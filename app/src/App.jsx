@@ -1529,6 +1529,34 @@ const stockWarehouseDistribution = (item = {}, warehouses = []) => {
     .join("\n") || "—";
 };
 
+const stockWarehouseEditorEntries = (item = {}, warehouses = []) => {
+  const entries = stockWarehouseEntries(item, warehouses);
+  const existingWritableIds = new Set(
+    entries
+      .filter((entry) => entry.warehouseId)
+      .map((entry) => String(entry.warehouseId))
+  );
+  const editableWarehouses = (Array.isArray(warehouses) ? warehouses : [])
+    .filter(warehouseIsActive)
+    .filter(warehouseIsWritableFbs)
+    .map((warehouse) => {
+      const id = warehouse.id || warehouse.warehouse_id || warehouse.warehouseId;
+      if (!id || existingWritableIds.has(String(id))) return null;
+      return {
+        key: `warehouse-${id}`,
+        warehouseId: String(id),
+        label: warehouseDisplayName(warehouse) || String(id),
+        present: 0,
+        reserved: 0,
+        source: "warehouse",
+        sourceGroup: "fbs",
+        writable: true,
+      };
+    })
+    .filter(Boolean);
+  return [...entries, ...editableWarehouses];
+};
+
 const productStatus = (item = {}) =>
   item.statuses?.status_name ||
   item.statuses?.status ||
@@ -4527,7 +4555,7 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
   };
   const openStockEditor = (row) => {
     const product = row?._raw || {};
-    const entries = stockWarehouseEntries(product, warehouses);
+    const entries = stockWarehouseEditorEntries(product, warehouses);
     setStockEditor({ row, product, entries });
     setStockDrafts(Object.fromEntries(entries.map((entry) => [entry.key, entry.present])));
   };
