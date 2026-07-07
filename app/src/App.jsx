@@ -1376,14 +1376,57 @@ const stockDistribution = (item = {}) => {
     .join(" / ");
 };
 
+const WAREHOUSE_NAME_TRANSLATIONS = new Map([
+  ["Казань_РФЦ_НОВЫЙ", "喀山新履约仓"],
+  ["ВОРОНЕЖ_2_РФЦ", "沃罗涅日 2 号履约仓"],
+  ["ГРИВНО_РФЦ", "格里夫诺履约仓"],
+  ["НОВОРОССИЙСК_РФЦ", "新罗西斯克履约仓"],
+  ["ПУШКИНО_2_РФЦ", "普希金诺 2 号履约仓"],
+  ["МАХАЧКАЛА_РФЦ", "马哈奇卡拉履约仓"],
+  ["CEL Hunchun 2", "CEL 珲春 2 仓"],
+  ["Ural Khorgos 2", "Ural 霍尔果斯 2 仓"],
+]);
+
+const displayWarehouseName = (value = "") => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return WAREHOUSE_NAME_TRANSLATIONS.get(raw) || raw;
+};
+
 const warehouseDisplayName = (warehouse = {}) => {
   const item = warehouse || {};
-  return item.name ||
-  item.warehouse_name ||
-  item.warehouseName ||
-  item.title ||
-  item.id ||
-  "";
+  return displayWarehouseName(
+    item.name ||
+    item.warehouse_name ||
+    item.warehouseName ||
+    item.title ||
+    item.id ||
+    ""
+  );
+};
+
+const warehouseIsActive = (warehouse = {}) => {
+  const status = String(
+    warehouse.status ??
+    warehouse.state ??
+    warehouse.warehouse_status ??
+    warehouse.warehouseStatus ??
+    ""
+  ).toLowerCase();
+  if (["disabled", "archived", "archive", "inactive", "deleted", "blocked"].includes(status)) return false;
+  if (warehouse.archived === true || warehouse.disabled === true || warehouse.isArchived === true) return false;
+  if (warehouse.isActive === false || warehouse.is_active === false || warehouse.active === false) return false;
+  return true;
+};
+
+const warehouseIsWritableFbs = (warehouse = {}) => {
+  const type = String(
+    warehouse.warehouse_type ??
+    warehouse.warehouseType ??
+    warehouse.type ??
+    ""
+  ).toLowerCase();
+  return type !== "fbp";
 };
 
 const warehouseIdValue = (value = {}) =>
@@ -1421,6 +1464,13 @@ const warehouseStockRows = (item = {}) => {
   return directSources.flatMap(stockArrayFromValue);
 };
 
+const stockSourceGroup = (source = "") => {
+  const text = String(source || "").toLowerCase();
+  if (text.includes("fbo")) return "fbo";
+  if (text.includes("fbs") || text.includes("rfbs")) return "fbs";
+  return text || "stock";
+};
+
 const stockWarehouseEntries = (item = {}, warehouses = []) => {
   const warehouseList = Array.isArray(warehouses) ? warehouses : [];
   const warehouseById = new Map(
@@ -1443,13 +1493,15 @@ const stockWarehouseEntries = (item = {}, warehouses = []) => {
       row.delivery_method?.name ||
       warehouseDisplayName(matchedWarehouse);
     const source = String(row.source || fallbackSource || "stock").toLowerCase();
+    const label = displayWarehouseName(directName) || (source.includes("fbo") ? "Ozon FBO仓" : "FBS 总库存");
     return {
       key: `${warehouseId || source || "stock"}-${index}`,
       warehouseId: warehouseId ? String(warehouseId) : "",
-      label: directName || (source.includes("fbo") ? "Ozon FBO仓" : "FBS 总库存"),
+      label,
       present: count,
       reserved: Number(row.reserved ?? row.reserved_stock ?? row.reserved_amount ?? 0) || 0,
       source,
+      sourceGroup: stockSourceGroup(source),
       writable: Boolean(warehouseId) && !source.includes("fbo"),
     };
   };
@@ -1457,12 +1509,15 @@ const stockWarehouseEntries = (item = {}, warehouses = []) => {
   const detailedEntries = warehouseStockRows(item)
     .map((row, index) => makeEntry(row, index, "fbs"))
     .filter((entry) => entry.present > 0);
+  const detailedSourceGroups = new Set(detailedEntries.map((entry) => entry.sourceGroup));
   const nestedEntries = stockEntries(item)
     .map((row, index) => makeEntry(row, index, row.source || "stock"))
     .filter((entry) => entry.present > 0)
     .filter((entry) => {
       if (!detailedEntries.length) return true;
-      return entry.source.includes("fbo") || (entry.warehouseId && !detailedEntries.some((detail) => detail.warehouseId === entry.warehouseId));
+      if (detailedSourceGroups.has(entry.sourceGroup)) return false;
+      if (!entry.warehouseId) return true;
+      return !detailedEntries.some((detail) => detail.warehouseId === entry.warehouseId);
     });
   return [...nestedEntries, ...detailedEntries];
 };
@@ -1470,7 +1525,7 @@ const stockWarehouseEntries = (item = {}, warehouses = []) => {
 const stockWarehouseDistribution = (item = {}, warehouses = []) => {
   const entries = stockWarehouseEntries(item, warehouses).filter((entry) => entry.present > 0);
   return entries
-    .map((entry) => `${entry.label} ${entry.present}`)
+    .map((entry) => `${entry.label}（${entry.present}）`)
     .join("\n") || "—";
 };
 
@@ -1859,11 +1914,13 @@ const productRows = (products = [], warehouses = []) =>
     const statusMeta = productStatusMeta(item);
     const image = productImageUrl(item);
     const sku = item.sku || item.ozon_sku || item.product_sku || item.product_id || item.id || item.offer_id || "";
+    const offerId = item.offer_id || item.offerId || item.item_code || item.itemCode || "";
     return {
       id: item.id || item.product_id || item.offer_id || `product-${index}`,
       "#": index + 1,
       _image: image,
       _sku: sku,
+      _offerId: offerId,
       _title: item.name || item.offer_id || item.product_id || "—",
       _statusMeta: statusMeta,
       _raw: item,
@@ -4437,8 +4494,6 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
   const [syncingStocks, setSyncingStocks] = useState(false);
   const [stockEditor, setStockEditor] = useState(null);
   const [stockDrafts, setStockDrafts] = useState({});
-  const [manualStockWarehouse, setManualStockWarehouse] = useState("");
-  const [manualStockValue, setManualStockValue] = useState(0);
   const [savingStock, setSavingStock] = useState(false);
   const products = scopedProductsForCurrentStore(localData?.caches?.products || [], binding, localData);
   const warehouses = scopedWarehousesForCurrentStore(localData?.caches?.warehouses || [], binding, localData);
@@ -4475,31 +4530,19 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
     const entries = stockWarehouseEntries(product, warehouses);
     setStockEditor({ row, product, entries });
     setStockDrafts(Object.fromEntries(entries.map((entry) => [entry.key, entry.present])));
-    setManualStockWarehouse("");
-    setManualStockValue(0);
   };
   const closeStockEditor = () => {
     if (savingStock) return;
     setStockEditor(null);
     setStockDrafts({});
-    setManualStockWarehouse("");
-    setManualStockValue(0);
   };
   const stockEditorEntries = stockEditor?.entries || [];
-  const warehouseEditOptions = warehouses
-    .map((warehouse) => {
-      const id = warehouse.warehouse_id ?? warehouse.warehouseId ?? warehouse.id;
-      const label = warehouseDisplayName(warehouse);
-      return id ? { value: String(id), label: label || String(id) } : null;
-    })
-    .filter(Boolean);
   const stockEditorChanges = stockEditorEntries
     .filter((entry) => entry.writable)
     .filter((entry) => Number(stockDrafts[entry.key]) !== Number(entry.present));
-  const manualStockExisting = stockEditorEntries.find((entry) => entry.warehouseId === manualStockWarehouse);
-  const hasManualStockChange = Boolean(manualStockWarehouse) &&
-    Number(manualStockValue) !== Number(manualStockExisting?.present ?? -1);
-  const stockEditorChangeCount = stockEditorChanges.length + (hasManualStockChange ? 1 : 0);
+  const stockEditorHasReadonlyEntries = stockEditorEntries.length > 0 &&
+    stockEditorEntries.some((entry) => !entry.writable);
+  const stockEditorChangeCount = stockEditorChanges.length;
   const submitStockEditor = async () => {
     if (!stockEditor || savingStock) return;
     if (!stockEditorChangeCount) {
@@ -4513,22 +4556,10 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
       message.error("缺少商品 offer_id / product_id，无法同步库存");
       return;
     }
-    const stockChanges = stockEditorChanges
-      .filter((entry) => !manualStockWarehouse || entry.warehouseId !== manualStockWarehouse)
-      .map((entry) => ({
-        warehouseId: entry.warehouseId,
-        stock: Number(stockDrafts[entry.key]) || 0,
-      }));
-    if (hasManualStockChange) {
-      stockChanges.push({
-        warehouseId: manualStockWarehouse,
-        stock: Number(manualStockValue) || 0,
-      });
-    }
-    const stocks = stockChanges.map((entry) => ({
+    const stocks = stockEditorChanges.map((entry) => ({
       ...(offerId ? { offer_id: String(offerId) } : {}),
       ...(productId ? { product_id: Number(productId) || String(productId) } : {}),
-      stock: entry.stock,
+      stock: Number(stockDrafts[entry.key]) || 0,
       warehouse_id: Number(entry.warehouseId) || String(entry.warehouseId),
     }));
     setSavingStock(true);
@@ -4542,8 +4573,6 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
       message.success({ content: `库存已同步 · ${stocks.length} 个仓库`, key: "stock-editor" });
       setStockEditor(null);
       setStockDrafts({});
-      setManualStockWarehouse("");
-      setManualStockValue(0);
     } catch (error) {
       message.error({ content: `库存同步失败: ${error.message}`, key: "stock-editor" });
     } finally {
@@ -4571,6 +4600,7 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
       render: (value, row) => {
         const title = row._title || value || "—";
         const sku = row._sku || "";
+        const offerId = row._offerId || "";
         return (
           <div className="product-info-cell">
             <span className="source-table-cell-text product-info-name" title={title}>{title}</span>
@@ -4590,6 +4620,11 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
                     type="text"
                   />
                 </Tooltip>
+              </span>
+            ) : null}
+            {offerId ? (
+              <span className="product-sku-row">
+                <span className="product-sku-text" title={offerId}>货号：{offerId}</span>
               </span>
             ) : null}
           </div>
@@ -4734,9 +4769,9 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
             <strong title={stockEditor?.row?._title}>{stockEditor?.row?._title || "—"}</strong>
             <span>SKU：{stockEditor?.row?._sku || "—"}</span>
           </div>
-          {stockEditorEntries.some((entry) => !entry.writable) ? (
+          {stockEditorHasReadonlyEntries ? (
             <Alert
-              message="没有仓库 ID 的汇总库存不能直接修改；需要在下方选择一个本店仓库后写入该 SKU 库存。"
+              message="仅支持直接修改已返回仓库 ID 的 FBS 仓库库存；缺少仓库 ID 的汇总库存不可写入。"
               showIcon
               type="warning"
             />
@@ -4793,23 +4828,6 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
               emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无库存明细" />,
             }}
           />
-          {warehouseEditOptions.length ? (
-            <div className="stock-manual-editor">
-              <Select
-                allowClear
-                placeholder="选择要写入库存的仓库"
-                value={manualStockWarehouse || undefined}
-                options={warehouseEditOptions}
-                onChange={(value) => setManualStockWarehouse(value || "")}
-              />
-              <InputNumber
-                min={0}
-                precision={0}
-                value={manualStockValue}
-                onChange={(value) => setManualStockValue(Number(value) || 0)}
-              />
-            </div>
-          ) : null}
         </div>
       </Modal>
     </div>

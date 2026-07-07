@@ -1320,9 +1320,11 @@ function pickArray(value) {
   if (Array.isArray(value.items)) return value.items;
   if (Array.isArray(value.stocks)) return value.stocks;
   if (Array.isArray(value.rows)) return value.rows;
+  if (Array.isArray(value.products)) return value.products;
   if (Array.isArray(value.result?.items)) return value.result.items;
   if (Array.isArray(value.result?.stocks)) return value.result.stocks;
   if (Array.isArray(value.result?.rows)) return value.result.rows;
+  if (Array.isArray(value.result?.products)) return value.result.products;
   if (Array.isArray(value.result)) return value.result;
   return [];
 }
@@ -1341,7 +1343,7 @@ function stockCountFromOzon(row = {}) {
   ) || 0;
 }
 
-function normalizeWarehouseStockRows(item = {}) {
+function normalizeWarehouseStockRows(item = {}, defaultSource = "fbs") {
   const rows = pickArray(item.stocks).length ? pickArray(item.stocks) : pickArray(item);
   const sourceRows = rows.length ? rows : (item.warehouse_id || item.warehouseId || item.warehouse_name || item.warehouseName ? [item] : []);
   return sourceRows.map((row) => ({
@@ -1349,14 +1351,16 @@ function normalizeWarehouseStockRows(item = {}) {
     warehouse_id: row.warehouse_id ?? row.warehouseId ?? row.warehouse?.id ?? item.warehouse_id ?? item.warehouseId,
     warehouse_name: row.warehouse_name ?? row.warehouseName ?? row.warehouse?.name ?? item.warehouse_name ?? item.warehouseName,
     present: stockCountFromOzon(row),
-    reserved: Number(row.reserved ?? row.reserved_stock ?? 0) || 0,
+    reserved: Number(row.reserved ?? row.reserved_stock ?? row.reserved_amount ?? 0) || 0,
     sku: row.sku ?? item.sku,
-    source: row.source || "fbs",
+    offer_id: row.offer_id ?? item.offer_id,
+    product_id: row.product_id ?? item.product_id,
+    source: row.source || defaultSource,
   })).filter((row) => row.warehouse_id || row.warehouse_name);
 }
 
-function addWarehouseStockLookup(map, item = {}) {
-  const rows = normalizeWarehouseStockRows(item);
+function addWarehouseStockLookup(map, item = {}, defaultSource = "fbs") {
+  const rows = normalizeWarehouseStockRows(item, defaultSource);
   const keys = [
     item.product_id,
     item.productId,
@@ -1373,6 +1377,37 @@ function addWarehouseStockLookup(map, item = {}) {
   }
 }
 
+function warehouseStockRowsForProduct(map, product = {}) {
+  const keys = [
+    product.product_id,
+    product.productId,
+    product.id,
+    product.offer_id,
+    product.offerId,
+    product.item_code,
+    product.sku,
+  ].filter(Boolean).map(String);
+  return keys
+    .map((key) => map.get(key))
+    .find((rows) => Array.isArray(rows)) || [];
+}
+
+function dedupeWarehouseStockRows(rows = []) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = [
+      String(row.source || ""),
+      String(row.warehouse_id ?? row.warehouseId ?? ""),
+      String(row.warehouse_name ?? row.warehouseName ?? ""),
+      String(row.sku ?? ""),
+      String(row.offer_id ?? row.offerId ?? ""),
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 async function fetchWarehouseStockLookup(store) {
   const map = new Map();
   let total = 0;
@@ -1383,7 +1418,7 @@ async function fetchWarehouseStockLookup(store) {
       const items = pickArray(data);
       if (!items.length) break;
       for (const item of items) {
-        addWarehouseStockLookup(map, item);
+        addWarehouseStockLookup(map, item, "fbo");
         total += 1;
       }
       if (items.length < limit) break;
@@ -1391,6 +1426,49 @@ async function fetchWarehouseStockLookup(store) {
     return { loaded: true, map, total };
   } catch (error) {
     console.error("[syncProducts] warehouse stock detail sync failed:", String(error?.message || error).slice(0, 300));
+    return { loaded: false, map, total: 0 };
+  }
+}
+
+async function fetchFbsWarehouseStockLookup(store, products = []) {
+  const map = new Map();
+  const offerIds = [...new Set(products.map((item) => item.offer_id || item.offerId).filter(Boolean).map(String))];
+  const skuIds = [...new Set(products.map((item) => item.sku).filter(Boolean).map(Number).filter(Boolean))];
+  const chunks = offerIds.length
+    ? offerIds.reduce((acc, item, index) => {
+        if (index % 500 === 0) acc.push([]);
+        acc[acc.length - 1].push(item);
+        return acc;
+      }, [])
+    : skuIds.reduce((acc, item, index) => {
+        if (index % 500 === 0) acc.push([]);
+        acc[acc.length - 1].push(item);
+        return acc;
+      }, []);
+  let total = 0;
+  try {
+    for (const chunk of chunks) {
+      let cursor = "";
+      for (let page = 0; page < 50; page += 1) {
+        const payload = {
+          limit: 1000,
+          ...(offerIds.length ? { offer_id: chunk } : { sku: chunk }),
+          ...(cursor ? { cursor } : {}),
+        };
+        const data = await ozonCall(store, "/v2/product/info/stocks-by-warehouse/fbs", payload, 120000);
+        const items = pickArray(data);
+        for (const item of items) {
+          addWarehouseStockLookup(map, item, "fbs");
+          total += 1;
+        }
+        cursor = data?.cursor || data?.result?.cursor || "";
+        if (!data?.has_next && !data?.result?.has_next) break;
+        if (!cursor) break;
+      }
+    }
+    return { loaded: true, map, total };
+  } catch (error) {
+    console.error("[syncProducts] fbs warehouse stock sync failed:", String(error?.message || error).slice(0, 300));
     return { loaded: false, map, total: 0 };
   }
 }
@@ -1482,15 +1560,16 @@ async function syncProducts(state, store) {
         const details = infoRes?.result?.items || infoRes?.items || [];
         const priceDetails = priceRes?.items || priceRes?.result?.items || [];
         const priceItemById = new Map(priceDetails.map((item) => [String(item.product_id || item.id || item.offer_id || ""), item]));
+        const fbsWarehouseStockLookup = await fetchFbsWarehouseStockLookup(store, details);
         const syncedAt = new Date().toISOString();
         for (const raw of details) {
           const id = raw.id || raw.product_id || raw.offer_id;
           const listItem = listItemById.get(String(id || "")) || {};
           const priceItem = priceItemById.get(String(id || "")) || {};
-          const warehouseStockKeys = [id, raw.product_id, raw.id, raw.offer_id, raw.sku].filter(Boolean).map(String);
-          const warehouseStocks = warehouseStockKeys
-            .map((key) => warehouseStockLookup.map.get(key))
-            .find((rows) => Array.isArray(rows));
+          const warehouseStocks = dedupeWarehouseStockRows([
+            ...warehouseStockRowsForProduct(warehouseStockLookup.map, raw),
+            ...warehouseStockRowsForProduct(fbsWarehouseStockLookup.map, raw),
+          ]);
           const isArchived = Boolean(raw.is_archived || raw.archived || visibility === "ARCHIVED");
           upsertById(cache, id, {
             ...raw,
@@ -1499,7 +1578,7 @@ async function syncProducts(state, store) {
             marketing_actions: priceItem.marketing_actions || raw.marketing_actions,
             price_info: priceItem,
             price_indexes: priceItem.price_indexes || raw.price_indexes,
-            ...(warehouseStockLookup.loaded ? { warehouse_stocks: warehouseStocks || [] } : {}),
+            ...(warehouseStockLookup.loaded || fbsWarehouseStockLookup.loaded ? { warehouse_stocks: warehouseStocks || [] } : {}),
             visibilityFilter: visibility,
             listVisibility: listItem.visibility || visibility,
             is_archived: isArchived,
