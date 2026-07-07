@@ -1314,9 +1314,152 @@ async function createOzonProductImport(state, req, body, type = "PRODUCT_IMPORT"
   }
 }
 
+function pickArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value.items)) return value.items;
+  if (Array.isArray(value.stocks)) return value.stocks;
+  if (Array.isArray(value.rows)) return value.rows;
+  if (Array.isArray(value.result?.items)) return value.result.items;
+  if (Array.isArray(value.result?.stocks)) return value.result.stocks;
+  if (Array.isArray(value.result?.rows)) return value.result.rows;
+  if (Array.isArray(value.result)) return value.result;
+  return [];
+}
+
+function stockCountFromOzon(row = {}) {
+  return Number(
+    row.present ??
+    row.stock ??
+    row.available ??
+    row.quantity ??
+    row.balance ??
+    row.available_stock ??
+    row.free_to_sell ??
+    row.free_to_sell_amount ??
+    0
+  ) || 0;
+}
+
+function normalizeWarehouseStockRows(item = {}) {
+  const rows = pickArray(item.stocks).length ? pickArray(item.stocks) : pickArray(item);
+  const sourceRows = rows.length ? rows : (item.warehouse_id || item.warehouseId || item.warehouse_name || item.warehouseName ? [item] : []);
+  return sourceRows.map((row) => ({
+    ...row,
+    warehouse_id: row.warehouse_id ?? row.warehouseId ?? row.warehouse?.id ?? item.warehouse_id ?? item.warehouseId,
+    warehouse_name: row.warehouse_name ?? row.warehouseName ?? row.warehouse?.name ?? item.warehouse_name ?? item.warehouseName,
+    present: stockCountFromOzon(row),
+    reserved: Number(row.reserved ?? row.reserved_stock ?? 0) || 0,
+    sku: row.sku ?? item.sku,
+    source: row.source || "fbs",
+  })).filter((row) => row.warehouse_id || row.warehouse_name);
+}
+
+function addWarehouseStockLookup(map, item = {}) {
+  const rows = normalizeWarehouseStockRows(item);
+  const keys = [
+    item.product_id,
+    item.productId,
+    item.id,
+    item.offer_id,
+    item.offerId,
+    item.item_code,
+    item.sku,
+  ].filter(Boolean).map(String);
+  if (!rows.length || !keys.length) return;
+  for (const key of keys) {
+    const existing = map.get(key) || [];
+    map.set(key, [...existing, ...rows]);
+  }
+}
+
+async function fetchWarehouseStockLookup(store) {
+  const map = new Map();
+  let total = 0;
+  const limit = 1000;
+  try {
+    for (let offset = 0; offset < 100000; offset += limit) {
+      const data = await ozonCall(store, "/v2/analytics/stock_on_warehouses", { limit, offset, warehouse_type: "ALL" }, 120000);
+      const items = pickArray(data);
+      if (!items.length) break;
+      for (const item of items) {
+        addWarehouseStockLookup(map, item);
+        total += 1;
+      }
+      if (items.length < limit) break;
+    }
+    return { loaded: true, map, total };
+  } catch (error) {
+    console.error("[syncProducts] warehouse stock detail sync failed:", String(error?.message || error).slice(0, 300));
+    return { loaded: false, map, total: 0 };
+  }
+}
+
+function productMatchesStockChange(product = {}, stock = {}, store = {}) {
+  const productStoreId = product.storeId || product.store_id || product.ozonStoreId || product.localStoreId;
+  const productClientId = product.clientId || product.client_id || product.ozonClientId;
+  if (productStoreId && String(productStoreId) !== String(store.id)) return false;
+  if (!productStoreId && productClientId && String(productClientId) !== String(store.clientId)) return false;
+  const stockOfferId = stock.offer_id || stock.offerId;
+  const stockProductId = stock.product_id || stock.productId;
+  const stockSku = stock.sku;
+  if (stockOfferId && String(product.offer_id || product.offerId || "") === String(stockOfferId)) return true;
+  if (stockProductId && String(product.product_id || product.productId || product.id || "") === String(stockProductId)) return true;
+  if (stockSku && String(product.sku || product.ozon_sku || "") === String(stockSku)) return true;
+  return false;
+}
+
+function applyStockChangesToCache(state, store, stocks = []) {
+  const products = state.caches.products || [];
+  const syncedAt = new Date().toISOString();
+  let updated = 0;
+  for (const stock of stocks) {
+    const warehouseId = stock.warehouse_id ?? stock.warehouseId;
+    if (!warehouseId) continue;
+    const product = products.find((item) => productMatchesStockChange(item, stock, store));
+    if (!product) continue;
+    const nextStock = Math.max(0, Number(stock.stock ?? stock.present ?? 0) || 0);
+    const rows = Array.isArray(product.warehouse_stocks) ? [...product.warehouse_stocks] : [];
+    const existingIndex = rows.findIndex((row) => String(row.warehouse_id ?? row.warehouseId) === String(warehouseId));
+    const currentRow = existingIndex >= 0 ? rows[existingIndex] : {};
+    const nextRow = {
+      ...currentRow,
+      warehouse_id: Number(warehouseId) || String(warehouseId),
+      present: nextStock,
+      reserved: Number(currentRow.reserved ?? currentRow.reserved_stock ?? 0) || 0,
+      sku: product.sku ?? stock.sku,
+      source: currentRow.source || "fbs",
+    };
+    if (existingIndex >= 0) rows[existingIndex] = nextRow;
+    else rows.push(nextRow);
+    product.warehouse_stocks = rows;
+
+    const fbsTotal = rows.reduce((sum, row) => sum + stockCountFromOzon(row), 0);
+    const stockRows = Array.isArray(product.stocks?.stocks) ? product.stocks.stocks : [];
+    const nonFbsRows = stockRows.filter((row) => !String(row.source || "").toLowerCase().includes("fbs"));
+    product.stocks = {
+      ...(product.stocks || {}),
+      has_stock: fbsTotal > 0 || nonFbsRows.some((row) => stockCountFromOzon(row) > 0),
+      stocks: [
+        ...nonFbsRows,
+        {
+          present: fbsTotal,
+          reserved: rows.reduce((sum, row) => sum + (Number(row.reserved ?? row.reserved_stock ?? 0) || 0), 0),
+          sku: product.sku ?? stock.sku,
+          source: "fbs",
+        },
+      ],
+    };
+    product.syncedAt = syncedAt;
+    updated += 1;
+  }
+  return updated;
+}
+
 async function syncProducts(state, store) {
   let imported = 0;
   const cache = state.caches.products;
+  const warehouseStockLookup = await fetchWarehouseStockLookup(store);
   for (const visibility of ["ALL", "ARCHIVED"]) {
     let lastId = "";
     for (let page = 0; page < 20; page += 1) {
@@ -1344,6 +1487,10 @@ async function syncProducts(state, store) {
           const id = raw.id || raw.product_id || raw.offer_id;
           const listItem = listItemById.get(String(id || "")) || {};
           const priceItem = priceItemById.get(String(id || "")) || {};
+          const warehouseStockKeys = [id, raw.product_id, raw.id, raw.offer_id, raw.sku].filter(Boolean).map(String);
+          const warehouseStocks = warehouseStockKeys
+            .map((key) => warehouseStockLookup.map.get(key))
+            .find((rows) => Array.isArray(rows));
           const isArchived = Boolean(raw.is_archived || raw.archived || visibility === "ARCHIVED");
           upsertById(cache, id, {
             ...raw,
@@ -1352,6 +1499,7 @@ async function syncProducts(state, store) {
             marketing_actions: priceItem.marketing_actions || raw.marketing_actions,
             price_info: priceItem,
             price_indexes: priceItem.price_indexes || raw.price_indexes,
+            ...(warehouseStockLookup.loaded ? { warehouse_stocks: warehouseStocks || [] } : {}),
             visibilityFilter: visibility,
             listVisibility: listItem.visibility || visibility,
             is_archived: isArchived,
@@ -2943,17 +3091,19 @@ async function handle(req, res) {
     const jobId = crypto.randomUUID();
     try {
       const data = await ozonCall(store, "/v2/products/stocks", { stocks }, 60000);
+      const updatedCache = applyStockChangesToCache(state, store, stocks);
       const job = upsertImportJob(state, {
         id: jobId,
         type: "STOCK_IMPORT",
         status: "SUCCESS",
         storeId: store.id,
         stockCount: stocks.length,
+        updatedCache,
         response: data,
         local: false,
       });
       await saveState(state);
-      sendJson(res, 200, { ok: true, result: data?.result || data, job: publicImportTask(job), raw: data });
+      sendJson(res, 200, { ok: true, result: data?.result || data, updatedCache, job: publicImportTask(job), raw: data });
     } catch (error) {
       const job = upsertImportJob(state, {
         id: jobId,

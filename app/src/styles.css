@@ -1957,6 +1957,12 @@ kbd {
   white-space: nowrap;
 }
 
+.source-table-link.ant-btn {
+  height: 24px;
+  padding: 0;
+  font-size: 12px;
+}
+
 .product-thumb {
   width: 40px;
   height: 40px;
@@ -2044,6 +2050,44 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.stock-edit-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stock-edit-warehouse {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stock-edit-warehouse strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(0, 0, 0, 0.78);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stock-edit-warehouse span {
+  color: rgba(0, 0, 0, 0.42);
+  font-size: 12px;
+}
+
+.stock-manual-editor {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 140px;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #fafbfc;
 }
 
 .product-price-modal {

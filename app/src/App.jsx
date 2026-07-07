@@ -13,6 +13,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Layout,
   Menu,
   Modal,
@@ -1345,10 +1346,24 @@ const moneyText = (value, currency = "") => {
 const stockEntries = (item = {}) =>
   Array.isArray(item.stocks?.stocks) ? item.stocks.stocks : [];
 
+const stockCountValue = (row = {}) =>
+  Number(
+    row.present ??
+    row.stock ??
+    row.available ??
+    row.quantity ??
+    row.balance ??
+    row.available_stock ??
+    row.free_to_sell ??
+    row.free_to_sell_amount ??
+    row.count ??
+    0
+  ) || 0;
+
 const stockTotal = (item = {}) => {
   const nested = stockEntries(item);
   if (nested.length) {
-    return nested.reduce((sum, row) => sum + (Number(row.present) || 0), 0);
+    return nested.reduce((sum, row) => sum + stockCountValue(row), 0);
   }
   return item.stocks?.present ?? item.stocks?.available ?? item.stock ?? "—";
 };
@@ -1371,9 +1386,42 @@ const warehouseDisplayName = (warehouse = {}) => {
   "";
 };
 
-const stockWarehouseDistribution = (item = {}, warehouses = []) => {
-  const nested = stockEntries(item);
-  if (!nested.length) return "—";
+const warehouseIdValue = (value = {}) =>
+  value.warehouse_id ??
+  value.warehouseId ??
+  value.warehouse?.warehouse_id ??
+  value.warehouse?.warehouseId ??
+  value.warehouse?.id ??
+  null;
+
+const stockArrayFromValue = (value) => {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value.items)) return value.items;
+  if (Array.isArray(value.stocks)) return value.stocks;
+  if (Array.isArray(value.result?.items)) return value.result.items;
+  if (Array.isArray(value.result?.stocks)) return value.result.stocks;
+  if (Array.isArray(value.result)) return value.result;
+  return [];
+};
+
+const warehouseStockRows = (item = {}) => {
+  const directSources = [
+    item.warehouse_stocks,
+    item.warehouseStocks,
+    item.stock_by_warehouse,
+    item.stockByWarehouse,
+    item.stocks_by_warehouse,
+    item.stocksByWarehouse,
+    item.fbs_warehouse_stocks,
+    item.fbsWarehouseStocks,
+    item.stocks?.warehouse_stocks,
+    item.stocks?.warehouseStocks,
+  ];
+  return directSources.flatMap(stockArrayFromValue);
+};
+
+const stockWarehouseEntries = (item = {}, warehouses = []) => {
   const warehouseList = Array.isArray(warehouses) ? warehouses : [];
   const warehouseById = new Map(
     warehouseList.flatMap((warehouse) => {
@@ -1381,31 +1429,48 @@ const stockWarehouseDistribution = (item = {}, warehouses = []) => {
       return ids.map((id) => [id, warehouse]);
     })
   );
-  const warehouseNames = warehouseList.map(warehouseDisplayName).filter(Boolean);
-  const sellerWarehouseLabel = warehouseNames.length
-    ? `${warehouseNames.slice(0, 2).join("、")}${warehouseNames.length > 2 ? `等 ${warehouseNames.length} 仓` : ""}`
-    : "卖家仓库";
-  return nested
-    .map((row) => ({ row, count: Number(row.present) || 0 }))
-    .filter(({ count }) => count > 0)
-    .map((row) => {
-      const count = row.count;
-      const stockRow = row.row;
-      const warehouseId = stockRow.warehouse_id || stockRow.warehouseId || stockRow.warehouse || stockRow.id;
-      const matchedWarehouse = warehouseId ? warehouseById.get(String(warehouseId)) : null;
-      const directName =
-        stockRow.warehouse_name ||
-        stockRow.warehouseName ||
-        stockRow.name ||
-        stockRow.delivery_method?.warehouse ||
-        stockRow.delivery_method?.name ||
-        warehouseDisplayName(matchedWarehouse);
-      if (directName) return `${directName} ${count}`;
-      const source = String(stockRow.source || "").toLowerCase();
-      if (source.includes("fbo")) return `Ozon FBO仓 ${count}`;
-      if (source.includes("fbs") || source.includes("rfbs")) return `${sellerWarehouseLabel} ${count}`;
-      return `${String(stockRow.source || "stock").toUpperCase()} ${count}`;
-    })
+
+  const makeEntry = (row = {}, index = 0, fallbackSource = "fbs") => {
+    const count = stockCountValue(row);
+    const warehouseId = warehouseIdValue(row);
+    const matchedWarehouse = warehouseId ? warehouseById.get(String(warehouseId)) : null;
+    const directName =
+      row.warehouse_name ||
+      row.warehouseName ||
+      row.name ||
+      row.warehouse?.name ||
+      row.delivery_method?.warehouse ||
+      row.delivery_method?.name ||
+      warehouseDisplayName(matchedWarehouse);
+    const source = String(row.source || fallbackSource || "stock").toLowerCase();
+    return {
+      key: `${warehouseId || source || "stock"}-${index}`,
+      warehouseId: warehouseId ? String(warehouseId) : "",
+      label: directName || (source.includes("fbo") ? "Ozon FBO仓" : "FBS 总库存"),
+      present: count,
+      reserved: Number(row.reserved ?? row.reserved_stock ?? row.reserved_amount ?? 0) || 0,
+      source,
+      writable: Boolean(warehouseId) && !source.includes("fbo"),
+    };
+  };
+
+  const detailedEntries = warehouseStockRows(item)
+    .map((row, index) => makeEntry(row, index, "fbs"))
+    .filter((entry) => entry.present > 0);
+  const nestedEntries = stockEntries(item)
+    .map((row, index) => makeEntry(row, index, row.source || "stock"))
+    .filter((entry) => entry.present > 0)
+    .filter((entry) => {
+      if (!detailedEntries.length) return true;
+      return entry.source.includes("fbo") || (entry.warehouseId && !detailedEntries.some((detail) => detail.warehouseId === entry.warehouseId));
+    });
+  return [...nestedEntries, ...detailedEntries];
+};
+
+const stockWarehouseDistribution = (item = {}, warehouses = []) => {
+  const entries = stockWarehouseEntries(item, warehouses).filter((entry) => entry.present > 0);
+  return entries
+    .map((entry) => `${entry.label} ${entry.present}`)
     .join("\n") || "—";
 };
 
@@ -4370,6 +4435,11 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
   const [activeStock, setActiveStock] = useState("全部");
   const [query, setQuery] = useState("");
   const [syncingStocks, setSyncingStocks] = useState(false);
+  const [stockEditor, setStockEditor] = useState(null);
+  const [stockDrafts, setStockDrafts] = useState({});
+  const [manualStockWarehouse, setManualStockWarehouse] = useState("");
+  const [manualStockValue, setManualStockValue] = useState(0);
+  const [savingStock, setSavingStock] = useState(false);
   const products = scopedProductsForCurrentStore(localData?.caches?.products || [], binding, localData);
   const warehouses = scopedWarehousesForCurrentStore(localData?.caches?.warehouses || [], binding, localData);
   const outOfStockCount = products.filter((item) => productMatchesStockFilter(item, "缺货")).length;
@@ -4398,6 +4468,86 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
       message.success("SKU 已复制");
     } catch {
       message.error("SKU 复制失败");
+    }
+  };
+  const openStockEditor = (row) => {
+    const product = row?._raw || {};
+    const entries = stockWarehouseEntries(product, warehouses);
+    setStockEditor({ row, product, entries });
+    setStockDrafts(Object.fromEntries(entries.map((entry) => [entry.key, entry.present])));
+    setManualStockWarehouse("");
+    setManualStockValue(0);
+  };
+  const closeStockEditor = () => {
+    if (savingStock) return;
+    setStockEditor(null);
+    setStockDrafts({});
+    setManualStockWarehouse("");
+    setManualStockValue(0);
+  };
+  const stockEditorEntries = stockEditor?.entries || [];
+  const warehouseEditOptions = warehouses
+    .map((warehouse) => {
+      const id = warehouse.warehouse_id ?? warehouse.warehouseId ?? warehouse.id;
+      const label = warehouseDisplayName(warehouse);
+      return id ? { value: String(id), label: label || String(id) } : null;
+    })
+    .filter(Boolean);
+  const stockEditorChanges = stockEditorEntries
+    .filter((entry) => entry.writable)
+    .filter((entry) => Number(stockDrafts[entry.key]) !== Number(entry.present));
+  const manualStockExisting = stockEditorEntries.find((entry) => entry.warehouseId === manualStockWarehouse);
+  const hasManualStockChange = Boolean(manualStockWarehouse) &&
+    Number(manualStockValue) !== Number(manualStockExisting?.present ?? -1);
+  const stockEditorChangeCount = stockEditorChanges.length + (hasManualStockChange ? 1 : 0);
+  const submitStockEditor = async () => {
+    if (!stockEditor || savingStock) return;
+    if (!stockEditorChangeCount) {
+      message.info("库存没有变化");
+      return;
+    }
+    const product = stockEditor.product || {};
+    const offerId = product.offer_id || product.offerId || "";
+    const productId = product.product_id || product.productId || product.id || "";
+    if (!offerId && !productId) {
+      message.error("缺少商品 offer_id / product_id，无法同步库存");
+      return;
+    }
+    const stockChanges = stockEditorChanges
+      .filter((entry) => !manualStockWarehouse || entry.warehouseId !== manualStockWarehouse)
+      .map((entry) => ({
+        warehouseId: entry.warehouseId,
+        stock: Number(stockDrafts[entry.key]) || 0,
+      }));
+    if (hasManualStockChange) {
+      stockChanges.push({
+        warehouseId: manualStockWarehouse,
+        stock: Number(manualStockValue) || 0,
+      });
+    }
+    const stocks = stockChanges.map((entry) => ({
+      ...(offerId ? { offer_id: String(offerId) } : {}),
+      ...(productId ? { product_id: Number(productId) || String(productId) } : {}),
+      stock: entry.stock,
+      warehouse_id: Number(entry.warehouseId) || String(entry.warehouseId),
+    }));
+    setSavingStock(true);
+    message.loading({ content: "正在同步库存到 Ozon", key: "stock-editor", duration: 0 });
+    try {
+      await apiRequest("/ozon/stocks/import", {
+        method: "POST",
+        body: { storeId: binding?.id, stocks },
+      });
+      await onRefresh?.();
+      message.success({ content: `库存已同步 · ${stocks.length} 个仓库`, key: "stock-editor" });
+      setStockEditor(null);
+      setStockDrafts({});
+      setManualStockWarehouse("");
+      setManualStockValue(0);
+    } catch (error) {
+      message.error({ content: `库存同步失败: ${error.message}`, key: "stock-editor" });
+    } finally {
+      setSavingStock(false);
     }
   };
   const stockColumns = [
@@ -4461,7 +4611,21 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
         );
       },
     },
-    "操作",
+    {
+      title: "操作",
+      dataIndex: "操作",
+      width: 88,
+      render: (_, row) => (
+        <Button
+          className="source-table-link"
+          onClick={() => openStockEditor(row)}
+          size="small"
+          type="link"
+        >
+          查看
+        </Button>
+      ),
+    },
   ];
   const refreshStocks = async () => {
     if (!hasStore) {
@@ -4554,6 +4718,100 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
           sourceEmpty
         />
       </Card>
+      <Modal
+        title="修改 SKU 库存"
+        open={!!stockEditor}
+        onCancel={closeStockEditor}
+        onOk={submitStockEditor}
+        okText="同步到 Ozon"
+        cancelText="取消"
+        width={720}
+        okButtonProps={{ disabled: !stockEditorChangeCount, loading: savingStock }}
+        destroyOnHidden
+      >
+        <div className="stock-edit-modal">
+          <div className="product-price-modal-head">
+            <strong title={stockEditor?.row?._title}>{stockEditor?.row?._title || "—"}</strong>
+            <span>SKU：{stockEditor?.row?._sku || "—"}</span>
+          </div>
+          {stockEditorEntries.some((entry) => !entry.writable) ? (
+            <Alert
+              message="没有仓库 ID 的汇总库存不能直接修改；需要在下方选择一个本店仓库后写入该 SKU 库存。"
+              showIcon
+              type="warning"
+            />
+          ) : null}
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="key"
+            dataSource={stockEditorEntries}
+            columns={[
+              {
+                title: "仓库",
+                dataIndex: "label",
+                render: (value, entry) => (
+                  <div className="stock-edit-warehouse">
+                    <strong title={value}>{value}</strong>
+                    <span>{entry.warehouseId ? `仓库 ID：${entry.warehouseId}` : "缺少仓库 ID"}</span>
+                  </div>
+                ),
+              },
+              {
+                title: "当前库存",
+                dataIndex: "present",
+                width: 100,
+              },
+              {
+                title: "预留",
+                dataIndex: "reserved",
+                width: 90,
+              },
+              {
+                title: "修改库存",
+                dataIndex: "draft",
+                width: 140,
+                render: (_, entry) => (
+                  entry.writable ? (
+                    <InputNumber
+                      min={0}
+                      precision={0}
+                      value={stockDrafts[entry.key]}
+                      onChange={(value) => setStockDrafts((prev) => ({
+                        ...prev,
+                        [entry.key]: Number(value) || 0,
+                      }))}
+                      style={{ width: "100%" }}
+                    />
+                  ) : (
+                    <Tag>不可修改</Tag>
+                  )
+                ),
+              },
+            ]}
+            locale={{
+              emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无库存明细" />,
+            }}
+          />
+          {warehouseEditOptions.length ? (
+            <div className="stock-manual-editor">
+              <Select
+                allowClear
+                placeholder="选择要写入库存的仓库"
+                value={manualStockWarehouse || undefined}
+                options={warehouseEditOptions}
+                onChange={(value) => setManualStockWarehouse(value || "")}
+              />
+              <InputNumber
+                min={0}
+                precision={0}
+                value={manualStockValue}
+                onChange={(value) => setManualStockValue(Number(value) || 0)}
+              />
+            </div>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   );
 }
