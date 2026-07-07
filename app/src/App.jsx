@@ -74,6 +74,77 @@ const STORAGE_KEY = "qh-local-binding-v1";
 const SETTINGS_KEY = "qh-local-settings-v1";
 const LOCAL_API_BASE = "http://127.0.0.1:3001";
 
+const writeClipboardText = async (value) => {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (!navigator.clipboard?.writeText) return false;
+  try {
+    await Promise.race([
+      navigator.clipboard.writeText(text),
+      new Promise((_, reject) => window.setTimeout(() => reject(new Error("clipboard timeout")), 500)),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function SkuCopyButton({ message, sku }) {
+  const buttonRef = useRef(null);
+  const lastCopyAtRef = useRef(0);
+  const messageRef = useRef(message);
+  const skuRef = useRef(sku);
+
+  useEffect(() => {
+    messageRef.current = message;
+    skuRef.current = sku;
+  }, [message, sku]);
+
+  const copySku = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const now = Date.now();
+    if (now - lastCopyAtRef.current < 600) return;
+    lastCopyAtRef.current = now;
+    if (await writeClipboardText(skuRef.current)) {
+      messageRef.current.success("SKU 已复制");
+      return;
+    }
+    messageRef.current.error("SKU 复制失败");
+  };
+
+  useEffect(() => {
+    const button = buttonRef.current;
+    if (!button) return undefined;
+    const handleCopy = (event) => {
+      copySku(event);
+    };
+    button.addEventListener("pointerdown", handleCopy, true);
+    button.addEventListener("mousedown", handleCopy, true);
+    button.addEventListener("click", handleCopy, true);
+    return () => {
+      button.removeEventListener("pointerdown", handleCopy, true);
+      button.removeEventListener("mousedown", handleCopy, true);
+      button.removeEventListener("click", handleCopy, true);
+    };
+  }, []);
+
+  return (
+    <button
+      aria-label="复制 SKU"
+      className="product-sku-copy"
+      data-copy-sku={sku}
+      onClickCapture={copySku}
+      onPointerDownCapture={copySku}
+      ref={buttonRef}
+      title="复制 SKU"
+      type="button"
+    >
+      <CopyOutlined />
+    </button>
+  );
+}
+
 const emptyLocalData = {
   currentStoreId: "",
   stores: [],
@@ -1788,6 +1859,11 @@ const productStatusFilterOptions = (products = []) => {
   return PRODUCT_STATUS_BUCKETS.map((item) => statusMap.get(item.label) || { ...item, count: 0 });
 };
 
+const STOCK_PAGE_PRODUCT_STATUSES = new Set(["销售中", "准备销售"]);
+
+const productVisibleInStockTable = (item = {}) =>
+  STOCK_PAGE_PRODUCT_STATUSES.has(productStatusMeta(item).label);
+
 const productPriceNumber = (value) => {
   if (value === null || value === undefined || value === "" || value === "—") return null;
   const raw = typeof value === "object" ? value.price || value.marketing_seller_price || value.marketing_price || value.value : value;
@@ -3150,28 +3226,6 @@ function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
   });
   const rows = productRows(visibleProducts);
   const resolvedPageSize = pageSizeChoice === "全部" ? Math.max(rows.length, 1) : Number(pageSizeChoice) || 20;
-  const copySku = async (sku) => {
-    const text = String(sku || "").trim();
-    if (!text) return;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const input = document.createElement("textarea");
-        input.value = text;
-        input.setAttribute("readonly", "readonly");
-        input.style.position = "fixed";
-        input.style.opacity = "0";
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand("copy");
-        document.body.removeChild(input);
-      }
-      message.success("SKU 已复制");
-    } catch {
-      message.error("SKU 复制失败");
-    }
-  };
   const priceColumns = [
     {
       title: "活动",
@@ -3223,25 +3277,19 @@ function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
       render: (value, row) => {
         const title = row._title || value || "—";
         const sku = row._sku || "";
+        const offerId = row._offerId || "";
         return (
           <div className="product-info-cell">
             <span className="source-table-cell-text product-info-name" title={title}>{title}</span>
             {sku ? (
               <span className="product-sku-row">
                 <span className="product-sku-text" title={sku}>SKU：{sku}</span>
-                <Tooltip title="复制 SKU">
-                  <Button
-                    aria-label="复制 SKU"
-                    className="product-sku-copy"
-                    icon={<CopyOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      copySku(sku);
-                    }}
-                    size="small"
-                    type="text"
-                  />
-                </Tooltip>
+                <SkuCopyButton message={message} sku={sku} />
+              </span>
+            ) : null}
+            {offerId ? (
+              <span className="product-sku-row">
+                <span className="product-sku-text" title={offerId}>货号：{offerId}</span>
               </span>
             ) : null}
           </div>
@@ -3365,6 +3413,7 @@ function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
             <div className="product-price-modal-head">
               <strong>{localizeOzonProductTitle(priceDetail._title, priceDetail._sku)}</strong>
               <span>SKU：{priceDetail._sku || "—"}</span>
+              <span>货号：{priceDetail._offerId || "—"}</span>
               <span>当前展示价：{priceDetail["价格"]}</span>
             </div>
             <Table
@@ -4519,40 +4568,21 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
   const { message } = AntApp.useApp();
   const [activeStock, setActiveStock] = useState("全部");
   const [query, setQuery] = useState("");
+  const [pageSizeChoice, setPageSizeChoice] = useState("20");
   const [syncingStocks, setSyncingStocks] = useState(false);
   const [stockEditor, setStockEditor] = useState(null);
   const [stockDrafts, setStockDrafts] = useState({});
   const [savingStock, setSavingStock] = useState(false);
   const products = scopedProductsForCurrentStore(localData?.caches?.products || [], binding, localData);
+  const stockTableProducts = products.filter(productVisibleInStockTable);
   const warehouses = scopedWarehousesForCurrentStore(localData?.caches?.warehouses || [], binding, localData);
-  const outOfStockCount = products.filter((item) => productMatchesStockFilter(item, "缺货")).length;
-  const lowStockCount = products.filter((item) => productMatchesStockFilter(item, "低库存")).length;
-  const filteredProducts = products.filter((item) =>
+  const outOfStockCount = stockTableProducts.filter((item) => productMatchesStockFilter(item, "缺货")).length;
+  const lowStockCount = stockTableProducts.filter((item) => productMatchesStockFilter(item, "低库存")).length;
+  const filteredProducts = stockTableProducts.filter((item) =>
     productMatchesQuery(item, query) && productMatchesStockFilter(item, activeStock)
   );
   const rows = productRows(filteredProducts, warehouses);
-  const copySku = async (sku) => {
-    const text = String(sku || "").trim();
-    if (!text) return;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const input = document.createElement("textarea");
-        input.value = text;
-        input.setAttribute("readonly", "readonly");
-        input.style.position = "fixed";
-        input.style.opacity = "0";
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand("copy");
-        document.body.removeChild(input);
-      }
-      message.success("SKU 已复制");
-    } catch {
-      message.error("SKU 复制失败");
-    }
-  };
+  const resolvedPageSize = pageSizeChoice === "全部" ? Math.max(rows.length, 1) : Number(pageSizeChoice) || 20;
   const openStockEditor = (row) => {
     const product = row?._raw || {};
     const entries = stockWarehouseEditorEntries(product, warehouses);
@@ -4635,19 +4665,7 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
             {sku ? (
               <span className="product-sku-row">
                 <span className="product-sku-text" title={sku}>SKU：{sku}</span>
-                <Tooltip title="复制 SKU">
-                  <Button
-                    aria-label="复制 SKU"
-                    className="product-sku-copy"
-                    icon={<CopyOutlined />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      copySku(sku);
-                    }}
-                    size="small"
-                    type="text"
-                  />
-                </Tooltip>
+                <SkuCopyButton message={message} sku={sku} />
               </span>
             ) : null}
             {offerId ? (
@@ -4724,11 +4742,10 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
         <Card className="panel-card source-card stock-main-card">
           <div className="card-title-row">
             <span>商品库存</span>
-            <Tag>仓库 {warehouses.length}</Tag>
           </div>
           <div className="stock-summary-grid">
             {[
-              ["商品总数", String(products.length), "当前店铺缓存商品"],
+              ["商品总数", String(stockTableProducts.length), "销售中/准备销售商品"],
               ["缺货 (全部)", String(outOfStockCount), outOfStockCount ? "需补货" : "当前店铺无缺货"],
               ["低库存 ≤10 (全部)", String(lowStockCount), lowStockCount ? "需关注" : "当前店铺无低库存"],
             ].map(([title, value, note]) => (
@@ -4750,8 +4767,7 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
         <div className="card-title-row">
           <span>库存</span>
           <Space>
-            <Button loading={syncingStocks} onClick={refreshStocks}>刷新</Button>
-            <Button type="primary" onClick={searchStocks}>查询</Button>
+            <Button loading={syncingStocks} onClick={refreshStocks} type="primary">刷新</Button>
           </Space>
         </div>
         <div className="filter-panel inline">
@@ -4759,7 +4775,7 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
             active={activeStock}
             onChange={setActiveStock}
             items={[
-              { label: "全部", count: products.length, tone: "primary" },
+              { label: "全部", count: stockTableProducts.length, tone: "primary" },
               { label: "缺货", count: outOfStockCount, tone: "primary" },
               { label: "低库存", count: lowStockCount, tone: "primary" },
             ]}
@@ -4775,8 +4791,27 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
         <div className="table-result-title">商品库存· 共 {rows.length} 条</div>
         <SourceTable
           hasStore={hasStore}
+          key={`${activeStock}-${query}-${pageSizeChoice}`}
           rows={rows}
           columns={stockColumns}
+          pageSize={resolvedPageSize}
+          pageSizeControl={(
+            <div className="product-page-size-control">
+              <span>每页显示</span>
+              <Select
+                size="small"
+                value={pageSizeChoice}
+                options={[
+                  { value: "20", label: "20" },
+                  { value: "50", label: "50" },
+                  { value: "100", label: "100" },
+                  { value: "全部", label: "全部" },
+                ]}
+                onChange={setPageSizeChoice}
+                popupMatchSelectWidth={false}
+              />
+            </div>
+          )}
           empty={false}
           sourceEmpty
         />
@@ -4796,6 +4831,7 @@ function StocksPage({ binding, hasStore, localData, onRefresh }) {
           <div className="product-price-modal-head">
             <strong title={stockEditor?.row?._title}>{stockEditor?.row?._title || "—"}</strong>
             <span>SKU：{stockEditor?.row?._sku || "—"}</span>
+            <span>货号：{stockEditor?.row?._offerId || "—"}</span>
           </div>
           {stockEditorHasReadonlyEntries ? (
             <Alert
