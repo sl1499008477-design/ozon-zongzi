@@ -1,0 +1,59 @@
+{
+  "scope": "message history local dry-run records",
+  "date": "2026-07-04",
+  "routes": [
+    "http://127.0.0.1:5173/ozon/messaging/history/",
+    "http://127.0.0.1:5173/ozon/postings/review-request/",
+    "http://127.0.0.1:5173/ozon/postings/pickup-reminder/"
+  ],
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "currentStoreMutationDuringPageQa": false,
+  "liveStateSummary": {
+    "hasBinding": true,
+    "postings": 462,
+    "messageHistory": 0,
+    "messageHistoryCache": 0
+  },
+  "isolatedBackendApiFlow": {
+    "dataDir": "/private/tmp/qh-message-history-test",
+    "port": 3304,
+    "created": 2,
+    "total": 2,
+    "reviewTotal": 1,
+    "filteredTotal": 1,
+    "stateSummary": 2,
+    "cacheCount": 2,
+    "dryRun": true
+  },
+  "egoPageQa": {
+    "historyTitle": "QH",
+    "historyPath": "/ozon/messaging/history/",
+    "historyHasQueryFields": true,
+    "historyHasTitle": true,
+    "historyHasColumns": true,
+    "historyHasEmptyState": true,
+    "historyRowCount": 0,
+    "reviewTitle": "QH",
+    "reviewPath": "/ozon/postings/review-request/",
+    "reviewHasTaskTitle": true,
+    "reviewHasMetrics": true,
+    "reviewHasButtons": true,
+    "reviewBatchDisabledInitially": true,
+    "reviewRowCount": 20,
+    "reviewHasSourceColumns": true
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed",
+    "backendHealth": "passed",
+    "historyRouteHead": "200"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "postingNumbers": "not_recorded",
+    "messageContent": "generic local dry-run labels only",
+    "productAndOrderRows": "not_recorded"
+  }
+}

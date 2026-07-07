@@ -1,0 +1,11 @@
+{
+  "taskSpaceId": 14,
+  "capturedAt": "2026-07-04T03:43:01.648Z",
+  "url": "http://127.0.0.1:5173/ozon/dashboard/",
+  "modalTexts": [
+    "绑定 Ozon 门店 门店名称 Client ID API Key 取 消 保存绑定"
+  ],
+  "drawerTexts": [],
+  "bodyHasBindTitle": true,
+  "quickPrimaryText": "一键同步全部 ⌘R"
+}

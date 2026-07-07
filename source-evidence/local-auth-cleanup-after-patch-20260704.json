@@ -1,0 +1,16 @@
+{
+  "capturedAt": "2026-07-04T06:36:09.850Z",
+  "taskSpaceId": 38,
+  "scenario": "Backend /local/state has no binding; browser localStorage is seeded with stale token, currentOzonStoreId, and qh-local-binding-v1 before reload.",
+  "result": {
+    "path": "/ozon/dashboard/",
+    "title": "QH",
+    "token": null,
+    "storeId": null,
+    "binding": null,
+    "logoutSignalPresent": true,
+    "hasUnboundCopy": true,
+    "hasStaleCopy": false
+  },
+  "passed": true
+}

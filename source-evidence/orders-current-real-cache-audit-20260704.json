@@ -1,0 +1,290 @@
+{
+  "capturedAt": "2026-07-04T10:23:24.249Z",
+  "note": "Sanitized structure evidence only. No row text, order numbers, shop names, account values, credentials, or raw business values are persisted.",
+  "source": {
+    "title": "QH",
+    "viewport": {
+      "innerWidth": 1580,
+      "innerHeight": 754,
+      "devicePixelRatio": 1.600000023841858,
+      "visualWidth": 1561,
+      "visualHeight": 754
+    },
+    "rects": {
+      "page": {
+        "x": 215,
+        "y": 112,
+        "w": 1346,
+        "h": 2849
+      },
+      "sider": {
+        "x": 0,
+        "y": 56,
+        "w": 215,
+        "h": 698
+      },
+      "header": {
+        "x": 215,
+        "y": 0,
+        "w": 1346,
+        "h": 56
+      },
+      "table": {
+        "x": 312,
+        "y": 581,
+        "w": 1153,
+        "h": 2117
+      },
+      "pagination": {
+        "x": 312,
+        "y": 2698,
+        "w": 1153,
+        "h": 49
+      },
+      "pageSize": null,
+      "actionRow": null
+    },
+    "controls": {
+      "buttons": [
+        "刷新",
+        "拉取最新订单",
+        "刷新进行中订单",
+        "筛 选",
+        "重 置",
+        "订单导出"
+      ],
+      "placeholders": [
+        "搜索货件号 / SKU / 货号 / 物流单号…",
+        "下单时间",
+        "结束时间"
+      ],
+      "selectText": [
+        "当前店铺",
+        "货件编号",
+        "20 条/页"
+      ]
+    },
+    "table": {
+      "headers": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "renderedRows": 20,
+      "rowHeights": [
+        100,
+        100,
+        100
+      ],
+      "bodyHeight": 2056,
+      "hasPagination": true,
+      "paginationPageCountText": "共 462 条 1 2 3 4 5 ••• 24 20 条/页",
+      "pageSizeText": ""
+    },
+    "tokenPresence": {
+      "订单": true,
+      "同步范围": true,
+      "已同步过": false,
+      "首次同步": true,
+      "最近 30 天": true,
+      "本周 GMV": true,
+      "本周利润": true,
+      "本周利润率": true,
+      "待处理": true,
+      "所有订单": true,
+      "等待备货": true,
+      "等待发运": true,
+      "已超时": true,
+      "运输中": true,
+      "有争议的": true,
+      "已签收": true,
+      "已取消": true,
+      "当前店铺": true,
+      "货件编号": true,
+      "搜索货件号 / SKU / 货号 / 物流单号…": false,
+      "下单时间": false,
+      "结束时间": false,
+      "筛 选": true,
+      "重 置": true,
+      "订单导出": true,
+      "自动同步": true,
+      "倒计时": true,
+      "货件 / 状态": true,
+      "店铺": true,
+      "商品": true,
+      "仓库 / 配送": true,
+      "订单金额": true,
+      "利润": true,
+      "操作": true,
+      "20 条/页": true,
+      "条/页": true,
+      "上一页": false,
+      "下一页": false,
+      "拉取最新订单": true,
+      "刷新进行中订单": true,
+      "刷新": true
+    }
+  },
+  "local": {
+    "title": "QH",
+    "viewport": {
+      "innerWidth": 2160,
+      "innerHeight": 1350,
+      "devicePixelRatio": 0.6666666865348816,
+      "visualWidth": 2138,
+      "visualHeight": 1350
+    },
+    "rects": {
+      "page": {
+        "x": 240,
+        "y": 80,
+        "w": 1874,
+        "h": 1787
+      },
+      "sider": {
+        "x": 0,
+        "y": 56,
+        "w": 216,
+        "h": 1294
+      },
+      "header": {
+        "x": 216,
+        "y": 0,
+        "w": 1922,
+        "h": 56
+      },
+      "table": {
+        "x": 261,
+        "y": 492,
+        "w": 1832,
+        "h": 1151
+      },
+      "pagination": {
+        "x": 261,
+        "y": 1659,
+        "w": 1832,
+        "h": 24
+      },
+      "pageSize": {
+        "x": 2046,
+        "y": 1675,
+        "w": 46,
+        "h": 24
+      },
+      "actionRow": {
+        "x": 261,
+        "y": 444,
+        "w": 1832,
+        "h": 32
+      }
+    },
+    "controls": {
+      "buttons": [
+        "刷新",
+        "拉取最新订单",
+        "刷新进行中订单",
+        "所有订单",
+        "等待备货",
+        "等待发运",
+        "已超时",
+        "运输中",
+        "有争议的",
+        "已签收",
+        "已取消",
+        "筛 选",
+        "重 置",
+        "订单导出"
+      ],
+      "placeholders": [
+        "搜索货件号 / SKU / 货号 / 物流单号…",
+        "下单时间",
+        "结束时间"
+      ],
+      "selectText": []
+    },
+    "table": {
+      "headers": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "renderedRows": 20,
+      "rowHeights": [
+        55,
+        55,
+        55
+      ],
+      "bodyHeight": 1095,
+      "hasPagination": true,
+      "paginationPageCountText": "1 2 3 4 5 24",
+      "pageSizeText": "20 条/页"
+    },
+    "tokenPresence": {
+      "订单": true,
+      "同步范围": true,
+      "已同步过": true,
+      "首次同步": true,
+      "最近 30 天": true,
+      "本周 GMV": true,
+      "本周利润": true,
+      "本周利润率": true,
+      "待处理": true,
+      "所有订单": true,
+      "等待备货": true,
+      "等待发运": true,
+      "已超时": true,
+      "运输中": true,
+      "有争议的": true,
+      "已签收": true,
+      "已取消": true,
+      "当前店铺": true,
+      "货件编号": true,
+      "搜索货件号 / SKU / 货号 / 物流单号…": false,
+      "下单时间": false,
+      "结束时间": false,
+      "筛 选": true,
+      "重 置": true,
+      "订单导出": true,
+      "自动同步": true,
+      "倒计时": true,
+      "货件 / 状态": true,
+      "店铺": true,
+      "商品": true,
+      "仓库 / 配送": true,
+      "订单金额": true,
+      "利润": true,
+      "操作": true,
+      "20 条/页": true,
+      "条/页": true,
+      "上一页": false,
+      "下一页": false,
+      "拉取最新订单": true,
+      "刷新进行中订单": true,
+      "刷新": true
+    }
+  },
+  "comparison": {
+    "headerMatch": true,
+    "localRenderedRows": 20,
+    "localRowHeights": [
+      55,
+      55,
+      55
+    ],
+    "localHasPagination": true,
+    "localPageSizeText": "20 条/页",
+    "sourceHasPageSizeToken": true,
+    "localHasPageSizeToken": true,
+    "missingStructuralTokensLocally": []
+  }
+}

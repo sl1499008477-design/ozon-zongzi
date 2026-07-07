@@ -1,0 +1,247 @@
+{
+  "capturedAt": "2026-07-04T04:07:05.107Z",
+  "taskSpaceId": 18,
+  "note": "Sanitized table-above source structure only; count-like numbers redacted and no table rows retained.",
+  "top": [
+    {
+      "tag": "span",
+      "cls": "anticon anticon-inbox",
+      "text": "inbox",
+      "placeholder": "",
+      "type": "",
+      "y": 142
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "添加采集商品",
+      "placeholder": "",
+      "type": "",
+      "y": 129
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加",
+      "placeholder": "",
+      "type": "",
+      "y": 153
+    },
+    {
+      "tag": "span",
+      "cls": "anticon anticon-link",
+      "text": "link",
+      "placeholder": "",
+      "type": "",
+      "y": 195
+    },
+    {
+      "tag": "input",
+      "cls": "ant-input ant-input-lg",
+      "text": "https://www.ozon.ru/product/... 或直接输入 SKU",
+      "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+      "type": "text",
+      "y": 191
+    },
+    {
+      "tag": "button",
+      "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+      "text": "添加采集",
+      "placeholder": "",
+      "type": "button",
+      "y": 183
+    },
+    {
+      "tag": "span",
+      "cls": "anticon anticon-plus",
+      "text": "plus",
+      "placeholder": "",
+      "type": "",
+      "y": 196
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "添加采集",
+      "placeholder": "",
+      "type": "",
+      "y": 192
+    },
+    {
+      "tag": "span",
+      "cls": "ant-tag ant-tag-blue",
+      "text": "自动识别价格 / 重量 / 卖家",
+      "placeholder": "",
+      "type": "",
+      "y": 235
+    },
+    {
+      "tag": "span",
+      "cls": "anticon anticon-check",
+      "text": "check",
+      "placeholder": "",
+      "type": "",
+      "y": 240
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "自动识别价格 / 重量 / 卖家",
+      "placeholder": "",
+      "type": "",
+      "y": 239
+    },
+    {
+      "tag": "span",
+      "cls": "ant-tag ant-tag-orange",
+      "text": "安装插件后一键采集",
+      "placeholder": "",
+      "type": "",
+      "y": 235
+    },
+    {
+      "tag": "span",
+      "cls": "anticon anticon-thunderbolt",
+      "text": "thunderbolt",
+      "placeholder": "",
+      "type": "",
+      "y": 240
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "安装插件后一键采集",
+      "placeholder": "",
+      "type": "",
+      "y": 239
+    },
+    {
+      "tag": "button",
+      "cls": "",
+      "text": "全部 [count]",
+      "placeholder": "",
+      "type": "",
+      "y": 285
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "全部",
+      "placeholder": "",
+      "type": "",
+      "y": 292
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "[count]",
+      "placeholder": "",
+      "type": "",
+      "y": 293
+    },
+    {
+      "tag": "button",
+      "cls": "",
+      "text": "待处理 [count]",
+      "placeholder": "",
+      "type": "",
+      "y": 285
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "待处理",
+      "placeholder": "",
+      "type": "",
+      "y": 292
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "[count]",
+      "placeholder": "",
+      "type": "",
+      "y": 293
+    },
+    {
+      "tag": "button",
+      "cls": "",
+      "text": "已上架 [count]",
+      "placeholder": "",
+      "type": "",
+      "y": 285
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "已上架",
+      "placeholder": "",
+      "type": "",
+      "y": 292
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "[count]",
+      "placeholder": "",
+      "type": "",
+      "y": 293
+    },
+    {
+      "tag": "button",
+      "cls": "",
+      "text": "失败 [count]",
+      "placeholder": "",
+      "type": "",
+      "y": 285
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "失败",
+      "placeholder": "",
+      "type": "",
+      "y": 292
+    },
+    {
+      "tag": "span",
+      "cls": "",
+      "text": "[count]",
+      "placeholder": "",
+      "type": "",
+      "y": 293
+    },
+    {
+      "tag": "div",
+      "cls": "ant-select-selector",
+      "text": "按来源筛选",
+      "placeholder": "",
+      "type": "",
+      "y": 288
+    },
+    {
+      "tag": "span",
+      "cls": "ant-select-selection-wrap",
+      "text": "按来源筛选",
+      "placeholder": "",
+      "type": "",
+      "y": 289
+    },
+    {
+      "tag": "span",
+      "cls": "ant-select-selection-placeholder",
+      "text": "按来源筛选",
+      "placeholder": "",
+      "type": "",
+      "y": 289
+    },
+    {
+      "tag": "span",
+      "cls": "anticon anticon-down ant-select-suffix",
+      "text": "down",
+      "placeholder": "",
+      "type": "",
+      "y": 293
+    }
+  ]
+}

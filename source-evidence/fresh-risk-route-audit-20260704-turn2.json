@@ -1,0 +1,1080 @@
+{
+  "checkedAt": "2026-07-04T10:54:14.988Z",
+  "routes": 8,
+  "withMissing": [
+    {
+      "route": "/ozon/promotions/prices/",
+      "missingTotal": 2,
+      "missing": {
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [
+          "20 条/页"
+        ]
+      }
+    },
+    {
+      "route": "/ozon/promotions/campaigns/",
+      "missingTotal": 6,
+      "missing": {
+        "buttons": [
+          "全部 6",
+          "参与中 4",
+          "可参与 2",
+          "即将结束 1"
+        ],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "selectTexts": [
+          "20 条/页"
+        ]
+      }
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "missingTotal": 2,
+      "missing": {
+        "buttons": [
+          "移除"
+        ],
+        "placeholders": [
+          "请输入"
+        ]
+      }
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "missingTotal": 6,
+      "missing": {
+        "placeholders": [
+          "搜索货号",
+          "开始日期",
+          "结束日期",
+          "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+          "例:女士夏季短袖 T 恤",
+          "例:服饰 / 电子 / 家居"
+        ]
+      }
+    },
+    {
+      "route": "/ozon/tools/watermark/",
+      "missingTotal": 1,
+      "missing": {
+        "emptyTexts": [
+          "暂无水印/边框模板，立即创建第一个"
+        ]
+      }
+    },
+    {
+      "route": "/ozon/templates/",
+      "missingTotal": 1,
+      "missing": {
+        "placeholders": [
+          "请输入"
+        ]
+      }
+    },
+    {
+      "route": "/ozon/settings/membership/",
+      "missingTotal": 1,
+      "missing": {
+        "placeholders": [
+          "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+        ]
+      }
+    }
+  ],
+  "leakedSecretFlags": [
+    "local:/ozon/promotions/prices/",
+    "local:/ozon/promotions/campaigns/",
+    "source:/ozon/promotions/auto-delete/",
+    "local:/ozon/promotions/auto-delete/",
+    "local:/ozon/tools/ai-poster-records/",
+    "local:/ozon/tools/watermark/",
+    "local:/ozon/templates/",
+    "local:/ozon/settings/jidian/",
+    "local:/ozon/settings/membership/"
+  ],
+  "results": [
+    {
+      "route": "/ozon/promotions/prices/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/promotions/prices/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 3392,
+        "headings": [
+          "QH"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "刷新"
+        ],
+        "labels": [
+          "搜索"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [
+          "20 条/页"
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "当前价格",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 279,
+              "y": 112,
+              "w": 1218,
+              "h": 2315
+            }
+          }
+        ],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/promotions/prices/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 224,
+        "headings": [
+          "价格与折扣"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "价格",
+          "折扣",
+          "选择商品",
+          "改价草稿",
+          "重 置",
+          "查 询",
+          "刷新"
+        ],
+        "labels": [
+          "搜索"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "当前价格",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 180,
+              "w": 1632,
+              "h": 292
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 2,
+        "missing": {
+          "placeholders": [
+            "请输入"
+          ],
+          "selectTexts": [
+            "20 条/页"
+          ]
+        }
+      }
+    },
+    {
+      "route": "/ozon/promotions/campaigns/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/promotions/campaigns/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 860,
+        "headings": [
+          "QH"
+        ],
+        "buttons": [
+          "全部 6",
+          "参与中 4",
+          "可参与 2",
+          "即将结束 1",
+          "刷新"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "selectTexts": [
+          "20 条/页"
+        ],
+        "tableHeaders": [
+          "活动",
+          "状态",
+          "折扣",
+          "商品",
+          "活动周期",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/promotions/campaigns/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 296,
+        "headings": [
+          "促销活动"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "全部 0",
+          "参与中 0",
+          "可参与 0",
+          "即将结束 0",
+          "刷新"
+        ],
+        "labels": [
+          "筛选"
+        ],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "活动",
+          "状态",
+          "折扣",
+          "商品",
+          "活动周期",
+          "操作"
+        ],
+        "emptyTexts": [
+          "加载中…"
+        ],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 180,
+              "w": 398,
+              "h": 131
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 651,
+              "y": 180,
+              "w": 398,
+              "h": 131
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 1063,
+              "y": 180,
+              "w": 398,
+              "h": 131
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 1474,
+              "y": 180,
+              "w": 398,
+              "h": 131
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 327,
+              "w": 1632,
+              "h": 117
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 461,
+              "w": 1632,
+              "h": 344
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 6,
+        "missing": {
+          "buttons": [
+            "全部 6",
+            "参与中 4",
+            "可参与 2",
+            "即将结束 1"
+          ],
+          "placeholders": [
+            "搜索活动名称 / ID"
+          ],
+          "selectTexts": [
+            "20 条/页"
+          ]
+        }
+      }
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/promotions/auto-delete/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 941,
+        "headings": [
+          "QH",
+          "自动清理配置"
+        ],
+        "buttons": [
+          "开 关",
+          "重 置",
+          "查 询",
+          "从 Ozon 同步",
+          "刷新",
+          "移除"
+        ],
+        "labels": [
+          "活动名称",
+          "类型",
+          "状态"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [
+          "每天一次",
+          "请选择"
+        ],
+        "tableHeaders": [
+          "活动名称",
+          "类型",
+          "折扣力度",
+          "商品数量",
+          "有效期",
+          "状态",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 279,
+              "y": 254,
+              "w": 1218,
+              "h": 171
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/promotions/auto-delete/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 381,
+        "headings": [
+          "促销活动自动清理 · 利润保护",
+          "自动清理配置",
+          "ID"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "开 关",
+          "重 置",
+          "查 询",
+          "展开",
+          "从 Ozon 同步",
+          "刷新"
+        ],
+        "labels": [
+          "自动清理 开 关",
+          "最大可接受折扣 %",
+          "检测频率 每天一次",
+          "活动名称",
+          "类型 请选择"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "活动名称",
+          "类型",
+          "折扣力度",
+          "商品数量",
+          "有效期",
+          "状态",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 180,
+              "w": 1632,
+              "h": 161
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 357,
+              "w": 1632,
+              "h": 100
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 473,
+              "w": 1632,
+              "h": 213
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 2,
+        "missing": {
+          "buttons": [
+            "移除"
+          ],
+          "placeholders": [
+            "请输入"
+          ]
+        }
+      }
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/tools/ai-poster-records/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 356,
+        "headings": [
+          "QH",
+          "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        ],
+        "buttons": [
+          "收起",
+          "开始生成"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索货号",
+          "开始日期",
+          "结束日期",
+          "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+          "例:女士夏季短袖 T 恤",
+          "例:服饰 / 电子 / 家居"
+        ],
+        "selectTexts": [
+          "全部状态"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "openMenuCount": 2,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 279,
+              "y": 192,
+              "w": 1218,
+              "h": 438
+            }
+          }
+        ],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/tools/ai-poster-records/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 399,
+        "headings": [
+          "AI 改图神器",
+          "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "收起",
+          "开始生成",
+          "查询",
+          "重置"
+        ],
+        "labels": [
+          "点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 10 张",
+          "或粘贴图片链接",
+          "商品名(可选)",
+          "类目(可选)"
+        ],
+        "placeholders": [
+          "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+          "例:女士夏季短袖 T 恤",
+          "例:服饰 / 电子 / 家居",
+          "开始日期",
+          "结束日期",
+          "搜索货号"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "原图",
+          "改图结果",
+          "货号",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无改图记录"
+        ],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 180,
+              "w": 1610,
+              "h": 572
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 768,
+              "w": 1610,
+              "h": 400
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 6,
+        "missing": {
+          "placeholders": [
+            "搜索货号",
+            "开始日期",
+            "结束日期",
+            "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+            "例:女士夏季短袖 T 恤",
+            "例:服饰 / 电子 / 家居"
+          ]
+        }
+      }
+    },
+    {
+      "route": "/ozon/tools/watermark/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/tools/watermark/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 295,
+        "headings": [
+          "QH",
+          "水印/边框模板 0",
+          "预览与下载 请先选用模板"
+        ],
+        "buttons": [
+          "新建模板",
+          "下载当前",
+          "批量下载（0）"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "selectTexts": [],
+        "tableHeaders": [],
+        "emptyTexts": [
+          "暂无水印/边框模板，立即创建第一个"
+        ],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 279,
+              "y": 192,
+              "w": 1218,
+              "h": 234
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 279,
+              "y": 442,
+              "w": 1218,
+              "h": 576
+            }
+          }
+        ],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/tools/watermark/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 285,
+        "headings": [
+          "水印工具",
+          "水印/边框模板 0",
+          "预览与下载 请先选用模板"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "新建模板",
+          "下载当前",
+          "批量下载（0）"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "selectTexts": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 436,
+              "y": 194,
+              "w": 1218,
+              "h": 206
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 436,
+              "y": 416,
+              "w": 1218,
+              "h": 576
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 1,
+        "missing": {
+          "emptyTexts": [
+            "暂无水印/边框模板，立即创建第一个"
+          ]
+        }
+      }
+    },
+    {
+      "route": "/ozon/templates/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/templates/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 180,
+        "headings": [
+          "QH"
+        ],
+        "buttons": [
+          "新建模板",
+          "导入模板",
+          "刷新",
+          "重 置",
+          "查 询"
+        ],
+        "labels": [
+          "模板名称",
+          "默认",
+          "操作"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "模板名称",
+          "店铺",
+          "默认",
+          "创建时间",
+          "更新时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 279,
+              "y": 112,
+              "w": 1237,
+              "h": 512
+            }
+          }
+        ],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/templates/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 183,
+        "headings": [],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "新建模板",
+          "导入模板",
+          "刷新",
+          "重 置",
+          "查 询",
+          "展开",
+          "T"
+        ],
+        "labels": [
+          "模板名称",
+          "默认"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "模板名称",
+          "店铺",
+          "默认",
+          "创建时间",
+          "更新时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 240,
+              "y": 112,
+              "w": 1632,
+              "h": 496
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 1,
+        "missing": {
+          "placeholders": [
+            "请输入"
+          ]
+        }
+      }
+    },
+    {
+      "route": "/ozon/settings/jidian/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/settings/jidian/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 159,
+        "headings": [
+          "QH"
+        ],
+        "buttons": [
+          "查看消费明细"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "selectTexts": [],
+        "tableHeaders": [],
+        "emptyTexts": [
+          "极点 自助充值已切换为人工服务 请联系客服为您开通"
+        ],
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 618,
+              "y": 184,
+              "w": 560,
+              "h": 414
+            }
+          }
+        ],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/settings/jidian/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 160,
+        "headings": [
+          "极点充值"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "查看消费明细"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "selectTexts": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 776,
+              "y": 167,
+              "w": 560,
+              "h": 414
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 0,
+        "missing": {}
+      }
+    },
+    {
+      "route": "/ozon/settings/membership/",
+      "source": {
+        "title": "QH",
+        "path": "/ozon/settings/membership/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 886,
+        "headings": [
+          "QH",
+          "会员权益",
+          "激活码兑换",
+          "套餐档位",
+          "权益对比",
+          "激活码使用记录"
+        ],
+        "buttons": [
+          "兑换权益",
+          "月卡",
+          "季卡",
+          "年卡省更多",
+          "使用激活码开通"
+        ],
+        "labels": [],
+        "placeholders": [
+          "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "权益项",
+          "普通版 年卡",
+          "高级版 年卡",
+          "企业版 年卡",
+          "激活码",
+          "套餐类型",
+          "使用时间",
+          "状态"
+        ],
+        "emptyTexts": [],
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "cardSamples": [],
+        "leakedSecret": false
+      },
+      "local": {
+        "title": "QH",
+        "path": "/ozon/settings/membership/",
+        "bodyText": "[redacted structural body text]",
+        "bodyLen": 933,
+        "headings": [
+          "会员权益",
+          "套餐档位",
+          "权益对比",
+          "激活码使用记录"
+        ],
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ID",
+          "会员权益 免费会员",
+          "兑换权益",
+          "使用激活码开通"
+        ],
+        "labels": [
+          "月卡",
+          "季卡",
+          "年卡省更多"
+        ],
+        "placeholders": [
+          "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+        ],
+        "selectTexts": [],
+        "tableHeaders": [
+          "权益项",
+          "普通版 年卡",
+          "高级版 年卡",
+          "企业版 年卡",
+          "激活码",
+          "套餐类型",
+          "使用时间",
+          "状态"
+        ],
+        "emptyTexts": [
+          "暂无激活码使用记录"
+        ],
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "cardSamples": [
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 553,
+              "y": 180,
+              "w": 590,
+              "h": 214
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 1159,
+              "y": 180,
+              "w": 378,
+              "h": 214
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 553,
+              "y": 410,
+              "w": 984,
+              "h": 542
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 553,
+              "y": 968,
+              "w": 984,
+              "h": 576
+            }
+          },
+          {
+            "text": "[redacted card text]",
+            "rect": {
+              "x": 553,
+              "y": 1560,
+              "w": 984,
+              "h": 349
+            }
+          }
+        ],
+        "leakedSecret": true
+      },
+      "compare": {
+        "missingTotal": 1,
+        "missing": {
+          "placeholders": [
+            "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+          ]
+        }
+      }
+    }
+  ]
+}

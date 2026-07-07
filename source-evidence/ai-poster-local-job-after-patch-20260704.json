@@ -1,0 +1,47 @@
+{
+  "route": "/ozon/tools/ai-poster-records",
+  "validatedAt": "2026-07-04T20:40:00+08:00",
+  "scope": "AI poster local task flow",
+  "sourceOfTruth": "local UI plus local task API",
+  "storeStateBeforeCleanup": {
+    "aiPosterJobsBeforeSubmit": 0,
+    "aiPosterJobsAfterSubmit": 1,
+    "latestTaskType": "AI_POSTER",
+    "latestTaskStatus": "PENDING",
+    "latestTaskImageCount": 1,
+    "latestTaskLinkCount": 1
+  },
+  "uiEvidence": {
+    "createdTaskFromStartButton": true,
+    "visibleTableRowsAfterSubmit": 1,
+    "tableHeaders": [
+      "原图",
+      "改图结果",
+      "货号",
+      "状态",
+      "创建时间",
+      "操作"
+    ],
+    "tableShowsProcessingStatus": true,
+    "linkInputClearedAfterSubmit": true
+  },
+  "privacyAndWriteBoundary": {
+    "rawImageLinksPersisted": false,
+    "rawImageFilesPersisted": false,
+    "realAiServiceCalled": false,
+    "ozonWriteEndpointCalled": false,
+    "sampleProductDataInserted": false
+  },
+  "cleanup": {
+    "qaTaskRemovedFromLocalState": true,
+    "removedAiPosterJobs": 1,
+    "removedAiPosterReports": 1,
+    "currentAiPosterJobsAfterCleanup": 0
+  },
+  "currentStoreStateAfterCleanup": {
+    "stores": 1,
+    "products": 580,
+    "postings": 466,
+    "jobs": 12
+  }
+}

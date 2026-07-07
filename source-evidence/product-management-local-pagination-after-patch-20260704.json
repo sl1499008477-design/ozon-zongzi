@@ -1,0 +1,249 @@
+{
+  "createdAt": "2026-07-04T10:09:54.103Z",
+  "sensitiveDataPolicy": "Only layout metrics and masked structural table state are persisted.",
+  "results": [
+    {
+      "route": "/ozon/products/list/",
+      "url": "http://127.0.0.1:5173/ozon/products/list/?ellipsis-patch=1783159788202",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/products/list/?ellipsis-patch=1783159788202",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1873,
+        "ph": 1509
+      },
+      "dom": {
+        "path": "/ozon/products/list/",
+        "mainRect": {
+          "x": 240,
+          "y": 80,
+          "w": 1610,
+          "h": 1397
+        },
+        "tableRect": {
+          "x": 261,
+          "y": 249,
+          "w": 1568,
+          "h": 1207
+        },
+        "tableRows": 20,
+        "rowHeights": [
+          55,
+          55,
+          55,
+          55,
+          55
+        ],
+        "placeholderRows": 0,
+        "paginationItems": [
+          "Previous Page",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "Next 5 Pages",
+          "29",
+          "Next Page"
+        ],
+        "hasPagination": true,
+        "hasNoData": false,
+        "hasNoProduct": false,
+        "hasLongPage": false,
+        "headers": [
+          "商品信息",
+          "状态",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "firstCellText": "已同步商品",
+        "masked": true
+      }
+    },
+    {
+      "route": "/ozon/products/import-history/",
+      "url": "http://127.0.0.1:5173/ozon/products/import-history/?ellipsis-patch=1783159789719",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/products/import-history/?ellipsis-patch=1783159789719",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1896,
+        "ph": 904
+      },
+      "dom": {
+        "path": "/ozon/products/import-history/",
+        "mainRect": {
+          "x": 240,
+          "y": 80,
+          "w": 1632,
+          "h": 757
+        },
+        "tableRect": {
+          "x": 261,
+          "y": 546,
+          "w": 1591,
+          "h": 269
+        },
+        "tableRows": 0,
+        "rowHeights": [],
+        "placeholderRows": 1,
+        "paginationItems": [],
+        "hasPagination": false,
+        "hasNoData": true,
+        "hasNoProduct": false,
+        "hasLongPage": false,
+        "headers": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "firstCellText": "",
+        "masked": true
+      }
+    },
+    {
+      "route": "/ozon/products/stocks/",
+      "url": "http://127.0.0.1:5173/ozon/products/stocks/?ellipsis-patch=1783159791216",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/products/stocks/?ellipsis-patch=1783159791216",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1873,
+        "ph": 1831
+      },
+      "dom": {
+        "path": "/ozon/products/stocks/",
+        "mainRect": {
+          "x": 240,
+          "y": 80,
+          "w": 1610,
+          "h": 1719
+        },
+        "tableRect": {
+          "x": 261,
+          "y": 571,
+          "w": 1568,
+          "h": 1207
+        },
+        "tableRows": 20,
+        "rowHeights": [
+          55,
+          55,
+          55,
+          55,
+          55
+        ],
+        "placeholderRows": 0,
+        "paginationItems": [
+          "Previous Page",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "Next 5 Pages",
+          "29",
+          "Next Page"
+        ],
+        "hasPagination": true,
+        "hasNoData": false,
+        "hasNoProduct": false,
+        "hasLongPage": false,
+        "headers": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "firstCellText": "已同步",
+        "masked": true
+      }
+    },
+    {
+      "route": "/ozon/products/reshelf/",
+      "url": "http://127.0.0.1:5173/ozon/products/reshelf/?ellipsis-patch=1783159792667",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/products/reshelf/?ellipsis-patch=1783159792667",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1873,
+        "ph": 1509
+      },
+      "dom": {
+        "path": "/ozon/products/reshelf/",
+        "mainRect": {
+          "x": 240,
+          "y": 80,
+          "w": 1610,
+          "h": 1397
+        },
+        "tableRect": {
+          "x": 261,
+          "y": 249,
+          "w": 1568,
+          "h": 1207
+        },
+        "tableRows": 20,
+        "rowHeights": [
+          55,
+          55,
+          55,
+          55,
+          55
+        ],
+        "placeholderRows": 0,
+        "paginationItems": [
+          "Previous Page",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "Next 5 Pages",
+          "29",
+          "Next Page"
+        ],
+        "hasPagination": true,
+        "hasNoData": false,
+        "hasNoProduct": false,
+        "hasLongPage": false,
+        "headers": [
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "firstCellText": "已同步商品",
+        "masked": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,295 @@
+{
+  "taskSpaceId": 14,
+  "pngPath": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-dashboard-after.png",
+  "capturedAt": "2026-07-04T03:42:21.423Z",
+  "url": "http://127.0.0.1:5173/ozon/dashboard/",
+  "title": "仪表盘 - QH",
+  "hasSourceMetricNotes": true,
+  "removedLocalTodoText": true,
+  "metricGrid": {
+    "rect": {
+      "x": 240,
+      "y": 160,
+      "w": 1634,
+      "h": 121
+    },
+    "styles": {
+      "display": "grid",
+      "gridTemplateColumns": "408px 408px 408px 408px",
+      "gap": "0px",
+      "border": "0.75px solid rgb(237, 240, 245)",
+      "borderRadius": "8px",
+      "background": "rgb(255, 255, 255)"
+    }
+  },
+  "metricCards": [
+    {
+      "text": "今日订单 0 — 持平 vs 昨日",
+      "rect": {
+        "x": 241,
+        "y": 161,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "今日 GMV ¥0 — 持平 vs 昨日",
+      "rect": {
+        "x": 649,
+        "y": 161,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "待打包 0 暂无积压",
+      "rect": {
+        "x": 1057,
+        "y": 161,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "待发货 0 合计待处理 0",
+      "rect": {
+        "x": 1465,
+        "y": 161,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "0px none rgba(0, 0, 0, 0.88)",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "在售商品 0个 多店聚合",
+      "rect": {
+        "x": 241,
+        "y": 298,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "库存预警 0SKU 库存充足",
+      "rect": {
+        "x": 649,
+        "y": 298,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "今日退货 0 退货率 0.0%",
+      "rect": {
+        "x": 1057,
+        "y": 298,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    },
+    {
+      "text": "7 日利润 ¥0 本周累计",
+      "rect": {
+        "x": 1465,
+        "y": 298,
+        "w": 408,
+        "h": 119
+      },
+      "styles": {
+        "display": "flex",
+        "gridTemplateColumns": "none",
+        "gap": "normal",
+        "border": "0px none rgba(0, 0, 0, 0.88)",
+        "borderRadius": "0px",
+        "background": "rgb(255, 255, 255)"
+      }
+    }
+  ],
+  "todoRows": [
+    {
+      "rect": {
+        "x": 261,
+        "y": 496,
+        "w": 591,
+        "h": 58
+      },
+      "skeletonCount": 4,
+      "text": ""
+    },
+    {
+      "rect": {
+        "x": 261,
+        "y": 554,
+        "w": 591,
+        "h": 58
+      },
+      "skeletonCount": 4,
+      "text": ""
+    },
+    {
+      "rect": {
+        "x": 261,
+        "y": 612,
+        "w": 591,
+        "h": 58
+      },
+      "skeletonCount": 4,
+      "text": ""
+    },
+    {
+      "rect": {
+        "x": 261,
+        "y": 670,
+        "w": 591,
+        "h": 58
+      },
+      "skeletonCount": 4,
+      "text": ""
+    }
+  ],
+  "quickActions": {
+    "styles": {
+      "display": "flex",
+      "gridTemplateColumns": "none",
+      "gap": "8px",
+      "border": "0px none rgba(0, 0, 0, 0.88)",
+      "borderRadius": "0px",
+      "background": "rgba(0, 0, 0, 0)"
+    },
+    "buttons": [
+      {
+        "text": "一键同步全部 ⌘R",
+        "className": "primary",
+        "rect": {
+          "x": 261,
+          "y": 826,
+          "w": 162,
+          "h": 34
+        },
+        "hasKbd": true
+      },
+      {
+        "text": "批量改价",
+        "className": "",
+        "rect": {
+          "x": 431,
+          "y": 826,
+          "w": 102,
+          "h": 34
+        },
+        "hasKbd": false
+      },
+      {
+        "text": "AI 大模型改图",
+        "className": "",
+        "rect": {
+          "x": 541,
+          "y": 826,
+          "w": 130,
+          "h": 34
+        },
+        "hasKbd": false
+      },
+      {
+        "text": "1688 采集",
+        "className": "",
+        "rect": {
+          "x": 679,
+          "y": 826,
+          "w": 109,
+          "h": 34
+        },
+        "hasKbd": false
+      },
+      {
+        "text": "群发消息",
+        "className": "",
+        "rect": {
+          "x": 796,
+          "y": 826,
+          "w": 102,
+          "h": 34
+        },
+        "hasKbd": false
+      },
+      {
+        "text": "批量上架",
+        "className": "",
+        "rect": {
+          "x": 906,
+          "y": 826,
+          "w": 102,
+          "h": 34
+        },
+        "hasKbd": false
+      },
+      {
+        "text": "打印发货单",
+        "className": "",
+        "rect": {
+          "x": 1015,
+          "y": 826,
+          "w": 115,
+          "h": 34
+        },
+        "hasKbd": false
+      }
+    ]
+  },
+  "dialogs": []
+}

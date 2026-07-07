@@ -1,0 +1,1719 @@
+{
+  "capturedAt": "2026-07-04T02:05:33.520Z",
+  "states": [
+    {
+      "clicked": "商品",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 152,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 196,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 240,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 284,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 328,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 372,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        }
+      ]
+    },
+    {
+      "clicked": "选品",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 376,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "类目分析",
+          "href": "https://qh.jizhangerp.com/ozon/selection/category/",
+          "rect": {
+            "x": 22,
+            "y": 424,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "榜单选品",
+          "href": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+          "rect": {
+            "x": 22,
+            "y": 468,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "中国专区",
+          "href": "https://qh.jizhangerp.com/ozon/selection/china/",
+          "rect": {
+            "x": 22,
+            "y": 512,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 424,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 468,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 512,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 556,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 600,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        }
+      ]
+    },
+    {
+      "clicked": "AI 工具",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 376,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "类目分析",
+          "href": "https://qh.jizhangerp.com/ozon/selection/category/",
+          "rect": {
+            "x": 22,
+            "y": 424,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "榜单选品",
+          "href": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+          "rect": {
+            "x": 22,
+            "y": 468,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "中国专区",
+          "href": "https://qh.jizhangerp.com/ozon/selection/china/",
+          "rect": {
+            "x": 22,
+            "y": 512,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 424,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "AI 改图神器",
+          "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+          "rect": {
+            "x": 22,
+            "y": 472,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 商品套图",
+          "href": "https://qh.jizhangerp.com/ozon/ai-image/",
+          "rect": {
+            "x": 22,
+            "y": 516,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 472,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 516,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 560,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 604,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        }
+      ]
+    },
+    {
+      "clicked": "促销",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 376,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "类目分析",
+          "href": "https://qh.jizhangerp.com/ozon/selection/category/",
+          "rect": {
+            "x": 22,
+            "y": 424,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "榜单选品",
+          "href": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+          "rect": {
+            "x": 22,
+            "y": 468,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "中国专区",
+          "href": "https://qh.jizhangerp.com/ozon/selection/china/",
+          "rect": {
+            "x": 22,
+            "y": 512,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 424,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "AI 改图神器",
+          "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+          "rect": {
+            "x": 22,
+            "y": 472,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 商品套图",
+          "href": "https://qh.jizhangerp.com/ozon/ai-image/",
+          "rect": {
+            "x": 22,
+            "y": 516,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 472,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "价格与折扣",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+          "rect": {
+            "x": 22,
+            "y": 520,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "营销活动",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+          "rect": {
+            "x": 22,
+            "y": 564,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "自动删促销",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+          "rect": {
+            "x": 22,
+            "y": 608,
+            "w": 181,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 520,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 564,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 608,
+            "w": 191,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        }
+      ]
+    },
+    {
+      "clicked": "订单",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 376,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "类目分析",
+          "href": "https://qh.jizhangerp.com/ozon/selection/category/",
+          "rect": {
+            "x": 22,
+            "y": 424,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "榜单选品",
+          "href": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+          "rect": {
+            "x": 22,
+            "y": 468,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "中国专区",
+          "href": "https://qh.jizhangerp.com/ozon/selection/china/",
+          "rect": {
+            "x": 22,
+            "y": 512,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 560,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "AI 改图神器",
+          "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+          "rect": {
+            "x": 22,
+            "y": 608,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 商品套图",
+          "href": "https://qh.jizhangerp.com/ozon/ai-image/",
+          "rect": {
+            "x": 22,
+            "y": 652,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 608,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "价格与折扣",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+          "rect": {
+            "x": 22,
+            "y": 656,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "营销活动",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+          "rect": {
+            "x": 22,
+            "y": 700,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "自动删促销",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+          "rect": {
+            "x": 22,
+            "y": 744,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 656,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "订单",
+          "href": "https://qh.jizhangerp.com/ozon/postings/list/",
+          "rect": {
+            "x": 22,
+            "y": 704,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "退货申请",
+          "href": "https://qh.jizhangerp.com/ozon/postings/returns/",
+          "rect": {
+            "x": 22,
+            "y": 748,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "利润趋势",
+          "href": "https://qh.jizhangerp.com/ozon/postings/profit-trend/",
+          "rect": {
+            "x": 22,
+            "y": 792,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "数据大屏",
+          "href": "https://qh.jizhangerp.com/datascreen/",
+          "rect": {
+            "x": 22,
+            "y": 836,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "索要好评",
+          "href": "https://qh.jizhangerp.com/ozon/postings/review-request/",
+          "rect": {
+            "x": 22,
+            "y": 880,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "提醒取货",
+          "href": "https://qh.jizhangerp.com/ozon/postings/pickup-reminder/",
+          "rect": {
+            "x": 22,
+            "y": 924,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 704,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 748,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        }
+      ]
+    },
+    {
+      "clicked": "工具",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 376,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "类目分析",
+          "href": "https://qh.jizhangerp.com/ozon/selection/category/",
+          "rect": {
+            "x": 22,
+            "y": 424,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "榜单选品",
+          "href": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+          "rect": {
+            "x": 22,
+            "y": 468,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "中国专区",
+          "href": "https://qh.jizhangerp.com/ozon/selection/china/",
+          "rect": {
+            "x": 22,
+            "y": 512,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 560,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "AI 改图神器",
+          "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+          "rect": {
+            "x": 22,
+            "y": 608,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 商品套图",
+          "href": "https://qh.jizhangerp.com/ozon/ai-image/",
+          "rect": {
+            "x": 22,
+            "y": 652,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 608,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "价格与折扣",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+          "rect": {
+            "x": 22,
+            "y": 656,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "营销活动",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+          "rect": {
+            "x": 22,
+            "y": 700,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "自动删促销",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+          "rect": {
+            "x": 22,
+            "y": 744,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 656,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "订单",
+          "href": "https://qh.jizhangerp.com/ozon/postings/list/",
+          "rect": {
+            "x": 22,
+            "y": 704,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "退货申请",
+          "href": "https://qh.jizhangerp.com/ozon/postings/returns/",
+          "rect": {
+            "x": 22,
+            "y": 748,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "利润趋势",
+          "href": "https://qh.jizhangerp.com/ozon/postings/profit-trend/",
+          "rect": {
+            "x": 22,
+            "y": 792,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "数据大屏",
+          "href": "https://qh.jizhangerp.com/datascreen/",
+          "rect": {
+            "x": 22,
+            "y": 836,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "索要好评",
+          "href": "https://qh.jizhangerp.com/ozon/postings/review-request/",
+          "rect": {
+            "x": 22,
+            "y": 880,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "提醒取货",
+          "href": "https://qh.jizhangerp.com/ozon/postings/pickup-reminder/",
+          "rect": {
+            "x": 22,
+            "y": 924,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 704,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 748,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        }
+      ]
+    },
+    {
+      "clicked": "消息",
+      "found": true,
+      "menu": [
+        {
+          "text": "仪表盘",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "rect": {
+            "x": 12,
+            "y": 60,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "商品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 104,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "商品列表",
+          "href": "https://qh.jizhangerp.com/ozon/products/list/",
+          "rect": {
+            "x": 22,
+            "y": 152,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "采集箱",
+          "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+          "rect": {
+            "x": 22,
+            "y": 196,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "上架记录",
+          "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+          "rect": {
+            "x": 22,
+            "y": 240,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "库存管理",
+          "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+          "rect": {
+            "x": 22,
+            "y": 284,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "下架重上",
+          "href": "https://qh.jizhangerp.com/ozon/products/reshelf/",
+          "rect": {
+            "x": 22,
+            "y": 328,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "选品",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 376,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "类目分析",
+          "href": "https://qh.jizhangerp.com/ozon/selection/category/",
+          "rect": {
+            "x": 22,
+            "y": 424,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "榜单选品",
+          "href": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+          "rect": {
+            "x": 22,
+            "y": 468,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "中国专区",
+          "href": "https://qh.jizhangerp.com/ozon/selection/china/",
+          "rect": {
+            "x": 22,
+            "y": 512,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 工具\n推荐",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 560,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "AI 改图神器",
+          "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+          "rect": {
+            "x": 22,
+            "y": 608,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "AI 商品套图",
+          "href": "https://qh.jizhangerp.com/ozon/ai-image/",
+          "rect": {
+            "x": 22,
+            "y": 652,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "促销",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 608,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "价格与折扣",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+          "rect": {
+            "x": 22,
+            "y": 656,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "营销活动",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+          "rect": {
+            "x": 22,
+            "y": 700,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "自动删促销",
+          "href": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+          "rect": {
+            "x": 22,
+            "y": 744,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "订单",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 792,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "订单",
+          "href": "https://qh.jizhangerp.com/ozon/postings/list/",
+          "rect": {
+            "x": 22,
+            "y": 840,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "退货申请",
+          "href": "https://qh.jizhangerp.com/ozon/postings/returns/",
+          "rect": {
+            "x": 22,
+            "y": 884,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "利润趋势",
+          "href": "https://qh.jizhangerp.com/ozon/postings/profit-trend/",
+          "rect": {
+            "x": 22,
+            "y": 928,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "数据大屏",
+          "href": "https://qh.jizhangerp.com/datascreen/",
+          "rect": {
+            "x": 22,
+            "y": 972,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "索要好评",
+          "href": "https://qh.jizhangerp.com/ozon/postings/review-request/",
+          "rect": {
+            "x": 22,
+            "y": 1016,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "提醒取货",
+          "href": "https://qh.jizhangerp.com/ozon/postings/pickup-reminder/",
+          "rect": {
+            "x": 22,
+            "y": 1060,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "工具",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 840,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "消息",
+          "href": null,
+          "rect": {
+            "x": 12,
+            "y": 884,
+            "w": 173,
+            "h": 40
+          },
+          "className": "ant-menu-submenu-title"
+        },
+        {
+          "text": "公告中心",
+          "href": "https://qh.jizhangerp.com/ozon/announcements/",
+          "rect": {
+            "x": 22,
+            "y": 932,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "消息模板",
+          "href": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+          "rect": {
+            "x": 22,
+            "y": 976,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        },
+        {
+          "text": "发送记录",
+          "href": "https://qh.jizhangerp.com/ozon/messaging/history/",
+          "rect": {
+            "x": 22,
+            "y": 1020,
+            "w": 163,
+            "h": 40
+          },
+          "className": "ant-menu-item ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+        }
+      ]
+    }
+  ]
+}

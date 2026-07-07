@@ -1,0 +1,1169 @@
+{
+  "capturedAt": "2026-07-04T04:21:48.494Z",
+  "taskSpaceId": 19,
+  "note": "Sanitized returns-page structural/interaction evidence only. Counts are redacted; no table body rows, store names, buyer data, or return/order numbers retained. Refresh/search/pager buttons were observed but not clicked.",
+  "source": [
+    {
+      "label": "initial",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [
+        "[count]/页",
+        "[count]/页"
+      ],
+      "tags": [],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "[count]/页"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after FBS",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [
+        "[count]/页",
+        "[count]/页"
+      ],
+      "tags": [],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "[count]/页"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after FBO",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [
+        "[count]/页",
+        "[count]/页"
+      ],
+      "tags": [],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "[count]/页"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 退货申请 (rFBS)",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [
+        "[count]/页",
+        "[count]/页"
+      ],
+      "tags": [],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "[count]/页"
+      ],
+      "modalTitles": []
+    }
+  ],
+  "local": [
+    {
+      "label": "initial",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(22, 119, 255)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after FBS",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(22, 119, 255)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after FBO",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(22, 119, 255)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 退货申请 (rFBS)",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(22, 119, 255)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "modalTitles": []
+    }
+  ],
+  "localAfterPatch": [
+    {
+      "label": "initial after patch",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "disabledPagerButtons": [
+        {
+          "text": "上一页",
+          "disabled": true
+        },
+        {
+          "text": "下一页",
+          "disabled": true
+        }
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after FBS",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "disabledPagerButtons": [
+        {
+          "text": "上一页",
+          "disabled": true
+        },
+        {
+          "text": "下一页",
+          "disabled": true
+        }
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after FBO",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "disabledPagerButtons": [
+        {
+          "text": "上一页",
+          "disabled": true
+        },
+        {
+          "text": "下一页",
+          "disabled": true
+        }
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 退货申请 (rFBS)",
+      "path": "/ozon/postings/returns/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "退货申请 (rFBS)",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "搜 索",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        }
+      ],
+      "tabs": [
+        {
+          "text": "退货申请 (rFBS)",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBS",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "FBO",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "搜索货件号 / 货号 / SKU",
+          "type": "text",
+          "aria": ""
+        }
+      ],
+      "selects": [],
+      "tags": [
+        "透传模式,按当前店铺过滤"
+      ],
+      "tableHeaders": [
+        "申请 / 货件",
+        "店铺",
+        "商品",
+        "申请时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "pagerTexts": [
+        "第 [count] 页 · 本页 [count] 条 [count]/页 上一页 下一页"
+      ],
+      "disabledPagerButtons": [
+        {
+          "text": "上一页",
+          "disabled": true
+        },
+        {
+          "text": "下一页",
+          "disabled": true
+        }
+      ],
+      "modalTitles": []
+    }
+  ],
+  "localVerifiedAt": "2026-07-04T04:23:24.908Z"
+}

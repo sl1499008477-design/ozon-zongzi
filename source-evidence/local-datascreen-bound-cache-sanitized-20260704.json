@@ -1,0 +1,76 @@
+{
+  "createdAt": "2026-07-04T09:59:43.750Z",
+  "url": "http://127.0.0.1:5173/datascreen/?qa=1783159182164",
+  "info": {
+    "url": "http://127.0.0.1:5173/datascreen/?qa=1783159182164",
+    "title": "QH · 订单数据大屏",
+    "w": 1896,
+    "h": 904,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1897,
+    "ph": 1384
+  },
+  "beforeMask": {
+    "title": "QH · 订单数据大屏",
+    "path": "/datascreen/",
+    "hasBackendShell": false,
+    "hasDataScreen": true,
+    "hasBoundFooter": true,
+    "hasEmptyBindingFooter": false,
+    "hasOrderDataText": true,
+    "metricCards": 6,
+    "panels": 7,
+    "trendDays": 30,
+    "statusRows": 5,
+    "channelRows": 7,
+    "orderFlowRows": 5,
+    "hotProductRows": 2,
+    "hourBuckets": 8,
+    "statusStripItems": 5,
+    "hasEmptyOrbit": false,
+    "bodyHasLongNumbers": true,
+    "bodyHasEmail": false
+  },
+  "afterMask": {
+    "textSample": "QH · 订单数据中心 ORDER COMMAND CENTER · 全部店铺 · 数据每 60s 自动刷新 7天 15天 30天 全屏 返回订单 17:59:42 2026-07-04 星期六 今日订单 ****** — 持平 今日销售额 ****** — 持平 今日预估利润 ****** 需成本数据 近 7 天订单 ****** — 持平 vs 前 7 天 近 30 天销售额 ****** 462 单 近 30 天退货率 ****** — 持平 退货 0 单 订单状态分布 ****** 近 30 天订单 运输中 ****** 已签收 ****** 等待发运 ****** 等待备货 ****** 已取消 ****** 店铺战力榜 · 今日 ****** 当前店铺 ****** ****** 订单量 × 销售额趋势 · 近 30 天 区间销售额 ¥109,432.25 · 利润 ¥— ****** ****** ****** ****** 单量 销售额¥ 06-05 06-08 06-11 06-14 06-17 06-20 06-23 06-26 06-29 已同步 ****** 单 · 趋势来自本地只读缓存 今日时段分布 ****** 0时 ****** 3时 ****** 6时 ****** 9时 ****** 12时 ****** 15时 ****** 18时 ****** 21时 配送渠道 TOP ****** ****** ****** ****** ****** ****** ****** ****** ****** ****** 实时订单流 LIVE ****** 等待备货 ****** ****** 等待备货 ****** ****** 等待备货 ****** ****** 等待备货 ****** ****** 等待备货 ****** 今日热销 TOP ****** ****** ****** ****** 待备货 ****** 待发运 ****** 运输中 ****** 有争议 ****** 已取消 ****** 数据来源:本地同步缓存(状态为近 3",
+    "shellRect": {
+      "x": 0,
+      "y": 0,
+      "w": 1874,
+      "h": 1361
+    },
+    "metricsRect": {
+      "x": 25,
+      "y": 147,
+      "w": 1824,
+      "h": 132
+    },
+    "mainRect": {
+      "x": 25,
+      "y": 295,
+      "w": 1824,
+      "h": 920
+    },
+    "statusStripRect": {
+      "x": 25,
+      "y": 1231,
+      "w": 1824,
+      "h": 70
+    },
+    "masked": true,
+    "preservedLabels": [
+      "QH · 订单数据中心",
+      "订单状态分布",
+      "订单量 × 销售额趋势",
+      "今日时段分布",
+      "配送渠道 TOP",
+      "实时订单流",
+      "今日热销 TOP"
+    ]
+  },
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-datascreen-bound-cache-sanitized-20260704.png",
+  "screenshotOk": true,
+  "screenshotBytes": 148078,
+  "note": "Local bound-store data screen captured after DOM masking. Evidence stores structure/row counts only, not order IDs, product names, or financial values."
+}

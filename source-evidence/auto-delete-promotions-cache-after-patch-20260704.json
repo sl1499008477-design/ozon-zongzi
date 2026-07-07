@@ -1,0 +1,25 @@
+{
+  "route": "/ozon/promotions/auto-delete/",
+  "checkedAt": "2026-07-04T11:12:37+08:00",
+  "localApi": {
+    "health": "ok",
+    "promotionsCount": 6,
+    "syncEndpoint": "/local/sync/PROMOTIONS",
+    "syncMode": "read-only"
+  },
+  "frontendChecks": {
+    "usesLocalPromotionsCache": true,
+    "rowMapper": "autoDeletePromotionRows",
+    "columns": ["活动名称", "类型", "折扣力度", "商品数量", "有效期", "状态", "操作"],
+    "displayOnlyAction": "移除",
+    "readonlyConfigGuard": true,
+    "controlledFilters": ["活动名称", "类型", "状态"],
+    "routeStatus": 200
+  },
+  "validation": {
+    "build": "passed with existing Vite large chunk warning",
+    "diffCheck": "passed",
+    "secretScanOutsideServerData": "no matches"
+  },
+  "persistedDataBoundary": "Evidence stores counts, route names, column names, and check results only. It does not store promotion titles, descriptions, store identifiers, API keys, or Client ID."
+}

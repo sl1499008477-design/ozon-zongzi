@@ -1,0 +1,67 @@
+{
+  "scope": "frontend placeholder interaction cleanup",
+  "validatedAt": "2026-07-04T21:10:47+08:00",
+  "changes": {
+    "topbarUserMenu": [
+      "用户设置 now routes to 店铺管理",
+      "AI 助手绑定 now routes to AI 执行记录",
+      "Browser Agent now routes to the local plugin page",
+      "修改密码 now opens a source-style modal instead of a placeholder toast"
+    ],
+    "messageTasks": [
+      "索要好评 查看结果 now routes to 发送记录"
+    ],
+    "productTemplates": [
+      "导入模板 now imports user-provided JSON into the local productTemplates cache"
+    ],
+    "jidianAndMembership": [
+      "查看消费明细 now opens a local balance/detail modal with an empty state when no records exist",
+      "会员套餐 使用激活码开通 now focuses the activation-code input"
+    ],
+    "privacyDisplay": [
+      "topbar current-store label no longer exposes the raw bound-store identifier when no store label is available"
+    ]
+  },
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "currentLocalState": {
+    "stores": 1,
+    "products": 580,
+    "postings": 466,
+    "announcements": 0,
+    "messageHistory": 0,
+    "productTemplates": 0,
+    "jobs": 13,
+    "aiPosterJobs": 0
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed",
+    "frontendPlaceholderScan": "only backend local-readonly guard messages remain",
+    "localFrontendHealth": 200,
+    "localBrowserQa": {
+      "topbarContainsBoundStoreLabel": true,
+      "topbarContainsRawStoreIdentifier": false,
+      "topbarContainsLongNumericToken": false,
+      "productTemplateImportButtonVisible": true,
+      "productTemplateUploadInputCount": 1,
+      "productTemplateOldImportToastVisible": false,
+      "reviewResultRouteAfterClick": "/ozon/messaging/history/",
+      "jidianDetailModalOpens": true,
+      "jidianOldPlaceholderToastVisible": false,
+      "membershipPlanButtonFocusesActivationInput": true
+    }
+  },
+  "sourceRecheck": {
+    "attemptedWithEgoLite": true,
+    "result": "blocked_by_agent_sandbox_bootstrap_access_and_escalation_timeout",
+    "fallback": "used existing topbar/template/membership evidence already saved in source-evidence"
+  },
+  "redaction": {
+    "rawCredentials": "not_recorded",
+    "productRows": "not_recorded",
+    "orderRows": "not_recorded",
+    "templatePayloads": "not_recorded"
+  }
+}

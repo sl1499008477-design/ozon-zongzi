@@ -1,0 +1,21 @@
+{
+  "capturedAt": "2026-07-04T10:51:26.598Z",
+  "before": {
+    "recognized": true,
+    "pending": true,
+    "hasInput": true
+  },
+  "after": {
+    "title": "QH",
+    "path": "/ozon/tools/ai-poster-records/",
+    "recognizedOne": true,
+    "pendingOne": true,
+    "submitOne": true,
+    "dropText": "点击、拖拽,或 Ctrl/⌘+V 粘贴图片\n支持多张,单次最多 10 张",
+    "queueText": "已识别 1 条\n待处理图片1 / 10\n\n上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里",
+    "submitText": "将提交 1 张,消耗 1 极点余额:未知",
+    "inputValueEmpty": true,
+    "leaks": true
+  },
+  "screenshotPath": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/ai-poster-upload-queue-after-patch-20260704.png"
+}

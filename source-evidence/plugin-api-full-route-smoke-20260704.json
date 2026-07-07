@@ -1,0 +1,1233 @@
+{
+  "createdAt": "2026-07-04T09:30:34.135Z",
+  "base": "http://127.0.0.1:3103",
+  "dataScope": "isolated temp backend, fake local binding only, no real Ozon credentials, no remote writes",
+  "sensitiveDataPolicy": "evidence stores status codes, top-level response keys, and local error codes only; response bodies are intentionally omitted",
+  "extensionEndpointReferences": [
+    "/auth/ozon-stores",
+    "/browser-agents/heartbeat",
+    "/browser-agents/jobs/:param/fail",
+    "/browser-agents/jobs/:param/progress",
+    "/browser-agents/jobs/:param/result",
+    "/browser-agents/jobs/next",
+    "/browser-agents/register",
+    "/ozon/cache/import-with-hash",
+    "/ozon/collect-box/:param/ai-listing-draft",
+    "/ozon/collect-box/:param/ai-listing-draft/publish",
+    "/ozon/dashboard",
+    "/ozon/dashboard/",
+    "/ozon/postings/cache/import",
+    "/ozon/products/collect",
+    "/ozon/products/collect/edit",
+    "/ozon/products/favorites",
+    "/ozon/products/import-history",
+    "/ozon/products/list",
+    "/ozon/products/reshelf",
+    "/ozon/settings/jidian",
+    "/ozon/settings/membership",
+    "/ozon/settings/stores",
+    "/ozon/stores/:param/sync-credentials",
+    "/ozon/sync/client-intervals",
+    "/ozon/sync/client-report",
+    "/ozon/sync/lease/acquire",
+    "/ozon/sync/lease/heartbeat",
+    "/ozon/sync/lease/release",
+    "/ozon/templates",
+    "/ozon/tools/watermark",
+    "/ozon/warehouses",
+    "/ozon/warehouses/cache/import",
+    "/ozon/watermark-settings",
+    "/sources/:param/collect"
+  ],
+  "setup": {
+    "binding": {
+      "status": 200,
+      "tokenPresent": true,
+      "storeIdPresent": true,
+      "storeKeys": [
+        "id",
+        "storeId",
+        "label",
+        "companyName",
+        "legalName",
+        "clientId",
+        "apiKeyMasked",
+        "savedAt",
+        "updatedAt"
+      ]
+    },
+    "secondaryLease": {
+      "status": 200,
+      "leaseIdPresent": true,
+      "keys": [
+        "acquired",
+        "leaseId",
+        "expiresAt"
+      ]
+    },
+    "browserAgent": {
+      "status": 200,
+      "agentIdPresent": true,
+      "keys": [
+        "id",
+        "deviceKey",
+        "deviceName",
+        "extensionId",
+        "extensionVersion",
+        "capabilities",
+        "status",
+        "local",
+        "registeredAt",
+        "lastHeartbeatAt"
+      ]
+    },
+    "collectionJob": {
+      "status": 200,
+      "idPresent": true,
+      "keys": [
+        "id",
+        "type",
+        "sku",
+        "status",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "marketJob": {
+      "status": 200,
+      "idPresent": true,
+      "keys": [
+        "id",
+        "type",
+        "sku",
+        "status",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "collectItem": {
+      "status": 200,
+      "idPresent": true,
+      "keys": [
+        "id",
+        "sku",
+        "title",
+        "productUrl",
+        "name",
+        "source",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "results": [
+    {
+      "label": "health probe",
+      "method": "GET",
+      "path": "/health",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "service",
+        "version"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.204Z"
+    },
+    {
+      "label": "local state payload",
+      "method": "GET",
+      "path": "/local/state",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "token",
+        "currentStoreId",
+        "binding",
+        "stores",
+        "summary",
+        "caches",
+        "jobs",
+        "updatedAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.209Z"
+    },
+    {
+      "label": "auth captcha",
+      "method": "GET",
+      "path": "/auth/captcha",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.211Z"
+    },
+    {
+      "label": "auth ozon stores list",
+      "method": "GET",
+      "path": "/auth/ozon-stores",
+      "status": 200,
+      "code": null,
+      "keys": [],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.213Z"
+    },
+    {
+      "label": "auth device heartbeat",
+      "method": "PUT",
+      "path": "/auth/device/heartbeat",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "local",
+        "at"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.218Z"
+    },
+    {
+      "label": "auth store cookie sync",
+      "method": "PATCH",
+      "path": "/auth/ozon-stores/local_5e61d33875a0",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "store",
+        "sellerCompanyId",
+        "sellerCookieCount"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.220Z"
+    },
+    {
+      "label": "auth send code disabled",
+      "method": "POST",
+      "path": "/auth/send-code",
+      "status": 400,
+      "code": "LOCAL_WEB_BIND_ONLY",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "400 LOCAL_WEB_BIND_ONLY",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.225Z"
+    },
+    {
+      "label": "auth sms verify disabled",
+      "method": "POST",
+      "path": "/auth/sms/verify",
+      "status": 400,
+      "code": "LOCAL_WEB_BIND_ONLY",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "400 LOCAL_WEB_BIND_ONLY",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.227Z"
+    },
+    {
+      "label": "auth password disabled",
+      "method": "POST",
+      "path": "/auth/login-password",
+      "status": 400,
+      "code": "LOCAL_WEB_BIND_ONLY",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "400 LOCAL_WEB_BIND_ONLY",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.231Z"
+    },
+    {
+      "label": "feature flags",
+      "method": "GET",
+      "path": "/feature-flags/me",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ozon_fleet_serverside",
+        "ozon_public_import",
+        "localClone"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.234Z"
+    },
+    {
+      "label": "membership usage summary",
+      "method": "GET",
+      "path": "/membership/usage-summary",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "plan",
+        "level",
+        "canUse",
+        "usage",
+        "limits",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.237Z"
+    },
+    {
+      "label": "jidian balance",
+      "method": "GET",
+      "path": "/jidian/balance",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "balance",
+        "pointLabel",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.239Z"
+    },
+    {
+      "label": "jidian pricing",
+      "method": "GET",
+      "path": "/jidian/pricing",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "AI_IMAGE",
+        "AI_REWRITE",
+        "_meta"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.241Z"
+    },
+    {
+      "label": "watermark settings",
+      "method": "GET",
+      "path": "/ozon/watermark-settings",
+      "status": 200,
+      "code": null,
+      "keys": [],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.244Z"
+    },
+    {
+      "label": "usage tracking",
+      "method": "POST",
+      "path": "/usage/track",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.245Z"
+    },
+    {
+      "label": "sync intervals",
+      "method": "GET",
+      "path": "/ozon/sync/client-intervals",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "postingsMin",
+        "productsMin",
+        "warehousesMin"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.247Z"
+    },
+    {
+      "label": "sync credentials shape",
+      "method": "GET",
+      "path": "/ozon/stores/local_5e61d33875a0/sync-credentials",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "clientId",
+        "apiKey"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.247Z"
+    },
+    {
+      "label": "sync lease acquire",
+      "method": "POST",
+      "path": "/ozon/sync/lease/acquire",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "acquired",
+        "leaseId",
+        "expiresAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.248Z"
+    },
+    {
+      "label": "sync lease heartbeat",
+      "method": "POST",
+      "path": "/ozon/sync/lease/heartbeat",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "refreshed",
+        "expiresAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.254Z"
+    },
+    {
+      "label": "sync lease release",
+      "method": "POST",
+      "path": "/ozon/sync/lease/release",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "released"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.258Z"
+    },
+    {
+      "label": "sync client report",
+      "method": "POST",
+      "path": "/ozon/sync/client-report",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "job"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.261Z"
+    },
+    {
+      "label": "sync job lookup",
+      "method": "GET",
+      "path": "/ozon/sync/jobs/route-job-1",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "clientJobId",
+        "id",
+        "type",
+        "status",
+        "fetchedCount",
+        "updatedAt",
+        "createdAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.264Z"
+    },
+    {
+      "label": "browser agent heartbeat",
+      "method": "POST",
+      "path": "/browser-agents/heartbeat",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "id",
+        "deviceKey",
+        "deviceName",
+        "extensionId",
+        "extensionVersion",
+        "capabilities",
+        "status",
+        "local",
+        "registeredAt",
+        "lastHeartbeatAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.268Z"
+    },
+    {
+      "label": "browser agent next job",
+      "method": "GET",
+      "path": "/browser-agents/jobs/next?deviceId=local_agent_12fd55b170d2",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "job",
+        "local",
+        "reason"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.273Z"
+    },
+    {
+      "label": "browser agent job progress",
+      "method": "POST",
+      "path": "/browser-agents/jobs/route-browser-job/progress",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "job",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.274Z"
+    },
+    {
+      "label": "browser agent job result",
+      "method": "POST",
+      "path": "/browser-agents/jobs/route-browser-job/result",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "job",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.276Z"
+    },
+    {
+      "label": "browser agent job fail",
+      "method": "POST",
+      "path": "/browser-agents/jobs/route-browser-job/fail",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "job",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.278Z"
+    },
+    {
+      "label": "browser old collection job lookup",
+      "method": "GET",
+      "path": "/browser-agents/collection-jobs/5f0df1af-837a-4955-ac74-86acfdcd0b86",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "id",
+        "type",
+        "sku",
+        "status",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.307Z"
+    },
+    {
+      "label": "browser old market job lookup",
+      "method": "GET",
+      "path": "/browser-agents/market-data-jobs/fdc4d05f-e18f-44f2-b441-ea343b2c2302",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "id",
+        "type",
+        "sku",
+        "status",
+        "result",
+        "error",
+        "createdAt",
+        "updatedAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.350Z"
+    },
+    {
+      "label": "products cache import with hash",
+      "method": "POST",
+      "path": "/ozon/cache/import-with-hash",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "imported",
+        "needRaw"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.351Z"
+    },
+    {
+      "label": "postings cache import",
+      "method": "POST",
+      "path": "/ozon/postings/cache/import",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "imported"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.353Z"
+    },
+    {
+      "label": "warehouses cache import",
+      "method": "POST",
+      "path": "/ozon/warehouses/cache/import",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "imported"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.355Z"
+    },
+    {
+      "label": "products cache list",
+      "method": "GET",
+      "path": "/ozon/products/cache?currentPage=1&pageSize=20&sortBy=updated_at&sortOrder=desc",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "total"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.357Z"
+    },
+    {
+      "label": "products status counts",
+      "method": "GET",
+      "path": "/ozon/products/cache/status-counts",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ALL",
+        "total"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.357Z"
+    },
+    {
+      "label": "product data single",
+      "method": "GET",
+      "path": "/ozon/product-data/ROUTE-PRODUCT-1?skipMarket=1",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "data",
+        "sku",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.358Z"
+    },
+    {
+      "label": "product data batch",
+      "method": "POST",
+      "path": "/ozon/product-data/batch",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "data",
+        "items",
+        "total",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.359Z"
+    },
+    {
+      "label": "product dims cache",
+      "method": "POST",
+      "path": "/ozon/product-data/dims",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "imported",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.362Z"
+    },
+    {
+      "label": "collect box list",
+      "method": "GET",
+      "path": "/ozon/collect-box?currentPage=1&pageSize=20",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "items",
+        "total",
+        "current",
+        "pageSize"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.377Z"
+    },
+    {
+      "label": "collect box patch",
+      "method": "PATCH",
+      "path": "/ozon/collect-box/ROUTE-COLLECT-1",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "id",
+        "sku",
+        "title",
+        "productUrl",
+        "name",
+        "source",
+        "status",
+        "createdAt",
+        "updatedAt",
+        "note"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.379Z"
+    },
+    {
+      "label": "collect box batch",
+      "method": "POST",
+      "path": "/ozon/collect-box/batch",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "imported",
+        "data",
+        "total"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.382Z"
+    },
+    {
+      "label": "source collect single",
+      "method": "POST",
+      "path": "/sources/ozon/collect",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "data"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.383Z"
+    },
+    {
+      "label": "source collect batch",
+      "method": "POST",
+      "path": "/sources/ozon/collect/batch",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "imported",
+        "data",
+        "total"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.384Z"
+    },
+    {
+      "label": "favorites list",
+      "method": "GET",
+      "path": "/ozon/favorites?currentPage=1&pageSize=1",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "items",
+        "total",
+        "current",
+        "pageSize"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.385Z"
+    },
+    {
+      "label": "favorites create",
+      "method": "POST",
+      "path": "/ozon/favorites",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "sku",
+        "title",
+        "id",
+        "productUrl",
+        "name",
+        "source",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.386Z"
+    },
+    {
+      "label": "warehouses list",
+      "method": "GET",
+      "path": "/ozon/warehouses",
+      "status": 200,
+      "code": null,
+      "keys": [],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.386Z"
+    },
+    {
+      "label": "import by sku tasks",
+      "method": "GET",
+      "path": "/ozon/products/import-by-sku/tasks?current=1&pageSize=20",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "items",
+        "total",
+        "current",
+        "pageSize"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.387Z"
+    },
+    {
+      "label": "extension l1 samples",
+      "method": "POST",
+      "path": "/extension/l1-samples",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.387Z"
+    },
+    {
+      "label": "categories tree",
+      "method": "GET",
+      "path": "/ozon/categories/tree?language=DEFAULT",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "items",
+        "total",
+        "language"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.390Z"
+    },
+    {
+      "label": "category attributes",
+      "method": "GET",
+      "path": "/ozon/description-category/12345/attributes",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "items",
+        "total",
+        "typeId"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.390Z"
+    },
+    {
+      "label": "bestsellers snapshot",
+      "method": "POST",
+      "path": "/ozon/selection/bestsellers/snapshot",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "imported"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.391Z"
+    },
+    {
+      "label": "category mapping",
+      "method": "POST",
+      "path": "/ozon/selection/category-mapping",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.391Z"
+    },
+    {
+      "label": "extension translate",
+      "method": "POST",
+      "path": "/ozon/extension/translate",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "texts",
+        "translated",
+        "from",
+        "to",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.392Z"
+    },
+    {
+      "label": "extension ai optimize",
+      "method": "POST",
+      "path": "/ozon/extension/ai-optimize",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "title",
+        "description",
+        "keywords",
+        "optimized",
+        "suggestions",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.392Z"
+    },
+    {
+      "label": "templates list",
+      "method": "GET",
+      "path": "/ozon/templates?pageSize=100",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "data",
+        "items",
+        "total",
+        "current",
+        "pageSize"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.393Z"
+    },
+    {
+      "label": "template apply",
+      "method": "POST",
+      "path": "/ozon/templates/route-template/apply",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "templateId",
+        "templateSettings",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.393Z"
+    },
+    {
+      "label": "ai optimize for rating",
+      "method": "POST",
+      "path": "/ozon/ai/optimize-for-rating",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "local",
+        "optimized",
+        "title",
+        "description",
+        "attrs",
+        "warnings"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.395Z"
+    },
+    {
+      "label": "ai suggest category",
+      "method": "POST",
+      "path": "/ozon/ai/suggest-category",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "local",
+        "suggestions",
+        "category"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.396Z"
+    },
+    {
+      "label": "ai verify category",
+      "method": "POST",
+      "path": "/ozon/ai/verify-category",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "local",
+        "valid",
+        "reason"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.396Z"
+    },
+    {
+      "label": "ai listing draft create",
+      "method": "POST",
+      "path": "/ozon/collect-box/ROUTE-COLLECT-1/ai-listing-draft",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "draft",
+        "item",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.397Z"
+    },
+    {
+      "label": "ai listing draft confirm",
+      "method": "POST",
+      "path": "/ozon/collect-box/ROUTE-COLLECT-1/ai-listing-draft/confirm",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "draft",
+        "item",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.398Z"
+    },
+    {
+      "label": "ai listing draft publish guarded",
+      "method": "POST",
+      "path": "/ozon/collect-box/ROUTE-COLLECT-1/ai-listing-draft/publish",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.398Z"
+    },
+    {
+      "label": "import status local failed",
+      "method": "POST",
+      "path": "/ozon/products/import/status",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "task_id",
+        "status",
+        "done",
+        "error",
+        "local"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.399Z"
+    },
+    {
+      "label": "prepare bundle guarded",
+      "method": "POST",
+      "path": "/ozon/products/prepare-bundle-items",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.399Z"
+    },
+    {
+      "label": "products import guarded",
+      "method": "POST",
+      "path": "/ozon/products/import",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.399Z"
+    },
+    {
+      "label": "public import guarded",
+      "method": "POST",
+      "path": "/ozon/products/import-from-public",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.400Z"
+    },
+    {
+      "label": "follow public guarded",
+      "method": "POST",
+      "path": "/ozon/products/follow-from-public",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.400Z"
+    },
+    {
+      "label": "import by sku guarded",
+      "method": "POST",
+      "path": "/ozon/products/import-by-sku",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.400Z"
+    },
+    {
+      "label": "stocks import guarded",
+      "method": "POST",
+      "path": "/ozon/stocks/import",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "keys": [
+        "ok",
+        "message",
+        "code"
+      ],
+      "expected": "409 LOCAL_OZON_WRITE_DISABLED",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.402Z"
+    },
+    {
+      "label": "fleet disabled local fallback",
+      "method": "POST",
+      "path": "/ozon/fleet/search",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "ok",
+        "disabled",
+        "local",
+        "path"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.403Z"
+    },
+    {
+      "label": "extension latest",
+      "method": "GET",
+      "path": "/extension/latest",
+      "status": 200,
+      "code": null,
+      "keys": [
+        "version",
+        "latestVersion",
+        "downloadUrl"
+      ],
+      "expected": "2xx",
+      "passed": true,
+      "startedAt": "2026-07-04T09:30:34.403Z"
+    }
+  ],
+  "failures": [],
+  "summary": {
+    "total": 70,
+    "passed": 70,
+    "failed": 0,
+    "guardedWrites": 7,
+    "localWebBindOnly": 3
+  }
+}

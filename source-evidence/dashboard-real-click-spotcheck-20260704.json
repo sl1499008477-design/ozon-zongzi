@@ -1,0 +1,610 @@
+{
+  "capturedAt": "2026-07-04T05:41:25.890Z",
+  "taskSpaceId": 31,
+  "summary": [
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/promotions/prices/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/tools/ai-poster-records/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/products/collect/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/postings/list/",
+      "overlays": 1,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "found": true,
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlays": 0,
+      "error": null
+    }
+  ],
+  "results": [
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-%E6%89%B9%E9%87%8F%E6%94%B9%E4%BB%B7-1783143640848",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-qa-btn",
+        "text": "批量改价",
+        "className": "sd-qa-btn",
+        "x": 523,
+        "y": 883,
+        "rect": {
+          "left": 471,
+          "top": 865,
+          "width": 103,
+          "height": 36
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-%E6%89%B9%E9%87%8F%E6%94%B9%E4%BB%B7-1783143640848",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-quickButton-%E6%89%B9%E9%87%8F%E6%94%B9%E4%BB%B7-1783143645179",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".quick-actions button, .quick-actions a, button, a",
+        "text": "批量改价",
+        "className": "",
+        "x": 482,
+        "y": 843,
+        "rect": {
+          "left": 431,
+          "top": 826,
+          "width": 102,
+          "height": 34
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/promotions/prices/",
+        "title": "QH",
+        "pathname": "/ozon/promotions/prices/"
+      },
+      "overlays": [],
+      "titleText": [
+        "价格与折扣"
+      ]
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143648203",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-qa-btn",
+        "text": "AI 大模型改图",
+        "className": "sd-qa-btn",
+        "x": 649,
+        "y": 883,
+        "rect": {
+          "left": 583,
+          "top": 865,
+          "width": 132,
+          "height": 36
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143648203",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-quickButton-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143651340",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".quick-actions button, .quick-actions a, button, a",
+        "text": "AI 大模型改图",
+        "className": "",
+        "x": 606,
+        "y": 843,
+        "rect": {
+          "left": 541,
+          "top": 826,
+          "width": 130,
+          "height": 34
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/",
+        "title": "QH",
+        "pathname": "/ozon/tools/ai-poster-records/"
+      },
+      "overlays": [],
+      "titleText": [
+        "AI 改图神器"
+      ]
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-1688%20%E9%87%87%E9%9B%86-1783143654274",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-qa-btn",
+        "text": "0 采集",
+        "className": "sd-qa-btn",
+        "x": 778,
+        "y": 883,
+        "rect": {
+          "left": 723,
+          "top": 865,
+          "width": 109,
+          "height": 36
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-1688%20%E9%87%87%E9%9B%86-1783143654274",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-quickButton-1688%20%E9%87%87%E9%9B%86-1783143657467",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".quick-actions button, .quick-actions a, button, a",
+        "text": "0 采集",
+        "className": "",
+        "x": 734,
+        "y": 843,
+        "rect": {
+          "left": 679,
+          "top": 826,
+          "width": 109,
+          "height": 34
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/products/collect/",
+        "title": "QH",
+        "pathname": "/ozon/products/collect/"
+      },
+      "overlays": [],
+      "titleText": []
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-%E6%89%93%E5%8D%B0%E5%8F%91%E8%B4%A7%E5%8D%95-1783143660614",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-qa-btn",
+        "text": "打印发货单",
+        "className": "sd-qa-btn",
+        "x": 1121,
+        "y": 883,
+        "rect": {
+          "left": 1063,
+          "top": 865,
+          "width": 117,
+          "height": 36
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-quickButton-%E6%89%93%E5%8D%B0%E5%8F%91%E8%B4%A7%E5%8D%95-1783143660614",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-quickButton-%E6%89%93%E5%8D%B0%E5%8F%91%E8%B4%A7%E5%8D%95-1783143664151",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".quick-actions button, .quick-actions a, button, a",
+        "text": "打印发货单",
+        "className": "",
+        "x": 1073,
+        "y": 843,
+        "rect": {
+          "left": 1015,
+          "top": 826,
+          "width": 115,
+          "height": 34
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/postings/list/",
+        "title": "QH",
+        "pathname": "/ozon/postings/list/"
+      },
+      "overlays": [
+        "同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 0 天至现在"
+      ],
+      "titleText": [
+        "订单"
+      ]
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143667112",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-feat-card",
+        "text": "采集箱",
+        "className": "sd-feat-card",
+        "x": 355,
+        "y": 1035,
+        "rect": {
+          "left": 280,
+          "top": 981,
+          "width": 151,
+          "height": 107
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143667112",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143670842",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".feature-grid button",
+        "text": "采集箱",
+        "className": "",
+        "x": 497,
+        "y": 985,
+        "rect": {
+          "left": 261,
+          "top": 959,
+          "width": 472,
+          "height": 52
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143670842",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "仪表盘"
+      ]
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143673711",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-feat-card",
+        "text": "AI 大模型改图 NEW",
+        "className": "sd-feat-card",
+        "x": 964,
+        "y": 1035,
+        "rect": {
+          "left": 889,
+          "top": 981,
+          "width": 151,
+          "height": 107
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143673711",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143676905",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".feature-grid button",
+        "text": "AI 大模型改图 NEW",
+        "className": "",
+        "x": 497,
+        "y": 1109,
+        "rect": {
+          "left": 261,
+          "top": 1083,
+          "width": 472,
+          "height": 52
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143676905",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "仪表盘"
+      ]
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143679896",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".sd-feat-card",
+        "text": "水印管理",
+        "className": "sd-feat-card",
+        "x": 1116,
+        "y": 1035,
+        "rect": {
+          "left": 1041,
+          "top": 981,
+          "width": 151,
+          "height": 107
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?realclick=source-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143679896",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "QH"
+      ]
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143683087",
+        "title": "QH"
+      },
+      "target": {
+        "found": true,
+        "selector": ".feature-grid button",
+        "text": "水印管理",
+        "className": "",
+        "x": 979,
+        "y": 1109,
+        "rect": {
+          "left": 743,
+          "top": 1083,
+          "width": 472,
+          "height": 52
+        }
+      },
+      "clicked": true,
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?realclick=local-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143683087",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "overlays": [],
+      "titleText": [
+        "仪表盘"
+      ]
+    }
+  ]
+}

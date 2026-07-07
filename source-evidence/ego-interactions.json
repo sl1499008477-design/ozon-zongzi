@@ -1,0 +1,170 @@
+{
+  "capturedAt": "2026-07-04T03:19:30.403Z",
+  "taskSpaceId": 8,
+  "interactions": [
+    {
+      "label": "/ozon/messaging/templates/ / click 新建模板 / clicked=true",
+      "route": "/ozon/messaging/templates/",
+      "state": {
+        "path": "/ozon/messaging/templates/",
+        "modalTitles": [
+          "新建模板"
+        ],
+        "modalTexts": [
+          "新建模板 模板名称 所属分类 订单通知 消息内容[num] 可用变量提示： {customer_name} {order_id} {tracking_number} 取 消 保 存"
+        ],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "buttons": [
+          "取 消",
+          "保 存"
+        ],
+        "labels": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "所属分类",
+          "消息内容"
+        ],
+        "placeholders": [
+          "给模板起个名字，例如：发货通知",
+          "输入消息内容，支持变量：{customer_name}, {order_id}, {tracking_number}"
+        ],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "/ozon/postings/review-request/ / click 文案模板 / clicked=true",
+      "route": "/ozon/postings/review-request/",
+      "state": {
+        "path": "/ozon/postings/review-request/",
+        "modalTitles": [
+          "索要好评文案模板"
+        ],
+        "modalTexts": [
+          "索要好评文案模板 可为不同店铺保存多套文案，发送前选择模板后仍可临时修改。 新建模板 模板名称 适用范围 内容预览 操作 暂无文案模板"
+        ],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "buttons": [
+          "新建模板"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "/ozon/postings/review-request/ / click 任务监控 / clicked=true",
+      "route": "/ozon/postings/review-request/",
+      "state": {
+        "path": "/ozon/postings/review-request/",
+        "modalTitles": [
+          "索要好评文案模板"
+        ],
+        "modalTexts": [
+          "索要好评文案模板可为不同店铺保存多套文案，发送前选择模板后仍可临时修改。新建模板模板名称适用范围内容预览操作暂无数据暂无文案模板"
+        ],
+        "drawerTitles": [
+          "任务监控"
+        ],
+        "drawerTexts": [
+          "任务监控 暂无本页触发的任务"
+        ],
+        "buttons": [
+          "新建模板"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "/ozon/postings/pickup-reminder/ / click 任务监控 / clicked=true",
+      "route": "/ozon/postings/pickup-reminder/",
+      "state": {
+        "path": "/ozon/postings/pickup-reminder/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [
+          "任务监控"
+        ],
+        "drawerTexts": [
+          "任务监控 店铺 状态 错误 暂无数据"
+        ],
+        "buttons": [],
+        "labels": [],
+        "placeholders": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "/ozon/tools/watermark/ / click 新建模板 / clicked=true",
+      "route": "/ozon/tools/watermark/",
+      "state": {
+        "path": "/ozon/tools/watermark/",
+        "modalTitles": [
+          "创建水印/边框模板"
+        ],
+        "modalTexts": [
+          "创建水印/边框模板 模板名称 水印类型 ✏️ 文字水印 文字内容 字体 Arial 字体大小[num][num][num] 字体颜色 #FFFFFF 不透明度[num][num][num] 旋转角度（度） -[num][num][num] 边距（占短边 %） 贴边[num][num][num][num] 水印位置 恢复默认 取 消 创 建"
+        ],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "buttons": [
+          "恢复默认",
+          "取 消",
+          "创 建"
+        ],
+        "labels": [
+          "模板名称",
+          "水印类型",
+          "文字内容",
+          "字体",
+          "字体大小",
+          "字体颜色",
+          "不透明度",
+          "旋转角度（度）",
+          "边距（占短边 %）",
+          "水印位置"
+        ],
+        "placeholders": [
+          "例如：店铺主水印",
+          "例如：OZON STORE"
+        ],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "/ozon/selection/top-list/ / click 更多筛选 / clicked=true",
+      "route": "/ozon/selection/top-list/",
+      "state": {
+        "path": "/ozon/selection/top-list/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "buttons": [],
+        "labels": [],
+        "placeholders": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "/ozon/selection/china/ / click 更多筛选 / clicked=true",
+      "route": "/ozon/selection/china/",
+      "state": {
+        "path": "/ozon/selection/china/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "buttons": [],
+        "labels": [],
+        "placeholders": [],
+        "bodyHasLogin": false
+      }
+    }
+  ]
+}

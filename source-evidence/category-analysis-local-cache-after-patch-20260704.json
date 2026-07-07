@@ -1,0 +1,34 @@
+{
+  "scope": "category analysis local product-cache aggregation",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/selection/category/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "featuresWired": {
+    "categoryRows": "derived from local products cache grouped by type/category id",
+    "refreshButton": "POST /local/sync/PRODUCTS readonly cache refresh",
+    "categoryFilter": "local category group select",
+    "marketMetrics": "left blank until trustworthy market snapshot exists"
+  },
+  "liveCacheAggregation": {
+    "products": 580,
+    "categoryGroups": 55,
+    "unknownCategoryProducts": 0,
+    "messageHistory": 0
+  },
+  "routeCheck": {
+    "categoryRouteHead": 200
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "gitDiffCheck": "passed",
+    "sourceCodeControlProbe": "passed"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "productNames": "not_recorded",
+    "skus": "not_recorded",
+    "offerIds": "not_recorded",
+    "categoryIdsOnly": "counted_not_listed"
+  }
+}

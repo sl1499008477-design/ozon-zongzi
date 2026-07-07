@@ -1,0 +1,29 @@
+{
+  "capturedAt": "2026-07-04T11:01:44.096Z",
+  "route": "/ozon/promotions/prices/",
+  "localState": {
+    "ok": true,
+    "hasStore": true,
+    "productsCount": 580,
+    "postingsCount": 462
+  },
+  "pricePageExpectation": {
+    "rowsFrom": "localData.caches.products",
+    "renderedRowCount": 580,
+    "pageSize": 20,
+    "showsPagination": true,
+    "headers": [
+      "主图",
+      "商品",
+      "当前价格",
+      "操作"
+    ],
+    "readOnlyActionText": "买家看 改价"
+  },
+  "watermarkExpectation": {
+    "route": "/ozon/tools/watermark/",
+    "templateEmptyText": "暂无水印/边框模板，立即创建第一个",
+    "oldLoadingTextRemoved": true
+  },
+  "credentialPersistence": "counts only; no raw products, store ids, api keys, or row text persisted"
+}

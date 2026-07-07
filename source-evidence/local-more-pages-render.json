@@ -1,0 +1,331 @@
+{
+  "checkedAt": "2026-07-04T03:17:45.092Z",
+  "taskSpaceId": 7,
+  "pages": [
+    {
+      "route": "/ozon/ai-image/",
+      "label": "AI 商品套图",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/ai-image/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 320,
+        "ph": 652
+      },
+      "data": {
+        "path": "/ozon/ai-image/",
+        "title": "仪表盘 - QH",
+        "h1": [
+          "AI 商品套图"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "⌘K"
+        ],
+        "placeholders": [],
+        "tableHeaders": [],
+        "hasNewCampaignSearch": false,
+        "hasPostingSearch": false,
+        "hasPostingDateRange": false,
+        "hasReturnSearch": false,
+        "hasAutoDeleteStatus": false,
+        "hasAiExtraGreyText": false,
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "route": "/ozon/promotions/prices/",
+      "label": "价格与折扣",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/promotions/prices/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 465,
+        "ph": 868
+      },
+      "data": {
+        "path": "/ozon/promotions/prices/",
+        "title": "仪表盘 - QH",
+        "h1": [
+          "价格与折扣",
+          "价格与折扣"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "价格",
+          "折扣",
+          "选择商品",
+          "改价草稿",
+          "重 置",
+          "查 询",
+          "刷 新",
+          "⌘K"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "当前价格",
+          "操作"
+        ],
+        "hasNewCampaignSearch": false,
+        "hasPostingSearch": false,
+        "hasPostingDateRange": false,
+        "hasReturnSearch": false,
+        "hasAutoDeleteStatus": false,
+        "hasAiExtraGreyText": false,
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "route": "/ozon/promotions/campaigns/",
+      "label": "营销活动",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/promotions/campaigns/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 320,
+        "ph": 1283
+      },
+      "data": {
+        "path": "/ozon/promotions/campaigns/",
+        "title": "仪表盘 - QH",
+        "h1": [
+          "促销活动",
+          "促销活动"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "全部 0",
+          "参与中 0",
+          "可参与 0",
+          "即将结束 0",
+          "刷 新",
+          "⌘K"
+        ],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "tableHeaders": [
+          "活动",
+          "状态",
+          "折扣",
+          "商品",
+          "活动周期",
+          "操作"
+        ],
+        "hasNewCampaignSearch": true,
+        "hasPostingSearch": false,
+        "hasPostingDateRange": false,
+        "hasReturnSearch": false,
+        "hasAutoDeleteStatus": false,
+        "hasAiExtraGreyText": false,
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "label": "自动删促销",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/promotions/auto-delete/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 320,
+        "ph": 1393
+      },
+      "data": {
+        "path": "/ozon/promotions/auto-delete/",
+        "title": "仪表盘 - QH",
+        "h1": [
+          "自动删促销",
+          "促销活动自动清理 · 利润保护"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "重 置",
+          "查 询",
+          "从 Ozon 同步",
+          "刷 新",
+          "⌘K"
+        ],
+        "placeholders": [
+          "请输入",
+          "请选择"
+        ],
+        "tableHeaders": [
+          "活动名称",
+          "类型",
+          "折扣力度",
+          "商品数量",
+          "有效期",
+          "状态",
+          "操作"
+        ],
+        "hasNewCampaignSearch": false,
+        "hasPostingSearch": false,
+        "hasPostingDateRange": false,
+        "hasReturnSearch": false,
+        "hasAutoDeleteStatus": true,
+        "hasAiExtraGreyText": false,
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "label": "订单",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/postings/list/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 466,
+        "ph": 1955
+      },
+      "data": {
+        "path": "/ozon/postings/list/",
+        "title": "仪表盘 - QH",
+        "h1": [
+          "订单",
+          "订单"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "刷 新",
+          "拉取最新订单",
+          "刷新进行中订单",
+          "所有订单",
+          "等待备货",
+          "等待发运",
+          "已超时",
+          "运输中",
+          "有争议的",
+          "已签收",
+          "已取消",
+          "筛 选",
+          "重 置",
+          "订单导出",
+          "⌘K"
+        ],
+        "placeholders": [
+          "搜索货件号 / SKU / 货号 / 物流单号…",
+          "下单时间",
+          "结束时间"
+        ],
+        "tableHeaders": [
+          "倒计时",
+          "货件 / 状态",
+          "店铺",
+          "商品",
+          "仓库 / 配送",
+          "订单金额",
+          "利润",
+          "操作"
+        ],
+        "hasNewCampaignSearch": false,
+        "hasPostingSearch": true,
+        "hasPostingDateRange": true,
+        "hasReturnSearch": false,
+        "hasAutoDeleteStatus": false,
+        "hasAiExtraGreyText": false,
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "route": "/ozon/postings/returns/",
+      "label": "退货申请",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/postings/returns/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 320,
+        "ph": 1210
+      },
+      "data": {
+        "path": "/ozon/postings/returns/",
+        "title": "仪表盘 - QH",
+        "h1": [
+          "退货申请",
+          "退货 / 退款"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "刷 新",
+          "退货申请 (rFBS)",
+          "FBS",
+          "FBO",
+          "搜 索",
+          "重 置",
+          "上一页",
+          "下一页",
+          "⌘K"
+        ],
+        "placeholders": [
+          "搜索货件号 / 货号 / SKU"
+        ],
+        "tableHeaders": [
+          "申请 / 货件",
+          "店铺",
+          "商品",
+          "申请时间",
+          "操作"
+        ],
+        "hasNewCampaignSearch": false,
+        "hasPostingSearch": false,
+        "hasPostingDateRange": false,
+        "hasReturnSearch": true,
+        "hasAutoDeleteStatus": false,
+        "hasAiExtraGreyText": false,
+        "hasSampleStoreData": false
+      }
+    }
+  ]
+}

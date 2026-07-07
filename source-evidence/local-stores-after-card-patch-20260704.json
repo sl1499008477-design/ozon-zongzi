@@ -1,0 +1,61 @@
+{
+  "capturedAt": "2026-07-04T08:19:02.774Z",
+  "taskSpaceId": 48,
+  "info": {
+    "url": "http://127.0.0.1:5173/ozon/settings/stores/?storesFinal=1783153140749",
+    "title": "QH",
+    "w": 1896,
+    "h": 904,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1896,
+    "ph": 904
+  },
+  "data": {
+    "path": "/ozon/settings/stores/",
+    "computedPaddingTop": "48px",
+    "storeCards": [
+      {
+        "i": 0,
+        "cls": "ant-card ant-card-bordered panel-card source-card stores-settings-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "我的 Ozon 门店 0/999 同步仓库 刷 新 新增 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 同步本帐号所有门店 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+        "rect": {
+          "x": 240,
+          "y": 128,
+          "w": 1632,
+          "h": 446
+        }
+      }
+    ],
+    "headers": [
+      "门店编号",
+      "ClientId",
+      "Api-Key",
+      "标签",
+      "公司",
+      "INN",
+      "货币",
+      "Premium",
+      "添加时间",
+      "操作"
+    ],
+    "inputs": [
+      {
+        "placeholder": "",
+        "value": "on",
+        "type": "checkbox"
+      }
+    ],
+    "hasTitle": true,
+    "hasZero": true,
+    "hasActions": true,
+    "hasOldFilters": false,
+    "cardCount": 1
+  },
+  "ok": true,
+  "sourceReference": {
+    "cardY": 128,
+    "evidence": "source-evidence/stores-current-audit-20260704.json"
+  },
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-stores-after-card-patch-20260704.png"
+}

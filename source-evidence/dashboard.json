@@ -1,0 +1,743 @@
+{
+  "info": {
+    "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+    "title": "QH",
+    "w": 1250,
+    "h": 689,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1231,
+    "ph": 1700
+  },
+  "data": {
+    "title": "QH",
+    "path": "/ozon/dashboard/",
+    "bodyText": "仪表盘\n商品\n选品\nAI 工具\n推荐\n促销\n订单\n工具\n消息\nQH\n帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\nsl\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n仪表盘\n2026-07-04 · 周六\n自动同步 · 上次 [redacted-time]\n极点余额 0\n全部同步\n⌘R\n今日订单\n3\n[redacted]%\nvs 昨日\n今日 GMV\n¥[redacted]\n[redacted]%\nvs 昨日\n待打包\n35\n立即处理 →\n待发货\n47\n合计待处理 [redacted]\n在售商品\n54个\n多店聚合\n库存预警\n[redacted]SKU\n[redacted] 个断货 · 立即补货 →\n今日退货\n0\n退货率 0.0%\n7 日利润\n¥[redacted]\n本周累计\n待办与告警\n2\n2 项待处理\n配置规则\n缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU\n低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU\n业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 [redacted] 单\n待打包\n35\n[redacted]%\n待发货\n47\n[redacted]%\n已发货\n317\n[redacted]%\n已送达\n52\n[redacted]%\n已取消\n19\n[redacted]%\n订单趋势\n7 日\n30 日\n快捷操作\n常用操作一键触达 · ⌘K 唤起命令面板\n一键同步全部\n⌘R\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单\n功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\n水印管理\n17track\n营销活动\n本周 GMV\n¥[redacted]\n本周利润\n¥[redacted]\n本周订单\n119\n退货率\n0.0%\n每 5 分钟自动同步 · 上次\n[redacted-time]",
+    "menu": [
+      {
+        "text": "仪表盘",
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "rect": {
+          "x": 12,
+          "y": 60,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.95)",
+          "background": "rgba(0, 0, 0, 0.04)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-item ant-menu-item-selected ant-menu-item-only-child ant-pro-base-menu-inline-menu-item"
+      },
+      {
+        "text": "商品",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 104,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      },
+      {
+        "text": "选品",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 148,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      },
+      {
+        "text": "AI 工具\n推荐",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 192,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      },
+      {
+        "text": "促销",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 236,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      },
+      {
+        "text": "订单",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 280,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      },
+      {
+        "text": "工具",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 324,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      },
+      {
+        "text": "消息",
+        "href": null,
+        "rect": {
+          "x": 12,
+          "y": 368,
+          "w": 191,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.65)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "6px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "ant-menu-submenu-title"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "全部同步\n⌘R",
+        "rect": {
+          "x": 1049,
+          "y": 112,
+          "w": [redacted],
+          "h": 32,
+          "color": "rgb(60, 66, 87)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-btn",
+        "disabled": false
+      },
+      {
+        "text": "今日订单\n3\n[redacted]%\nvs 昨日",
+        "rect": {
+          "x": 280,
+          "y": 186,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "今日 GMV\n¥[redacted]\n[redacted]%\nvs 昨日",
+        "rect": {
+          "x": 724,
+          "y": 186,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "待打包\n35\n立即处理 →",
+        "rect": {
+          "x": 280,
+          "y": 302,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "待发货\n47\n合计待处理 [redacted]",
+        "rect": {
+          "x": 724,
+          "y": 302,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "在售商品\n54个\n多店聚合",
+        "rect": {
+          "x": 280,
+          "y": 434,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "库存预警\n[redacted]SKU\n[redacted] 个断货 · 立即补货 →",
+        "rect": {
+          "x": 724,
+          "y": 434,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "今日退货\n0\n退货率 0.0%",
+        "rect": {
+          "x": 280,
+          "y": 551,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "7 日利润\n¥[redacted]\n本周累计",
+        "rect": {
+          "x": 724,
+          "y": 551,
+          "w": 443,
+          "h": 115,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-kpi",
+        "disabled": false
+      },
+      {
+        "text": "缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU",
+        "rect": {
+          "x": 280,
+          "y": 740,
+          "w": 887,
+          "h": 68,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-alert-row",
+        "disabled": false
+      },
+      {
+        "text": "低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU",
+        "rect": {
+          "x": 280,
+          "y": 808,
+          "w": 887,
+          "h": 67,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-alert-row",
+        "disabled": false
+      },
+      {
+        "text": "一键同步全部\n⌘R",
+        "rect": {
+          "x": 298,
+          "y": 1191,
+          "w": 166,
+          "h": 36,
+          "color": "rgb(255, 255, 255)",
+          "background": "rgb(26, 31, 54)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn sd-primary",
+        "disabled": false
+      },
+      {
+        "text": "批量改价",
+        "rect": {
+          "x": 471,
+          "y": 1191,
+          "w": 103,
+          "h": 36,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn",
+        "disabled": false
+      },
+      {
+        "text": "AI 大模型改图",
+        "rect": {
+          "x": 583,
+          "y": 1191,
+          "w": 132,
+          "h": 36,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn",
+        "disabled": false
+      },
+      {
+        "text": "1688 采集",
+        "rect": {
+          "x": 723,
+          "y": 1191,
+          "w": 109,
+          "h": 36,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn",
+        "disabled": false
+      },
+      {
+        "text": "群发消息",
+        "rect": {
+          "x": 840,
+          "y": 1191,
+          "w": 103,
+          "h": 36,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn",
+        "disabled": false
+      },
+      {
+        "text": "批量上架",
+        "rect": {
+          "x": 952,
+          "y": 1191,
+          "w": 103,
+          "h": 36,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn",
+        "disabled": false
+      },
+      {
+        "text": "打印发货单",
+        "rect": {
+          "x": 298,
+          "y": 1235,
+          "w": 117,
+          "h": 36,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "6px",
+          "fontSize": "13px",
+          "fontWeight": "500"
+        },
+        "className": "sd-qa-btn",
+        "disabled": false
+      },
+      {
+        "text": "",
+        "rect": {
+          "x": 456,
+          "y": 1455,
+          "w": 44,
+          "h": 44,
+          "color": "rgb(0, 0, 0)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "0px",
+          "fontSize": "13.3333px",
+          "fontWeight": "400"
+        },
+        "className": "",
+        "disabled": false
+      }
+    ],
+    "cards": [
+      {
+        "text": "待办与告警\n2\n2 项待处理\n配置规则\n缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU\n低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU",
+        "rect": {
+          "x": 279,
+          "y": 689,
+          "w": 888,
+          "h": 187,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "8px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-card"
+      },
+      {
+        "text": "待办与告警\n2\n2 项待处理\n配置规则",
+        "rect": {
+          "x": 280,
+          "y": 689,
+          "w": 887,
+          "h": 51,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-card-head"
+      },
+      {
+        "text": "业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 [redacted] 单\n待打包\n35\n[redacted]%\n待发货\n47\n[redacted]%\n已发货\n317\n[redacted]%\n已送达\n52\n[redacted]%\n已取消\n19\n[redacted]%\n订单趋势\n7 日\n30 日",
+        "rect": {
+          "x": 279,
+          "y": 892,
+          "w": 888,
+          "h": 228,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "8px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-card"
+      },
+      {
+        "text": "业务速览\n数据滞后 ≤ 15 分钟",
+        "rect": {
+          "x": 280,
+          "y": 893,
+          "w": 887,
+          "h": 51,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-card-head"
+      },
+      {
+        "text": "一键同步全部\n⌘R\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单",
+        "rect": {
+          "x": 279,
+          "y": 1176,
+          "w": 888,
+          "h": 109,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "8px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-card"
+      },
+      {
+        "text": "采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 279,
+          "y": 1350,
+          "w": 888,
+          "h": 216,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "8px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-card"
+      },
+      {
+        "text": "采集箱",
+        "rect": {
+          "x": 280,
+          "y": 1351,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "类目分析",
+        "rect": {
+          "x": 502,
+          "y": 1351,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "榜单选品",
+        "rect": {
+          "x": 724,
+          "y": 1351,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "利润趋势",
+        "rect": {
+          "x": 946,
+          "y": 1351,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "AI 大模型改图",
+        "rect": {
+          "x": 280,
+          "y": 1458,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "水印管理",
+        "rect": {
+          "x": 502,
+          "y": 1458,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "17track",
+        "rect": {
+          "x": 724,
+          "y": 1458,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      },
+      {
+        "text": "营销活动",
+        "rect": {
+          "x": 946,
+          "y": 1458,
+          "w": 221,
+          "h": 107,
+          "color": "rgb(26, 31, 54)",
+          "background": "rgb(255, 255, 255)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": "sd-feat-card"
+      }
+    ],
+    "links": [
+      {
+        "text": "仪表盘",
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "rect": {
+          "x": 28,
+          "y": 60,
+          "w": 159,
+          "h": 40,
+          "color": "rgba(0, 0, 0, 0.95)",
+          "background": "rgba(0, 0, 0, 0)",
+          "radius": "0px",
+          "fontSize": "14px",
+          "fontWeight": "400"
+        },
+        "className": ""
+      }
+    ],
+    "resources": [
+      "https://static.jizhangerp.com/_next/static/media/bd9b9909c3a641ff-s.p.woff2",
+      "https://static.jizhangerp.com/_next/static/media/e4af272ccee01ff0-s.p.woff2",
+      "https://static.jizhangerp.com/_next/static/css/0d232512de4165fc.css",
+      "https://static.jizhangerp.com/_next/static/chunks/webpack-85d43d0ca00260ee.js",
+      "https://static.jizhangerp.com/_next/static/chunks/main-app-f3a237f04c8566f8.js",
+      "https://static.jizhangerp.com/_next/static/chunks/4bd1b696-ca3810c8560d1704.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2619-a8f77c1041b3567d.js",
+      "https://static.jizhangerp.com/_next/static/chunks/3794-1454259097c417d1.js",
+      "https://static.jizhangerp.com/_next/static/chunks/8202-47aeb5c341e3589b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/9185-2e5259fad67d756a.js",
+      "https://static.jizhangerp.com/_next/static/chunks/8536-39257fe285a7aa95.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5863-ee198e4cdf70b28b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/1866-207fa842f06d6b47.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5004-137665bd14bf24fc.js",
+      "https://static.jizhangerp.com/_next/static/chunks/3582-ef22136c738894ec.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5387-1fa44348dd0c6c18.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2590-5e013f7f37650eca.js",
+      "https://static.jizhangerp.com/_next/static/chunks/7111-c13b6f9ff9ff9c5d.js",
+      "https://static.jizhangerp.com/_next/static/chunks/9416-56bf8a39a92ba9ed.js",
+      "https://static.jizhangerp.com/_next/static/chunks/188-a455e20e1e443d1c.js",
+      "https://static.jizhangerp.com/_next/static/chunks/1141-f7cfb7ecfdd945b9.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5049-4e594b24b044ae82.js",
+      "https://static.jizhangerp.com/_next/static/chunks/6649-cd7d309b1177d4c1.js",
+      "https://static.jizhangerp.com/_next/static/chunks/8603-92974a20e7e2d040.js",
+      "https://static.jizhangerp.com/_next/static/chunks/7118-2ca6a0ff97eb1da8.js",
+      "https://static.jizhangerp.com/_next/static/chunks/7883-581bf969ab15e095.js",
+      "https://static.jizhangerp.com/_next/static/chunks/7501-86b912f173dca37c.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2339-64871442ad182967.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5780-f085d90ad4d4a03b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/4855-1410d55532f9b779.js",
+      "https://static.jizhangerp.com/_next/static/chunks/9891-c270f6809cb63638.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5380-ec95b3944ce920a6.js",
+      "https://static.jizhangerp.com/_next/static/chunks/430-2c5ccd4dfd29ea45.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2722-f2f56aae4e9079bf.js",
+      "https://static.jizhangerp.com/_next/static/chunks/5489-2d554c6342c450c1.js",
+      "https://static.jizhangerp.com/_next/static/chunks/7828-874e62ef5f54b7b4.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2979-e85258e00626f73e.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2731-80dc75f04d6975cc.js",
+      "https://static.jizhangerp.com/_next/static/chunks/app/ozon/layout-d58c34ff868d98d2.js",
+      "https://static.jizhangerp.com/_next/static/chunks/9130-0749da8588f23c16.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2356-97b17ce826819b5b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/108-4ac6850d82f76a59.js",
+      "https://static.jizhangerp.com/_next/static/chunks/8085-44077feb69a64db5.js",
+      "https://static.jizhangerp.com/_next/static/chunks/4984-d7cf40d2cc2a8827.js",
+      "https://static.jizhangerp.com/_next/static/chunks/2630-aa5337dbaf737080.js",
+      "https://static.jizhangerp.com/_next/static/chunks/app/global-error-d3081e58105d3037.js",
+      "https://static.jizhangerp.com/_next/static/chunks/app/layout-0f0284a8f708cdb9.js",
+      "https://static.jizhangerp.com/_next/static/chunks/app/error-164f8c09bddc803b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/app/ozon/dashboard/page-375a0e0803c7229b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/3767.c212804698ab8185.js",
+      "https://jz-item-image-bucket.oss-cn-beijing.aliyuncs.com/images/2026-05-16/1778920130866_167440059dc78c4e.png",
+      "https://static.jizhangerp.com/_next/static/media/21350d82a1f187e9-s.woff2",
+      "https://static.jizhangerp.com/_next/static/chunks/36c7393a-0c7c9ceee89f75ab.js",
+      "https://static.jizhangerp.com/_next/static/chunks/ad2866b8-21acb30511706b53.js",
+      "https://static.jizhangerp.com/_next/static/chunks/e37a0b60-e84d2f30fea16ea4.js",
+      "https://static.jizhangerp.com/_next/static/chunks/8074-11755b50f5e3202b.js",
+      "https://static.jizhangerp.com/_next/static/chunks/344.d4f2dee7d4387cb0.js"
+    ]
+  },
+  "capturedAt": "2026-07-04T02:04:25.047Z"
+}

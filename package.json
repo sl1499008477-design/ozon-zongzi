@@ -1,0 +1,15 @@
+{
+  "name": "qh-ozon-local-clone",
+  "version": "0.13.46.1-local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "server": "node server/index.mjs",
+    "app": "pnpm --dir app dev -- --port 5173",
+    "build": "pnpm --dir app build",
+    "compat-proxy": "node scripts/frontend-compat-proxy.mjs",
+    "package-extension": "node scripts/package-extension.mjs",
+    "verify": "node scripts/verify.mjs"
+  }
+}

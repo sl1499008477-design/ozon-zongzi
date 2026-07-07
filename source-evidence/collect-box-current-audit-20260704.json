@@ -1,0 +1,243 @@
+{
+  "createdAt": "2026-07-04T09:52:04.454Z",
+  "label": "source collect box current",
+  "url": "https://qh.jizhangerp.com/ozon/products/collect/?qa=1783158719310",
+  "info": {
+    "url": "https://qh.jizhangerp.com/ozon/products/collect/?qa=1783158719310",
+    "title": "QH",
+    "w": 1580,
+    "h": 754,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1580,
+    "ph": 754
+  },
+  "dom": {
+    "title": "QH",
+    "path": "/ozon/products/collect/",
+    "bodySample": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 ****** 添加采集商品 粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加 添加采集 自动识别价格 / 重量 / 卖家 安装插件后一键采集 全部 0 待处理 0 已上架 0 失败 0 按来源筛选 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 暂无采集商品，请在上方添加",
+    "headings": [
+      {
+        "text": "QH",
+        "cls": "",
+        "rect": {
+          "x": 52,
+          "y": 12,
+          "w": 27,
+          "h": 32
+        }
+      }
+    ],
+    "buttons": [
+      {
+        "tag": "a",
+        "text": "仪表盘",
+        "cls": "",
+        "rect": {
+          "x": 28,
+          "y": 60,
+          "w": 159,
+          "h": 40
+        }
+      },
+      {
+        "tag": "a",
+        "text": "商品列表",
+        "cls": "",
+        "rect": {
+          "x": 54,
+          "y": 152,
+          "w": 133,
+          "h": 40
+        }
+      },
+      {
+        "tag": "a",
+        "text": "采集箱",
+        "cls": "",
+        "rect": {
+          "x": 54,
+          "y": 196,
+          "w": 133,
+          "h": 40
+        }
+      },
+      {
+        "tag": "a",
+        "text": "上架记录",
+        "cls": "",
+        "rect": {
+          "x": 54,
+          "y": 240,
+          "w": 133,
+          "h": 40
+        }
+      },
+      {
+        "tag": "a",
+        "text": "库存管理",
+        "cls": "",
+        "rect": {
+          "x": 54,
+          "y": 284,
+          "w": 133,
+          "h": 40
+        }
+      },
+      {
+        "tag": "a",
+        "text": "QH",
+        "cls": "",
+        "rect": {
+          "x": 16,
+          "y": 12,
+          "w": 63,
+          "h": 32
+        }
+      },
+      {
+        "tag": "button",
+        "text": "添加采集",
+        "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+        "rect": {
+          "x": 1375,
+          "y": 183,
+          "w": 121,
+          "h": 40
+        }
+      },
+      {
+        "tag": "button",
+        "text": "全部 0",
+        "cls": "",
+        "rect": {
+          "x": 279,
+          "y": 285,
+          "w": 62,
+          "h": 30
+        }
+      },
+      {
+        "tag": "button",
+        "text": "待处理 0",
+        "cls": "",
+        "rect": {
+          "x": 349,
+          "y": 285,
+          "w": 87,
+          "h": 30
+        }
+      },
+      {
+        "tag": "button",
+        "text": "已上架 0",
+        "cls": "",
+        "rect": {
+          "x": 444,
+          "y": 285,
+          "w": 87,
+          "h": 30
+        }
+      },
+      {
+        "tag": "button",
+        "text": "失败 0",
+        "cls": "",
+        "rect": {
+          "x": 539,
+          "y": 285,
+          "w": 74,
+          "h": 30
+        }
+      }
+    ],
+    "inputs": [
+      {
+        "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+        "value": "",
+        "rect": {
+          "x": 331,
+          "y": 191,
+          "w": 1006,
+          "h": 24
+        }
+      },
+      {
+        "placeholder": "",
+        "value": "",
+        "rect": {
+          "x": 1384,
+          "y": 289,
+          "w": 107,
+          "h": 22
+        }
+      },
+      {
+        "placeholder": "",
+        "value": "on",
+        "rect": {
+          "x": 287,
+          "y": 344,
+          "w": 16,
+          "h": 16
+        }
+      },
+      {
+        "placeholder": "",
+        "value": "on",
+        "rect": {
+          "x": 287,
+          "y": 379,
+          "w": 16,
+          "h": 16
+        }
+      }
+    ],
+    "chips": [
+      {
+        "text": "自动识别价格 / 重量 / 卖家",
+        "cls": "ant-tag ant-tag-blue",
+        "rect": {
+          "x": 300,
+          "y": 235,
+          "w": 178,
+          "h": 21
+        }
+      },
+      {
+        "text": "安装插件后一键采集",
+        "cls": "ant-tag ant-tag-orange",
+        "rect": {
+          "x": 485,
+          "y": 235,
+          "w": 144,
+          "h": 21
+        }
+      }
+    ],
+    "tableHeaders": [
+      "商品信息",
+      "采集价格",
+      "卖家 / 来源",
+      "品牌",
+      "下单链接",
+      "采集时间",
+      "状态",
+      "操作",
+      "商品信息",
+      "采集价格",
+      "卖家 / 来源",
+      "品牌",
+      "下单链接",
+      "采集时间",
+      "状态",
+      "操作"
+    ],
+    "tableEmpty": true,
+    "masked": true
+  },
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-collect-box-current-20260704.png",
+  "screenshotOk": true,
+  "screenshotBytes": 115920,
+  "note": "Long numeric/account/email values were masked. Non-empty table body cells are replaced before screenshot to avoid persisting business row data."
+}

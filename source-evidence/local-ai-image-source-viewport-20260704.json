@@ -1,0 +1,47 @@
+{
+  "createdAt": "2026-07-04T09:50:22.884Z",
+  "url": "http://127.0.0.1:5173/ozon/ai-image/?viewport=source&qa=1783158621326",
+  "info": {
+    "url": "http://127.0.0.1:5173/ozon/ai-image/?viewport=source&qa=1783158621326",
+    "title": "QH",
+    "w": 1896,
+    "h": 904,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1896,
+    "ph": 904
+  },
+  "h2Rect": {
+    "x": 998,
+    "y": 268,
+    "w": 115,
+    "h": 27
+  },
+  "iconRect": {
+    "x": 1035,
+    "y": 200,
+    "w": 42,
+    "h": 42
+  },
+  "pRect": {
+    "x": 895,
+    "y": 309,
+    "w": 321,
+    "h": 26
+  },
+  "gatedRect": {
+    "x": 240,
+    "y": 80,
+    "w": 1632,
+    "h": 768
+  },
+  "sidebarRect": null,
+  "topbarRect": null,
+  "hasCard": false,
+  "aiSubmenuTexts": [],
+  "masked": true,
+  "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 ****** 会员权益 免费会员 极 极点 0 当前用户 已登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 AI 商品套图 该功能正在灰度内测中，尚未对当前账号开放。",
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-ai-image-source-viewport-20260704.png",
+  "screenshotOk": true,
+  "screenshotBytes": 57299
+}

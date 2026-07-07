@@ -1,0 +1,34 @@
+{
+  "route": "/ozon/postings/profit-trend/",
+  "checkedAt": "2026-07-04T19:17:40+08:00",
+  "localCacheModel": {
+    "postingsCacheCount": 462,
+    "rangeDays": 30,
+    "nonZeroDays": 30,
+    "rangeOrders": 455,
+    "hasPositiveOrderAmount": true,
+    "amountsPersisted": false
+  },
+  "frontendChecks": {
+    "usesLocalPostingsCache": true,
+    "model": "profitTrendModel",
+    "trendBars": 30,
+    "hasOutDaySummary": true,
+    "hasRealOrderCount": true,
+    "keepsUnknownProfitAsPlaceholder": true,
+    "columns": ["日期", "订单数", "订单金额", "OZON 佣金", "采购成本", "利润", "毛利率", "客单价"]
+  },
+  "egoBrowserVerification": {
+    "url": "/ozon/postings/profit-trend/",
+    "title": "QH",
+    "hasProfitTitle": true,
+    "hasCostPlaceholder": true,
+    "hasNoEmptyOnlyState": true
+  },
+  "validation": {
+    "build": "passed with existing Vite large chunk warning",
+    "diffCheck": "passed",
+    "secretScanOutsideServerData": "no matches"
+  },
+  "persistedDataBoundary": "Evidence stores route names, counts, booleans, and column names only. It does not store order numbers, product names, customer data, raw amounts, API keys, or Client ID."
+}

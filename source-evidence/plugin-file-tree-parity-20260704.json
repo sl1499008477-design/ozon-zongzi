@@ -1,0 +1,102 @@
+{
+  "generatedAt": "2026-07-04T07:18:00.000Z",
+  "sourcePath": "/Users/songliang/Desktop/QH 0.13.42.1",
+  "localPath": "/Users/songliang/Documents/sonli ozon3.0/extension",
+  "sourceFileCount": 84,
+  "localFileCount": 84,
+  "missingFromLocal": [],
+  "extraInLocal": [],
+  "unchangedFileCount": 69,
+  "changedFileCount": 15,
+  "differencePolicy": "All changed files were reviewed as local-clone adaptations: production API/update endpoints and old localhost:3000 routes are replaced by the local 3001 API and 5173 frontend; sync acquire now passes type TTL; web logout bridge comments/signals describe local dashboard flow.",
+  "changedFiles": [
+    {
+      "file": "background/service-worker.js",
+      "reason": "local backend/frontend routing, local-only backend detection, local dashboard logout redirect, local packaged logo URL"
+    },
+    {
+      "file": "background/sync/backend-client.js",
+      "reason": "comment updated from production/local mixed backend to local backend wrapper"
+    },
+    {
+      "file": "background/sync/sync-engine.js",
+      "reason": "initial lease acquire passes the same type-specific TTL used by heartbeat"
+    },
+    {
+      "file": "content/alibaba-1688.js",
+      "reason": "fallback openFrontend target points to local 5173 clone"
+    },
+    {
+      "file": "content/jizhangerp-bridge.js",
+      "reason": "comment updated to describe local 5173 frontend bridge"
+    },
+    {
+      "file": "content/jzc-calc.js",
+      "reason": "extension update/install URLs point to local 3001/5173 clone"
+    },
+    {
+      "file": "content/ozon-data-panel.js",
+      "reason": "collect edit fallback opens local 5173 clone"
+    },
+    {
+      "file": "content/ozon-premium-hook.js",
+      "reason": "brand API/web hosts point to local 3001/5173 clone"
+    },
+    {
+      "file": "content/ozon-product.js",
+      "reason": "ERP and collect edit links open local 5173 clone"
+    },
+    {
+      "file": "content/ozon-search.js",
+      "reason": "collect edit fallback opens local 5173 clone"
+    },
+    {
+      "file": "content/shared-utils.js",
+      "reason": "brand API/web hosts point to local clone and logo uses packaged icon"
+    },
+    {
+      "file": "content/sync-auth.js",
+      "reason": "logout bridge comment documents local dashboard flow"
+    },
+    {
+      "file": "lib/cn-source-panel.js",
+      "reason": "fallback openFrontend target points to local 5173 clone"
+    },
+    {
+      "file": "manifest.json",
+      "reason": "local 5173/3001 permissions replace old localhost:3000 and production API/update URL"
+    },
+    {
+      "file": "popup/popup.js",
+      "reason": "popup login/update/install actions point to local dashboard/plugin pages"
+    }
+  ],
+  "iconHashes": {
+    "icons/icon16.png": {
+      "source": "207180c4fee0bf5ac67e0110c91a69798f4c2f5ba85224cc2bba46ef38ffee5f",
+      "local": "207180c4fee0bf5ac67e0110c91a69798f4c2f5ba85224cc2bba46ef38ffee5f",
+      "match": true
+    },
+    "icons/icon48.png": {
+      "source": "a5c736d186b06eb4ee4b0108cbf00bbf35f75137089bfa23419f12167dc06f84",
+      "local": "a5c736d186b06eb4ee4b0108cbf00bbf35f75137089bfa23419f12167dc06f84",
+      "match": true
+    },
+    "icons/icon128.png": {
+      "source": "b6c8d0544832fd26f3f0db52b89b6e846f417a1d6ee2eef20376c37ca9e60267",
+      "local": "b6c8d0544832fd26f3f0db52b89b6e846f417a1d6ee2eef20376c37ca9e60267",
+      "match": true
+    }
+  },
+  "zipPackageScan": {
+    "path": "app/public/qh-extension-0.13.42.1.zip",
+    "fileCount": 84,
+    "version": "0.13.42.1",
+    "updateUrl": null,
+    "hasLocalApiPermission": true,
+    "hasLocalFrontend": true,
+    "hasProductionApiString": false,
+    "hasOldLocalhost3000String": false,
+    "serviceWorkerUsesPackagedLogo": true
+  }
+}

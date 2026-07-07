@@ -1,0 +1,22 @@
+{
+  "capturedAt": "2026-07-04T06:27:05.860Z",
+  "taskSpaceId": 37,
+  "results": [
+    {
+      "kind": "source",
+      "url": "https://qh.jizhangerp.com/ozon/products/favorites/",
+      "title": "QH",
+      "path": "/ozon/products/favorites/",
+      "has404": true,
+      "text": "404 This page could not be found."
+    },
+    {
+      "kind": "local-before-restart",
+      "url": "http://127.0.0.1:5173/ozon/products/favorites/",
+      "title": "QH",
+      "path": "/ozon/products/favorites/",
+      "has404": true,
+      "note": "The local dev server was still serving the pre-patch bundle during this probe; the source route is confirmed as 404."
+    }
+  ]
+}

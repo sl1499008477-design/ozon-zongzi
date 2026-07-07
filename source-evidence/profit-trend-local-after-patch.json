@@ -1,0 +1,807 @@
+{
+  "capturedAt": "2026-07-04T04:30:27.247Z",
+  "taskSpaceId": 20,
+  "note": "Local-only post-patch verification. No source business values, no sync/export/save actions.",
+  "profitStates": [
+    {
+      "label": "initial",
+      "data": {
+        "active": [
+          "30 天",
+          "利润视图"
+        ],
+        "date": "2026-06-05 至 2026-07-04",
+        "outDays": "0 个出单日 · 30 个空白日",
+        "detailDays": "日明细 · 共 30 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "active",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "active",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    },
+    {
+      "label": "7 天",
+      "data": {
+        "active": [
+          "7 天",
+          "利润视图"
+        ],
+        "date": "2026-06-28 至 2026-07-04",
+        "outDays": "0 个出单日 · 7 个空白日",
+        "detailDays": "日明细 · 共 7 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "active",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "active",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    },
+    {
+      "label": "90 天",
+      "data": {
+        "active": [
+          "90 天",
+          "利润视图"
+        ],
+        "date": "2026-04-06 至 2026-07-04",
+        "outDays": "0 个出单日 · 90 个空白日",
+        "detailDays": "日明细 · 共 90 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "active",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "active",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    },
+    {
+      "label": "成本拆解",
+      "data": {
+        "active": [
+          "90 天",
+          "成本拆解"
+        ],
+        "date": "2026-04-06 至 2026-07-04",
+        "outDays": "0 个出单日 · 90 个空白日",
+        "detailDays": "日明细 · 共 90 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "active",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "active",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    },
+    {
+      "label": "订单量",
+      "data": {
+        "active": [
+          "90 天",
+          "订单量"
+        ],
+        "date": "2026-04-06 至 2026-07-04",
+        "outDays": "0 个出单日 · 90 个空白日",
+        "detailDays": "日明细 · 共 90 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "active",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "active",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    },
+    {
+      "label": "利润视图",
+      "data": {
+        "active": [
+          "90 天",
+          "利润视图"
+        ],
+        "date": "2026-04-06 至 2026-07-04",
+        "outDays": "0 个出单日 · 90 个空白日",
+        "detailDays": "日明细 · 共 90 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "active",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "active",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    },
+    {
+      "label": "30 天",
+      "data": {
+        "active": [
+          "30 天",
+          "利润视图"
+        ],
+        "date": "2026-06-05 至 2026-07-04",
+        "outDays": "0 个出单日 · 30 个空白日",
+        "detailDays": "日明细 · 共 30 天",
+        "hasGlobalHead": false,
+        "hasTrendTitle": true,
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "buttons": [
+          {
+            "text": "7 天",
+            "className": "",
+            "x": 1798,
+            "y": 114,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "30 天",
+            "className": "active",
+            "x": 1853,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "90 天",
+            "className": "",
+            "x": 1910,
+            "y": 114,
+            "w": 56,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "180 天",
+            "className": "",
+            "x": 1967,
+            "y": 114,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "利润视图",
+            "className": "active",
+            "x": 1892,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "成本拆解",
+            "className": "",
+            "x": 1983,
+            "y": 327,
+            "w": 75,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          },
+          {
+            "text": "订单量",
+            "className": "",
+            "x": 2074,
+            "y": 327,
+            "w": 62,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500"
+          }
+        ]
+      }
+    }
+  ],
+  "product": {
+    "path": "/ozon/products/list/",
+    "hasGlobalHead": false,
+    "buttons": [
+      "帮助中心使用文档",
+      "公告公告中心",
+      "浏览器插件插件下载",
+      "当前门店去绑定门店",
+      "会员权益免费会员",
+      "同步全部",
+      "⌘K"
+    ],
+    "inputs": [
+      {
+        "placeholder": "搜 SKU / 货号 / 标题…",
+        "type": "search"
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox"
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox"
+      }
+    ],
+    "headings": [
+      "商品列表"
+    ]
+  }
+}

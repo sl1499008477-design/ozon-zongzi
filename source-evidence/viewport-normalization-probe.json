@@ -1,0 +1,150 @@
+{
+  "taskSpaceId": 15,
+  "capturedAt": "2026-07-04T03:45:10.992Z",
+  "source": {
+    "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+    "before": {
+      "label": "before",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "w": 1580,
+        "h": 754,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1561,
+        "ph": 1296
+      },
+      "dom": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "innerWidth": 1580,
+        "innerHeight": 754,
+        "outerWidth": 1280,
+        "outerHeight": 706,
+        "devicePixelRatio": 1.600000023841858,
+        "visualViewport": {
+          "width": 1561.25,
+          "height": 753.75,
+          "scale": 1
+        },
+        "screen": {
+          "width": 1280,
+          "height": 800,
+          "availWidth": 1280,
+          "availHeight": 706
+        }
+      }
+    },
+    "windowResult": {
+      "error": "No web contents in the target"
+    },
+    "emu": {},
+    "after": {
+      "label": "after",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "w": 1600,
+        "h": 900,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1581,
+        "ph": 1296
+      },
+      "dom": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "innerWidth": 1600,
+        "innerHeight": 900,
+        "outerWidth": 1280,
+        "outerHeight": 706,
+        "devicePixelRatio": 0.800000011920929,
+        "visualViewport": {
+          "width": 1581.25,
+          "height": 900,
+          "scale": 1
+        },
+        "screen": {
+          "width": 1280,
+          "height": 720,
+          "availWidth": 1280,
+          "availHeight": 720
+        }
+      }
+    }
+  },
+  "local": {
+    "url": "http://127.0.0.1:5173/ozon/dashboard/",
+    "before": {
+      "label": "before",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/",
+        "title": "仪表盘 - QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1873,
+        "ph": 1457
+      },
+      "dom": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/",
+        "title": "仪表盘 - QH",
+        "innerWidth": 1896,
+        "innerHeight": 904,
+        "outerWidth": 1280,
+        "outerHeight": 706,
+        "devicePixelRatio": 1.3333333730697632,
+        "visualViewport": {
+          "width": 1873.5,
+          "height": 904.5,
+          "scale": 1
+        },
+        "screen": {
+          "width": 1280,
+          "height": 800,
+          "availWidth": 1280,
+          "availHeight": 706
+        }
+      }
+    },
+    "windowResult": {
+      "error": "No web contents in the target"
+    },
+    "emu": {},
+    "after": {
+      "label": "after",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/",
+        "title": "仪表盘 - QH",
+        "w": 1920,
+        "h": 1080,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1897,
+        "ph": 1457
+      },
+      "dom": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/",
+        "title": "仪表盘 - QH",
+        "innerWidth": 1920,
+        "innerHeight": 1080,
+        "outerWidth": 1280,
+        "outerHeight": 706,
+        "devicePixelRatio": 0.6666666865348816,
+        "visualViewport": {
+          "width": 1897.5,
+          "height": 1080,
+          "scale": 1
+        },
+        "screen": {
+          "width": 1280,
+          "height": 720,
+          "availWidth": 1280,
+          "availHeight": 720
+        }
+      }
+    }
+  }
+}

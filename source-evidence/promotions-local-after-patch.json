@@ -1,0 +1,487 @@
+{
+  "capturedAt": "2026-07-04T04:40:37.573Z",
+  "taskSpaceId": 22,
+  "note": "Local post-patch promotion verification. No sync/refresh/query actions clicked.",
+  "pages": [
+    {
+      "path": "/ozon/promotions/prices/",
+      "action": "initial",
+      "labels": [
+        "搜索"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": false,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "promoButtons": [
+        {
+          "text": "价格",
+          "rect": {
+            "x": 261,
+            "y": 201,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(22, 119, 255)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": "active"
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 321,
+            "y": 201,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": ""
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 382,
+            "y": 201,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": ""
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 471,
+            "y": 201,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": ""
+        }
+      ],
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "价格",
+        "折扣",
+        "选择商品",
+        "改价草稿",
+        "重 置",
+        "查 询",
+        "刷新"
+      ]
+    },
+    {
+      "path": "/ozon/promotions/prices/",
+      "action": "折扣",
+      "labels": [
+        "搜索"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": false,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "promoButtons": [
+        {
+          "text": "价格",
+          "rect": {
+            "x": 261,
+            "y": 201,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": ""
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 321,
+            "y": 201,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(22, 119, 255)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": "active"
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 382,
+            "y": 201,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": ""
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 471,
+            "y": 201,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": ""
+          },
+          "className": ""
+        }
+      ],
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "价格",
+        "折扣",
+        "选择商品",
+        "改价草稿",
+        "重 置",
+        "查 询",
+        "刷新"
+      ]
+    },
+    {
+      "path": "/ozon/promotions/campaigns/",
+      "action": "initial",
+      "labels": [],
+      "placeholders": [
+        "搜索活动名称 / ID"
+      ],
+      "tableHeaders": [
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作"
+      ],
+      "emptyTexts": [
+        "加载中…"
+      ],
+      "hasEmptyNode": true,
+      "hasSelectAllCheckbox": false,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "promoButtons": [
+        {
+          "text": "全部0",
+          "rect": {
+            "x": 1111,
+            "y": 349,
+            "w": 61,
+            "h": 30,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(22, 119, 255)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "参与中0",
+          "rect": {
+            "x": 1180,
+            "y": 349,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "rect": {
+            "x": 1262,
+            "y": 349,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "rect": {
+            "x": 1343,
+            "y": 349,
+            "w": 86,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": ""
+        }
+      ],
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "全部0",
+        "参与中0",
+        "可参与0",
+        "即将结束0",
+        "刷新"
+      ]
+    },
+    {
+      "path": "/ozon/promotions/campaigns/",
+      "action": "参与中",
+      "labels": [],
+      "placeholders": [
+        "搜索活动名称 / ID"
+      ],
+      "tableHeaders": [
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作"
+      ],
+      "emptyTexts": [
+        "加载中…"
+      ],
+      "hasEmptyNode": true,
+      "hasSelectAllCheckbox": false,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "promoButtons": [
+        {
+          "text": "全部0",
+          "rect": {
+            "x": 1111,
+            "y": 349,
+            "w": 61,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "rect": {
+            "x": 1180,
+            "y": 349,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(22, 119, 255)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "可参与0",
+          "rect": {
+            "x": 1262,
+            "y": 349,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "rect": {
+            "x": 1343,
+            "y": 349,
+            "w": 86,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": ""
+        }
+      ],
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "全部0",
+        "参与中0",
+        "可参与0",
+        "即将结束0",
+        "刷新"
+      ]
+    },
+    {
+      "path": "/ozon/promotions/auto-delete/",
+      "action": "initial",
+      "labels": [
+        "活动名称",
+        "类型请选择",
+        "状态请选择"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "tableHeaders": [
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": false,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "promoButtons": [],
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "重 置",
+        "查 询",
+        "从 Ozon 同步",
+        "刷新"
+      ]
+    },
+    {
+      "path": "/ozon/promotions/auto-delete/",
+      "action": "展开",
+      "labels": [
+        "活动名称",
+        "类型请选择",
+        "状态请选择"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "tableHeaders": [
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": false,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "promoButtons": [],
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "重 置",
+        "查 询",
+        "从 Ozon 同步",
+        "刷新"
+      ]
+    }
+  ]
+}

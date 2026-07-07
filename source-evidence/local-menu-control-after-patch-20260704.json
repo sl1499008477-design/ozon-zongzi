@@ -1,0 +1,1321 @@
+{
+  "capturedAt": "2026-07-04T05:51:19.848Z",
+  "taskSpaceId": 32,
+  "routes": [
+    "/ozon/selection/top-list/",
+    "/ozon/selection/china/",
+    "/ozon/tools/ai-poster-records/",
+    "/ozon/postings/list/",
+    "/ozon/postings/review-request/",
+    "/ozon/postings/pickup-reminder/",
+    "/ozon/tools/watermark/"
+  ],
+  "comparisons": [
+    {
+      "route": "/ozon/selection/top-list/",
+      "sourceTokenCount": 35,
+      "localTokenCount": 66,
+      "missingCount": 6,
+      "missing": [
+        "全部",
+        "月销量",
+        "月销售额 ₽",
+        "平均价 ₽",
+        "月销售额环比 %",
+        "发货模式"
+      ],
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "sourceTokenCount": 32,
+      "localTokenCount": 63,
+      "missingCount": 6,
+      "missing": [
+        "全部",
+        "月销量",
+        "月销售额 ₽",
+        "平均价 ₽",
+        "月销售额环比 %",
+        "发货模式"
+      ],
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "sourceTokenCount": 11,
+      "localTokenCount": 31,
+      "missingCount": 1,
+      "missing": [
+        "全部状态"
+      ],
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "sourceTokenCount": 22,
+      "localTokenCount": 43,
+      "missingCount": 2,
+      "missing": [
+        "当前店铺",
+        "货件编号"
+      ],
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "sourceTokenCount": 26,
+      "localTokenCount": 36,
+      "missingCount": 1,
+      "missing": [
+        "当前店铺"
+      ],
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "sourceTokenCount": 26,
+      "localTokenCount": 33,
+      "missingCount": 3,
+      "missing": [
+        "当前店铺",
+        "已到取件点",
+        "买家未取"
+      ],
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/tools/watermark/",
+      "sourceTokenCount": 6,
+      "localTokenCount": 14,
+      "missingCount": 1,
+      "missing": [
+        "预览与下载 请先选用模板"
+      ],
+      "localLogin": true
+    }
+  ],
+  "captures": [
+    {
+      "kind": "local",
+      "route": "/ozon/selection/top-list/",
+      "url": "http://127.0.0.1:5173/ozon/selection/top-list/?afterPatch=1783144270948",
+      "title": "QH",
+      "path": "/ozon/selection/top-list/",
+      "bodyHasLogin": true,
+      "tokenCount": 66,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "榜单选品"
+        },
+        {
+          "kind": "heading",
+          "text": "数据更新 —"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "热销商品"
+        },
+        {
+          "kind": "control",
+          "text": "热销新品"
+        },
+        {
+          "kind": "control",
+          "text": "潜力商品"
+        },
+        {
+          "kind": "control",
+          "text": "蓝海商品"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "高增长"
+        },
+        {
+          "kind": "control",
+          "text": "低价高销"
+        },
+        {
+          "kind": "control",
+          "text": "高加购"
+        },
+        {
+          "kind": "control",
+          "text": "蓝海量级"
+        },
+        {
+          "kind": "control",
+          "text": "任意"
+        },
+        {
+          "kind": "control",
+          "text": "FBO"
+        },
+        {
+          "kind": "control",
+          "text": "FBS"
+        },
+        {
+          "kind": "control",
+          "text": "RFBS"
+        },
+        {
+          "kind": "control",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "control",
+          "text": "批量加入草稿箱"
+        },
+        {
+          "kind": "control",
+          "text": "清空选择"
+        },
+        {
+          "kind": "control",
+          "text": "‹"
+        },
+        {
+          "kind": "control",
+          "text": "›"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "sku"
+        },
+        {
+          "kind": "placeholder",
+          "text": "逗号/空格/换行分隔"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最小"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最大"
+        },
+        {
+          "kind": "label",
+          "text": "7天"
+        },
+        {
+          "kind": "label",
+          "text": "0天"
+        },
+        {
+          "kind": "label",
+          "text": "金额单位 ₽ ¥"
+        },
+        {
+          "kind": "label",
+          "text": "分区 全部分区"
+        },
+        {
+          "kind": "label",
+          "text": "一级类目 全部"
+        },
+        {
+          "kind": "label",
+          "text": "商品名称"
+        },
+        {
+          "kind": "label",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "批量 SKUS"
+        },
+        {
+          "kind": "label",
+          "text": "月销量 ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额环比 % ~"
+        },
+        {
+          "kind": "label",
+          "text": "发货模式 任意 FBO FBS RFBS CB · 跨境"
+        },
+        {
+          "kind": "label",
+          "text": "任意"
+        },
+        {
+          "kind": "label",
+          "text": "FBO"
+        },
+        {
+          "kind": "label",
+          "text": "FBS"
+        },
+        {
+          "kind": "label",
+          "text": "RFBS"
+        },
+        {
+          "kind": "label",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销售额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "增长"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "未启用额外筛选"
+        },
+        {
+          "kind": "static",
+          "text": "已选 0"
+        },
+        {
+          "kind": "static",
+          "text": "暂无榜单数据"
+        },
+        {
+          "kind": "static",
+          "text": "共 0 条 · 第 1 / 1 页 ‹ 1 › 每页 0 条"
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/selection/china/",
+      "url": "http://127.0.0.1:5173/ozon/selection/china/?afterPatch=1783144272292",
+      "title": "QH",
+      "path": "/ozon/selection/china/",
+      "bodyHasLogin": true,
+      "tokenCount": 63,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "中国专区"
+        },
+        {
+          "kind": "heading",
+          "text": "数据更新 —"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "高增长"
+        },
+        {
+          "kind": "control",
+          "text": "低价高销"
+        },
+        {
+          "kind": "control",
+          "text": "高加购"
+        },
+        {
+          "kind": "control",
+          "text": "中国对标"
+        },
+        {
+          "kind": "control",
+          "text": "任意"
+        },
+        {
+          "kind": "control",
+          "text": "FBO"
+        },
+        {
+          "kind": "control",
+          "text": "FBS"
+        },
+        {
+          "kind": "control",
+          "text": "RFBS"
+        },
+        {
+          "kind": "control",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "control",
+          "text": "批量加入草稿箱"
+        },
+        {
+          "kind": "control",
+          "text": "清空选择"
+        },
+        {
+          "kind": "control",
+          "text": "‹"
+        },
+        {
+          "kind": "control",
+          "text": "›"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "sku"
+        },
+        {
+          "kind": "placeholder",
+          "text": "逗号/空格/换行分隔"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最小"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最大"
+        },
+        {
+          "kind": "label",
+          "text": "7天"
+        },
+        {
+          "kind": "label",
+          "text": "0天"
+        },
+        {
+          "kind": "label",
+          "text": "金额单位 ₽ ¥"
+        },
+        {
+          "kind": "label",
+          "text": "分区 全部分区"
+        },
+        {
+          "kind": "label",
+          "text": "含零销量商品 ⓘ"
+        },
+        {
+          "kind": "label",
+          "text": "一级类目 全部"
+        },
+        {
+          "kind": "label",
+          "text": "商品名称"
+        },
+        {
+          "kind": "label",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "批量 SKUS"
+        },
+        {
+          "kind": "label",
+          "text": "月销量 ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额环比 % ~"
+        },
+        {
+          "kind": "label",
+          "text": "发货模式 任意 FBO FBS RFBS CB · 跨境"
+        },
+        {
+          "kind": "label",
+          "text": "任意"
+        },
+        {
+          "kind": "label",
+          "text": "FBO"
+        },
+        {
+          "kind": "label",
+          "text": "FBS"
+        },
+        {
+          "kind": "label",
+          "text": "RFBS"
+        },
+        {
+          "kind": "label",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销售额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "增长"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "未启用额外筛选"
+        },
+        {
+          "kind": "static",
+          "text": "已选 0"
+        },
+        {
+          "kind": "static",
+          "text": "暂无榜单数据"
+        },
+        {
+          "kind": "static",
+          "text": "共 0 条 · 第 1 / 1 页 ‹ 1 › 每页 0 条"
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/tools/ai-poster-records/",
+      "url": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/?afterPatch=1783144273546",
+      "title": "QH",
+      "path": "/ozon/tools/ai-poster-records/",
+      "bodyHasLogin": true,
+      "tokenCount": 31,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "AI 改图神器"
+        },
+        {
+          "kind": "heading",
+          "text": "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        },
+        {
+          "kind": "heading",
+          "text": "上传图片或粘贴图片链接,无需绑定商品"
+        },
+        {
+          "kind": "heading",
+          "text": "收起"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "收起"
+        },
+        {
+          "kind": "control",
+          "text": "开始生成"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "placeholder",
+          "text": "每行一个图片链接,http(s)://... [url]"
+        },
+        {
+          "kind": "placeholder",
+          "text": "例:女士夏季短袖 T 恤"
+        },
+        {
+          "kind": "placeholder",
+          "text": "例:服饰 / 电子 / 家居"
+        },
+        {
+          "kind": "placeholder",
+          "text": "开始日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货号"
+        },
+        {
+          "kind": "label",
+          "text": "或粘贴图片链接"
+        },
+        {
+          "kind": "label",
+          "text": "商品名(可选)"
+        },
+        {
+          "kind": "label",
+          "text": "类目(可选)"
+        },
+        {
+          "kind": "tableHead",
+          "text": "原图"
+        },
+        {
+          "kind": "tableHead",
+          "text": "改图结果"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "创建时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "将提交 0 张,消耗 0 极点余额:未知"
+        },
+        {
+          "kind": "static",
+          "text": "暂无改图记录"
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/list/",
+      "url": "http://127.0.0.1:5173/ozon/postings/list/?afterPatch=1783144274907",
+      "title": "QH",
+      "path": "/ozon/postings/list/",
+      "bodyHasLogin": true,
+      "tokenCount": 43,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "订单"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新"
+        },
+        {
+          "kind": "heading",
+          "text": "拉取最新订单"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新进行中订单"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "拉取最新订单"
+        },
+        {
+          "kind": "control",
+          "text": "刷新进行中订单"
+        },
+        {
+          "kind": "control",
+          "text": "所有订单"
+        },
+        {
+          "kind": "control",
+          "text": "等待备货"
+        },
+        {
+          "kind": "control",
+          "text": "等待发运"
+        },
+        {
+          "kind": "control",
+          "text": "已超时"
+        },
+        {
+          "kind": "control",
+          "text": "运输中"
+        },
+        {
+          "kind": "control",
+          "text": "有争议的"
+        },
+        {
+          "kind": "control",
+          "text": "已签收"
+        },
+        {
+          "kind": "control",
+          "text": "已取消"
+        },
+        {
+          "kind": "control",
+          "text": "筛 选"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "订单导出"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货件号 / SKU / 货号 / 物流单号…"
+        },
+        {
+          "kind": "placeholder",
+          "text": "下单时间"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "倒计时"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件 / 状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库 / 配送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单金额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "利润"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "本周 GMV"
+        },
+        {
+          "kind": "static",
+          "text": "本周利润"
+        },
+        {
+          "kind": "static",
+          "text": "本周利润率"
+        },
+        {
+          "kind": "static",
+          "text": "待处理"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据"
+        },
+        {
+          "kind": "static",
+          "text": "近 7 天订单"
+        },
+        {
+          "kind": "static",
+          "text": "客单价"
+        },
+        {
+          "kind": "static",
+          "text": "当前筛选"
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/review-request/",
+      "url": "http://127.0.0.1:5173/ozon/postings/review-request/?afterPatch=1783144276140",
+      "title": "QH",
+      "path": "/ozon/postings/review-request/",
+      "bodyHasLogin": true,
+      "tokenCount": 36,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "索要好评"
+        },
+        {
+          "kind": "heading",
+          "text": "文案模板"
+        },
+        {
+          "kind": "heading",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "文案模板"
+        },
+        {
+          "kind": "control",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "筛选"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "同步当前店铺"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部店铺"
+        },
+        {
+          "kind": "control",
+          "text": "批量发送"
+        },
+        {
+          "kind": "placeholder",
+          "text": "货件编号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "货号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "SKU"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发运"
+        },
+        {
+          "kind": "tableHead",
+          "text": "图片"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号，数量 名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "查看商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库"
+        },
+        {
+          "kind": "tableHead",
+          "text": "配送服务 方式"
+        },
+        {
+          "kind": "tableHead",
+          "text": "送达"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "当前筛选"
+        },
+        {
+          "kind": "static",
+          "text": "待发送"
+        },
+        {
+          "kind": "static",
+          "text": "已发送"
+        },
+        {
+          "kind": "static",
+          "text": "失败 / 不可发"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据，请先同步已签收订单"
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/pickup-reminder/",
+      "url": "http://127.0.0.1:5173/ozon/postings/pickup-reminder/?afterPatch=1783144277371",
+      "title": "QH",
+      "path": "/ozon/postings/pickup-reminder/",
+      "bodyHasLogin": true,
+      "tokenCount": 33,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "提醒取货"
+        },
+        {
+          "kind": "heading",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "筛选"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "同步当前店铺"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部店铺"
+        },
+        {
+          "kind": "control",
+          "text": "批量发送"
+        },
+        {
+          "kind": "placeholder",
+          "text": "货件编号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "物流单号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "SKU"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "取货状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "图片"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号，数量 名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "物流单号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "配送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最近物流时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "查看商品"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "当前筛选"
+        },
+        {
+          "kind": "static",
+          "text": "待发送"
+        },
+        {
+          "kind": "static",
+          "text": "已发送"
+        },
+        {
+          "kind": "static",
+          "text": "到货未取"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据，请先同步运输中订单"
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/tools/watermark/",
+      "url": "http://127.0.0.1:5173/ozon/tools/watermark/?afterPatch=1783144278607",
+      "title": "QH",
+      "path": "/ozon/tools/watermark/",
+      "bodyHasLogin": true,
+      "tokenCount": 14,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "水印管理"
+        },
+        {
+          "kind": "heading",
+          "text": "水印/边框模板 0"
+        },
+        {
+          "kind": "heading",
+          "text": "预览与下载"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "新建模板"
+        },
+        {
+          "kind": "control",
+          "text": "下载当前"
+        },
+        {
+          "kind": "control",
+          "text": "批量下载（0）"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "暂无水印/边框模板，立即创建第一个"
+        },
+        {
+          "kind": "static",
+          "text": "请先选用模板"
+        }
+      ]
+    }
+  ]
+}

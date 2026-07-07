@@ -1,0 +1,1249 @@
+{
+  "capturedAt": "2026-07-04T04:08:41.617Z",
+  "taskSpaceId": 18,
+  "note": "Sanitized structural/interaction evidence only. Status counts are redacted as [count]; no table body rows, store names, product values, or source business values retained.",
+  "source": [
+    {
+      "label": "initial",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 待处理",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(254, 243, 199)",
+          "color": "rgb(146, 64, 14)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 失败",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(254, 226, 226)",
+          "color": "rgb(185, 28, 28)",
+          "fontWeight": "600"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 全部",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.65)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [],
+      "modalTitles": []
+    }
+  ],
+  "local": [
+    {
+      "label": "initial",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [
+        "采集箱",
+        "添加采集商品",
+        "粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 待处理",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "active",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [
+        "采集箱",
+        "添加采集商品",
+        "粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 失败",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "active",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [
+        "采集箱",
+        "添加采集商品",
+        "粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 全部",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "cardTexts": [
+        "采集箱",
+        "添加采集商品",
+        "粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加"
+      ],
+      "modalTitles": []
+    }
+  ],
+  "localAfterPatch": [
+    {
+      "label": "initial after patch",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 待处理",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "active",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 失败",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "active",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 全部",
+      "path": "/ozon/products/collect/",
+      "buttons": [
+        {
+          "text": "添加采集",
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+          "disabled": false
+        },
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "disabled": false
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "disabled": false
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "disabled": false
+        }
+      ],
+      "chips": [
+        {
+          "text": "全部 [count]",
+          "className": "active",
+          "background": "rgb(15, 23, 42)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "600"
+        },
+        {
+          "text": "待处理 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已上架 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "失败 [count]",
+          "className": "",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(55, 65, 81)",
+          "fontWeight": "500"
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        },
+        {
+          "placeholder": "",
+          "type": "checkbox",
+          "aria": "Select all"
+        }
+      ],
+      "tags": [
+        "自动识别价格 / 重量 / 卖家",
+        "安装插件后一键采集"
+      ],
+      "selects": [
+        "按来源筛选"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "采集价格",
+        "卖家 / 来源",
+        "品牌",
+        "下单链接",
+        "采集时间",
+        "状态",
+        "操作"
+      ],
+      "modalTitles": []
+    }
+  ],
+  "localVerifiedAt": "2026-07-04T04:10:41.577Z"
+}

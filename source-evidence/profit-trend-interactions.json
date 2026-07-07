@@ -1,0 +1,1203 @@
+{
+  "capturedAt": "2026-07-04T04:26:16.074Z",
+  "note": "Only safe segmented range/view controls were clicked. No sync/export/save controls were used.",
+  "source": {
+    "label": "source",
+    "before": {
+      "url": "https://qh.jizhangerp.com/ozon/postings/profit-trend/",
+      "title": "QH",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [number] 利润趋势 2026-06-05 至 2026-07-04 当前店铺 按出单日期聚合，金额为人民币口径 7 天 30 天 90 天 180 天 全部店铺 订单金额 ¥ 0 持平 vs 上期 客单价 — 利润 ¥ 0 持平 vs 上期 利润率 — 毛利率 — 佣金 — · 采购 — 订单数 0 单 持平 vs 上期 0 个出单日 · 30 个空白日 日维度趋势 利润视图 成本拆解 订单量 经营判断 本期 利润最好 暂无 本期还没有可分析订单 利润压力 暂无可判断 同步订单后展示利润压力 采购成本为 0 的出单日 暂无可判断 有出单数据后展示采购成本录入信号 费用结构 暂无可判断 本期暂无订单金额 日明细 共 30 天 日期 订单数 订单金额 OZON 佣金 采购成本 利润 毛利率 客单价",
+      "segmentButtons": [
+        {
+          "text": "7 天",
+          "tag": "BUTTON",
+          "className": "",
+          "rect": {
+            "x": 1333,
+            "y": 116,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(105, 115, 134)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "30 天",
+          "tag": "BUTTON",
+          "className": "pt-active",
+          "rect": {
+            "x": 1388,
+            "y": 116,
+            "w": 54,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(255, 255, 255)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "90 天",
+          "tag": "BUTTON",
+          "className": "",
+          "rect": {
+            "x": 1443,
+            "y": 116,
+            "w": 54,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(105, 115, 134)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "180 天",
+          "tag": "BUTTON",
+          "className": "",
+          "rect": {
+            "x": 1498,
+            "y": 116,
+            "w": 57,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(105, 115, 134)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "利润视图",
+          "tag": "BUTTON",
+          "className": "pt-active",
+          "rect": {
+            "x": 1157,
+            "y": 369,
+            "w": 71,
+            "h": 28,
+            "background": "rgb(26, 31, 54)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(255, 255, 255)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "成本拆解",
+          "tag": "BUTTON",
+          "className": "",
+          "rect": {
+            "x": 1229,
+            "y": 369,
+            "w": 71,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(105, 115, 134)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "订单量",
+          "tag": "BUTTON",
+          "className": "",
+          "rect": {
+            "x": 1301,
+            "y": 369,
+            "w": 58,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(105, 115, 134)",
+            "radius": "5px",
+            "fontSize": "12.5px",
+            "fontWeight": "500",
+            "border": "0px none rgb(105, 115, 134)"
+          },
+          "role": "",
+          "aria": ""
+        }
+      ],
+      "mainPanelText": "0 个出单日 · 30 个空白日",
+      "judgementCards": [
+        {
+          "text": "利润趋势2026-06-05 至 2026-07-04当前店铺按出单日期聚合，金额为人民币口径7 天30 天90 天180 天全部店铺",
+          "rect": {
+            "x": 279,
+            "y": 112,
+            "w": 1438,
+            "h": 51,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(26, 31, 54)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgb(26, 31, 54)"
+          },
+          "className": "sd-page-header"
+        },
+        {
+          "text": "订单金额¥0持平vs 上期客单价 —利润¥0持平vs 上期利润率 —毛利率—佣金 — · 采购 —订单数0单持平vs 上期0 个出单日 · 30 个空白日",
+          "rect": {
+            "x": 279,
+            "y": 185,
+            "w": 1438,
+            "h": 144,
+            "background": "rgb(227, 232, 238)",
+            "color": "rgb(26, 31, 54)",
+            "radius": "8px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(227, 232, 238)"
+          },
+          "className": "sd-kpi-row"
+        },
+        {
+          "text": "日维度趋势利润视图成本拆解订单量经营判断本期利润最好暂无本期还没有可分析订单利润压力暂无可判断同步订单后展示利润压力采购成本为 0 的出单日暂无可判断有出单数据后展示采购成本录入信号费用结构暂无可判断本期暂无订单金额",
+          "rect": {
+            "x": 279,
+            "y": 351,
+            "w": 1438,
+            "h": 437,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(26, 31, 54)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgb(26, 31, 54)"
+          },
+          "className": "pt-main-grid"
+        },
+        {
+          "text": "日明细共 30 天日期订单数订单金额Ozon 佣金采购成本利润毛利率客单价",
+          "rect": {
+            "x": 279,
+            "y": 810,
+            "w": 1438,
+            "h": 405,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(26, 31, 54)",
+            "radius": "8px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(227, 232, 238)"
+          },
+          "className": "sd-card"
+        }
+      ],
+      "activeLabels": [
+        "30 天",
+        "利润视图"
+      ]
+    },
+    "states": [
+      {
+        "clicked": {
+          "ok": true,
+          "text": "7 天"
+        },
+        "state": {
+          "activeLabels": [
+            "7 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "30 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "90 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "180 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "利润视图",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "订单量",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            }
+          ],
+          "location": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "90 天"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "30 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "90 天",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "180 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "利润视图",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "订单量",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            }
+          ],
+          "location": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "成本拆解"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "成本拆解"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "30 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "90 天",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "180 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "利润视图",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "订单量",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            }
+          ],
+          "location": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "订单量"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "订单量"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "30 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "90 天",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "180 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "利润视图",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "订单量",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ],
+          "location": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "利润视图"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "30 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "90 天",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "180 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "利润视图",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "订单量",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            }
+          ],
+          "location": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "30 天"
+        },
+        "state": {
+          "activeLabels": [
+            "30 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "30 天",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "90 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "180 天",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "利润视图",
+              "className": "pt-active",
+              "aria": "",
+              "bg": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            },
+            {
+              "text": "订单量",
+              "className": "",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)"
+            }
+          ],
+          "location": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+        }
+      }
+    ]
+  },
+  "local": {
+    "label": "local",
+    "before": {
+      "url": "http://127.0.0.1:5173/ozon/postings/profit-trend/",
+      "title": "仪表盘 - QH",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 索要好评 提醒取货 工具 消息 利润趋势 2026-07-04 · 周六 自动同步 · 上次 — 极点余额 0 全部同步 ⌘R 利润趋势 2026-06-05 至 2026-07-04 · 当前店铺 · 按出单日期聚合，金额为人民币口径 7 天 30 天 90 天 180 天 全部店铺 订单金额 ¥0 持平 vs 上期 · 客单价 — 利润 ¥0 持平 vs 上期 · 利润率 — 毛利率 — 佣金 — · 采购 — 订单数 0 单 持平 vs 上期 0 个出单日 · 30 个空白日 利润视图 成本拆解 订单量 经营判断 本期利润最好 暂无 本期还没有可分析订单 利润压力 暂无可判断 同步订单后展示利润压力 采购成本为 0 的出单日 暂无可判断 有出单数据后展示采购成本录入信号 费用结构 暂无可判断 本期暂无订单金额 日明细 · 共 30 天 日期 订单数 订单金额 OZON 佣金 采购成本 利润 毛利率 客单价 日期 订单数 订单金额 OZON 佣金 采购成本 利润 毛利率 客单价 绑定门店后显示真实数据 ⌘K",
+      "segmentButtons": [
+        {
+          "text": "7 天",
+          "tag": "LABEL",
+          "className": "ant-segmented-item",
+          "rect": {
+            "x": 1801,
+            "y": 162,
+            "w": 48,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.65)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "30 天",
+          "tag": "LABEL",
+          "className": "ant-segmented-item ant-segmented-item-selected",
+          "rect": {
+            "x": 1849,
+            "y": 162,
+            "w": 57,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "90 天",
+          "tag": "LABEL",
+          "className": "ant-segmented-item",
+          "rect": {
+            "x": 1906,
+            "y": 162,
+            "w": 57,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.65)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "180 天",
+          "tag": "LABEL",
+          "className": "ant-segmented-item",
+          "rect": {
+            "x": 1964,
+            "y": 162,
+            "w": 64,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.65)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "利润视图",
+          "tag": "LABEL",
+          "className": "ant-segmented-item ant-segmented-item-selected",
+          "rect": {
+            "x": 1890,
+            "y": 398,
+            "w": 79,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "成本拆解",
+          "tag": "LABEL",
+          "className": "ant-segmented-item",
+          "rect": {
+            "x": 1969,
+            "y": 398,
+            "w": 79,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.65)"
+          },
+          "role": "",
+          "aria": ""
+        },
+        {
+          "text": "订单量",
+          "tag": "LABEL",
+          "className": "ant-segmented-item",
+          "rect": {
+            "x": 2048,
+            "y": 398,
+            "w": 65,
+            "h": 28,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "4px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.65)"
+          },
+          "role": "",
+          "aria": ""
+        }
+      ],
+      "mainPanelText": "0 个出单日 · 30 个空白日利润视图成本拆解订单量",
+      "judgementCards": [
+        {
+          "text": "经营判断本期利润最好暂无本期还没有可分析订单",
+          "rect": {
+            "x": 261,
+            "y": 444,
+            "w": 455,
+            "h": 124,
+            "background": "rgb(250, 250, 250)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "8px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(240, 240, 240)"
+          },
+          "className": ""
+        },
+        {
+          "text": "利润压力暂无可判断同步订单后展示利润压力",
+          "rect": {
+            "x": 727,
+            "y": 444,
+            "w": 455,
+            "h": 124,
+            "background": "rgb(250, 250, 250)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "8px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(240, 240, 240)"
+          },
+          "className": ""
+        },
+        {
+          "text": "采购成本为 0 的出单日暂无可判断有出单数据后展示采购成本录入信号",
+          "rect": {
+            "x": 1194,
+            "y": 444,
+            "w": 455,
+            "h": 124,
+            "background": "rgb(250, 250, 250)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "8px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(240, 240, 240)"
+          },
+          "className": ""
+        },
+        {
+          "text": "费用结构暂无可判断本期暂无订单金额",
+          "rect": {
+            "x": 1661,
+            "y": 444,
+            "w": 455,
+            "h": 124,
+            "background": "rgb(250, 250, 250)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "8px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(240, 240, 240)"
+          },
+          "className": ""
+        }
+      ],
+      "activeLabels": [
+        "30 天",
+        "利润视图"
+      ]
+    },
+    "states": [
+      {
+        "clicked": {
+          "ok": true,
+          "text": "7 天"
+        },
+        "state": {
+          "activeLabels": [
+            "7 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.686)"
+            },
+            {
+              "text": "30 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "90 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "180 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "利润视图",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "订单量",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            }
+          ],
+          "location": "http://127.0.0.1:5173/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "90 天"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "30 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "90 天",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.675)"
+            },
+            {
+              "text": "180 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "利润视图",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "订单量",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            }
+          ],
+          "location": "http://127.0.0.1:5173/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "成本拆解"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "30 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "90 天",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)"
+            },
+            {
+              "text": "180 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "利润视图",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "订单量",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            }
+          ],
+          "location": "http://127.0.0.1:5173/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "订单量"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "订单量"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "30 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "90 天",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)"
+            },
+            {
+              "text": "180 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "利润视图",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "订单量",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.69)"
+            }
+          ],
+          "location": "http://127.0.0.1:5173/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "利润视图"
+        },
+        "state": {
+          "activeLabels": [
+            "90 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "30 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "90 天",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)"
+            },
+            {
+              "text": "180 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "利润视图",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.675)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "订单量",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            }
+          ],
+          "location": "http://127.0.0.1:5173/ozon/postings/profit-trend/"
+        }
+      },
+      {
+        "clicked": {
+          "ok": true,
+          "text": "30 天"
+        },
+        "state": {
+          "activeLabels": [
+            "30 天",
+            "利润视图"
+          ],
+          "candidates": [
+            {
+              "text": "7 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "30 天",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.675)"
+            },
+            {
+              "text": "90 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "180 天",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "利润视图",
+              "className": "ant-segmented-item ant-segmented-item-selected",
+              "aria": "",
+              "bg": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)"
+            },
+            {
+              "text": "成本拆解",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            },
+            {
+              "text": "订单量",
+              "className": "ant-segmented-item",
+              "aria": "",
+              "bg": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.65)"
+            }
+          ],
+          "location": "http://127.0.0.1:5173/ozon/postings/profit-trend/"
+        }
+      }
+    ]
+  }
+}

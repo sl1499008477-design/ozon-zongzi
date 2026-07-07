@@ -1,0 +1,50 @@
+{
+  "scope": "returns and refunds local cache wiring",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/postings/returns/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "ozonReturnApiEndpointGuessed": false,
+  "featuresWired": {
+    "localState": "returns and refunds caches are included in /local/state",
+    "readEndpoint": "GET /ozon/returns reads local returns/refunds cache with type/status/search filters",
+    "batchEndpoint": "POST /ozon/returns/batch stores local-only return/refund rows for future plugin or verified readonly import",
+    "pageRefresh": "refresh reads local cache and does not call unverified Ozon return APIs",
+    "pageFilters": "type tabs and search operate on local cache rows"
+  },
+  "currentStoreState": {
+    "hasBinding": true,
+    "returns": 0,
+    "refunds": 0,
+    "returnsCache": 0,
+    "refundsCache": 0,
+    "products": 580,
+    "postings": 466,
+    "messageHistory": 0
+  },
+  "isolatedBackendApiFlow": {
+    "dataDir": "/private/tmp/qh-returns-test",
+    "port": 3305,
+    "created": 2,
+    "filteredTotal": 1,
+    "returnsSummary": 2,
+    "refundsSummary": 0,
+    "cacheCount": 2,
+    "local": true
+  },
+  "routeCheck": {
+    "returnsRouteHead": 200
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "returnIds": "not_recorded",
+    "postingNumbers": "not_recorded",
+    "skus": "not_recorded",
+    "productNames": "not_recorded"
+  }
+}

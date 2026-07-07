@@ -1,0 +1,116 @@
+{
+  "taskSpaceId": 16,
+  "capturedAt": "2026-07-04T03:56:49.091Z",
+  "source": "https://qh.jizhangerp.com/ozon/selection/category/",
+  "note": "Sanitized structural/interaction evidence only; source business values and rows intentionally omitted.",
+  "before": {
+    "path": "/ozon/selection/category/",
+    "headings": [
+      "QH",
+      "类目分析"
+    ],
+    "buttons": [
+      "7天",
+      "28天",
+      "90天",
+      "365天",
+      "₽",
+      "¥",
+      "刷新",
+      "全部类目 一级类目开始逐层下钻",
+      "增长机会 GMV 环比不低于 30%",
+      "高退货率 退货风险不低于 15%",
+      "品牌集中 品牌销售占比不低于 30%",
+      "FBS机会 FBS 销售占比不低于 50%",
+      "全部类目",
+      "查询",
+      "重置",
+      "更多筛选 ↓"
+    ],
+    "placeholders": [
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大"
+    ],
+    "formLabels": [],
+    "hasMoreButton": true,
+    "hasCollapseButton": false,
+    "hasExpandedCategoryFilters": false
+  },
+  "interactions": [
+    {
+      "text": "更多筛选",
+      "ok": true,
+      "label": "after-more",
+      "after": {
+        "path": "/ozon/selection/category/",
+        "dialogCount": 0,
+        "formLabels": [],
+        "hasMoreButton": false,
+        "hasCollapseButton": true,
+        "hasExpandedCategoryFilters": true
+      }
+    },
+    {
+      "text": "收起",
+      "ok": true,
+      "label": "after-collapse",
+      "after": {
+        "path": "/ozon/selection/category/",
+        "dialogCount": 0,
+        "formLabels": [],
+        "hasMoreButton": true,
+        "hasCollapseButton": false,
+        "hasExpandedCategoryFilters": false
+      }
+    },
+    {
+      "text": "查询",
+      "ok": true,
+      "label": "after-query",
+      "after": {
+        "path": "/ozon/selection/category/",
+        "dialogCount": 0,
+        "formLabels": [],
+        "hasMoreButton": true,
+        "hasCollapseButton": false,
+        "hasExpandedCategoryFilters": false
+      }
+    },
+    {
+      "text": "重置",
+      "ok": true,
+      "label": "after-reset",
+      "after": {
+        "path": "/ozon/selection/category/",
+        "dialogCount": 0,
+        "formLabels": [],
+        "hasMoreButton": true,
+        "hasCollapseButton": false,
+        "hasExpandedCategoryFilters": false
+      }
+    },
+    {
+      "text": "刷新",
+      "ok": true,
+      "label": "after-refresh",
+      "after": {
+        "path": "/ozon/selection/category/",
+        "dialogCount": 0,
+        "formLabels": [],
+        "hasMoreButton": true,
+        "hasCollapseButton": false,
+        "hasExpandedCategoryFilters": false
+      }
+    }
+  ]
+}

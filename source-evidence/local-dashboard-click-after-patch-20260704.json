@@ -1,0 +1,148 @@
+{
+  "capturedAt": "2026-07-04T05:44:09.150Z",
+  "taskSpaceId": 31,
+  "summary": [
+    {
+      "mode": "quickButton",
+      "label": "批量改价",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    },
+    {
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    },
+    {
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    },
+    {
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    },
+    {
+      "mode": "featureCard",
+      "label": "采集箱",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    },
+    {
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    },
+    {
+      "mode": "featureCard",
+      "label": "水印管理",
+      "clicked": true,
+      "before": "/ozon/dashboard/",
+      "after": "/ozon/dashboard/",
+      "overlays": 0
+    }
+  ],
+  "results": [
+    {
+      "mode": "quickButton",
+      "label": "批量改价",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "批量改价",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    },
+    {
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "AI 大模型改图",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    },
+    {
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "0 采集",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    },
+    {
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "打印发货单",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    },
+    {
+      "mode": "featureCard",
+      "label": "采集箱",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "采集箱",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    },
+    {
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "AI 大模型改图 NEW",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    },
+    {
+      "mode": "featureCard",
+      "label": "水印管理",
+      "before": "/ozon/dashboard/",
+      "clicked": {
+        "clicked": true,
+        "text": "水印管理",
+        "className": ""
+      },
+      "after": "/ozon/dashboard/",
+      "overlays": []
+    }
+  ]
+}

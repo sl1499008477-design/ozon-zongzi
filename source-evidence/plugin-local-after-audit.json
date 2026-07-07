@@ -1,0 +1,64 @@
+{
+  "capturedAt": "2026-07-04T05:02:39.352Z",
+  "taskSpaceId": 25,
+  "note": "Current local plugin install page verification; structural fields only.",
+  "local": {
+    "url": "http://127.0.0.1:5173/ozon/tools/plugin/",
+    "path": "/ozon/tools/plugin/",
+    "title": "仪表盘 - QH",
+    "headings": [
+      "QH 浏览器插件"
+    ],
+    "links": [
+      {
+        "text": "QH",
+        "href": null,
+        "download": false
+      },
+      {
+        "text": "插件下载",
+        "href": "/qh-extension-0.13.42.1.zip",
+        "download": true
+      },
+      {
+        "text": "弹窗预览",
+        "href": "/plugin/popup.html",
+        "download": false
+      }
+    ],
+    "buttons": [
+      "帮助中心使用文档",
+      "公告公告中心",
+      "浏览器插件插件下载",
+      "当前门店去绑定门店",
+      "会员权益免费会员"
+    ],
+    "images": [
+      {
+        "src": "/icons/icon48.png",
+        "alt": "QH",
+        "w": 48,
+        "h": 48
+      },
+      {
+        "src": "/icons/icon128.png",
+        "alt": "QH",
+        "w": 128,
+        "h": 128
+      }
+    ],
+    "codes": [
+      "/Users/songliang/Documents/sonli ozon3.0/extension",
+      "content/ozon-product.js",
+      "content/ozon-search.js",
+      "content/ozon-seller-bridge.js",
+      "content/alibaba-1688.js",
+      "batch-upload/index.html",
+      "background/service-worker.js"
+    ],
+    "hasGlobalHead": false,
+    "hasSampleStoreData": false,
+    "hasPluginPath": true,
+    "hasVersion": true
+  }
+}

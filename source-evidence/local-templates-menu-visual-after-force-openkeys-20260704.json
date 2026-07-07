@@ -1,0 +1,89 @@
+{
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-templates-menu-visual-after-force-openkeys-20260704.png",
+  "data": [
+    {
+      "text": "商品",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline",
+      "rect": {
+        "x": 8,
+        "y": 104,
+        "w": 199,
+        "h": 40
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    },
+    {
+      "text": "选品",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline",
+      "rect": {
+        "x": 8,
+        "y": 148,
+        "w": 199,
+        "h": 40
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    },
+    {
+      "text": "AI 工具 推荐",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline",
+      "rect": {
+        "x": 8,
+        "y": 192,
+        "w": 199,
+        "h": 40
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    },
+    {
+      "text": "促销",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline",
+      "rect": {
+        "x": 8,
+        "y": 236,
+        "w": 199,
+        "h": 40
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    },
+    {
+      "text": "订单",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline",
+      "rect": {
+        "x": 8,
+        "y": 280,
+        "w": 199,
+        "h": 40
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    },
+    {
+      "text": "工具",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline",
+      "rect": {
+        "x": 8,
+        "y": 324,
+        "w": 199,
+        "h": 40
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    },
+    {
+      "text": "消息 公告中心 消息模板 发送记录",
+      "cls": "ant-menu-submenu ant-menu-submenu-inline ant-menu-submenu-open",
+      "rect": {
+        "x": 8,
+        "y": 368,
+        "w": 199,
+        "h": 180
+      },
+      "display": "list-item",
+      "visibility": "visible"
+    }
+  ]
+}

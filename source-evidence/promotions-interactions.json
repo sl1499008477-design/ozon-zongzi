@@ -1,0 +1,2575 @@
+{
+  "capturedAt": "2026-07-04T04:38:27.884Z",
+  "taskSpaceId": 22,
+  "note": "Sanitized promotion page structural evidence only. Sync/refresh/query buttons were observed but not clicked.",
+  "pages": [
+    {
+      "label": "source",
+      "path": "/ozon/promotions/prices/",
+      "action": "initial",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [phone] 价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 商品 当前价格 操作",
+      "headings": [
+        "QH"
+      ],
+      "labels": [
+        "搜索",
+        "搜索"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 1542,
+            "y": 364,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1614,
+            "y": 364,
+            "w": 86,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1522,
+            "y": 452,
+            "w": 82,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "仪表盘",
+        "价格与折扣",
+        "营销活动",
+        "自动删促销",
+        "QH"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "chips": [
+        {
+          "text": "价格",
+          "rect": {
+            "x": 292,
+            "y": 216,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab ant-tabs-tab-active"
+        },
+        {
+          "text": "价格",
+          "rect": {
+            "x": 292,
+            "y": 228,
+            "w": 29,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(22, 119, 255)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgb(22, 119, 255)"
+          },
+          "className": "ant-tabs-tab-btn"
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 352,
+            "y": 216,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab"
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 352,
+            "y": 228,
+            "w": 29,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab-btn"
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 292,
+            "y": 278,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab ant-tabs-tab-active"
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 292,
+            "y": 290,
+            "w": 57,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(22, 119, 255)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgb(22, 119, 255)"
+          },
+          "className": "ant-tabs-tab-btn"
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 381,
+            "y": 278,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab"
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 381,
+            "y": 290,
+            "w": 57,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab-btn"
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "source",
+      "path": "/ozon/promotions/prices/",
+      "action": "折扣",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [phone] 价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 商品 当前价格 操作",
+      "headings": [
+        "QH"
+      ],
+      "labels": [
+        "搜索",
+        "搜索"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 1542,
+            "y": 364,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1614,
+            "y": 364,
+            "w": 86,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1522,
+            "y": 452,
+            "w": 82,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "仪表盘",
+        "价格与折扣",
+        "营销活动",
+        "自动删促销",
+        "QH"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "chips": [
+        {
+          "text": "价格",
+          "rect": {
+            "x": 292,
+            "y": 216,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab ant-tabs-tab-active"
+        },
+        {
+          "text": "价格",
+          "rect": {
+            "x": 292,
+            "y": 228,
+            "w": 29,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(22, 119, 255)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgb(22, 119, 255)"
+          },
+          "className": "ant-tabs-tab-btn"
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 352,
+            "y": 216,
+            "w": 29,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab"
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 352,
+            "y": 228,
+            "w": 29,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab-btn"
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 292,
+            "y": 278,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab ant-tabs-tab-active"
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 292,
+            "y": 290,
+            "w": 57,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgb(22, 119, 255)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgb(22, 119, 255)"
+          },
+          "className": "ant-tabs-tab-btn"
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 381,
+            "y": 278,
+            "w": 57,
+            "h": 46,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab"
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 381,
+            "y": 290,
+            "w": 57,
+            "h": 22,
+            "background": "rgba(0, 0, 0, 0)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "0px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0px none rgba(0, 0, 0, 0.88)"
+          },
+          "className": "ant-tabs-tab-btn"
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "local",
+      "path": "/ozon/promotions/prices/",
+      "action": "initial",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 主图 商品 当前价格 操作 绑定门店后显示真实数据",
+      "headings": [
+        "价格与折扣"
+      ],
+      "labels": [
+        "搜索"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "帮助中心使用文档",
+          "disabled": false,
+          "rect": {
+            "x": 1510,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "公告公告中心",
+          "disabled": false,
+          "rect": {
+            "x": 1601,
+            "y": 11,
+            "w": 80,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "disabled": false,
+          "rect": {
+            "x": 1687,
+            "y": 11,
+            "w": 96,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "disabled": false,
+          "rect": {
+            "x": 1789,
+            "y": 11,
+            "w": 91,
+            "h": 34,
+            "background": "rgb(255, 247, 237)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 225, 189)"
+          },
+          "className": "qh-header-action tone-orange"
+        },
+        {
+          "text": "会员权益免费会员",
+          "disabled": false,
+          "rect": {
+            "x": 1885,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "价格",
+          "disabled": false,
+          "rect": {
+            "x": 261,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "折扣",
+          "disabled": false,
+          "rect": {
+            "x": 319,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "选择商品",
+          "disabled": false,
+          "rect": {
+            "x": 377,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "改价草稿",
+          "disabled": false,
+          "rect": {
+            "x": 459,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 1912,
+            "y": 247,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1983,
+            "y": 247,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 2055,
+            "y": 247,
+            "w": 60,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "QH"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "chips": [
+        {
+          "text": "价格",
+          "rect": {
+            "x": 261,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 319,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 377,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 459,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "local",
+      "path": "/ozon/promotions/prices/",
+      "action": "折扣",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 主图 商品 当前价格 操作 绑定门店后显示真实数据",
+      "headings": [
+        "价格与折扣"
+      ],
+      "labels": [
+        "搜索"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "帮助中心使用文档",
+          "disabled": false,
+          "rect": {
+            "x": 1510,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "公告公告中心",
+          "disabled": false,
+          "rect": {
+            "x": 1601,
+            "y": 11,
+            "w": 80,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "disabled": false,
+          "rect": {
+            "x": 1687,
+            "y": 11,
+            "w": 96,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "disabled": false,
+          "rect": {
+            "x": 1789,
+            "y": 11,
+            "w": 91,
+            "h": 34,
+            "background": "rgb(255, 247, 237)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 225, 189)"
+          },
+          "className": "qh-header-action tone-orange"
+        },
+        {
+          "text": "会员权益免费会员",
+          "disabled": false,
+          "rect": {
+            "x": 1885,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "价格",
+          "disabled": false,
+          "rect": {
+            "x": 261,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "折扣",
+          "disabled": false,
+          "rect": {
+            "x": 319,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "选择商品",
+          "disabled": false,
+          "rect": {
+            "x": 377,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "改价草稿",
+          "disabled": false,
+          "rect": {
+            "x": 459,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 1912,
+            "y": 247,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1983,
+            "y": 247,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 2055,
+            "y": 247,
+            "w": 60,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "QH"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "chips": [
+        {
+          "text": "价格",
+          "rect": {
+            "x": 261,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "折扣",
+          "rect": {
+            "x": 319,
+            "y": 201,
+            "w": 50,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "选择商品",
+          "rect": {
+            "x": 377,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "改价草稿",
+          "rect": {
+            "x": 459,
+            "y": 201,
+            "w": 75,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "source",
+      "path": "/ozon/promotions/campaigns/",
+      "action": "initial",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [phone] 促销活动 实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期 全部活动 0 平台当前可见活动 参与中 0 暂未参与 可参与 0 尚未加入 即将结束（7天内） 0 暂无临期活动 筛选 全部 0 参与中 0 可参与 0 即将结束 0 刷新 活动列表· 共 0 条 活动 状态 折扣 商品 活动周期 操作 活动 状态 折扣 商品 活动周期 操作 加载中…",
+      "headings": [
+        "QH"
+      ],
+      "labels": [],
+      "placeholders": [
+        "搜索活动名称 / ID"
+      ],
+      "buttons": [
+        {
+          "text": "全部0",
+          "disabled": false,
+          "rect": {
+            "x": 589,
+            "y": 323,
+            "w": 68,
+            "h": 28,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "600",
+            "border": "0.625px solid rgb(22, 119, 255)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "disabled": false,
+          "rect": {
+            "x": 668,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "disabled": false,
+          "rect": {
+            "x": 759,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "disabled": false,
+          "rect": {
+            "x": 850,
+            "y": 323,
+            "w": 94,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1640,
+            "y": 321,
+            "w": 82,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-loading"
+        }
+      ],
+      "links": [
+        "仪表盘",
+        "价格与折扣",
+        "营销活动",
+        "自动删促销",
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作",
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "chips": [
+        {
+          "text": "全部0",
+          "rect": {
+            "x": 589,
+            "y": 323,
+            "w": 68,
+            "h": 28,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "600",
+            "border": "0.625px solid rgb(22, 119, 255)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "rect": {
+            "x": 668,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "rect": {
+            "x": 759,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "rect": {
+            "x": 850,
+            "y": 323,
+            "w": 94,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "source",
+      "path": "/ozon/promotions/campaigns/",
+      "action": "参与中",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [phone] 促销活动 实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期 全部活动 0 平台当前可见活动 参与中 0 暂未参与 可参与 0 尚未加入 即将结束（7天内） 0 暂无临期活动 筛选 全部 0 参与中 0 可参与 0 即将结束 0 刷新 活动列表· 共 0 条 活动 状态 折扣 商品 活动周期 操作 活动 状态 折扣 商品 活动周期 操作 加载中…",
+      "headings": [
+        "QH"
+      ],
+      "labels": [],
+      "placeholders": [
+        "搜索活动名称 / ID"
+      ],
+      "buttons": [
+        {
+          "text": "全部0",
+          "disabled": false,
+          "rect": {
+            "x": 589,
+            "y": 323,
+            "w": 68,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "disabled": false,
+          "rect": {
+            "x": 668,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(82, 196, 26)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "600",
+            "border": "0.625px solid rgb(82, 196, 26)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "disabled": false,
+          "rect": {
+            "x": 759,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "disabled": false,
+          "rect": {
+            "x": 850,
+            "y": 323,
+            "w": 94,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1640,
+            "y": 321,
+            "w": 82,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-loading"
+        }
+      ],
+      "links": [
+        "仪表盘",
+        "价格与折扣",
+        "营销活动",
+        "自动删促销",
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作",
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "chips": [
+        {
+          "text": "全部0",
+          "rect": {
+            "x": 589,
+            "y": 323,
+            "w": 68,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "rect": {
+            "x": 668,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(82, 196, 26)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "600",
+            "border": "0.625px solid rgb(82, 196, 26)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "rect": {
+            "x": 759,
+            "y": 323,
+            "w": 81,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "rect": {
+            "x": 850,
+            "y": 323,
+            "w": 94,
+            "h": 28,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "local",
+      "path": "/ozon/promotions/campaigns/",
+      "action": "initial",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 促销活动 实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期 全部活动 0 平台当前可见活动 参与中 0 暂未参与 可参与 0 尚未加入 即将结束（7天内） 0 暂无临期活动 全部 0 参与中 0 可参与 0 即将结束 0 刷新 活动列表· 共 0 条 活动 状态 折扣 商品 活动周期 操作 活动 状态 折扣 商品 活动周期 操作 绑定门店后显示真实数据",
+      "headings": [
+        "促销活动"
+      ],
+      "labels": [],
+      "placeholders": [
+        "搜索活动名称 / ID"
+      ],
+      "buttons": [
+        {
+          "text": "帮助中心使用文档",
+          "disabled": false,
+          "rect": {
+            "x": 1510,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "公告公告中心",
+          "disabled": false,
+          "rect": {
+            "x": 1601,
+            "y": 11,
+            "w": 80,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "disabled": false,
+          "rect": {
+            "x": 1687,
+            "y": 11,
+            "w": 96,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "disabled": false,
+          "rect": {
+            "x": 1789,
+            "y": 11,
+            "w": 91,
+            "h": 34,
+            "background": "rgb(255, 247, 237)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 225, 189)"
+          },
+          "className": "qh-header-action tone-orange"
+        },
+        {
+          "text": "会员权益免费会员",
+          "disabled": false,
+          "rect": {
+            "x": 1885,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "全部0",
+          "disabled": false,
+          "rect": {
+            "x": 1111,
+            "y": 348,
+            "w": 65,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "参与中0",
+          "disabled": false,
+          "rect": {
+            "x": 1184,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "disabled": false,
+          "rect": {
+            "x": 1270,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "disabled": false,
+          "rect": {
+            "x": 1111,
+            "y": 386,
+            "w": 90,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1445,
+            "y": 366,
+            "w": 670,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "chips": [
+        {
+          "text": "全部0",
+          "rect": {
+            "x": 1111,
+            "y": 348,
+            "w": 65,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "参与中0",
+          "rect": {
+            "x": 1184,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "可参与0",
+          "rect": {
+            "x": 1270,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "rect": {
+            "x": 1111,
+            "y": 386,
+            "w": 90,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "local",
+      "path": "/ozon/promotions/campaigns/",
+      "action": "参与中",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 促销活动 实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期 全部活动 0 平台当前可见活动 参与中 0 暂未参与 可参与 0 尚未加入 即将结束（7天内） 0 暂无临期活动 全部 0 参与中 0 可参与 0 即将结束 0 刷新 活动列表· 共 0 条 活动 状态 折扣 商品 活动周期 操作 活动 状态 折扣 商品 活动周期 操作 绑定门店后显示真实数据",
+      "headings": [
+        "促销活动"
+      ],
+      "labels": [],
+      "placeholders": [
+        "搜索活动名称 / ID"
+      ],
+      "buttons": [
+        {
+          "text": "帮助中心使用文档",
+          "disabled": false,
+          "rect": {
+            "x": 1510,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "公告公告中心",
+          "disabled": false,
+          "rect": {
+            "x": 1601,
+            "y": 11,
+            "w": 80,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "disabled": false,
+          "rect": {
+            "x": 1687,
+            "y": 11,
+            "w": 96,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "disabled": false,
+          "rect": {
+            "x": 1789,
+            "y": 11,
+            "w": 91,
+            "h": 34,
+            "background": "rgb(255, 247, 237)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 225, 189)"
+          },
+          "className": "qh-header-action tone-orange"
+        },
+        {
+          "text": "会员权益免费会员",
+          "disabled": false,
+          "rect": {
+            "x": 1885,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "全部0",
+          "disabled": false,
+          "rect": {
+            "x": 1111,
+            "y": 348,
+            "w": 65,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "disabled": false,
+          "rect": {
+            "x": 1184,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "可参与0",
+          "disabled": false,
+          "rect": {
+            "x": 1270,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "disabled": false,
+          "rect": {
+            "x": 1111,
+            "y": 386,
+            "w": 90,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1445,
+            "y": 366,
+            "w": 670,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动",
+        "状态",
+        "折扣",
+        "商品",
+        "活动周期",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "chips": [
+        {
+          "text": "全部0",
+          "rect": {
+            "x": 1111,
+            "y": 348,
+            "w": 65,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "参与中0",
+          "rect": {
+            "x": 1184,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(15, 23, 42)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "600",
+            "border": "0.75px solid rgb(15, 23, 42)"
+          },
+          "className": "active"
+        },
+        {
+          "text": "可参与0",
+          "rect": {
+            "x": 1270,
+            "y": 348,
+            "w": 77,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        },
+        {
+          "text": "即将结束0",
+          "rect": {
+            "x": 1111,
+            "y": 386,
+            "w": 90,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(55, 65, 81)",
+            "radius": "999px",
+            "fontSize": "12px",
+            "fontWeight": "500",
+            "border": "0.75px solid rgb(229, 231, 235)"
+          },
+          "className": ""
+        }
+      ],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "source",
+      "path": "/ozon/promotions/auto-delete/",
+      "action": "initial",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [phone] 促销活动自动清理 · 利润保护 按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。 自动清理配置 加载店铺中… 活动名称 类型 状态 请选择 重 置 查 询 当前店铺促销活动 从 Ozon 同步 刷新 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 活动名称 类型 折扣力度 商品数量 有效期 状态 操作",
+      "headings": [
+        "QH"
+      ],
+      "labels": [
+        "活动名称",
+        "活动名称",
+        "类型",
+        "类型",
+        "状态",
+        "状态"
+      ],
+      "placeholders": [
+        "请输入",
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 1554,
+            "y": 428,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1626,
+            "y": 428,
+            "w": 86,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading"
+        },
+        {
+          "text": "从 Ozon 同步",
+          "disabled": false,
+          "rect": {
+            "x": 1388,
+            "y": 517,
+            "w": 138,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1534,
+            "y": 517,
+            "w": 82,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "仪表盘",
+        "价格与折扣",
+        "营销活动",
+        "自动删促销",
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作",
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "chips": [],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "source",
+      "path": "/ozon/promotions/auto-delete/",
+      "action": "展开",
+      "bodyText": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [phone] 促销活动自动清理 · 利润保护 按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。 自动清理配置 加载店铺中… 活动名称 类型 状态 请选择 重 置 查 询 当前店铺促销活动 从 Ozon 同步 刷新 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 活动名称 类型 折扣力度 商品数量 有效期 状态 操作",
+      "headings": [
+        "QH"
+      ],
+      "labels": [
+        "活动名称",
+        "活动名称",
+        "类型",
+        "类型",
+        "状态",
+        "状态"
+      ],
+      "placeholders": [
+        "请输入",
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 1554,
+            "y": 428,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1626,
+            "y": 428,
+            "w": 86,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading"
+        },
+        {
+          "text": "从 Ozon 同步",
+          "disabled": false,
+          "rect": {
+            "x": 1388,
+            "y": 517,
+            "w": 138,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 1534,
+            "y": 517,
+            "w": 82,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.625px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "仪表盘",
+        "价格与折扣",
+        "营销活动",
+        "自动删促销",
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作",
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "chips": [],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "local",
+      "path": "/ozon/promotions/auto-delete/",
+      "action": "initial",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 促销活动自动清理 · 利润保护 按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。 自动清理配置 加载店铺中… 绑定店铺后可配置最大可接受折扣、检测频率和自动移出策略。 活动名称 类型 请选择 状态 请选择 重 置 查 询 当前店铺促销活动 从 Ozon 同步 刷新 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 绑定门店后显示真实数据",
+      "headings": [
+        "促销活动自动清理 · 利润保护"
+      ],
+      "labels": [
+        "活动名称",
+        "类型请选择",
+        "状态请选择"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "帮助中心使用文档",
+          "disabled": false,
+          "rect": {
+            "x": 1510,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "公告公告中心",
+          "disabled": false,
+          "rect": {
+            "x": 1601,
+            "y": 11,
+            "w": 80,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "disabled": false,
+          "rect": {
+            "x": 1687,
+            "y": 11,
+            "w": 96,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "disabled": false,
+          "rect": {
+            "x": 1789,
+            "y": 11,
+            "w": 91,
+            "h": 34,
+            "background": "rgb(255, 247, 237)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 225, 189)"
+          },
+          "className": "qh-header-action tone-orange"
+        },
+        {
+          "text": "会员权益免费会员",
+          "disabled": false,
+          "rect": {
+            "x": 1885,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 996,
+            "y": 409,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1068,
+            "y": 409,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+        },
+        {
+          "text": "从 Ozon 同步",
+          "disabled": false,
+          "rect": {
+            "x": 1931,
+            "y": 499,
+            "w": 116,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 2055,
+            "y": 499,
+            "w": 60,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "chips": [],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    },
+    {
+      "label": "local",
+      "path": "/ozon/promotions/auto-delete/",
+      "action": "展开",
+      "bodyText": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 促销活动自动清理 · 利润保护 按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。 自动清理配置 加载店铺中… 绑定店铺后可配置最大可接受折扣、检测频率和自动移出策略。 活动名称 类型 请选择 状态 请选择 重 置 查 询 当前店铺促销活动 从 Ozon 同步 刷新 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 绑定门店后显示真实数据",
+      "headings": [
+        "促销活动自动清理 · 利润保护"
+      ],
+      "labels": [
+        "活动名称",
+        "类型请选择",
+        "状态请选择"
+      ],
+      "placeholders": [
+        "请输入"
+      ],
+      "buttons": [
+        {
+          "text": "帮助中心使用文档",
+          "disabled": false,
+          "rect": {
+            "x": 1510,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "公告公告中心",
+          "disabled": false,
+          "rect": {
+            "x": 1601,
+            "y": 11,
+            "w": 80,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "disabled": false,
+          "rect": {
+            "x": 1687,
+            "y": 11,
+            "w": 96,
+            "h": 34,
+            "background": "rgb(243, 248, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(216, 232, 255)"
+          },
+          "className": "qh-header-action tone-blue"
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "disabled": false,
+          "rect": {
+            "x": 1789,
+            "y": 11,
+            "w": 91,
+            "h": 34,
+            "background": "rgb(255, 247, 237)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 225, 189)"
+          },
+          "className": "qh-header-action tone-orange"
+        },
+        {
+          "text": "会员权益免费会员",
+          "disabled": false,
+          "rect": {
+            "x": 1885,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.65)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(238, 241, 245)"
+          },
+          "className": "qh-header-action tone-default"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "rect": {
+            "x": 996,
+            "y": 409,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "查 询",
+          "disabled": false,
+          "rect": {
+            "x": 1068,
+            "y": 409,
+            "w": 64,
+            "h": 32,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgba(0, 0, 0, 0)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+        },
+        {
+          "text": "从 Ozon 同步",
+          "disabled": false,
+          "rect": {
+            "x": 1931,
+            "y": 499,
+            "w": 116,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "rect": {
+            "x": 2055,
+            "y": 499,
+            "w": 60,
+            "h": 32,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgba(0, 0, 0, 0.88)",
+            "radius": "6px",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+        }
+      ],
+      "links": [
+        "QH"
+      ],
+      "tableHeaders": [
+        "活动名称",
+        "类型",
+        "折扣力度",
+        "商品数量",
+        "有效期",
+        "状态",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "chips": [],
+      "hasGlobalHead": false,
+      "commandMentions": 0
+    }
+  ]
+}

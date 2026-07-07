@@ -1,0 +1,47 @@
+{
+  "scope": "message templates local persistence",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/messaging/templates/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "currentStoreMutationDuringPageQa": false,
+  "liveStateSummary": {
+    "hasBinding": true,
+    "messageTemplates": 0,
+    "messageTemplateCache": 0
+  },
+  "isolatedBackendApiFlow": {
+    "dataDir": "/private/tmp/qh-message-template-test",
+    "port": 3301,
+    "createdOk": true,
+    "listedTotal": 1,
+    "updatedCategory": "pickup",
+    "stateCountAfterUpdate": 1,
+    "stateCountAfterDelete": 0
+  },
+  "egoPageQa": {
+    "title": "QH",
+    "hasTemplateTitle": true,
+    "hasCreateButton": true,
+    "hasColumns": true,
+    "hasEmptyState": true,
+    "rowCount": 0,
+    "modalHasFields": true,
+    "visibleWrapsAfterCancel": 0,
+    "visibleMasksAfterCancel": 0,
+    "rowsAfterCancel": 0
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed",
+    "secretScanOutsideServerData": "no_matches",
+    "backendHealth": "passed",
+    "routeHead": "200"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "templateContent": "not_recorded",
+    "productAndOrderRows": "not_recorded"
+  }
+}

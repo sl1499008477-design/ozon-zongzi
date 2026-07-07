@@ -1,0 +1,1897 @@
+{
+  "capturedAt": "2026-07-04T05:32:32.547Z",
+  "results": [
+    {
+      "kind": "source",
+      "targetResults": [
+        {
+          "label": "批量改价",
+          "clicked": {
+            "found": true,
+            "text": "批量改价",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 471,
+              "y": 1067,
+              "w": 103,
+              "h": 36
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+            "title": "价格与折扣 - QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1580,
+            "ph": 754
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+            "title": "价格与折扣 - QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "价格与折扣",
+              "营销活动",
+              "自动删促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "sl",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]"
+            ]
+          }
+        },
+        {
+          "label": "AI 大模型改图",
+          "clicked": {
+            "found": true,
+            "text": "AI 大模型改图",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 583,
+              "y": 865,
+              "w": 132,
+              "h": 36
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "1688 采集",
+          "clicked": {
+            "found": true,
+            "text": "1688 采集",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 723,
+              "y": 359,
+              "w": 109,
+              "h": 36
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "群发消息",
+          "clicked": {
+            "found": true,
+            "text": "群发消息",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 840,
+              "y": 359,
+              "w": 103,
+              "h": 36
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "批量上架",
+          "clicked": {
+            "found": true,
+            "text": "批量上架",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 952,
+              "y": 359,
+              "w": 103,
+              "h": 36
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "打印发货单",
+          "clicked": {
+            "found": true,
+            "text": "打印发货单",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 1063,
+              "y": 359,
+              "w": 117,
+              "h": 36
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "采集箱",
+          "clicked": {
+            "found": false
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "类目分析",
+          "clicked": {
+            "found": false
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "榜单选品",
+          "clicked": {
+            "found": false
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "sl",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "利润趋势",
+          "clicked": {
+            "found": false
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 506.875,
+            "pw": 1561,
+            "ph": 1594
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "sl",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 3 小时前"
+            ]
+          }
+        },
+        {
+          "label": "水印管理",
+          "clicked": {
+            "found": true,
+            "text": "水印管理",
+            "tag": "A",
+            "rect": {
+              "x": 54,
+              "y": 468,
+              "w": 133,
+              "h": 40
+            }
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+            "title": "AI 改图神器 - QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1561,
+            "ph": 810
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+            "title": "AI 改图神器 - QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "AI 改图神器",
+              "AI 商品套图",
+              "促销",
+              "订单",
+              "工具",
+              "水印管理",
+              "浏览器插件",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "sl",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户"
+            ]
+          }
+        },
+        {
+          "label": "17track",
+          "clicked": {
+            "found": false
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1561,
+            "ph": 1296
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 —"
+            ]
+          }
+        },
+        {
+          "label": "营销活动",
+          "clicked": {
+            "found": false
+          },
+          "beforeUrl": "https://qh.jizhangerp.com/ozon/dashboard/",
+          "afterInfo": {
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "w": 1580,
+            "h": 754,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1561,
+            "ph": 1474
+          },
+          "data": {
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "title": "QH",
+            "firstLines": [
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "sl",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "[REDACTED]",
+              "仪表盘",
+              "2026-07-04 · 周六",
+              "自动同步 · 上次 3 小时前"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "targetResults": [
+        {
+          "label": "批量改价",
+          "clicked": {
+            "found": true,
+            "text": "批量改价",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 431,
+              "y": 826,
+              "w": 102,
+              "h": 34
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/promotions/prices/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/promotions/prices/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "价格与折扣",
+              "营销活动",
+              "自动删促销",
+              "订单",
+              "工具",
+              "消息"
+            ]
+          }
+        },
+        {
+          "label": "AI 大模型改图",
+          "clicked": {
+            "found": true,
+            "text": "AI 大模型改图",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 541,
+              "y": 826,
+              "w": 130,
+              "h": 34
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 383.25,
+            "pw": 1873,
+            "ph": 1288
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "AI 改图神器",
+              "AI 商品套图",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "AI 改图神器"
+            ]
+          }
+        },
+        {
+          "label": "1688 采集",
+          "clicked": {
+            "found": true,
+            "text": "1688 采集",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 679,
+              "y": 826,
+              "w": 109,
+              "h": 34
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/products/collect/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/products/collect/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "商品列表",
+              "采集箱",
+              "上架记录",
+              "库存管理",
+              "下架重上",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单"
+            ]
+          }
+        },
+        {
+          "label": "群发消息",
+          "clicked": {
+            "found": true,
+            "text": "群发消息",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 796,
+              "y": 826,
+              "w": 102,
+              "h": 34
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/messaging/templates/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/messaging/templates/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息",
+              "公告中心",
+              "消息模板",
+              "发送记录"
+            ]
+          }
+        },
+        {
+          "label": "批量上架",
+          "clicked": {
+            "found": true,
+            "text": "批量上架",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 906,
+              "y": 826,
+              "w": 102,
+              "h": 34
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/products/import-history/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/products/import-history/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "商品列表",
+              "采集箱",
+              "上架记录",
+              "库存管理",
+              "下架重上",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单"
+            ]
+          }
+        },
+        {
+          "label": "打印发货单",
+          "clicked": {
+            "found": true,
+            "text": "打印发货单",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 1015,
+              "y": 826,
+              "w": 115,
+              "h": 34
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/postings/list/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 57,
+            "pw": 1873,
+            "ph": 961
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/postings/list/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "订单",
+              "退货申请",
+              "利润趋势",
+              "数据大屏",
+              "索要好评"
+            ]
+          }
+        },
+        {
+          "label": "采集箱",
+          "clicked": {
+            "found": true,
+            "text": "采集箱",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 261,
+              "y": 959,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/products/collect/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/products/collect/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "商品列表",
+              "采集箱",
+              "上架记录",
+              "库存管理",
+              "下架重上",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单"
+            ]
+          }
+        },
+        {
+          "label": "类目分析",
+          "clicked": {
+            "found": true,
+            "text": "类目分析",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 743,
+              "y": 959,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/selection/category/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 393,
+            "pw": 1873,
+            "ph": 1297
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/selection/category/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "类目分析",
+              "榜单选品",
+              "中国专区",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息"
+            ]
+          }
+        },
+        {
+          "label": "榜单选品",
+          "clicked": {
+            "found": true,
+            "text": "榜单选品",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 261,
+              "y": 1021,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/selection/top-list/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 226.5,
+            "pw": 1873,
+            "ph": 1131
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/selection/top-list/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "类目分析",
+              "榜单选品",
+              "中国专区",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "消息"
+            ]
+          }
+        },
+        {
+          "label": "利润趋势",
+          "clicked": {
+            "found": true,
+            "text": "利润趋势",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 743,
+              "y": 1021,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/postings/profit-trend/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/postings/profit-trend/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "订单",
+              "退货申请",
+              "利润趋势",
+              "数据大屏",
+              "索要好评"
+            ]
+          }
+        },
+        {
+          "label": "水印管理",
+          "clicked": {
+            "found": true,
+            "text": "水印管理",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 743,
+              "y": 1083,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/tools/watermark/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/tools/watermark/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "工具",
+              "水印管理",
+              "浏览器插件",
+              "消息",
+              "水印管理"
+            ]
+          }
+        },
+        {
+          "label": "17track",
+          "clicked": {
+            "found": true,
+            "text": "17track",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 261,
+              "y": 1145,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/postings/list/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 57,
+            "pw": 1873,
+            "ph": 961
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/postings/list/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "订单",
+              "订单",
+              "退货申请",
+              "利润趋势",
+              "数据大屏",
+              "索要好评"
+            ]
+          }
+        },
+        {
+          "label": "营销活动",
+          "clicked": {
+            "found": true,
+            "text": "营销活动",
+            "tag": "BUTTON",
+            "rect": {
+              "x": 743,
+              "y": 1145,
+              "w": 472,
+              "h": 52
+            }
+          },
+          "beforeUrl": "http://127.0.0.1:5173/ozon/dashboard/?quickAudit=1783143097717",
+          "afterInfo": {
+            "url": "http://127.0.0.1:5173/ozon/promotions/campaigns/",
+            "title": "QH",
+            "w": 1896,
+            "h": 904,
+            "sx": 0,
+            "sy": 0,
+            "pw": 1896,
+            "ph": 904
+          },
+          "data": {
+            "href": "http://127.0.0.1:5173/ozon/promotions/campaigns/",
+            "title": "QH",
+            "firstLines": [
+              "QH",
+              "帮助中心",
+              "使用文档",
+              "公告",
+              "公告中心",
+              "浏览器插件",
+              "插件下载",
+              "当前门店",
+              "去绑定门店",
+              "会员权益",
+              "免费会员",
+              "极",
+              "极点",
+              "0",
+              "当前用户",
+              "未登录",
+              "仪表盘",
+              "商品",
+              "选品",
+              "AI 工具",
+              "推荐",
+              "促销",
+              "价格与折扣",
+              "营销活动",
+              "自动删促销",
+              "订单",
+              "工具",
+              "消息"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "source": {
+      "批量改价": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+        "title": "价格与折扣 - QH",
+        "first": [
+          "sl",
+          "会员权益",
+          "免费会员",
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]"
+        ]
+      },
+      "AI 大模型改图": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "1688 采集": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "群发消息": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "批量上架": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "打印发货单": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "采集箱": {
+        "found": false,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "类目分析": {
+        "found": false,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "榜单选品": {
+        "found": false,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "利润趋势": {
+        "found": false,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 3 小时前"
+        ]
+      },
+      "水印管理": {
+        "found": true,
+        "href": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+        "title": "AI 改图神器 - QH",
+        "first": [
+          "当前门店",
+          "sl",
+          "会员权益",
+          "免费会员",
+          "极",
+          "极点",
+          "0",
+          "当前用户"
+        ]
+      },
+      "17track": {
+        "found": false,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 —"
+        ]
+      },
+      "营销活动": {
+        "found": false,
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "first": [
+          "极",
+          "极点",
+          "0",
+          "当前用户",
+          "[REDACTED]",
+          "仪表盘",
+          "2026-07-04 · 周六",
+          "自动同步 · 上次 3 小时前"
+        ]
+      }
+    },
+    "local": {
+      "批量改价": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/promotions/prices/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "价格与折扣",
+          "营销活动",
+          "自动删促销",
+          "订单",
+          "工具",
+          "消息"
+        ]
+      },
+      "AI 大模型改图": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "AI 改图神器",
+          "AI 商品套图",
+          "促销",
+          "订单",
+          "工具",
+          "消息",
+          "AI 改图神器"
+        ]
+      },
+      "1688 采集": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/products/collect/",
+        "title": "QH",
+        "first": [
+          "上架记录",
+          "库存管理",
+          "下架重上",
+          "选品",
+          "AI 工具",
+          "推荐",
+          "促销",
+          "订单"
+        ]
+      },
+      "群发消息": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/messaging/templates/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "订单",
+          "工具",
+          "消息",
+          "公告中心",
+          "消息模板",
+          "发送记录"
+        ]
+      },
+      "批量上架": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/products/import-history/",
+        "title": "QH",
+        "first": [
+          "上架记录",
+          "库存管理",
+          "下架重上",
+          "选品",
+          "AI 工具",
+          "推荐",
+          "促销",
+          "订单"
+        ]
+      },
+      "打印发货单": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/postings/list/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "订单",
+          "订单",
+          "退货申请",
+          "利润趋势",
+          "数据大屏",
+          "索要好评"
+        ]
+      },
+      "采集箱": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/products/collect/",
+        "title": "QH",
+        "first": [
+          "上架记录",
+          "库存管理",
+          "下架重上",
+          "选品",
+          "AI 工具",
+          "推荐",
+          "促销",
+          "订单"
+        ]
+      },
+      "类目分析": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/selection/category/",
+        "title": "QH",
+        "first": [
+          "榜单选品",
+          "中国专区",
+          "AI 工具",
+          "推荐",
+          "促销",
+          "订单",
+          "工具",
+          "消息"
+        ]
+      },
+      "榜单选品": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/selection/top-list/",
+        "title": "QH",
+        "first": [
+          "榜单选品",
+          "中国专区",
+          "AI 工具",
+          "推荐",
+          "促销",
+          "订单",
+          "工具",
+          "消息"
+        ]
+      },
+      "利润趋势": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/postings/profit-trend/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "订单",
+          "订单",
+          "退货申请",
+          "利润趋势",
+          "数据大屏",
+          "索要好评"
+        ]
+      },
+      "水印管理": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/tools/watermark/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "订单",
+          "工具",
+          "水印管理",
+          "浏览器插件",
+          "消息",
+          "水印管理"
+        ]
+      },
+      "17track": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/postings/list/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "订单",
+          "订单",
+          "退货申请",
+          "利润趋势",
+          "数据大屏",
+          "索要好评"
+        ]
+      },
+      "营销活动": {
+        "found": true,
+        "href": "http://127.0.0.1:5173/ozon/promotions/campaigns/",
+        "title": "QH",
+        "first": [
+          "推荐",
+          "促销",
+          "价格与折扣",
+          "营销活动",
+          "自动删促销",
+          "订单",
+          "工具",
+          "消息"
+        ]
+      }
+    }
+  }
+}

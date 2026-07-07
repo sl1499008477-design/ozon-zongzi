@@ -1,0 +1,90 @@
+{
+  "capturedAt": "2026-07-04T10:31:32.598Z",
+  "note": "Counts and interaction state only. No product text, SKU, offer ID, or row content persisted.",
+  "productList": {
+    "before": {
+      "rows": 20,
+      "resultTitle": "共 580 个"
+    },
+    "after": {
+      "rows": 1,
+      "resultTitle": "共 1 个"
+    },
+    "expectedMatches": 1,
+    "usedQueryLength": 13
+  },
+  "stocks": {
+    "initial": {
+      "active": "全部",
+      "buttons": [
+        {
+          "label": "全部",
+          "count": "580"
+        },
+        {
+          "label": "缺货",
+          "count": "442"
+        },
+        {
+          "label": "低库存",
+          "count": "63"
+        }
+      ],
+      "rows": 20,
+      "title": "商品库存· 共 580 条",
+      "pageSize": "20 条/页"
+    },
+    "缺货": {
+      "active": "缺货",
+      "buttons": [
+        {
+          "label": "全部",
+          "count": "580"
+        },
+        {
+          "label": "缺货",
+          "count": "442"
+        },
+        {
+          "label": "低库存",
+          "count": "63"
+        }
+      ],
+      "rows": 20,
+      "title": "商品库存· 共 442 条",
+      "pageSize": "20 条/页"
+    },
+    "低库存": {
+      "active": "低库存",
+      "buttons": [
+        {
+          "label": "全部",
+          "count": "580"
+        },
+        {
+          "label": "缺货",
+          "count": "442"
+        },
+        {
+          "label": "低库存",
+          "count": "63"
+        }
+      ],
+      "rows": 20,
+      "title": "商品库存· 共 63 条",
+      "pageSize": "20 条/页"
+    }
+  },
+  "reshelf": {
+    "before": {
+      "rows": 20,
+      "resultTitle": "共 580 个"
+    },
+    "after": {
+      "rows": 1,
+      "resultTitle": "共 1 个"
+    },
+    "expectedMatches": 1,
+    "usedQueryLength": 13
+  }
+}

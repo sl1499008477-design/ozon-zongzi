@@ -1,0 +1,35 @@
+{
+  "capturedAt": "2026-07-04T11:09:02.774Z",
+  "route": "/ozon/promotions/campaigns/",
+  "backend": {
+    "hasStore": true,
+    "promotionsCount": 6,
+    "summaryPromotions": 6,
+    "firstKeys": [
+      "id",
+      "date_start",
+      "date_end",
+      "potential_products_count",
+      "is_participating",
+      "participating_products_count",
+      "action_type",
+      "banned_products_count",
+      "with_targeting",
+      "discount_type",
+      "discount_value",
+      "order_amount",
+      "freeze_date",
+      "is_voucher_action",
+      "auto_add_dates",
+      "syncedAt"
+    ]
+  },
+  "frontendChecks": {
+    "usesPromotionCache": true,
+    "hasStatusCounts": true,
+    "refreshCallsReadOnlySync": true,
+    "tableRowsFromPromotions": true,
+    "keepsSourceHeaders": true
+  },
+  "persistedData": "counts and field names only; no promotion titles/descriptions, store ids, product rows, API keys, or Client ID persisted"
+}

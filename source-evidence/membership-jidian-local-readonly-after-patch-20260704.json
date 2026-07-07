@@ -1,0 +1,47 @@
+{
+  "routes": [
+    "/ozon/settings/jidian",
+    "/ozon/settings/membership"
+  ],
+  "validatedAt": "2026-07-04T21:05:00+08:00",
+  "scope": "membership and jidian hidden routes",
+  "sourceOfTruth": "browser local login state plus local readonly endpoints",
+  "readonlyEndpoints": {
+    "jidianBalance": "/jidian/balance",
+    "jidianPricing": "/jidian/pricing",
+    "membershipUsageSummary": "/membership/usage-summary"
+  },
+  "browserEvidence": {
+    "hasStoreTokenInBrowser": true,
+    "jidianShowsBalance": true,
+    "jidianShowsPricing": true,
+    "membershipShowsFreeMember": true,
+    "membershipShowsBoundStoreCount": true,
+    "activationPlaceholderHasSampleCode": false,
+    "membershipTableHeaders": [
+      "权益项",
+      "普通版 年卡",
+      "高级版 年卡",
+      "企业版 年卡",
+      "激活码",
+      "套餐类型",
+      "使用时间",
+      "状态"
+    ]
+  },
+  "privacyAndWriteBoundary": {
+    "activationCodeSubmitted": false,
+    "rechargeWriteCalled": false,
+    "membershipWriteCalled": false,
+    "externalPaymentCalled": false,
+    "ozonWriteEndpointCalled": false,
+    "sampleEntitlementDataInserted": false
+  },
+  "currentLocalState": {
+    "stores": 1,
+    "products": 580,
+    "postings": 466,
+    "jobs": 12,
+    "aiPosterJobs": 0
+  }
+}

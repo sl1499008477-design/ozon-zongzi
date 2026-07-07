@@ -1,0 +1,55 @@
+{
+  "checkedAt": "2026-07-04T07:38:17.035Z",
+  "url": "http://127.0.0.1:5173/ozon/settings/stores/?verify=1783150664336",
+  "modal": {
+    "visible": true,
+    "title": "新增 API 授权门店",
+    "fields": [
+      {
+        "label": "Client-Id",
+        "placeholder": "Ozon Client-Id",
+        "required": true,
+        "type": "text"
+      },
+      {
+        "label": "Api-Key",
+        "placeholder": "Ozon Api-Key",
+        "required": true,
+        "type": "password"
+      },
+      {
+        "label": "标签",
+        "placeholder": "可选，例如：主店",
+        "required": false,
+        "type": "text"
+      }
+    ],
+    "buttons": [
+      "取 消",
+      "新 增"
+    ],
+    "bodyText": "新增 API 授权门店 Client-Id Api-Key 标签 取 消 新 增"
+  },
+  "expected": {
+    "title": "新增 API 授权门店",
+    "fields": [
+      [
+        "Client-Id",
+        "Ozon Client-Id"
+      ],
+      [
+        "Api-Key",
+        "Ozon Api-Key"
+      ],
+      [
+        "标签",
+        "可选，例如：主店"
+      ]
+    ],
+    "buttons": [
+      "取 消",
+      "新 增"
+    ]
+  },
+  "ok": true
+}

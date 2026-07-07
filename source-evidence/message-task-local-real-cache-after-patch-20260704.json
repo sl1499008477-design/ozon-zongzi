@@ -1,0 +1,133 @@
+{
+  "capturedAt": "2026-07-04T10:43:30.147Z",
+  "note": "Local real-cache verification only. No row text, order numbers, product names, or SKU values are persisted.",
+  "routes": {
+    "/ozon/postings/review-request/": {
+      "path": "/ozon/postings/review-request/",
+      "heading": "索要好评",
+      "hasFallback": false,
+      "metricCards": [
+        {
+          "label": "当前筛选",
+          "value": 52
+        },
+        {
+          "label": "待发送",
+          "value": 52
+        },
+        {
+          "label": "已发送",
+          "value": 0
+        },
+        {
+          "label": "失败 / 不可发",
+          "value": 0
+        }
+      ],
+      "buttons": [
+        "文案模板",
+        "任务监控 (0)",
+        "筛选",
+        "重置",
+        "查看结果",
+        "同步当前店铺",
+        "同步全部店铺",
+        "批量发送"
+      ],
+      "placeholders": [
+        "货件编号",
+        "货号",
+        "商品名称",
+        "SKU"
+      ],
+      "selects": [],
+      "alerts": [
+        "建议仅对履约体验稳定、商品质量有把握的订单发送评价邀请，以提升好评转化并降低负面反馈风险。"
+      ],
+      "table": {
+        "headers": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "发运",
+          "图片",
+          "货号，数量 名称",
+          "查看商品",
+          "价格",
+          "仓库",
+          "配送服务 方式",
+          "送达"
+        ],
+        "renderedRows": 20,
+        "hasSendText": true,
+        "hasViewText": true,
+        "hasPageSize20": true,
+        "emptyText": ""
+      },
+      "selectedDisabled": true,
+      "bodyLength": 5378
+    },
+    "/ozon/postings/pickup-reminder/": {
+      "path": "/ozon/postings/pickup-reminder/",
+      "heading": "提醒取货",
+      "hasFallback": false,
+      "metricCards": [
+        {
+          "label": "当前筛选",
+          "value": 314
+        },
+        {
+          "label": "待发送",
+          "value": 314
+        },
+        {
+          "label": "已发送",
+          "value": 0
+        },
+        {
+          "label": "到货未取",
+          "value": 314
+        }
+      ],
+      "buttons": [
+        "任务监控 (0)",
+        "筛选",
+        "重置",
+        "同步当前店铺",
+        "同步全部店铺",
+        "批量发送"
+      ],
+      "placeholders": [
+        "货件编号",
+        "物流单号",
+        "商品名称",
+        "SKU"
+      ],
+      "selects": [],
+      "alerts": [
+        "默认仅展示已到取件点且买家未取的订单；需要排查更多物流阶段时，可切换到货状态和取货状态筛选。"
+      ],
+      "table": {
+        "headers": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "取货状态",
+          "图片",
+          "货号，数量 名称",
+          "物流单号",
+          "配送",
+          "最近物流时间",
+          "查看商品"
+        ],
+        "renderedRows": 20,
+        "hasSendText": true,
+        "hasViewText": true,
+        "hasPageSize20": true,
+        "emptyText": ""
+      },
+      "selectedDisabled": true,
+      "bodyLength": 4978
+    }
+  }
+}

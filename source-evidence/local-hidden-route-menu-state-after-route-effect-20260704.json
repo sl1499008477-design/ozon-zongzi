@@ -1,0 +1,43 @@
+{
+  "capturedAt": "2026-07-04T07:15:02.618Z",
+  "taskSpaceId": 39,
+  "results": [
+    {
+      "name": "jidian",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/settings/jidian/?menuStatePatch=1783149296907",
+        "path": "/ozon/settings/jidian/",
+        "text": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 极点充值 当前余额0极点 极点 自助充值已切换为人工服务 请联系客服为您开通请联系您的服务商客服 查看消费明细",
+        "openGroups": [
+          "工具 水印管理 浏览器插件"
+        ],
+        "selectedItems": []
+      }
+    },
+    {
+      "name": "stores",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/settings/stores/?menuStatePatch=1783149298790",
+        "path": "/ozon/settings/stores/",
+        "text": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 我的 Ozon 门店 0/999 同步仓库 刷 新 新增 店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 同步本帐号所有门店 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+        "openGroups": [
+          "工具 水印管理 浏览器插件"
+        ],
+        "selectedItems": []
+      }
+    },
+    {
+      "name": "templates",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/templates/?menuStatePatch=1783149300686",
+        "path": "/ozon/templates/",
+        "text": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 T 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作 暂无数据",
+        "openGroups": [
+          "消息 公告中心 消息模板 发送记录"
+        ],
+        "selectedItems": []
+      }
+    }
+  ],
+  "ok": false
+}

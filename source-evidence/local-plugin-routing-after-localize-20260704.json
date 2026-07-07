@@ -1,0 +1,29 @@
+{
+  "capturedAt": "2026-07-04T06:31:33.945Z",
+  "taskSpaceId": 37,
+  "results": [
+    {
+      "url": "http://127.0.0.1:5173/ozon/products/favorites/",
+      "title": "QH",
+      "path": "/ozon/products/favorites/",
+      "has404": true,
+      "hasCollect": false,
+      "note": "Matches the source route audit, where /ozon/products/favorites/ is a 404."
+    },
+    {
+      "url": "http://127.0.0.1:5173/ozon/products/collect/edit?id=abc",
+      "title": "QH",
+      "path": "/ozon/products/collect/edit",
+      "has404": false,
+      "hasCollect": true,
+      "note": "The copied extension can open collected item edit links without landing on the 404 page; local clone routes them back to the source-style collect box shell."
+    },
+    {
+      "url": "http://127.0.0.1:5173/ozon/tools/plugin/",
+      "title": "QH",
+      "path": "/ozon/tools/plugin/",
+      "has404": false,
+      "hasPlugin": true
+    }
+  ]
+}

@@ -1,0 +1,133 @@
+{
+  "taskSpaceId": 16,
+  "capturedAt": "2026-07-04T03:55:46.238Z",
+  "before": {
+    "label": "before",
+    "path": "/ozon/selection/category/",
+    "scrollY": 418.5,
+    "formLabels": [
+      "一级类目",
+      "路径",
+      "月销量",
+      "月销售额 ₽",
+      "平均价 ₽",
+      "GMV增长 %",
+      "退货率 %",
+      "卖家数"
+    ],
+    "buttons": [
+      "查 询",
+      "重 置",
+      "更多筛选 ↓"
+    ],
+    "placeholders": [
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大"
+    ],
+    "dialogs": [],
+    "hasBaseFilters": true,
+    "hasExpandedFilters": false,
+    "hasMoreButton": true,
+    "hasCollapseButton": false
+  },
+  "afterExpand": {
+    "label": "after-expand",
+    "path": "/ozon/selection/category/",
+    "scrollY": 418.5,
+    "formLabels": [
+      "一级类目",
+      "路径",
+      "月销量",
+      "月销售额 ₽",
+      "平均价 ₽",
+      "GMV增长 %",
+      "退货率 %",
+      "卖家数",
+      "品牌数",
+      "品牌占比 %",
+      "头部卖家 %",
+      "FBS占比 %"
+    ],
+    "buttons": [
+      "查 询",
+      "重 置",
+      "收起 ↑"
+    ],
+    "placeholders": [
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大"
+    ],
+    "dialogs": [],
+    "hasBaseFilters": true,
+    "hasExpandedFilters": true,
+    "hasMoreButton": false,
+    "hasCollapseButton": true
+  },
+  "afterCollapse": {
+    "label": "after-collapse",
+    "path": "/ozon/selection/category/",
+    "scrollY": 441,
+    "formLabels": [
+      "一级类目",
+      "路径",
+      "月销量",
+      "月销售额 ₽",
+      "平均价 ₽",
+      "GMV增长 %",
+      "退货率 %",
+      "卖家数"
+    ],
+    "buttons": [
+      "查 询",
+      "重 置",
+      "更多筛选 ↓"
+    ],
+    "placeholders": [
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大",
+      "最小",
+      "最大"
+    ],
+    "dialogs": [],
+    "hasBaseFilters": true,
+    "hasExpandedFilters": false,
+    "hasMoreButton": true,
+    "hasCollapseButton": false
+  }
+}

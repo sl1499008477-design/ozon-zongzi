@@ -1,0 +1,46 @@
+{
+  "scope": "product templates local persistence",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/templates/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "currentStoreMutationDuringPageQa": false,
+  "liveStateSummary": {
+    "hasBinding": true,
+    "productTemplates": 0,
+    "productTemplateCache": 0
+  },
+  "isolatedBackendApiFlow": {
+    "dataDir": "/private/tmp/qh-product-template-test",
+    "port": 3302,
+    "createdOk": true,
+    "listedTotal": 1,
+    "updatedDefault": false,
+    "appliedOk": true,
+    "stateCountAfterUpdate": 1,
+    "stateCountAfterDelete": 0
+  },
+  "egoPageQa": {
+    "title": "QH",
+    "path": "/ozon/templates/",
+    "hasTopButtons": true,
+    "hasDefaultFilters": true,
+    "hasColumns": true,
+    "hasEmptyState": true,
+    "rowCount": 0,
+    "modalHasFields": true,
+    "visibleWrapsAfterCancel": 0,
+    "visibleMasksAfterCancel": 0,
+    "rowsAfterCancel": 0
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "templateContent": "not_recorded",
+    "productAndOrderRows": "not_recorded"
+  }
+}

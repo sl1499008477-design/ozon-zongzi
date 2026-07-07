@@ -1,0 +1,56 @@
+{
+  "generatedAt": "2026-07-04T06:40:17.791Z",
+  "scope": "isolated temp backend; no writes to workspace server-data",
+  "tempBase": "http://127.0.0.1:3111",
+  "health": {
+    "ok": true,
+    "service": "qh-local-api",
+    "version": "0.13.42.1-local"
+  },
+  "store": {
+    "id": "local_6efbbd66c0df",
+    "visibleCount": 1,
+    "authStoreListExposesApiKey": false
+  },
+  "credentialsShape": {
+    "hasClientId": true,
+    "hasApiKey": true
+  },
+  "intervals": {
+    "postingsMin": 5,
+    "productsMin": 30,
+    "warehousesMin": 360
+  },
+  "lease": {
+    "acquired": true,
+    "heartbeatRefreshed": true,
+    "released": true,
+    "ttlSecondsSent": 2700
+  },
+  "syncEngineRuntimeCheck": {
+    "type": "PRODUCTS",
+    "initialAcquireTtlSeconds": 2700,
+    "resultOk": true,
+    "fetchedCount": 0
+  },
+  "reports": {
+    "pendingOk": true,
+    "runningOk": true,
+    "successOk": true,
+    "finalStatus": "SUCCESS",
+    "fetchedCount": 0
+  },
+  "imports": {
+    "productImport": {
+      "imported": 0,
+      "needRaw": []
+    },
+    "postingsImport": {
+      "imported": 0
+    },
+    "warehousesImport": {
+      "imported": 0
+    }
+  },
+  "endpointCount": 15
+}

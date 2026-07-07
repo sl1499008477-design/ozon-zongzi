@@ -1,0 +1,101 @@
+{
+  "capturedAt": "2026-07-04T09:02:13.009Z",
+  "syncReports": [
+    {
+      "type": "WAREHOUSES",
+      "ok": true,
+      "durationMs": 1777,
+      "status": "SUCCESS",
+      "fetchedCount": 16,
+      "error": null
+    },
+    {
+      "type": "POSTINGS",
+      "ok": true,
+      "durationMs": 4245,
+      "status": "SUCCESS",
+      "fetchedCount": 460,
+      "error": null
+    },
+    {
+      "type": "PRODUCTS",
+      "ok": true,
+      "durationMs": 4360,
+      "status": "SUCCESS",
+      "fetchedCount": 580,
+      "error": null
+    }
+  ],
+  "state": {
+    "tokenSaved": true,
+    "currentStoreId": "[local-store-id]",
+    "storeCount": 1,
+    "currentStore": {
+      "id": "[local-store-id]",
+      "label": "[client-id]",
+      "clientId": "[client-id]",
+      "apiKeyMasked": "已保存"
+    },
+    "summary": {
+      "products": 580,
+      "postings": 460,
+      "warehouses": 16,
+      "collectBox": 0,
+      "favorites": 0,
+      "lastSyncAt": "2026-07-04T09:02:02.485Z"
+    },
+    "cacheCounts": {
+      "products": 580,
+      "postings": 460,
+      "warehouses": 16,
+      "collectBox": 0,
+      "favorites": 0
+    },
+    "samples": {
+      "products": [
+        {
+          "id": "[product-id]",
+          "offer_id": "[offer-id]",
+          "name": "[product-name]",
+          "syncedAt": "2026-07-04T09:02:09.694Z",
+          "sample": 1
+        },
+        {
+          "id": "[product-id]",
+          "offer_id": "[offer-id]",
+          "name": "[product-name]",
+          "syncedAt": "2026-07-04T09:02:09.694Z",
+          "sample": 2
+        }
+      ],
+      "postings": [
+        {
+          "id": "[posting-id]",
+          "status": "delivering",
+          "syncedAt": "2026-07-04T09:02:04.954Z",
+          "sample": 1
+        },
+        {
+          "id": "[posting-id]",
+          "status": "cancelled",
+          "syncedAt": "2026-07-04T09:02:04.954Z",
+          "sample": 2
+        }
+      ],
+      "warehouses": [
+        {
+          "id": "[warehouse-id]",
+          "name": "[warehouse-name]",
+          "syncedAt": "2026-07-04T09:02:04.239Z",
+          "sample": 1
+        },
+        {
+          "id": "[warehouse-id]",
+          "name": "[warehouse-name]",
+          "syncedAt": "2026-07-04T09:02:04.239Z",
+          "sample": 2
+        }
+      ]
+    }
+  }
+}

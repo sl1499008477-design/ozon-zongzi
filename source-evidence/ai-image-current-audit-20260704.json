@@ -1,0 +1,211 @@
+{
+  "createdAt": "2026-07-04T09:43:01.302Z",
+  "taskId": 53,
+  "pages": {
+    "source": {
+      "url": "https://qh.jizhangerp.com/ozon/ai-image/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/ai-image/",
+        "title": "QH",
+        "w": 1580,
+        "h": 754,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1580,
+        "ph": 754
+      },
+      "dom": {
+        "title": "QH",
+        "path": "/ozon/ai-image/",
+        "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 ****** AI 商品套图 该功能正在灰度内测中，尚未对当前账号开放。",
+        "tokens": [
+          "AI 商品套图",
+          "灰度",
+          "内测",
+          "商品",
+          "套图",
+          "功能"
+        ],
+        "headings": [
+          {
+            "tag": "h1",
+            "text": "QH",
+            "cls": "",
+            "rect": {
+              "x": 52,
+              "y": 12,
+              "w": 27,
+              "h": 32
+            }
+          },
+          {
+            "tag": "h2",
+            "text": "AI 商品套图",
+            "cls": "jsx-fe89c40183e6e233",
+            "rect": {
+              "x": 299,
+              "y": 253,
+              "w": 1197,
+              "h": 28
+            }
+          }
+        ],
+        "buttons": [
+          {
+            "tag": "a",
+            "text": "仪表盘",
+            "cls": "",
+            "rect": {
+              "x": 28,
+              "y": 60,
+              "w": 159,
+              "h": 40
+            }
+          },
+          {
+            "tag": "a",
+            "text": "QH",
+            "cls": "",
+            "rect": {
+              "x": 16,
+              "y": 12,
+              "w": 63,
+              "h": 32
+            }
+          }
+        ],
+        "inputs": [],
+        "cards": [],
+        "tables": []
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-ai-image-current-20260704.png",
+      "screenshotOk": true
+    },
+    "local": {
+      "url": "http://127.0.0.1:5173/ozon/ai-image/",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/ai-image/",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1896,
+        "ph": 904
+      },
+      "dom": {
+        "title": "QH",
+        "path": "/ozon/ai-image/",
+        "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 ****** 会员权益 免费会员 极 极点 0 当前用户 已登录 仪表盘 商品 选品 AI 工具 推荐 AI 改图神器 AI 商品套图 促销 订单 工具 消息 AI 商品套图 该功能正在灰度内测中，尚未对当前账号开放。",
+        "tokens": [
+          "AI 商品套图",
+          "AI 改图神器",
+          "灰度",
+          "内测",
+          "商品",
+          "套图",
+          "功能"
+        ],
+        "headings": [
+          {
+            "tag": "h2",
+            "text": "AI 商品套图",
+            "cls": "",
+            "rect": {
+              "x": 261,
+              "y": 133,
+              "w": 105,
+              "h": 25
+            }
+          }
+        ],
+        "buttons": [
+          {
+            "tag": "a",
+            "text": "QH",
+            "cls": "qh-brand",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "w": 216,
+              "h": 56
+            }
+          },
+          {
+            "tag": "button",
+            "text": "帮助中心 使用文档",
+            "cls": "qh-header-action tone-blue",
+            "rect": {
+              "x": 1252,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "tag": "button",
+            "text": "公告 公告中心",
+            "cls": "qh-header-action tone-default",
+            "rect": {
+              "x": 1343,
+              "y": 11,
+              "w": 80,
+              "h": 34
+            }
+          },
+          {
+            "tag": "button",
+            "text": "浏览器插件 插件下载",
+            "cls": "qh-header-action tone-blue",
+            "rect": {
+              "x": 1429,
+              "y": 11,
+              "w": 96,
+              "h": 34
+            }
+          },
+          {
+            "tag": "button",
+            "text": "当前门店 ******",
+            "cls": "qh-header-action tone-orange",
+            "rect": {
+              "x": 1531,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "tag": "button",
+            "text": "会员权益 免费会员",
+            "cls": "qh-header-action tone-default",
+            "rect": {
+              "x": 1621,
+              "y": 9,
+              "w": 84,
+              "h": 34
+            }
+          }
+        ],
+        "inputs": [],
+        "cards": [
+          {
+            "tag": "div",
+            "text": "AI 商品套图 该功能正在灰度内测中，尚未对当前账号开放。",
+            "cls": "ant-card ant-card-bordered panel-card source-card ai-image-release-card css-dev-only-do-not-override-1pi45l5 css-var-_r_",
+            "rect": {
+              "x": 240,
+              "y": 112,
+              "w": 1632,
+              "h": 158
+            }
+          }
+        ],
+        "tables": []
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-ai-image-current-20260704.png",
+      "screenshotOk": true
+    }
+  },
+  "sensitiveDataPolicy": "long numeric account values and email-like strings are masked before extraction and screenshot capture"
+}

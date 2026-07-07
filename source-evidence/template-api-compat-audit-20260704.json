@@ -1,0 +1,42 @@
+{
+  "capturedAt": "2026-07-04T06:21:01Z",
+  "scope": "Isolated temp backend compatibility check for QH template endpoints used by the copied extension",
+  "tempServer": {
+    "url": "http://127.0.0.1:3107",
+    "dataDir": "/private/tmp/qh-template-regression-20260704"
+  },
+  "realWorkspaceDataUntouched": true,
+  "checks": [
+    {
+      "name": "GET /ozon/templates?pageSize=100 without auth",
+      "status": 401,
+      "expected": "Local backend rejects extension template reads before a shop is bound."
+    },
+    {
+      "name": "POST /local/binding in temp data dir",
+      "status": 200,
+      "expected": "Temporary auth token is created only in the isolated temp data directory."
+    },
+    {
+      "name": "GET /ozon/templates?pageSize=100 with auth",
+      "status": 200,
+      "bodyShape": {
+        "data": [],
+        "items": [],
+        "total": 0,
+        "current": 1,
+        "pageSize": 100
+      }
+    },
+    {
+      "name": "POST /ozon/templates/:id/apply with auth",
+      "status": 200,
+      "bodyShape": {
+        "ok": true,
+        "templateSettings": {},
+        "local": true
+      }
+    }
+  ],
+  "passed": true
+}

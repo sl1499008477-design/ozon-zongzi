@@ -1,0 +1,81 @@
+{
+  "capturedAt": "2026-07-04T03:29:08.238Z",
+  "taskSpaceId": 11,
+  "interactions": [
+    {
+      "label": "帮助中心",
+      "clicked": true,
+      "state": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "popoverTexts": [],
+        "buttons": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "公告",
+      "clicked": true,
+      "state": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "popoverTexts": [],
+        "buttons": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "当前门店",
+      "clicked": true,
+      "state": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "popoverTexts": [],
+        "buttons": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "会员权益",
+      "clicked": true,
+      "state": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "popoverTexts": [],
+        "buttons": [],
+        "bodyHasLogin": false
+      }
+    },
+    {
+      "label": "当前用户",
+      "clicked": true,
+      "state": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "popoverTexts": [],
+        "buttons": [],
+        "bodyHasLogin": false
+      }
+    }
+  ]
+}

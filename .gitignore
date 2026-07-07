@@ -1,0 +1,8 @@
+node_modules/
+.pnpm-store/
+app/node_modules/
+app/dist/
+app/.vite/
+app/.npm-cache/
+server-data/
+.DS_Store

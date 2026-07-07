@@ -1,0 +1,439 @@
+{
+  "capturedAt": "2026-07-04T02:38:40.447Z",
+  "pages": [
+    {
+      "path": "/ozon/dashboard/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "title": "QH",
+        "w": 1976,
+        "h": 1620,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1976,
+        "ph": 1620
+      },
+      "data": {
+        "title": "QH",
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "bodyStart": "仪表盘\n商品\n选品\nAI 工具\n推荐\n促销\n订单\n工具\n消息\nQH\n帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\nsl\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[redacted-phone]\n仪表盘\n2026-07-04 · 周六\n自动同步 · 上次 [redacted-time]\n极点余额 0\n全部同步\n⌘R\n今日订单\n[redacted]\n[redacted]%\nvs 昨日\n今日 GMV\n¥[redacted]\n[redacted]%\nvs 昨日\n待打包\n[redacted]\n立即处理 →\n待发货\n[redacted]\n合计待处理 [redacted]\n在售商品\n[redacted]个\n多店聚合\n库存预警\n[redacted]SKU\n[redacted] 个断货 · 立即补货 →\n今日退货\n0\n退货率 0.0%\n7 日利润\n¥[redacted]\n本周累计\n待办与告警\n2\n2 项待处理\n配置规则\n缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU\n低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU\n业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 [redacted] 单\n待打包\n[redacted]\n[redacted]%\n待发货\n[redacted]\n[redacted]%\n已发货\n[redacted]\n[redacted]%\n已送达\n[redacted]\n[redacted]%\n已取消\n[redacted]\n[redacted]%\n订单趋势\n7 日\n30 日\n快捷操作\n常用操作一键触达 · ⌘K 唤起命令面板\n一键同步全部\n⌘R\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单\n功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\n水印管理\n17track\n营销活动\n本周 GMV\n¥[redacted]\n本周利润\n¥[redacted]\n本周订单\n[redacted]\n退货率\n0.0%\n每 5 分钟自动同步 · 上次\n[redacted-time]",
+        "buttons": [
+          {
+            "text": "全部同步\n⌘R",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-btn"
+          },
+          {
+            "text": "一键同步全部\n⌘R",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn sd-primary"
+          },
+          {
+            "text": "批量改价",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn"
+          },
+          {
+            "text": "AI 大模型改图",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn"
+          },
+          {
+            "text": "1688 采集",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn"
+          },
+          {
+            "text": "群发消息",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn"
+          },
+          {
+            "text": "批量上架",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn"
+          },
+          {
+            "text": "打印发货单",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-qa-btn"
+          },
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": "AI 大模型改图需 Basic 及以上会员（含每日免费试用）",
+            "cls": ""
+          }
+        ],
+        "links": [
+          {
+            "text": "仪表盘",
+            "placeholder": null,
+            "href": "/ozon/dashboard/",
+            "aria": null,
+            "cls": ""
+          },
+          {
+            "text": "QH",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": ""
+          }
+        ],
+        "inputs": [],
+        "cards": [
+          {
+            "text": "待办与告警\n2\n2 项待处理\n配置规则\n缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU\n低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-card"
+          },
+          {
+            "text": "待办与告警\n2\n2 项待处理\n配置规则",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-card-head"
+          },
+          {
+            "text": "业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 [redacted] 单\n待打包\n[redacted]\n[redacted]%\n待发货\n[redacted]\n[redacted]%\n已发货\n[redacted]\n[redacted]%\n已送达\n[redacted]\n[redacted]%\n已取消\n[redacted]\n[redacted]%\n订单趋势\n7 日\n30 日",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-card"
+          },
+          {
+            "text": "业务速览\n数据滞后 ≤ 15 分钟",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-card-head"
+          },
+          {
+            "text": "一键同步全部\n⌘R\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-card"
+          },
+          {
+            "text": "采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\n水印管理\n17track\n营销活动",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-card"
+          },
+          {
+            "text": "采集箱",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "类目分析",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "榜单选品",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "利润趋势",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "AI 大模型改图",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "水印管理",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "17track",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          },
+          {
+            "text": "营销活动",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "sd-feat-card"
+          }
+        ],
+        "topbar": {
+          "x": 215,
+          "y": 0,
+          "w": 1761,
+          "h": 56
+        },
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 215,
+          "h": 1564
+        }
+      }
+    },
+    {
+      "path": "/ozon/tools/plugin/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/tools/plugin/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 44,
+        "ph": 98
+      },
+      "data": {
+        "title": "QH",
+        "url": "https://qh.jizhangerp.com/ozon/tools/plugin/",
+        "bodyStart": "404\nThis page could not be found.",
+        "buttons": [],
+        "links": [],
+        "inputs": [],
+        "cards": [],
+        "topbar": null,
+        "sider": null
+      }
+    },
+    {
+      "path": "/ozon/announcements/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/announcements/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 214,
+        "ph": 942
+      },
+      "data": {
+        "title": "QH",
+        "url": "https://qh.jizhangerp.com/ozon/announcements/",
+        "bodyStart": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[redacted-phone]\n公告中心\n查看平台和分销商发布的更新、维护与业务通知\n全部已读",
+        "buttons": [
+          {
+            "text": "全部已读",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "links": [
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": ""
+          }
+        ],
+        "inputs": [],
+        "cards": [
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-card ant-card-bordered"
+          },
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-card-body"
+          }
+        ],
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 56
+        },
+        "sider": null
+      }
+    },
+    {
+      "path": "/ozon/messaging/templates/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 748,
+        "ph": 715
+      },
+      "data": {
+        "title": "QH",
+        "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+        "bodyStart": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[redacted-phone]\n模板名称\n分类\n请选择\n重 置\n查 询\n展开\n模板列表\n新建模板\n模板名称\t分类\t内容预览\t\n更新时间\n\t操作\n",
+        "buttons": [
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-input-clear-icon ant-input-clear-icon-hidden"
+          },
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-input-clear-icon ant-input-clear-icon-hidden"
+          },
+          {
+            "text": "重 置",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查 询",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading"
+          },
+          {
+            "text": "新建模板",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          }
+        ],
+        "links": [
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": ""
+          },
+          {
+            "text": "展开",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-pro-query-filter-collapse-button"
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": ""
+          },
+          {
+            "text": "",
+            "placeholder": "请输入",
+            "href": null,
+            "aria": null,
+            "cls": "ant-input"
+          },
+          {
+            "text": "",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-select-selection-search-input"
+          },
+          {
+            "text": "",
+            "placeholder": "请输入",
+            "href": null,
+            "aria": null,
+            "cls": "ant-input"
+          },
+          {
+            "text": "",
+            "placeholder": "请选择",
+            "href": null,
+            "aria": null,
+            "cls": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "模板名称\n分类\n请选择\n重 置\n查 询\n展开",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-pro-card ant-pro-table-search ant-pro-table-search-query-filter"
+          },
+          {
+            "text": "模板列表\n新建模板\n模板名称\t分类\t内容预览\t\n更新时间\n\t操作",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-pro-card"
+          },
+          {
+            "text": "模板列表\n新建模板\n模板名称\t分类\t内容预览\t\n更新时间\n\t操作",
+            "placeholder": null,
+            "href": null,
+            "aria": null,
+            "cls": "ant-pro-card-body"
+          }
+        ],
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 56
+        },
+        "sider": null
+      }
+    }
+  ]
+}

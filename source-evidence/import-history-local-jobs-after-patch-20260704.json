@@ -1,0 +1,35 @@
+{
+  "scope": "import history local IMPORT_BY_SKU task wiring",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/products/import-history/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "featuresWired": {
+    "taskSource": "localData.jobs filtered to type IMPORT_BY_SKU",
+    "statusFilters": "local status groups for completed, partial, processing, and failed tasks",
+    "searchFilter": "local search by task id, SKU, offer id, status, and error text",
+    "dateFilter": "local task created/updated time range filter",
+    "emptyState": "kept empty when no real import task exists"
+  },
+  "liveLocalState": {
+    "totalJobs": 10,
+    "importBySkuJobs": 0,
+    "products": 580,
+    "warehouses": 16,
+    "messageHistory": 0
+  },
+  "routeCheck": {
+    "importHistoryRouteHead": 200
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "skus": "not_recorded",
+    "offerIds": "not_recorded",
+    "taskIds": "not_recorded",
+    "productNames": "not_recorded"
+  }
+}

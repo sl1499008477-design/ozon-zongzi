@@ -1,0 +1,103 @@
+{
+  "capturedAt": "2026-07-04T02:03:59.171Z",
+  "sanitizedAt": "2026-07-04T03:58:18.961Z",
+  "note": "Sanitized route inventory only. Detailed source text was removed to avoid retaining source business/store data; use the later page-specific evidence files for structure and interaction checks.",
+  "routes": [
+    {
+      "route": "/ozon/dashboard/",
+      "url": "https://qh.jizhangerp.com/ozon/dashboard/"
+    },
+    {
+      "route": "/ozon/products/list/",
+      "url": "https://qh.jizhangerp.com/ozon/products/list/"
+    },
+    {
+      "route": "/ozon/products/collect/",
+      "url": "https://qh.jizhangerp.com/ozon/products/collect/"
+    },
+    {
+      "route": "/ozon/products/import-history/",
+      "url": "https://qh.jizhangerp.com/ozon/products/import-history/"
+    },
+    {
+      "route": "/ozon/products/stocks/",
+      "url": "https://qh.jizhangerp.com/ozon/products/stocks/"
+    },
+    {
+      "route": "/ozon/products/reshelf/",
+      "url": "https://qh.jizhangerp.com/ozon/products/reshelf/"
+    },
+    {
+      "route": "/ozon/selection/category/",
+      "url": "https://qh.jizhangerp.com/ozon/selection/category/"
+    },
+    {
+      "route": "/ozon/selection/top-list/",
+      "url": "https://qh.jizhangerp.com/ozon/selection/top-list/"
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "url": "https://qh.jizhangerp.com/ozon/selection/china/"
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "url": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/"
+    },
+    {
+      "route": "/ozon/ai-image/",
+      "url": "https://qh.jizhangerp.com/ozon/ai-image/"
+    },
+    {
+      "route": "/ozon/promotions/prices/",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/prices/"
+    },
+    {
+      "route": "/ozon/promotions/campaigns/",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/campaigns/"
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/"
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/list/"
+    },
+    {
+      "route": "/ozon/postings/returns/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/returns/"
+    },
+    {
+      "route": "/ozon/postings/profit-trend/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/profit-trend/"
+    },
+    {
+      "route": "/datascreen/",
+      "url": "https://qh.jizhangerp.com/datascreen/"
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/review-request/"
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/pickup-reminder/"
+    },
+    {
+      "route": "/ozon/tools/watermark/",
+      "url": "https://qh.jizhangerp.com/ozon/tools/watermark/"
+    },
+    {
+      "route": "/ozon/announcements/",
+      "url": "https://qh.jizhangerp.com/ozon/announcements/"
+    },
+    {
+      "route": "/ozon/messaging/templates/",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/templates/"
+    },
+    {
+      "route": "/ozon/messaging/history/",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/history/"
+    }
+  ]
+}

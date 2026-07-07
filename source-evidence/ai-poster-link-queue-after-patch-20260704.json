@@ -1,0 +1,19 @@
+{
+  "capturedAt": "2026-07-04T10:39:02.664Z",
+  "note": "Probe URLs are not persisted in this evidence; only queue text/count flags and textarea length are stored.",
+  "result": {
+    "before": {
+      "queue": "已识别 0 条 待处理图片0 / 10 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里",
+      "summary": "将提交 0 张,消耗 0 极点余额:未知"
+    },
+    "after": {
+      "queue": "已识别 2 条 待处理图片2 / 10 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里",
+      "summary": "将提交 2 张,消耗 2 极点余额:未知",
+      "recognizedCountVisible": true,
+      "pendingCountVisible": true,
+      "submitCountVisible": true,
+      "textareaLength": 59,
+      "hasRawProbeInBody": false
+    }
+  }
+}

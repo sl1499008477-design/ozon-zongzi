@@ -1,0 +1,84 @@
+{
+  "capturedAt": "2026-07-04T12:16:09Z",
+  "page": "/ozon/settings/stores/",
+  "scope": "store settings page local binding, local state refresh, and read-only warehouse sync",
+  "redaction": {
+    "clientId": "omitted",
+    "apiKey": "omitted",
+    "storeName": "omitted",
+    "rawStoreRows": "omitted"
+  },
+  "localState": {
+    "stores": 1,
+    "hasBinding": true,
+    "currentStoreIdPresent": true,
+    "products": 580,
+    "postings": 466,
+    "warehouses": 16,
+    "jobsBeforeWarehouseSync": 10,
+    "jobsAfterWarehouseSync": 11,
+    "lastSyncAtPresent": true
+  },
+  "validatedInteractions": {
+    "refresh": {
+      "source": "/local/state",
+      "result": "store and warehouse counts are read from local state"
+    },
+    "syncWarehouses": {
+      "source": "/local/sync/WAREHOUSES",
+      "ozonBehavior": "read-only warehouse list refresh through the local backend",
+      "ok": true,
+      "jobStatus": "SUCCESS",
+      "fetchedCount": 16,
+      "beforeWarehouses": 16,
+      "afterWarehouses": 16
+    },
+    "showDisabledStores": {
+      "behavior": "local filter toggle only"
+    },
+    "clearBinding": {
+      "executed": false,
+      "reason": "would intentionally remove the current local binding"
+    }
+  },
+  "visualQa": {
+    "tool": "ego-browser",
+    "desktopViewport": {
+      "width": 1920,
+      "height": 1059,
+      "storesSettingsCardWidth": 1656,
+      "currentLineWidth": 1615,
+      "headers": [
+        "门店编号",
+        "ClientId",
+        "Api-Key",
+        "标签",
+        "公司",
+        "INN",
+        "货币",
+        "Premium",
+        "状态",
+        "本地仓库",
+        "最后同步",
+        "添加时间",
+        "操作"
+      ],
+      "badButtons": 0,
+      "buttonOverlaps": 0,
+      "warehouseCountVisible": true,
+      "localWarehouseColumnVisible": true,
+      "lastSyncColumnVisible": true
+    },
+    "mobileWidthProbe": {
+      "bodyClientWidth": 320,
+      "warehouseCountVisible": true,
+      "localWarehouseColumnVisible": true,
+      "lastSyncColumnVisible": true,
+      "badButtons": 0,
+      "buttonOverlaps": 0
+    },
+    "devServerNote": "The 5173 Vite process was restarted after an old ego tab initially reused stale Vite modules; a cache-busted hard navigation confirmed the new module."
+  },
+  "noWriteEndpointsCalled": true,
+  "sampleDataInserted": false
+}

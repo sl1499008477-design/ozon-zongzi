@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-07-04T11:04:39.426Z",
+  "route": "/ozon/promotions/campaigns/",
+  "checks": {
+    "campaignTableUsesRealEmpty": true,
+    "noPersistentLoading": true,
+    "keepsSourceSearch": true,
+    "keepsStatusButtons": true
+  },
+  "persistedData": "code structure only; no source campaign counts, source activity names, product rows, API keys, or Client ID persisted"
+}

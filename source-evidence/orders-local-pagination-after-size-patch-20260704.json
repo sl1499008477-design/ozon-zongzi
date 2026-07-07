@@ -1,0 +1,29 @@
+{
+  "capturedAt": "2026-07-04T10:21:20.466Z",
+  "note": "No table row text persisted.",
+  "local": {
+    "tableHeaders": [
+      "倒计时",
+      "货件 / 状态",
+      "店铺",
+      "商品",
+      "仓库 / 配送",
+      "订单金额",
+      "利润",
+      "操作"
+    ],
+    "renderedRows": 0,
+    "rowHeights": [],
+    "tableRect": {
+      "x": 261,
+      "y": 492,
+      "w": 1568,
+      "h": 269
+    },
+    "paginationRect": null,
+    "paginationText": "",
+    "sizeLabelText": "",
+    "sizeLabelRect": null,
+    "hasChinesePageSize": false
+  }
+}

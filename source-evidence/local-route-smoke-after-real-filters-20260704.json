@@ -1,0 +1,268 @@
+{
+  "capturedAt": "2026-07-04T10:33:10.607Z",
+  "note": "Local route smoke only. Failure means missing root, Vite error overlay, or near-blank body; heading-less card pages are allowed.",
+  "checked": 26,
+  "failures": [],
+  "results": [
+    {
+      "path": "/ozon/dashboard/",
+      "documentTitle": "QH",
+      "heading": "仪表盘",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 667
+    },
+    {
+      "path": "/ozon/products/list/",
+      "documentTitle": "QH",
+      "heading": "商品列表",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 3133
+    },
+    {
+      "path": "/ozon/products/collect/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 311
+    },
+    {
+      "path": "/ozon/products/import-history/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 317
+    },
+    {
+      "path": "/ozon/products/stocks/",
+      "documentTitle": "QH",
+      "heading": "库存管理",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 2765
+    },
+    {
+      "path": "/ozon/products/reshelf/",
+      "documentTitle": "QH",
+      "heading": "下架重上",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 3344
+    },
+    {
+      "path": "/ozon/selection/category/",
+      "documentTitle": "QH",
+      "heading": "类目分析",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 590
+    },
+    {
+      "path": "/ozon/selection/market/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 143
+    },
+    {
+      "path": "/ozon/ai-image/editor/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 143
+    },
+    {
+      "path": "/ozon/ai-image/",
+      "documentTitle": "QH",
+      "heading": "AI 商品套图",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 131
+    },
+    {
+      "path": "/ozon/promotions/prices/",
+      "documentTitle": "QH",
+      "heading": "价格与折扣",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 229
+    },
+    {
+      "path": "/ozon/promotions/campaigns/",
+      "documentTitle": "QH",
+      "heading": "促销活动",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 301
+    },
+    {
+      "path": "/ozon/promotions/auto-delete/",
+      "documentTitle": "QH",
+      "heading": "促销活动自动清理 · 利润保护",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 361
+    },
+    {
+      "path": "/ozon/postings/list/",
+      "documentTitle": "QH",
+      "heading": "订单",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 1763
+    },
+    {
+      "path": "/ozon/postings/returns/",
+      "documentTitle": "QH",
+      "heading": "退货 / 退款",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 330
+    },
+    {
+      "path": "/ozon/postings/profit-trend/",
+      "documentTitle": "QH",
+      "heading": "利润趋势",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 519
+    },
+    {
+      "path": "/ozon/tools/watermark/",
+      "documentTitle": "QH",
+      "heading": "水印工具",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 290
+    },
+    {
+      "path": "/ozon/tools/plugin/",
+      "documentTitle": "QH",
+      "heading": "QH 浏览器插件",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 423
+    },
+    {
+      "path": "/ozon/announcements/",
+      "documentTitle": "QH",
+      "heading": "公告中心",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 1460
+    },
+    {
+      "path": "/ozon/messaging/templates/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 191
+    },
+    {
+      "path": "/ozon/messaging/history/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 191
+    },
+    {
+      "path": "/ozon/settings/stores/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 293
+    },
+    {
+      "path": "/ozon/settings/membership/",
+      "documentTitle": "QH",
+      "heading": "会员权益",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 941
+    },
+    {
+      "path": "/ozon/settings/jidian/",
+      "documentTitle": "QH",
+      "heading": "极点充值",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 165
+    },
+    {
+      "path": "/ozon/templates/",
+      "documentTitle": "QH",
+      "heading": "",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": true,
+      "hasDataScreen": false,
+      "bodyLength": 188
+    },
+    {
+      "path": "/datascreen/",
+      "documentTitle": "QH · 订单数据大屏",
+      "heading": "QH · 订单数据中心",
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "hasShell": false,
+      "hasDataScreen": true,
+      "bodyLength": 586
+    }
+  ]
+}

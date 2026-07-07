@@ -1,0 +1,403 @@
+{
+  "templates": {
+    "url": "http://127.0.0.1:5173/ozon/messaging/templates/",
+    "title": "QH",
+    "tokens": {
+      "contentPreview": true,
+      "updatedAt": true,
+      "sendContent": false,
+      "status": false,
+      "sentAt": false,
+      "noTemplate": false,
+      "noHistory": false,
+      "spinner": true,
+      "refreshIcon": true,
+      "settingsIcon": true,
+      "expand": true
+    },
+    "labels": [
+      "模板名称",
+      "分类"
+    ],
+    "buttons": [
+      {
+        "text": "QH",
+        "cls": "qh-brand",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 216,
+          "h": 56
+        }
+      },
+      {
+        "text": "帮助中心\n使用文档",
+        "cls": "qh-header-action tone-blue",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2230,
+          "y": 11,
+          "w": 84,
+          "h": 34
+        }
+      },
+      {
+        "text": "公告\n公告中心",
+        "cls": "qh-header-action tone-default",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2321,
+          "y": 11,
+          "w": 80,
+          "h": 34
+        }
+      },
+      {
+        "text": "浏览器插件\n插件下载",
+        "cls": "qh-header-action tone-blue",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2407,
+          "y": 11,
+          "w": 96,
+          "h": 34
+        }
+      },
+      {
+        "text": "当前门店\n去绑定门店",
+        "cls": "qh-header-action tone-orange",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2509,
+          "y": 11,
+          "w": 91,
+          "h": 34
+        }
+      },
+      {
+        "text": "会员权益\n免费会员",
+        "cls": "qh-header-action tone-default",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2605,
+          "y": 9,
+          "w": 84,
+          "h": 34
+        }
+      },
+      {
+        "text": "重 置",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 886,
+          "y": 133,
+          "w": 64,
+          "h": 32
+        }
+      },
+      {
+        "text": "查 询",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 958,
+          "y": 133,
+          "w": 64,
+          "h": 32
+        }
+      },
+      {
+        "text": "展开",
+        "cls": "",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 1030,
+          "y": 133,
+          "w": 29,
+          "h": 32
+        }
+      },
+      {
+        "text": "新建模板",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2653,
+          "y": 222,
+          "w": 111,
+          "h": 32
+        }
+      },
+      {
+        "text": "",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-sm ant-btn-icon-only source-icon-button",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2775,
+          "y": 226,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "text": "",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-sm ant-btn-icon-only source-icon-button",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2811,
+          "y": 226,
+          "w": 24,
+          "h": 24
+        }
+      }
+    ],
+    "cards": [
+      {
+        "text": "模板名称 分类 请选择 重 置 查 询 展开",
+        "rect": {
+          "x": 240,
+          "y": 112,
+          "w": 2616,
+          "h": 73
+        }
+      },
+      {
+        "text": "模板列表 新建模板 模板名称 分类 内容预览 更新时间 操作 模板名称 分类 内容预览 更新时间 操作",
+        "rect": {
+          "x": 240,
+          "y": 201,
+          "w": 2616,
+          "h": 198
+        }
+      }
+    ],
+    "headers": [
+      "模板名称",
+      "分类",
+      "内容预览",
+      "更新时间",
+      "操作"
+    ],
+    "inputs": [
+      {
+        "placeholder": "请输入",
+        "value": "",
+        "type": "text"
+      },
+      {
+        "placeholder": "",
+        "value": "",
+        "type": "text"
+      }
+    ]
+  },
+  "history": {
+    "url": "http://127.0.0.1:5173/ozon/messaging/history/",
+    "title": "QH",
+    "tokens": {
+      "contentPreview": false,
+      "updatedAt": false,
+      "sendContent": true,
+      "status": true,
+      "sentAt": true,
+      "noTemplate": false,
+      "noHistory": false,
+      "spinner": true,
+      "refreshIcon": true,
+      "settingsIcon": true,
+      "expand": true
+    },
+    "labels": [
+      "接收人",
+      "使用模板"
+    ],
+    "buttons": [
+      {
+        "text": "QH",
+        "cls": "qh-brand",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 216,
+          "h": 56
+        }
+      },
+      {
+        "text": "帮助中心\n使用文档",
+        "cls": "qh-header-action tone-blue",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2230,
+          "y": 11,
+          "w": 84,
+          "h": 34
+        }
+      },
+      {
+        "text": "公告\n公告中心",
+        "cls": "qh-header-action tone-default",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2321,
+          "y": 11,
+          "w": 80,
+          "h": 34
+        }
+      },
+      {
+        "text": "浏览器插件\n插件下载",
+        "cls": "qh-header-action tone-blue",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2407,
+          "y": 11,
+          "w": 96,
+          "h": 34
+        }
+      },
+      {
+        "text": "当前门店\n去绑定门店",
+        "cls": "qh-header-action tone-orange",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2509,
+          "y": 11,
+          "w": 91,
+          "h": 34
+        }
+      },
+      {
+        "text": "会员权益\n免费会员",
+        "cls": "qh-header-action tone-default",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2605,
+          "y": 9,
+          "w": 84,
+          "h": 34
+        }
+      },
+      {
+        "text": "重 置",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 940,
+          "y": 133,
+          "w": 64,
+          "h": 32
+        }
+      },
+      {
+        "text": "查 询",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 1011,
+          "y": 133,
+          "w": 64,
+          "h": 32
+        }
+      },
+      {
+        "text": "展开",
+        "cls": "",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 1083,
+          "y": 133,
+          "w": 29,
+          "h": 32
+        }
+      },
+      {
+        "text": "",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-sm ant-btn-icon-only source-icon-button",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2775,
+          "y": 222,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "text": "",
+        "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-sm ant-btn-icon-only source-icon-button",
+        "aria": "",
+        "title": "",
+        "rect": {
+          "x": 2811,
+          "y": 222,
+          "w": 24,
+          "h": 24
+        }
+      }
+    ],
+    "cards": [
+      {
+        "text": "接收人 使用模板 重 置 查 询 展开",
+        "rect": {
+          "x": 240,
+          "y": 112,
+          "w": 2616,
+          "h": 73
+        }
+      },
+      {
+        "text": "历史记录 接收人 使用模板 发送内容 状态 发送时间 操作 接收人 使用模板 发送内容 状态 发送时间 操作",
+        "rect": {
+          "x": 240,
+          "y": 201,
+          "w": 2616,
+          "h": 188
+        }
+      }
+    ],
+    "headers": [
+      "接收人",
+      "使用模板",
+      "发送内容",
+      "状态",
+      "发送时间",
+      "操作"
+    ],
+    "inputs": [
+      {
+        "placeholder": "请输入",
+        "value": "",
+        "type": "text"
+      },
+      {
+        "placeholder": "请输入",
+        "value": "",
+        "type": "text"
+      }
+    ]
+  }
+}

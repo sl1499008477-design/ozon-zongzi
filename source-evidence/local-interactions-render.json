@@ -1,0 +1,117 @@
+{
+  "checkedAt": "2026-07-04T03:23:47.611Z",
+  "taskSpaceId": 9,
+  "interactions": [
+    {
+      "label": "/ozon/messaging/templates/ / click 新建模板 / clicked=true",
+      "route": "/ozon/messaging/templates/",
+      "state": {
+        "path": "/ozon/messaging/templates/",
+        "modalTitles": [
+          "新建模板"
+        ],
+        "drawerTitles": [],
+        "buttons": [
+          "取 消",
+          "保 存"
+        ],
+        "labels": [
+          "模板名称",
+          "分类",
+          "所属分类",
+          "消息内容"
+        ],
+        "placeholders": [
+          "给模板起个名字，例如：发货通知",
+          "输入消息内容，支持变量：{customer_name}, {order_id}, {tracking_number}",
+          "请选择"
+        ],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "label": "/ozon/postings/review-request/ / click 文案模板 / clicked=true",
+      "route": "/ozon/postings/review-request/",
+      "state": {
+        "path": "/ozon/postings/review-request/",
+        "modalTitles": [
+          "索要好评文案模板"
+        ],
+        "drawerTitles": [],
+        "buttons": [
+          "新建模板"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "label": "/ozon/postings/review-request/ / click 任务监控 / clicked=true",
+      "route": "/ozon/postings/review-request/",
+      "state": {
+        "path": "/ozon/postings/review-request/",
+        "modalTitles": [
+          "索要好评文案模板"
+        ],
+        "drawerTitles": [
+          "任务监控"
+        ],
+        "buttons": [
+          "新建模板"
+        ],
+        "labels": [],
+        "placeholders": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "label": "/ozon/postings/pickup-reminder/ / click 任务监控 / clicked=true",
+      "route": "/ozon/postings/pickup-reminder/",
+      "state": {
+        "path": "/ozon/postings/pickup-reminder/",
+        "modalTitles": [],
+        "drawerTitles": [
+          "任务监控"
+        ],
+        "buttons": [],
+        "labels": [],
+        "placeholders": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "label": "/ozon/tools/watermark/ / click 新建模板 / clicked=true",
+      "route": "/ozon/tools/watermark/",
+      "state": {
+        "path": "/ozon/tools/watermark/",
+        "modalTitles": [
+          "创建水印/边框模板"
+        ],
+        "drawerTitles": [],
+        "buttons": [
+          "恢复默认",
+          "取 消",
+          "创 建"
+        ],
+        "labels": [
+          "模板名称",
+          "水印类型",
+          "文字内容",
+          "字体",
+          "字体大小",
+          "字体颜色",
+          "不透明度",
+          "旋转角度（度）",
+          "边距（占短边 %）",
+          "水印位置"
+        ],
+        "placeholders": [
+          "例如：店铺主水印",
+          "例如：OZON STORE"
+        ],
+        "hasSampleStoreData": false
+      }
+    }
+  ]
+}

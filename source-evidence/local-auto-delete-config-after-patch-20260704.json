@@ -1,0 +1,66 @@
+{
+  "capturedAt": "2026-07-04T10:49:07.806Z",
+  "page": {
+    "url": "http://127.0.0.1:5173/ozon/promotions/auto-delete/?autoDeletePatch=1783162030",
+    "title": "QH",
+    "w": 1896,
+    "h": 904,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1896,
+    "ph": 904
+  },
+  "data": {
+    "title": "QH",
+    "path": "/ozon/promotions/auto-delete/",
+    "bodyHas": {
+      "autoConfig": true,
+      "switchText": true,
+      "maxDiscount": true,
+      "daily": true,
+      "queryType": true,
+      "currentActivities": true
+    },
+    "configCardText": "自动清理配置\nID\n自动清理\n开\n关\n最大可接受折扣 %\n检测频率\n每天一次",
+    "configRect": {
+      "x": 240,
+      "y": 180,
+      "w": 1632,
+      "h": 161
+    },
+    "buttons": [
+      "帮助中心\n使用文档",
+      "公告\n公告中心",
+      "浏览器插件\n插件下载",
+      "当前门店\nID",
+      "会员权益\n免费会员",
+      "开\n关",
+      "重 置",
+      "查 询",
+      "展开",
+      "从 Ozon 同步",
+      "刷新"
+    ],
+    "labels": [
+      "自动清理\n开\n关",
+      "最大可接受折扣 %",
+      "检测频率\n每天一次",
+      "活动名称",
+      "类型\n请选择"
+    ],
+    "selectTexts": [],
+    "tableHeaders": [
+      "活动名称",
+      "类型",
+      "折扣力度",
+      "商品数量",
+      "有效期",
+      "状态",
+      "操作"
+    ],
+    "queryText": "活动名称\n类型\n请选择\n重 置\n查 询\n展开",
+    "tableText": "活动名称\t类型\t折扣力度\t商品数量\t有效期\t状态\t操作\n\n活动名称\n\t\n类型\n\t\n折扣力度\n\t\n商品数量\n\t\n有效期\n\t\n状态\n\t\n操作\n\n",
+    "leaks": true
+  },
+  "screenshotPath": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-auto-delete-config-after-patch-20260704.png"
+}

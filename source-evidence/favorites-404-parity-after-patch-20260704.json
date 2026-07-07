@@ -1,0 +1,28 @@
+{
+  "route": "/ozon/products/favorites",
+  "validatedAt": "2026-07-04T22:05:00+08:00",
+  "scope": "source and local 404 parity for extension favorites route",
+  "sourceEvidence": {
+    "path": "/ozon/products/favorites/",
+    "documentTitle": "404: This page could not be found.",
+    "has404": true,
+    "hasNotFoundText": true,
+    "hasExtraButtons": false
+  },
+  "localEvidence": {
+    "path": "/ozon/products/favorites/",
+    "documentTitle": "404: This page could not be found.",
+    "has404": true,
+    "hasNotFoundText": true,
+    "hasExtraButtons": false
+  },
+  "decision": {
+    "implementedFavoritesPage": false,
+    "reason": "The live source route is also a 404; local parity requires matching the source error page rather than inventing a favorites page."
+  },
+  "writeBoundary": {
+    "sampleFavoriteDataInserted": false,
+    "favoriteApiCalled": false,
+    "ozonWriteEndpointCalled": false
+  }
+}

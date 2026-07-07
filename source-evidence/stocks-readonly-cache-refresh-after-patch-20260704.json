@@ -1,0 +1,39 @@
+{
+  "scope": "stock management readonly cache refresh",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/products/stocks/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "featuresWired": {
+    "refreshButton": "POST /local/sync/WAREHOUSES and POST /local/sync/PRODUCTS readonly cache refresh",
+    "queryButton": "reports current local filtered row count",
+    "warehouseBadge": "uses local warehouses cache count",
+    "stockMetrics": "derived from local products cache"
+  },
+  "liveCacheSummaryBeforeRefresh": {
+    "products": 580,
+    "warehouses": 16
+  },
+  "liveCacheSummaryAfterRefresh": {
+    "products": 580,
+    "warehouses": 16,
+    "outOfStock": 442,
+    "lowStock": 63,
+    "messageHistory": 0
+  },
+  "routeCheck": {
+    "stocksRouteHead": 200
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "productNames": "not_recorded",
+    "skus": "not_recorded",
+    "offerIds": "not_recorded",
+    "warehouseNames": "not_recorded"
+  }
+}

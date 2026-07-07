@@ -1,0 +1,138 @@
+{
+  "capturedAt": "2026-07-04T05:05:53.275Z",
+  "taskSpaceId": 25,
+  "note": "Selection pages after source toolbar patch; structural fields only.",
+  "pages": [
+    {
+      "route": "/ozon/selection/top-list/",
+      "data": {
+        "path": "/ozon/selection/top-list/",
+        "headings": [
+          "榜单选品"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "热销商品",
+          "热销新品",
+          "潜力商品",
+          "蓝海商品",
+          "高增长",
+          "低价高销",
+          "高加购",
+          "蓝海量级",
+          "查询",
+          "重置",
+          "更多筛选 ↓",
+          "批量加入草稿箱",
+          "清空选择",
+          "‹",
+          "1",
+          "›"
+        ],
+        "labels": [
+          "7天",
+          "28天",
+          "金额单位",
+          "₽",
+          "¥",
+          "分区",
+          "一级类目全部",
+          "筛选",
+          "商品名称",
+          "SKU",
+          "批量 SKUS",
+          "月销量~",
+          "月销售额 ₽~",
+          "平均价 ₽~",
+          "月销售额环比 %~",
+          "发货模式任意FBOFBSRFBSCB · 跨境",
+          "任意",
+          "FBO",
+          "FBS",
+          "RFBS",
+          "CB · 跨境"
+        ],
+        "alerts": [],
+        "pagerText": "共 0 条 · 第 1 / 1 页‹1›每页20条",
+        "emptyTexts": [
+          "暂无榜单数据"
+        ],
+        "hasTopDescription": true,
+        "hasAmountUnit": true,
+        "hasPartition": true,
+        "hasPager": true,
+        "hasSampleStoreData": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "data": {
+        "path": "/ozon/selection/china/",
+        "headings": [
+          "中国专区"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "高增长",
+          "低价高销",
+          "高加购",
+          "中国对标",
+          "查询",
+          "重置",
+          "更多筛选 ↓",
+          "批量加入草稿箱",
+          "清空选择",
+          "‹",
+          "1",
+          "›"
+        ],
+        "labels": [
+          "7天",
+          "28天",
+          "金额单位",
+          "₽",
+          "¥",
+          "分区",
+          "含零销量商品",
+          "一级类目全部",
+          "筛选",
+          "商品名称",
+          "SKU",
+          "批量 SKUS",
+          "月销量~",
+          "月销售额 ₽~",
+          "平均价 ₽~",
+          "月销售额环比 %~",
+          "发货模式任意FBOFBSRFBSCB · 跨境",
+          "任意",
+          "FBO",
+          "FBS",
+          "RFBS",
+          "CB · 跨境"
+        ],
+        "alerts": [
+          "中国馆对标中国专区来自中国馆/跨境来源标记，默认隐藏当期零销量商品；勾选“含零销量商品”可查看补录 SKU。"
+        ],
+        "pagerText": "共 0 条 · 第 1 / 1 页‹1›每页20条",
+        "emptyTexts": [
+          "暂无榜单数据"
+        ],
+        "hasTopDescription": true,
+        "hasAmountUnit": true,
+        "hasPartition": true,
+        "hasPager": true,
+        "hasSampleStoreData": false,
+        "hasGlobalHead": false
+      }
+    }
+  ]
+}

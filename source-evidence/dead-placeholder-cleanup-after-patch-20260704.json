@@ -1,0 +1,22 @@
+{
+  "validatedAt": "2026-07-04T21:45:00+08:00",
+  "scope": "dead placeholder component and generic query feedback cleanup",
+  "changes": {
+    "removedUnusedSourceSimpleTablePage": true,
+    "genericTaskRecordedPlaceholderRemaining": false,
+    "genericNoMoreDataPlaceholderRemaining": false,
+    "genericNoMoreFilterPlaceholderRemaining": false,
+    "searchFeedbackShowsResultCounts": true
+  },
+  "remainingTaskRecordedCopy": {
+    "route": "/ozon/tools/ai-poster-records",
+    "meaning": "real local AI_POSTER task record",
+    "placeholder": false
+  },
+  "validation": {
+    "frontendBuildPassed": true,
+    "diffWhitespaceCheckPassed": true,
+    "sampleDataInserted": false,
+    "ozonWriteEndpointCalled": false
+  }
+}

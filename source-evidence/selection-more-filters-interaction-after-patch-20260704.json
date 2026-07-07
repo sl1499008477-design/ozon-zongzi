@@ -1,0 +1,79 @@
+{
+  "scope": "selection pages more-filter interaction",
+  "validatedAt": "2026-07-04T21:24:12+08:00",
+  "routes": [
+    "/ozon/selection/top-list/",
+    "/ozon/selection/china/"
+  ],
+  "sourceEvidence": {
+    "file": "source-evidence/fresh-menu-token-audit-20260704-continued.json",
+    "sourceTokensUsed": [
+      "未启用额外筛选",
+      "更多筛选 ↓",
+      "月销量",
+      "月销售额 ₽",
+      "平均价 ₽",
+      "月销售额环比 %",
+      "最小",
+      "最大"
+    ]
+  },
+  "changes": {
+    "removedPlaceholderToast": "更多筛选 no longer opens a local-only placeholder message",
+    "initialState": "shows 未启用额外筛选 and source-style min/max range placeholders",
+    "activeState": "clicking 更多筛选 enables market range inputs and changes the control to 收起筛选 ↑",
+    "dataBoundary": "market metric filters only apply when corresponding numeric snapshot fields exist; no market metrics are fabricated"
+  },
+  "browserQa": {
+    "topList": {
+      "before": {
+        "hasInactiveText": true,
+        "hasActiveText": false,
+        "moreButtonText": "更多筛选 ↓",
+        "rangePlaceholders": ["最小", "最大"],
+        "marketRangeInputsDisabled": true,
+        "oldPlaceholderToastText": false
+      },
+      "afterClick": {
+        "hasInactiveText": false,
+        "hasActiveText": true,
+        "moreButtonText": "收起筛选 ↑",
+        "marketRangeInputsDisabled": false
+      }
+    },
+    "china": {
+      "before": {
+        "hasInactiveText": true,
+        "hasActiveText": false,
+        "moreButtonText": "更多筛选 ↓",
+        "rangePlaceholders": ["最小", "最大"],
+        "marketRangeInputsDisabled": true,
+        "oldPlaceholderToastText": false
+      },
+      "afterClick": {
+        "hasInactiveText": false,
+        "hasActiveText": true,
+        "moreButtonText": "收起筛选 ↑",
+        "marketRangeInputsDisabled": false
+      }
+    }
+  },
+  "currentLocalState": {
+    "stores": 1,
+    "products": 580,
+    "postings": 466,
+    "announcements": 0,
+    "jobs": 13,
+    "aiPosterJobs": 0,
+    "messageHistory": 0,
+    "productTemplates": 0
+  },
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "redaction": {
+    "rawCredentials": "not_recorded",
+    "storeIdentifier": "not_recorded",
+    "productNames": "not_recorded",
+    "skus": "not_recorded"
+  }
+}

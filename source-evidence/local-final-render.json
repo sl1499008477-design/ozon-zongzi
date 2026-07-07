@@ -1,0 +1,130 @@
+{
+  "checkedAt": "2026-07-04T03:12:05.159Z",
+  "taskSpaceId": 6,
+  "routes": [
+    {
+      "name": "datascreen",
+      "url": "http://127.0.0.1:5173/datascreen/",
+      "info": {
+        "url": "http://127.0.0.1:5173/datascreen/",
+        "title": "仪表盘 - QH",
+        "w": 1920,
+        "h": 1059,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1897,
+        "ph": 1186
+      },
+      "data": {
+        "title": "仪表盘 - QH",
+        "bodyLength": 732,
+        "textSample": "QH\n帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n未登录\n仪表盘\n商品\n选品\nAI 工具\n推荐\n促销\n订单\n订单\n退货申请\n利润趋势\n数据大屏\n索要好评\n提醒取货\n工具\n消息\n数据大屏\n2026-07-04 · 周六\n自动同步 · 上次 —\n极点余额 0\n全部同步\n⌘R\nQH · 订单数据中心\n\nORDER COMMAND CENTER · 全部店铺 · 数据每 60s 自动刷新\n\n7天\n15天\n30天\n全 屏\n返回订单\n11:12:05\n2026年07月04日星期六\n今日订单\n0\n— 持平\n今日销售额\n¥0\n— 持平\n今日预估利润\n¥0\n— 持平\n近 7 天订单\n0\n— 持平 vs 前 7 天\n近 30 天销售额\n¥0\n0 单\n近 30 天退货率\n0.0%\n退货 0 单\n订单状态分布\n0\n\n近 30 天订单\n\n暂无数据\n店铺战力榜 · 今日\n0 单\n\n今日暂无订单\n\n订单量 × 销售额趋势 · 近 30 天\n区间销售额 ¥0 · 利润 ¥0\n1\n0\n06-05\n06-09\n06-13\n06-17\n06-21\n06-25\n06-29\n07-03\n07-04\n\n暂无订单数据 — 请先在「订单」页同步\n\n今日时段分布\n0时\n3时\n6时\n9时\n12时\n15时\n18时\n21时\n配送渠道 TOP\n\n暂无数据\n\n实时订单流\nLIVE\n\n暂无订单 — 等待同步\n\n今日热销 TOP\n\n今日暂无成交商品\n\n待备货\n0\n待发运\n0\n运输中\n0\n有争议\n0\n已取消\n0\n数据来源:本地同步缓存(状态为近 30 天口径) · RUB 按 ≈0.084 折算 CNY · 等待绑定店铺\n⌘K",
+        "visibleButtons": [
+          "帮助中心\n使用文档",
+          "公告\n公告中心",
+          "浏览器插件\n插件下载",
+          "当前门店\n去绑定门店",
+          "会员权益\n免费会员",
+          "全部同步\n⌘R",
+          "全 屏",
+          "返回订单",
+          "⌘K"
+        ],
+        "headings": [
+          "数据大屏",
+          "QH · 订单数据中心"
+        ],
+        "zeroMetricCount": 23,
+        "hasSampleStoreData": false,
+        "hasEmptyBindingCopy": true
+      }
+    },
+    {
+      "name": "dashboard",
+      "url": "http://127.0.0.1:5173/ozon/dashboard/",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 320,
+        "ph": 4250
+      },
+      "data": {
+        "title": "仪表盘 - QH",
+        "bodyLength": 599,
+        "textSample": "AI 工具\n推荐\n仪表盘\n2026-07-04 · 周六\n自动同步 · 上次 —\n极点余额 0\n全部同步\n⌘R\n今日订单\n0\n—\nvs 昨日\n今日 GMV\n¥0\n—\nvs 昨日\n待打包\n0\n立即处理 →\n待发货\n0\n合计待处理 0\n在售商品\n0个\n多店聚合\n库存预警\n0SKU\n0 个断货 · 立即补货 →\n今日退货\n0\n退货率 0.0%\n7 日利润\n¥0\n本周累计\n待办与告警\n配置规则\n店铺授权\n未绑定\n商品同步\n0 个待同步\n订单处理\n0 个待处理\n库存预警\n0 个 SKU\n业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 0 单\n暂无订单\n订单趋势\n7 日\n30 日\n暂无数据\n快捷操作\n常用操作一键触达 · ⌘K 唤起命令面板\n一键同步全部\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单\n功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动\n快速上手\n1/4\n\n完成全部步骤后此模块自动隐藏\n\n绑定店铺\n添加 Ozon API Key\n2\n安装浏览器插件\nQH助手已安装\n3\n同步商品数据\n点击立即开始 · 预计 3 分钟\n4\n处理首个订单\n查看订单列表学习发货流程\n本周 GMV\n¥0\n本周利润\n¥0\n本周订单\n0\n退货率\n0.0%\n\n每 5 分钟自动同步 · 上次 —\n\n⌘K",
+        "visibleButtons": [
+          "全部同步\n⌘R",
+          "今日订单\n0\n—\nvs 昨日",
+          "今日 GMV\n¥0\n—\nvs 昨日",
+          "待打包\n0\n立即处理 →",
+          "待发货\n0\n合计待处理 0",
+          "在售商品\n0个\n多店聚合",
+          "库存预警\n0SKU\n0 个断货 · 立即补货 →",
+          "今日退货\n0\n退货率 0.0%",
+          "7 日利润\n¥0\n本周累计",
+          "配置规则",
+          "店铺授权\n未绑定",
+          "商品同步\n0 个待同步",
+          "订单处理\n0 个待处理",
+          "库存预警\n0 个 SKU",
+          "一键同步全部",
+          "批量改价",
+          "AI 大模型改图",
+          "1688 采集",
+          "群发消息",
+          "批量上架",
+          "打印发货单",
+          "采集箱",
+          "类目分析",
+          "榜单选品",
+          "利润趋势",
+          "AI 大模型改图\nNEW",
+          "水印管理",
+          "17track",
+          "营销活动",
+          "⌘K"
+        ],
+        "headings": [
+          "仪表盘"
+        ],
+        "zeroMetricCount": 21,
+        "hasSampleStoreData": false,
+        "hasEmptyBindingCopy": false
+      }
+    },
+    {
+      "name": "plugin",
+      "url": "http://127.0.0.1:5173/ozon/tools/plugin/",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/tools/plugin/",
+        "title": "仪表盘 - QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 320,
+        "ph": 1213
+      },
+      "data": {
+        "title": "仪表盘 - QH",
+        "bodyLength": 373,
+        "textSample": "AI 工具\n推荐\n浏览器插件\n2026-07-04 · 周六\n自动同步 · 上次 —\n极点余额 0\n全部同步\n⌘R\nQH 浏览器插件\n\n版本 0.13.42.1\n\n已复制到本地项目\n加载目录\n/Users/songliang/Documents/sonli ozon3.0/extension\n插件下载\n弹窗预览\nOzon 商品采集\ncontent/ozon-product.js\nOzon 搜索采集\ncontent/ozon-search.js\nSeller Cookie 同步\ncontent/ozon-seller-bridge.js\n1688 商品采集\ncontent/alibaba-1688.js\n批量上架页\nbatch-upload/index.html\n后台同步引擎\nbackground/service-worker.js\n⌘K",
+        "visibleButtons": [
+          "全部同步\n⌘R",
+          "⌘K"
+        ],
+        "headings": [
+          "浏览器插件",
+          "QH 浏览器插件"
+        ],
+        "zeroMetricCount": 3,
+        "hasSampleStoreData": false,
+        "hasEmptyBindingCopy": false
+      }
+    }
+  ]
+}

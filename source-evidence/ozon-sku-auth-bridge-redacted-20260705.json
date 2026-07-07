@@ -1,0 +1,56 @@
+{
+  "checkedAt": "2026-07-05T06:20:00+08:00",
+  "scope": "Read-only SKU public-page capture and local web-to-extension auth bridge repair",
+  "dataBoundary": "No API key, token value, product title, product image URL, order row, customer data, or raw Ozon payload is persisted in this evidence.",
+  "storeBindingState": {
+    "localStateEndpoint": "http://127.0.0.1:3001/local/state",
+    "hasToken": true,
+    "hasCurrentStoreId": true,
+    "stores": 1,
+    "products": 580,
+    "postings": 466,
+    "warehouses": 16,
+    "collectBox": 0,
+    "promotions": 6,
+    "jobs": 17
+  },
+  "publicSkuCapture": {
+    "source": "https://www.ozon.ru/",
+    "method": "Browser page-context fetch equivalent to extension background fetchOzonPublicProduct",
+    "writeEndpointsCalled": false,
+    "checkedCount": 11,
+    "okCount": 11,
+    "failed": [],
+    "rows": [
+      { "sku": "3234590011", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 9, "breadcrumbCount": 4, "widgetStateCount": 81 },
+      { "sku": "1647361358", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 17, "breadcrumbCount": 5, "widgetStateCount": 81 },
+      { "sku": "2926065181", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 9, "breadcrumbCount": 3, "widgetStateCount": 82 },
+      { "sku": "1692762229", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 17, "breadcrumbCount": 4, "widgetStateCount": 82 },
+      { "sku": "2082134919", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 28, "breadcrumbCount": 5, "widgetStateCount": 81 },
+      { "sku": "1353860207", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 17, "breadcrumbCount": 4, "widgetStateCount": 83 },
+      { "sku": "4015166523", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 9, "breadcrumbCount": 4, "widgetStateCount": 83 },
+      { "sku": "1759754684", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 29, "breadcrumbCount": 5, "widgetStateCount": 81 },
+      { "sku": "892759093", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 13, "breadcrumbCount": 5, "widgetStateCount": 84 },
+      { "sku": "2343733729", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 13, "breadcrumbCount": 4, "widgetStateCount": 80 },
+      { "sku": "1990622504", "endpoint": "entrypoint", "httpStatus": 200, "hasName": true, "hasBreadcrumbs": true, "imageCount": 16, "breadcrumbCount": 5, "widgetStateCount": 80 }
+    ]
+  },
+  "authBridgeRepair": {
+    "patchedFile": "app/src/App.jsx",
+    "behavior": "When /local/state restores an existing binding, the frontend now writes token/currentStoreId to localStorage and immediately calls syncAuthToExtension with the restored values.",
+    "reason": "The extension content script only observes storage events from other tabs. Same-tab localStorage writes during React state restoration did not wake the web-to-extension bridge, so Ozon product pages could remain on the login prompt until the user manually rebound or synced.",
+    "ozonWriteEndpointsCalled": false
+  },
+  "browserVerification": {
+    "egoLiteTaskSpace": 2,
+    "attempted": true,
+    "completed": false,
+    "blockedReason": "Full Access escalation for ego-browser was rejected by the harness due usage limit. No workaround or indirect browser control was used after rejection."
+  },
+  "localVerification": {
+    "appBuild": "pass",
+    "serverNodeCheck": "pass",
+    "gitDiffCheck": "pass",
+    "secretFragmentScan": "pass"
+  }
+}

@@ -1,0 +1,1390 @@
+{
+  "capturedAt": "2026-07-04T05:58:33.055Z",
+  "taskSpaceId": 33,
+  "viewports": [
+    {
+      "name": "mobile390",
+      "width": 390,
+      "height": 844,
+      "deviceScaleFactor": 1,
+      "mobile": true
+    },
+    {
+      "name": "narrow768",
+      "width": 768,
+      "height": 900,
+      "deviceScaleFactor": 1,
+      "mobile": false
+    }
+  ],
+  "routes": [
+    "/ozon/dashboard/",
+    "/ozon/products/list/"
+  ],
+  "comparisons": [
+    {
+      "viewport": "mobile390",
+      "route": "/ozon/dashboard/",
+      "sourceViewportSize": {
+        "innerWidth": 390,
+        "innerHeight": 844,
+        "visualWidth": 390,
+        "visualHeight": 844
+      },
+      "localViewportSize": {
+        "innerWidth": 424,
+        "innerHeight": 918,
+        "visualWidth": 390,
+        "visualHeight": 844
+      },
+      "sourceLayout": {
+        "brandTextVisible": false,
+        "menuTextVisible": false,
+        "sidebarCollapsed": null,
+        "hasHorizontalOverflow": false
+      },
+      "localLayout": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": false,
+        "sidebarCollapsed": null,
+        "hasHorizontalOverflow": false
+      },
+      "sourceRects": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 56,
+          "right": 390,
+          "bottom": 56
+        },
+        "brand": null,
+        "sider": null,
+        "content": {
+          "x": 0,
+          "y": 56,
+          "w": 390,
+          "h": 2161,
+          "right": 390,
+          "bottom": 2217
+        },
+        "table": null
+      },
+      "localRects": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 425,
+          "h": 56,
+          "right": 425,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "content": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 3665,
+          "right": 390,
+          "bottom": 3665
+        },
+        "table": null
+      },
+      "sourceDoc": {
+        "scrollWidth": 390,
+        "scrollHeight": 2217,
+        "clientWidth": 390,
+        "clientHeight": 844
+      },
+      "localDoc": {
+        "scrollWidth": 424,
+        "scrollHeight": 3665,
+        "clientWidth": 390,
+        "clientHeight": 844
+      },
+      "localOverflowCount": 0
+    },
+    {
+      "viewport": "mobile390",
+      "route": "/ozon/products/list/",
+      "sourceViewportSize": {
+        "innerWidth": 390,
+        "innerHeight": 844,
+        "visualWidth": 390,
+        "visualHeight": 844
+      },
+      "localViewportSize": {
+        "innerWidth": 390,
+        "innerHeight": 844,
+        "visualWidth": 390,
+        "visualHeight": 844
+      },
+      "sourceLayout": {
+        "brandTextVisible": false,
+        "menuTextVisible": false,
+        "sidebarCollapsed": null,
+        "hasHorizontalOverflow": false
+      },
+      "localLayout": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": false,
+        "sidebarCollapsed": null,
+        "hasHorizontalOverflow": false
+      },
+      "sourceRects": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 56,
+          "right": 390,
+          "bottom": 56
+        },
+        "brand": null,
+        "sider": null,
+        "content": {
+          "x": 0,
+          "y": 56,
+          "w": 390,
+          "h": 614,
+          "right": 390,
+          "bottom": 670
+        },
+        "table": {
+          "x": 52,
+          "y": 534,
+          "w": 286,
+          "h": 80,
+          "right": 338,
+          "bottom": 614
+        }
+      },
+      "localRects": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 56,
+          "right": 390,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "content": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 844,
+          "right": 390,
+          "bottom": 844
+        },
+        "table": {
+          "x": 33,
+          "y": 278,
+          "w": 324,
+          "h": 248,
+          "right": 357,
+          "bottom": 526
+        }
+      },
+      "sourceDoc": {
+        "scrollWidth": 390,
+        "scrollHeight": 844,
+        "clientWidth": 390,
+        "clientHeight": 844
+      },
+      "localDoc": {
+        "scrollWidth": 390,
+        "scrollHeight": 844,
+        "clientWidth": 390,
+        "clientHeight": 844
+      },
+      "localOverflowCount": 17
+    },
+    {
+      "viewport": "narrow768",
+      "route": "/ozon/dashboard/",
+      "sourceViewportSize": {
+        "innerWidth": 960,
+        "innerHeight": 1125,
+        "visualWidth": 941,
+        "visualHeight": 1125
+      },
+      "localViewportSize": {
+        "innerWidth": 1152,
+        "innerHeight": 1350,
+        "visualWidth": 1130,
+        "visualHeight": 1350
+      },
+      "sourceLayout": {
+        "brandTextVisible": false,
+        "menuTextVisible": true,
+        "sidebarCollapsed": true,
+        "hasHorizontalOverflow": false
+      },
+      "localLayout": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": true,
+        "sidebarCollapsed": true,
+        "hasHorizontalOverflow": false
+      },
+      "sourceRects": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "w": 877,
+          "h": 56,
+          "right": 941,
+          "bottom": 56
+        },
+        "brand": null,
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 64,
+          "h": 1069,
+          "right": 64,
+          "bottom": 1125
+        },
+        "content": {
+          "x": 64,
+          "y": 56,
+          "w": 877,
+          "h": 1890,
+          "right": 941,
+          "bottom": 1946
+        },
+        "table": null
+      },
+      "localRects": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "w": 1066,
+          "h": 56,
+          "right": 1130,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 64,
+          "h": 1294,
+          "right": 64,
+          "bottom": 1350
+        },
+        "content": {
+          "x": 64,
+          "y": 0,
+          "w": 1066,
+          "h": 2351,
+          "right": 1130,
+          "bottom": 2351
+        },
+        "table": null
+      },
+      "sourceDoc": {
+        "scrollWidth": 941,
+        "scrollHeight": 1945,
+        "clientWidth": 941,
+        "clientHeight": 1125
+      },
+      "localDoc": {
+        "scrollWidth": 1129,
+        "scrollHeight": 2350,
+        "clientWidth": 1129,
+        "clientHeight": 1350
+      },
+      "localOverflowCount": 0
+    },
+    {
+      "viewport": "narrow768",
+      "route": "/ozon/products/list/",
+      "sourceViewportSize": {
+        "innerWidth": 960,
+        "innerHeight": 1125,
+        "visualWidth": 960,
+        "visualHeight": 1125
+      },
+      "localViewportSize": {
+        "innerWidth": 1152,
+        "innerHeight": 1350,
+        "visualWidth": 1152,
+        "visualHeight": 1350
+      },
+      "sourceLayout": {
+        "brandTextVisible": false,
+        "menuTextVisible": true,
+        "sidebarCollapsed": true,
+        "hasHorizontalOverflow": false
+      },
+      "localLayout": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": true,
+        "sidebarCollapsed": true,
+        "hasHorizontalOverflow": false
+      },
+      "sourceRects": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "w": 896,
+          "h": 56,
+          "right": 960,
+          "bottom": 56
+        },
+        "brand": null,
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 64,
+          "h": 1069,
+          "right": 64,
+          "bottom": 1125
+        },
+        "content": {
+          "x": 64,
+          "y": 56,
+          "w": 896,
+          "h": 417,
+          "right": 960,
+          "bottom": 473
+        },
+        "table": {
+          "x": 116,
+          "y": 319,
+          "w": 792,
+          "h": 98,
+          "right": 908,
+          "bottom": 417
+        }
+      },
+      "localRects": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "w": 1088,
+          "h": 56,
+          "right": 1152,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 64,
+          "h": 1294,
+          "right": 64,
+          "bottom": 1350
+        },
+        "content": {
+          "x": 64,
+          "y": 0,
+          "w": 1088,
+          "h": 1350,
+          "right": 1152,
+          "bottom": 1350
+        },
+        "table": {
+          "x": 109,
+          "y": 249,
+          "w": 999,
+          "h": 269,
+          "right": 1107,
+          "bottom": 519
+        }
+      },
+      "sourceDoc": {
+        "scrollWidth": 960,
+        "scrollHeight": 1125,
+        "clientWidth": 960,
+        "clientHeight": 1125
+      },
+      "localDoc": {
+        "scrollWidth": 1152,
+        "scrollHeight": 1350,
+        "clientWidth": 1152,
+        "clientHeight": 1350
+      },
+      "localOverflowCount": 9
+    }
+  ],
+  "captures": [
+    {
+      "kind": "local",
+      "route": "/ozon/dashboard/",
+      "viewport": "mobile390",
+      "pageInfo": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?responsiveAfter=mobile390-1783144705463",
+        "title": "QH",
+        "w": 424,
+        "h": 918
+      },
+      "title": "QH",
+      "path": "/ozon/dashboard/",
+      "viewportSize": {
+        "innerWidth": 424,
+        "innerHeight": 918,
+        "visualWidth": 390,
+        "visualHeight": 844
+      },
+      "documentSize": {
+        "scrollWidth": 424,
+        "scrollHeight": 3665,
+        "clientWidth": 390,
+        "clientHeight": 844
+      },
+      "rects": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 425,
+          "h": 56,
+          "right": 425,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "content": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 3665,
+          "right": 390,
+          "bottom": 3665
+        },
+        "table": null
+      },
+      "display": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": false,
+        "sidebarCollapsed": null,
+        "hasHorizontalOverflow": false
+      },
+      "topActions": [
+        {
+          "text": "帮助中心使用文档",
+          "rect": {
+            "x": 211,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 243,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "公告公告中心",
+          "rect": {
+            "x": 245,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 277,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "rect": {
+            "x": 279,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 311,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "rect": {
+            "x": 313,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 345,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "会员权益免费会员",
+          "rect": {
+            "x": 347,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 379,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前用户未登录",
+          "rect": {
+            "x": 381,
+            "y": 11,
+            "w": 34,
+            "h": 34,
+            "right": 415,
+            "bottom": 45
+          }
+        }
+      ],
+      "overflowEls": []
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/list/",
+      "viewport": "mobile390",
+      "pageInfo": {
+        "url": "http://127.0.0.1:5173/ozon/products/list/?responsiveAfter=mobile390-1783144707474",
+        "title": "QH",
+        "w": 390,
+        "h": 844
+      },
+      "title": "QH",
+      "path": "/ozon/products/list/",
+      "viewportSize": {
+        "innerWidth": 390,
+        "innerHeight": 844,
+        "visualWidth": 390,
+        "visualHeight": 844
+      },
+      "documentSize": {
+        "scrollWidth": 390,
+        "scrollHeight": 844,
+        "clientWidth": 390,
+        "clientHeight": 844
+      },
+      "rects": {
+        "topbar": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 56,
+          "right": 390,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "content": {
+          "x": 0,
+          "y": 0,
+          "w": 390,
+          "h": 844,
+          "right": 390,
+          "bottom": 844
+        },
+        "table": {
+          "x": 33,
+          "y": 278,
+          "w": 324,
+          "h": 248,
+          "right": 357,
+          "bottom": 526
+        }
+      },
+      "display": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": false,
+        "sidebarCollapsed": null,
+        "hasHorizontalOverflow": false
+      },
+      "topActions": [
+        {
+          "text": "帮助中心使用文档",
+          "rect": {
+            "x": 176,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 208,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "公告公告中心",
+          "rect": {
+            "x": 210,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 242,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "rect": {
+            "x": 244,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 276,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "rect": {
+            "x": 278,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 310,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "会员权益免费会员",
+          "rect": {
+            "x": 312,
+            "y": 11,
+            "w": 32,
+            "h": 34,
+            "right": 344,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前用户未登录",
+          "rect": {
+            "x": 346,
+            "y": 11,
+            "w": 34,
+            "h": 34,
+            "right": 380,
+            "bottom": 45
+          }
+        }
+      ],
+      "overflowEls": [
+        {
+          "tag": "TABLE",
+          "cls": "",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 暂无商品",
+          "rect": {
+            "x": 34,
+            "y": 279,
+            "w": 1100,
+            "h": 246,
+            "right": 1134,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "COLGROUP",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 34,
+            "y": 279,
+            "w": 1100,
+            "h": 246,
+            "right": 1134,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "COL",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 376,
+            "y": 279,
+            "w": 128,
+            "h": 246,
+            "right": 504,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "COL",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 504,
+            "y": 279,
+            "w": 128,
+            "h": 246,
+            "right": 632,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "COL",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 632,
+            "y": 279,
+            "w": 224,
+            "h": 246,
+            "right": 856,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "COL",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 856,
+            "y": 279,
+            "w": 150,
+            "h": 246,
+            "right": 1006,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "COL",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 1006,
+            "y": 279,
+            "w": 128,
+            "h": 246,
+            "right": 1134,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "THEAD",
+          "cls": "ant-table-thead",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作",
+          "rect": {
+            "x": 34,
+            "y": 279,
+            "w": 1100,
+            "h": 55,
+            "right": 1134,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TR",
+          "cls": "",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作",
+          "rect": {
+            "x": 34,
+            "y": 279,
+            "w": 1100,
+            "h": 55,
+            "right": 1134,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TH",
+          "cls": "ant-table-cell",
+          "text": "价格",
+          "rect": {
+            "x": 376,
+            "y": 279,
+            "w": 128,
+            "h": 55,
+            "right": 504,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TH",
+          "cls": "ant-table-cell",
+          "text": "库存",
+          "rect": {
+            "x": 504,
+            "y": 279,
+            "w": 128,
+            "h": 55,
+            "right": 632,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TH",
+          "cls": "ant-table-cell",
+          "text": "货源 (¥)",
+          "rect": {
+            "x": 632,
+            "y": 279,
+            "w": 224,
+            "h": 55,
+            "right": 856,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TH",
+          "cls": "ant-table-cell",
+          "text": "最后同步",
+          "rect": {
+            "x": 856,
+            "y": 279,
+            "w": 150,
+            "h": 55,
+            "right": 1006,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TH",
+          "cls": "ant-table-cell",
+          "text": "操作",
+          "rect": {
+            "x": 1006,
+            "y": 279,
+            "w": 128,
+            "h": 55,
+            "right": 1134,
+            "bottom": 334
+          }
+        },
+        {
+          "tag": "TBODY",
+          "cls": "ant-table-tbody",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 暂无商品",
+          "rect": {
+            "x": 34,
+            "y": 334,
+            "w": 1100,
+            "h": 191,
+            "right": 1134,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "TR",
+          "cls": "ant-table-placeholder",
+          "text": "暂无商品",
+          "rect": {
+            "x": 34,
+            "y": 334,
+            "w": 1100,
+            "h": 191,
+            "right": 1134,
+            "bottom": 525
+          }
+        },
+        {
+          "tag": "TD",
+          "cls": "ant-table-cell",
+          "text": "暂无商品",
+          "rect": {
+            "x": 34,
+            "y": 334,
+            "w": 1100,
+            "h": 191,
+            "right": 1134,
+            "bottom": 525
+          }
+        }
+      ]
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/dashboard/",
+      "viewport": "narrow768",
+      "pageInfo": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?responsiveAfter=narrow768-1783144709447",
+        "title": "QH",
+        "w": 1152,
+        "h": 1350
+      },
+      "title": "QH",
+      "path": "/ozon/dashboard/",
+      "viewportSize": {
+        "innerWidth": 1152,
+        "innerHeight": 1350,
+        "visualWidth": 1130,
+        "visualHeight": 1350
+      },
+      "documentSize": {
+        "scrollWidth": 1129,
+        "scrollHeight": 2350,
+        "clientWidth": 1129,
+        "clientHeight": 1350
+      },
+      "rects": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "w": 1066,
+          "h": 56,
+          "right": 1130,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 64,
+          "h": 1294,
+          "right": 64,
+          "bottom": 1350
+        },
+        "content": {
+          "x": 64,
+          "y": 0,
+          "w": 1066,
+          "h": 2351,
+          "right": 1130,
+          "bottom": 2351
+        },
+        "table": null
+      },
+      "display": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": true,
+        "sidebarCollapsed": true,
+        "hasHorizontalOverflow": false
+      },
+      "topActions": [
+        {
+          "text": "帮助中心使用文档",
+          "rect": {
+            "x": 792,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 823,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "公告公告中心",
+          "rect": {
+            "x": 825,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 857,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "rect": {
+            "x": 859,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 890,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "rect": {
+            "x": 892,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 924,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "会员权益免费会员",
+          "rect": {
+            "x": 926,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 957,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "极 极点 0",
+          "rect": {
+            "x": 959,
+            "y": 11,
+            "w": 70,
+            "h": 34,
+            "right": 1029,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前用户 未登录",
+          "rect": {
+            "x": 1031,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "right": 1116,
+            "bottom": 45
+          }
+        }
+      ],
+      "overflowEls": []
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/list/",
+      "viewport": "narrow768",
+      "pageInfo": {
+        "url": "http://127.0.0.1:5173/ozon/products/list/?responsiveAfter=narrow768-1783144711366",
+        "title": "QH",
+        "w": 1152,
+        "h": 1350
+      },
+      "title": "QH",
+      "path": "/ozon/products/list/",
+      "viewportSize": {
+        "innerWidth": 1152,
+        "innerHeight": 1350,
+        "visualWidth": 1152,
+        "visualHeight": 1350
+      },
+      "documentSize": {
+        "scrollWidth": 1152,
+        "scrollHeight": 1350,
+        "clientWidth": 1152,
+        "clientHeight": 1350
+      },
+      "rects": {
+        "topbar": {
+          "x": 64,
+          "y": 0,
+          "w": 1088,
+          "h": 56,
+          "right": 1152,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0,
+          "right": 0,
+          "bottom": 0
+        },
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 64,
+          "h": 1294,
+          "right": 64,
+          "bottom": 1350
+        },
+        "content": {
+          "x": 64,
+          "y": 0,
+          "w": 1088,
+          "h": 1350,
+          "right": 1152,
+          "bottom": 1350
+        },
+        "table": {
+          "x": 109,
+          "y": 249,
+          "w": 999,
+          "h": 269,
+          "right": 1107,
+          "bottom": 519
+        }
+      },
+      "display": {
+        "brandTextVisible": false,
+        "brandVisible": false,
+        "menuTextVisible": false,
+        "sidebarVisible": true,
+        "sidebarCollapsed": true,
+        "hasHorizontalOverflow": false
+      },
+      "topActions": [
+        {
+          "text": "帮助中心使用文档",
+          "rect": {
+            "x": 814,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 846,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "公告公告中心",
+          "rect": {
+            "x": 848,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 879,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "浏览器插件插件下载",
+          "rect": {
+            "x": 881,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 913,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前门店去绑定门店",
+          "rect": {
+            "x": 915,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 946,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "会员权益免费会员",
+          "rect": {
+            "x": 948,
+            "y": 11,
+            "w": 31,
+            "h": 34,
+            "right": 980,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "极 极点 0",
+          "rect": {
+            "x": 982,
+            "y": 11,
+            "w": 70,
+            "h": 34,
+            "right": 1052,
+            "bottom": 45
+          }
+        },
+        {
+          "text": "当前用户 未登录",
+          "rect": {
+            "x": 1054,
+            "y": 11,
+            "w": 84,
+            "h": 34,
+            "right": 1138,
+            "bottom": 45
+          }
+        }
+      ],
+      "overflowEls": [
+        {
+          "tag": "TABLE",
+          "cls": "",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 暂无商品",
+          "rect": {
+            "x": 109,
+            "y": 250,
+            "w": 1100,
+            "h": 245,
+            "right": 1209,
+            "bottom": 495
+          }
+        },
+        {
+          "tag": "COLGROUP",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 109,
+            "y": 250,
+            "w": 1100,
+            "h": 245,
+            "right": 1209,
+            "bottom": 495
+          }
+        },
+        {
+          "tag": "COL",
+          "cls": "",
+          "text": "",
+          "rect": {
+            "x": 1081,
+            "y": 250,
+            "w": 128,
+            "h": 245,
+            "right": 1209,
+            "bottom": 495
+          }
+        },
+        {
+          "tag": "THEAD",
+          "cls": "ant-table-thead",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作",
+          "rect": {
+            "x": 109,
+            "y": 250,
+            "w": 1100,
+            "h": 55,
+            "right": 1209,
+            "bottom": 305
+          }
+        },
+        {
+          "tag": "TR",
+          "cls": "",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作",
+          "rect": {
+            "x": 109,
+            "y": 250,
+            "w": 1100,
+            "h": 55,
+            "right": 1209,
+            "bottom": 305
+          }
+        },
+        {
+          "tag": "TH",
+          "cls": "ant-table-cell",
+          "text": "操作",
+          "rect": {
+            "x": 1081,
+            "y": 250,
+            "w": 128,
+            "h": 55,
+            "right": 1209,
+            "bottom": 305
+          }
+        },
+        {
+          "tag": "TBODY",
+          "cls": "ant-table-tbody",
+          "text": "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 暂无商品",
+          "rect": {
+            "x": 109,
+            "y": 305,
+            "w": 1100,
+            "h": 191,
+            "right": 1209,
+            "bottom": 495
+          }
+        },
+        {
+          "tag": "TR",
+          "cls": "ant-table-placeholder",
+          "text": "暂无商品",
+          "rect": {
+            "x": 109,
+            "y": 305,
+            "w": 1100,
+            "h": 191,
+            "right": 1209,
+            "bottom": 495
+          }
+        },
+        {
+          "tag": "TD",
+          "cls": "ant-table-cell",
+          "text": "暂无商品",
+          "rect": {
+            "x": 109,
+            "y": 305,
+            "w": 1100,
+            "h": 191,
+            "right": 1209,
+            "bottom": 495
+          }
+        }
+      ]
+    }
+  ]
+}

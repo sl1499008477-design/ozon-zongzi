@@ -1,0 +1,4962 @@
+{
+  "capturedAt": "2026-07-04T05:48:29.096Z",
+  "taskSpaceId": 32,
+  "routes": [
+    "/ozon/products/list/",
+    "/ozon/products/collect/",
+    "/ozon/products/import-history/",
+    "/ozon/products/stocks/",
+    "/ozon/products/reshelf/",
+    "/ozon/selection/category/",
+    "/ozon/selection/top-list/",
+    "/ozon/selection/china/",
+    "/ozon/tools/ai-poster-records/",
+    "/ozon/ai-image/",
+    "/ozon/promotions/prices/",
+    "/ozon/promotions/campaigns/",
+    "/ozon/promotions/auto-delete/",
+    "/ozon/postings/list/",
+    "/ozon/postings/returns/",
+    "/ozon/postings/profit-trend/",
+    "/ozon/postings/review-request/",
+    "/ozon/postings/pickup-reminder/",
+    "/ozon/tools/watermark/",
+    "/ozon/announcements/",
+    "/ozon/messaging/templates/",
+    "/ozon/messaging/history/"
+  ],
+  "comparisons": [
+    {
+      "route": "/ozon/products/list/",
+      "sourceTokenCount": 10,
+      "localTokenCount": 18,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/products/collect/",
+      "sourceTokenCount": 18,
+      "localTokenCount": 23,
+      "missingCount": 1,
+      "missing": [
+        "按来源筛选"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/products/import-history/",
+      "sourceTokenCount": 22,
+      "localTokenCount": 30,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/products/stocks/",
+      "sourceTokenCount": 14,
+      "localTokenCount": 24,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/products/reshelf/",
+      "sourceTokenCount": 14,
+      "localTokenCount": 21,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/selection/category/",
+      "sourceTokenCount": 32,
+      "localTokenCount": 48,
+      "missingCount": 2,
+      "missing": [
+        "全部",
+        "全部类目"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/selection/top-list/",
+      "sourceTokenCount": 35,
+      "localTokenCount": 59,
+      "missingCount": 12,
+      "missing": [
+        "×",
+        "全部",
+        "sku",
+        "逗号/空格/换行分隔",
+        "最小",
+        "最大",
+        "分区 全部分区",
+        "月销量",
+        "月销售额 ₽",
+        "平均价 ₽",
+        "月销售额环比 %",
+        "发货模式"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "sourceTokenCount": 32,
+      "localTokenCount": 56,
+      "missingCount": 13,
+      "missing": [
+        "×",
+        "全部",
+        "sku",
+        "逗号/空格/换行分隔",
+        "最小",
+        "最大",
+        "分区 全部分区",
+        "含零销量商品 ⓘ",
+        "月销量",
+        "月销售额 ₽",
+        "平均价 ₽",
+        "月销售额环比 %",
+        "发货模式"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "sourceTokenCount": 11,
+      "localTokenCount": 28,
+      "missingCount": 4,
+      "missing": [
+        "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品",
+        "例:女士夏季短袖 T 恤",
+        "例:服饰 / 电子 / 家居",
+        "全部状态"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/ai-image/",
+      "sourceTokenCount": 2,
+      "localTokenCount": 8,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/promotions/prices/",
+      "sourceTokenCount": 15,
+      "localTokenCount": 20,
+      "missingCount": 1,
+      "missing": [
+        "0 条/页"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/promotions/campaigns/",
+      "sourceTokenCount": 13,
+      "localTokenCount": 25,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "sourceTokenCount": 16,
+      "localTokenCount": 24,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "sourceTokenCount": 22,
+      "localTokenCount": 43,
+      "missingCount": 2,
+      "missing": [
+        "当前店铺",
+        "货件编号"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/returns/",
+      "sourceTokenCount": 15,
+      "localTokenCount": 29,
+      "missingCount": 1,
+      "missing": [
+        "0/页"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/profit-trend/",
+      "sourceTokenCount": 15,
+      "localTokenCount": 26,
+      "missingCount": 1,
+      "missing": [
+        "全部店铺"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "sourceTokenCount": 26,
+      "localTokenCount": 32,
+      "missingCount": 4,
+      "missing": [
+        "货号",
+        "商品名称",
+        "SKU",
+        "当前店铺"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "sourceTokenCount": 26,
+      "localTokenCount": 29,
+      "missingCount": 5,
+      "missing": [
+        "商品名称",
+        "SKU",
+        "当前店铺",
+        "已到取件点",
+        "买家未取"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/tools/watermark/",
+      "sourceTokenCount": 6,
+      "localTokenCount": 14,
+      "missingCount": 1,
+      "missing": [
+        "预览与下载 请先选用模板"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/announcements/",
+      "sourceTokenCount": 3,
+      "localTokenCount": 9,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/messaging/templates/",
+      "sourceTokenCount": 13,
+      "localTokenCount": 20,
+      "missingCount": 1,
+      "missing": [
+        "请选择"
+      ],
+      "sourceLogin": false,
+      "localLogin": true
+    },
+    {
+      "route": "/ozon/messaging/history/",
+      "sourceTokenCount": 12,
+      "localTokenCount": 21,
+      "missingCount": 0,
+      "missing": [],
+      "sourceLogin": false,
+      "localLogin": true
+    }
+  ],
+  "captures": [
+    {
+      "kind": "source",
+      "route": "/ozon/products/list/",
+      "url": "https://qh.jizhangerp.com/ozon/products/list/?menuAudit=1783144017873",
+      "title": "QH",
+      "path": "/ozon/products/list/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 10,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜 SKU / 货号 / 标题…"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "库存"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货源 (¥)"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最后同步"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 商品列表 未选择店铺 · 数据定时自动同步 自动同步 同步全部 全部 ● 销售中 ● 准备出售 ● 错误 ● 待修改 ● 已下架 ● 已归档 ⌘K 价格指数 全部 超值 有利 中等 不利 共 0 个 商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 商品信息 状态 价格 库存 货源 (¥) 最后同步 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/list/",
+      "url": "http://127.0.0.1:5173/ozon/products/list/?menuAudit=1783144026195",
+      "title": "QH",
+      "path": "/ozon/products/list/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 18,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "商品列表"
+        },
+        {
+          "kind": "heading",
+          "text": "同步全部"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜 SKU / 货号 / 标题…"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "库存"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货源 (¥)"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最后同步"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "暂无商品"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 商品列表 采集箱 上架记录 库存管理 下架重上 选品 AI 工具 推荐 促销 订单 工具 消息 商品列表 当前门店：去绑定门店 同步全部 共 0 个 商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 暂无商品"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/products/collect/",
+      "url": "https://qh.jizhangerp.com/ozon/products/collect/?menuAudit=1783144027669",
+      "title": "QH",
+      "path": "/ozon/products/collect/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 18,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "添加采集"
+        },
+        {
+          "kind": "control",
+          "text": "全部 0"
+        },
+        {
+          "kind": "control",
+          "text": "待处理 0"
+        },
+        {
+          "kind": "control",
+          "text": "已上架 0"
+        },
+        {
+          "kind": "control",
+          "text": "失败 0"
+        },
+        {
+          "kind": "placeholder",
+          "text": "[url] 或直接输入 SKU"
+        },
+        {
+          "kind": "label",
+          "text": "按来源筛选"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "采集价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家 / 来源"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌"
+        },
+        {
+          "kind": "tableHead",
+          "text": "下单链接"
+        },
+        {
+          "kind": "tableHead",
+          "text": "采集时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "自动识别价格 / 重量 / 卖家"
+        },
+        {
+          "kind": "static",
+          "text": "安装插件后一键采集"
+        }
+      ],
+      "bodySample": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 添加采集商品 粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加 添加采集 自动识别价格 / 重量 / 卖家 安装插件后一键采集 全部 0 待处理 0 已上架 0 失败 0 按来源筛选 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 暂无采集商品，请在上方添加"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/collect/",
+      "url": "http://127.0.0.1:5173/ozon/products/collect/?menuAudit=1783144029695",
+      "title": "QH",
+      "path": "/ozon/products/collect/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 23,
+      "tokens": [
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "添加采集"
+        },
+        {
+          "kind": "control",
+          "text": "全部 0"
+        },
+        {
+          "kind": "control",
+          "text": "待处理 0"
+        },
+        {
+          "kind": "control",
+          "text": "已上架 0"
+        },
+        {
+          "kind": "control",
+          "text": "失败 0"
+        },
+        {
+          "kind": "placeholder",
+          "text": "[url] 或直接输入 SKU"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "采集价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家 / 来源"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌"
+        },
+        {
+          "kind": "tableHead",
+          "text": "下单链接"
+        },
+        {
+          "kind": "tableHead",
+          "text": "采集时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "自动识别价格 / 重量 / 卖家"
+        },
+        {
+          "kind": "static",
+          "text": "安装插件后一键采集"
+        },
+        {
+          "kind": "static",
+          "text": "暂无采集商品，请在上方添加"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 商品列表 采集箱 上架记录 库存管理 下架重上 选品 AI 工具 推荐 促销 订单 工具 消息 添加采集商品 粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加 添加采集 自动识别价格 / 重量 / 卖家 安装插件后一键采集 全部 0 待处理 0 已上架 0 失败 0 按来源筛选 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 暂无采集商品，请在上方添加"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/products/import-history/",
+      "url": "https://qh.jizhangerp.com/ozon/products/import-history/?menuAudit=1783144031134",
+      "title": "QH",
+      "path": "/ozon/products/import-history/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 22,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "已完成"
+        },
+        {
+          "kind": "control",
+          "text": "部分成功"
+        },
+        {
+          "kind": "control",
+          "text": "处理中"
+        },
+        {
+          "kind": "control",
+          "text": "失败"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "批量删除 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "全部展开"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索 SKU / 货号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "开始日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束日期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "#"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "源 SKU"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "变体"
+        },
+        {
+          "kind": "tableHead",
+          "text": "售价"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "创建时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 累计批次 0 全部历史 今日上品（含变体） 0 今日暂无 处理中 0 当前无队列 成功率 — 基于已结束任务 状态 全部 已完成 部分成功 处理中 失败 重 置 查询 导入批次列表· 共 0 条 批量删除 (0) 全部展开 # 商品信息 源 SKU 店铺 变体 售价 状态 创建时间 操作 # 商品信息 源 SKU 店铺 变体 售价 状态 创建时间 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/import-history/",
+      "url": "http://127.0.0.1:5173/ozon/products/import-history/?menuAudit=1783144033179",
+      "title": "QH",
+      "path": "/ozon/products/import-history/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 30,
+      "tokens": [
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "已完成"
+        },
+        {
+          "kind": "control",
+          "text": "部分成功"
+        },
+        {
+          "kind": "control",
+          "text": "处理中"
+        },
+        {
+          "kind": "control",
+          "text": "失败"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "批量删除 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "全部展开"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索 SKU / 货号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "开始日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束日期"
+        },
+        {
+          "kind": "label",
+          "text": "状态"
+        },
+        {
+          "kind": "label",
+          "text": "搜索"
+        },
+        {
+          "kind": "label",
+          "text": "创建时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "#"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "源 SKU"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "变体"
+        },
+        {
+          "kind": "tableHead",
+          "text": "售价"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "创建时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 商品列表 采集箱 上架记录 库存管理 下架重上 选品 AI 工具 推荐 促销 订单 工具 消息 累计批次 0 全部历史 今日上品（含变体） 0 今日暂无 处理中 0 当前无队列 成功率 — 基于已结束任务 状态 全部 已完成 部分成功 处理中 失败 搜索 创建时间 重 置 查询 导入批次列表 · 共 0 条 批量删除 (0) 全部展开 # 商品信息 源 SKU 店铺 变体 售价 状态 创建时间 操作 # 商品信息 源 SKU 店铺 变体 售价 状态 创建时间 操作"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/products/stocks/",
+      "url": "https://qh.jizhangerp.com/ozon/products/stocks/?menuAudit=1783144034634",
+      "title": "QH",
+      "path": "/ozon/products/stocks/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 14,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "商品库存"
+        },
+        {
+          "kind": "control",
+          "text": "暂存草稿"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "缺货 0"
+        },
+        {
+          "kind": "control",
+          "text": "低库存 0"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索商品名 / 货号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "主图"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "总库存"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库分布"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 库存管理 查看各商品库存与仓库分布,批量改库存先暂存、再一键同步到 Ozon 商品库存 暂存草稿 商品总数 0 当前店铺缓存商品 缺货 (全部) ... 当前店铺无缺货 低库存 ≤0 (全部) ... 当前店铺无低库存 暂存待提交 0 暂无待提交改动 库存 全部 缺货 0 低库存 0 件 刷新 查询 商品库存· 共 0 条 主图 商品 总库存 仓库分布 操作 商品 总库存 仓库分布 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/stocks/",
+      "url": "http://127.0.0.1:5173/ozon/products/stocks/?menuAudit=1783144036383",
+      "title": "QH",
+      "path": "/ozon/products/stocks/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 24,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "库存管理"
+        },
+        {
+          "kind": "heading",
+          "text": "商品库存"
+        },
+        {
+          "kind": "heading",
+          "text": "暂存草稿"
+        },
+        {
+          "kind": "heading",
+          "text": "库存"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新"
+        },
+        {
+          "kind": "heading",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "缺货 0"
+        },
+        {
+          "kind": "control",
+          "text": "低库存 0"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索商品名 / 货号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "主图"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "总库存"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库分布"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "暂存草稿"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 商品列表 采集箱 上架记录 库存管理 下架重上 选品 AI 工具 推荐 促销 订单 工具 消息 库存管理 查看各商品库存与仓库分布,批量改库存先暂存、再一键同步到 Ozon 商品库存 暂存草稿 商品总数 0 当前店铺缓存商品 缺货 (全部) ... 当前店铺无缺货 低库存 ≤0 (全部) ... 当前店铺无低库存 暂存待提交 0 暂无待提交改动 库存 刷新 查询 全部 缺货 0 低库存 0 商品库存· 共 0 条 主图 商品 总库存 仓库分布 操作 主图 商品 总库存 仓库分布 操作"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/products/reshelf/",
+      "url": "https://qh.jizhangerp.com/ozon/products/reshelf/?menuAudit=1783144037883",
+      "title": "QH",
+      "path": "/ozon/products/reshelf/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 14,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "下架重上"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜 SKU / 货号 / 标题…"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目佣金"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "下架原因"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "库存"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货源 (¥)"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最后同步"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 下架重上 未选择店铺 · 数据定时自动同步 下架重上 同步全部 全部 ● 销售中 ● 准备出售 ● 错误 ● 待修改 已下架 ● 已归档 ⌘K 价格指数 全部 超值 有利 中等 不利 共 0 个 商品信息 类目佣金 店铺 状态 下架原因 价格 库存 货源 (¥) 最后同步 操作 商品信息 类目佣金 店铺 状态 下架原因 价格 库存 货源 (¥) 最后同步 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/products/reshelf/",
+      "url": "http://127.0.0.1:5173/ozon/products/reshelf/?menuAudit=1783144040276",
+      "title": "QH",
+      "path": "/ozon/products/reshelf/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 21,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "下架重上"
+        },
+        {
+          "kind": "heading",
+          "text": "同步全部"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "下架重上"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜 SKU / 货号 / 标题…"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品信息"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目佣金"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "下架原因"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "库存"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货源 (¥)"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最后同步"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 商品列表 采集箱 上架记录 库存管理 下架重上 选品 AI 工具 推荐 促销 订单 工具 消息 下架重上 当前门店：去绑定门店 下架重上 同步全部 共 0 个 商品信息 类目佣金 店铺 状态 下架原因 价格 库存 货源 (¥) 最后同步 操作 商品信息 类目佣金 店铺 状态 下架原因 价格 库存 货源 (¥) 最后同步 操作"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/selection/category/",
+      "url": "https://qh.jizhangerp.com/ozon/selection/category/?menuAudit=1783144041733",
+      "title": "QH",
+      "path": "/ozon/selection/category/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "类目分析"
+        ]
+      },
+      "tokenCount": 32,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "类目分析"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "全部类目 一级类目开始逐层下钻"
+        },
+        {
+          "kind": "control",
+          "text": "增长机会 GMV 环比不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "高退货率 退货风险不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "品牌集中 品牌销售占比不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "FBS机会 FBS 销售占比不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "全部类目"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最小"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最大"
+        },
+        {
+          "kind": "tableHead",
+          "text": "#"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目"
+        },
+        {
+          "kind": "tableHead",
+          "text": "月销量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "月销售额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "GMV增长"
+        },
+        {
+          "kind": "tableHead",
+          "text": "平均价"
+        },
+        {
+          "kind": "tableHead",
+          "text": "均价环比"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家数"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌数"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌占比"
+        },
+        {
+          "kind": "tableHead",
+          "text": "头部卖家"
+        },
+        {
+          "kind": "tableHead",
+          "text": "FBS占比"
+        },
+        {
+          "kind": "tableHead",
+          "text": "出库率"
+        },
+        {
+          "kind": "tableHead",
+          "text": "退货率"
+        },
+        {
+          "kind": "static",
+          "text": "本周期还没有类目分析快照"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 类目分析 榜单选品 中国专区 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 类目分析 按 Ozon 本地快照查看类目规模、增长、退货、品牌集中度与履约结构。 7天 0天 0天 0天 ₽ ¥ 快照 未生成 刷新 全部类目 一级类目开始逐层下钻 增长机会 GMV 环比不低于 0% 高退货率 退货风险不低于 0% 品牌集中 品牌销售占比不低于 0% FBS机会 FBS 销售占比不低于 0% 匹配类目 0 当前视图: 全部类目 当前页销量 0 按当前页汇总 当前页销售额 ₽0 ≈¥0 平均退货率 - 当前页均值 增长领跑 - 暂无增长数据 一级类目 全部 路径 全部类目 筛选 月销量 至 月销售额 ₽ 至 ₽ 平均价 ₽ 至 ₽ GMV增长 % 至 % 退货率 % 至 % 卖家数 至 查询 重置 更多筛选 ↓ 类目市场列表未启用手动筛选 一级类目总览 # 类目 月销量 月销售额 GMV增长 平均价 均价环比 卖"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/selection/category/",
+      "url": "http://127.0.0.1:5173/ozon/selection/category/?menuAudit=1783144043469",
+      "title": "QH",
+      "path": "/ozon/selection/category/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 48,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "类目分析"
+        },
+        {
+          "kind": "heading",
+          "text": "快照 未生成"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "全部类目 一级类目开始逐层下钻"
+        },
+        {
+          "kind": "control",
+          "text": "增长机会 GMV 环比不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "高退货率 退货风险不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "品牌集中 品牌销售占比不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "FBS机会 FBS 销售占比不低于 0%"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最小"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最大"
+        },
+        {
+          "kind": "label",
+          "text": "7天"
+        },
+        {
+          "kind": "label",
+          "text": "0天"
+        },
+        {
+          "kind": "label",
+          "text": "一级类目 全部"
+        },
+        {
+          "kind": "label",
+          "text": "路径 全部类目"
+        },
+        {
+          "kind": "label",
+          "text": "月销量 至"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽ 至"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽ 至"
+        },
+        {
+          "kind": "label",
+          "text": "GMV增长 % 至"
+        },
+        {
+          "kind": "label",
+          "text": "退货率 % 至"
+        },
+        {
+          "kind": "label",
+          "text": "卖家数 至"
+        },
+        {
+          "kind": "tableHead",
+          "text": "#"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目"
+        },
+        {
+          "kind": "tableHead",
+          "text": "月销量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "月销售额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "GMV增长"
+        },
+        {
+          "kind": "tableHead",
+          "text": "平均价"
+        },
+        {
+          "kind": "tableHead",
+          "text": "均价环比"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家数"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌数"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌占比"
+        },
+        {
+          "kind": "tableHead",
+          "text": "头部卖家"
+        },
+        {
+          "kind": "tableHead",
+          "text": "FBS占比"
+        },
+        {
+          "kind": "tableHead",
+          "text": "出库率"
+        },
+        {
+          "kind": "tableHead",
+          "text": "退货率"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "快照 未生成"
+        },
+        {
+          "kind": "static",
+          "text": "本周期还没有类目分析快照"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 类目分析 榜单选品 中国专区 AI 工具 推荐 促销 订单 工具 消息 类目分析 按 Ozon 本地快照查看类目规模、增长、退货、品牌集中度与履约结构。 7天 0天 0天 0天 ₽ ¥ 快照 未生成 刷新 全部类目 一级类目开始逐层下钻 增长机会 GMV 环比不低于 0% 高退货率 退货风险不低于 0% 品牌集中 品牌销售占比不低于 0% FBS机会 FBS 销售占比不低于 0% 匹配类目 0 当前视图: 全部类目 当前页销量 0 按当前页汇总 当前页销售额 ₽0 ≈¥0 平均退货率 - 当前页均值 增长领跑 - 暂无增长数据 一级类目 全部 路径 全部类目 筛选 月销量 至 月销售额 ₽ 至 平均价 ₽ 至 GMV增长 % 至 退货率 % 至 卖家数 至 查询 重置 更多筛选 ↓ 类目市场列表未启用手动筛选 一级类目总览 # 类目 月销量 月销售额 GMV增长 平均价 均价环比 卖家数 品牌数 品牌占比 头部卖家"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/selection/top-list/",
+      "url": "https://qh.jizhangerp.com/ozon/selection/top-list/?menuAudit=1783144044936",
+      "title": "QH",
+      "path": "/ozon/selection/top-list/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "榜单选品"
+        ]
+      },
+      "tokenCount": 35,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "榜单选品"
+        },
+        {
+          "kind": "control",
+          "text": "热销商品"
+        },
+        {
+          "kind": "control",
+          "text": "热销新品"
+        },
+        {
+          "kind": "control",
+          "text": "潜力商品"
+        },
+        {
+          "kind": "control",
+          "text": "蓝海商品"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "×"
+        },
+        {
+          "kind": "control",
+          "text": "高增长"
+        },
+        {
+          "kind": "control",
+          "text": "低价高销"
+        },
+        {
+          "kind": "control",
+          "text": "高加购"
+        },
+        {
+          "kind": "control",
+          "text": "蓝海量级"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "control",
+          "text": "批量加入草稿箱"
+        },
+        {
+          "kind": "control",
+          "text": "清空选择"
+        },
+        {
+          "kind": "control",
+          "text": "‹"
+        },
+        {
+          "kind": "control",
+          "text": "›"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "sku"
+        },
+        {
+          "kind": "placeholder",
+          "text": "逗号/空格/换行分隔"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最小"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最大"
+        },
+        {
+          "kind": "label",
+          "text": "分区 全部分区"
+        },
+        {
+          "kind": "label",
+          "text": "商品名称"
+        },
+        {
+          "kind": "label",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "批量 SKUS"
+        },
+        {
+          "kind": "label",
+          "text": "月销量"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额环比 %"
+        },
+        {
+          "kind": "label",
+          "text": "发货模式"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 类目分析 榜单选品 中国专区 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 榜单选品 / Ozon 全平台 top 0 实时榜单 数据更新 — 热销商品 热销新品 潜力商品 蓝海商品 7天 0天 金额单位 ₽ ¥ 分区 全部分区 销量与销售额双高的爆款，适合切入趋势品类。 点击「一键跟卖」跳转 Ozon 商品页,自动唤起模拟手动跟卖。 × 选品策略 保留当前类目，快速切筛选 高增长 低价高销 高加购 蓝海量级 未启用额外筛选 一级类目 全部 筛选 商品名称 SKU 批量 SKUS 月销量 ~ 月销售额 ₽ ~ 平均价 ₽ ~ 月销售额环比 % ~ 发货模式 任意 FBO FBS RFBS CB · 跨境 查询 重置 更多筛选 ↓ 共 0 件商品 · 当前展示 0-0 已选 0 批量加入草稿箱 清空选择 共 0 条 · 第 1 / 1 页 ‹ 1 › 每页 0 0 0 0 条"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/selection/top-list/",
+      "url": "http://127.0.0.1:5173/ozon/selection/top-list/?menuAudit=1783144046774",
+      "title": "QH",
+      "path": "/ozon/selection/top-list/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 59,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "榜单选品"
+        },
+        {
+          "kind": "heading",
+          "text": "数据更新 —"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "热销商品"
+        },
+        {
+          "kind": "control",
+          "text": "热销新品"
+        },
+        {
+          "kind": "control",
+          "text": "潜力商品"
+        },
+        {
+          "kind": "control",
+          "text": "蓝海商品"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "高增长"
+        },
+        {
+          "kind": "control",
+          "text": "低价高销"
+        },
+        {
+          "kind": "control",
+          "text": "高加购"
+        },
+        {
+          "kind": "control",
+          "text": "蓝海量级"
+        },
+        {
+          "kind": "control",
+          "text": "任意"
+        },
+        {
+          "kind": "control",
+          "text": "FBO"
+        },
+        {
+          "kind": "control",
+          "text": "FBS"
+        },
+        {
+          "kind": "control",
+          "text": "RFBS"
+        },
+        {
+          "kind": "control",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "control",
+          "text": "批量加入草稿箱"
+        },
+        {
+          "kind": "control",
+          "text": "清空选择"
+        },
+        {
+          "kind": "control",
+          "text": "‹"
+        },
+        {
+          "kind": "control",
+          "text": "›"
+        },
+        {
+          "kind": "label",
+          "text": "7天"
+        },
+        {
+          "kind": "label",
+          "text": "0天"
+        },
+        {
+          "kind": "label",
+          "text": "一级类目 全部"
+        },
+        {
+          "kind": "label",
+          "text": "商品名称"
+        },
+        {
+          "kind": "label",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "批量 SKUS"
+        },
+        {
+          "kind": "label",
+          "text": "月销量 ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额环比 % ~"
+        },
+        {
+          "kind": "label",
+          "text": "发货模式 任意 FBO FBS RFBS CB · 跨境"
+        },
+        {
+          "kind": "label",
+          "text": "任意"
+        },
+        {
+          "kind": "label",
+          "text": "FBO"
+        },
+        {
+          "kind": "label",
+          "text": "FBS"
+        },
+        {
+          "kind": "label",
+          "text": "RFBS"
+        },
+        {
+          "kind": "label",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销售额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "增长"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "未启用额外筛选"
+        },
+        {
+          "kind": "static",
+          "text": "已选 0"
+        },
+        {
+          "kind": "static",
+          "text": "暂无榜单数据"
+        },
+        {
+          "kind": "static",
+          "text": "共 0 条 · 第 1 / 1 页 ‹ 1 › 每页 0 条"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 类目分析 榜单选品 中国专区 AI 工具 推荐 促销 订单 工具 消息 榜单选品 / Ozon 全平台 top 0 实时榜单 数据更新 — 热销商品 热销新品 潜力商品 蓝海商品 7天 0天 金额单位 ₽ ¥ 分区 全部分区 销量与销售额双高的爆款，适合切入趋势品类。 点击「一键跟卖」跳转 Ozon 商品页,自动唤起模拟手动跟卖。 选品策略 保留当前类目，快速切筛选 高增长 低价高销 高加购 蓝海量级 未启用额外筛选 一级类目 全部 筛选 商品名称 SKU 批量 SKUS 月销量 ~ 月销售额 ₽ ~ 平均价 ₽ ~ 月销售额环比 % ~ 发货模式 任意 FBO FBS RFBS CB · 跨境 查询 重置 更多筛选 ↓ 共 0 件商品 · 当前展示 0-0 已选 0 批量加入草稿箱 清空选择 商品 类目 价格 销量 销售额 增长 卖家 品牌 操作 商品 类目 价格 销量 销售额 增长 卖家 品牌 操作 暂无榜单数据 共"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/selection/china/",
+      "url": "https://qh.jizhangerp.com/ozon/selection/china/?menuAudit=1783144048255",
+      "title": "QH",
+      "path": "/ozon/selection/china/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "中国专区"
+        ]
+      },
+      "tokenCount": 32,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "中国专区"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "×"
+        },
+        {
+          "kind": "control",
+          "text": "高增长"
+        },
+        {
+          "kind": "control",
+          "text": "低价高销"
+        },
+        {
+          "kind": "control",
+          "text": "高加购"
+        },
+        {
+          "kind": "control",
+          "text": "中国对标"
+        },
+        {
+          "kind": "control",
+          "text": "全部"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "control",
+          "text": "批量加入草稿箱"
+        },
+        {
+          "kind": "control",
+          "text": "清空选择"
+        },
+        {
+          "kind": "control",
+          "text": "‹"
+        },
+        {
+          "kind": "control",
+          "text": "›"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "sku"
+        },
+        {
+          "kind": "placeholder",
+          "text": "逗号/空格/换行分隔"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最小"
+        },
+        {
+          "kind": "placeholder",
+          "text": "最大"
+        },
+        {
+          "kind": "label",
+          "text": "分区 全部分区"
+        },
+        {
+          "kind": "label",
+          "text": "含零销量商品 ⓘ"
+        },
+        {
+          "kind": "label",
+          "text": "商品名称"
+        },
+        {
+          "kind": "label",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "批量 SKUS"
+        },
+        {
+          "kind": "label",
+          "text": "月销量"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额环比 %"
+        },
+        {
+          "kind": "label",
+          "text": "发货模式"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 类目分析 榜单选品 中国专区 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 中国专区 / Ozon 中国卖家热销榜单，跨境跟款对标 数据更新 — 7天 0天 金额单位 ₽ ¥ 分区 全部分区 含零销量商品 ⓘ 中国卖家热销商品，跨境玩法对标。 点击「一键跟卖」跳转 Ozon 商品页,自动唤起模拟手动跟卖。 × 中国馆对标 中国专区来自中国馆/跨境来源标记，默认隐藏当期零销量商品；勾选“含零销量商品”可查看补录 SKU。 选品策略 保留当前类目，快速切筛选 高增长 低价高销 高加购 中国对标 未启用额外筛选 一级类目 全部 筛选 商品名称 SKU 批量 SKUS 月销量 ~ 月销售额 ₽ ~ 平均价 ₽ ~ 月销售额环比 % ~ 发货模式 任意 FBO FBS RFBS CB · 跨境 查询 重置 更多筛选 ↓ 共 0 件商品 · 当前展示 0-0 已选 0 批量加入草稿箱 清空选择 共 0 条 · 第 1 / 1 页"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/selection/china/",
+      "url": "http://127.0.0.1:5173/ozon/selection/china/?menuAudit=1783144050050",
+      "title": "QH",
+      "path": "/ozon/selection/china/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 56,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "中国专区"
+        },
+        {
+          "kind": "heading",
+          "text": "数据更新 —"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "7天"
+        },
+        {
+          "kind": "control",
+          "text": "0天"
+        },
+        {
+          "kind": "control",
+          "text": "高增长"
+        },
+        {
+          "kind": "control",
+          "text": "低价高销"
+        },
+        {
+          "kind": "control",
+          "text": "高加购"
+        },
+        {
+          "kind": "control",
+          "text": "中国对标"
+        },
+        {
+          "kind": "control",
+          "text": "任意"
+        },
+        {
+          "kind": "control",
+          "text": "FBO"
+        },
+        {
+          "kind": "control",
+          "text": "FBS"
+        },
+        {
+          "kind": "control",
+          "text": "RFBS"
+        },
+        {
+          "kind": "control",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "更多筛选 ↓"
+        },
+        {
+          "kind": "control",
+          "text": "批量加入草稿箱"
+        },
+        {
+          "kind": "control",
+          "text": "清空选择"
+        },
+        {
+          "kind": "control",
+          "text": "‹"
+        },
+        {
+          "kind": "control",
+          "text": "›"
+        },
+        {
+          "kind": "label",
+          "text": "7天"
+        },
+        {
+          "kind": "label",
+          "text": "0天"
+        },
+        {
+          "kind": "label",
+          "text": "含零销量商品"
+        },
+        {
+          "kind": "label",
+          "text": "一级类目 全部"
+        },
+        {
+          "kind": "label",
+          "text": "商品名称"
+        },
+        {
+          "kind": "label",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "批量 SKUS"
+        },
+        {
+          "kind": "label",
+          "text": "月销量 ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "平均价 ₽ ~"
+        },
+        {
+          "kind": "label",
+          "text": "月销售额环比 % ~"
+        },
+        {
+          "kind": "label",
+          "text": "发货模式 任意 FBO FBS RFBS CB · 跨境"
+        },
+        {
+          "kind": "label",
+          "text": "任意"
+        },
+        {
+          "kind": "label",
+          "text": "FBO"
+        },
+        {
+          "kind": "label",
+          "text": "FBS"
+        },
+        {
+          "kind": "label",
+          "text": "RFBS"
+        },
+        {
+          "kind": "label",
+          "text": "CB · 跨境"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类目"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "销售额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "增长"
+        },
+        {
+          "kind": "tableHead",
+          "text": "卖家"
+        },
+        {
+          "kind": "tableHead",
+          "text": "品牌"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "未启用额外筛选"
+        },
+        {
+          "kind": "static",
+          "text": "已选 0"
+        },
+        {
+          "kind": "static",
+          "text": "暂无榜单数据"
+        },
+        {
+          "kind": "static",
+          "text": "共 0 条 · 第 1 / 1 页 ‹ 1 › 每页 0 条"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 类目分析 榜单选品 中国专区 AI 工具 推荐 促销 订单 工具 消息 中国专区 / Ozon 中国卖家热销榜单，跨境跟款对标 数据更新 — 7天 0天 金额单位 ₽ ¥ 分区 全部分区 含零销量商品 中国卖家热销商品，跨境玩法对标。 点击「一键跟卖」跳转 Ozon 商品页,自动唤起模拟手动跟卖。 中国馆对标 中国专区来自中国馆/跨境来源标记，默认隐藏当期零销量商品；勾选“含零销量商品”可查看补录 SKU。 选品策略 保留当前类目，快速切筛选 高增长 低价高销 高加购 中国对标 未启用额外筛选 一级类目 全部 筛选 商品名称 SKU 批量 SKUS 月销量 ~ 月销售额 ₽ ~ 平均价 ₽ ~ 月销售额环比 % ~ 发货模式 任意 FBO FBS RFBS CB · 跨境 查询 重置 更多筛选 ↓ 共 0 件商品 · 当前展示 0-0 已选 0 批量加入草稿箱 清空选择 商品 类目 价格 销量 销售额 增长 卖家 品牌 操作 商"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/tools/ai-poster-records/",
+      "url": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/?menuAudit=1783144051732",
+      "title": "QH",
+      "path": "/ozon/tools/ai-poster-records/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 11,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        },
+        {
+          "kind": "control",
+          "text": "收起"
+        },
+        {
+          "kind": "control",
+          "text": "开始生成"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "开始日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "每行一个图片链接,http(s)://... [url]"
+        },
+        {
+          "kind": "placeholder",
+          "text": "例:女士夏季短袖 T 恤"
+        },
+        {
+          "kind": "placeholder",
+          "text": "例:服饰 / 电子 / 家居"
+        },
+        {
+          "kind": "label",
+          "text": "全部状态"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 AI 改图神器 促销 订单 工具 水印管理 浏览器插件 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 AI 改图神器 Gemini Gemini 大模型改图历史 · 原图 vs 改图 实时对比 全部状态 Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品 收起 上传图片 点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 0 张 或粘贴图片链接 已识别 0 条 待处理图片0 / 0 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里 商品名(可选) 类目(可选) 将提交 0 张,消耗 0 极点余额:未知 开始生成"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/tools/ai-poster-records/",
+      "url": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/?menuAudit=1783144054225",
+      "title": "QH",
+      "path": "/ozon/tools/ai-poster-records/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 28,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "AI 改图神器"
+        },
+        {
+          "kind": "heading",
+          "text": "Gemini 快速改图"
+        },
+        {
+          "kind": "heading",
+          "text": "收起"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "收起"
+        },
+        {
+          "kind": "control",
+          "text": "开始生成"
+        },
+        {
+          "kind": "control",
+          "text": "查询"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "placeholder",
+          "text": "每行一个图片链接,http(s)://... [url]"
+        },
+        {
+          "kind": "placeholder",
+          "text": "开始日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束日期"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货号"
+        },
+        {
+          "kind": "label",
+          "text": "或粘贴图片链接"
+        },
+        {
+          "kind": "label",
+          "text": "商品名(可选)"
+        },
+        {
+          "kind": "label",
+          "text": "类目(可选)"
+        },
+        {
+          "kind": "tableHead",
+          "text": "原图"
+        },
+        {
+          "kind": "tableHead",
+          "text": "改图结果"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "创建时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "将提交 0 张,消耗 0 极点余额:未知"
+        },
+        {
+          "kind": "static",
+          "text": "暂无改图记录"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 AI 改图神器 AI 商品套图 促销 订单 工具 消息 AI 改图神器 Gemini 大模型改图历史 · 原图 vs 改图 实时对比 全部状态 Gemini 快速改图 收起 上传图片或粘贴图片链接,无需绑定商品 点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 0 张 或粘贴图片链接 已识别 0 条 待处理图片0 / 0 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里 商品名(可选) 类目(可选) 将提交 0 张,消耗 0 极点余额:未知 开始生成 查询 重置 原图 改图结果 货号 状态 创建时间 操作 原图 改图结果 货号 状态 创建时间 操作 暂无改图记录"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/ai-image/",
+      "url": "https://qh.jizhangerp.com/ozon/ai-image/?menuAudit=1783144055941",
+      "title": "QH",
+      "path": "/ozon/ai-image/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 2,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "AI 商品套图"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 AI 商品套图 该功能正在灰度内测中，尚未对当前账号开放。"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/ai-image/",
+      "url": "http://127.0.0.1:5173/ozon/ai-image/?menuAudit=1783144057813",
+      "title": "QH",
+      "path": "/ozon/ai-image/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 8,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "AI 商品套图"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "该功能正在灰度内测中，尚未对当前账号开放。"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 AI 改图神器 AI 商品套图 促销 订单 工具 消息 AI 商品套图 该功能正在灰度内测中，尚未对当前账号开放。"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/promotions/prices/",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/prices/?menuAudit=1783144059325",
+      "title": "QH",
+      "path": "/ozon/promotions/prices/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 15,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "价格"
+        },
+        {
+          "kind": "control",
+          "text": "折扣"
+        },
+        {
+          "kind": "control",
+          "text": "选择商品"
+        },
+        {
+          "kind": "control",
+          "text": "改价草稿"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "搜索"
+        },
+        {
+          "kind": "label",
+          "text": "0 条/页"
+        },
+        {
+          "kind": "tableHead",
+          "text": "主图"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "当前价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 sl 会员权益 免费会员 极 极点 0 当前用户 0 价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 商品 当前价格 操作 已同步商品"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/promotions/prices/",
+      "url": "http://127.0.0.1:5173/ozon/promotions/prices/?menuAudit=1783144065951",
+      "title": "QH",
+      "path": "/ozon/promotions/prices/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 20,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "价格与折扣"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "价格"
+        },
+        {
+          "kind": "control",
+          "text": "折扣"
+        },
+        {
+          "kind": "control",
+          "text": "选择商品"
+        },
+        {
+          "kind": "control",
+          "text": "改价草稿"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "搜索"
+        },
+        {
+          "kind": "tableHead",
+          "text": "主图"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "当前价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 主图 商品 当前价格 操作"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/promotions/campaigns/",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/campaigns/?menuAudit=1783144067499",
+      "title": "QH",
+      "path": "/ozon/promotions/campaigns/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 13,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "全部 0"
+        },
+        {
+          "kind": "control",
+          "text": "参与中 0"
+        },
+        {
+          "kind": "control",
+          "text": "可参与 0"
+        },
+        {
+          "kind": "control",
+          "text": "即将结束 0"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索活动名称 / ID"
+        },
+        {
+          "kind": "tableHead",
+          "text": "活动"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "折扣"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "活动周期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 促销活动 实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期 全部活动 0 平台当前可见活动 参与中 0 暂未参与 可参与 0 尚未加入 即将结束（7天内） 0 暂无临期活动 筛选 全部 0 参与中 0 可参与 0 即将结束 0 刷新 活动列表· 共 0 条 活动 状态 折扣 商品 活动周期 操作 活动 状态 折扣 商品 活动周期 操作 加载中…"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/promotions/campaigns/",
+      "url": "http://127.0.0.1:5173/ozon/promotions/campaigns/?menuAudit=1783144069546",
+      "title": "QH",
+      "path": "/ozon/promotions/campaigns/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 25,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "促销活动"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "全部 0"
+        },
+        {
+          "kind": "control",
+          "text": "参与中 0"
+        },
+        {
+          "kind": "control",
+          "text": "可参与 0"
+        },
+        {
+          "kind": "control",
+          "text": "即将结束 0"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索活动名称 / ID"
+        },
+        {
+          "kind": "label",
+          "text": "筛选"
+        },
+        {
+          "kind": "tableHead",
+          "text": "活动"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "折扣"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "活动周期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "全部活动"
+        },
+        {
+          "kind": "static",
+          "text": "参与中"
+        },
+        {
+          "kind": "static",
+          "text": "可参与"
+        },
+        {
+          "kind": "static",
+          "text": "即将结束（7天内）"
+        },
+        {
+          "kind": "static",
+          "text": "加载中…"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 促销活动 实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期 全部活动 0 平台当前可见活动 参与中 0 暂未参与 可参与 0 尚未加入 即将结束（7天内） 0 暂无临期活动 筛选 全部 0 参与中 0 可参与 0 即将结束 0 刷新 活动列表· 共 0 条 活动 状态 折扣 商品 活动周期 操作 活动 状态 折扣 商品 活动周期 操作 加载中…"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/promotions/auto-delete/",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/?menuAudit=1783144071041",
+      "title": "QH",
+      "path": "/ozon/promotions/auto-delete/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 16,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "自动清理配置"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "control",
+          "text": "从 Ozon 同步"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "活动名称"
+        },
+        {
+          "kind": "label",
+          "text": "类型"
+        },
+        {
+          "kind": "tableHead",
+          "text": "活动名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类型"
+        },
+        {
+          "kind": "tableHead",
+          "text": "折扣力度"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品数量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "有效期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 促销活动自动清理 · 利润保护 按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。 自动清理配置 加载店铺中… 活动名称 类型 重 置 查 询 展开 当前店铺促销活动 从 Ozon 同步 刷新 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 活动名称 类型 折扣力度 商品数量 有效期 状态 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/promotions/auto-delete/",
+      "url": "http://127.0.0.1:5173/ozon/promotions/auto-delete/?menuAudit=1783144072948",
+      "title": "QH",
+      "path": "/ozon/promotions/auto-delete/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 24,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "促销活动自动清理 · 利润保护"
+        },
+        {
+          "kind": "heading",
+          "text": "自动清理配置"
+        },
+        {
+          "kind": "heading",
+          "text": "加载店铺中…"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "control",
+          "text": "展开"
+        },
+        {
+          "kind": "control",
+          "text": "从 Ozon 同步"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "活动名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "活动名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "类型"
+        },
+        {
+          "kind": "tableHead",
+          "text": "折扣力度"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品数量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "有效期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "加载店铺中…"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 价格与折扣 营销活动 自动删促销 订单 工具 消息 促销活动自动清理 · 利润保护 按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。 自动清理配置 加载店铺中… 活动名称 重 置 查 询 展开 当前店铺促销活动 从 Ozon 同步 刷新 活动名称 类型 折扣力度 商品数量 有效期 状态 操作 活动名称 类型 折扣力度 商品数量 有效期 状态 操作"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/postings/list/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/list/?menuAudit=1783144074434",
+      "title": "QH",
+      "path": "/ozon/postings/list/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "订单"
+        ]
+      },
+      "tokenCount": 22,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "订单"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "拉取最新订单"
+        },
+        {
+          "kind": "control",
+          "text": "刷新进行中订单"
+        },
+        {
+          "kind": "control",
+          "text": "筛 选"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "订单导出"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货件号 / SKU / 货号 / 物流单号…"
+        },
+        {
+          "kind": "placeholder",
+          "text": "下单时间"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束时间"
+        },
+        {
+          "kind": "label",
+          "text": "当前店铺"
+        },
+        {
+          "kind": "label",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "倒计时"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件 / 状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库 / 配送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单金额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "利润"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 订单 0-0-0 周六 · 当前店铺 · 已关闭自动同步 刷新 拉取最新订单 刷新进行中订单 同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 0 天至现在 本周 GMV ¥— 本周利润 ¥— 本周利润率 —% 待处理 0 ↑ 全部已处理 所有订单 等待备货 等待发运 已超时 运输中 有争议的 已签收 已取消 当前店铺 货件编号 筛 选 重 置 订单导出 自动同步 倒计时 货件 / 状态 店铺 商品 仓库 / 配送 订单金额 利润 操作 倒计时 货件 / 状态 店铺 商品 仓库 / 配送 订单金额 利润 操作 暂无数据 近 7 天订单 — 客单价 ¥— 当前筛选 0 条订单 待处理 0 已关闭自动同步"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/list/",
+      "url": "http://127.0.0.1:5173/ozon/postings/list/?menuAudit=1783144076324",
+      "title": "QH",
+      "path": "/ozon/postings/list/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 43,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "订单"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新"
+        },
+        {
+          "kind": "heading",
+          "text": "拉取最新订单"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新进行中订单"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "拉取最新订单"
+        },
+        {
+          "kind": "control",
+          "text": "刷新进行中订单"
+        },
+        {
+          "kind": "control",
+          "text": "所有订单"
+        },
+        {
+          "kind": "control",
+          "text": "等待备货"
+        },
+        {
+          "kind": "control",
+          "text": "等待发运"
+        },
+        {
+          "kind": "control",
+          "text": "已超时"
+        },
+        {
+          "kind": "control",
+          "text": "运输中"
+        },
+        {
+          "kind": "control",
+          "text": "有争议的"
+        },
+        {
+          "kind": "control",
+          "text": "已签收"
+        },
+        {
+          "kind": "control",
+          "text": "已取消"
+        },
+        {
+          "kind": "control",
+          "text": "筛 选"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "订单导出"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货件号 / SKU / 货号 / 物流单号…"
+        },
+        {
+          "kind": "placeholder",
+          "text": "下单时间"
+        },
+        {
+          "kind": "placeholder",
+          "text": "结束时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "倒计时"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件 / 状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库 / 配送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单金额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "利润"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "本周 GMV"
+        },
+        {
+          "kind": "static",
+          "text": "本周利润"
+        },
+        {
+          "kind": "static",
+          "text": "本周利润率"
+        },
+        {
+          "kind": "static",
+          "text": "待处理"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据"
+        },
+        {
+          "kind": "static",
+          "text": "近 7 天订单"
+        },
+        {
+          "kind": "static",
+          "text": "客单价"
+        },
+        {
+          "kind": "static",
+          "text": "当前筛选"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 索要好评 提醒取货 工具 消息 订单 0-0-0 · 周六 · 当前店铺 · 已关闭自动同步 刷新 拉取最新订单 刷新进行中订单 同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 0 天至现在 本周 GMV ¥— 当前店铺 本周利润 ¥— 当前店铺 本周利润率 —% 当前店铺 待处理 0 ↑ 全部已处理 所有订单 等待备货 等待发运 已超时 运输中 有争议的 已签收 已取消 当前店铺 货件编号 筛 选 重 置 订单导出 自动同步 倒计时 货件 / 状态 店铺 商品 仓库 / 配送 订单金额 利润 操作 倒计时 货件 / 状态 店铺 商品 仓库 / 配送 订单金额 利润 操作 暂无数据 近 7 天订单 — 当前筛选 客单价 ¥— 当前筛选 当前筛选 0 条订单 待处理 0 已关闭自动同步"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/postings/returns/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/returns/?menuAudit=1783144077933",
+      "title": "QH",
+      "path": "/ozon/postings/returns/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "退货 / 退款"
+        ]
+      },
+      "tokenCount": 15,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "退货 / 退款"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "搜 索"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "上一页"
+        },
+        {
+          "kind": "control",
+          "text": "下一页"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货件号 / 货号 / SKU"
+        },
+        {
+          "kind": "label",
+          "text": "0/页"
+        },
+        {
+          "kind": "tableHead",
+          "text": "申请 / 货件"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "申请时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 退货 / 退款 0-0-0 周六 · — · 透传 Ozon API,刷新即同步 刷新 本页申请数 0 已到末页 待审批 0 无待处理 等待退货 0 无 等待退款 0 无 退货申请 (rFBS) FBS FBO 搜 索 重 置 透传模式,按当前店铺过滤 申请 / 货件 店铺 商品 申请时间 操作 申请 / 货件 店铺 商品 申请时间 操作 暂无数据 第 1 页 · 本页 0 条 0/页 上一页 下一页"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/returns/",
+      "url": "http://127.0.0.1:5173/ozon/postings/returns/?menuAudit=1783144080295",
+      "title": "QH",
+      "path": "/ozon/postings/returns/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 29,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "退货 / 退款"
+        },
+        {
+          "kind": "heading",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "刷新"
+        },
+        {
+          "kind": "control",
+          "text": "退货申请 (rFBS)"
+        },
+        {
+          "kind": "control",
+          "text": "FBS"
+        },
+        {
+          "kind": "control",
+          "text": "FBO"
+        },
+        {
+          "kind": "control",
+          "text": "搜 索"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "上一页"
+        },
+        {
+          "kind": "control",
+          "text": "下一页"
+        },
+        {
+          "kind": "placeholder",
+          "text": "搜索货件号 / 货号 / SKU"
+        },
+        {
+          "kind": "tableHead",
+          "text": "申请 / 货件"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "申请时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "本页申请数"
+        },
+        {
+          "kind": "static",
+          "text": "待审批"
+        },
+        {
+          "kind": "static",
+          "text": "等待退货"
+        },
+        {
+          "kind": "static",
+          "text": "等待退款"
+        },
+        {
+          "kind": "static",
+          "text": "透传模式,按当前店铺过滤"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据"
+        },
+        {
+          "kind": "static",
+          "text": "第 1 页 · 本页 0 条 0/页 上一页 下一页"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 索要好评 提醒取货 工具 消息 退货 / 退款 0-0-0 · 周六 · — · 透传 Ozon API,刷新即同步 刷新 本页申请数 0 已到末页 待审批 0 无待处理 等待退货 0 无 等待退款 0 无 退货申请 (rFBS) FBS FBO 搜 索 重 置 透传模式,按当前店铺过滤 申请 / 货件 店铺 商品 申请时间 操作 申请 / 货件 店铺 商品 申请时间 操作 暂无数据 第 1 页 · 本页 0 条 0/页 上一页 下一页"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/postings/profit-trend/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/profit-trend/?menuAudit=1783144082443",
+      "title": "QH",
+      "path": "/ozon/postings/profit-trend/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 15,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "7 天"
+        },
+        {
+          "kind": "control",
+          "text": "0 天"
+        },
+        {
+          "kind": "control",
+          "text": "利润视图"
+        },
+        {
+          "kind": "control",
+          "text": "成本拆解"
+        },
+        {
+          "kind": "control",
+          "text": "订单量"
+        },
+        {
+          "kind": "label",
+          "text": "全部店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "日期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单数"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单金额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "OZON 佣金"
+        },
+        {
+          "kind": "tableHead",
+          "text": "采购成本"
+        },
+        {
+          "kind": "tableHead",
+          "text": "利润"
+        },
+        {
+          "kind": "tableHead",
+          "text": "毛利率"
+        },
+        {
+          "kind": "tableHead",
+          "text": "客单价"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 利润趋势 0-0-0 至 0-0-0 当前店铺 按出单日期聚合，金额为人民币口径 7 天 0 天 0 天 0 天 全部店铺 订单金额 ¥ 0 持平 vs 上期 客单价 — 利润 ¥ 0 持平 vs 上期 利润率 — 毛利率 — 佣金 — · 采购 — 订单数 0 单 持平 vs 上期 0 个出单日 · 0 个空白日 日维度趋势 利润视图 成本拆解 订单量 经营判断 本期 利润最好 暂无 本期还没有可分析订单 利润压力 暂无可判断 同步订单后展示利润压力 采购成本为 0 的出单日 暂无可判断 有出单数据后展示采购成本录入信号 费用结构 暂无可判断 本期暂无订单金额 日明细 共 0 天 日期 订单数 订单金额 OZON 佣金 采购成本 利润 毛利率 客单价"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/profit-trend/",
+      "url": "http://127.0.0.1:5173/ozon/postings/profit-trend/?menuAudit=1783144085095",
+      "title": "QH",
+      "path": "/ozon/postings/profit-trend/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 26,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "利润趋势"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "7 天"
+        },
+        {
+          "kind": "control",
+          "text": "0 天"
+        },
+        {
+          "kind": "control",
+          "text": "利润视图"
+        },
+        {
+          "kind": "control",
+          "text": "成本拆解"
+        },
+        {
+          "kind": "control",
+          "text": "订单量"
+        },
+        {
+          "kind": "tableHead",
+          "text": "日期"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单数"
+        },
+        {
+          "kind": "tableHead",
+          "text": "订单金额"
+        },
+        {
+          "kind": "tableHead",
+          "text": "OZON 佣金"
+        },
+        {
+          "kind": "tableHead",
+          "text": "采购成本"
+        },
+        {
+          "kind": "tableHead",
+          "text": "利润"
+        },
+        {
+          "kind": "tableHead",
+          "text": "毛利率"
+        },
+        {
+          "kind": "tableHead",
+          "text": "客单价"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "订单金额"
+        },
+        {
+          "kind": "static",
+          "text": "利润"
+        },
+        {
+          "kind": "static",
+          "text": "毛利率"
+        },
+        {
+          "kind": "static",
+          "text": "订单数"
+        },
+        {
+          "kind": "static",
+          "text": "0 单"
+        },
+        {
+          "kind": "static",
+          "text": "暂无利润明细"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 索要好评 提醒取货 工具 消息 利润趋势 0-0-0 至 0-0-0 · 当前店铺 · 按出单日期聚合，金额为人民币口径 7 天 0 天 0 天 0 天 全部店铺 订单金额 ¥0 持平 vs 上期 · 客单价 — 利润 ¥0 持平 vs 上期 · 利润率 — 毛利率 — 佣金 — · 采购 — 订单数 0 单 持平 vs 上期 0 个出单日 · 0 个空白日 日维度趋势 利润视图 成本拆解 订单量 经营判断 本期利润最好 暂无 本期还没有可分析订单 利润压力 暂无可判断 同步订单后展示利润压力 采购成本为 0 的出单日 暂无可判断 有出单数据后展示采购成本录入信号 费用结构 暂无可判断 本期暂无订单金额 日明细 · 共 0 天 日期 订单数 订单金额 OZON 佣金 采购成本 利润 毛利率 客单价 日期 订单数 订单金额 OZON 佣"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/postings/review-request/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/review-request/?menuAudit=1783144086617",
+      "title": "QH",
+      "path": "/ozon/postings/review-request/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "索要好评"
+        ]
+      },
+      "tokenCount": 26,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "索要好评"
+        },
+        {
+          "kind": "control",
+          "text": "文案模板"
+        },
+        {
+          "kind": "control",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "筛选"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "同步当前店铺"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部店铺"
+        },
+        {
+          "kind": "control",
+          "text": "批量发送"
+        },
+        {
+          "kind": "placeholder",
+          "text": "货件编号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "货号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "当前店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发运"
+        },
+        {
+          "kind": "tableHead",
+          "text": "图片"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号，数量 名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "查看商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库"
+        },
+        {
+          "kind": "tableHead",
+          "text": "配送服务 方式"
+        },
+        {
+          "kind": "tableHead",
+          "text": "送达"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据，请先同步已签收订单"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 索要好评 0-0-0 周六 · 当前店铺 文案模板 任务监控 (0) 当前筛选 0 条候选记录 待发送 0 本页待处理 已发送 0 本页已完成 失败 / 不可发 0 需查看原因 当前店铺 筛选 重置 同步当前店铺 同步全部店铺 批量发送 建议仅对履约体验稳定、商品质量有把握的订单发送评价邀请，以提升好评转化并降低负面反馈风险。 操作 店铺 货件编号 发运 图片 货号，数量 名称 查看商品 价格 仓库 配送服务 方式 送达 操作 店铺 货件编号 发运 图片 货号，数量 名称 查看商品 价格 仓库 配送服务 方式 送达 暂无数据，请先同步已签收订单"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/review-request/",
+      "url": "http://127.0.0.1:5173/ozon/postings/review-request/?menuAudit=1783144088568",
+      "title": "QH",
+      "path": "/ozon/postings/review-request/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 32,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "索要好评"
+        },
+        {
+          "kind": "heading",
+          "text": "文案模板"
+        },
+        {
+          "kind": "heading",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "文案模板"
+        },
+        {
+          "kind": "control",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "筛选"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "同步当前店铺"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部店铺"
+        },
+        {
+          "kind": "control",
+          "text": "批量发送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发运"
+        },
+        {
+          "kind": "tableHead",
+          "text": "图片"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号，数量 名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "查看商品"
+        },
+        {
+          "kind": "tableHead",
+          "text": "价格"
+        },
+        {
+          "kind": "tableHead",
+          "text": "仓库"
+        },
+        {
+          "kind": "tableHead",
+          "text": "配送服务 方式"
+        },
+        {
+          "kind": "tableHead",
+          "text": "送达"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "当前筛选"
+        },
+        {
+          "kind": "static",
+          "text": "待发送"
+        },
+        {
+          "kind": "static",
+          "text": "已发送"
+        },
+        {
+          "kind": "static",
+          "text": "失败 / 不可发"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据，请先同步已签收订单"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 索要好评 提醒取货 工具 消息 索要好评 0-0-0 · 周六 · 当前店铺 文案模板 任务监控 (0) 当前筛选 0 条候选记录 待发送 0 本页待处理 已发送 0 本页已完成 失败 / 不可发 0 需查看原因 当前店铺 筛选 重置 同步当前店铺 同步全部店铺 批量发送 建议仅对履约体验稳定、商品质量有把握的订单发送评价邀请，以提升好评转化并降低负面反馈风险。 操作 店铺 货件编号 发运 图片 货号，数量 名称 查看商品 价格 仓库 配送服务 方式 送达 操作 店铺 货件编号 发运 图片 货号，数量 名称 查看商品 价格 仓库 配送服务 方式 送达 暂无数据，请先同步已签收订单"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/postings/pickup-reminder/",
+      "url": "https://qh.jizhangerp.com/ozon/postings/pickup-reminder/?menuAudit=1783144090097",
+      "title": "QH",
+      "path": "/ozon/postings/pickup-reminder/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH",
+          "提醒取货"
+        ]
+      },
+      "tokenCount": 26,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "提醒取货"
+        },
+        {
+          "kind": "control",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "筛选"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "同步当前店铺"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部店铺"
+        },
+        {
+          "kind": "control",
+          "text": "批量发送"
+        },
+        {
+          "kind": "placeholder",
+          "text": "货件编号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "物流单号"
+        },
+        {
+          "kind": "placeholder",
+          "text": "商品名称"
+        },
+        {
+          "kind": "placeholder",
+          "text": "SKU"
+        },
+        {
+          "kind": "label",
+          "text": "当前店铺"
+        },
+        {
+          "kind": "label",
+          "text": "已到取件点"
+        },
+        {
+          "kind": "label",
+          "text": "买家未取"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "取货状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "图片"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号，数量 名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "物流单号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "配送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最近物流时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "查看商品"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据，请先同步运输中订单"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 提醒取货 0-0-0 周六 · 当前店铺 任务监控 (0) 当前筛选 0 条候选记录 待发送 0 本页待处理 已发送 0 本页已完成 到货未取 0 本页可提醒 当前店铺 已到取件点 买家未取 筛选 重置 默认仅展示已到取件点且买家未取的订单；需要排查更多物流阶段时，可切换到货状态和取货状态筛选。 同步当前店铺 同步全部店铺 批量发送 操作 店铺 货件编号 取货状态 图片 货号，数量 名称 物流单号 配送 最近物流时间 查看商品 操作 店铺 货件编号 取货状态 图片 货号，数量 名称 物流单号 配送 最近物流时间 查看商品 暂无数据，请先同步运输中订单"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/postings/pickup-reminder/",
+      "url": "http://127.0.0.1:5173/ozon/postings/pickup-reminder/?menuAudit=1783144092517",
+      "title": "QH",
+      "path": "/ozon/postings/pickup-reminder/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 29,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "提醒取货"
+        },
+        {
+          "kind": "heading",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "任务监控 (0)"
+        },
+        {
+          "kind": "control",
+          "text": "筛选"
+        },
+        {
+          "kind": "control",
+          "text": "重置"
+        },
+        {
+          "kind": "control",
+          "text": "同步当前店铺"
+        },
+        {
+          "kind": "control",
+          "text": "同步全部店铺"
+        },
+        {
+          "kind": "control",
+          "text": "批量发送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "tableHead",
+          "text": "店铺"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货件编号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "取货状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "图片"
+        },
+        {
+          "kind": "tableHead",
+          "text": "货号，数量 名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "物流单号"
+        },
+        {
+          "kind": "tableHead",
+          "text": "配送"
+        },
+        {
+          "kind": "tableHead",
+          "text": "最近物流时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "查看商品"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "当前筛选"
+        },
+        {
+          "kind": "static",
+          "text": "待发送"
+        },
+        {
+          "kind": "static",
+          "text": "已发送"
+        },
+        {
+          "kind": "static",
+          "text": "到货未取"
+        },
+        {
+          "kind": "static",
+          "text": "暂无数据，请先同步运输中订单"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 订单 退货申请 利润趋势 数据大屏 索要好评 提醒取货 工具 消息 提醒取货 0-0-0 · 周六 · 当前店铺 任务监控 (0) 当前筛选 0 条候选记录 待发送 0 本页待处理 已发送 0 本页已完成 到货未取 0 本页可提醒 当前店铺 已到取件点 买家未取 筛选 重置 同步当前店铺 同步全部店铺 批量发送 默认仅展示已到取件点且买家未取的订单；需要排查更多物流阶段时，可切换到货状态和取货状态筛选。 操作 店铺 货件编号 取货状态 图片 货号，数量 名称 物流单号 配送 最近物流时间 查看商品 操作 店铺 货件编号 取货状态 图片 货号，数量 名称 物流单号 配送 最近物流时间 查看商品 暂无数据，请先同步运输中订单"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/tools/watermark/",
+      "url": "https://qh.jizhangerp.com/ozon/tools/watermark/?menuAudit=1783144094401",
+      "title": "QH",
+      "path": "/ozon/tools/watermark/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 6,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "水印/边框模板 0"
+        },
+        {
+          "kind": "heading",
+          "text": "预览与下载 请先选用模板"
+        },
+        {
+          "kind": "control",
+          "text": "新建模板"
+        },
+        {
+          "kind": "control",
+          "text": "下载当前"
+        },
+        {
+          "kind": "control",
+          "text": "批量下载（0）"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 水印工具 选模板 → 上传图片 → 实时预览 → 批量下载，覆盖 Ozon 商品主图水印需求 1 选择模板 › 2 上传图片 › 3 预览下载 水印/边框模板 0 新建模板 加载中... 预览与下载 请先选用模板 点击或拖拽上传图片 支持单张或批量，PNG / JPG 下载当前 批量下载（0） 先选择一个水印/边框模板 在上方模板列表中点击卡片即可选用"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/tools/watermark/",
+      "url": "http://127.0.0.1:5173/ozon/tools/watermark/?menuAudit=1783144096270",
+      "title": "QH",
+      "path": "/ozon/tools/watermark/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 14,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "水印管理"
+        },
+        {
+          "kind": "heading",
+          "text": "水印/边框模板 0"
+        },
+        {
+          "kind": "heading",
+          "text": "预览与下载"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "新建模板"
+        },
+        {
+          "kind": "control",
+          "text": "下载当前"
+        },
+        {
+          "kind": "control",
+          "text": "批量下载（0）"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "暂无水印/边框模板，立即创建第一个"
+        },
+        {
+          "kind": "static",
+          "text": "请先选用模板"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 水印管理 选模板、上传图片、实时预览、批量下载，覆盖 Ozon 商品主图水印需求 水印/边框模板 0 新建模板 暂无水印/边框模板，立即创建第一个 预览与下载 请先选用模板 点击或拖拽上传图片 支持单张或批量，PNG / JPG 下载当前 批量下载（0） 先选择一个水印/边框模板 在上方模板列表中点击卡片即可选用"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/announcements/",
+      "url": "https://qh.jizhangerp.com/ozon/announcements/?menuAudit=1783144097777",
+      "title": "QH",
+      "path": "/ozon/announcements/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 3,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "heading",
+          "text": "公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "全部已读"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 公告中心 查看平台和分销商发布的更新、维护与业务通知 全部已读"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/announcements/",
+      "url": "http://127.0.0.1:5173/ozon/announcements/?menuAudit=1783144100186",
+      "title": "QH",
+      "path": "/ozon/announcements/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 9,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "公告中心"
+        },
+        {
+          "kind": "heading",
+          "text": "全部已读"
+        },
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "全部已读"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 公告中心 查看平台和分销商发布的更新、维护与业务通知 全部已读"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/messaging/templates/",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/templates/?menuAudit=1783144101649",
+      "title": "QH",
+      "path": "/ozon/messaging/templates/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 13,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "control",
+          "text": "新建模板"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "模板名称"
+        },
+        {
+          "kind": "label",
+          "text": "分类"
+        },
+        {
+          "kind": "label",
+          "text": "请选择"
+        },
+        {
+          "kind": "tableHead",
+          "text": "模板名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "分类"
+        },
+        {
+          "kind": "tableHead",
+          "text": "内容预览"
+        },
+        {
+          "kind": "tableHead",
+          "text": "更新时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 模板名称 分类 请选择 重 置 查 询 展开 模板列表 新建模板 模板名称 分类 内容预览 更新时间 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/messaging/templates/",
+      "url": "http://127.0.0.1:5173/ozon/messaging/templates/?menuAudit=1783144103993",
+      "title": "QH",
+      "path": "/ozon/messaging/templates/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 20,
+      "tokens": [
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "control",
+          "text": "新建模板"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "模板名称"
+        },
+        {
+          "kind": "label",
+          "text": "分类"
+        },
+        {
+          "kind": "label",
+          "text": "内容预览"
+        },
+        {
+          "kind": "label",
+          "text": "更新时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "模板名称"
+        },
+        {
+          "kind": "tableHead",
+          "text": "分类"
+        },
+        {
+          "kind": "tableHead",
+          "text": "内容预览"
+        },
+        {
+          "kind": "tableHead",
+          "text": "更新时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "暂无模板"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 模板名称 分类 请选择 内容预览 更新时间 重 置 查 询 展开 模板列表 新建模板 模板名称 分类 内容预览 更新时间 操作 模板名称 分类 内容预览 更新时间 操作 暂无模板"
+    },
+    {
+      "kind": "source",
+      "route": "/ozon/messaging/history/",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/history/?menuAudit=1783144105519",
+      "title": "QH",
+      "path": "/ozon/messaging/history/",
+      "bodyHasLogin": false,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": [
+          "QH"
+        ]
+      },
+      "tokenCount": 12,
+      "tokens": [
+        {
+          "kind": "heading",
+          "text": "QH"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "接收人"
+        },
+        {
+          "kind": "label",
+          "text": "使用模板"
+        },
+        {
+          "kind": "tableHead",
+          "text": "接收人"
+        },
+        {
+          "kind": "tableHead",
+          "text": "使用模板"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发送内容"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发送时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        }
+      ],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 接收人 使用模板 重 置 查 询 展开 历史记录 接收人 使用模板 发送内容 状态 发送时间 操作"
+    },
+    {
+      "kind": "local",
+      "route": "/ozon/messaging/history/",
+      "url": "http://127.0.0.1:5173/ozon/messaging/history/?menuAudit=1783144107451",
+      "title": "QH",
+      "path": "/ozon/messaging/history/",
+      "bodyHasLogin": true,
+      "shell": {
+        "hasQhBrand": true,
+        "h1": []
+      },
+      "tokenCount": 21,
+      "tokens": [
+        {
+          "kind": "control",
+          "text": "帮助中心 使用文档"
+        },
+        {
+          "kind": "control",
+          "text": "公告 公告中心"
+        },
+        {
+          "kind": "control",
+          "text": "浏览器插件 插件下载"
+        },
+        {
+          "kind": "control",
+          "text": "当前门店 去绑定门店"
+        },
+        {
+          "kind": "control",
+          "text": "会员权益 免费会员"
+        },
+        {
+          "kind": "control",
+          "text": "重 置"
+        },
+        {
+          "kind": "control",
+          "text": "查 询"
+        },
+        {
+          "kind": "placeholder",
+          "text": "请输入"
+        },
+        {
+          "kind": "label",
+          "text": "接收人"
+        },
+        {
+          "kind": "label",
+          "text": "使用模板"
+        },
+        {
+          "kind": "label",
+          "text": "发送内容"
+        },
+        {
+          "kind": "label",
+          "text": "状态"
+        },
+        {
+          "kind": "label",
+          "text": "发送时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "接收人"
+        },
+        {
+          "kind": "tableHead",
+          "text": "使用模板"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发送内容"
+        },
+        {
+          "kind": "tableHead",
+          "text": "状态"
+        },
+        {
+          "kind": "tableHead",
+          "text": "发送时间"
+        },
+        {
+          "kind": "tableHead",
+          "text": "操作"
+        },
+        {
+          "kind": "static",
+          "text": "推荐"
+        },
+        {
+          "kind": "static",
+          "text": "暂无发送记录"
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 接收人 使用模板 发送内容 状态 请选择 发送时间 重 置 查 询 展开 历史记录 接收人 使用模板 发送内容 状态 发送时间 操作 接收人 使用模板 发送内容 状态 发送时间 操作 暂无发送记录"
+    }
+  ]
+}

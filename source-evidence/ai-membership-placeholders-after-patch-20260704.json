@@ -1,0 +1,66 @@
+{
+  "scope": "AI poster and membership placeholder parity",
+  "validatedAt": "2026-07-04T21:30:23+08:00",
+  "sourceEvidence": [
+    "source-evidence/current-menu-control-audit-20260704.json",
+    "source-evidence/fresh-risk-route-audit-20260704-turn2.json"
+  ],
+  "changes": {
+    "aiPosterLinkPlaceholder": "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+    "aiPosterProductPlaceholder": "例:女士夏季短袖 T 恤",
+    "aiPosterCategoryPlaceholder": "例:服饰 / 电子 / 家居",
+    "membershipActivationPlaceholder": "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+  },
+  "egoVerification": {
+    "taskSpaceId": 70,
+    "devServerRestartRequired": true,
+    "aiPosterRoute": "/ozon/tools/ai-poster-records/",
+    "membershipRoute": "/ozon/settings/membership/",
+    "aiPoster": {
+      "title": "QH",
+      "hasLinkPlaceholder": true,
+      "hasProductPlaceholder": true,
+      "hasCategoryPlaceholder": true,
+      "hasStatus": true,
+      "placeholders": [
+        "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+        "例:女士夏季短袖 T 恤",
+        "例:服饰 / 电子 / 家居",
+        "开始日期",
+        "结束日期",
+        "搜索货号"
+      ]
+    },
+    "membership": {
+      "title": "QH",
+      "hasActivationPlaceholder": true,
+      "placeholders": [
+        "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+      ]
+    }
+  },
+  "validation": {
+    "pnpmBuild": "passed",
+    "serverSyntax": "passed",
+    "gitDiffCheck": "passed",
+    "secretScan": "passed",
+    "localState": {
+      "web": 200,
+      "api": true,
+      "stores": 1,
+      "products": 580,
+      "postings": 466,
+      "warehouses": 16,
+      "announcements": 0,
+      "jobs": 13,
+      "aiPosterJobs": 0,
+      "messageHistory": 0,
+      "productTemplates": 0,
+      "watermarkTemplates": 0,
+      "promotions": 6
+    }
+  },
+  "noSampleBusinessRowsInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "redaction": "Evidence stores UI placeholder text and aggregate counts only; no credentials, product names, SKUs, order IDs, or row payloads are included."
+}

@@ -1,0 +1,43 @@
+{
+  "capturedAt": "2026-07-04T07:21:44.836Z",
+  "taskSpaceId": 39,
+  "results": [
+    {
+      "name": "jidian",
+      "screenshot": null,
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/settings/jidian/?afterViteRestart=1783149698134",
+        "path": "/ozon/settings/jidian/",
+        "siderClass": "ant-layout-sider ant-layout-sider-dark qh-sider hidden-route-sider css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "visibleSubItems": [],
+        "openGroups": [],
+        "menuText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+      }
+    },
+    {
+      "name": "stores",
+      "screenshot": null,
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/settings/stores/?afterViteRestart=1783149700345",
+        "path": "/ozon/settings/stores/",
+        "siderClass": "ant-layout-sider ant-layout-sider-dark qh-sider hidden-route-sider css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "visibleSubItems": [],
+        "openGroups": [],
+        "menuText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+      }
+    },
+    {
+      "name": "templates",
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-templates-hidden-sider-after-vite-restart-20260704.png",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/templates/?afterViteRestart=1783149702563",
+        "path": "/ozon/templates/",
+        "siderClass": "ant-layout-sider ant-layout-sider-dark qh-sider hidden-route-sider css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "visibleSubItems": [],
+        "openGroups": [],
+        "menuText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+      }
+    }
+  ],
+  "ok": true
+}

@@ -1,0 +1,424 @@
+{
+  "capturedAt": "2026-07-04T03:14:28.889Z",
+  "taskSpaceId": 7,
+  "pages": [
+    {
+      "route": "/ozon/ai-image",
+      "label": "AI 商品套图",
+      "url": "https://qh.jizhangerp.com/ozon/ai-image/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/ai-image/",
+        "title": "QH",
+        "w": 1600,
+        "h": 882,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1600,
+        "ph": 882
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/ai-image/",
+        "headings": [
+          "QH",
+          "AI 商品套图"
+        ],
+        "buttons": [],
+        "links": [
+          "仪表盘",
+          "QH"
+        ],
+        "placeholders": [],
+        "formLabels": [],
+        "tabsAndChips": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "bodyHasLogin": false,
+        "bodyLength": 138
+      }
+    },
+    {
+      "route": "/ozon/announcements",
+      "label": "公告中心",
+      "url": "https://qh.jizhangerp.com/ozon/announcements/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/announcements/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 214,
+        "ph": 942
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/announcements/",
+        "headings": [
+          "公告中心"
+        ],
+        "buttons": [
+          "全部已读"
+        ],
+        "links": [],
+        "placeholders": [],
+        "formLabels": [],
+        "tabsAndChips": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "bodyHasLogin": false,
+        "bodyLength": 102
+      }
+    },
+    {
+      "route": "/ozon/messaging/templates",
+      "label": "消息模板",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 748,
+        "ph": 715
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/messaging/templates/",
+        "headings": [],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "新建模板"
+        ],
+        "links": [
+          "展开"
+        ],
+        "placeholders": [
+          "请输入",
+          "请选择"
+        ],
+        "formLabels": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间"
+        ],
+        "tabsAndChips": [],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "bodyHasLogin": false,
+        "bodyLength": 130
+      }
+    },
+    {
+      "route": "/ozon/messaging/history",
+      "label": "发送记录",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/history/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/messaging/history/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1118,
+        "ph": 680
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/messaging/history/",
+        "headings": [],
+        "buttons": [
+          "重 置",
+          "查 询"
+        ],
+        "links": [
+          "展开"
+        ],
+        "placeholders": [
+          "请输入",
+          "请选择"
+        ],
+        "formLabels": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间"
+        ],
+        "tabsAndChips": [],
+        "tableHeaders": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "bodyHasLogin": false,
+        "bodyLength": 126
+      }
+    },
+    {
+      "route": "/ozon/promotions/prices",
+      "label": "价格与折扣",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 235,
+        "ph": 1825
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/promotions/prices/",
+        "headings": [],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "刷新"
+        ],
+        "links": [],
+        "placeholders": [
+          "请输入"
+        ],
+        "formLabels": [
+          "搜索"
+        ],
+        "tabsAndChips": [
+          "价格",
+          "折扣",
+          "选择商品",
+          "改价草稿"
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "当前价格",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "bodyHasLogin": false,
+        "bodyLength": 195
+      }
+    },
+    {
+      "route": "/ozon/promotions/campaigns",
+      "label": "营销活动",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 264,
+        "ph": 1955
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/promotions/campaigns/",
+        "headings": [],
+        "buttons": [
+          "全部[num]",
+          "参与中[num]",
+          "可参与[num]",
+          "即将结束[num]",
+          "刷新"
+        ],
+        "links": [],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "formLabels": [],
+        "tabsAndChips": [],
+        "tableHeaders": [
+          "活动",
+          "状态",
+          "折扣",
+          "商品",
+          "活动周期",
+          "操作"
+        ],
+        "emptyTexts": [
+          "加载中…"
+        ],
+        "bodyHasLogin": false,
+        "bodyLength": 268
+      }
+    },
+    {
+      "route": "/ozon/promotions/auto-delete",
+      "label": "自动删促销",
+      "url": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 316,
+        "ph": 3827
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/promotions/auto-delete/",
+        "headings": [
+          "自动清理配置"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "从 Ozon 同步",
+          "刷新"
+        ],
+        "links": [
+          "展开"
+        ],
+        "placeholders": [
+          "请输入",
+          "请选择"
+        ],
+        "formLabels": [
+          "活动名称",
+          "类型",
+          "状态"
+        ],
+        "tabsAndChips": [],
+        "tableHeaders": [
+          "活动名称",
+          "类型",
+          "折扣力度",
+          "商品数量",
+          "有效期",
+          "状态",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "bodyHasLogin": false,
+        "bodyLength": 327
+      }
+    },
+    {
+      "route": "/ozon/postings/list",
+      "label": "订单",
+      "url": "https://qh.jizhangerp.com/ozon/postings/list/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/list/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 564,
+        "ph": 2466
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/list/",
+        "headings": [
+          "订单"
+        ],
+        "buttons": [
+          "刷新",
+          "拉取最新订单",
+          "刷新进行中订单",
+          "筛 选",
+          "重 置",
+          "订单导出"
+        ],
+        "links": [],
+        "placeholders": [
+          "搜索货件号 / SKU / 货号 / 物流单号…",
+          "下单时间",
+          "结束时间"
+        ],
+        "formLabels": [],
+        "tabsAndChips": [
+          "当前店铺",
+          "货件编号"
+        ],
+        "tableHeaders": [
+          "倒计时",
+          "货件 / 状态",
+          "店铺",
+          "商品",
+          "仓库 / 配送",
+          "订单金额",
+          "利润",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "bodyHasLogin": false,
+        "bodyLength": 412
+      }
+    },
+    {
+      "route": "/ozon/postings/returns",
+      "label": "退货申请",
+      "url": "https://qh.jizhangerp.com/ozon/postings/returns/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/returns/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 267,
+        "ph": 1659
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/returns/",
+        "headings": [
+          "退货 / 退款"
+        ],
+        "buttons": [
+          "刷新",
+          "搜 索",
+          "重 置",
+          "上一页",
+          "下一页"
+        ],
+        "links": [],
+        "placeholders": [
+          "搜索货件号 / 货号 / SKU"
+        ],
+        "formLabels": [],
+        "tabsAndChips": [
+          "[num]"
+        ],
+        "tableHeaders": [
+          "申请 / 货件",
+          "店铺",
+          "商品",
+          "申请时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "bodyHasLogin": false,
+        "bodyLength": 295
+      }
+    }
+  ]
+}

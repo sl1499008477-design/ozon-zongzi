@@ -1,0 +1,83 @@
+{
+  "capturedAt": "2026-07-04T05:52:23.930Z",
+  "taskSpaceId": 32,
+  "note": "AntD Select values visible even when generic token extractor misses .ant-select-selection-item. AI poster status select is also visible.",
+  "order": [
+    {
+      "text": "当前店铺",
+      "className": "ant-select ant-select-outlined source-select css-var-_r_0_ ant-select-css-var css-dev-only-do-not-override-1pi45l5 ant-select-single ant-select-show-arrow",
+      "rect": {
+        "x": 261,
+        "y": 445,
+        "w": 160,
+        "h": 31
+      }
+    },
+    {
+      "text": "货件编号",
+      "className": "ant-select ant-select-outlined source-select narrow css-var-_r_0_ ant-select-css-var css-dev-only-do-not-override-1pi45l5 ant-select-single ant-select-show-arrow",
+      "rect": {
+        "x": 429,
+        "y": 445,
+        "w": 120,
+        "h": 31
+      }
+    }
+  ],
+  "review": [
+    {
+      "text": "当前店铺",
+      "className": "ant-select ant-select-outlined source-select css-var-_r_0_ ant-select-css-var css-dev-only-do-not-override-1pi45l5 ant-select-single ant-select-show-arrow",
+      "rect": {
+        "x": 261,
+        "y": 348,
+        "w": 160,
+        "h": 31
+      }
+    }
+  ],
+  "pickup": [
+    {
+      "text": "当前店铺",
+      "className": "ant-select ant-select-outlined source-select css-var-_r_0_ ant-select-css-var css-dev-only-do-not-override-1pi45l5 ant-select-single ant-select-show-arrow",
+      "rect": {
+        "x": 261,
+        "y": 348,
+        "w": 160,
+        "h": 31
+      }
+    },
+    {
+      "text": "已到取件点",
+      "className": "ant-select ant-select-outlined source-select css-var-_r_0_ ant-select-css-var css-dev-only-do-not-override-1pi45l5 ant-select-single ant-select-show-arrow",
+      "rect": {
+        "x": 989,
+        "y": 348,
+        "w": 160,
+        "h": 31
+      }
+    },
+    {
+      "text": "买家未取",
+      "className": "ant-select ant-select-outlined source-select css-var-_r_0_ ant-select-css-var css-dev-only-do-not-override-1pi45l5 ant-select-single ant-select-show-arrow",
+      "rect": {
+        "x": 1157,
+        "y": 348,
+        "w": 160,
+        "h": 31
+      }
+    }
+  ],
+  "aiPoster": [
+    {
+      "text": "全部状态",
+      "className": "ant-select ant-select-outlined source-select narrow",
+      "rect": {
+        "x": 1730,
+        "y": 112,
+        "w": 120,
+        "h": 31
+      }
+    }
+  ]
+}

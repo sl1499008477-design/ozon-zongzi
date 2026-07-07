@@ -1,0 +1,63 @@
+{
+  "generatedAt": "2026-07-04T09:25:43.583Z",
+  "scope": "Live 3001 Browser Agent compatibility smoke after backend restart",
+  "server": "http://127.0.0.1:3001",
+  "checks": [
+    {
+      "name": "register",
+      "status": 200,
+      "responseKeys": [
+        "id",
+        "deviceKey",
+        "deviceName",
+        "extensionId",
+        "extensionVersion",
+        "capabilities",
+        "status",
+        "local",
+        "registeredAt",
+        "lastHeartbeatAt"
+      ]
+    },
+    {
+      "name": "heartbeat",
+      "status": 200,
+      "responseKeys": [
+        "id",
+        "deviceKey",
+        "deviceName",
+        "extensionId",
+        "extensionVersion",
+        "capabilities",
+        "status",
+        "local",
+        "registeredAt",
+        "lastHeartbeatAt"
+      ]
+    },
+    {
+      "name": "jobs-next",
+      "status": 200,
+      "responseKeys": [
+        "job",
+        "local",
+        "reason"
+      ]
+    },
+    {
+      "name": "progress",
+      "status": 200,
+      "responseKeys": [
+        "ok",
+        "job",
+        "local"
+      ]
+    }
+  ],
+  "assertions": {
+    "noLocalNotFound": true,
+    "noTokenPersistedInEvidence": true,
+    "noOzonWriteEndpointsCalled": true,
+    "jobsNextReturnedNoJob": true
+  }
+}

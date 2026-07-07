@@ -1,0 +1,21 @@
+{
+  "capturedAt": "2026-07-04T05:18:22.610Z",
+  "checks": [
+    {
+      "route": "/datascreen/",
+      "expectedTitle": "QH · 订单数据大屏",
+      "title": "仪表盘 - QH",
+      "titleOk": false,
+      "shellNodeCount": 0,
+      "datascreenCount": 1
+    },
+    {
+      "route": "/ozon/dashboard/",
+      "expectedTitle": "QH",
+      "title": "仪表盘 - QH",
+      "titleOk": false,
+      "shellNodeCount": 3,
+      "datascreenCount": 0
+    }
+  ]
+}

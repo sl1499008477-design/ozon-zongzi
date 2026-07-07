@@ -1,0 +1,598 @@
+{
+  "createdAt": "2026-07-04T10:06:51.049Z",
+  "routes": [
+    "/ozon/products/list/",
+    "/ozon/products/import-history/",
+    "/ozon/products/stocks/",
+    "/ozon/products/reshelf/"
+  ],
+  "sensitiveDataPolicy": "No DOM screenshots. Extracted strings are masked before persistence; evidence compares controls only.",
+  "pairs": [
+    {
+      "route": "/ozon/products/list/",
+      "source": {
+        "url": "https://qh.jizhangerp.com/ozon/products/list/?audit=1783159590761",
+        "masked": true,
+        "buttons": [
+          "仪表盘",
+          "商品列表",
+          "采集箱",
+          "上架记录",
+          "库存管理",
+          "QH",
+          "同步全部"
+        ],
+        "inputs": [
+          "搜 SKU / 货号 / 标题…",
+          "Select all",
+          "Select all"
+        ],
+        "tags": [],
+        "headers": [
+          "商品信息",
+          "状态",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作",
+          "商品信息",
+          "状态",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "mainRect": {
+          "x": 215,
+          "y": 56,
+          "w": 1365,
+          "h": 385
+        }
+      },
+      "local": {
+        "url": "http://127.0.0.1:5173/ozon/products/list/?audit=1783159593416",
+        "masked": true,
+        "buttons": [
+          "QH",
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ******",
+          "会员权益 免费会员",
+          "同步全部"
+        ],
+        "inputs": [
+          "搜 SKU / 货号 / 标题…",
+          "Select all",
+          "Select all"
+        ],
+        "tags": [
+          "推荐"
+        ],
+        "headers": [
+          "商品信息",
+          "状态",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [
+          "商品信息 状态 价格 库存 货源 (¥) 最后同步 操作 暂无商品",
+          "暂无商品",
+          "暂无商品"
+        ],
+        "mainRect": {
+          "x": 216,
+          "y": 0,
+          "w": 1680,
+          "h": 905
+        }
+      },
+      "missing": [
+        "仪表盘",
+        "商品列表",
+        "采集箱",
+        "上架记录",
+        "库存管理"
+      ],
+      "localOnly": [
+        "帮助中心 使用文档",
+        "公告 公告中心",
+        "浏览器插件 插件下载",
+        "当前门店 ******",
+        "会员权益 免费会员",
+        "推荐"
+      ]
+    },
+    {
+      "route": "/ozon/products/import-history/",
+      "source": {
+        "url": "https://qh.jizhangerp.com/ozon/products/import-history/?audit=1783159595392",
+        "masked": true,
+        "buttons": [
+          "仪表盘",
+          "商品列表",
+          "采集箱",
+          "上架记录",
+          "库存管理",
+          "下架重上",
+          "QH",
+          "全部",
+          "已完成",
+          "部分成功",
+          "处理中",
+          "失败",
+          "重 置",
+          "查询",
+          "批量删除 (0)",
+          "全部展开"
+        ],
+        "inputs": [
+          "搜索 SKU / 货号",
+          "开始日期",
+          "结束日期",
+          "Select all",
+          "Select all"
+        ],
+        "tags": [],
+        "headers": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作",
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "# 商品信息 源 SKU 店铺 变体 售价 状态 创建时间 操作 暂无数据",
+          "暂无数据",
+          "暂无数据"
+        ],
+        "mainRect": {
+          "x": 215,
+          "y": 56,
+          "w": 1365,
+          "h": 631
+        }
+      },
+      "local": {
+        "url": "http://127.0.0.1:5173/ozon/products/import-history/?audit=1783159600614",
+        "masked": true,
+        "buttons": [
+          "QH",
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ******",
+          "会员权益 免费会员",
+          "全部",
+          "已完成",
+          "部分成功",
+          "处理中",
+          "失败",
+          "重 置",
+          "查询",
+          "批量删除 (0)",
+          "全部展开"
+        ],
+        "inputs": [
+          "搜索 SKU / 货号",
+          "开始日期",
+          "结束日期",
+          "Select all",
+          "Select all"
+        ],
+        "tags": [
+          "推荐"
+        ],
+        "headers": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "mainRect": {
+          "x": 216,
+          "y": 0,
+          "w": 1680,
+          "h": 905
+        }
+      },
+      "missing": [
+        "仪表盘",
+        "商品列表",
+        "采集箱",
+        "上架记录",
+        "库存管理",
+        "下架重上"
+      ],
+      "localOnly": [
+        "帮助中心 使用文档",
+        "公告 公告中心",
+        "浏览器插件 插件下载",
+        "当前门店 ******",
+        "会员权益 免费会员",
+        "推荐"
+      ]
+    },
+    {
+      "route": "/ozon/products/stocks/",
+      "source": {
+        "url": "https://qh.jizhangerp.com/ozon/products/stocks/?audit=1783159602203",
+        "masked": true,
+        "buttons": [
+          "仪表盘",
+          "商品列表",
+          "采集箱",
+          "上架记录",
+          "库存管理",
+          "QH",
+          "全部",
+          "缺货 0",
+          "低库存 0",
+          "刷新",
+          "查询"
+        ],
+        "inputs": [
+          "搜索商品名 / 货号",
+          "Select all",
+          "Select all"
+        ],
+        "tags": [],
+        "headers": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "mainRect": {
+          "x": 215,
+          "y": 56,
+          "w": 1365,
+          "h": 609
+        }
+      },
+      "local": {
+        "url": "http://127.0.0.1:5173/ozon/products/stocks/?audit=1783159604038",
+        "masked": true,
+        "buttons": [
+          "QH",
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ******",
+          "会员权益 免费会员",
+          "刷新",
+          "查询",
+          "全部",
+          "缺货 0",
+          "低库存 0"
+        ],
+        "inputs": [
+          "搜索商品名 / 货号",
+          "Select all",
+          "Select all",
+          "Select row 1",
+          "Select row 2",
+          "Select row 3",
+          "Select row 4",
+          "Select row 5",
+          "Select row 6",
+          "Select row 7",
+          "Select row 8",
+          "Select row 9",
+          "Select row 10",
+          "Select row 11",
+          "Select row 12",
+          "Select row 13",
+          "Select row 14",
+          "Select row 15",
+          "Select row 16",
+          "Select row 17",
+          "Select row 18",
+          "Select row 19",
+          "Select row 20",
+          "Select row 21",
+          "Select row 22",
+          "Select row 23",
+          "Select row 24",
+          "Select row 25",
+          "Select row 26",
+          "Select row 27",
+          "Select row 28",
+          "Select row 29",
+          "Select row 30",
+          "Select row 31",
+          "Select row 32",
+          "Select row 33",
+          "Select row 34",
+          "Select row 35",
+          "Select row 36",
+          "Select row 37"
+        ],
+        "tags": [
+          "推荐",
+          "暂存草稿"
+        ],
+        "headers": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "mainRect": {
+          "x": 216,
+          "y": 0,
+          "w": 1658,
+          "h": 35617
+        }
+      },
+      "missing": [
+        "仪表盘",
+        "商品列表",
+        "采集箱",
+        "上架记录",
+        "库存管理"
+      ],
+      "localOnly": [
+        "帮助中心 使用文档",
+        "公告 公告中心",
+        "浏览器插件 插件下载",
+        "当前门店 ******",
+        "会员权益 免费会员",
+        "Select row 1",
+        "Select row 2",
+        "Select row 3",
+        "Select row 4",
+        "Select row 5",
+        "Select row 6",
+        "Select row 7",
+        "Select row 8",
+        "Select row 9",
+        "Select row 10",
+        "Select row 11",
+        "Select row 12",
+        "Select row 13",
+        "Select row 14",
+        "Select row 15",
+        "Select row 16",
+        "Select row 17",
+        "Select row 18",
+        "Select row 19",
+        "Select row 20",
+        "Select row 21",
+        "Select row 22",
+        "Select row 23",
+        "Select row 24",
+        "Select row 25",
+        "Select row 26",
+        "Select row 27",
+        "Select row 28",
+        "Select row 29",
+        "Select row 30",
+        "Select row 31",
+        "Select row 32",
+        "Select row 33",
+        "Select row 34",
+        "Select row 35",
+        "Select row 36",
+        "Select row 37",
+        "推荐",
+        "暂存草稿"
+      ]
+    },
+    {
+      "route": "/ozon/products/reshelf/",
+      "source": {
+        "url": "https://qh.jizhangerp.com/ozon/products/reshelf/?audit=1783159606163",
+        "masked": true,
+        "buttons": [
+          "仪表盘",
+          "商品列表",
+          "采集箱",
+          "上架记录",
+          "库存管理",
+          "QH",
+          "下架重上",
+          "同步全部"
+        ],
+        "inputs": [
+          "搜 SKU / 货号 / 标题…",
+          "Select all",
+          "Select all"
+        ],
+        "tags": [],
+        "headers": [
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作",
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "mainRect": {
+          "x": 215,
+          "y": 56,
+          "w": 1365,
+          "h": 385
+        }
+      },
+      "local": {
+        "url": "http://127.0.0.1:5173/ozon/products/reshelf/?audit=1783159608332",
+        "masked": true,
+        "buttons": [
+          "QH",
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 ******",
+          "会员权益 免费会员",
+          "下架重上",
+          "同步全部"
+        ],
+        "inputs": [
+          "搜 SKU / 货号 / 标题…",
+          "Select all",
+          "Select all",
+          "Select row 1",
+          "Select row 2",
+          "Select row 3",
+          "Select row 4",
+          "Select row 5",
+          "Select row 6",
+          "Select row 7",
+          "Select row 8",
+          "Select row 9",
+          "Select row 10",
+          "Select row 11",
+          "Select row 12",
+          "Select row 13",
+          "Select row 14",
+          "Select row 15",
+          "Select row 16",
+          "Select row 17",
+          "Select row 18",
+          "Select row 19",
+          "Select row 20",
+          "Select row 21",
+          "Select row 22",
+          "Select row 23",
+          "Select row 24",
+          "Select row 25",
+          "Select row 26",
+          "Select row 27",
+          "Select row 28",
+          "Select row 29",
+          "Select row 30",
+          "Select row 31",
+          "Select row 32",
+          "Select row 33",
+          "Select row 34",
+          "Select row 35",
+          "Select row 36",
+          "Select row 37"
+        ],
+        "tags": [
+          "推荐"
+        ],
+        "headers": [
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "mainRect": {
+          "x": 216,
+          "y": 0,
+          "w": 1658,
+          "h": 48449
+        }
+      },
+      "missing": [
+        "仪表盘",
+        "商品列表",
+        "采集箱",
+        "上架记录",
+        "库存管理"
+      ],
+      "localOnly": [
+        "帮助中心 使用文档",
+        "公告 公告中心",
+        "浏览器插件 插件下载",
+        "当前门店 ******",
+        "会员权益 免费会员",
+        "Select row 1",
+        "Select row 2",
+        "Select row 3",
+        "Select row 4",
+        "Select row 5",
+        "Select row 6",
+        "Select row 7",
+        "Select row 8",
+        "Select row 9",
+        "Select row 10",
+        "Select row 11",
+        "Select row 12",
+        "Select row 13",
+        "Select row 14",
+        "Select row 15",
+        "Select row 16",
+        "Select row 17",
+        "Select row 18",
+        "Select row 19",
+        "Select row 20",
+        "Select row 21",
+        "Select row 22",
+        "Select row 23",
+        "Select row 24",
+        "Select row 25",
+        "Select row 26",
+        "Select row 27",
+        "Select row 28",
+        "Select row 29",
+        "Select row 30",
+        "Select row 31",
+        "Select row 32",
+        "Select row 33",
+        "Select row 34",
+        "Select row 35",
+        "Select row 36",
+        "Select row 37",
+        "推荐"
+      ]
+    }
+  ]
+}

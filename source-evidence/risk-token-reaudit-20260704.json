@@ -1,0 +1,562 @@
+{
+  "checkedAt": "2026-07-04T08:13:07.060Z",
+  "taskSpaceId": 47,
+  "note": "Only token presence/status is stored; source body text is intentionally omitted to avoid persisting real account/store/product data.",
+  "results": [
+    {
+      "route": "/ozon/products/collect/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "按来源筛选",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/selection/category/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "7天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "28天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "90天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "365天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "全部类目",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销量",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销售额 ₽",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "平均价 ₽",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/selection/top-list/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "7天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "28天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "全部",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "全部分区",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "发货模式",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "平均价 ₽",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销售额 ₽",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销售额环比 %",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销量",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "7天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "28天",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "全部",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "全部分区",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "发货模式",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "平均价 ₽",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销售额 ₽",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销售额环比 %",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月销量",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 2,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "Gemini 快速改图",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "全部状态",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "商品名(可选)",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "类目",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/promotions/prices/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "价格与折扣",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "从商品列表选品并设置售价",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "选择商品",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "改价草稿",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "自动清理配置",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "类型",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "请选择",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "当前店铺促销活动",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "当前店铺",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "货件编号",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/returns/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "20/页",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/profit-trend/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "全部店铺",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "当前店铺",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "当前店铺",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "已到取件点",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "买家未取",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/messaging/templates/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "请选择",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "暂无数据",
+          "source": false,
+          "local": false
+        }
+      ]
+    },
+    {
+      "route": "/ozon/messaging/history/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 1,
+      "localOpenMenus": 1,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "请选择",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/templates/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 0,
+      "localOpenMenus": 0,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "操作",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/settings/jidian/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 0,
+      "localOpenMenus": 0,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "极点 自助充值已切换为人工服务",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "请联系客服为您开通",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/settings/membership/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 0,
+      "localOpenMenus": 0,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "套餐档位",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "月卡",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "季卡",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "年卡省更多",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "激活码兑换",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "免费体验版",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "AI 编辑权限",
+          "source": true,
+          "local": true
+        }
+      ]
+    },
+    {
+      "route": "/ozon/settings/stores/",
+      "sourceTitle": "QH",
+      "localTitle": "QH",
+      "sourceOpenMenus": 0,
+      "localOpenMenus": 0,
+      "missingWhereSourceHas": [],
+      "tokenResults": [
+        {
+          "token": "我的 Ozon 门店",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "0/999",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "同步仓库",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "刷 新",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "新增",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "门店编号",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "ClientId",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "Api-Key",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "标签",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "公司",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "INN",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "货币",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "Premium",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "添加时间",
+          "source": true,
+          "local": true
+        },
+        {
+          "token": "操作",
+          "source": true,
+          "local": true
+        }
+      ]
+    }
+  ]
+}

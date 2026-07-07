@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-07-04T11:03:30.529Z",
+  "route": "/ozon/tools/ai-poster-records/",
+  "checks": {
+    "hasUploadTitle": true,
+    "uploadDropStillPresent": true,
+    "latestQueueCountCalculation": true,
+    "uploadTitleStyle": true
+  },
+  "persistedData": "code structure only; no source account values, product rows, image files, API keys, or Client ID persisted"
+}

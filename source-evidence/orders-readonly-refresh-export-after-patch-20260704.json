@@ -1,0 +1,38 @@
+{
+  "scope": "orders readonly refresh, filter, and export wiring",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/postings/list/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "featuresWired": {
+    "refreshButton": "POST /local/sync/POSTINGS with 30-day readonly range",
+    "pullLatestButton": "POST /local/sync/POSTINGS with 1-day readonly range",
+    "refreshInProgressButton": "POST /local/sync/POSTINGS with 7-day readonly range",
+    "searchFilter": "local cache filter by posting/order/product/tracking fields",
+    "dateFilter": "local cache business-time range filter",
+    "export": "browser-local CSV download of current filtered rows"
+  },
+  "liveReadonlySync": {
+    "beforePostings": 462,
+    "afterPostings": 466,
+    "messageHistoryAfterSync": 0,
+    "cacheOnlyMutation": true
+  },
+  "routeCheck": {
+    "postingsListHead": 200
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed",
+    "sourceCodeControlProbe": "passed",
+    "headlessBrowserDomProbe": "blocked_by_missing_browser_binary_and_system_headless_launch"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "postingNumbers": "not_recorded",
+    "skus": "not_recorded",
+    "productNames": "not_recorded",
+    "orderRows": "not_recorded"
+  }
+}

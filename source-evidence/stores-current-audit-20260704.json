@@ -1,0 +1,529 @@
+{
+  "capturedAt": "2026-07-04T08:15:28.008Z",
+  "taskSpaceId": 48,
+  "source": {
+    "info": {
+      "url": "https://qh.jizhangerp.com/ozon/settings/stores/?storesAudit=1783152921389",
+      "title": "QH",
+      "w": 1580,
+      "h": 754,
+      "sx": 0,
+      "sy": 0,
+      "pw": 1580,
+      "ph": 754
+    },
+    "data": {
+      "title": "QH",
+      "path": "/ozon/settings/stores/",
+      "textIncludes": {
+        "myStores": true,
+        "zero999": true,
+        "syncWarehouse": true,
+        "refreshSpaced": true,
+        "add": true,
+        "reset": true,
+        "disabled": true,
+        "current": true,
+        "clear": true,
+        "syncAll": true,
+        "noData": false
+      },
+      "buttons": [
+        {
+          "text": "仪表盘",
+          "cls": "",
+          "rect": {
+            "x": 28,
+            "y": 60,
+            "w": 159,
+            "h": 40
+          }
+        },
+        {
+          "text": "QH",
+          "cls": "",
+          "rect": {
+            "x": 16,
+            "y": 12,
+            "w": 63,
+            "h": 32
+          }
+        },
+        {
+          "text": "同步仓库",
+          "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+          "rect": {
+            "x": 1220,
+            "y": 140,
+            "w": 110,
+            "h": 32
+          }
+        },
+        {
+          "text": "刷 新",
+          "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-loading",
+          "rect": {
+            "x": 1338,
+            "y": 140,
+            "w": 86,
+            "h": 32
+          }
+        },
+        {
+          "text": "新增",
+          "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+          "rect": {
+            "x": 1432,
+            "y": 140,
+            "w": 60,
+            "h": 32
+          }
+        },
+        {
+          "text": "重 置",
+          "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+          "rect": {
+            "x": 660,
+            "y": 208,
+            "w": 64,
+            "h": 32
+          }
+        },
+        {
+          "text": "清除当前门店",
+          "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-sm",
+          "rect": {
+            "x": 468,
+            "y": 256,
+            "w": 101,
+            "h": 24
+          }
+        },
+        {
+          "text": "同步本帐号所有门店",
+          "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-sm",
+          "rect": {
+            "x": 577,
+            "y": 256,
+            "w": 144,
+            "h": 24
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "店铺名称",
+          "value": "",
+          "rect": {
+            "x": 333,
+            "y": 212,
+            "w": 123,
+            "h": 23
+          }
+        },
+        {
+          "placeholder": "Client ID",
+          "value": "",
+          "rect": {
+            "x": 503,
+            "y": 212,
+            "w": 121,
+            "h": 23
+          }
+        }
+      ],
+      "checkboxes": [],
+      "tableHeaders": [
+        "门店编号",
+        "ClientId",
+        "Api-Key",
+        "标签",
+        "公司",
+        "INN",
+        "货币",
+        "Premium",
+        "添加时间",
+        "操作"
+      ],
+      "tableRect": {
+        "x": 304,
+        "y": 288,
+        "w": 1188,
+        "h": 109
+      },
+      "mainRect": {
+        "x": 215,
+        "y": 56,
+        "w": 1365,
+        "h": 421
+      },
+      "sourcePageRect": null,
+      "cards": [
+        {
+          "i": 0,
+          "cls": "ant-card ant-card-bordered",
+          "text": "我的 Ozon 门店 0/999 同步仓库 刷 新 新增 重 置 显示已停用店铺 当前选择门店： ••• 清除当前门店 同步本帐号所有门店 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 •••",
+          "rect": {
+            "x": 279,
+            "y": 128,
+            "w": 1237,
+            "h": 293
+          }
+        }
+      ]
+    }
+  },
+  "local": {
+    "info": {
+      "url": "http://127.0.0.1:5173/ozon/settings/stores/?storesAudit=1783152926444",
+      "title": "QH",
+      "w": 1896,
+      "h": 904,
+      "sx": 0,
+      "sy": 0,
+      "pw": 1896,
+      "ph": 904
+    },
+    "data": {
+      "title": "QH",
+      "path": "/ozon/settings/stores/",
+      "textIncludes": {
+        "myStores": true,
+        "zero999": true,
+        "syncWarehouse": true,
+        "refreshSpaced": true,
+        "add": true,
+        "reset": true,
+        "disabled": true,
+        "current": true,
+        "clear": true,
+        "syncAll": true,
+        "noData": true
+      },
+      "buttons": [
+        {
+          "text": "QH",
+          "cls": "qh-brand",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 216,
+            "h": 56
+          }
+        },
+        {
+          "text": "帮助中心 使用文档",
+          "cls": "qh-header-action tone-blue",
+          "rect": {
+            "x": 1246,
+            "y": 11,
+            "w": 84,
+            "h": 34
+          }
+        },
+        {
+          "text": "公告 公告中心",
+          "cls": "qh-header-action tone-default",
+          "rect": {
+            "x": 1337,
+            "y": 11,
+            "w": 80,
+            "h": 34
+          }
+        },
+        {
+          "text": "浏览器插件 插件下载",
+          "cls": "qh-header-action tone-blue",
+          "rect": {
+            "x": 1423,
+            "y": 11,
+            "w": 96,
+            "h": 34
+          }
+        },
+        {
+          "text": "当前门店 去绑定门店",
+          "cls": "qh-header-action tone-orange",
+          "rect": {
+            "x": 1525,
+            "y": 11,
+            "w": 91,
+            "h": 34
+          }
+        },
+        {
+          "text": "会员权益 免费会员",
+          "cls": "qh-header-action tone-default",
+          "rect": {
+            "x": 1621,
+            "y": 11,
+            "w": 84,
+            "h": 34
+          }
+        },
+        {
+          "text": "同步仓库",
+          "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+          "rect": {
+            "x": 1644,
+            "y": 112,
+            "w": 89,
+            "h": 32
+          }
+        },
+        {
+          "text": "刷 新",
+          "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+          "rect": {
+            "x": 1740,
+            "y": 112,
+            "w": 64,
+            "h": 32
+          }
+        },
+        {
+          "text": "新增",
+          "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+          "rect": {
+            "x": 1812,
+            "y": 112,
+            "w": 60,
+            "h": 32
+          }
+        },
+        {
+          "text": "重 置",
+          "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+          "rect": {
+            "x": 924,
+            "y": 266,
+            "w": 64,
+            "h": 32
+          }
+        },
+        {
+          "text": "清除当前门店",
+          "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-dangerous ant-btn-color-dangerous ant-btn-variant-outlined",
+          "rect": {
+            "x": 377,
+            "y": 314,
+            "w": 117,
+            "h": 32
+          }
+        },
+        {
+          "text": "同步本帐号所有门店",
+          "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+          "rect": {
+            "x": 502,
+            "y": 314,
+            "w": 160,
+            "h": 32
+          }
+        }
+      ],
+      "inputs": [
+        {
+          "placeholder": "店铺名称",
+          "value": "",
+          "rect": {
+            "x": 261,
+            "y": 220,
+            "w": 727,
+            "h": 31
+          }
+        },
+        {
+          "placeholder": "Client ID",
+          "value": "",
+          "rect": {
+            "x": 1002,
+            "y": 220,
+            "w": 727,
+            "h": 31
+          }
+        },
+        {
+          "placeholder": "",
+          "value": "on",
+          "rect": {
+            "x": 1789,
+            "y": 180,
+            "w": 16,
+            "h": 16
+          }
+        }
+      ],
+      "checkboxes": [
+        {
+          "text": "显示已停用店铺",
+          "rect": {
+            "x": 1742,
+            "y": 181,
+            "w": 109,
+            "h": 71
+          }
+        }
+      ],
+      "tableHeaders": [
+        "门店编号",
+        "ClientId",
+        "Api-Key",
+        "标签",
+        "公司",
+        "INN",
+        "货币",
+        "Premium",
+        "添加时间",
+        "操作"
+      ],
+      "tableRect": {
+        "x": 261,
+        "y": 403,
+        "w": 1591,
+        "h": 266
+      },
+      "mainRect": {
+        "x": 216,
+        "y": 0,
+        "w": 1680,
+        "h": 905
+      },
+      "sourcePageRect": {
+        "x": 240,
+        "y": 80,
+        "w": 1632,
+        "h": 610
+      },
+      "cards": [
+        {
+          "i": 0,
+          "cls": "ant-card ant-card-bordered panel-card source-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+          "text": "店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 同步本帐号所有门店",
+          "rect": {
+            "x": 240,
+            "y": 160,
+            "w": 1632,
+            "h": 206
+          }
+        },
+        {
+          "i": 1,
+          "cls": "ant-card ant-card-bordered panel-card source-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+          "text": "门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+          "rect": {
+            "x": 240,
+            "y": 382,
+            "w": 1632,
+            "h": 308
+          }
+        }
+      ]
+    }
+  },
+  "compare": [
+    {
+      "token": "我的 Ozon 门店",
+      "source": true,
+      "local": false
+    },
+    {
+      "token": "同步仓库",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "刷 新",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "新增",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "重 置",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "显示已停用店铺",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "当前选择门店",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "清除当前门店",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "同步本帐号所有门店",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "门店编号",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "ClientId",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "Api-Key",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "标签",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "公司",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "INN",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "货币",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "Premium",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "添加时间",
+      "source": true,
+      "local": true
+    },
+    {
+      "token": "操作",
+      "source": true,
+      "local": true
+    }
+  ],
+  "missingWhereSourceHas": [
+    "我的 Ozon 门店"
+  ],
+  "screenshots": {
+    "source": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-stores-current-sanitized-20260704.png",
+    "local": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-stores-current-20260704.png"
+  },
+  "note": "Source DOM text and table body values were masked before screenshot/extraction to avoid persisting account/store identifiers."
+}

@@ -1,0 +1,3160 @@
+{
+  "checkedAt": "2026-07-04T08:03:06.716Z",
+  "routes": [
+    "/ozon/products/list/",
+    "/ozon/products/collect/",
+    "/ozon/products/import-history/",
+    "/ozon/products/stocks/",
+    "/ozon/products/reshelf/",
+    "/ozon/selection/category/",
+    "/ozon/selection/top-list/",
+    "/ozon/selection/china/",
+    "/ozon/tools/ai-poster-records/",
+    "/ozon/ai-image/",
+    "/ozon/promotions/prices/",
+    "/ozon/promotions/campaigns/",
+    "/ozon/promotions/auto-delete/",
+    "/ozon/postings/list/",
+    "/ozon/postings/returns/",
+    "/ozon/postings/profit-trend/",
+    "/ozon/postings/review-request/",
+    "/ozon/postings/pickup-reminder/",
+    "/ozon/tools/watermark/",
+    "/ozon/announcements/",
+    "/ozon/messaging/templates/",
+    "/ozon/messaging/history/",
+    "/ozon/templates/",
+    "/ozon/settings/jidian/",
+    "/ozon/settings/membership/",
+    "/ozon/settings/stores/"
+  ],
+  "results": [
+    {
+      "route": "/ozon/products/list/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "同步全部"
+        ],
+        "placeholders": [
+          "搜 SKU / 货号 / 标题…"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "价格",
+          "商品信息",
+          "库存",
+          "操作",
+          "最后同步",
+          "状态",
+          "货源 (¥)"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "同步全部"
+        ],
+        "placeholders": [
+          "搜 SKU / 货号 / 标题…"
+        ],
+        "headings": [
+          "共 0 个",
+          "商品列表"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "价格",
+          "商品信息",
+          "库存",
+          "操作",
+          "最后同步",
+          "状态",
+          "货源 (¥)"
+        ],
+        "emptyTexts": [
+          "暂无商品"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/products/collect/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "全部 0",
+          "失败 0",
+          "已上架 0",
+          "待处理 0",
+          "添加采集"
+        ],
+        "placeholders": [
+          "https://www.ozon.ru/product/... 或直接输入 SKU"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "下单链接",
+          "卖家 / 来源",
+          "品牌",
+          "商品信息",
+          "操作",
+          "状态",
+          "采集价格",
+          "采集时间"
+        ],
+        "emptyTexts": [],
+        "selectTexts": [
+          "按来源筛选"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "全部 0",
+          "失败 0",
+          "已上架 0",
+          "待处理 0",
+          "添加采集"
+        ],
+        "placeholders": [
+          "https://www.ozon.ru/product/... 或直接输入 SKU"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "下单链接",
+          "卖家 / 来源",
+          "品牌",
+          "商品信息",
+          "操作",
+          "状态",
+          "采集价格",
+          "采集时间"
+        ],
+        "emptyTexts": [
+          "暂无采集商品，请在上方添加"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "按来源筛选"
+        ]
+      },
+      "missingTotal": 1,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/products/import-history/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "全部",
+          "全部展开",
+          "处理中",
+          "失败",
+          "已完成",
+          "批量删除 (0)",
+          "查询",
+          "部分成功",
+          "重 置"
+        ],
+        "placeholders": [
+          "开始日期",
+          "搜索 SKU / 货号",
+          "结束日期"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "#",
+          "创建时间",
+          "变体",
+          "售价",
+          "商品信息",
+          "店铺",
+          "操作",
+          "源 SKU",
+          "状态"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "全部",
+          "全部展开",
+          "处理中",
+          "失败",
+          "已完成",
+          "批量删除 (0)",
+          "查询",
+          "部分成功",
+          "重 置"
+        ],
+        "placeholders": [
+          "开始日期",
+          "搜索 SKU / 货号",
+          "结束日期"
+        ],
+        "headings": [],
+        "labels": [
+          "创建时间",
+          "搜索",
+          "状态"
+        ],
+        "tableHeaders": [
+          "#",
+          "创建时间",
+          "变体",
+          "售价",
+          "商品信息",
+          "店铺",
+          "操作",
+          "源 SKU",
+          "状态"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/products/stocks/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "低库存 0",
+          "全部",
+          "刷新",
+          "查询",
+          "缺货 0"
+        ],
+        "placeholders": [
+          "搜索商品名 / 货号"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "主图",
+          "仓库分布",
+          "商品",
+          "总库存",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "低库存 0",
+          "全部",
+          "刷新",
+          "查询",
+          "缺货 0"
+        ],
+        "placeholders": [
+          "搜索商品名 / 货号"
+        ],
+        "headings": [
+          "商品库存· 共 0 条",
+          "库存管理"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "主图",
+          "仓库分布",
+          "商品",
+          "总库存",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/products/reshelf/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "下架重上",
+          "同步全部"
+        ],
+        "placeholders": [
+          "搜 SKU / 货号 / 标题…"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "下架原因",
+          "价格",
+          "商品信息",
+          "库存",
+          "店铺",
+          "操作",
+          "最后同步",
+          "状态",
+          "类目佣金",
+          "货源 (¥)"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "下架重上",
+          "同步全部"
+        ],
+        "placeholders": [
+          "搜 SKU / 货号 / 标题…"
+        ],
+        "headings": [
+          "下架重上",
+          "共 0 个"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "下架原因",
+          "价格",
+          "商品信息",
+          "库存",
+          "店铺",
+          "操作",
+          "最后同步",
+          "状态",
+          "类目佣金",
+          "货源 (¥)"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/selection/category/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "28天",
+          "365天",
+          "7天",
+          "90天",
+          "FBS机会 FBS 销售占比不低于 50%",
+          "¥",
+          "₽",
+          "全部",
+          "全部类目",
+          "全部类目 一级类目开始逐层下钻",
+          "刷新",
+          "品牌集中 品牌销售占比不低于 30%",
+          "增长机会 GMV 环比不低于 30%",
+          "更多筛选 ↓",
+          "查询",
+          "重置",
+          "高退货率 退货风险不低于 15%"
+        ],
+        "placeholders": [
+          "最大",
+          "最小"
+        ],
+        "headings": [
+          "类目分析"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "#",
+          "FBS占比",
+          "GMV增长",
+          "出库率",
+          "卖家数",
+          "品牌占比",
+          "品牌数",
+          "均价环比",
+          "头部卖家",
+          "平均价",
+          "月销售额",
+          "月销量",
+          "类目",
+          "退货率"
+        ],
+        "emptyTexts": [
+          "本周期还没有类目分析快照"
+        ],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "FBS机会 FBS 销售占比不低于 50%",
+          "全部类目 一级类目开始逐层下钻",
+          "刷新",
+          "品牌集中 品牌销售占比不低于 30%",
+          "增长机会 GMV 环比不低于 30%",
+          "更多筛选 ↓",
+          "查询",
+          "重置",
+          "高退货率 退货风险不低于 15%"
+        ],
+        "placeholders": [
+          "最大",
+          "最小"
+        ],
+        "headings": [
+          "一级类目总览",
+          "类目分析"
+        ],
+        "labels": [
+          "28天",
+          "365天",
+          "7天",
+          "90天",
+          "GMV增长 % 至",
+          "¥",
+          "₽",
+          "一级类目 全部",
+          "卖家数 至",
+          "平均价 ₽ 至",
+          "月销售额 ₽ 至",
+          "月销量 至",
+          "路径 全部类目",
+          "退货率 % 至"
+        ],
+        "tableHeaders": [
+          "#",
+          "FBS占比",
+          "GMV增长",
+          "出库率",
+          "卖家数",
+          "品牌占比",
+          "品牌数",
+          "均价环比",
+          "头部卖家",
+          "平均价",
+          "月销售额",
+          "月销量",
+          "类目",
+          "退货率"
+        ],
+        "emptyTexts": [
+          "本周期还没有类目分析快照"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [
+          "28天",
+          "365天",
+          "7天",
+          "90天",
+          "¥",
+          "₽",
+          "全部",
+          "全部类目"
+        ],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 8,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/selection/top-list/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "1",
+          "28天",
+          "7天",
+          "¥",
+          "×",
+          "‹",
+          "›",
+          "₽",
+          "低价高销",
+          "全部",
+          "批量加入草稿箱",
+          "更多筛选 ↓",
+          "查询",
+          "清空选择",
+          "潜力商品",
+          "热销商品",
+          "热销新品",
+          "蓝海商品",
+          "蓝海量级",
+          "重置",
+          "高加购",
+          "高增长"
+        ],
+        "placeholders": [
+          "sku",
+          "商品名称",
+          "最大",
+          "最小",
+          "逗号/空格/换行分隔"
+        ],
+        "headings": [
+          "榜单选品"
+        ],
+        "labels": [
+          "SKU",
+          "分区 全部分区",
+          "发货模式",
+          "商品名称",
+          "平均价 ₽",
+          "批量 SKUS",
+          "月销售额 ₽",
+          "月销售额环比 %",
+          "月销量"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "1",
+          "×",
+          "‹",
+          "›",
+          "低价高销",
+          "批量加入草稿箱",
+          "更多筛选 ↓",
+          "查询",
+          "清空选择",
+          "潜力商品",
+          "热销商品",
+          "热销新品",
+          "蓝海商品",
+          "蓝海量级",
+          "重置",
+          "高加购",
+          "高增长"
+        ],
+        "placeholders": [
+          "sku",
+          "商品名称",
+          "最大",
+          "最小",
+          "逗号/空格/换行分隔"
+        ],
+        "headings": [
+          "榜单选品"
+        ],
+        "labels": [
+          "28天",
+          "7天",
+          "CB · 跨境",
+          "FBO",
+          "FBS",
+          "RFBS",
+          "SKU",
+          "¥",
+          "₽",
+          "一级类目 全部",
+          "任意",
+          "发货模式 任意 FBO FBS RFBS CB · 跨境",
+          "商品名称",
+          "平均价 ₽ ~",
+          "批量 SKUS",
+          "月销售额 ₽ ~",
+          "月销售额环比 % ~",
+          "月销量 ~"
+        ],
+        "tableHeaders": [
+          "价格",
+          "卖家",
+          "品牌",
+          "商品",
+          "增长",
+          "操作",
+          "类目",
+          "销售额",
+          "销量"
+        ],
+        "emptyTexts": [
+          "暂无榜单数据"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [
+          "28天",
+          "7天",
+          "¥",
+          "₽",
+          "全部"
+        ],
+        "placeholders": [],
+        "headings": [],
+        "labels": [
+          "分区 全部分区",
+          "发货模式",
+          "平均价 ₽",
+          "月销售额 ₽",
+          "月销售额环比 %",
+          "月销量"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 11,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "1",
+          "28天",
+          "7天",
+          "¥",
+          "×",
+          "‹",
+          "›",
+          "₽",
+          "中国对标",
+          "低价高销",
+          "全部",
+          "批量加入草稿箱",
+          "更多筛选 ↓",
+          "查询",
+          "清空选择",
+          "重置",
+          "高加购",
+          "高增长"
+        ],
+        "placeholders": [
+          "sku",
+          "商品名称",
+          "最大",
+          "最小",
+          "逗号/空格/换行分隔"
+        ],
+        "headings": [
+          "中国专区"
+        ],
+        "labels": [
+          "SKU",
+          "分区 全部分区",
+          "发货模式",
+          "含零销量商品 ⓘ",
+          "商品名称",
+          "平均价 ₽",
+          "批量 SKUS",
+          "月销售额 ₽",
+          "月销售额环比 %",
+          "月销量"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "1",
+          "×",
+          "‹",
+          "›",
+          "中国对标",
+          "低价高销",
+          "批量加入草稿箱",
+          "更多筛选 ↓",
+          "查询",
+          "清空选择",
+          "重置",
+          "高加购",
+          "高增长"
+        ],
+        "placeholders": [
+          "sku",
+          "商品名称",
+          "最大",
+          "最小",
+          "逗号/空格/换行分隔"
+        ],
+        "headings": [
+          "中国专区"
+        ],
+        "labels": [
+          "28天",
+          "7天",
+          "CB · 跨境",
+          "FBO",
+          "FBS",
+          "RFBS",
+          "SKU",
+          "¥",
+          "₽",
+          "一级类目 全部",
+          "任意",
+          "发货模式 任意 FBO FBS RFBS CB · 跨境",
+          "含零销量商品 ⓘ",
+          "商品名称",
+          "平均价 ₽ ~",
+          "批量 SKUS",
+          "月销售额 ₽ ~",
+          "月销售额环比 % ~",
+          "月销量 ~"
+        ],
+        "tableHeaders": [
+          "价格",
+          "卖家",
+          "品牌",
+          "商品",
+          "增长",
+          "操作",
+          "类目",
+          "销售额",
+          "销量"
+        ],
+        "emptyTexts": [
+          "暂无榜单数据"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [
+          "28天",
+          "7天",
+          "¥",
+          "₽",
+          "全部"
+        ],
+        "placeholders": [],
+        "headings": [],
+        "labels": [
+          "分区 全部分区",
+          "发货模式",
+          "平均价 ₽",
+          "月销售额 ₽",
+          "月销售额环比 %",
+          "月销量"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 11,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 2,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "开始生成",
+          "收起"
+        ],
+        "placeholders": [
+          "例:女士夏季短袖 T 恤",
+          "例:服饰 / 电子 / 家居",
+          "开始日期",
+          "搜索货号",
+          "每行一个图片链接,http(s)://... https://example.com/a.jpg",
+          "结束日期"
+        ],
+        "headings": [
+          "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "全部状态"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "开始生成",
+          "收起",
+          "查询",
+          "重置"
+        ],
+        "placeholders": [
+          "例:女士夏季短袖 T 恤",
+          "例:服饰 / 电子 / 家居",
+          "开始日期",
+          "搜索货号",
+          "每行一个图片链接,http(s)://... https://example.com/a.jpg",
+          "结束日期"
+        ],
+        "headings": [
+          "AI 改图神器"
+        ],
+        "labels": [
+          "商品名(可选)",
+          "或粘贴图片链接",
+          "类目(可选)"
+        ],
+        "tableHeaders": [
+          "创建时间",
+          "原图",
+          "操作",
+          "改图结果",
+          "状态",
+          "货号"
+        ],
+        "emptyTexts": [
+          "暂无改图记录"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [
+          "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "全部状态"
+        ]
+      },
+      "missingTotal": 2,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品 收起 上传图片 点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 10 张 或粘贴图片链接 已识别 0 条 待处理图片0 / 10 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里 商品名(可选) 类目",
+          "localText": "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品 收起 点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 10 张 或粘贴图片链接 已识别 0 条 待处理图片0 / 10 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里 商品名(可选) 类目(可选)",
+          "sourceRect": {
+            "x": 279,
+            "y": 192,
+            "w": 1218,
+            "h": 438
+          },
+          "localRect": {
+            "x": 240,
+            "y": 180,
+            "w": 1610,
+            "h": 572
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/ai-image/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [
+          "AI 商品套图"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [
+          "AI 商品套图"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/promotions/prices/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "刷新",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [],
+        "labels": [
+          "搜索"
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "当前价格",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "价格",
+          "刷新",
+          "折扣",
+          "改价草稿",
+          "查 询",
+          "选择商品",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [
+          "价格与折扣"
+        ],
+        "labels": [
+          "搜索"
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "当前价格",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 商品 当前价格 操作",
+          "localText": "价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 主图 商品 当前价格 操作",
+          "sourceRect": {
+            "x": 279,
+            "y": 112,
+            "w": 1237,
+            "h": 495
+          },
+          "localRect": {
+            "x": 240,
+            "y": 180,
+            "w": 1632,
+            "h": 277
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/promotions/campaigns/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": true
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": true
+      },
+      "source": {
+        "buttons": [
+          "全部 0",
+          "刷新",
+          "即将结束 0",
+          "参与中 0",
+          "可参与 0"
+        ],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [
+          "商品",
+          "折扣",
+          "操作",
+          "活动",
+          "活动周期",
+          "状态"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "全部 0",
+          "刷新",
+          "即将结束 0",
+          "参与中 0",
+          "可参与 0"
+        ],
+        "placeholders": [
+          "搜索活动名称 / ID"
+        ],
+        "headings": [
+          "促销活动",
+          "活动列表· 共 0 条"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "商品",
+          "折扣",
+          "操作",
+          "活动",
+          "活动周期",
+          "状态"
+        ],
+        "emptyTexts": [
+          "加载中…"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "从 Ozon 同步",
+          "刷新",
+          "开 关",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [
+          "自动清理配置"
+        ],
+        "labels": [
+          "活动名称",
+          "状态",
+          "类型"
+        ],
+        "tableHeaders": [
+          "商品数量",
+          "折扣力度",
+          "操作",
+          "有效期",
+          "活动名称",
+          "状态",
+          "类型"
+        ],
+        "emptyTexts": [],
+        "selectTexts": [
+          "每天一次",
+          "请选择"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "从 Ozon 同步",
+          "刷新",
+          "展开",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [
+          "促销活动自动清理 · 利润保护"
+        ],
+        "labels": [
+          "活动名称"
+        ],
+        "tableHeaders": [
+          "商品数量",
+          "折扣力度",
+          "操作",
+          "有效期",
+          "活动名称",
+          "状态",
+          "类型"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [
+          "开 关"
+        ],
+        "placeholders": [],
+        "headings": [
+          "自动清理配置"
+        ],
+        "labels": [
+          "状态",
+          "类型"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "每天一次",
+          "请选择"
+        ]
+      },
+      "missingTotal": 6,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "自动清理配置 sl [client-id] 自动清理 开 关 最大可接受折扣 % 检测频率 每天一次",
+          "localText": "自动清理配置 加载店铺中…",
+          "sourceRect": {
+            "x": 279,
+            "y": 254,
+            "w": 1218,
+            "h": 171
+          },
+          "localRect": {
+            "x": 240,
+            "y": 180,
+            "w": 1632,
+            "h": 83
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "刷新",
+          "刷新进行中订单",
+          "拉取最新订单",
+          "筛 选",
+          "订单导出",
+          "重 置"
+        ],
+        "placeholders": [
+          "下单时间",
+          "搜索货件号 / SKU / 货号 / 物流单号…",
+          "结束时间"
+        ],
+        "headings": [
+          "订单"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "仓库 / 配送",
+          "倒计时",
+          "利润",
+          "商品",
+          "店铺",
+          "操作",
+          "订单金额",
+          "货件 / 状态"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": [
+          "当前店铺",
+          "货件编号"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "刷新",
+          "刷新进行中订单",
+          "已取消",
+          "已签收",
+          "已超时",
+          "所有订单",
+          "拉取最新订单",
+          "有争议的",
+          "等待发运",
+          "等待备货",
+          "筛 选",
+          "订单导出",
+          "运输中",
+          "重 置"
+        ],
+        "placeholders": [
+          "下单时间",
+          "搜索货件号 / SKU / 货号 / 物流单号…",
+          "结束时间"
+        ],
+        "headings": [
+          "订单"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "仓库 / 配送",
+          "倒计时",
+          "利润",
+          "商品",
+          "店铺",
+          "操作",
+          "订单金额",
+          "货件 / 状态"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "当前店铺",
+          "货件编号"
+        ]
+      },
+      "missingTotal": 2,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/returns/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "上一页",
+          "下一页",
+          "刷新",
+          "搜 索",
+          "重 置"
+        ],
+        "placeholders": [
+          "搜索货件号 / 货号 / SKU"
+        ],
+        "headings": [
+          "退货 / 退款"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "商品",
+          "店铺",
+          "操作",
+          "申请 / 货件",
+          "申请时间"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": [
+          "20/页"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "FBO",
+          "FBS",
+          "上一页",
+          "下一页",
+          "刷新",
+          "搜 索",
+          "退货申请 (rFBS)",
+          "重 置"
+        ],
+        "placeholders": [
+          "搜索货件号 / 货号 / SKU"
+        ],
+        "headings": [
+          "退货 / 退款"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "商品",
+          "店铺",
+          "操作",
+          "申请 / 货件",
+          "申请时间"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "20/页"
+        ]
+      },
+      "missingTotal": 1,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/profit-trend/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "180 天",
+          "30 天",
+          "7 天",
+          "90 天",
+          "利润视图",
+          "成本拆解",
+          "订单量"
+        ],
+        "placeholders": [],
+        "headings": [],
+        "labels": [
+          "全部店铺"
+        ],
+        "tableHeaders": [
+          "OZON 佣金",
+          "利润",
+          "客单价",
+          "日期",
+          "毛利率",
+          "订单数",
+          "订单金额",
+          "采购成本"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "180 天",
+          "30 天",
+          "7 天",
+          "90 天",
+          "利润视图",
+          "成本拆解",
+          "订单量"
+        ],
+        "placeholders": [],
+        "headings": [
+          "利润趋势",
+          "日明细 · 共 30 天"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "OZON 佣金",
+          "利润",
+          "客单价",
+          "日期",
+          "毛利率",
+          "订单数",
+          "订单金额",
+          "采购成本"
+        ],
+        "emptyTexts": [
+          "暂无利润明细"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [
+          "全部店铺"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 1,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "任务监控 (0)",
+          "同步全部店铺",
+          "同步当前店铺",
+          "批量发送",
+          "文案模板",
+          "筛选",
+          "重置"
+        ],
+        "placeholders": [
+          "SKU",
+          "商品名称",
+          "货件编号",
+          "货号"
+        ],
+        "headings": [
+          "索要好评"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "仓库",
+          "价格",
+          "发运",
+          "图片",
+          "店铺",
+          "操作",
+          "查看商品",
+          "货件编号",
+          "货号，数量 名称",
+          "送达",
+          "配送服务 方式"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步已签收订单"
+        ],
+        "selectTexts": [
+          "当前店铺"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "任务监控 (0)",
+          "同步全部店铺",
+          "同步当前店铺",
+          "批量发送",
+          "文案模板",
+          "筛选",
+          "重置"
+        ],
+        "placeholders": [
+          "SKU",
+          "商品名称",
+          "货件编号",
+          "货号"
+        ],
+        "headings": [
+          "索要好评"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "仓库",
+          "价格",
+          "发运",
+          "图片",
+          "店铺",
+          "操作",
+          "查看商品",
+          "货件编号",
+          "货号，数量 名称",
+          "送达",
+          "配送服务 方式"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步已签收订单"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "当前店铺"
+        ]
+      },
+      "missingTotal": 1,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "任务监控 (0)",
+          "同步全部店铺",
+          "同步当前店铺",
+          "批量发送",
+          "筛选",
+          "重置"
+        ],
+        "placeholders": [
+          "SKU",
+          "商品名称",
+          "物流单号",
+          "货件编号"
+        ],
+        "headings": [
+          "提醒取货"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "取货状态",
+          "图片",
+          "店铺",
+          "操作",
+          "最近物流时间",
+          "查看商品",
+          "物流单号",
+          "货件编号",
+          "货号，数量 名称",
+          "配送"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步运输中订单"
+        ],
+        "selectTexts": [
+          "买家未取",
+          "已到取件点",
+          "当前店铺"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "任务监控 (0)",
+          "同步全部店铺",
+          "同步当前店铺",
+          "批量发送",
+          "筛选",
+          "重置"
+        ],
+        "placeholders": [
+          "SKU",
+          "商品名称",
+          "物流单号",
+          "货件编号"
+        ],
+        "headings": [
+          "提醒取货"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "取货状态",
+          "图片",
+          "店铺",
+          "操作",
+          "最近物流时间",
+          "查看商品",
+          "物流单号",
+          "货件编号",
+          "货号，数量 名称",
+          "配送"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步运输中订单"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "买家未取",
+          "已到取件点",
+          "当前店铺"
+        ]
+      },
+      "missingTotal": 3,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/tools/watermark/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": true
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": true
+      },
+      "source": {
+        "buttons": [
+          "下载当前",
+          "批量下载（0）",
+          "新建模板"
+        ],
+        "placeholders": [],
+        "headings": [
+          "水印/边框模板 0",
+          "预览与下载 请先选用模板"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "下载当前",
+          "批量下载（0）",
+          "新建模板"
+        ],
+        "placeholders": [],
+        "headings": [
+          "水印/边框模板 0",
+          "水印工具",
+          "预览与下载 请先选用模板"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/announcements/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "全部已读"
+        ],
+        "placeholders": [],
+        "headings": [
+          "公告中心"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "全部已读"
+        ],
+        "placeholders": [],
+        "headings": [
+          "公告中心"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/messaging/templates/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "新建模板",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入",
+          "请选择"
+        ],
+        "headings": [],
+        "labels": [
+          "内容预览",
+          "分类",
+          "更新时间",
+          "模板名称"
+        ],
+        "tableHeaders": [
+          "内容预览",
+          "分类",
+          "操作",
+          "更新时间",
+          "模板名称"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": [
+          "请选择"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "新建模板",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [],
+        "labels": [
+          "内容预览",
+          "分类",
+          "更新时间",
+          "模板名称"
+        ],
+        "tableHeaders": [
+          "内容预览",
+          "分类",
+          "操作",
+          "更新时间",
+          "模板名称"
+        ],
+        "emptyTexts": [
+          "暂无模板"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [
+          "请选择"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": [
+          "请选择"
+        ]
+      },
+      "missingTotal": 3,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/messaging/history/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入",
+          "请选择"
+        ],
+        "headings": [],
+        "labels": [
+          "使用模板",
+          "发送内容",
+          "发送时间",
+          "接收人",
+          "状态"
+        ],
+        "tableHeaders": [
+          "使用模板",
+          "发送内容",
+          "发送时间",
+          "接收人",
+          "操作",
+          "状态"
+        ],
+        "emptyTexts": [],
+        "selectTexts": [
+          "请选择"
+        ]
+      },
+      "local": {
+        "buttons": [
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [
+          "历史记录"
+        ],
+        "labels": [
+          "使用模板",
+          "发送内容",
+          "发送时间",
+          "接收人",
+          "状态"
+        ],
+        "tableHeaders": [
+          "使用模板",
+          "发送内容",
+          "发送时间",
+          "接收人",
+          "操作",
+          "状态"
+        ],
+        "emptyTexts": [
+          "暂无发送记录"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [
+          "请选择"
+        ],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": [
+          "请选择"
+        ]
+      },
+      "missingTotal": 2,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/templates/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "刷新",
+          "导入模板",
+          "新建模板",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [],
+        "labels": [
+          "操作",
+          "模板名称",
+          "默认"
+        ],
+        "tableHeaders": [
+          "创建时间",
+          "店铺",
+          "操作",
+          "更新时间",
+          "模板名称",
+          "默认"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "T",
+          "刷新",
+          "导入模板",
+          "展开",
+          "新建模板",
+          "查 询",
+          "重 置"
+        ],
+        "placeholders": [
+          "请输入"
+        ],
+        "headings": [],
+        "labels": [
+          "模板名称",
+          "默认"
+        ],
+        "tableHeaders": [
+          "创建时间",
+          "店铺",
+          "操作",
+          "更新时间",
+          "模板名称",
+          "默认"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [
+          "操作"
+        ],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 1,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+          "localText": "新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 T 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作 暂无数据",
+          "sourceRect": {
+            "x": 279,
+            "y": 112,
+            "w": 1237,
+            "h": 378
+          },
+          "localRect": {
+            "x": 240,
+            "y": 112,
+            "w": 1632,
+            "h": 496
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/settings/jidian/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "查看消费明细"
+        ],
+        "placeholders": [],
+        "headings": [
+          "极点充值"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [
+          "极点 自助充值已切换为人工服务 请联系客服为您开通"
+        ],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "查看消费明细"
+        ],
+        "placeholders": [],
+        "headings": [
+          "极点充值"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [
+          "极点 自助充值已切换为人工服务 请联系客服为您开通"
+        ],
+        "selectTexts": []
+      },
+      "missingTotal": 1,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/settings/membership/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "使用激活码开通",
+          "兑换权益",
+          "季卡",
+          "年卡省更多",
+          "月卡"
+        ],
+        "placeholders": [
+          "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+        ],
+        "headings": [
+          "会员权益",
+          "套餐档位",
+          "权益对比",
+          "激活码使用记录",
+          "激活码兑换"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "企业版 年卡",
+          "使用时间",
+          "套餐类型",
+          "普通版 年卡",
+          "权益项",
+          "激活码",
+          "状态",
+          "高级版 年卡"
+        ],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "使用激活码开通",
+          "兑换权益"
+        ],
+        "placeholders": [
+          "请输入激活码，如 JZ-XXXX-XXXX-XXXX"
+        ],
+        "headings": [
+          "会员权益",
+          "权益对比",
+          "激活码使用记录"
+        ],
+        "labels": [
+          "季卡",
+          "年卡省更多",
+          "月卡"
+        ],
+        "tableHeaders": [
+          "企业版 年卡",
+          "使用时间",
+          "套餐类型",
+          "普通版 年卡",
+          "权益项",
+          "激活码",
+          "状态",
+          "高级版 年卡"
+        ],
+        "emptyTexts": [
+          "暂无激活码使用记录"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [
+          "季卡",
+          "年卡省更多",
+          "月卡"
+        ],
+        "placeholders": [],
+        "headings": [
+          "套餐档位",
+          "激活码兑换"
+        ],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 5,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/settings/stores/",
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "source": {
+        "buttons": [
+          "刷 新",
+          "同步仓库",
+          "同步本帐号所有门店",
+          "新增",
+          "清除当前门店",
+          "重 置"
+        ],
+        "placeholders": [
+          "Client ID",
+          "店铺名称"
+        ],
+        "headings": [
+          "我的 Ozon 门店 0/999"
+        ],
+        "labels": [],
+        "tableHeaders": [
+          "Api-Key",
+          "ClientId",
+          "INN",
+          "Premium",
+          "公司",
+          "操作",
+          "标签",
+          "添加时间",
+          "货币",
+          "门店编号"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": []
+      },
+      "local": {
+        "buttons": [
+          "刷 新",
+          "同步仓库",
+          "同步本帐号所有门店",
+          "新增",
+          "清除当前门店",
+          "重 置"
+        ],
+        "placeholders": [
+          "Client ID",
+          "店铺名称"
+        ],
+        "headings": [
+          "我的 Ozon 门店 0/999"
+        ],
+        "labels": [
+          "Client ID",
+          "店铺名称",
+          "显示已停用店铺"
+        ],
+        "tableHeaders": [
+          "Api-Key",
+          "ClientId",
+          "INN",
+          "Premium",
+          "公司",
+          "操作",
+          "标签",
+          "添加时间",
+          "货币",
+          "门店编号"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": []
+      },
+      "missing": {
+        "buttons": [],
+        "placeholders": [],
+        "headings": [],
+        "labels": [],
+        "tableHeaders": [],
+        "emptyTexts": [],
+        "selectTexts": []
+      },
+      "missingTotal": 0,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "我的 Ozon 门店 0/999 同步仓库 刷 新 新增 重 置 显示已停用店铺 当前选择门店： f6cb6646-440b-42ab-b50e-15ad7718e35e 清除当前门店 同步本帐号所有门店 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 C",
+          "localText": "店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 同步本帐号所有门店",
+          "sourceRect": {
+            "x": 279,
+            "y": 128,
+            "w": 1237,
+            "h": 424
+          },
+          "localRect": {
+            "x": 240,
+            "y": 160,
+            "w": 1632,
+            "h": 206
+          }
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "route": "/ozon/products/collect/",
+      "missingTotal": 1,
+      "missing": {
+        "selectTexts": [
+          "按来源筛选"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/selection/category/",
+      "missingTotal": 8,
+      "missing": {
+        "buttons": [
+          "28天",
+          "365天",
+          "7天",
+          "90天",
+          "¥",
+          "₽",
+          "全部",
+          "全部类目"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/selection/top-list/",
+      "missingTotal": 11,
+      "missing": {
+        "buttons": [
+          "28天",
+          "7天",
+          "¥",
+          "₽",
+          "全部"
+        ],
+        "labels": [
+          "分区 全部分区",
+          "发货模式",
+          "平均价 ₽",
+          "月销售额 ₽",
+          "月销售额环比 %",
+          "月销量"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "missingTotal": 11,
+      "missing": {
+        "buttons": [
+          "28天",
+          "7天",
+          "¥",
+          "₽",
+          "全部"
+        ],
+        "labels": [
+          "分区 全部分区",
+          "发货模式",
+          "平均价 ₽",
+          "月销售额 ₽",
+          "月销售额环比 %",
+          "月销量"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "missingTotal": 2,
+      "missing": {
+        "headings": [
+          "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品"
+        ],
+        "selectTexts": [
+          "全部状态"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 2,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 1,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品 收起 上传图片 点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 10 张 或粘贴图片链接 已识别 0 条 待处理图片0 / 10 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里 商品名(可选) 类目",
+          "localText": "Gemini 快速改图 上传图片或粘贴图片链接,无需绑定商品 收起 点击、拖拽,或 Ctrl/⌘+V 粘贴图片 支持多张,单次最多 10 张 或粘贴图片链接 已识别 0 条 待处理图片0 / 10 上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里 商品名(可选) 类目(可选)",
+          "sourceRect": {
+            "x": 279,
+            "y": 192,
+            "w": 1218,
+            "h": 438
+          },
+          "localRect": {
+            "x": 240,
+            "y": 180,
+            "w": 1610,
+            "h": 572
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/ai-image/",
+      "missingTotal": 0,
+      "missing": {},
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/promotions/prices/",
+      "missingTotal": 0,
+      "missing": {},
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 1,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "价格与折扣 从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。 价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 商品 当前价格 操作",
+          "localText": "价格 折扣 选择商品 改价草稿 搜索 重 置 查 询 刷新 主图 商品 当前价格 操作 主图 商品 当前价格 操作",
+          "sourceRect": {
+            "x": 279,
+            "y": 112,
+            "w": 1237,
+            "h": 495
+          },
+          "localRect": {
+            "x": 240,
+            "y": 180,
+            "w": 1632,
+            "h": 277
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/promotions/auto-delete/",
+      "missingTotal": 6,
+      "missing": {
+        "buttons": [
+          "开 关"
+        ],
+        "headings": [
+          "自动清理配置"
+        ],
+        "labels": [
+          "状态",
+          "类型"
+        ],
+        "selectTexts": [
+          "每天一次",
+          "请选择"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 1,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "自动清理配置 sl [client-id] 自动清理 开 关 最大可接受折扣 % 检测频率 每天一次",
+          "localText": "自动清理配置 加载店铺中…",
+          "sourceRect": {
+            "x": 279,
+            "y": 254,
+            "w": 1218,
+            "h": 171
+          },
+          "localRect": {
+            "x": 240,
+            "y": 180,
+            "w": 1632,
+            "h": 83
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "missingTotal": 2,
+      "missing": {
+        "selectTexts": [
+          "当前店铺",
+          "货件编号"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/returns/",
+      "missingTotal": 1,
+      "missing": {
+        "selectTexts": [
+          "20/页"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/profit-trend/",
+      "missingTotal": 1,
+      "missing": {
+        "labels": [
+          "全部店铺"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "missingTotal": 1,
+      "missing": {
+        "selectTexts": [
+          "当前店铺"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "missingTotal": 3,
+      "missing": {
+        "selectTexts": [
+          "买家未取",
+          "已到取件点",
+          "当前店铺"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/messaging/templates/",
+      "missingTotal": 3,
+      "missing": {
+        "placeholders": [
+          "请选择"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "selectTexts": [
+          "请选择"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/messaging/history/",
+      "missingTotal": 2,
+      "missing": {
+        "placeholders": [
+          "请选择"
+        ],
+        "selectTexts": [
+          "请选择"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 1,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/templates/",
+      "missingTotal": 1,
+      "missing": {
+        "labels": [
+          "操作"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 1,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+          "localText": "新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 T 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作 暂无数据",
+          "sourceRect": {
+            "x": 279,
+            "y": 112,
+            "w": 1237,
+            "h": 378
+          },
+          "localRect": {
+            "x": 240,
+            "y": 112,
+            "w": 1632,
+            "h": 496
+          }
+        }
+      ]
+    },
+    {
+      "route": "/ozon/settings/jidian/",
+      "missingTotal": 1,
+      "missing": {
+        "emptyTexts": [
+          "极点 自助充值已切换为人工服务 请联系客服为您开通"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/settings/membership/",
+      "missingTotal": 5,
+      "missing": {
+        "buttons": [
+          "季卡",
+          "年卡省更多",
+          "月卡"
+        ],
+        "headings": [
+          "套餐档位",
+          "激活码兑换"
+        ]
+      },
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 0,
+      "cardDelta": []
+    },
+    {
+      "route": "/ozon/settings/stores/",
+      "missingTotal": 0,
+      "missing": {},
+      "sourceMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "localMeta": {
+        "title": "QH",
+        "openMenuCount": 0,
+        "modalDrawerCount": 0,
+        "hasStorePrompt": false,
+        "hasLoading": false
+      },
+      "cardDeltaCount": 1,
+      "cardDelta": [
+        {
+          "index": 0,
+          "sourceText": "我的 Ozon 门店 0/999 同步仓库 刷 新 新增 重 置 显示已停用店铺 当前选择门店： f6cb6646-440b-42ab-b50e-15ad7718e35e 清除当前门店 同步本帐号所有门店 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 C",
+          "localText": "店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 同步本帐号所有门店",
+          "sourceRect": {
+            "x": 279,
+            "y": 128,
+            "w": 1237,
+            "h": 424
+          },
+          "localRect": {
+            "x": 240,
+            "y": 160,
+            "w": 1632,
+            "h": 206
+          }
+        }
+      ]
+    }
+  ]
+}

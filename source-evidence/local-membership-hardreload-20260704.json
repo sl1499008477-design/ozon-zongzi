@@ -1,0 +1,70 @@
+{
+  "capturedAt": "2026-07-04T06:54:14.799Z",
+  "taskSpaceId": 39,
+  "info": {
+    "url": "http://127.0.0.1:5173/ozon/settings/membership/?hardReload=1783148052194",
+    "title": "QH",
+    "w": 1896,
+    "h": 904,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1873,
+    "ph": 1966
+  },
+  "data": {
+    "missing": [],
+    "hasLocalDot": false,
+    "page": {
+      "x": 553,
+      "y": 80,
+      "w": 984,
+      "h": 1854
+    },
+    "topGrid": {
+      "x": 553,
+      "y": 180,
+      "w": 984,
+      "h": 214
+    },
+    "current": {
+      "x": 553,
+      "y": 180,
+      "w": 590,
+      "h": 214
+    },
+    "code": {
+      "x": 1159,
+      "y": 180,
+      "w": 378,
+      "h": 214
+    },
+    "planGrid": {
+      "x": 573,
+      "y": 495,
+      "w": 943,
+      "h": 436
+    },
+    "planCount": 3,
+    "planRects": [
+      {
+        "x": 573,
+        "y": 495,
+        "w": 304,
+        "h": 436
+      },
+      {
+        "x": 893,
+        "y": 495,
+        "w": 304,
+        "h": 436
+      },
+      {
+        "x": 1212,
+        "y": 495,
+        "w": 304,
+        "h": 436
+      }
+    ]
+  },
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-membership-hardreload-20260704.png"
+}

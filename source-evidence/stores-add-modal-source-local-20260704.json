@@ -1,0 +1,170 @@
+{
+  "capturedAt": "2026-07-04T07:33:46.690Z",
+  "taskSpaceId": 39,
+  "source": {
+    "kind": "source",
+    "clicked": true,
+    "data": {
+      "path": "/ozon/settings/stores/",
+      "title": "QH",
+      "body": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 我的 Ozon 门店 0/999 同步仓库 刷 新 新增 重 置 显示已停用店铺 当前选择门店： STORE-ID 清除当前门店 STORE 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据 新增 API 授权门店 Client-Id Api-Key 标签 取 消 新 增",
+      "overlays": [
+        {
+          "cls": "ant-modal",
+          "text": "新增 API 授权门店 Client-Id Api-Key 标签 取 消 新 增",
+          "rect": {
+            "x": 530,
+            "y": 100,
+            "w": 520,
+            "h": 387
+          },
+          "title": "新增 API 授权门店",
+          "buttons": [
+            "取 消",
+            "新 增"
+          ],
+          "fields": [
+            {
+              "text": "Client-Id",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-col ant-form-item-label"
+            },
+            {
+              "text": "Client-Id",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-form-item-required"
+            },
+            {
+              "text": "",
+              "placeholder": "Ozon Client-Id",
+              "value": "",
+              "cls": "ant-input ant-input-outlined"
+            },
+            {
+              "text": "Api-Key",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-col ant-form-item-label"
+            },
+            {
+              "text": "Api-Key",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-form-item-required"
+            },
+            {
+              "text": "",
+              "placeholder": "Ozon Api-Key",
+              "value": "",
+              "cls": "ant-input"
+            },
+            {
+              "text": "标签",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-col ant-form-item-label"
+            },
+            {
+              "text": "标签",
+              "placeholder": "",
+              "value": "",
+              "cls": ""
+            },
+            {
+              "text": "",
+              "placeholder": "可选，例如：主店",
+              "value": "",
+              "cls": "ant-input ant-input-outlined"
+            }
+          ]
+        }
+      ]
+    },
+    "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-stores-add-modal-20260704.png"
+  },
+  "local": {
+    "kind": "local",
+    "clicked": true,
+    "data": {
+      "path": "/ozon/settings/stores/",
+      "title": "QH",
+      "body": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 我的 Ozon 门店 0/999 同步仓库 刷 新 新增 店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 STORE 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据 绑定 Ozon 门店 门店名称 Client ID API Key 取消 保存绑定",
+      "overlays": [
+        {
+          "cls": "ant-modal css-dev-only-do-not-override-1pi45l5",
+          "text": "绑定 Ozon 门店 门店名称 Client ID API Key 取消 保存绑定",
+          "rect": {
+            "x": 688,
+            "y": 100,
+            "w": 520,
+            "h": 363
+          },
+          "title": "绑定 Ozon 门店",
+          "buttons": [
+            "取消",
+            "保存绑定"
+          ],
+          "fields": [
+            {
+              "text": "门店名称",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-col ant-form-item-label css-dev-only-do-not-override-1pi45l5 css-var-_r_0_"
+            },
+            {
+              "text": "门店名称",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-form-item-required"
+            },
+            {
+              "text": "",
+              "placeholder": "请输入门店名称",
+              "value": "",
+              "cls": "ant-input css-dev-only-do-not-override-1pi45l5"
+            },
+            {
+              "text": "Client ID",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-col ant-form-item-label css-dev-only-do-not-override-1pi45l5 css-var-_r_0_"
+            },
+            {
+              "text": "Client ID",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-form-item-required"
+            },
+            {
+              "text": "",
+              "placeholder": "请输入 Ozon Client ID",
+              "value": "",
+              "cls": "ant-input css-dev-only-do-not-override-1pi45l5"
+            },
+            {
+              "text": "API Key",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-col ant-form-item-label css-dev-only-do-not-override-1pi45l5 css-var-_r_0_"
+            },
+            {
+              "text": "API Key",
+              "placeholder": "",
+              "value": "",
+              "cls": "ant-form-item-required"
+            },
+            {
+              "text": "",
+              "placeholder": "请输入 Ozon API Key",
+              "value": "",
+              "cls": "ant-input css-dev-only-do-not-override-1pi45l5"
+            }
+          ]
+        }
+      ]
+    },
+    "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-stores-add-modal-20260704.png"
+  }
+}

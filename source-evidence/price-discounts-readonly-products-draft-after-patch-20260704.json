@@ -1,0 +1,66 @@
+{
+  "capturedAt": "2026-07-04T12:29:22Z",
+  "page": "/ozon/promotions/prices/",
+  "scope": "price discount page product-cache refresh and local-only repricing draft interaction",
+  "redaction": {
+    "clientId": "omitted",
+    "apiKey": "omitted",
+    "storeName": "omitted",
+    "productNames": "omitted",
+    "skus": "omitted",
+    "rawProductRows": "omitted"
+  },
+  "localState": {
+    "stores": 1,
+    "hasBinding": true,
+    "products": 580,
+    "postings": 466,
+    "warehouses": 16,
+    "jobsAfterProductSync": 12,
+    "messageHistory": 0
+  },
+  "validatedReadOnlySync": {
+    "source": "/local/sync/PRODUCTS",
+    "ozonBehavior": "read-only product cache refresh through the local backend",
+    "ok": true,
+    "jobStatus": "SUCCESS",
+    "fetchedCount": 580,
+    "beforeProducts": 580,
+    "afterProducts": 580
+  },
+  "visualQa": {
+    "tool": "ego-browser",
+    "desktopViewport": {
+      "width": 1920,
+      "height": 1059,
+      "defaultHeaders": [
+        "主图",
+        "商品",
+        "当前价格",
+        "操作"
+      ],
+      "oldPlaceholderTaskRecordedVisible": false,
+      "buyerViewActionVisible": true,
+      "repriceDraftActionVisible": true,
+      "oldViewOnlyActionVisible": false
+    },
+    "draftFlow": {
+      "action": "clicked first visible 改价 action, then switched to 改价草稿",
+      "headers": [
+        "主图",
+        "商品",
+        "当前价格",
+        "目标价格",
+        "草稿状态",
+        "操作"
+      ],
+      "clearDraftButtonEnabled": true,
+      "removeDraftButtonEnabled": true,
+      "draftRowVisible": true
+    },
+    "devServerNote": "The 5173 Vite process was restarted after stale HMR output initially served the previous table action text."
+  },
+  "noWriteEndpointsCalled": true,
+  "ozonPriceUpdateCalled": false,
+  "sampleDataInserted": false
+}

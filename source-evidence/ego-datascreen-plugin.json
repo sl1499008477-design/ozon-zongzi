@@ -1,0 +1,134 @@
+{
+  "capturedAt": "2026-07-04T03:07:10.500Z",
+  "datascreenInfo": {
+    "url": "https://qh.jizhangerp.com/datascreen/",
+    "title": "QH · 订单数据大屏",
+    "w": 0,
+    "h": 0,
+    "sx": 0,
+    "sy": 0,
+    "pw": 0,
+    "ph": 0
+  },
+  "datascreen": {
+    "bodyText": "QH · 订单数据中心\nORDER COMMAND CENTER · 全部店铺 · 数据每 60s 自动刷新\n7天\n15天\n30天\n全屏\n返回订单\n[redacted-time]:08\n2026-07-04 星期六\n今日订单\n0\n— 持平\n今日销售额\n¥[redacted]\n— 持平\n今日预估利润\n¥[redacted]\n— 持平\n近 7 天订单\n0\n— 持平\nvs 前 7 天\n近 30 天销售额\n¥[redacted]\n0 单\n近 30 天退货率\n0.0%\n— 持平\n退货 0 单\n订单状态分布\n0\n近 30 天订单\n暂无数据\n店铺战力榜 · 今日\n0 单\n今日暂无订单\n订单量 × 销售额趋势 · 近 30 天\n区间销售额 ¥[redacted] · 利润 ¥[redacted]\n0\n0\n1\n1\n单量\n销售额¥[redacted]-05\n06-09\n06-13\n06-17\n06-21\n06-25\n06-29\n07-03\n07-04\n暂无订单数据 — 请先在「订单」页同步\n今日时段分布\n0时\n3时\n6时\n9时\n12时\n15时\n18时\n21时\n配送渠道 TOP\n暂无数据\n实时订单流\nLIVE\n暂无订单 — 等待同步\n今日热销 TOP\n今日暂无成交商品\n待备货\n0\n待发运\n0\n运输中\n0\n有争议\n0\n已取消\n0\n数据来源:本地同步缓存(状态为近 30 天口径) · RUB 按 ≈0.084 折算 CNY · 正在加载…",
+    "headings": [],
+    "buttons": [
+      "7天",
+      "15天",
+      "30天",
+      "全屏"
+    ],
+    "cards": [
+      "订单状态分布 0 近 30 天订单 暂无数据",
+      "订单状态分布",
+      "0 近 30 天订单 暂无数据",
+      "店铺战力榜 · 今日 0 单 今日暂无订单",
+      "店铺战力榜 · 今日 0 单",
+      "店铺战力榜 · 今日",
+      "0 单",
+      "今日暂无订单",
+      "订单量 × 销售额趋势 · 近 30 天 区间销售额 ¥[redacted] · 利润 ¥[redacted] 0 0 1 1 单量 销售额¥[redacted]-05 06-09 06-13 06-17 06-21 06-25 06-29 07-03 07-04 暂无订单数据 — 请先在「订单」页同步",
+      "订单量 × 销售额趋势 · 近 30 天 区间销售额 ¥[redacted] · 利润 ¥[redacted]",
+      "订单量 × 销售额趋势 · 近 30 天",
+      "区间销售额 ¥[redacted] · 利润 ¥[redacted]",
+      "0 0 1 1 单量 销售额¥[redacted]-05 06-09 06-13 06-17 06-21 06-25 06-29 07-03 07-04 暂无订单数据 — 请先在「订单」页同步",
+      "今日时段分布 0时 3时 6时 9时 12时 15时 18时 21时",
+      "今日时段分布",
+      "0时 3时 6时 9时 12时 15时 18时 21时",
+      "配送渠道 TOP 暂无数据",
+      "配送渠道 TOP",
+      "暂无数据",
+      "实时订单流 LIVE 暂无订单 — 等待同步",
+      "实时订单流 LIVE",
+      "实时订单流",
+      "暂无订单 — 等待同步",
+      "今日热销 TOP 今日暂无成交商品",
+      "今日热销 TOP",
+      "今日暂无成交商品"
+    ],
+    "inputs": [],
+    "dialogs": []
+  },
+  "dashboardBefore": {
+    "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\nsl\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[redacted-phone]\n仪表盘\n2026-07-04 · 周六\n自动同步 · 上次 [redacted-time]\n极点余额 0\n全部同步\n⌘R\n今日订单\n3\n[redacted]%\nvs 昨日\n今日 GMV\n¥[redacted]\n[redacted]%\nvs 昨日\n待打包\n35\n立即处理 →\n待发货\n47\n合计待处理 [redacted]\n在售商品\n54个\n多店聚合\n库存预警\n[redacted]SKU\n[redacted] 个断货 · 立即补货 →\n今日退货\n0\n退货率 0.0%\n7 日利润\n¥[redacted]\n本周累计\n待办与告警\n2\n2 项待处理\n配置规则\n缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU\n低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU\n业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 [redacted] 单\n待打包\n35\n[redacted]%\n待发货\n47\n[redacted]%\n已发货\n[redacted]\n[redacted]%\n已送达\n52\n[redacted]%\n已取消\n19\n[redacted]%\n订单趋势\n7 日\n30 日\n快捷操作\n常用操作一键触达 · ⌘K 唤起命令面板\n一键同步全部\n⌘R\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单\n功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\n水印管理\n17track\n营销活动\n本周 GMV\n¥[redacted]\n本周利润\n¥[redacted]\n本周订单\n119\n退货率\n0.0%\n每 5 分钟自动同步 · 上次\n[redacted-time]",
+    "headings": [
+      "待办与告警 2 2 项待处理 配置规则",
+      "业务速览 数据滞后 ≤ 15 分钟"
+    ],
+    "buttons": [
+      "全部同步 ⌘R",
+      "一键同步全部 ⌘R",
+      "批量改价",
+      "AI 大模型改图",
+      "1688 采集",
+      "群发消息",
+      "批量上架",
+      "打印发货单"
+    ],
+    "cards": [
+      "待办与告警 2 2 项待处理 配置规则 缺货 库存告罄 SKU [redacted-product] 库存为 0 1 SKU 低位 低库存预警 [redacted] 个 SKU 库存 ≤ 50 3 SKU",
+      "待办与告警 2 2 项待处理 配置规则",
+      "业务速览 数据滞后 ≤ 15 分钟 订单状态 共 [redacted] 单 待打包 [redacted] [redacted]% 待发货 [redacted] [redacted]% 已发货 [redacted] [redacted]% 已送达 [redacted] [redacted]% 已取消 [redacted] [redacted]% 订单趋势 7 日 30 日",
+      "业务速览 数据滞后 ≤ 15 分钟",
+      "一键同步全部 ⌘R 批量改价 AI 大模型改图 1688 采集 群发消息 批量上架 打印发货单",
+      "采集箱 类目分析 榜单选品 利润趋势 AI 大模型改图 水印管理 17track 营销活动",
+      "采集箱",
+      "类目分析",
+      "榜单选品",
+      "利润趋势",
+      "AI 大模型改图",
+      "水印管理",
+      "17track",
+      "营销活动"
+    ],
+    "inputs": [],
+    "dialogs": []
+  },
+  "clickedPlugin": true,
+  "pluginActionInfo": {
+    "url": "https://qh.jizhangerp.com/ozon/dashboard/",
+    "title": "QH",
+    "w": 0,
+    "h": 0,
+    "sx": 0,
+    "sy": 0,
+    "pw": 235,
+    "ph": 4380
+  },
+  "pluginAction": {
+    "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\nsl\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[redacted-phone]\n仪表盘\n2026-07-04 · 周六\n自动同步 · 上次 [redacted-time]\n极点余额 0\n全部同步\n⌘R\n今日订单\n3\n[redacted]%\nvs 昨日\n今日 GMV\n¥[redacted]\n[redacted]%\nvs 昨日\n待打包\n35\n立即处理 →\n待发货\n47\n合计待处理 [redacted]\n在售商品\n54个\n多店聚合\n库存预警\n[redacted]SKU\n[redacted] 个断货 · 立即补货 →\n今日退货\n0\n退货率 0.0%\n7 日利润\n¥[redacted]\n本周累计\n待办与告警\n2\n2 项待处理\n配置规则\n缺货\n库存告罄 SKU\n[redacted-product] 库存为 0\n1\nSKU\n低位\n低库存预警\n[redacted] 个 SKU 库存 ≤ 50\n3\nSKU\n业务速览\n数据滞后 ≤ 15 分钟\n订单状态\n共 [redacted] 单\n待打包\n35\n[redacted]%\n待发货\n47\n[redacted]%\n已发货\n[redacted]\n[redacted]%\n已送达\n52\n[redacted]%\n已取消\n19\n[redacted]%\n订单趋势\n7 日\n30 日\n快捷操作\n常用操作一键触达 · ⌘K 唤起命令面板\n一键同步全部\n⌘R\n批量改价\nAI 大模型改图\n1688 采集\n群发消息\n批量上架\n打印发货单\n功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\n水印管理\n17track\n营销活动\n本周 GMV\n¥[redacted]\n本周利润\n¥[redacted]\n本周订单\n119\n退货率\n0.0%\n每 5 分钟自动同步 · 上次\n[redacted-time]",
+    "headings": [
+      "待办与告警 2 2 项待处理 配置规则",
+      "业务速览 数据滞后 ≤ 15 分钟"
+    ],
+    "buttons": [
+      "全部同步 ⌘R",
+      "一键同步全部 ⌘R",
+      "批量改价",
+      "AI 大模型改图",
+      "1688 采集",
+      "群发消息",
+      "批量上架",
+      "打印发货单"
+    ],
+    "cards": [
+      "待办与告警 2 2 项待处理 配置规则 缺货 库存告罄 SKU [redacted-product] 库存为 0 1 SKU 低位 低库存预警 [redacted] 个 SKU 库存 ≤ 50 3 SKU",
+      "待办与告警 2 2 项待处理 配置规则",
+      "业务速览 数据滞后 ≤ 15 分钟 订单状态 共 [redacted] 单 待打包 [redacted] [redacted]% 待发货 [redacted] [redacted]% 已发货 [redacted] [redacted]% 已送达 [redacted] [redacted]% 已取消 [redacted] [redacted]% 订单趋势 7 日 30 日",
+      "业务速览 数据滞后 ≤ 15 分钟",
+      "一键同步全部 ⌘R 批量改价 AI 大模型改图 1688 采集 群发消息 批量上架 打印发货单",
+      "采集箱 类目分析 榜单选品 利润趋势 AI 大模型改图 水印管理 17track 营销活动",
+      "采集箱",
+      "类目分析",
+      "榜单选品",
+      "利润趋势",
+      "AI 大模型改图",
+      "水印管理",
+      "17track",
+      "营销活动"
+    ],
+    "inputs": [],
+    "dialogs": []
+  }
+}

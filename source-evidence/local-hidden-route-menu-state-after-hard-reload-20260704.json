@@ -1,0 +1,46 @@
+{
+  "capturedAt": "2026-07-04T07:16:13.447Z",
+  "taskSpaceId": 39,
+  "results": [
+    {
+      "name": "jidian",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/settings/jidian/?hardReloadMenuPatch=1783149366787",
+        "path": "/ozon/settings/jidian/",
+        "hasMenuKeyPatch": true,
+        "openGroups": [
+          "工具 水印管理 浏览器插件"
+        ],
+        "selectedItems": [],
+        "menuText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 水印管理 浏览器插件"
+      }
+    },
+    {
+      "name": "stores",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/settings/stores/?hardReloadMenuPatch=1783149368986",
+        "path": "/ozon/settings/stores/",
+        "hasMenuKeyPatch": true,
+        "openGroups": [
+          "工具 水印管理 浏览器插件"
+        ],
+        "selectedItems": [],
+        "menuText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 水印管理 浏览器插件"
+      }
+    },
+    {
+      "name": "templates",
+      "data": {
+        "url": "http://127.0.0.1:5173/ozon/templates/?hardReloadMenuPatch=1783149371249",
+        "path": "/ozon/templates/",
+        "hasMenuKeyPatch": true,
+        "openGroups": [
+          "消息 公告中心 消息模板 发送记录"
+        ],
+        "selectedItems": [],
+        "menuText": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 公告中心 消息模板 发送记录 公告中心 消息模板 发送记录"
+      }
+    }
+  ],
+  "ok": false
+}

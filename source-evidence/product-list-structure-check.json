@@ -1,0 +1,140 @@
+{
+  "capturedAt": "2026-07-04T04:01:48.042Z",
+  "taskSpaceId": 17,
+  "note": "Sanitized structure only: no source table/body/store values retained.",
+  "source": {
+    "path": "/ozon/products/list/",
+    "headings": [],
+    "buttons": [
+      "同步全部"
+    ],
+    "inputs": [
+      {
+        "placeholder": "搜 SKU / 货号 / 标题…",
+        "type": "text",
+        "aria": ""
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox",
+        "aria": "Select all"
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox",
+        "aria": "Select all"
+      }
+    ],
+    "tableHeaders": [
+      "商品信息",
+      "状态",
+      "价格",
+      "库存",
+      "货源 (¥)",
+      "最后同步",
+      "操作"
+    ],
+    "chips": [],
+    "modalTitles": []
+  },
+  "local": {
+    "path": "/ozon/products/list/",
+    "headings": [
+      "商品列表"
+    ],
+    "buttons": [
+      "全部同步 ⌘R",
+      "立即同步",
+      "全部",
+      "销售中",
+      "准备出售 0",
+      "错误 0",
+      "待修改 0",
+      "已下架 0",
+      "已归档",
+      "超值",
+      "有利",
+      "中等",
+      "不利"
+    ],
+    "inputs": [
+      {
+        "placeholder": "搜 SKU / 货号 / 标题…",
+        "type": "search",
+        "aria": ""
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox",
+        "aria": "Select all"
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox",
+        "aria": "Select all"
+      }
+    ],
+    "tableHeaders": [
+      "商品信息",
+      "状态",
+      "价格",
+      "库存",
+      "货源 (¥)",
+      "最后同步",
+      "操作"
+    ],
+    "chips": [
+      "全部",
+      "销售中",
+      "准备出售 0",
+      "错误 0",
+      "待修改 0",
+      "已下架 0",
+      "已归档",
+      "超值",
+      "有利",
+      "中等",
+      "不利"
+    ],
+    "modalTitles": []
+  },
+  "localAfterPatch": {
+    "path": "/ozon/products/list/",
+    "headings": [
+      "商品列表"
+    ],
+    "buttons": [
+      "全部同步 ⌘R",
+      "同步全部"
+    ],
+    "inputs": [
+      {
+        "placeholder": "搜 SKU / 货号 / 标题…",
+        "type": "search",
+        "aria": ""
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox",
+        "aria": "Select all"
+      },
+      {
+        "placeholder": "",
+        "type": "checkbox",
+        "aria": "Select all"
+      }
+    ],
+    "tableHeaders": [
+      "商品信息",
+      "状态",
+      "价格",
+      "库存",
+      "货源 (¥)",
+      "最后同步",
+      "操作"
+    ],
+    "chips": [],
+    "modalTitles": []
+  },
+  "verifiedAt": "2026-07-04T04:03:58.595Z"
+}

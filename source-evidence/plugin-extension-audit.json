@@ -1,0 +1,42 @@
+{
+  "capturedAt": "2026-07-04T05:06:21.325Z",
+  "note": "Plugin local-copy audit. Differences are limited to local Vite host permissions and localhost frontend routing.",
+  "sourceRoot": "/Users/songliang/Desktop/QH 0.13.42.1",
+  "localRoot": "extension",
+  "sourceFileCount": 84,
+  "localFileCount": 84,
+  "zipFileCount": 84,
+  "differingFiles": [
+    "Files [source-plugin]/background/service-worker.js and [local-extension]/background/service-worker.js differ",
+    "Files [source-plugin]/manifest.json and [local-extension]/manifest.json differ",
+    "Files [source-plugin]/popup/popup.js and [local-extension]/popup/popup.js differ"
+  ],
+  "manifest": {
+    "version": "0.13.42.1",
+    "addedHostPermissions": [
+      "http://localhost:5173/*",
+      "http://127.0.0.1:5173/*"
+    ],
+    "missingHostPermissions": [],
+    "addedContentScriptMatches": [
+      {
+        "index": 7,
+        "match": "http://localhost:5173/*"
+      },
+      {
+        "index": 7,
+        "match": "http://127.0.0.1:5173/*"
+      },
+      {
+        "index": 8,
+        "match": "http://localhost:5173/*"
+      },
+      {
+        "index": 8,
+        "match": "http://127.0.0.1:5173/*"
+      }
+    ],
+    "missingContentScriptMatches": []
+  },
+  "zipMatchesLocalExtension": true
+}

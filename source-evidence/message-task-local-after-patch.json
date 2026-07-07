@@ -1,0 +1,186 @@
+{
+  "capturedAt": "2026-07-04T04:53:03.996Z",
+  "taskSpaceId": 24,
+  "note": "Fresh full-page local render check after message task patch.",
+  "local": [
+    {
+      "route": "/ozon/postings/review-request/",
+      "action": "initial",
+      "data": {
+        "path": "/ozon/postings/review-request/",
+        "action": "initial",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "tableHeaders": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "发运",
+          "图片",
+          "货号，数量 名称",
+          "查看商品",
+          "价格",
+          "仓库",
+          "配送服务 方式",
+          "送达"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步已签收订单"
+        ],
+        "hasStorePrompt": false,
+        "hasTemplateCopy": false,
+        "hasReviewTaskEmpty": false,
+        "hasPickupTaskTable": false
+      }
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "action": "initial",
+      "data": {
+        "path": "/ozon/postings/pickup-reminder/",
+        "action": "initial",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "tableHeaders": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "取货状态",
+          "图片",
+          "货号，数量 名称",
+          "物流单号",
+          "配送",
+          "最近物流时间",
+          "查看商品"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步运输中订单"
+        ],
+        "hasStorePrompt": false,
+        "hasTemplateCopy": false,
+        "hasReviewTaskEmpty": false,
+        "hasPickupTaskTable": false
+      }
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "action": "文案模板",
+      "data": {
+        "path": "/ozon/postings/review-request/",
+        "action": "文案模板",
+        "modalTitles": [
+          "索要好评文案模板"
+        ],
+        "modalTexts": [
+          "索要好评文案模板可为不同店铺保存多套文案，发送前选择模板后仍可临时修改。新建模板模板名称适用范围内容预览操作模板名称适用范围内容预览操作No data暂无文案模板"
+        ],
+        "drawerTitles": [],
+        "drawerTexts": [],
+        "tableHeaders": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "发运",
+          "图片",
+          "货号，数量 名称",
+          "查看商品",
+          "价格",
+          "仓库",
+          "配送服务 方式",
+          "送达",
+          "模板名称",
+          "适用范围",
+          "内容预览",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步已签收订单",
+          "暂无文案模板"
+        ],
+        "hasStorePrompt": false,
+        "hasTemplateCopy": true,
+        "hasReviewTaskEmpty": false,
+        "hasPickupTaskTable": false
+      }
+    },
+    {
+      "route": "/ozon/postings/review-request/",
+      "action": "任务监控",
+      "data": {
+        "path": "/ozon/postings/review-request/",
+        "action": "任务监控",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [
+          "任务监控"
+        ],
+        "drawerTexts": [
+          "任务监控暂无本页触发的任务"
+        ],
+        "tableHeaders": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "发运",
+          "图片",
+          "货号，数量 名称",
+          "查看商品",
+          "价格",
+          "仓库",
+          "配送服务 方式",
+          "送达"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步已签收订单"
+        ],
+        "hasStorePrompt": false,
+        "hasTemplateCopy": false,
+        "hasReviewTaskEmpty": true,
+        "hasPickupTaskTable": false
+      }
+    },
+    {
+      "route": "/ozon/postings/pickup-reminder/",
+      "action": "任务监控",
+      "data": {
+        "path": "/ozon/postings/pickup-reminder/",
+        "action": "任务监控",
+        "modalTitles": [],
+        "modalTexts": [],
+        "drawerTitles": [
+          "任务监控"
+        ],
+        "drawerTexts": [
+          "任务监控店铺状态错误店铺状态错误No data暂无数据"
+        ],
+        "tableHeaders": [
+          "操作",
+          "店铺",
+          "货件编号",
+          "取货状态",
+          "图片",
+          "货号，数量 名称",
+          "物流单号",
+          "配送",
+          "最近物流时间",
+          "查看商品",
+          "店铺",
+          "状态",
+          "错误"
+        ],
+        "emptyTexts": [
+          "暂无数据，请先同步运输中订单",
+          "暂无数据"
+        ],
+        "hasStorePrompt": false,
+        "hasTemplateCopy": false,
+        "hasReviewTaskEmpty": false,
+        "hasPickupTaskTable": true
+      }
+    }
+  ]
+}

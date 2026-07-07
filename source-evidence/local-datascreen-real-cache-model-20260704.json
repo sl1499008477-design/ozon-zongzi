@@ -1,0 +1,214 @@
+{
+  "generatedAt": "2026-07-04T09:21:38.762Z",
+  "source": "server-data/local-state.json aggregated without raw order/product identifiers",
+  "realCacheCounts": {
+    "postings": 462,
+    "products": 580,
+    "warehouses": 16
+  },
+  "datascreenModels": [
+    {
+      "rangeDays": 7,
+      "trendBars": 7,
+      "rangePostings": 111,
+      "rangeAmountRedacted": "[redacted-positive-amount]",
+      "nonZeroTrendDays": 7,
+      "maxCount": 23,
+      "statusRows": [
+        {
+          "label": "awaiting_deliver",
+          "value": 41
+        },
+        {
+          "label": "awaiting_packaging",
+          "value": 36
+        },
+        {
+          "label": "delivering",
+          "value": 32
+        },
+        {
+          "label": "cancelled",
+          "value": 2
+        }
+      ],
+      "channelRowCount": 5,
+      "hourBuckets": [
+        {
+          "label": "0时",
+          "count": 1
+        },
+        {
+          "label": "3时",
+          "count": 1
+        },
+        {
+          "label": "6时",
+          "count": 0
+        },
+        {
+          "label": "9时",
+          "count": 0
+        },
+        {
+          "label": "12时",
+          "count": 0
+        },
+        {
+          "label": "15时",
+          "count": 2
+        },
+        {
+          "label": "18时",
+          "count": 0
+        },
+        {
+          "label": "21时",
+          "count": 0
+        }
+      ],
+      "todayHotProductCount": 2,
+      "latestOrderRows": 5
+    },
+    {
+      "rangeDays": 15,
+      "trendBars": 15,
+      "rangePostings": 242,
+      "rangeAmountRedacted": "[redacted-positive-amount]",
+      "nonZeroTrendDays": 15,
+      "maxCount": 23,
+      "statusRows": [
+        {
+          "label": "delivering",
+          "value": 157
+        },
+        {
+          "label": "awaiting_deliver",
+          "value": 41
+        },
+        {
+          "label": "awaiting_packaging",
+          "value": 36
+        },
+        {
+          "label": "cancelled",
+          "value": 8
+        }
+      ],
+      "channelRowCount": 5,
+      "hourBuckets": [
+        {
+          "label": "0时",
+          "count": 1
+        },
+        {
+          "label": "3时",
+          "count": 1
+        },
+        {
+          "label": "6时",
+          "count": 0
+        },
+        {
+          "label": "9时",
+          "count": 0
+        },
+        {
+          "label": "12时",
+          "count": 0
+        },
+        {
+          "label": "15时",
+          "count": 2
+        },
+        {
+          "label": "18时",
+          "count": 0
+        },
+        {
+          "label": "21时",
+          "count": 0
+        }
+      ],
+      "todayHotProductCount": 2,
+      "latestOrderRows": 5
+    },
+    {
+      "rangeDays": 30,
+      "trendBars": 30,
+      "rangePostings": 455,
+      "rangeAmountRedacted": "[redacted-positive-amount]",
+      "nonZeroTrendDays": 30,
+      "maxCount": 30,
+      "statusRows": [
+        {
+          "label": "delivering",
+          "value": 313
+        },
+        {
+          "label": "delivered",
+          "value": 48
+        },
+        {
+          "label": "awaiting_deliver",
+          "value": 41
+        },
+        {
+          "label": "awaiting_packaging",
+          "value": 36
+        },
+        {
+          "label": "cancelled",
+          "value": 17
+        }
+      ],
+      "channelRowCount": 5,
+      "hourBuckets": [
+        {
+          "label": "0时",
+          "count": 1
+        },
+        {
+          "label": "3时",
+          "count": 1
+        },
+        {
+          "label": "6时",
+          "count": 0
+        },
+        {
+          "label": "9时",
+          "count": 0
+        },
+        {
+          "label": "12时",
+          "count": 0
+        },
+        {
+          "label": "15时",
+          "count": 2
+        },
+        {
+          "label": "18时",
+          "count": 0
+        },
+        {
+          "label": "21时",
+          "count": 0
+        }
+      ],
+      "todayHotProductCount": 2,
+      "latestOrderRows": 5
+    }
+  ],
+  "codeAssertions": {
+    "noPendingGeneratedCopy": true,
+    "hasTrendBarsClass": true,
+    "hasOrderFlowClass": true,
+    "hasRangeAwareChartTitle": true
+  },
+  "browserVerification": {
+    "attempted": true,
+    "result": "ego-browser sandbox-outside approval timed out twice; no new screenshot captured in this run"
+  }
+}

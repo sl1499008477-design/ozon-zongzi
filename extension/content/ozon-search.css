@@ -1,0 +1,329 @@
+.ozon-helper-toggle {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  background: rgba(26, 26, 46, 0.95);
+  color: #e8e8e8;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ozon-helper-toggle.is-active {
+  background: rgba(0, 91, 255, 0.25);
+  box-shadow: 0 8px 24px rgba(0, 91, 255, 0.35);
+}
+
+.ozon-helper-checkbox {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.ozon-helper-checkbox.is-visible {
+  display: flex;
+}
+
+.ozon-helper-checkbox input {
+  display: none;
+}
+
+.ozon-helper-checkbox-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(26, 26, 46, 0.95);
+  position: relative;
+}
+
+.ozon-helper-checkbox input:checked + .ozon-helper-checkbox-mark {
+  background: #005bff;
+  border-color: #005bff;
+}
+
+.ozon-helper-checkbox input:checked + .ozon-helper-checkbox-mark::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.ozon-helper-card-selected {
+  box-shadow: 0 0 0 2px rgba(0, 91, 255, 0.6) inset;
+  border-radius: 12px;
+}
+
+.ozon-helper-card-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(26, 26, 46, 0.9);
+  border-radius: 10px;
+  padding: 6px 8px;
+  color: #e8e8e8;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ozon-helper-card-sales {
+  color: #a0a0b0;
+}
+
+.ozon-helper-card-discount {
+  color: #00d68f;
+  font-weight: 600;
+}
+
+.ozon-helper-card-price {
+  color: #e8e8e8;
+}
+
+.ozon-helper-bottom-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: rgba(26, 26, 46, 0.95);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 12px 20px;
+  z-index: 10001;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #e8e8e8;
+  transform: translateY(100%);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ozon-helper-bottom-bar.is-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.ozon-helper-bottom-info {
+  font-weight: 600;
+}
+
+.ozon-helper-bottom-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.ozon-helper-button {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e8e8e8;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ozon-helper-button.primary {
+  background: #005bff;
+  border-color: #005bff;
+  color: #fff;
+}
+
+.ozon-helper-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* Panel toggle button - positioned below selection mode toggle */
+.ozon-helper-panel-toggle {
+  top: 60px !important;
+}
+
+@media (max-width: 1200px) {
+  .ozon-helper-toggle {
+    right: 10px;
+  }
+}
+
+/* --- Data Panel (reuses ozon-helper-sidebar-card-* classes from product page) --- */
+.ozon-helper-data-panel {
+  width: 100%;
+  background: #fff;
+  border-radius: 0 0 10px 10px;
+  border-top: 1px solid #f0f0f0;
+  overflow: visible;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+/* Ozon 的 .tile-root 父容器在 search/category/首页推荐 carousel 下经常被
+   设成 grid 固定行高（auto-rows: 1fr 之类），把 .tile-root 的高度锁死
+   → 我们追加的数据面板内容超出 tile-root 边界后被 grid 切掉，截图只露出
+   "商品信息"前 6 行，后两个 section 全丢。
+   方案：注入面板的 tile-root 强制高度自适应 + 取消父 grid 的行高限制。
+   `:has()` Chrome 105+ 全支持，安全。*/
+.tile-root:has(> .ozon-helper-data-panel) {
+  height: auto !important;
+  min-height: auto !important;
+  align-self: start !important;
+  grid-row: auto !important;
+}
+
+/* Compact overrides for narrow search page cards — 1 col layout */
+.ozon-helper-data-panel .ozon-helper-sidebar-section-header {
+  padding: 5px 10px 5px 8px;
+  font-size: 11px;
+  border-left: none;
+}
+.ozon-helper-data-panel .oh-section-icon {
+  width: 14px;
+  height: 14px;
+}
+/* 按 section accent 染色图标（仅搜索页 data panel；product 页保持统一蓝） */
+.ozon-helper-data-panel .ozon-helper-sidebar-section.is-accent-blue   .oh-section-icon { color: #1d6bff; }
+.ozon-helper-data-panel .ozon-helper-sidebar-section.is-accent-green  .oh-section-icon { color: #16a34a; }
+.ozon-helper-data-panel .ozon-helper-sidebar-section.is-accent-purple .oh-section-icon { color: #8b5cf6; }
+
+.ozon-helper-data-panel .ozon-helper-sidebar-section-body {
+  grid-template-columns: 1fr;
+  padding: 5px 10px 6px;
+  gap: 3px 0;
+}
+.ozon-helper-data-panel .ozon-helper-sidebar-section-body.is-collapsed {
+  max-height: 0;
+  padding: 0 10px;
+  gap: 0;
+}
+
+.ozon-helper-data-panel .ozon-helper-sidebar-card-row {
+  padding: 0;
+}
+
+.ozon-helper-data-panel .ozon-helper-sidebar-card-label {
+  font-size: 10px;
+}
+
+.ozon-helper-data-panel .ozon-helper-sidebar-card-value {
+  font-size: 11px;
+}
+
+.ozon-helper-panel-loading,
+.ozon-helper-panel-error {
+  text-align: center;
+  color: #999;
+  padding: 8px 0;
+  font-size: 12px;
+}
+
+.ozon-helper-panel-error {
+  color: #ef4444;
+}
+.ozon-helper-card-seller {
+  color: #a0a0b0;
+  font-size: 10px;
+}
+
+.ozon-helper-card-rating {
+  color: #ffd700;
+  font-size: 10px;
+}
+
+/* ─── Hero 2x2 四卡（data panel 内紧凑化） ─── */
+/* 详情页 sidebar 的 hero 是 3 列；data panel 卡片窄，覆盖为 2 列 */
+.ozon-helper-data-panel .oh-hero-section {
+  grid-template-columns: 1fr 1fr;
+  padding: 8px;
+  gap: 6px;
+}
+.ozon-helper-data-panel .oh-hero-stat {
+  padding: 6px 4px;
+  min-height: 54px;
+  border-radius: 8px;
+}
+.ozon-helper-data-panel .oh-hero-label {
+  font-size: 10px;
+}
+.ozon-helper-data-panel .oh-hero-value {
+  font-size: 13px;
+}
+/* 副标（上架时间 N 天 / 尺寸 200×150×80）小字号、灰色 */
+.ozon-helper-data-panel .oh-hero-value small {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: #6b7a93;
+  margin-top: 2px;
+  font-family: inherit;
+}
+/* 高亮卡（右上：上架时间，nth-child(2)）— 自动继承详情页规则 ozon-product.css:2911 */
+
+/* 跟卖 hero 卡 — 可点击 hover */
+.ozon-helper-data-panel .oh-hero-stat.is-clickable {
+  cursor: pointer;
+}
+.ozon-helper-data-panel .oh-hero-stat.is-clickable:hover {
+  background: #fff7eb;
+  border-color: #ea580c;
+}
+
+/* ─── 底部操作按钮行 ─── */
+/* shared-utils.js 渲染为两行结构:
+ *   .card-actions(纵向 flex)
+ *     ├─ .card-btn.is-primary  「一键跟卖」满宽
+ *     └─ .card-actions-row(横向 flex)
+ *         ├─ .card-btn  「编辑上架」
+ *         └─ .card-btn  「采集」
+ * 旧的 grid 1fr 1fr 把 .card-actions-row 压进 50% 容器,内层两按钮挤到溢出。
+ */
+.ozon-helper-data-panel .ozon-helper-sidebar-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #f0f0f0;
+}
+.ozon-helper-data-panel .ozon-helper-sidebar-card-actions-row {
+  display: flex;
+  gap: 6px;
+}
+.ozon-helper-data-panel .ozon-helper-sidebar-card-actions-row .ozon-helper-sidebar-card-btn {
+  flex: 1;
+}
+.ozon-helper-data-panel .ozon-helper-sidebar-card-btn {
+  padding: 0 8px;
+  font-size: 11px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 6px;
+}
+.ozon-helper-data-panel .ozon-helper-sidebar-card-btn .oh-btn-icon {
+  display: inline-flex;
+  align-items: center;
+}
+.ozon-helper-data-panel .ozon-helper-sidebar-card-btn[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

@@ -1,0 +1,77 @@
+{
+  "capturedAt": "2026-07-04T12:34:50Z",
+  "pages": [
+    "/ozon/selection/top-list/",
+    "/ozon/selection/china/"
+  ],
+  "scope": "selection pages use local product cache as a candidate pool while keeping unavailable market metrics explicit",
+  "redaction": {
+    "clientId": "omitted",
+    "apiKey": "omitted",
+    "storeName": "omitted",
+    "productNames": "omitted",
+    "skus": "omitted",
+    "rawProductRows": "omitted"
+  },
+  "localState": {
+    "stores": 1,
+    "hasBinding": true,
+    "products": 580,
+    "stockedProducts": 138,
+    "categories": 55,
+    "jobs": 12,
+    "messageHistory": 0
+  },
+  "visualQa": {
+    "tool": "ego-browser",
+    "desktopViewport": {
+      "width": 1920,
+      "height": 1059
+    },
+    "topList": {
+      "candidateCount": 580,
+      "visibleRange": "1-20",
+      "headers": [
+        "商品",
+        "类目",
+        "价格",
+        "销量",
+        "销售额",
+        "增长",
+        "卖家",
+        "品牌",
+        "发货",
+        "库存",
+        "操作"
+      ],
+      "localCacheLabelVisible": true,
+      "marketSnapshotAlertVisible": true,
+      "oldEmptySnapshotCopyVisible": false,
+      "bulkDraftButtonEnabledAfterSelection": true,
+      "draftCountAfterBulkAdd": 20
+    },
+    "china": {
+      "candidateCount": 138,
+      "visibleRange": "1-20",
+      "headers": [
+        "商品",
+        "类目",
+        "价格",
+        "销量",
+        "销售额",
+        "增长",
+        "卖家",
+        "品牌",
+        "发货",
+        "库存",
+        "操作"
+      ],
+      "localCacheLabelVisible": true,
+      "marketSnapshotAlertVisible": true,
+      "oldEmptySnapshotCopyVisible": false
+    }
+  },
+  "marketMetricsFabricated": false,
+  "noWriteEndpointsCalled": true,
+  "sampleDataInserted": false
+}

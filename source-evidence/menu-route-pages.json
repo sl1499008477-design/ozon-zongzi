@@ -1,0 +1,5567 @@
+{
+  "capturedAt": "2026-07-04T02:06:38.124Z",
+  "results": [
+    {
+      "path": "/ozon/products/stocks/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/products/stocks/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 264,
+        "ph": 2097
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/products/stocks/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n库存管理\n查看各商品库存与仓库分布,批量改库存先暂存、再一键同步到 Ozon\n商品库存\n暂存草稿\n商品总数\n0\n当前店铺缓存商品\n缺货 (全部)\n...\n当前店铺无缺货\n低库存 ≤10 (全部)\n...\n当前店铺无低库存\n暂存待提交\n0\n暂无待提交改动\n库存\n全部\n缺货\n0\n低库存\n0\n\t件\n刷新\n查询\n商品库存· 共 0 条\n\t主图\t商品\t\n总库存\n\t仓库分布\t操作\n\n\t\n \n\t\n商品\n\t\n总库存\n\t\n仓库分布\n\t\n操作",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "",
+            "rect": {
+              "x": 64,
+              "y": 820,
+              "w": 46,
+              "h": 46,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-tabs-nav-more",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "全部",
+            "rect": {
+              "x": 79,
+              "y": 1522,
+              "w": 34,
+              "h": 28,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "缺货\n0",
+            "rect": {
+              "x": 79,
+              "y": 1560,
+              "w": 56,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "低库存\n0",
+            "rect": {
+              "x": 79,
+              "y": 1598,
+              "w": 56,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 93,
+              "y": 1636,
+              "w": 1,
+              "h": 11,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.45)",
+              "radius": "0px 4px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "700"
+            },
+            "className": "ant-input-number-handler ant-input-number-handler-up",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 93,
+              "y": 1647,
+              "w": 1,
+              "h": 11,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.45)",
+              "radius": "0px 0px 4px",
+              "fontSize": "14px",
+              "fontWeight": "700"
+            },
+            "className": "ant-input-number-handler ant-input-number-handler-down",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "刷新",
+            "rect": {
+              "x": 79,
+              "y": 1679,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查询",
+            "rect": {
+              "x": 79,
+              "y": 1721,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 79,
+              "y": 1636,
+              "w": 14,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input-number-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 97,
+              "y": 1949,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 97,
+              "y": 1984,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "",
+            "rect": {
+              "x": 89,
+              "y": 1934,
+              "w": 32,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-selection-column",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "主图",
+            "rect": {
+              "x": 121,
+              "y": 1934,
+              "w": 70,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品",
+            "rect": {
+              "x": 191,
+              "y": 1934,
+              "w": 300,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "总库存",
+            "rect": {
+              "x": 491,
+              "y": 1934,
+              "w": 100,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-column-has-sorters",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "仓库分布",
+            "rect": {
+              "x": 591,
+              "y": 1934,
+              "w": 360,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 89,
+              "y": 1934,
+              "w": 100,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "商品库存· 共 0 条\n\t主图\t商品\t\n总库存\n\t仓库分布\t操作\n\n\t\n \n\t\n商品\n\t\n总库存\n\t\n仓库分布\n\t\n操作",
+            "rect": {
+              "x": 64,
+              "y": 1782,
+              "w": 1,
+              "h": 259,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card ant-pro-card-border",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品库存· 共 0 条\n\t主图\t商品\t\n总库存\n\t仓库分布\t操作\n\n\t\n \n\t\n商品\n\t\n总库存\n\t\n仓库分布\n\t\n操作",
+            "rect": {
+              "x": 65,
+              "y": 1782,
+              "w": 48,
+              "h": 258,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/selection/top-list/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/selection/top-list/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 654,
+        "ph": 2973
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/selection/top-list/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n榜单选品\n/ Ozon 全平台 top 1000 实时榜单\n数据更新 —\n热销商品\n热销新品\n潜力商品\n蓝海商品\n7天\n28天\n金额单位\n₽\n¥\n分区\n全部分区\n销量与销售额双高的爆款，适合切入趋势品类。 点击「一键跟卖」跳转 Ozon 商品页,自动唤起模拟手动跟卖。\n×\n选品策略\n保留当前类目，快速切筛选\n高增长\n低价高销\n高加购\n蓝海量级\n未启用额外筛选\n一级类目\n全部\n筛选\n商品名称\nSKU\n批量 SKUS\n月销量\n~\n月销售额 ₽\n~\n平均价 ₽\n~\n月销售额环比 %\n~\n发货模式\n任意\nFBO\nFBS\nRFBS\nCB · 跨境\n查询\n重置\n更多筛选 ↓\n共 0 件商品 · 当前展示 0-0\n已选 0\n批量加入草稿箱\n清空选择\n共 0 条 · 第 1 / 1 页\n‹\n1\n›\n每页 \n10\n20\n50\n100\n 条",
+        "headings": [
+          {
+            "text": "榜单选品",
+            "rect": {
+              "x": 88,
+              "y": 141,
+              "w": 18,
+              "h": 113,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px",
+              "fontSize": "18px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "热销商品",
+            "rect": {
+              "x": 93,
+              "y": 287,
+              "w": 49,
+              "h": 84,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "热销新品",
+            "rect": {
+              "x": 142,
+              "y": 287,
+              "w": 49,
+              "h": 84,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "6px",
+              "fontSize": "13px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "潜力商品",
+            "rect": {
+              "x": 191,
+              "y": 287,
+              "w": 49,
+              "h": 84,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "6px",
+              "fontSize": "13px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "蓝海商品",
+            "rect": {
+              "x": 240,
+              "y": 287,
+              "w": 49,
+              "h": 84,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "6px",
+              "fontSize": "13px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "7天",
+            "rect": {
+              "x": 309,
+              "y": 309,
+              "w": 36,
+              "h": 39,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "28天",
+            "rect": {
+              "x": 345,
+              "y": 309,
+              "w": 40,
+              "h": 39,
+              "background": "rgb(239, 246, 255)",
+              "color": "rgb(30, 64, 175)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "₽",
+            "rect": {
+              "x": 465,
+              "y": 318,
+              "w": 30,
+              "h": 22,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "¥",
+            "rect": {
+              "x": 497,
+              "y": 318,
+              "w": 30,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "×",
+            "rect": {
+              "x": 164,
+              "y": 396,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(148, 163, 184)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "高增长",
+            "rect": {
+              "x": 102,
+              "y": 943,
+              "w": [redacted],
+              "h": 64,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "低价高销",
+            "rect": {
+              "x": 102,
+              "y": 1015,
+              "w": [redacted],
+              "h": 81,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "高加购",
+            "rect": {
+              "x": 102,
+              "y": 1103,
+              "w": [redacted],
+              "h": 64,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "蓝海量级",
+            "rect": {
+              "x": 102,
+              "y": 1175,
+              "w": [redacted],
+              "h": 81,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "全部",
+            "rect": {
+              "x": 182,
+              "y": 1421,
+              "w": 48,
+              "h": 25,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查询",
+            "rect": {
+              "x": 104,
+              "y": 2137,
+              "w": 72,
+              "h": 42,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重置",
+            "rect": {
+              "x": 104,
+              "y": 2187,
+              "w": 72,
+              "h": 42,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "更多筛选 ↓",
+            "rect": {
+              "x": 104,
+              "y": 2237,
+              "w": 78,
+              "h": 42,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(37, 99, 235)",
+              "radius": "0px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "批量加入草稿箱",
+            "rect": {
+              "x": 161,
+              "y": 2346,
+              "w": 41,
+              "h": 131,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "清空选择",
+            "rect": {
+              "x": 211,
+              "y": 2372,
+              "w": 28,
+              "h": 79,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(37, 99, 235)",
+              "radius": "0px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "‹",
+            "rect": {
+              "x": 116,
+              "y": 2765,
+              "w": 24,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(203, 213, 225)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "1",
+            "rect": {
+              "x": 144,
+              "y": 2765,
+              "w": 24,
+              "h": 28,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "›",
+            "rect": {
+              "x": 172,
+              "y": 2765,
+              "w": 24,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(203, 213, 225)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "全部分区",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 564,
+              "y": [redacted],
+              "w": 90,
+              "h": 25,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "6px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "商品名称",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 1560,
+              "w": 49,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "sku",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 1637,
+              "w": 26,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "逗号/空格/换行分隔",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 1713,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 1789,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 143,
+              "y": 1789,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 1865,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 155,
+              "y": 1865,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 1941,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 149,
+              "y": 1941,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2017,
+              "w": 32,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 169,
+              "y": 2017,
+              "w": 32,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "任意\nFBO\nFBS\nRFBS\nCB · 跨境",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2093,
+              "w": 49,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "10\n20\n50\n100",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 212,
+              "y": 2769,
+              "w": 56,
+              "h": 20,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "4px",
+              "fontSize": "11px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          }
+        ],
+        "headers": [],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/selection/china/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/selection/china/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 503,
+        "ph": 3433
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/selection/china/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n中国专区\n/ Ozon 中国卖家热销榜单，跨境跟款对标\n数据更新 —\n7天\n28天\n金额单位\n₽\n¥\n分区\n全部分区\n含零销量商品\nⓘ\n中国卖家热销商品，跨境玩法对标。 点击「一键跟卖」跳转 Ozon 商品页,自动唤起模拟手动跟卖。\n×\n中国馆对标\n中国专区来自中国馆/跨境来源标记，默认隐藏当期零销量商品；勾选“含零销量商品”可查看补录 SKU。\n选品策略\n保留当前类目，快速切筛选\n高增长\n低价高销\n高加购\n中国对标\n未启用额外筛选\n一级类目\n全部\n筛选\n商品名称\nSKU\n批量 SKUS\n月销量\n~\n月销售额 ₽\n~\n平均价 ₽\n~\n月销售额环比 %\n~\n发货模式\n任意\nFBO\nFBS\nRFBS\nCB · 跨境\n查询\n重置\n更多筛选 ↓\n共 0 件商品 · 当前展示 0-0\n已选 0\n批量加入草稿箱\n清空选择\n共 0 条 · 第 1 / 1 页\n‹\n1\n›\n每页 \n10\n20\n50\n100\n 条",
+        "headings": [
+          {
+            "text": "中国专区",
+            "rect": {
+              "x": 88,
+              "y": 158,
+              "w": 18,
+              "h": 113,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px",
+              "fontSize": "18px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "7天",
+            "rect": {
+              "x": 91,
+              "y": 354,
+              "w": 36,
+              "h": 39,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "28天",
+            "rect": {
+              "x": 127,
+              "y": 354,
+              "w": 40,
+              "h": 39,
+              "background": "rgb(239, 246, 255)",
+              "color": "rgb(30, 64, 175)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "₽",
+            "rect": {
+              "x": 247,
+              "y": 362,
+              "w": 30,
+              "h": 22,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "¥",
+            "rect": {
+              "x": 279,
+              "y": 362,
+              "w": 30,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "×",
+            "rect": {
+              "x": 164,
+              "y": 450,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(148, 163, 184)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "高增长",
+            "rect": {
+              "x": 102,
+              "y": 1403,
+              "w": [redacted],
+              "h": 64,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "低价高销",
+            "rect": {
+              "x": 102,
+              "y": 1475,
+              "w": [redacted],
+              "h": 81,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "高加购",
+            "rect": {
+              "x": 102,
+              "y": 1564,
+              "w": [redacted],
+              "h": 64,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "中国对标",
+            "rect": {
+              "x": 102,
+              "y": 1636,
+              "w": [redacted],
+              "h": 81,
+              "background": "rgb(251, 252, 254)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "全部",
+            "rect": {
+              "x": 182,
+              "y": 1881,
+              "w": 48,
+              "h": 25,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "700"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查询",
+            "rect": {
+              "x": 104,
+              "y": 2597,
+              "w": 72,
+              "h": 42,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重置",
+            "rect": {
+              "x": 104,
+              "y": 2647,
+              "w": 72,
+              "h": 42,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "更多筛选 ↓",
+            "rect": {
+              "x": 104,
+              "y": 2697,
+              "w": 78,
+              "h": 42,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(37, 99, 235)",
+              "radius": "0px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "批量加入草稿箱",
+            "rect": {
+              "x": 161,
+              "y": 2807,
+              "w": 41,
+              "h": 131,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(71, 85, 105)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "清空选择",
+            "rect": {
+              "x": 211,
+              "y": 2832,
+              "w": 28,
+              "h": 79,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(37, 99, 235)",
+              "radius": "0px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "‹",
+            "rect": {
+              "x": 116,
+              "y": 3226,
+              "w": 24,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(203, 213, 225)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "1",
+            "rect": {
+              "x": 144,
+              "y": 3226,
+              "w": 24,
+              "h": 28,
+              "background": "rgb(37, 99, 235)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "›",
+            "rect": {
+              "x": 172,
+              "y": 3226,
+              "w": 24,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(203, 213, 225)",
+              "radius": "4px",
+              "fontSize": "12px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "全部分区",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 346,
+              "y": 361,
+              "w": 90,
+              "h": 25,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "6px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 451,
+              "y": 367,
+              "w": 13,
+              "h": 13,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "13.3333px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "商品名称",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2021,
+              "w": 49,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "sku",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2097,
+              "w": 26,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "逗号/空格/换行分隔",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2173,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2249,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 143,
+              "y": 2249,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2325,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 155,
+              "y": 2325,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2401,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 149,
+              "y": 2401,
+              "w": 21,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最小",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2477,
+              "w": 32,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px 0px 0px 5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "最大",
+            "aria": "",
+            "rect": {
+              "x": 169,
+              "y": 2477,
+              "w": 32,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "0px 5px 5px 0px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "任意\nFBO\nFBS\nRFBS\nCB · 跨境",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 112,
+              "y": 2554,
+              "w": 49,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(15, 23, 42)",
+              "radius": "5px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "10\n20\n50\n100",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 212,
+              "y": 3230,
+              "w": 56,
+              "h": 20,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "4px",
+              "fontSize": "11px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          }
+        ],
+        "headers": [],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/tools/ai-poster-records/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/tools/ai-poster-records/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 284,
+        "ph": 2400
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/tools/ai-poster-records/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\nAI 改图神器\nGemini\nGemini 大模型改图历史 · 原图 vs 改图 实时对比\n全部状态\nGemini 快速改图\n上传图片或粘贴图片链接,无需绑定商品\n收起\n上传图片\n\n点击、拖拽,或 Ctrl/⌘+V 粘贴图片\n\n支持多张,单次最多 10 张\n\n或粘贴图片链接\n已识别 0 条\n待处理图片0 / 10\n上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里\n商品名(可选)\n类目(可选)\n将提交 0 张,消耗 0 极点余额:未知\n开始生成",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "",
+            "rect": {
+              "x": 64,
+              "y": 496,
+              "w": 32,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-icon-only",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "收起",
+            "rect": {
+              "x": 77,
+              "y": 554,
+              "w": 66,
+              "h": 24,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "4px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-sm",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "点击、拖拽,或 Ctrl/⌘+V 粘贴图片\n\n支持多张,单次最多 10 张",
+            "rect": {
+              "x": 81,
+              "y": 692,
+              "w": 62,
+              "h": 345,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-upload ant-upload-btn",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "开始生成",
+            "rect": {
+              "x": 81,
+              "y": 2278,
+              "w": 110,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "搜索货号",
+            "aria": "",
+            "rect": {
+              "x": 94,
+              "y": 382,
+              "w": 163,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input"
+          },
+          {
+            "text": "全部状态",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 64,
+              "y": 417,
+              "w": 140,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 76,
+              "y": 418,
+              "w": 99,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "",
+            "placeholder": "开始日期",
+            "aria": "",
+            "rect": {
+              "x": 76,
+              "y": 462,
+              "w": 73,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "结束日期",
+            "aria": "",
+            "rect": {
+              "x": 181,
+              "y": 462,
+              "w": 73,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg",
+            "aria": "",
+            "rect": {
+              "x": 95,
+              "y": 738,
+              "w": 23,
+              "h": 85,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px",
+              "fontSize": "12px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input ant-input-outlined"
+          }
+        ],
+        "headers": [],
+        "cards": [
+          {
+            "text": "Gemini 快速改图\n上传图片或粘贴图片链接,无需绑定商品\n收起\n上传图片\n\n点击、拖拽,或 Ctrl/⌘+V 粘贴图片\n\n支持多张,单次最多 10 张\n\n或粘贴图片链接\n已识别 0 条\n待处理图片0 / 10\n上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里\n商品名(可选)\n类目(可选)\n将提交 0 张,消耗 0 极点余额:未知\n开始生成",
+            "rect": {
+              "x": 64,
+              "y": 546,
+              "w": 1,
+              "h": 1781,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "12px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card ant-card-bordered ant-card-small",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "Gemini 快速改图\n上传图片或粘贴图片链接,无需绑定商品\n收起",
+            "rect": {
+              "x": 65,
+              "y": 547,
+              "w": 24,
+              "h": 38,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-card-head",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "收起",
+            "rect": {
+              "x": 77,
+              "y": 554,
+              "w": 66,
+              "h": 24,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card-extra",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "上传图片\n\n点击、拖拽,或 Ctrl/⌘+V 粘贴图片\n\n支持多张,单次最多 10 张\n\n或粘贴图片链接\n已识别 0 条\n待处理图片0 / 10\n上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里\n商品名(可选)\n类目(可选)\n将提交 0 张,消耗 0 极点余额:未知\n开始生成",
+            "rect": {
+              "x": 65,
+              "y": 584,
+              "w": 32,
+              "h": 1742,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 0px 8px 8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/ai-image/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/ai-image/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 128,
+        "ph": 995
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/ai-image/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\nAI 商品套图\n\n该功能正在灰度内测中，尚未对当前账号开放。",
+        "headings": [],
+        "buttons": [],
+        "inputs": [],
+        "headers": [],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/promotions/prices/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/promotions/prices/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 235,
+        "ph": 1825
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/promotions/prices/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n价格与折扣\n从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。\n价格\n折扣\n选择商品\n改价草稿\n搜索\n重 置\n查 询\n刷新\n\t主图\t商品\t当前价格\t操作\n\n\t\n \n\t\n商品\n\t\n当前价格\n\t\n操作",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "",
+            "rect": {
+              "x": 77,
+              "y": 1172,
+              "w": 46,
+              "h": 46,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-tabs-nav-more",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 77,
+              "y": 1234,
+              "w": 46,
+              "h": 46,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-tabs-nav-more",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重 置",
+            "rect": {
+              "x": 101,
+              "y": 1458,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查 询",
+            "rect": {
+              "x": 172,
+              "y": 1458,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "刷新",
+            "rect": {
+              "x": 107,
+              "y": 1562,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 109,
+              "y": 1665,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 109,
+              "y": 1700,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "",
+            "rect": {
+              "x": 101,
+              "y": 1650,
+              "w": 32,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-selection-column",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "主图",
+            "rect": {
+              "x": 133,
+              "y": 1650,
+              "w": 64,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品",
+            "rect": {
+              "x": 197,
+              "y": 1650,
+              "w": 300,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "当前价格",
+            "rect": {
+              "x": 497,
+              "y": 1650,
+              "w": 180,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 101,
+              "y": 1650,
+              "w": 100,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "价格与折扣\n从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。\n价格\n折扣\n选择商品\n改价草稿\n搜索\n重 置\n查 询\n刷新\n\t主图\t商品\t当前价格\t操作\n\n\t\n \n\t\n商品\n\t\n当前价格\n\t\n操作",
+            "rect": {
+              "x": 64,
+              "y": 112,
+              "w": 1,
+              "h": 1657,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card ant-card-bordered ant-card-small",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "价格与折扣\n从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。\n价格\n折扣\n选择商品\n改价草稿\n搜索\n重 置\n查 询\n刷新\n\t主图\t商品\t当前价格\t操作\n\n\t\n \n\t\n商品\n\t\n当前价格\n\t\n操作",
+            "rect": {
+              "x": 65,
+              "y": 113,
+              "w": 24,
+              "h": 1656,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 0px 8px 8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card-body",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "刷新\n\t主图\t商品\t当前价格\t操作\n\n\t\n \n\t\n商品\n\t\n当前价格\n\t\n操作",
+            "rect": {
+              "x": 77,
+              "y": 1530,
+              "w": 48,
+              "h": 226,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/promotions/campaigns/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/promotions/campaigns/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 264,
+        "ph": 1955
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/promotions/campaigns/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n促销活动\n实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期\n全部活动\n0\n平台当前可见活动\n参与中\n0\n暂未参与\n可参与\n0\n尚未加入\n即将结束（7天内）\n0\n暂无临期活动\n筛选\n全部\n0\n参与中\n0\n可参与\n0\n即将结束\n0\n刷新\n活动列表· 共 0 条\n活动\t状态\t折扣\t商品\t活动周期\t操作\n\n活动\n\t\n状态\n\t\n折扣\n\t\n商品\n\t\n活动周期\n\t\n操作\n\n加载中…",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "全部\n0",
+            "rect": {
+              "x": 79,
+              "y": 1396,
+              "w": 56,
+              "h": 28,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "参与中\n0",
+            "rect": {
+              "x": 79,
+              "y": 1434,
+              "w": 56,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "可参与\n0",
+            "rect": {
+              "x": 79,
+              "y": 1472,
+              "w": 56,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "即将结束\n0",
+            "rect": {
+              "x": 79,
+              "y": 1510,
+              "w": 56,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "刷新",
+            "rect": {
+              "x": 79,
+              "y": 1558,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-loading",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [],
+        "headers": [
+          {
+            "text": "活动",
+            "rect": {
+              "x": 89,
+              "y": 1771,
+              "w": 220,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-ellipsis",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "状态",
+            "rect": {
+              "x": 309,
+              "y": 1771,
+              "w": 110,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "折扣",
+            "rect": {
+              "x": 419,
+              "y": 1771,
+              "w": 110,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品",
+            "rect": {
+              "x": 529,
+              "y": 1771,
+              "w": 130,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "活动周期",
+            "rect": {
+              "x": 659,
+              "y": 1771,
+              "w": 220,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 879,
+              "y": 1771,
+              "w": 110,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "活动列表· 共 0 条\n活动\t状态\t折扣\t商品\t活动周期\t操作\n\n活动\n\t\n状态\n\t\n折扣\n\t\n商品\n\t\n活动周期\n\t\n操作\n\n加载中…",
+            "rect": {
+              "x": 64,
+              "y": 1618,
+              "w": 1,
+              "h": 281,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card ant-pro-card-border",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "活动列表· 共 0 条\n活动\t状态\t折扣\t商品\t活动周期\t操作\n\n活动\n\t\n状态\n\t\n折扣\n\t\n商品\n\t\n活动周期\n\t\n操作\n\n加载中…",
+            "rect": {
+              "x": 65,
+              "y": 1619,
+              "w": 48,
+              "h": 280,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/promotions/auto-delete/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/promotions/auto-delete/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 316,
+        "ph": 3827
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/promotions/auto-delete/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n促销活动自动清理 · 利润保护\n按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。\n自动清理配置\n加载店铺中…\n活动名称\n重 置\n查 询\n展开\n当前店铺促销活动\n从 Ozon 同步\n刷新\n\t活动名称\t类型\t折扣力度\t商品数量\t有效期\t状态\t操作\n\n\t\n活动名称\n\t\n类型\n\t\n折扣力度\n\t\n商品数量\n\t\n有效期\n\t\n状态\n\t\n操作",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "重 置",
+            "rect": {
+              "x": 89,
+              "y": 3338,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查 询",
+            "rect": {
+              "x": 160,
+              "y": 3338,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "从 Ozon 同步",
+            "rect": {
+              "x": 89,
+              "y": 3577,
+              "w": 138,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "刷新",
+            "rect": {
+              "x": 234,
+              "y": 3577,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 97,
+              "y": 3680,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 97,
+              "y": 3715,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "",
+            "rect": {
+              "x": 89,
+              "y": 3665,
+              "w": 32,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-selection-column",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "活动名称",
+            "rect": {
+              "x": 121,
+              "y": 3665,
+              "w": 222,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-ellipsis",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "类型",
+            "rect": {
+              "x": 343,
+              "y": 3665,
+              "w": 121,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "折扣力度",
+            "rect": {
+              "x": 464,
+              "y": 3665,
+              "w": 111,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品数量",
+            "rect": {
+              "x": 574,
+              "y": 3665,
+              "w": 101,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "有效期",
+            "rect": {
+              "x": 675,
+              "y": 3665,
+              "w": 212,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "状态",
+            "rect": {
+              "x": 887,
+              "y": 3665,
+              "w": 111,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 89,
+              "y": 3665,
+              "w": 91,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "自动清理配置",
+            "rect": {
+              "x": 64,
+              "y": 2866,
+              "w": 48,
+              "h": 56,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 8px 0px 0px",
+              "fontSize": "16px",
+              "fontWeight": "600"
+            },
+            "className": "ant-card-head",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "加载店铺中…",
+            "rect": {
+              "x": 64,
+              "y": 2921,
+              "w": 48,
+              "h": 180,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 0px 8px 8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card-body",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "活动名称\n重 置\n查 询\n展开",
+            "rect": {
+              "x": 64,
+              "y": 3125,
+              "w": 1,
+              "h": 275,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card ant-pro-card-border ant-pro-card-bordered ant-pro-table-search ant-pro-table-search-query-filter",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "当前店铺促销活动\n从 Ozon 同步\n刷新\n\t活动名称\t类型\t折扣力度\t商品数量\t有效期\t状态\t操作\n\n\t\n活动名称\n\t\n类型\n\t\n折扣力度\n\t\n商品数量\n\t\n有效期\n\t\n状态\n\t\n操作",
+            "rect": {
+              "x": 64,
+              "y": 3416,
+              "w": 1,
+              "h": 355,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card ant-pro-card-border",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "当前店铺促销活动\n从 Ozon 同步\n刷新\n\t活动名称\t类型\t折扣力度\t商品数量\t有效期\t状态\t操作\n\n\t\n活动名称\n\t\n类型\n\t\n折扣力度\n\t\n商品数量\n\t\n有效期\n\t\n状态\n\t\n操作",
+            "rect": {
+              "x": 65,
+              "y": 3417,
+              "w": 48,
+              "h": 354,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/postings/list/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/list/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 564,
+        "ph": 2466
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/list/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n订单\n\n2026-07-04 周六 · 当前店铺 · 已关闭自动同步\n\n刷新\n拉取最新订单\n刷新进行中订单\n同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 30 天至现在\n本周 GMV\n¥—\n本周利润\n¥—\n本周利润率\n—%\n待处理\n0\n↑ 全部已处理\n所有订单\n等待备货\n等待发运\n已超时\n运输中\n有争议的\n已签收\n已取消\n当前店铺\n货件编号\n筛 选\n重 置\n订单导出\n自动同步\n\t倒计时\t货件 / 状态\t店铺\t商品\t仓库 / 配送\t订单金额\t利润\t操作\n\n\t\n倒计时\n\t\n货件 / 状态\n\t\n店铺\n\t\n商品\n\t\n仓库 / 配送\n\t\n订单金额\n\t\n利润\n\t\n操作\n\n\n暂无数据\n近 7 天订单\n—\n客单价\n¥—\n当前筛选\n0\n条订单\n待处理\n0\n已关闭自动同步",
+        "headings": [
+          {
+            "text": "订单",
+            "rect": {
+              "x": 96,
+              "y": 136,
+              "w": 38,
+              "h": 69,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "22px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "刷新",
+            "rect": {
+              "x": 134,
+              "y": 361,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "拉取最新订单",
+            "rect": {
+              "x": 224,
+              "y": 361,
+              "w": 139,
+              "h": 32,
+              "background": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "刷新进行中订单",
+            "rect": {
+              "x": 371,
+              "y": 361,
+              "w": 153,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 532,
+              "y": 361,
+              "w": 32,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-icon-only",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "筛 选",
+            "rect": {
+              "x": 96,
+              "y": 1700,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重 置",
+            "rect": {
+              "x": 96,
+              "y": 1740,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "订单导出",
+            "rect": {
+              "x": 96,
+              "y": 1780,
+              "w": 130,
+              "h": 32,
+              "background": "rgb(255, 251, 235)",
+              "color": "rgb(180, 83, 9)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-dropdown-trigger",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 126,
+              "y": 1858,
+              "w": 28,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0.25)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "100px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-switch ant-switch-small",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "当前店铺",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 96,
+              "y": 1542,
+              "w": 98,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 108,
+              "y": 1543,
+              "w": 57,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "货件编号",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 96,
+              "y": 1582,
+              "w": 98,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 108,
+              "y": 1583,
+              "w": 57,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "",
+            "placeholder": "下单时间",
+            "aria": "",
+            "rect": {
+              "x": 108,
+              "y": 1665,
+              "w": 1,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "结束时间",
+            "aria": "",
+            "rect": {
+              "x": 141,
+              "y": 1665,
+              "w": 1,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": ""
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 113,
+              "y": 1933,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 105,
+              "y": 1966,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "",
+            "rect": {
+              "x": 97,
+              "y": 1920,
+              "w": 32,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "8px 0px 0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell ant-table-selection-column ant-table-cell-fix-left",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "倒计时",
+            "rect": {
+              "x": 129,
+              "y": 1920,
+              "w": 72,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-left",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "货件 / 状态",
+            "rect": {
+              "x": 201,
+              "y": 1920,
+              "w": 220,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-left ant-table-cell-fix-left-last",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "店铺",
+            "rect": {
+              "x": 421,
+              "y": 1920,
+              "w": 100,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品",
+            "rect": {
+              "x": 521,
+              "y": 1920,
+              "w": 418,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "仓库 / 配送",
+            "rect": {
+              "x": 939,
+              "y": 1920,
+              "w": 160,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "订单金额",
+            "rect": {
+              "x": 1099,
+              "y": 1920,
+              "w": 130,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "利润",
+            "rect": {
+              "x": 1229,
+              "y": 1920,
+              "w": 130,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 97,
+              "y": 1920,
+              "w": 110,
+              "h": 43,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/postings/returns/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/returns/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 267,
+        "ph": 1659
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/returns/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n退货 / 退款\n\n2026-07-04 周六 · — · 透传 Ozon API,刷新即同步\n\n刷新\n本页申请数\n0\n已到末页\n待审批\n0\n无待处理\n等待退货\n0\n无\n等待退款\n0\n无\n退货申请 (rFBS)\nFBS\nFBO\n搜 索\n重 置\n透传模式,按当前店铺过滤\n申请 / 货件\t店铺\t商品\t申请时间\t操作\n\n申请 / 货件\n\t\n店铺\n\t\n商品\n\t\n申请时间\n\t\n操作\n\n\n暂无数据\n第 1 页\n·\n本页 0 条\n20/页\n上一页\n下一页",
+        "headings": [
+          {
+            "text": "退货 / 退款",
+            "rect": {
+              "x": 96,
+              "y": 136,
+              "w": 38,
+              "h": 138,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "22px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "刷新",
+            "rect": {
+              "x": 134,
+              "y": 430,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 224,
+              "y": 430,
+              "w": 32,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-icon-only",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "搜 索",
+            "rect": {
+              "x": 96,
+              "y": 857,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重 置",
+            "rect": {
+              "x": 96,
+              "y": 897,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "上一页",
+            "rect": {
+              "x": 270,
+              "y": 1447,
+              "w": 74,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "下一页",
+            "rect": {
+              "x": 352,
+              "y": 1447,
+              "w": 74,
+              "h": 32,
+              "background": "rgb(26, 31, 54)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "20/页",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 162,
+              "y": 1447,
+              "w": 100,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 173,
+              "y": 1448,
+              "w": 59,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "申请 / 货件",
+            "rect": {
+              "x": 97,
+              "y": 1179,
+              "w": 220,
+              "h": 39,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "8px 0px 0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-left ant-table-cell-fix-left-last",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "店铺",
+            "rect": {
+              "x": [redacted],
+              "y": 1179,
+              "w": 110,
+              "h": 39,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "商品",
+            "rect": {
+              "x": 427,
+              "y": 1179,
+              "w": 600,
+              "h": 39,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "申请时间",
+            "rect": {
+              "x": 1027,
+              "y": 1179,
+              "w": 160,
+              "h": 39,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 97,
+              "y": 1179,
+              "w": 110,
+              "h": 39,
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "11.5px",
+              "fontWeight": "500"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/postings/profit-trend/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/profit-trend/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 174,
+        "ph": 3877
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/profit-trend/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n利润趋势\n2026-06-05 至 2026-07-04\n当前店铺\n按出单日期聚合，金额为人民币口径\n7 天\n30 天\n90 天\n180 天\n全部店铺\n订单金额\n¥\n0\n持平\nvs 上期\n客单价 —\n利润\n¥\n0\n持平\nvs 上期\n利润率 —\n毛利率\n—\n佣金 — · 采购 —\n订单数\n0\n单\n持平\nvs 上期\n0 个出单日 · 30 个空白日\n日维度趋势\n利润视图\n成本拆解\n订单量\n经营判断\n本期\n利润最好\n暂无\n本期还没有可分析订单\n利润压力\n暂无可判断\n同步订单后展示利润压力\n采购成本为 0 的出单日\n暂无可判断\n有出单数据后展示采购成本录入信号\n费用结构\n暂无可判断\n本期暂无订单金额\n日明细\n共\n30\n天\n日期\t订单数\t订单金额\tOZON 佣金\t采购成本\t利润\t毛利率\t客单价",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "7 天",
+            "rect": {
+              "x": 68,
+              "y": 572,
+              "w": 54,
+              "h": 28,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "30 天",
+            "rect": {
+              "x": 123,
+              "y": 572,
+              "w": 54,
+              "h": 28,
+              "background": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "pt-active",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "90 天",
+            "rect": {
+              "x": 178,
+              "y": 572,
+              "w": 54,
+              "h": 28,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "180 天",
+            "rect": {
+              "x": 233,
+              "y": 572,
+              "w": 54,
+              "h": 28,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 135,
+              "y": 639,
+              "w": 28,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0.25)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "100px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-switch ant-switch-small",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 64,
+              "y": 671,
+              "w": 14,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "6px",
+              "fontSize": "13px",
+              "fontWeight": "500"
+            },
+            "className": "sd-btn pt-icon-btn",
+            "disabled": true,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "利润视图",
+            "rect": {
+              "x": 113,
+              "y": 1020,
+              "w": 54,
+              "h": 28,
+              "background": "rgb(26, 31, 54)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "pt-active",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "成本拆解",
+            "rect": {
+              "x": 168,
+              "y": 1020,
+              "w": 54,
+              "h": 28,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "订单量",
+            "rect": {
+              "x": 223,
+              "y": 1020,
+              "w": 54,
+              "h": 28,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "5px",
+              "fontSize": "12.5px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [],
+        "headers": [
+          {
+            "text": "日期",
+            "rect": {
+              "x": 65,
+              "y": 3450,
+              "w": 91,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "订单数",
+            "rect": {
+              "x": 155,
+              "y": 3450,
+              "w": 110,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "订单金额",
+            "rect": {
+              "x": 265,
+              "y": 3450,
+              "w": 129,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "OZON 佣金",
+            "rect": {
+              "x": 394,
+              "y": 3450,
+              "w": 152,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "采购成本",
+            "rect": {
+              "x": 546,
+              "y": 3450,
+              "w": 129,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "利润",
+            "rect": {
+              "x": 675,
+              "y": 3450,
+              "w": 91,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "毛利率",
+            "rect": {
+              "x": 765,
+              "y": 3450,
+              "w": 110,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "客单价",
+            "rect": {
+              "x": 875,
+              "y": 3450,
+              "w": 110,
+              "h": 37,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(105, 115, 134)",
+              "radius": "0px",
+              "fontSize": "11px",
+              "fontWeight": "500"
+            },
+            "className": "sd-right",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "日维度趋势\n利润视图\n成本拆解\n订单量",
+            "rect": {
+              "x": 64,
+              "y": 963,
+              "w": 1,
+              "h": 506,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "sd-card",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "日维度趋势\n利润视图\n成本拆解\n订单量",
+            "rect": {
+              "x": 65,
+              "y": 964,
+              "w": 36,
+              "h": 141,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "sd-card-head",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 65,
+              "y": 1105,
+              "w": 36,
+              "h": 364,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "pt-card-body",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "经营判断\n本期\n利润最好\n暂无\n本期还没有可分析订单\n利润压力\n暂无可判断\n同步订单后展示利润压力\n采购成本为 0 的出单日\n暂无可判断\n有出单数据后展示采购成本录入信号\n费用结构\n暂无可判断\n本期暂无订单金额",
+            "rect": {
+              "x": 64,
+              "y": 1486,
+              "w": 1,
+              "h": 1846,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "sd-card",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "经营判断\n本期",
+            "rect": {
+              "x": 65,
+              "y": 1486,
+              "w": 36,
+              "h": [redacted],
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "sd-card-head",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "日明细\n共\n30\n天\n日期\t订单数\t订单金额\tOZON 佣金\t采购成本\t利润\t毛利率\t客单价",
+            "rect": {
+              "x": 64,
+              "y": 3353,
+              "w": 1,
+              "h": 468,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "sd-card",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "日明细\n共\n30\n天",
+            "rect": {
+              "x": 65,
+              "y": 3354,
+              "w": 36,
+              "h": 96,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "sd-card-head",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/postings/review-request/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/review-request/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 385,
+        "ph": 1927
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/review-request/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n索要好评\n\n2026-07-04 周六 · 当前店铺\n\n文案模板\n任务监控 (0)\n当前筛选\n0\n条候选记录\n待发送\n0\n本页待处理\n已发送\n0\n本页已完成\n失败 / 不可发\n0\n需查看原因\n当前店铺\n筛选\n重置\n同步当前店铺\n同步全部店铺\n批量发送\n建议仅对履约体验稳定、商品质量有把握的订单发送评价邀请，以提升好评转化并降低负面反馈风险。\n\t操作\t店铺\t货件编号\t发运\t图片\t货号，数量 名称\t查看商品\t价格\t仓库\t配送服务 方式\t送达\n\n\t\n操作\n\t\n店铺\n\t\n货件编号\n\t\n发运\n\t\n图片\n\t\n货号，数量 名称\n\t\n查看商品\n\t\n价格\n\t\n仓库\n\t\n配送服务 方式\n\t\n送达\n\n\n暂无数据，请先同步已签收订单",
+        "headings": [
+          {
+            "text": "索要好评",
+            "rect": {
+              "x": 96,
+              "y": 136,
+              "w": 38,
+              "h": 138,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "22px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "文案模板",
+            "rect": {
+              "x": 134,
+              "y": 348,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "任务监控 (0)",
+            "rect": {
+              "x": 252,
+              "y": 348,
+              "w": 133,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "筛选",
+            "rect": {
+              "x": 111,
+              "y": 823,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重置",
+            "rect": {
+              "x": 111,
+              "y": 863,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "同步当前店铺",
+            "rect": {
+              "x": 111,
+              "y": 911,
+              "w": 139,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "同步全部店铺",
+            "rect": {
+              "x": 111,
+              "y": 951,
+              "w": 139,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "批量发送",
+            "rect": {
+              "x": 111,
+              "y": 991,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "当前店铺",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 111,
+              "y": 626,
+              "w": 98,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 122,
+              "y": 627,
+              "w": 57,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "",
+            "placeholder": "货件编号",
+            "aria": "",
+            "rect": {
+              "x": 111,
+              "y": 666,
+              "w": 23,
+              "h": 31,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input ant-input-outlined"
+          },
+          {
+            "text": "",
+            "placeholder": "货号",
+            "aria": "",
+            "rect": {
+              "x": 111,
+              "y": 705,
+              "w": 23,
+              "h": 31,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input ant-input-outlined"
+          },
+          {
+            "text": "",
+            "placeholder": "商品名称",
+            "aria": "",
+            "rect": {
+              "x": 111,
+              "y": 744,
+              "w": 23,
+              "h": 31,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input ant-input-outlined"
+          },
+          {
+            "text": "",
+            "placeholder": "SKU",
+            "aria": "",
+            "rect": {
+              "x": 111,
+              "y": 784,
+              "w": 23,
+              "h": 31,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input ant-input-outlined"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 113,
+              "y": 1584,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 105,
+              "y": 1619,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "",
+            "rect": {
+              "x": 97,
+              "y": 1569,
+              "w": 32,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "8px 0px 0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-selection-column ant-table-cell-fix-left",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 129,
+              "y": 1569,
+              "w": 150,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-left ant-table-cell-fix-left-last",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "店铺",
+            "rect": {
+              "x": 279,
+              "y": 1569,
+              "w": 140,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "货件编号",
+            "rect": {
+              "x": 419,
+              "y": 1569,
+              "w": 170,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "发运",
+            "rect": {
+              "x": 589,
+              "y": 1569,
+              "w": 150,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "图片",
+            "rect": {
+              "x": 739,
+              "y": 1569,
+              "w": 90,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "货号，数量 名称",
+            "rect": {
+              "x": 829,
+              "y": 1569,
+              "w": 360,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查看商品",
+            "rect": {
+              "x": 1189,
+              "y": 1569,
+              "w": 120,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "价格",
+            "rect": {
+              "x": 1309,
+              "y": 1569,
+              "w": 120,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "仓库",
+            "rect": {
+              "x": 1429,
+              "y": 1569,
+              "w": 170,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "配送服务 方式",
+            "rect": {
+              "x": 1599,
+              "y": 1569,
+              "w": 220,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "送达",
+            "rect": {
+              "x": 1819,
+              "y": 1569,
+              "w": 160,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/postings/pickup-reminder/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/postings/pickup-reminder/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 531,
+        "ph": 2437
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/postings/pickup-reminder/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n提醒取货\n\n2026-07-04 周六 · 当前店铺\n\n任务监控 (0)\n当前筛选\n0\n条候选记录\n待发送\n0\n本页待处理\n已发送\n0\n本页已完成\n到货未取\n0\n本页可提醒\n当前店铺\n已到取件点\n买家未取\n筛选\n重置\n默认仅展示已到取件点且买家未取的订单；需要排查更多物流阶段时，可切换到货状态和取货状态筛选。\n同步当前店铺\n同步全部店铺\n批量发送\n\t操作\t店铺\t货件编号\t取货状态\t图片\t货号，数量 名称\t物流单号\t配送\t最近物流时间\t查看商品\n\n\t\n操作\n\t\n店铺\n\t\n货件编号\n\t\n取货状态\n\t\n图片\n\t\n货号，数量 名称\n\t\n物流单号\n\t\n配送\n\t\n最近物流时间\n\t\n查看商品\n\n\n暂无数据，请先同步运输中订单",
+        "headings": [
+          {
+            "text": "提醒取货",
+            "rect": {
+              "x": 96,
+              "y": 136,
+              "w": 38,
+              "h": 138,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(26, 31, 54)",
+              "radius": "0px",
+              "fontSize": "22px",
+              "fontWeight": "600"
+            },
+            "className": "",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "任务监控 (0)",
+            "rect": {
+              "x": 134,
+              "y": 136,
+              "w": 133,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "筛选",
+            "rect": {
+              "x": 113,
+              "y": 983,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "重置",
+            "rect": {
+              "x": 204,
+              "y": 983,
+              "w": [redacted],
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "同步当前店铺",
+            "rect": {
+              "x": 127,
+              "y": 1519,
+              "w": 139,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "同步全部店铺",
+            "rect": {
+              "x": 274,
+              "y": 1519,
+              "w": 139,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "批量发送",
+            "rect": {
+              "x": 421,
+              "y": 1519,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "当前店铺",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 113,
+              "y": 692,
+              "w": 180,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 693,
+              "w": 139,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "",
+            "placeholder": "货件编号",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 739,
+              "w": 151,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input"
+          },
+          {
+            "text": "",
+            "placeholder": "物流单号",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 780,
+              "w": 151,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input"
+          },
+          {
+            "text": "",
+            "placeholder": "商品名称",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 822,
+              "w": 181,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input"
+          },
+          {
+            "text": "",
+            "placeholder": "SKU",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 863,
+              "w": 121,
+              "h": 22,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-input"
+          },
+          {
+            "text": "已到取件点",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 113,
+              "y": 899,
+              "w": 130,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 900,
+              "w": 89,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "买家未取",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 113,
+              "y": 941,
+              "w": 140,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 124,
+              "y": 942,
+              "w": 99,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(0, 0, 0)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selection-search-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 113,
+              "y": 2088,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "aria": "Select all",
+            "rect": {
+              "x": 113,
+              "y": 2122,
+              "w": 16,
+              "h": 16,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgb(84, 84, 84)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-checkbox-input"
+          }
+        ],
+        "headers": [
+          {
+            "text": "",
+            "rect": {
+              "x": 97,
+              "y": 2073,
+              "w": 32,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "8px 0px 0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-selection-column ant-table-cell-fix-left",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 129,
+              "y": 2073,
+              "w": 150,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-left ant-table-cell-fix-left-last",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "店铺",
+            "rect": {
+              "x": 279,
+              "y": 2073,
+              "w": 140,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "货件编号",
+            "rect": {
+              "x": 419,
+              "y": 2073,
+              "w": 170,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "取货状态",
+            "rect": {
+              "x": 589,
+              "y": 2073,
+              "w": 180,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "图片",
+            "rect": {
+              "x": 769,
+              "y": 2073,
+              "w": 90,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "货号，数量 名称",
+            "rect": {
+              "x": 859,
+              "y": 2073,
+              "w": 360,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "物流单号",
+            "rect": {
+              "x": 1219,
+              "y": 2073,
+              "w": 180,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "配送",
+            "rect": {
+              "x": 1399,
+              "y": 2073,
+              "w": 220,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "最近物流时间",
+            "rect": {
+              "x": 1619,
+              "y": 2073,
+              "w": 170,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查看商品",
+            "rect": {
+              "x": 1789,
+              "y": 2073,
+              "w": 120,
+              "h": [redacted],
+              "background": "rgb(247, 248, 250)",
+              "color": "rgb(60, 66, 87)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "13px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "path": "/ozon/announcements/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/announcements/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 214,
+        "ph": 942
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/announcements/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n公告中心\n查看平台和分销商发布的更新、维护与业务通知\n全部已读",
+        "headings": [
+          {
+            "text": "公告中心",
+            "rect": {
+              "x": 64,
+              "y": 112,
+              "w": 24,
+              "h": 128,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "24px",
+              "fontWeight": "600"
+            },
+            "className": "ant-typography",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "buttons": [
+          {
+            "text": "全部已读",
+            "rect": {
+              "x": 104,
+              "y": 391,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [],
+        "headers": [],
+        "cards": [
+          {
+            "text": "",
+            "rect": {
+              "x": 64,
+              "y": 718,
+              "w": 1,
+              "h": 168,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card ant-card-bordered",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 65,
+              "y": 719,
+              "w": 48,
+              "h": 167,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 0px 8px 8px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/messaging/templates/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 748,
+        "ph": 715
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/messaging/templates/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n模板名称\n分类\n请选择\n重 置\n查 询\n展开\n模板列表\n新建模板\n模板名称\t分类\t内容预览\t\n更新时间\n\t操作",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "重 置",
+            "rect": {
+              "x": 88,
+              "y": 304,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查 询",
+            "rect": {
+              "x": 160,
+              "y": 304,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "新建模板",
+            "rect": {
+              "x": 88,
+              "y": 478,
+              "w": 120,
+              "h": 38,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [
+          {
+            "text": "请选择",
+            "placeholder": "",
+            "aria": "",
+            "rect": {
+              "x": 88,
+              "y": 228,
+              "w": 23,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-select-selector"
+          }
+        ],
+        "headers": [
+          {
+            "text": "模板名称",
+            "rect": {
+              "x": 88,
+              "y": 572,
+              "w": 200,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "分类",
+            "rect": {
+              "x": 288,
+              "y": 572,
+              "w": 120,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "更新时间",
+            "rect": {
+              "x": 408,
+              "y": 572,
+              "w": 160,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-column-has-sorters",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 88,
+              "y": 572,
+              "w": 180,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "模板列表\n新建模板\n模板名称\t分类\t内容预览\t\n更新时间\n\t操作",
+            "rect": {
+              "x": 64,
+              "y": 382,
+              "w": 48,
+              "h": 277,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    },
+    {
+      "path": "/ozon/messaging/history/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/messaging/history/",
+        "title": "QH",
+        "w": 0,
+        "h": 0,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1118,
+        "ph": 680
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/messaging/history/",
+        "bodyText": "帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n[phone]\n接收人\n使用模板\n重 置\n查 询\n展开\n历史记录\n接收人\t使用模板\t发送内容\t状态\t\n发送时间\n\t操作",
+        "headings": [],
+        "buttons": [
+          {
+            "text": "重 置",
+            "rect": {
+              "x": 88,
+              "y": 315,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "查 询",
+            "rect": {
+              "x": 160,
+              "y": 315,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(22, [redacted], 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "",
+            "rect": {
+              "x": 974,
+              "y": 545,
+              "w": 20,
+              "h": 30,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.294)",
+              "radius": "6px",
+              "fontSize": "12px",
+              "fontWeight": "600"
+            },
+            "className": "ant-dropdown-trigger ant-table-filter-trigger",
+            "disabled": false,
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "inputs": [],
+        "headers": [
+          {
+            "text": "接收人",
+            "rect": {
+              "x": 88,
+              "y": 537,
+              "w": 180,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "使用模板",
+            "rect": {
+              "x": 268,
+              "y": 537,
+              "w": 150,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "发送内容",
+            "rect": {
+              "x": 418,
+              "y": 537,
+              "w": 300,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-ellipsis",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "状态",
+            "rect": {
+              "x": 718,
+              "y": 537,
+              "w": 100,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "发送时间",
+            "rect": {
+              "x": 818,
+              "y": 537,
+              "w": 180,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-column-has-sorters",
+            "placeholder": "",
+            "aria": ""
+          },
+          {
+            "text": "操作",
+            "rect": {
+              "x": 88,
+              "y": 537,
+              "w": 120,
+              "h": [redacted],
+              "background": "rgb(250, 250, 250)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px 8px 0px 0px",
+              "fontSize": "14px",
+              "fontWeight": "600"
+            },
+            "className": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+            "placeholder": "",
+            "aria": ""
+          }
+        ],
+        "cards": [
+          {
+            "text": "历史记录\n接收人\t使用模板\t发送内容\t状态\t\n发送时间\n\t操作",
+            "rect": {
+              "x": 64,
+              "y": 393,
+              "w": 48,
+              "h": 231,
+              "background": "rgba(0, 0, 0, 0)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "0px",
+              "fontSize": "14px",
+              "fontWeight": "400"
+            },
+            "className": "ant-pro-card-body",
+            "placeholder": "",
+            "aria": ""
+          }
+        ]
+      }
+    }
+  ]
+}

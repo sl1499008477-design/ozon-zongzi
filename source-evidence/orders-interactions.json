@@ -1,0 +1,1532 @@
+{
+  "capturedAt": "2026-07-04T04:18:34.585Z",
+  "taskSpaceId": 18,
+  "note": "Sanitized order-page structural/interaction evidence only. Amounts/counts are redacted; no table body rows, store names, buyer data, or order numbers retained. Sync/refresh buttons were observed but not clicked.",
+  "source": [
+    {
+      "label": "initial",
+      "path": "/ozon/postings/list/",
+      "titleTexts": [
+        "订单"
+      ],
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "当前店铺",
+        "货件编号",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 等待备货",
+      "path": "/ozon/postings/list/",
+      "titleTexts": [
+        "订单"
+      ],
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "当前店铺",
+        "货件编号",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 已取消",
+      "path": "/ozon/postings/list/",
+      "titleTexts": [
+        "订单"
+      ],
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "当前店铺",
+        "货件编号",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 所有订单",
+      "path": "/ozon/postings/list/",
+      "titleTexts": [
+        "订单"
+      ],
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "span",
+          "className": "",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "span",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "当前店铺",
+        "货件编号",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "search",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "modalTitles": []
+    }
+  ],
+  "localAfterPatch": [
+    {
+      "label": "initial after auto-space patch",
+      "path": "/ozon/postings/list/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "所有订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 等待备货",
+      "path": "/ozon/postings/list/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "所有订单",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 已取消",
+      "path": "/ozon/postings/list/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "所有订单",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "modalTitles": []
+    },
+    {
+      "clicked": true,
+      "label": "after 所有订单",
+      "path": "/ozon/postings/list/",
+      "actions": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "拉取最新订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "刷新进行中订单",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "所有订单",
+          "disabled": false,
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "disabled": false,
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "筛 选",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "重 置",
+          "disabled": false,
+          "background": "rgb(255, 255, 255)",
+          "color": "rgba(0, 0, 0, 0.88)",
+          "fontWeight": "400"
+        },
+        {
+          "text": "订单导出",
+          "disabled": false,
+          "background": "rgb(255, 251, 235)",
+          "color": "rgb(180, 83, 9)",
+          "fontWeight": "400"
+        }
+      ],
+      "statusItems": [
+        {
+          "text": "所有订单",
+          "tag": "button",
+          "className": "active",
+          "background": "rgb(26, 31, 54)",
+          "color": "rgb(255, 255, 255)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待备货",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "等待发运",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已超时",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "运输中",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "有争议的",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已签收",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        },
+        {
+          "text": "已取消",
+          "tag": "button",
+          "className": "",
+          "background": "rgba(0, 0, 0, 0)",
+          "color": "rgb(105, 115, 134)",
+          "fontWeight": "500"
+        }
+      ],
+      "selects": [
+        "当前店铺",
+        "货件编号"
+      ],
+      "inputs": [
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "搜索货件号 / SKU / 货号 / 物流单号…",
+          "type": "text",
+          "aria": ""
+        },
+        {
+          "placeholder": "下单时间",
+          "type": "input",
+          "aria": ""
+        },
+        {
+          "placeholder": "结束时间",
+          "type": "input",
+          "aria": ""
+        }
+      ],
+      "tableHeaders": [
+        "倒计时",
+        "货件 / 状态",
+        "店铺",
+        "商品",
+        "仓库 / 配送",
+        "订单金额",
+        "利润",
+        "操作"
+      ],
+      "emptyTexts": [
+        "绑定门店后显示真实数据"
+      ],
+      "modalTitles": []
+    }
+  ],
+  "localVerifiedAt": "2026-07-04T04:20:04.768Z"
+}

@@ -1,0 +1,69 @@
+{
+  "scope": "Promotions campaigns page table page-size label parity",
+  "validatedAt": "2026-07-05T06:08:04+08:00",
+  "sourceEvidence": [
+    "source-evidence/fresh-risk-route-audit-20260704-turn2.json"
+  ],
+  "prePatchLocalRiskScan": {
+    "checkedWithEgo": true,
+    "taskSpaceId": 1,
+    "routesChecked": [
+      "/ozon/promotions/prices/",
+      "/ozon/promotions/campaigns/",
+      "/ozon/promotions/auto-delete/",
+      "/ozon/tools/ai-poster-records/",
+      "/ozon/tools/watermark/",
+      "/ozon/templates/",
+      "/ozon/settings/membership/"
+    ],
+    "withMissing": [
+      {
+        "route": "/ozon/promotions/campaigns/",
+        "missing": [
+          "20 条/页"
+        ]
+      }
+    ]
+  },
+  "changes": {
+    "sourceTable": "Added a scoped showPageSizeText prop for pages that need source-style page-size copy even when rows do not exceed pageSize.",
+    "campaignsPage": "Enabled the page-size label on /ozon/promotions/campaigns/.",
+    "css": "Reserved footer space when a table shows only the page-size label without Ant pagination controls."
+  },
+  "egoVerification": {
+    "taskSpaceId": 1,
+    "route": "/ozon/promotions/campaigns/",
+    "devServerRestartRequired": true,
+    "title": "QH",
+    "allTextTokensPresent": true,
+    "hasSearchPlaceholder": true,
+    "pageSizeLabel": [
+      "20 条/页"
+    ],
+    "missingTextTokens": []
+  },
+  "validation": {
+    "pnpmBuild": "passed",
+    "serverSyntax": "passed",
+    "gitDiffCheck": "passed",
+    "secretScan": "passed",
+    "localState": {
+      "web": 200,
+      "api": true,
+      "stores": 1,
+      "products": 580,
+      "postings": 466,
+      "warehouses": 16,
+      "announcements": 0,
+      "jobs": 17,
+      "aiPosterJobs": 0,
+      "messageHistory": 0,
+      "productTemplates": 0,
+      "watermarkTemplates": 0,
+      "promotions": 6
+    }
+  },
+  "noSampleBusinessRowsInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "redaction": "Evidence stores route-level UI token presence and aggregate counts only; no credentials, promotion names, product names, SKUs, order IDs, or row payloads are included."
+}

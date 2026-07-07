@@ -1,0 +1,524 @@
+{
+  "capturedAt": "2026-07-04T06:58:11.566Z",
+  "taskSpaceId": 39,
+  "info": {
+    "url": "https://qh.jizhangerp.com/ozon/templates/?templatesSourceRetry=1783148284566",
+    "title": "QH",
+    "w": 1580,
+    "h": 754,
+    "sx": 0,
+    "sy": 0,
+    "pw": 1580,
+    "ph": 754
+  },
+  "poll": {
+    "textLength": 187,
+    "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [REDACTED] 新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+    "title": "QH",
+    "ready": "complete",
+    "root": false,
+    "bodyChildren": 13
+  },
+  "data": {
+    "title": "QH",
+    "path": "/ozon/templates/",
+    "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 [REDACTED] 新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+    "buttons": [
+      {
+        "text": "仪表盘",
+        "cls": "",
+        "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+        "disabled": false,
+        "rect": {
+          "x": 28,
+          "y": 60,
+          "w": 159,
+          "h": 40
+        }
+      },
+      {
+        "text": "QH",
+        "cls": "",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 16,
+          "y": 12,
+          "w": 63,
+          "h": 32
+        }
+      },
+      {
+        "text": "新建模板",
+        "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 1173,
+          "y": 124,
+          "w": 110,
+          "h": 32
+        }
+      },
+      {
+        "text": "导入模板",
+        "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 1291,
+          "y": 124,
+          "w": 110,
+          "h": 32
+        }
+      },
+      {
+        "text": "刷新",
+        "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 1410,
+          "y": 124,
+          "w": 82,
+          "h": 32
+        }
+      },
+      {
+        "text": "重 置",
+        "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 1245,
+          "y": 216,
+          "w": 64,
+          "h": 32
+        }
+      },
+      {
+        "text": "查 询",
+        "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-loading",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 1316,
+          "y": 216,
+          "w": 86,
+          "h": 32
+        }
+      },
+      {
+        "text": "展开",
+        "cls": "ant-pro-query-filter-collapse-button",
+        "href": "",
+        "disabled": false,
+        "rect": {
+          "x": 1418,
+          "y": 221,
+          "w": 50,
+          "h": 22
+        }
+      }
+    ],
+    "inputs": [
+      {
+        "placeholder": "",
+        "value": "",
+        "cls": "",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      },
+      {
+        "placeholder": "请输入",
+        "value": "",
+        "cls": "ant-input",
+        "rect": {
+          "x": 410,
+          "y": 221,
+          "w": 254,
+          "h": 22
+        }
+      },
+      {
+        "placeholder": "请输入",
+        "value": "",
+        "cls": "ant-input",
+        "rect": {
+          "x": 770,
+          "y": 221,
+          "w": 282,
+          "h": 22
+        }
+      },
+      {
+        "placeholder": "请输入",
+        "value": "",
+        "cls": "ant-input",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "cards": [
+      {
+        "cls": "ant-card ant-card-bordered",
+        "text": "新建模板 导入模板 刷新 模板名称 默认 重 置 查 询 展开 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 279,
+          "y": 112,
+          "w": 1237,
+          "h": 378
+        }
+      },
+      {
+        "cls": "ant-pro-table",
+        "text": "模板名称 默认 重 置 查 询 展开 模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 304,
+          "y": 192,
+          "w": 1188,
+          "h": 274
+        }
+      },
+      {
+        "cls": "ant-pro-card ant-pro-table-search ant-pro-table-search-query-filter",
+        "text": "模板名称 默认 重 置 查 询 展开",
+        "rect": {
+          "x": 304,
+          "y": 192,
+          "w": 1188,
+          "h": 80
+        }
+      },
+      {
+        "cls": "ant-pro-query-filter-container ",
+        "text": "模板名称 默认 重 置 查 询 展开",
+        "rect": {
+          "x": 304,
+          "y": 192,
+          "w": 1188,
+          "h": 80
+        }
+      },
+      {
+        "cls": "ant-form ant-form-horizontal ant-pro-query-filter ant-pro-form",
+        "text": "模板名称 默认 重 置 查 询 展开",
+        "rect": {
+          "x": 304,
+          "y": 192,
+          "w": 1188,
+          "h": 80
+        }
+      },
+      {
+        "cls": "ant-row ant-row-start ant-pro-query-filter-row",
+        "text": "模板名称 默认 重 置 查 询 展开",
+        "rect": {
+          "x": 316,
+          "y": 216,
+          "w": 1164,
+          "h": 32
+        }
+      },
+      {
+        "cls": "ant-col ant-col-8 ant-pro-query-filter-row-split",
+        "text": "模板名称",
+        "rect": {
+          "x": 316,
+          "y": 216,
+          "w": 388,
+          "h": 32
+        }
+      },
+      {
+        "cls": "ant-col ant-col-8 ant-pro-query-filter-row-split",
+        "text": "默认",
+        "rect": {
+          "x": 704,
+          "y": 216,
+          "w": 388,
+          "h": 32
+        }
+      },
+      {
+        "cls": "ant-form-item ant-pro-query-filter-actions ant-form-item-horizontal",
+        "text": "重 置 查 询 展开",
+        "rect": {
+          "x": 1103,
+          "y": 216,
+          "w": 364,
+          "h": 32
+        }
+      },
+      {
+        "cls": "ant-pro-query-filter-collapse-button",
+        "text": "展开",
+        "rect": {
+          "x": 1418,
+          "y": 221,
+          "w": 50,
+          "h": 22
+        }
+      },
+      {
+        "cls": "ant-table-wrapper",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 352,
+          "w": 1140,
+          "h": 98
+        }
+      },
+      {
+        "cls": "ant-table ant-table-middle ant-table-empty ant-table-ping-right ant-table-fixed-column ant-table-scroll-horizontal ant-table-has-fix-left ant-table-has-fix-right",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 352,
+          "w": 1140,
+          "h": 98
+        }
+      },
+      {
+        "cls": "ant-table-container",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 352,
+          "w": 1140,
+          "h": 98
+        }
+      },
+      {
+        "cls": "ant-table-content",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作 模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 352,
+          "w": 1140,
+          "h": 98
+        }
+      },
+      {
+        "cls": "ant-table-thead",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 352,
+          "w": 1200,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-cell ant-table-cell-fix-left ant-table-cell-fix-left-last",
+        "text": "模板名称",
+        "rect": {
+          "x": 328,
+          "y": 352,
+          "w": 229,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-cell",
+        "text": "店铺",
+        "rect": {
+          "x": 556,
+          "y": 352,
+          "w": 183,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-cell",
+        "text": "默认",
+        "rect": {
+          "x": 739,
+          "y": 352,
+          "w": 91,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-cell",
+        "text": "创建时间",
+        "rect": {
+          "x": 830,
+          "y": 352,
+          "w": 206,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-cell",
+        "text": "更新时间",
+        "rect": {
+          "x": 1036,
+          "y": 352,
+          "w": 206,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-cell ant-table-cell-fix-right ant-table-cell-fix-right-first",
+        "text": "操作",
+        "rect": {
+          "x": 1182,
+          "y": 352,
+          "w": 286,
+          "h": 47
+        }
+      },
+      {
+        "cls": "ant-table-tbody",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 398,
+          "w": 1200,
+          "h": 33
+        }
+      },
+      {
+        "cls": "ant-table-measure-row",
+        "text": "模板名称 店铺 默认 创建时间 更新时间 操作",
+        "rect": {
+          "x": 328,
+          "y": 398,
+          "w": 1200,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell",
+        "text": "模板名称",
+        "rect": {
+          "x": 328,
+          "y": 398,
+          "w": 229,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell-content",
+        "text": "模板名称",
+        "rect": {
+          "x": 336,
+          "y": 398,
+          "w": 213,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell",
+        "text": "店铺",
+        "rect": {
+          "x": 556,
+          "y": 398,
+          "w": 183,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell-content",
+        "text": "店铺",
+        "rect": {
+          "x": 564,
+          "y": 398,
+          "w": 167,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell",
+        "text": "默认",
+        "rect": {
+          "x": 739,
+          "y": 398,
+          "w": 91,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell-content",
+        "text": "默认",
+        "rect": {
+          "x": 747,
+          "y": 398,
+          "w": 75,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell",
+        "text": "创建时间",
+        "rect": {
+          "x": 830,
+          "y": 398,
+          "w": 206,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell-content",
+        "text": "创建时间",
+        "rect": {
+          "x": 838,
+          "y": 398,
+          "w": 190,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell",
+        "text": "更新时间",
+        "rect": {
+          "x": 1036,
+          "y": 398,
+          "w": 206,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell-content",
+        "text": "更新时间",
+        "rect": {
+          "x": 1044,
+          "y": 398,
+          "w": 190,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell",
+        "text": "操作",
+        "rect": {
+          "x": 1242,
+          "y": 398,
+          "w": 286,
+          "h": 0
+        }
+      },
+      {
+        "cls": "ant-table-measure-cell-content",
+        "text": "操作",
+        "rect": {
+          "x": 1250,
+          "y": 398,
+          "w": 270,
+          "h": 0
+        }
+      }
+    ]
+  },
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-templates-retry-20260704.png"
+}

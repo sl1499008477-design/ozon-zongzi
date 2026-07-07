@@ -1,0 +1,681 @@
+{
+  "capturedAt": "2026-07-04T04:44:56.795Z",
+  "taskSpaceId": 23,
+  "note": "Local product-management post-patch verification. No sync/refresh/delete/reshelf actions clicked.",
+  "pages": [
+    {
+      "path": "/ozon/products/import-history/",
+      "action": "initial",
+      "placeholders": [
+        "搜索 SKU / 货号",
+        "开始日期",
+        "结束日期"
+      ],
+      "tableHeaders": [
+        "#",
+        "商品信息",
+        "源 SKU",
+        "店铺",
+        "变体",
+        "售价",
+        "状态",
+        "创建时间",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "全部",
+        "已完成",
+        "部分成功",
+        "处理中",
+        "失败",
+        "重 置",
+        "查询",
+        "批量删除 (0)",
+        "全部展开"
+      ],
+      "targetButtons": [
+        {
+          "text": "全部",
+          "rect": {
+            "x": 355,
+            "y": 279,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(22, 119, 255)"
+          },
+          "className": "active tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "已完成",
+          "rect": {
+            "x": 416,
+            "y": 279,
+            "w": 66,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-success",
+          "disabled": false
+        },
+        {
+          "text": "部分成功",
+          "rect": {
+            "x": 489,
+            "y": 279,
+            "w": 79,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "处理中",
+          "rect": {
+            "x": 576,
+            "y": 279,
+            "w": 66,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "失败",
+          "rect": {
+            "x": 650,
+            "y": 279,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-danger",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "path": "/ozon/products/import-history/",
+      "action": "已完成",
+      "placeholders": [
+        "搜索 SKU / 货号",
+        "开始日期",
+        "结束日期"
+      ],
+      "tableHeaders": [
+        "#",
+        "商品信息",
+        "源 SKU",
+        "店铺",
+        "变体",
+        "售价",
+        "状态",
+        "创建时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "hasEmptyNode": true,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "全部",
+        "已完成",
+        "部分成功",
+        "处理中",
+        "失败",
+        "重 置",
+        "查询",
+        "批量删除 (0)",
+        "全部展开"
+      ],
+      "targetButtons": [
+        {
+          "text": "全部",
+          "rect": {
+            "x": 355,
+            "y": 279,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "已完成",
+          "rect": {
+            "x": 416,
+            "y": 279,
+            "w": 66,
+            "h": 30,
+            "background": "rgb(82, 196, 26)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(82, 196, 26)"
+          },
+          "className": "active tone-success",
+          "disabled": false
+        },
+        {
+          "text": "部分成功",
+          "rect": {
+            "x": 489,
+            "y": 279,
+            "w": 79,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "处理中",
+          "rect": {
+            "x": 576,
+            "y": 279,
+            "w": 66,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "失败",
+          "rect": {
+            "x": 650,
+            "y": 279,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-danger",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "path": "/ozon/products/import-history/",
+      "action": "失败",
+      "placeholders": [
+        "搜索 SKU / 货号",
+        "开始日期",
+        "结束日期"
+      ],
+      "tableHeaders": [
+        "#",
+        "商品信息",
+        "源 SKU",
+        "店铺",
+        "变体",
+        "售价",
+        "状态",
+        "创建时间",
+        "操作"
+      ],
+      "emptyTexts": [
+        "暂无数据"
+      ],
+      "hasEmptyNode": true,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "全部",
+        "已完成",
+        "部分成功",
+        "处理中",
+        "失败",
+        "重 置",
+        "查询",
+        "批量删除 (0)",
+        "全部展开"
+      ],
+      "targetButtons": [
+        {
+          "text": "全部",
+          "rect": {
+            "x": 355,
+            "y": 279,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "已完成",
+          "rect": {
+            "x": 416,
+            "y": 279,
+            "w": 66,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-success",
+          "disabled": false
+        },
+        {
+          "text": "部分成功",
+          "rect": {
+            "x": 489,
+            "y": 279,
+            "w": 79,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "处理中",
+          "rect": {
+            "x": 576,
+            "y": 279,
+            "w": 66,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "失败",
+          "rect": {
+            "x": 650,
+            "y": 279,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 77, 79)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(255, 77, 79)"
+          },
+          "className": "active tone-danger",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "path": "/ozon/products/stocks/",
+      "action": "initial",
+      "placeholders": [
+        "搜索商品名 / 货号"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "总库存",
+        "仓库分布",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "刷新",
+        "查询",
+        "全部",
+        "缺货0",
+        "低库存0"
+      ],
+      "targetButtons": [
+        {
+          "text": "全部",
+          "rect": {
+            "x": 261,
+            "y": 487,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(22, 119, 255)"
+          },
+          "className": "active tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "缺货0",
+          "rect": {
+            "x": 322,
+            "y": 487,
+            "w": 61,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "低库存0",
+          "rect": {
+            "x": 391,
+            "y": 487,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "path": "/ozon/products/stocks/",
+      "action": "缺货",
+      "placeholders": [
+        "搜索商品名 / 货号"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "总库存",
+        "仓库分布",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "刷新",
+        "查询",
+        "全部",
+        "缺货0",
+        "低库存0"
+      ],
+      "targetButtons": [
+        {
+          "text": "全部",
+          "rect": {
+            "x": 261,
+            "y": 487,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "缺货0",
+          "rect": {
+            "x": 322,
+            "y": 487,
+            "w": 61,
+            "h": 30,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(22, 119, 255)"
+          },
+          "className": "active tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "低库存0",
+          "rect": {
+            "x": 391,
+            "y": 487,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "path": "/ozon/products/stocks/",
+      "action": "低库存",
+      "placeholders": [
+        "搜索商品名 / 货号"
+      ],
+      "tableHeaders": [
+        "主图",
+        "商品",
+        "总库存",
+        "仓库分布",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "刷新",
+        "查询",
+        "全部",
+        "缺货0",
+        "低库存0"
+      ],
+      "targetButtons": [
+        {
+          "text": "全部",
+          "rect": {
+            "x": 261,
+            "y": 487,
+            "w": 53,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "缺货0",
+          "rect": {
+            "x": 322,
+            "y": 487,
+            "w": 61,
+            "h": 30,
+            "background": "rgb(255, 255, 255)",
+            "color": "rgb(31, 41, 55)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(217, 217, 217)"
+          },
+          "className": "tone-primary",
+          "disabled": false
+        },
+        {
+          "text": "低库存0",
+          "rect": {
+            "x": 391,
+            "y": 487,
+            "w": 74,
+            "h": 30,
+            "background": "rgb(22, 119, 255)",
+            "color": "rgb(255, 255, 255)",
+            "radius": "6px",
+            "fontSize": "12.5px",
+            "fontWeight": "400",
+            "border": "0.75px solid rgb(22, 119, 255)"
+          },
+          "className": "active tone-primary",
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "path": "/ozon/products/reshelf/",
+      "action": "initial",
+      "placeholders": [
+        "搜 SKU / 货号 / 标题…"
+      ],
+      "tableHeaders": [
+        "商品信息",
+        "类目佣金",
+        "店铺",
+        "状态",
+        "下架原因",
+        "价格",
+        "库存",
+        "货源 (¥)",
+        "最后同步",
+        "操作"
+      ],
+      "emptyTexts": [],
+      "hasEmptyNode": false,
+      "hasSelectAllCheckbox": true,
+      "hasGlobalHead": false,
+      "commandMentions": 0,
+      "buttons": [
+        "帮助中心使用文档",
+        "公告公告中心",
+        "浏览器插件插件下载",
+        "当前门店去绑定门店",
+        "会员权益免费会员",
+        "下架重上",
+        "同步全部"
+      ],
+      "targetButtons": []
+    }
+  ]
+}

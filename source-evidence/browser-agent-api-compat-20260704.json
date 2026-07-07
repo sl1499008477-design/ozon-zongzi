@@ -1,0 +1,103 @@
+{
+  "generatedAt": "2026-07-04T09:24:45.096Z",
+  "scope": "Browser Agent endpoints used by extension/background/sync/backend-client.js",
+  "tempServer": {
+    "url": "http://127.0.0.1:3102",
+    "dataDir": "/private/tmp/qh-browser-agent-test"
+  },
+  "realServerUnaffected": true,
+  "assertions": {
+    "allCovered": true,
+    "jobsNextReturnsNoRemoteJob": true,
+    "noOzonWriteEndpointsCalled": true,
+    "credentialsRedacted": true
+  },
+  "checks": [
+    {
+      "name": "register browser agent",
+      "method": "POST",
+      "path": "/browser-agents/register",
+      "status": 200,
+      "code": null,
+      "responseKeys": [
+        "id",
+        "deviceKey",
+        "deviceName",
+        "extensionId",
+        "extensionVersion",
+        "capabilities",
+        "status",
+        "local",
+        "registeredAt",
+        "lastHeartbeatAt"
+      ]
+    },
+    {
+      "name": "heartbeat browser agent",
+      "method": "POST",
+      "path": "/browser-agents/heartbeat",
+      "status": 200,
+      "code": null,
+      "responseKeys": [
+        "id",
+        "deviceKey",
+        "deviceName",
+        "extensionId",
+        "extensionVersion",
+        "capabilities",
+        "status",
+        "local",
+        "registeredAt",
+        "lastHeartbeatAt"
+      ]
+    },
+    {
+      "name": "claim next browser agent job",
+      "method": "GET",
+      "path": "/browser-agents/jobs/next?deviceId=local_agent_751b76c660cd",
+      "status": 200,
+      "code": null,
+      "responseKeys": [
+        "job",
+        "local",
+        "reason"
+      ]
+    },
+    {
+      "name": "report browser agent progress",
+      "method": "POST",
+      "path": "/browser-agents/jobs/local-job-1/progress",
+      "status": 200,
+      "code": null,
+      "responseKeys": [
+        "ok",
+        "job",
+        "local"
+      ]
+    },
+    {
+      "name": "complete browser agent job",
+      "method": "POST",
+      "path": "/browser-agents/jobs/local-job-1/result",
+      "status": 200,
+      "code": null,
+      "responseKeys": [
+        "ok",
+        "job",
+        "local"
+      ]
+    },
+    {
+      "name": "fail browser agent job",
+      "method": "POST",
+      "path": "/browser-agents/jobs/local-job-2/fail",
+      "status": 200,
+      "code": null,
+      "responseKeys": [
+        "ok",
+        "job",
+        "local"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1064 @@
+{
+  "capturedAt": "2026-07-04T07:14:17.716Z",
+  "taskSpaceId": 39,
+  "routes": [
+    "jidian",
+    "stores",
+    "collect"
+  ],
+  "results": [
+    {
+      "kind": "source",
+      "name": "jidian",
+      "url": "https://qh.jizhangerp.com/ozon/settings/jidian/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/settings/jidian/?continuedAudit=1783149242208",
+        "title": "QH",
+        "w": 1580,
+        "h": 754,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1580,
+        "ph": 754
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/settings/jidian/",
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 极点充值 极点充值 当前余额 0 极点 极点 自助充值已切换为人工服务 请联系客服为您开通 请联系您的服务商客服 查看消费明细",
+        "buttons": [
+          {
+            "text": "仪表盘",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "disabled": false,
+            "rect": {
+              "x": 28,
+              "y": 60,
+              "w": 159,
+              "h": 40
+            }
+          },
+          {
+            "text": "QH",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 16,
+              "y": 12,
+              "w": 63,
+              "h": 32
+            }
+          },
+          {
+            "text": "查看消费明细",
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-lg",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 903,
+              "y": 517,
+              "w": 153,
+              "h": 40
+            }
+          }
+        ],
+        "inputs": [],
+        "menuOpenGroups": [],
+        "cards": [
+          {
+            "cls": "ant-card ant-card-bordered",
+            "text": "极点充值 当前余额 0 极点 极点 自助充值已切换为人工服务 请联系客服为您开通 请联系您的服务商客服 查看消费明细",
+            "rect": {
+              "x": 618,
+              "y": 184,
+              "w": 560,
+              "h": 414
+            }
+          }
+        ]
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-jidian-continued-20260704-continued.png"
+    },
+    {
+      "kind": "local",
+      "name": "jidian",
+      "url": "http://127.0.0.1:5173/ozon/settings/jidian/",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/settings/jidian/?continuedAudit=1783149248089",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1896,
+        "ph": 904
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/settings/jidian/",
+        "text": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 极点充值 当前余额0极点 极点 自助充值已切换为人工服务 请联系客服为您开通请联系您的服务商客服 查看消费明细",
+        "buttons": [
+          {
+            "text": "QH",
+            "cls": "qh-brand",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "w": 216,
+              "h": 56
+            }
+          },
+          {
+            "text": "帮助中心 使用文档",
+            "cls": "qh-header-action tone-blue",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1246,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "text": "公告 公告中心",
+            "cls": "qh-header-action tone-default",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1337,
+              "y": 11,
+              "w": 80,
+              "h": 34
+            }
+          },
+          {
+            "text": "浏览器插件 插件下载",
+            "cls": "qh-header-action tone-blue",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1423,
+              "y": 11,
+              "w": 96,
+              "h": 34
+            }
+          },
+          {
+            "text": "当前门店 STORE",
+            "cls": "qh-header-action tone-orange",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1525,
+              "y": 11,
+              "w": 91,
+              "h": 34
+            }
+          },
+          {
+            "text": "会员权益 免费会员",
+            "cls": "qh-header-action tone-default",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1621,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "text": "查看消费明细",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 308,
+              "w": 1591,
+              "h": 32
+            }
+          }
+        ],
+        "inputs": [],
+        "menuOpenGroups": [
+          "工具 水印管理 浏览器插件"
+        ],
+        "cards": [
+          {
+            "cls": "ant-card ant-card-bordered panel-card source-card jidian-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+            "text": "当前余额0极点 极点 自助充值已切换为人工服务 请联系客服为您开通请联系您的服务商客服 查看消费明细",
+            "rect": {
+              "x": 240,
+              "y": 153,
+              "w": 1632,
+              "h": 207
+            }
+          }
+        ]
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-jidian-continued-20260704-continued.png"
+    },
+    {
+      "kind": "source",
+      "name": "stores",
+      "url": "https://qh.jizhangerp.com/ozon/settings/stores/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/settings/stores/?continuedAudit=1783149249758",
+        "title": "QH",
+        "w": 1580,
+        "h": 754,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1580,
+        "ph": 754
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/settings/stores/",
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 我的 Ozon 门店 0/999 同步仓库 刷 新 新增 重 置 显示已停用店铺 当前选择门店： STORE-ID 清除当前门店 STORE 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+        "buttons": [
+          {
+            "text": "仪表盘",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "disabled": false,
+            "rect": {
+              "x": 28,
+              "y": 60,
+              "w": 159,
+              "h": 40
+            }
+          },
+          {
+            "text": "QH",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 16,
+              "y": 12,
+              "w": 63,
+              "h": 32
+            }
+          },
+          {
+            "text": "同步仓库",
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1220,
+              "y": 140,
+              "w": 110,
+              "h": 32
+            }
+          },
+          {
+            "text": "刷 新",
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-loading",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1338,
+              "y": 140,
+              "w": 86,
+              "h": 32
+            }
+          },
+          {
+            "text": "新增",
+            "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1432,
+              "y": 140,
+              "w": 60,
+              "h": 32
+            }
+          },
+          {
+            "text": "重 置",
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 660,
+              "y": 208,
+              "w": 64,
+              "h": 32
+            }
+          },
+          {
+            "text": "清除当前门店",
+            "cls": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined ant-btn-sm",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 701,
+              "y": 256,
+              "w": 101,
+              "h": 24
+            }
+          },
+          {
+            "text": "同步本帐号所有门店",
+            "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-sm",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 810,
+              "y": 256,
+              "w": 144,
+              "h": 24
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "店铺名称",
+            "value": "",
+            "cls": "ant-input",
+            "rect": {
+              "x": 333,
+              "y": 212,
+              "w": 123,
+              "h": 23
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "Client ID",
+            "value": "",
+            "cls": "ant-input",
+            "rect": {
+              "x": 503,
+              "y": 212,
+              "w": 121,
+              "h": 23
+            }
+          }
+        ],
+        "menuOpenGroups": [],
+        "cards": [
+          {
+            "cls": "ant-card ant-card-bordered",
+            "text": "我的 Ozon 门店 0/999 同步仓库 刷 新 新增 重 置 显示已停用店铺 当前选择门店： STORE-ID 清除当前门店 STORE 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+            "rect": {
+              "x": 279,
+              "y": 128,
+              "w": 1237,
+              "h": 424
+            }
+          }
+        ]
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-stores-continued-20260704-continued.png"
+    },
+    {
+      "kind": "local",
+      "name": "stores",
+      "url": "http://127.0.0.1:5173/ozon/settings/stores/",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/settings/stores/?continuedAudit=1783149252344",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1896,
+        "ph": 904
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/settings/stores/",
+        "text": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 我的 Ozon 门店 0/999 同步仓库 刷 新 新增 店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 STORE 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+        "buttons": [
+          {
+            "text": "QH",
+            "cls": "qh-brand",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "w": 216,
+              "h": 56
+            }
+          },
+          {
+            "text": "帮助中心 使用文档",
+            "cls": "qh-header-action tone-blue",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1246,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "text": "公告 公告中心",
+            "cls": "qh-header-action tone-default",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1337,
+              "y": 11,
+              "w": 80,
+              "h": 34
+            }
+          },
+          {
+            "text": "浏览器插件 插件下载",
+            "cls": "qh-header-action tone-blue",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1423,
+              "y": 11,
+              "w": 96,
+              "h": 34
+            }
+          },
+          {
+            "text": "当前门店 STORE",
+            "cls": "qh-header-action tone-orange",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1525,
+              "y": 11,
+              "w": 91,
+              "h": 34
+            }
+          },
+          {
+            "text": "会员权益 免费会员",
+            "cls": "qh-header-action tone-default",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1621,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "text": "同步仓库",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1644,
+              "y": 112,
+              "w": 89,
+              "h": 32
+            }
+          },
+          {
+            "text": "刷 新",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1740,
+              "y": 112,
+              "w": 64,
+              "h": 32
+            }
+          },
+          {
+            "text": "新增",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1812,
+              "y": 112,
+              "w": 60,
+              "h": 32
+            }
+          },
+          {
+            "text": "重 置",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 924,
+              "y": 266,
+              "w": 64,
+              "h": 32
+            }
+          },
+          {
+            "text": "清除当前门店",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-dangerous ant-btn-color-dangerous ant-btn-variant-outlined",
+            "href": "",
+            "disabled": true,
+            "rect": {
+              "x": 377,
+              "y": 314,
+              "w": 117,
+              "h": 32
+            }
+          },
+          {
+            "text": "同步本帐号所有门店",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 502,
+              "y": 314,
+              "w": 160,
+              "h": 32
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "店铺名称",
+            "value": "",
+            "cls": "ant-input css-dev-only-do-not-override-1pi45l5 ant-input-outlined css-var-_r_0_ ant-input-css-var",
+            "rect": {
+              "x": 261,
+              "y": 220,
+              "w": 727,
+              "h": 31
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "Client ID",
+            "value": "",
+            "cls": "ant-input css-dev-only-do-not-override-1pi45l5 ant-input-outlined css-var-_r_0_ ant-input-css-var",
+            "rect": {
+              "x": 1002,
+              "y": 220,
+              "w": 727,
+              "h": 31
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "on",
+            "cls": "ant-checkbox-input",
+            "rect": {
+              "x": 1789,
+              "y": 180,
+              "w": 16,
+              "h": 16
+            }
+          }
+        ],
+        "menuOpenGroups": [
+          "工具 水印管理 浏览器插件"
+        ],
+        "cards": [
+          {
+            "cls": "ant-card ant-card-bordered panel-card source-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+            "text": "店铺名称 Client ID 显示已停用店铺 重 置 当前选择门店： — 清除当前门店 STORE",
+            "rect": {
+              "x": 240,
+              "y": 160,
+              "w": 1632,
+              "h": 206
+            }
+          },
+          {
+            "cls": "ant-card ant-card-bordered panel-card source-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+            "text": "门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 门店编号 ClientId Api-Key 标签 公司 INN 货币 Premium 添加时间 操作 暂无数据",
+            "rect": {
+              "x": 240,
+              "y": 382,
+              "w": 1632,
+              "h": 308
+            }
+          }
+        ]
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-stores-continued-20260704-continued.png"
+    },
+    {
+      "kind": "source",
+      "name": "collect",
+      "url": "https://qh.jizhangerp.com/ozon/products/collect/",
+      "info": {
+        "url": "https://qh.jizhangerp.com/ozon/products/collect/?continuedAudit=1783149254006",
+        "title": "QH",
+        "w": 1580,
+        "h": 754,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1580,
+        "ph": 754
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/products/collect/",
+        "text": "仪表盘 商品 商品列表 采集箱 上架记录 库存管理 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 添加采集商品 粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加 添加采集 自动识别价格 / 重量 / 卖家 安装插件后一键采集 全部 0 待处理 0 已上架 0 失败 0 按来源筛选 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 暂无采集商品，请在上方添加",
+        "buttons": [
+          {
+            "text": "仪表盘",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/dashboard/",
+            "disabled": false,
+            "rect": {
+              "x": 28,
+              "y": 60,
+              "w": 159,
+              "h": 40
+            }
+          },
+          {
+            "text": "商品列表",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/products/list/",
+            "disabled": false,
+            "rect": {
+              "x": 54,
+              "y": 152,
+              "w": 133,
+              "h": 40
+            }
+          },
+          {
+            "text": "采集箱",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/products/collect/",
+            "disabled": false,
+            "rect": {
+              "x": 54,
+              "y": 196,
+              "w": 133,
+              "h": 40
+            }
+          },
+          {
+            "text": "上架记录",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/products/import-history/",
+            "disabled": false,
+            "rect": {
+              "x": 54,
+              "y": 240,
+              "w": 133,
+              "h": 40
+            }
+          },
+          {
+            "text": "库存管理",
+            "cls": "",
+            "href": "https://qh.jizhangerp.com/ozon/products/stocks/",
+            "disabled": false,
+            "rect": {
+              "x": 54,
+              "y": 284,
+              "w": 133,
+              "h": 40
+            }
+          },
+          {
+            "text": "QH",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 16,
+              "y": 12,
+              "w": 63,
+              "h": 32
+            }
+          },
+          {
+            "text": "添加采集",
+            "cls": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1375,
+              "y": 183,
+              "w": 121,
+              "h": 40
+            }
+          },
+          {
+            "text": "全部 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 279,
+              "y": 285,
+              "w": 62,
+              "h": 30
+            }
+          },
+          {
+            "text": "待处理 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 349,
+              "y": 285,
+              "w": 87,
+              "h": 30
+            }
+          },
+          {
+            "text": "已上架 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 444,
+              "y": 285,
+              "w": 87,
+              "h": 30
+            }
+          },
+          {
+            "text": "失败 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 539,
+              "y": 285,
+              "w": 74,
+              "h": 30
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+            "value": "",
+            "cls": "ant-input ant-input-lg",
+            "rect": {
+              "x": 331,
+              "y": 191,
+              "w": 1006,
+              "h": 24
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "",
+            "cls": "ant-select-selection-search-input",
+            "rect": {
+              "x": 1384,
+              "y": 289,
+              "w": 107,
+              "h": 22
+            }
+          },
+          {
+            "text": "按来源筛选",
+            "placeholder": "",
+            "value": "",
+            "cls": "ant-select-selection-placeholder",
+            "rect": {
+              "x": 1384,
+              "y": 289,
+              "w": 125,
+              "h": 22
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "on",
+            "cls": "ant-checkbox-input",
+            "rect": {
+              "x": 287,
+              "y": 344,
+              "w": 16,
+              "h": 16
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "on",
+            "cls": "ant-checkbox-input",
+            "rect": {
+              "x": 287,
+              "y": 379,
+              "w": 16,
+              "h": 16
+            }
+          }
+        ],
+        "menuOpenGroups": [
+          "商品 商品列表 采集箱 上架记录 库存管理"
+        ],
+        "cards": []
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-collect-continued-20260704-continued.png"
+    },
+    {
+      "kind": "local",
+      "name": "collect",
+      "url": "http://127.0.0.1:5173/ozon/products/collect/",
+      "info": {
+        "url": "http://127.0.0.1:5173/ozon/products/collect/?continuedAudit=1783149256072",
+        "title": "QH",
+        "w": 1896,
+        "h": 904,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1896,
+        "ph": 904
+      },
+      "data": {
+        "title": "QH",
+        "path": "/ozon/products/collect/",
+        "text": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 STORE 会员权益 免费会员 极 极点 0 当前用户 USER 仪表盘 商品 商品列表 采集箱 上架记录 库存管理 下架重上 选品 AI 工具 推荐 促销 订单 工具 消息 添加采集商品 粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加 添加采集 自动识别价格 / 重量 / 卖家 安装插件后一键采集 全部 0 待处理 0 已上架 0 失败 0 按来源筛选 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 暂无采集商品，请在上方添加",
+        "buttons": [
+          {
+            "text": "QH",
+            "cls": "qh-brand",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "w": 216,
+              "h": 56
+            }
+          },
+          {
+            "text": "帮助中心 使用文档",
+            "cls": "qh-header-action tone-blue",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1246,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "text": "公告 公告中心",
+            "cls": "qh-header-action tone-default",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1337,
+              "y": 11,
+              "w": 80,
+              "h": 34
+            }
+          },
+          {
+            "text": "浏览器插件 插件下载",
+            "cls": "qh-header-action tone-blue",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1423,
+              "y": 11,
+              "w": 96,
+              "h": 34
+            }
+          },
+          {
+            "text": "当前门店 STORE",
+            "cls": "qh-header-action tone-orange",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1525,
+              "y": 11,
+              "w": 91,
+              "h": 34
+            }
+          },
+          {
+            "text": "会员权益 免费会员",
+            "cls": "qh-header-action tone-default",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1621,
+              "y": 11,
+              "w": 84,
+              "h": 34
+            }
+          },
+          {
+            "text": "添加采集",
+            "cls": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid ant-btn-lg ant-btn-compact-item ant-btn-compact-last-item",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 1378,
+              "y": 198,
+              "w": 121,
+              "h": 40
+            }
+          },
+          {
+            "text": "全部 0",
+            "cls": "active",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 240,
+              "y": 279,
+              "w": 65,
+              "h": 30
+            }
+          },
+          {
+            "text": "待处理 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 313,
+              "y": 279,
+              "w": 77,
+              "h": 30
+            }
+          },
+          {
+            "text": "已上架 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 399,
+              "y": 279,
+              "w": 77,
+              "h": 30
+            }
+          },
+          {
+            "text": "失败 0",
+            "cls": "",
+            "href": "",
+            "disabled": false,
+            "rect": {
+              "x": 484,
+              "y": 279,
+              "w": 65,
+              "h": 30
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "text": "",
+            "placeholder": "https://www.ozon.ru/product/... 或直接输入 SKU",
+            "value": "",
+            "cls": "ant-input ant-input-lg css-dev-only-do-not-override-1pi45l5",
+            "rect": {
+              "x": 296,
+              "y": 206,
+              "w": 1071,
+              "h": 25
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "",
+            "cls": "ant-select-input",
+            "rect": {
+              "x": 272,
+              "y": 351,
+              "w": 119,
+              "h": 22
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "on",
+            "cls": "ant-checkbox-input",
+            "rect": {
+              "x": 292,
+              "y": 413,
+              "w": 16,
+              "h": 16
+            }
+          },
+          {
+            "text": "",
+            "placeholder": "",
+            "value": "on",
+            "cls": "ant-checkbox-input",
+            "rect": {
+              "x": 277,
+              "y": 452,
+              "w": 16,
+              "h": 16
+            }
+          }
+        ],
+        "menuOpenGroups": [
+          "商品 商品列表 采集箱 上架记录 库存管理 下架重上"
+        ],
+        "cards": [
+          {
+            "cls": "ant-card ant-card-bordered collect-add-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+            "text": "添加采集商品 粘贴 Ozon 商品链接 / 直接输入 SKU，回车快速添加 添加采集 自动识别价格 / 重量 / 卖家 安装插件后一键采集",
+            "rect": {
+              "x": 240,
+              "y": 112,
+              "w": 1632,
+              "h": 151
+            }
+          },
+          {
+            "cls": "ant-card ant-card-bordered panel-card source-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+            "text": "按来源筛选 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 商品信息 采集价格 卖家 / 来源 品牌 下单链接 采集时间 状态 操作 暂无采集商品，请在上方添加",
+            "rect": {
+              "x": 240,
+              "y": 325,
+              "w": 1632,
+              "h": 358
+            }
+          }
+        ]
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-collect-continued-20260704-continued.png"
+    }
+  ],
+  "checks": {
+    "localHiddenMenuOpenGroups": [
+      {
+        "name": "jidian",
+        "menuOpenGroups": [
+          "工具 水印管理 浏览器插件"
+        ]
+      },
+      {
+        "name": "stores",
+        "menuOpenGroups": [
+          "工具 水印管理 浏览器插件"
+        ]
+      }
+    ],
+    "collectLocalHasSourceFilter": true,
+    "collectSourceHasSourceFilter": true
+  }
+}

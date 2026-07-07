@@ -1,0 +1,55 @@
+{
+  "scope": "watermark templates local persistence and page interaction",
+  "date": "2026-07-04",
+  "route": "http://127.0.0.1:5173/ozon/tools/watermark/",
+  "noSampleDataInserted": true,
+  "ozonWriteEndpointsCalled": false,
+  "currentStoreMutationDuringPageQa": false,
+  "liveStateSummary": {
+    "hasBinding": true,
+    "watermarkTemplates": 0,
+    "watermarkTemplateCache": 0,
+    "storeBoundWatermark": false
+  },
+  "isolatedBackendApiFlow": {
+    "dataDir": "/private/tmp/qh-watermark-template-test",
+    "port": 3303,
+    "createdOk": true,
+    "listedCount": 1,
+    "firstType": "text",
+    "storeBoundAfterCreate": true,
+    "updatedType": "border",
+    "stateCountAfterUpdate": 1,
+    "stateCountAfterDelete": 0,
+    "storeBoundAfterDelete": false
+  },
+  "egoPageQa": {
+    "title": "QH",
+    "path": "/ozon/tools/watermark/",
+    "hasSourceShell": true,
+    "hasTemplateCard": true,
+    "hasPreviewCard": true,
+    "hasEmptyState": true,
+    "downloadDisabledWithoutTemplateOrImage": true,
+    "templateButtons": 0,
+    "modalOpened": true,
+    "modalHasFields": true,
+    "modalInputCount": 10,
+    "modalSelectCount": 3,
+    "visibleWrapsAfterCancel": 0,
+    "visibleMasksAfterCancel": 0
+  },
+  "validations": {
+    "pnpmBuild": "passed",
+    "nodeCheckServer": "passed",
+    "gitDiffCheck": "passed",
+    "backendHealth": "passed",
+    "routeHead": "200"
+  },
+  "redaction": {
+    "storesRawCredentials": "not_recorded",
+    "templateText": "not_recorded",
+    "uploadedImages": "not_recorded",
+    "productAndOrderRows": "not_recorded"
+  }
+}

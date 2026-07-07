@@ -1,0 +1,105 @@
+{
+  "date": "2026-07-07",
+  "scope": "source plugin 1:1 clone priority plus collect-box and listing flow",
+  "status": "complete_for_source_plugin_clone_collect_box_and_listing_flow",
+  "requirements": [
+    {
+      "requirement": "source browser extension UI and functions are cloned 1:1",
+      "evidence": [
+        "scripts/check-extension-source-parity.mjs passes against /Users/songliang/Desktop/0.13.46.1",
+        "scripts/check-extension-ui-parity.mjs verifies popup HTML/CSS, icons, batch-upload UI, and content CSS are byte-identical to the source extension",
+        "scripts/check-extension-diff-contract.mjs verifies all source/local extension differences are limited to audited local routing, follow-sell bridge, dry-run preview, and Ozon category/type fixes",
+        "app/public/qh-extension-0.13.46.1.zip and app/dist/qh-extension-0.13.46.1.zip match the extension tree"
+      ],
+      "result": "proved_for_current_source_extension_tree"
+    },
+    {
+      "requirement": "plugin popup UI entries and navigation remain usable in the local clone",
+      "evidence": [
+        "extension/popup/__tests__/popup-routing.smoke.test.js verifies popup actions and labels for dashboard, product list, collect box, batch upload, import history, reshelf, pricing, watermark, stores, premium pivot, data panel, and collector",
+        "extension/popup/__tests__/browser-agent-popup.smoke.test.js verifies Browser Agent popup UI wiring"
+      ],
+      "result": "proved_by_static_contract"
+    },
+    {
+      "requirement": "collect box and product list can open the product information edit page",
+      "evidence": [
+        "scripts/check-collect-edit-listing-contract.mjs verifies product-list 查看 and collect-box 查看 both route to /ozon/products/collect/edit/",
+        "ego lite runtime verification clicked both entry points and confirmed source-style edit sections rendered"
+      ],
+      "result": "proved_by_contract_and_runtime_spotcheck"
+    },
+    {
+      "requirement": "specified SKU collect/listing dry-run works through the installed local plugin",
+      "evidence": [
+        "ego lite plugin bridge responded with version 0.13.46.1",
+        "SKU 1424490696 dry-run: category 17028737, type 94637, attributes 40, images 12",
+        "SKU 2855190785 dry-run: category 17027907, type 92374, attributes 18, images 5",
+        "SKU 3278119665 dry-run: category 17028654, type 94814, attributes 36, images 16"
+      ],
+      "result": "proved_by_runtime_dry_run"
+    },
+    {
+      "requirement": "real listing flow reaches Ozon for the test store",
+      "evidence": [
+        "A real PRODUCT_IMPORT task was submitted for SKU 1424490696",
+        "Ozon task id 5016114798 exists in local import history",
+        "A later read-only refresh from the logged-in local browser context returned status FAILED",
+        "The failed item has Ozon error code currency_differs_from_contract on field currency"
+      ],
+      "result": "local_submit_chain_proved_but_ozon_rejected_test_payload_currency"
+    },
+    {
+      "requirement": "real listing flow uses the test store contract currency and imports successfully",
+      "evidence": [
+        "The backend now exposes the inferred store currency to the frontend as CNY for store 数据 01test",
+        "A regression test proves that when the plugin sends RUB but the bound store product cache indicates CNY, /v3/product/import receives currency_code CNY",
+        "SKU 2855190785 dry-run passed after the currency fix: category 17027907, type 92374, attributes 18, images 5",
+        "A real PRODUCT_IMPORT task was submitted for SKU 2855190785 with normalized currency_code CNY",
+        "Ozon task id 5016830015 reached SUCCESS, item status imported, product_id 5386966567, no item errors"
+      ],
+      "result": "proved_by_runtime_real_import_success"
+    },
+    {
+      "requirement": "no API credentials are written to code or evidence",
+      "evidence": [
+        "pnpm verify credential literal scan passes",
+        "explicit rg scan for provided API keys and Client IDs returns no matches in app/src, server, extension, scripts, design-qa.md, README.md, and package.json"
+      ],
+      "result": "proved"
+    }
+  ],
+  "current_local_state_summary": {
+    "collect_items": 17,
+    "products": 581,
+    "jobs": 84,
+    "test_skus": {
+      "1424490696": {
+        "in_collect_box": true,
+        "collect_status": "listed",
+        "real_import_task_id": 5016114798,
+        "ozon_item_status": "failed",
+        "ozon_error_code": "currency_differs_from_contract"
+      },
+      "2855190785": {
+        "in_collect_box": true,
+        "collect_status": "listed",
+        "dry_run_passed": true,
+        "real_import_task_id": 5016830015,
+        "ozon_item_status": "imported",
+        "product_id": 5386966567
+      },
+      "3278119665": {
+        "in_collect_box": true,
+        "collect_status": "collected",
+        "dry_run_passed": true
+      }
+    }
+  },
+  "completion_evidence": [
+    "pnpm verify passed after the currency-contract fix",
+    "local backend was restarted on http://127.0.0.1:3001 with the fix loaded",
+    "GET /local/state returns binding currency CNY for store 数据 01test",
+    "Ozon task 5016830015 reached terminal SUCCESS with product_id 5386966567 and no item errors"
+  ]
+}

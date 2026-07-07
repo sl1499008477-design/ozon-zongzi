@@ -1,0 +1,24 @@
+{
+  "createdAt": "2026-07-04T10:10:19.651Z",
+  "url": "http://127.0.0.1:5173/ozon/products/stocks/?visual-pagination=1783159817950",
+  "rows": 20,
+  "hasPagination": true,
+  "sourcePageRect": {
+    "x": 240,
+    "y": 80,
+    "w": 1610,
+    "h": 1719
+  },
+  "tableRect": {
+    "x": 261,
+    "y": 571,
+    "w": 1568,
+    "h": 1207
+  },
+  "paginationText": "1 2 3 4 5 29",
+  "masked": true,
+  "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-stocks-pagination-after-patch-20260704.png",
+  "screenshotOk": true,
+  "screenshotBytes": 111759,
+  "note": "Table body cells and long identifiers were masked before screenshot; this evidence verifies finite table height and pagination with real local cache present."
+}

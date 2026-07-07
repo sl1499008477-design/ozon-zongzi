@@ -1,0 +1,3414 @@
+{
+  "capturedAt": "2026-07-04T04:43:06.971Z",
+  "taskSpaceId": 23,
+  "note": "Sanitized product-management page evidence. Sync/refresh/reshelf/delete actions were not clicked.",
+  "pages": [
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/import-history/",
+      "data": {
+        "path": "/ozon/products/import-history/",
+        "action": "initial",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索 SKU / 货号",
+          "开始日期",
+          "结束日期"
+        ],
+        "buttons": [
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 589,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(22, 119, 255)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "已完成",
+            "disabled": false,
+            "rect": {
+              "x": 646,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "部分成功",
+            "disabled": false,
+            "rect": {
+              "x": 715,
+              "y": 256,
+              "w": 72,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "处理中",
+            "disabled": false,
+            "rect": {
+              "x": 798,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "失败",
+            "disabled": false,
+            "rect": {
+              "x": 867,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "重 置",
+            "disabled": false,
+            "rect": {
+              "x": 1566,
+              "y": 254,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 1640,
+              "y": 254,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "批量删除 (0)",
+            "disabled": true,
+            "rect": {
+              "x": 1428,
+              "y": 331,
+              "w": 133,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "全部展开",
+            "disabled": false,
+            "rect": {
+              "x": 1569,
+              "y": 331,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 589,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(22, 119, 255)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "已完成",
+            "rect": {
+              "x": 646,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "部分成功",
+            "rect": {
+              "x": 715,
+              "y": 256,
+              "w": 72,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "处理中",
+            "rect": {
+              "x": 798,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "失败",
+            "rect": {
+              "x": 867,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作",
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/import-history/",
+      "data": {
+        "path": "/ozon/products/import-history/",
+        "action": "已完成",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索 SKU / 货号",
+          "开始日期",
+          "结束日期"
+        ],
+        "buttons": [
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 589,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "已完成",
+            "disabled": false,
+            "rect": {
+              "x": 646,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(82, 196, 26)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(82, 196, 26)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "部分成功",
+            "disabled": false,
+            "rect": {
+              "x": 715,
+              "y": 256,
+              "w": 72,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "处理中",
+            "disabled": false,
+            "rect": {
+              "x": 798,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "失败",
+            "disabled": false,
+            "rect": {
+              "x": 867,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "重 置",
+            "disabled": false,
+            "rect": {
+              "x": 1566,
+              "y": 254,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 1640,
+              "y": 254,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "批量删除 (0)",
+            "disabled": true,
+            "rect": {
+              "x": 1428,
+              "y": 331,
+              "w": 133,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "全部展开",
+            "disabled": false,
+            "rect": {
+              "x": 1569,
+              "y": 331,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 589,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "已完成",
+            "rect": {
+              "x": 646,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(82, 196, 26)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(82, 196, 26)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "部分成功",
+            "rect": {
+              "x": 715,
+              "y": 256,
+              "w": 72,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "处理中",
+            "rect": {
+              "x": 798,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "失败",
+            "rect": {
+              "x": 867,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作",
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/import-history/",
+      "data": {
+        "path": "/ozon/products/import-history/",
+        "action": "失败",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索 SKU / 货号",
+          "开始日期",
+          "结束日期"
+        ],
+        "buttons": [
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 589,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "已完成",
+            "disabled": false,
+            "rect": {
+              "x": 646,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "部分成功",
+            "disabled": false,
+            "rect": {
+              "x": 715,
+              "y": 256,
+              "w": 72,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "处理中",
+            "disabled": false,
+            "rect": {
+              "x": 798,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "失败",
+            "disabled": false,
+            "rect": {
+              "x": 867,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 77, 79)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(255, 77, 79)"
+            },
+            "className": "ozon-ih-chip"
+          },
+          {
+            "text": "重 置",
+            "disabled": false,
+            "rect": {
+              "x": 1566,
+              "y": 254,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 1640,
+              "y": 254,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "批量删除 (0)",
+            "disabled": true,
+            "rect": {
+              "x": 1428,
+              "y": 331,
+              "w": 133,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "全部展开",
+            "disabled": false,
+            "rect": {
+              "x": 1569,
+              "y": 331,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 589,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "已完成",
+            "rect": {
+              "x": 646,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "部分成功",
+            "rect": {
+              "x": 715,
+              "y": 256,
+              "w": 72,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "处理中",
+            "rect": {
+              "x": 798,
+              "y": 256,
+              "w": 60,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          },
+          {
+            "text": "失败",
+            "rect": {
+              "x": 867,
+              "y": 256,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 77, 79)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(255, 77, 79)"
+            },
+            "className": "ozon-ih-chip",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作",
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/import-history/",
+      "data": {
+        "path": "/ozon/products/import-history/",
+        "action": "initial",
+        "headings": [],
+        "labels": [
+          "状态",
+          "搜索",
+          "创建时间"
+        ],
+        "placeholders": [
+          "搜索 SKU / 货号",
+          "Start date",
+          "End date"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 355,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active"
+          },
+          {
+            "text": "已完成",
+            "disabled": false,
+            "rect": {
+              "x": 413,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "部分成功",
+            "disabled": false,
+            "rect": {
+              "x": 483,
+              "y": 279,
+              "w": 75,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "处理中",
+            "disabled": false,
+            "rect": {
+              "x": 566,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "失败",
+            "disabled": false,
+            "rect": {
+              "x": 636,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "重 置",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 409,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 333,
+              "y": 409,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "批量删除 (0)",
+            "disabled": true,
+            "rect": {
+              "x": 1907,
+              "y": 499,
+              "w": 111,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "全部展开",
+            "disabled": false,
+            "rect": {
+              "x": 2027,
+              "y": 499,
+              "w": 89,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 355,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active",
+            "disabled": false
+          },
+          {
+            "text": "已完成",
+            "rect": {
+              "x": 413,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "部分成功",
+            "rect": {
+              "x": 483,
+              "y": 279,
+              "w": 75,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "处理中",
+            "rect": {
+              "x": 566,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "失败",
+            "rect": {
+              "x": 636,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/import-history/",
+      "data": {
+        "path": "/ozon/products/import-history/",
+        "action": "已完成",
+        "headings": [],
+        "labels": [
+          "状态",
+          "搜索",
+          "创建时间"
+        ],
+        "placeholders": [
+          "搜索 SKU / 货号",
+          "Start date",
+          "End date"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 355,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active"
+          },
+          {
+            "text": "已完成",
+            "disabled": false,
+            "rect": {
+              "x": 413,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "部分成功",
+            "disabled": false,
+            "rect": {
+              "x": 483,
+              "y": 279,
+              "w": 75,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "处理中",
+            "disabled": false,
+            "rect": {
+              "x": 566,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "失败",
+            "disabled": false,
+            "rect": {
+              "x": 636,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "重 置",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 409,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 333,
+              "y": 409,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "批量删除 (0)",
+            "disabled": true,
+            "rect": {
+              "x": 1907,
+              "y": 499,
+              "w": 111,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "全部展开",
+            "disabled": false,
+            "rect": {
+              "x": 2027,
+              "y": 499,
+              "w": 89,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 355,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active",
+            "disabled": false
+          },
+          {
+            "text": "已完成",
+            "rect": {
+              "x": 413,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "部分成功",
+            "rect": {
+              "x": 483,
+              "y": 279,
+              "w": 75,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "处理中",
+            "rect": {
+              "x": 566,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "失败",
+            "rect": {
+              "x": 636,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/import-history/",
+      "data": {
+        "path": "/ozon/products/import-history/",
+        "action": "失败",
+        "headings": [],
+        "labels": [
+          "状态",
+          "搜索",
+          "创建时间"
+        ],
+        "placeholders": [
+          "搜索 SKU / 货号",
+          "Start date",
+          "End date"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 355,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active"
+          },
+          {
+            "text": "已完成",
+            "disabled": false,
+            "rect": {
+              "x": 413,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "部分成功",
+            "disabled": false,
+            "rect": {
+              "x": 483,
+              "y": 279,
+              "w": 75,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "处理中",
+            "disabled": false,
+            "rect": {
+              "x": 566,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "失败",
+            "disabled": false,
+            "rect": {
+              "x": 636,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "重 置",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 409,
+              "w": 64,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 333,
+              "y": 409,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "批量删除 (0)",
+            "disabled": true,
+            "rect": {
+              "x": 1907,
+              "y": 499,
+              "w": 111,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "全部展开",
+            "disabled": false,
+            "rect": {
+              "x": 2027,
+              "y": 499,
+              "w": 89,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 355,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active",
+            "disabled": false
+          },
+          {
+            "text": "已完成",
+            "rect": {
+              "x": 413,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "部分成功",
+            "rect": {
+              "x": 483,
+              "y": 279,
+              "w": 75,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "处理中",
+            "rect": {
+              "x": 566,
+              "y": 279,
+              "w": 62,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "失败",
+            "rect": {
+              "x": 636,
+              "y": 279,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "#",
+          "商品信息",
+          "源 SKU",
+          "店铺",
+          "变体",
+          "售价",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/stocks/",
+      "data": {
+        "path": "/ozon/products/stocks/",
+        "action": "initial",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索商品名 / 货号"
+        ],
+        "buttons": [
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 589,
+              "y": 390,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(22, 119, 255)"
+            },
+            "className": ""
+          },
+          {
+            "text": "缺货0",
+            "disabled": false,
+            "rect": {
+              "x": 646,
+              "y": 390,
+              "w": 68,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "低库存0",
+            "disabled": false,
+            "rect": {
+              "x": 724,
+              "y": 390,
+              "w": 81,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "刷新",
+            "disabled": false,
+            "rect": {
+              "x": 1548,
+              "y": 389,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 1640,
+              "y": 389,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 589,
+              "y": 390,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(22, 119, 255)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "缺货0",
+            "rect": {
+              "x": 646,
+              "y": 390,
+              "w": 68,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "低库存0",
+            "rect": {
+              "x": 724,
+              "y": 390,
+              "w": 81,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/stocks/",
+      "data": {
+        "path": "/ozon/products/stocks/",
+        "action": "缺货",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索商品名 / 货号"
+        ],
+        "buttons": [
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 589,
+              "y": 390,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "缺货1",
+            "disabled": false,
+            "rect": {
+              "x": 646,
+              "y": 390,
+              "w": 68,
+              "h": 28,
+              "background": "rgb(255, 77, 79)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(255, 77, 79)"
+            },
+            "className": ""
+          },
+          {
+            "text": "低库存3",
+            "disabled": false,
+            "rect": {
+              "x": 724,
+              "y": 390,
+              "w": 81,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "刷新",
+            "disabled": false,
+            "rect": {
+              "x": 1529,
+              "y": 389,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 1621,
+              "y": 389,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 589,
+              "y": 390,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/stocks/",
+      "data": {
+        "path": "/ozon/products/stocks/",
+        "action": "低库存",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜索商品名 / 货号"
+        ],
+        "buttons": [
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 589,
+              "y": 390,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "缺货1",
+            "disabled": false,
+            "rect": {
+              "x": 646,
+              "y": 390,
+              "w": 68,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "低库存3",
+            "disabled": false,
+            "rect": {
+              "x": 724,
+              "y": 390,
+              "w": 81,
+              "h": 28,
+              "background": "rgb(250, 173, 20)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgb(250, 173, 20)"
+            },
+            "className": ""
+          },
+          {
+            "text": "刷新",
+            "disabled": false,
+            "rect": {
+              "x": 1548,
+              "y": 389,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 1640,
+              "y": 389,
+              "w": 82,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 589,
+              "y": 390,
+              "w": 47,
+              "h": 28,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(31, 41, 55)",
+              "radius": "6px",
+              "fontSize": "12.5px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/stocks/",
+      "data": {
+        "path": "/ozon/products/stocks/",
+        "action": "initial",
+        "headings": [
+          "库存管理"
+        ],
+        "labels": [],
+        "placeholders": [
+          "商品 / SKU",
+          "件"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "刷新",
+            "disabled": false,
+            "rect": {
+              "x": 1987,
+              "y": 422,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 2055,
+              "y": 422,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 487,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active"
+          },
+          {
+            "text": "缺货0",
+            "disabled": false,
+            "rect": {
+              "x": 319,
+              "y": 487,
+              "w": 65,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "低库存0",
+            "disabled": false,
+            "rect": {
+              "x": 392,
+              "y": 487,
+              "w": 77,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 261,
+              "y": 487,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active",
+            "disabled": false
+          },
+          {
+            "text": "缺货0",
+            "rect": {
+              "x": 319,
+              "y": 487,
+              "w": 65,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "低库存0",
+            "rect": {
+              "x": 392,
+              "y": 487,
+              "w": 77,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/stocks/",
+      "data": {
+        "path": "/ozon/products/stocks/",
+        "action": "缺货",
+        "headings": [
+          "库存管理"
+        ],
+        "labels": [],
+        "placeholders": [
+          "商品 / SKU",
+          "件"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "刷新",
+            "disabled": false,
+            "rect": {
+              "x": 1987,
+              "y": 422,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 2055,
+              "y": 422,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 487,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active"
+          },
+          {
+            "text": "缺货0",
+            "disabled": false,
+            "rect": {
+              "x": 319,
+              "y": 487,
+              "w": 65,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "低库存0",
+            "disabled": false,
+            "rect": {
+              "x": 392,
+              "y": 487,
+              "w": 77,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 261,
+              "y": 487,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active",
+            "disabled": false
+          },
+          {
+            "text": "缺货0",
+            "rect": {
+              "x": 319,
+              "y": 487,
+              "w": 65,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "低库存0",
+            "rect": {
+              "x": 392,
+              "y": 487,
+              "w": 77,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/stocks/",
+      "data": {
+        "path": "/ozon/products/stocks/",
+        "action": "低库存",
+        "headings": [
+          "库存管理"
+        ],
+        "labels": [],
+        "placeholders": [
+          "商品 / SKU",
+          "件"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "刷新",
+            "disabled": false,
+            "rect": {
+              "x": 1987,
+              "y": 422,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.88)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-color-default ant-btn-variant-outlined"
+          },
+          {
+            "text": "查询",
+            "disabled": false,
+            "rect": {
+              "x": 2055,
+              "y": 422,
+              "w": 60,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          },
+          {
+            "text": "全部",
+            "disabled": false,
+            "rect": {
+              "x": 261,
+              "y": 487,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active"
+          },
+          {
+            "text": "缺货0",
+            "disabled": false,
+            "rect": {
+              "x": 319,
+              "y": 487,
+              "w": 65,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          },
+          {
+            "text": "低库存0",
+            "disabled": false,
+            "rect": {
+              "x": 392,
+              "y": 487,
+              "w": 77,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": ""
+          }
+        ],
+        "chips": [
+          {
+            "text": "全部",
+            "rect": {
+              "x": 261,
+              "y": 487,
+              "w": 50,
+              "h": 30,
+              "background": "rgb(15, 23, 42)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "600",
+              "border": "0.75px solid rgb(15, 23, 42)"
+            },
+            "className": "active",
+            "disabled": false
+          },
+          {
+            "text": "缺货0",
+            "rect": {
+              "x": 319,
+              "y": 487,
+              "w": 65,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          },
+          {
+            "text": "低库存0",
+            "rect": {
+              "x": 392,
+              "y": 487,
+              "w": 77,
+              "h": 30,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgb(55, 65, 81)",
+              "radius": "999px",
+              "fontSize": "12px",
+              "fontWeight": "500",
+              "border": "0.75px solid rgb(229, 231, 235)"
+            },
+            "className": "",
+            "disabled": false
+          }
+        ],
+        "tableHeaders": [
+          "主图",
+          "商品",
+          "总库存",
+          "仓库分布",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    },
+    {
+      "label": "source",
+      "base": "https://qh.jizhangerp.com",
+      "route": "/ozon/products/reshelf/",
+      "data": {
+        "path": "/ozon/products/reshelf/",
+        "action": "initial",
+        "headings": [
+          "QH"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜 SKU / 货号 / 标题…"
+        ],
+        "buttons": [
+          {
+            "text": "下架重上",
+            "disabled": true,
+            "rect": {
+              "x": 1519,
+              "y": 117,
+              "w": 110,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.625px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn ant-btn-default ant-btn-dangerous ant-btn-color-dangerous ant-btn-variant-outlined"
+          },
+          {
+            "text": "同步全部",
+            "disabled": false,
+            "rect": {
+              "x": 1638,
+              "y": 117,
+              "w": 110,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "600",
+              "border": "0.625px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          }
+        ],
+        "chips": [],
+        "tableHeaders": [
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作",
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 1
+      }
+    },
+    {
+      "label": "local",
+      "base": "http://127.0.0.1:5173",
+      "route": "/ozon/products/reshelf/",
+      "data": {
+        "path": "/ozon/products/reshelf/",
+        "action": "initial",
+        "headings": [
+          "下架重上"
+        ],
+        "labels": [],
+        "placeholders": [
+          "搜 SKU / 货号 / 标题…"
+        ],
+        "buttons": [
+          {
+            "text": "帮助中心使用文档",
+            "disabled": false,
+            "rect": {
+              "x": 1510,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "公告公告中心",
+            "disabled": false,
+            "rect": {
+              "x": 1601,
+              "y": 11,
+              "w": 80,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "浏览器插件插件下载",
+            "disabled": false,
+            "rect": {
+              "x": 1687,
+              "y": 11,
+              "w": 96,
+              "h": 34,
+              "background": "rgb(243, 248, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(216, 232, 255)"
+            },
+            "className": "qh-header-action tone-blue"
+          },
+          {
+            "text": "当前门店去绑定门店",
+            "disabled": false,
+            "rect": {
+              "x": 1789,
+              "y": 11,
+              "w": 91,
+              "h": 34,
+              "background": "rgb(255, 247, 237)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(255, 225, 189)"
+            },
+            "className": "qh-header-action tone-orange"
+          },
+          {
+            "text": "会员权益免费会员",
+            "disabled": false,
+            "rect": {
+              "x": 1885,
+              "y": 11,
+              "w": 84,
+              "h": 34,
+              "background": "rgb(255, 255, 255)",
+              "color": "rgba(0, 0, 0, 0.65)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(238, 241, 245)"
+            },
+            "className": "qh-header-action tone-default"
+          },
+          {
+            "text": "下架重上",
+            "disabled": true,
+            "rect": {
+              "x": 1929,
+              "y": 112,
+              "w": 89,
+              "h": 32,
+              "background": "rgba(0, 0, 0, 0.04)",
+              "color": "rgba(0, 0, 0, 0.25)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgb(217, 217, 217)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-default ant-btn-dangerous ant-btn-color-dangerous ant-btn-variant-outlined"
+          },
+          {
+            "text": "同步全部",
+            "disabled": false,
+            "rect": {
+              "x": 2025,
+              "y": 112,
+              "w": 111,
+              "h": 32,
+              "background": "rgb(22, 119, 255)",
+              "color": "rgb(255, 255, 255)",
+              "radius": "6px",
+              "fontSize": "14px",
+              "fontWeight": "400",
+              "border": "0.75px solid rgba(0, 0, 0, 0)"
+            },
+            "className": "ant-btn css-dev-only-do-not-override-1pi45l5 css-var-_r_0_ ant-btn-primary ant-btn-color-primary ant-btn-variant-solid"
+          }
+        ],
+        "chips": [],
+        "tableHeaders": [
+          "商品信息",
+          "类目佣金",
+          "店铺",
+          "状态",
+          "下架原因",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [
+          "绑定门店后显示真实数据"
+        ],
+        "hasSelectAllCheckbox": true,
+        "bodyText": "[redacted body text; structural fields retained]",
+        "hasGlobalHead": false,
+        "commandMentions": 0
+      }
+    }
+  ]
+}

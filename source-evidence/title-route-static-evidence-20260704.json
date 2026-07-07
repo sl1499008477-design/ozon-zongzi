@@ -1,0 +1,12 @@
+{
+  "capturedAt": "2026-07-04T05:22:45.493Z",
+  "files": [
+    "app/index.html",
+    "app/src/App.jsx"
+  ],
+  "checks": {
+    "indexDefaultTitleQH": true,
+    "indexDatascreenInitialTitle": true,
+    "appRouteTitleEffect": true
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "capturedAt": "2026-07-04T07:28:00.000Z",
+  "purpose": "hidden extension/openFrontend route sidebar parent parity",
+  "sourceEvidence": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/hidden-routes-source-audit-20260704.json",
+  "localEvidenceBeforeMenuPatch": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/hidden-routes-local-after-patch-20260704.json",
+  "localEvidenceAfterMenuPatch": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-hidden-route-sider-after-vite-restart-20260704.json",
+  "localTemplateScreenshotAfterMenuPatch": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-templates-hidden-sider-after-vite-restart-20260704.png",
+  "routes": [
+    {
+      "route": "/ozon/templates/",
+      "visibleParentMenu": null,
+      "localRouteParentRemoved": true
+    },
+    {
+      "route": "/ozon/settings/jidian/",
+      "visibleParentMenu": null,
+      "localRouteParentRemoved": true
+    },
+    {
+      "route": "/ozon/settings/membership/",
+      "visibleParentMenu": null,
+      "localRouteParentRemoved": true
+    },
+    {
+      "route": "/ozon/settings/stores/",
+      "visibleParentMenu": null,
+      "localRouteParentRemoved": true
+    }
+  ],
+  "implementation": {
+    "routeParentKeepsOnlyRealSidebarChildren": true,
+    "navigateClearsOpenKeysForRoutesWithoutParent": true,
+    "popstateClearsOpenKeysForRoutesWithoutParent": true,
+    "routeEffectClearsOpenKeysForRoutesWithoutParent": true,
+    "hiddenRouteSiderForcesCollapsedVisualState": true,
+    "localFinalCheck": {
+      "file": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-hidden-route-sider-after-vite-restart-20260704.json",
+      "ok": true,
+      "visibleSubItems": 0,
+      "openGroups": 0
+    },
+    "retainedParentRoutes": [
+      "/ozon/tools/plugin/",
+      "/ozon/tools/watermark/",
+      "/ozon/messaging/templates/",
+      "/ozon/messaging/history/",
+      "/ozon/announcements/"
+    ]
+  },
+  "noSampleData": true
+}

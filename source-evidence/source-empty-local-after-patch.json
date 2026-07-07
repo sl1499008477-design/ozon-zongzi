@@ -1,0 +1,266 @@
+{
+  "capturedAt": "2026-07-04T04:58:53.671Z",
+  "taskSpaceId": 24,
+  "note": "Representative local source-empty table verification; no raw body text stored.",
+  "pages": [
+    {
+      "route": "/ozon/products/list/",
+      "data": {
+        "path": "/ozon/products/list/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "共 0 个"
+        ],
+        "headers": [
+          "商品信息",
+          "状态",
+          "价格",
+          "库存",
+          "货源 (¥)",
+          "最后同步",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无商品"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/products/collect/",
+      "data": {
+        "path": "/ozon/products/collect/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "headers": [
+          "商品信息",
+          "采集价格",
+          "卖家 / 来源",
+          "品牌",
+          "下单链接",
+          "采集时间",
+          "状态",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无采集商品，请在上方添加"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/selection/category/",
+      "data": {
+        "path": "/ozon/selection/category/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "全部类目",
+          "增长机会",
+          "高退货率",
+          "品牌集中",
+          "FBS机会"
+        ],
+        "headers": [
+          "#",
+          "类目",
+          "月销量",
+          "月销售额",
+          "GMV增长",
+          "平均价",
+          "均价环比",
+          "卖家数",
+          "品牌数",
+          "品牌占比",
+          "头部卖家",
+          "FBS占比",
+          "出库率",
+          "退货率"
+        ],
+        "emptyTexts": [
+          "本周期还没有类目分析快照"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/selection/top-list/",
+      "data": {
+        "path": "/ozon/selection/top-list/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "选品策略"
+        ],
+        "headers": [
+          "商品",
+          "类目",
+          "价格",
+          "销量",
+          "销售额",
+          "增长",
+          "卖家",
+          "品牌",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无榜单数据"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/tools/ai-poster-records/",
+      "data": {
+        "path": "/ozon/tools/ai-poster-records/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "点击、拖拽,或 Ctrl/⌘+V 粘贴图片",
+          "已识别 0 条"
+        ],
+        "headers": [
+          "原图",
+          "改图结果",
+          "货号",
+          "状态",
+          "创建时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无改图记录"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/postings/list/",
+      "data": {
+        "path": "/ozon/postings/list/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "¥—",
+          "¥—",
+          "—%",
+          "0",
+          "—"
+        ],
+        "headers": [
+          "倒计时",
+          "货件 / 状态",
+          "店铺",
+          "商品",
+          "仓库 / 配送",
+          "订单金额",
+          "利润",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无数据"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/messaging/templates/",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "模板列表"
+        ],
+        "headers": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无模板"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "route": "/ozon/messaging/history/",
+      "data": {
+        "path": "/ozon/messaging/history/",
+        "titles": [
+          "帮助中心",
+          "公告",
+          "浏览器插件",
+          "当前门店",
+          "会员权益",
+          "极点",
+          "未登录",
+          "历史记录"
+        ],
+        "headers": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间",
+          "操作"
+        ],
+        "emptyTexts": [
+          "暂无发送记录"
+        ],
+        "hasStorePrompt": false,
+        "hasGlobalHead": false
+      }
+    }
+  ]
+}

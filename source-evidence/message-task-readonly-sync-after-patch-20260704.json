@@ -1,0 +1,31 @@
+{
+  "routes": [
+    "/ozon/postings/review-request",
+    "/ozon/postings/pickup-reminder"
+  ],
+  "validatedAt": "2026-07-04T21:20:00+08:00",
+  "scope": "message task readonly sync buttons",
+  "sourceOfTruth": "browser click plus local sync job state",
+  "browserEvidence": {
+    "pageHasSyncCurrentStoreButton": true,
+    "pageHasSyncAllStoresButton": true,
+    "pageHasBatchSendButton": true,
+    "visibleCandidateCount": 55
+  },
+  "syncEvidence": {
+    "jobsBefore": 12,
+    "jobsAfter": 13,
+    "postingsJobsBefore": 3,
+    "postingsJobsAfter": 4,
+    "latestPostingsStatus": "SUCCESS",
+    "latestPostingsFetchedCount": 462
+  },
+  "writeBoundary": {
+    "messageHistoryBefore": 0,
+    "messageHistoryAfter": 0,
+    "messageHistoryUnchanged": true,
+    "messageSendEndpointCalled": false,
+    "ozonWriteEndpointCalled": false,
+    "sampleMessageDataInserted": false
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "checkedAt": "2026-07-04T03:27:15.714Z",
+  "taskSpaceId": 10,
+  "pages": [
+    {
+      "route": "/ozon/selection/top-list/",
+      "before": {
+        "path": "/ozon/selection/top-list/",
+        "hasInlineFilters": true,
+        "textSample": "QH\n帮助中心\n使用文档\n公告\n公告中心\n浏览器插件\n插件下载\n当前门店\n去绑定门店\n会员权益\n免费会员\n极\n极点\n0\n当前用户\n未登录\n仪表盘\n商品\n选品\n类目分析\n榜单选品\n中国专区\nAI 工具\n推荐\n促销\n订单\n工具\n消息\n榜单选品\n2026-07-04 · 周六\n自动同步 · 上次 —\n极点余额 0\n全部同步\n⌘R\n榜单选品\n\n/ Ozon 全平台 top 1000 实时榜单\n\n数据更新 —\n7天\n28天\n₽\n¥\n全部\n热销商品\n热销新品\n潜力商品\n蓝海商品\n低价高销\n高增长\n高加购\n蓝海量级\n选品策略\n保留当前类目，快速切筛选\n未启用额外筛选\n一级类目\n全部\n商品名称\nSKU\n批量 SKUS\n月销量\n~\n月销售额 ₽\n~\n平均价 ₽\n~\n月销售额环比 %\n~\n发货模式\n任意\nFBO\nFBS\nRFBS\nCB · 跨境\n查 询\n重 置\n更多筛选 ↓\n批量加入草稿箱\n清空选择\n共 0 件商品 · 当前展示 0-0\n已选 0\n\t商品\t类目\t价格\t销量\t销售额\t增长\t卖家\t品牌\t操作\n\n\t\n商品\n\t\n类目\n\t\n价格\n\t\n销量\n\t\n销售额\n\t\n增长\n\t\n卖家\n\t\n品牌\n\t\n操作\n\n\n绑定门店后显示真实数据\n⌘K",
+        "buttons": [
+          "帮助中心 使用文档",
+          "公告 公告中心",
+          "浏览器插件 插件下载",
+          "当前门店 去绑定门店",
+          "会员权益 免费会员",
+          "全部同步 ⌘R",
+          "全部",
+          "热销商品",
+          "热销新品",
+          "潜力商品",
+          "蓝海商品",
+          "低价高销",
+          "高增长",
+          "高加购",
+          "蓝海量级",
+          "查 询",
+          "重 置",
+          "更多筛选 ↓",
+          "批量加入草稿箱",
+          "清空选择",
+          "⌘K"
+        ],
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      },
+      "clickedMoreFilter": true,
+      "after": {
+        "clickedCreatesModal": false,
+        "clickedCreatesDrawer": false,
+        "modalTitles": [],
+        "drawerTitles": []
+      }
+    },
+    {
+      "route": "/ozon/selection/china/",
+      "before": {
+        "path": "/ozon/selection/china/",
+        "hasInlineFilters": true,
+        "textSample": "AI 工具\n推荐\n中国专区\n2026-07-04 · 周六\n自动同步 · 上次 —\n极点余额 0\n全部同步\n⌘R\n中国专区\n\n/ Ozon 中国卖家热销榜单，跨境跟款对标\n\n数据更新 —\n7天\n28天\n₽\n¥\n全部\n中国对标\n低价高销\n高增长\n高加购\n选品策略\n保留当前类目，快速切筛选\n未启用额外筛选\n一级类目\n全部\n商品名称\nSKU\n批量 SKUS\n月销量\n~\n月销售额 ₽\n~\n平均价 ₽\n~\n月销售额环比 %\n~\n发货模式\n任意\nFBO\nFBS\nRFBS\nCB · 跨境\n查 询\n重 置\n更多筛选 ↓\n批量加入草稿箱\n清空选择\n共 0 件商品 · 当前展示 0-0\n已选 0\n\t商品\t类目\t价格\t销量\t销售额\t增长\t卖家\t品牌\t操作\n\n\t\n商品\n\t\n类目\n\t\n价格\n\t\n销量\n\t\n销售额\n\t\n增长\n\t\n卖家\n\t\n品牌\n\t\n操作\n\n\n绑定门店后显示真实数据\n⌘K",
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "全部同步 ⌘R",
+          "全部",
+          "中国对标",
+          "低价高销",
+          "高增长",
+          "高加购",
+          "查 询",
+          "重 置",
+          "更多筛选 ↓",
+          "批量加入草稿箱",
+          "清空选择",
+          "⌘K"
+        ],
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      },
+      "clickedMoreFilter": true,
+      "after": {
+        "clickedCreatesModal": false,
+        "clickedCreatesDrawer": false,
+        "modalTitles": [],
+        "drawerTitles": []
+      }
+    }
+  ]
+}

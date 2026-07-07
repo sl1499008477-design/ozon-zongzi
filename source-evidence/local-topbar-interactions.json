@@ -1,0 +1,68 @@
+{
+  "checkedAt": "2026-07-04T03:32:38.937Z",
+  "taskSpaceId": 12,
+  "interactions": [
+    {
+      "text": "帮助中心",
+      "clicked": true,
+      "state": {
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "text": "公告",
+      "clicked": true,
+      "state": {
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "text": "会员权益",
+      "clicked": true,
+      "state": {
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "text": "当前用户",
+      "clicked": true,
+      "state": {
+        "path": "/ozon/dashboard/",
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "text": "浏览器插件",
+      "clicked": true,
+      "state": {
+        "path": "/ozon/tools/plugin/",
+        "modalTitles": [],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      }
+    },
+    {
+      "text": "当前门店",
+      "clicked": true,
+      "state": {
+        "path": "/ozon/dashboard/",
+        "modalTitles": [
+          "绑定 Ozon 门店"
+        ],
+        "drawerTitles": [],
+        "hasSampleStoreData": false
+      }
+    }
+  ]
+}

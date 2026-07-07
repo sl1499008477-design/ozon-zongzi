@@ -1,0 +1,68 @@
+{
+  "capturedAt": "2026-07-04T06:12:07Z",
+  "scope": "Local backend compatibility for copied QH browser extension",
+  "tempServer": {
+    "url": "http://127.0.0.1:3101",
+    "dataDir": "/private/tmp/qh-local-api-test"
+  },
+  "realServerUnaffected": {
+    "url": "http://127.0.0.1:3001",
+    "statePolicy": "No real server-data write was required for this compatibility audit."
+  },
+  "summary": {
+    "checks": 29,
+    "failed": 0,
+    "storePatchPersistedRawCookie": false,
+    "nonSyncReportsAffectLastSyncAt": false,
+    "tempSummaryAfterAudit": {
+      "products": 0,
+      "postings": 0,
+      "warehouses": 0,
+      "collectBox": 8,
+      "favorites": 2,
+      "lastSyncAt": null
+    }
+  },
+  "coveredEndpoints": [
+    "GET /feature-flags/me",
+    "GET /membership/usage-summary",
+    "GET /jidian/balance",
+    "GET /jidian/pricing",
+    "GET /ozon/watermark-settings",
+    "PUT /auth/device/heartbeat",
+    "PATCH /auth/ozon-stores/:id",
+    "POST /ozon/collect-box",
+    "PATCH /ozon/collect-box/:id",
+    "POST /ozon/collect-box/batch",
+    "POST /sources/:sourceId/collect",
+    "GET /ozon/collect-box",
+    "POST /ozon/favorites",
+    "GET /ozon/favorites",
+    "GET /ozon/categories/tree",
+    "GET /ozon/description-category/:typeId/attributes",
+    "GET /ozon/product-data/:sku",
+    "POST /ozon/product-data/batch",
+    "POST /ozon/product-data/dims",
+    "GET /ozon/products/import-by-sku/tasks",
+    "POST /extension/l1-samples",
+    "POST /ozon/ai/optimize-for-rating",
+    "POST /ozon/ai/suggest-category",
+    "POST /ozon/ai/verify-category",
+    "POST /ozon/extension/translate",
+    "POST /ozon/extension/ai-optimize",
+    "POST /ozon/products/import",
+    "POST /ozon/stocks/import",
+    "POST /ozon/fleet/:path"
+  ],
+  "writeSafety": {
+    "ozonWriteEndpoints": [
+      "POST /ozon/products/import",
+      "POST /ozon/products/import-from-public",
+      "POST /ozon/products/follow-from-public",
+      "POST /ozon/products/import-by-sku",
+      "POST /ozon/stocks/import",
+      "POST /ozon/collect-box/:id/ai-listing-draft/publish"
+    ],
+    "behavior": "Return LOCAL_OZON_WRITE_DISABLED instead of pretending a real Ozon write succeeded."
+  }
+}

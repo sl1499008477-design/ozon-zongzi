@@ -1,0 +1,1184 @@
+{
+  "capturedAt": "2026-07-04T05:39:57.815Z",
+  "taskSpaceId": 31,
+  "note": "Exact dashboard click audit. Text fields are sanitized; no sample business data intended.",
+  "summary": [
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "clicked": true,
+      "path": "/ozon/promotions/prices/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "clicked": true,
+      "path": "/ozon/tools/ai-poster-records/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "clicked": true,
+      "path": "/ozon/products/collect/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "群发消息",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "群发消息",
+      "clicked": true,
+      "path": "/ozon/messaging/templates/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "批量上架",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "批量上架",
+      "clicked": true,
+      "path": "/ozon/products/import-history/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "clicked": true,
+      "path": "/ozon/postings/list/",
+      "overlayCount": 1,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "类目分析",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "类目分析",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "榜单选品",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "榜单选品",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "利润趋势",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "利润趋势",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "17track",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "17track",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "营销活动",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "营销活动",
+      "clicked": true,
+      "path": "/ozon/dashboard/",
+      "overlayCount": 0,
+      "error": null
+    }
+  ],
+  "results": [
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E6%89%B9%E9%87%8F%E6%94%B9%E4%BB%B7-1783143515595",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "sd-qa-btn",
+        "text": "批量改价",
+        "rect": {
+          "x": 471,
+          "y": 865,
+          "w": 103,
+          "h": 36
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E6%89%B9%E9%87%8F%E6%94%B9%E4%BB%B7-1783143515595",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "批量改价",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-quickButton-%E6%89%B9%E9%87%8F%E6%94%B9%E4%BB%B7-1783143520154",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "",
+        "text": "批量改价",
+        "rect": {
+          "x": 431,
+          "y": 826,
+          "w": 102,
+          "h": 34
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/promotions/prices/",
+        "title": "QH",
+        "pathname": "/ozon/promotions/prices/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "价格与折扣"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143522894",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "sd-qa-btn",
+        "text": "AI 大模型改图",
+        "rect": {
+          "x": 583,
+          "y": 865,
+          "w": 132,
+          "h": 36
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143522894",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-quickButton-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143525858",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "",
+        "text": "AI 大模型改图",
+        "rect": {
+          "x": 541,
+          "y": 826,
+          "w": 130,
+          "h": 34
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/tools/ai-poster-records/",
+        "title": "QH",
+        "pathname": "/ozon/tools/ai-poster-records/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "AI 改图神器"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-1688%20%E9%87%87%E9%9B%86-1783143528577",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "sd-qa-btn",
+        "text": "1688 采集",
+        "rect": {
+          "x": 723,
+          "y": 865,
+          "w": 109,
+          "h": 36
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-1688%20%E9%87%87%E9%9B%86-1783143528577",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "1688 采集",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-quickButton-1688%20%E9%87%87%E9%9B%86-1783143531534",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "",
+        "text": "1688 采集",
+        "rect": {
+          "x": 679,
+          "y": 826,
+          "w": 109,
+          "h": 34
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/products/collect/",
+        "title": "QH",
+        "pathname": "/ozon/products/collect/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "群发消息",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E7%BE%A4%E5%8F%91%E6%B6%88%E6%81%AF-1783143534293",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "sd-qa-btn",
+        "text": "群发消息",
+        "rect": {
+          "x": 840,
+          "y": 865,
+          "w": 103,
+          "h": 36
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E7%BE%A4%E5%8F%91%E6%B6%88%E6%81%AF-1783143534293",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "群发消息",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-quickButton-%E7%BE%A4%E5%8F%91%E6%B6%88%E6%81%AF-1783143537308",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "",
+        "text": "群发消息",
+        "rect": {
+          "x": 796,
+          "y": 826,
+          "w": 102,
+          "h": 34
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/messaging/templates/",
+        "title": "QH",
+        "pathname": "/ozon/messaging/templates/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "批量上架",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E6%89%B9%E9%87%8F%E4%B8%8A%E6%9E%B6-1783143540223",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "sd-qa-btn",
+        "text": "批量上架",
+        "rect": {
+          "x": 952,
+          "y": 865,
+          "w": 103,
+          "h": 36
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E6%89%B9%E9%87%8F%E4%B8%8A%E6%9E%B6-1783143540223",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "批量上架",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-quickButton-%E6%89%B9%E9%87%8F%E4%B8%8A%E6%9E%B6-1783143543411",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "",
+        "text": "批量上架",
+        "rect": {
+          "x": 906,
+          "y": 826,
+          "w": 102,
+          "h": 34
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/products/import-history/",
+        "title": "QH",
+        "pathname": "/ozon/products/import-history/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E6%89%93%E5%8D%B0%E5%8F%91%E8%B4%A7%E5%8D%95-1783143546092",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "sd-qa-btn",
+        "text": "打印发货单",
+        "rect": {
+          "x": 1063,
+          "y": 865,
+          "w": 117,
+          "h": 36
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-quickButton-%E6%89%93%E5%8D%B0%E5%8F%91%E8%B4%A7%E5%8D%95-1783143546092",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "quickButton",
+      "label": "打印发货单",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-quickButton-%E6%89%93%E5%8D%B0%E5%8F%91%E8%B4%A7%E5%8D%95-1783143549066",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "BUTTON",
+        "className": "",
+        "text": "打印发货单",
+        "rect": {
+          "x": 1015,
+          "y": 826,
+          "w": 115,
+          "h": 34
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/postings/list/",
+        "title": "QH",
+        "pathname": "/ozon/postings/list/"
+      },
+      "dialog": null,
+      "overlayCount": 1,
+      "overlays": [
+        {
+          "className": "ant-alert ant-alert-info ant-alert-outlined css-var-_r_0_ css-dev-only-do-not-override-1pi0l5",
+          "text": "同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 0 天至现在"
+        }
+      ],
+      "headings": [
+        "订单"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143551800",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "采集箱",
+        "rect": {
+          "x": 280,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143551800",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "采集箱",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143554769",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E9%87%87%E9%9B%86%E7%AE%B1-1783143554769",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "类目分析",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E7%B1%BB%E7%9B%AE%E5%88%86%E6%9E%90-1783143557385",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "类目分析",
+        "rect": {
+          "x": 432,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E7%B1%BB%E7%9B%AE%E5%88%86%E6%9E%90-1783143557385",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "类目分析",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E7%B1%BB%E7%9B%AE%E5%88%86%E6%9E%90-1783143560375",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E7%B1%BB%E7%9B%AE%E5%88%86%E6%9E%90-1783143560375",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "榜单选品",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E6%A6%9C%E5%8D%95%E9%80%89%E5%93%81-1783143563002",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "榜单选品",
+        "rect": {
+          "x": 584,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E6%A6%9C%E5%8D%95%E9%80%89%E5%93%81-1783143563002",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "榜单选品",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E6%A6%9C%E5%8D%95%E9%80%89%E5%93%81-1783143565960",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E6%A6%9C%E5%8D%95%E9%80%89%E5%93%81-1783143565960",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "利润趋势",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E5%88%A9%E6%B6%A6%E8%B6%8B%E5%8A%BF-1783143568675",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "利润趋势",
+        "rect": {
+          "x": 736,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E5%88%A9%E6%B6%A6%E8%B6%8B%E5%8A%BF-1783143568675",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "利润趋势",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E5%88%A9%E6%B6%A6%E8%B6%8B%E5%8A%BF-1783143571635",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E5%88%A9%E6%B6%A6%E8%B6%8B%E5%8A%BF-1783143571635",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143574307",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "AI 大模型改图\nNEW",
+        "rect": {
+          "x": 889,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143574307",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "AI 大模型改图",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143577799",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-AI%20%E5%A4%A7%E6%A8%A1%E5%9E%8B%E6%94%B9%E5%9B%BE-1783143577799",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143580554",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "水印管理",
+        "rect": {
+          "x": 1041,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143580554",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "水印管理",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143583756",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E6%B0%B4%E5%8D%B0%E7%AE%A1%E7%90%86-1783143583756",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "17track",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-17track-1783143586454",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "17track",
+        "rect": {
+          "x": 1193,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-17track-1783143586454",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "17track",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-17track-1783143589428",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-17track-1783143589428",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    },
+    {
+      "kind": "source",
+      "mode": "featureCard",
+      "label": "营销活动",
+      "before": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E8%90%A5%E9%94%80%E6%B4%BB%E5%8A%A8-1783143592094",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "sd-feat-card",
+        "text": "营销活动",
+        "rect": {
+          "x": 1345,
+          "y": 981,
+          "w": 151,
+          "h": 107
+        }
+      },
+      "after": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?audit=source-featureCard-%E8%90%A5%E9%94%80%E6%B4%BB%E5%8A%A8-1783143592094",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "QH"
+      ],
+      "bodyHasLogin": false
+    },
+    {
+      "kind": "local",
+      "mode": "featureCard",
+      "label": "营销活动",
+      "before": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E8%90%A5%E9%94%80%E6%B4%BB%E5%8A%A8-1783143595150",
+        "title": "QH"
+      },
+      "clicked": {
+        "clicked": true,
+        "tag": "DIV",
+        "className": "ant-card ant-card-bordered panel-card feature-card css-dev-only-do-not-override-1pi45l5 css-var-_r_0_",
+        "text": "功能入口\nQH功能\n外部资源\n采集箱\n类目分析\n榜单选品\n利润趋势\nAI 大模型改图\nNEW\n水印管理\n17track\n营销活动",
+        "rect": {
+          "x": 240,
+          "y": 897,
+          "w": 996,
+          "h": 366
+        }
+      },
+      "after": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?audit=local-featureCard-%E8%90%A5%E9%94%80%E6%B4%BB%E5%8A%A8-1783143595150",
+        "title": "QH",
+        "pathname": "/ozon/dashboard/"
+      },
+      "dialog": null,
+      "overlayCount": 0,
+      "overlays": [],
+      "headings": [
+        "仪表盘"
+      ],
+      "bodyHasLogin": true
+    }
+  ]
+}

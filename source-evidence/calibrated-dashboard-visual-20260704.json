@@ -1,0 +1,418 @@
+{
+  "capturedAt": "2026-07-04T06:04:32.032Z",
+  "taskSpaceId": 34,
+  "note": "Dashboard screenshots are sanitized by replacing numeric text and obvious store labels before capture.",
+  "comparison": {
+    "sameInner": true,
+    "sameVisual": false,
+    "sourceInner": {
+      "width": 1920,
+      "height": 1080
+    },
+    "localInner": {
+      "width": 1920,
+      "height": 1080
+    },
+    "sourceVisual": {
+      "width": 1920,
+      "height": 1080,
+      "scale": 1
+    },
+    "localVisual": {
+      "width": 1898,
+      "height": 1080,
+      "scale": 1
+    },
+    "sourceRects": {
+      "topbar": {
+        "x": 215,
+        "y": 0,
+        "w": 1705,
+        "h": 56,
+        "right": 1920,
+        "bottom": 56
+      },
+      "brand": null,
+      "sider": {
+        "x": 0,
+        "y": 56,
+        "w": 215,
+        "h": 1024,
+        "right": 215,
+        "bottom": 1080
+      },
+      "content": {
+        "x": 215,
+        "y": 56,
+        "w": 1705,
+        "h": 334,
+        "right": 1920,
+        "bottom": 390
+      }
+    },
+    "localRects": {
+      "topbar": {
+        "x": 216,
+        "y": 0,
+        "w": 1682,
+        "h": 56,
+        "right": 1898,
+        "bottom": 56
+      },
+      "brand": {
+        "x": 0,
+        "y": 0,
+        "w": 216,
+        "h": 56,
+        "right": 216,
+        "bottom": 56
+      },
+      "sider": {
+        "x": 0,
+        "y": 56,
+        "w": 216,
+        "h": 1024,
+        "right": 216,
+        "bottom": 1080
+      },
+      "content": {
+        "x": 216,
+        "y": 0,
+        "w": 1682,
+        "h": 1457,
+        "right": 1898,
+        "bottom": 1457
+      }
+    }
+  },
+  "captures": [
+    {
+      "kind": "source",
+      "metrics": {
+        "width": 1536,
+        "height": 864,
+        "deviceScaleFactor": 1,
+        "mobile": false
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-dashboard-calibrated-20260704.png",
+      "pageInfo": {
+        "url": "https://qh.jizhangerp.com/ozon/dashboard/?calibratedVisual=source-1783145050329",
+        "title": "QH",
+        "w": 1920,
+        "h": 1080,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1920,
+        "ph": 1080
+      },
+      "title": "QH",
+      "inner": {
+        "width": 1920,
+        "height": 1080
+      },
+      "visual": {
+        "width": 1920,
+        "height": 1080,
+        "scale": 1
+      },
+      "doc": {
+        "scrollWidth": 1920,
+        "scrollHeight": 1080,
+        "clientWidth": 1920,
+        "clientHeight": 1080
+      },
+      "rects": {
+        "topbar": {
+          "x": 215,
+          "y": 0,
+          "w": 1705,
+          "h": 56,
+          "right": 1920,
+          "bottom": 56
+        },
+        "brand": null,
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 215,
+          "h": 1024,
+          "right": 215,
+          "bottom": 1080
+        },
+        "content": {
+          "x": 215,
+          "y": 56,
+          "w": 1705,
+          "h": 334,
+          "right": 1920,
+          "bottom": 390
+        }
+      },
+      "metricCards": [],
+      "quickButtons": [],
+      "bodySample": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 0 仪表盘 0· 周六 自动同步 · 上次 — 全部同步 ⌘R 今日订单 0 — 持平 vs 昨日 今日 GMV ¥0 — 持平 vs 昨日 待打包 0 暂无积压 待发货 0 合计待处理 0 在售商品 0个 多店聚合 库存预警 0SKU 库存充足 "
+    },
+    {
+      "kind": "local",
+      "metrics": {
+        "width": 1280,
+        "height": 720,
+        "deviceScaleFactor": 1,
+        "mobile": false
+      },
+      "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-dashboard-calibrated-20260704.png",
+      "pageInfo": {
+        "url": "http://127.0.0.1:5173/ozon/dashboard/?calibratedVisual=local-1783145069244",
+        "title": "QH",
+        "w": 1920,
+        "h": 1080,
+        "sx": 0,
+        "sy": 0,
+        "pw": 1897,
+        "ph": 1457
+      },
+      "title": "QH",
+      "inner": {
+        "width": 1920,
+        "height": 1080
+      },
+      "visual": {
+        "width": 1898,
+        "height": 1080,
+        "scale": 1
+      },
+      "doc": {
+        "scrollWidth": 1897,
+        "scrollHeight": 1457,
+        "clientWidth": 1897,
+        "clientHeight": 1080
+      },
+      "rects": {
+        "topbar": {
+          "x": 216,
+          "y": 0,
+          "w": 1682,
+          "h": 56,
+          "right": 1898,
+          "bottom": 56
+        },
+        "brand": {
+          "x": 0,
+          "y": 0,
+          "w": 216,
+          "h": 56,
+          "right": 216,
+          "bottom": 56
+        },
+        "sider": {
+          "x": 0,
+          "y": 56,
+          "w": 216,
+          "h": 1024,
+          "right": 216,
+          "bottom": 1080
+        },
+        "content": {
+          "x": 216,
+          "y": 0,
+          "w": 1682,
+          "h": 1457,
+          "right": 1898,
+          "bottom": 1457
+        }
+      },
+      "metricCards": [
+        {
+          "text": "今日订单 0 — 持平 vs 昨日",
+          "rect": {
+            "x": 241,
+            "y": 161,
+            "w": 408,
+            "h": 119,
+            "right": 649,
+            "bottom": 280
+          }
+        },
+        {
+          "text": "今日 GMV ¥0 — 持平 vs 昨日",
+          "rect": {
+            "x": 649,
+            "y": 161,
+            "w": 408,
+            "h": 119,
+            "right": 1057,
+            "bottom": 280
+          }
+        },
+        {
+          "text": "待打包 0 暂无积压",
+          "rect": {
+            "x": 1057,
+            "y": 161,
+            "w": 408,
+            "h": 119,
+            "right": 1465,
+            "bottom": 280
+          }
+        },
+        {
+          "text": "待发货 0 合计待处理 0",
+          "rect": {
+            "x": 1465,
+            "y": 161,
+            "w": 408,
+            "h": 119,
+            "right": 1873,
+            "bottom": 280
+          }
+        },
+        {
+          "text": "在售商品 0个 多店聚合",
+          "rect": {
+            "x": 241,
+            "y": 298,
+            "w": 408,
+            "h": 119,
+            "right": 649,
+            "bottom": 417
+          }
+        },
+        {
+          "text": "库存预警 0SKU 库存充足",
+          "rect": {
+            "x": 649,
+            "y": 298,
+            "w": 408,
+            "h": 119,
+            "right": 1057,
+            "bottom": 417
+          }
+        },
+        {
+          "text": "今日退货 0 退货率 0",
+          "rect": {
+            "x": 1057,
+            "y": 298,
+            "w": 408,
+            "h": 119,
+            "right": 1465,
+            "bottom": 417
+          }
+        },
+        {
+          "text": "0日利润 ¥0 本周累计",
+          "rect": {
+            "x": 1465,
+            "y": 298,
+            "w": 408,
+            "h": 119,
+            "right": 1873,
+            "bottom": 417
+          }
+        },
+        {
+          "text": "待办与告警 配置规则",
+          "rect": {
+            "x": 240,
+            "y": 434,
+            "w": 633,
+            "h": 315,
+            "right": 873,
+            "bottom": 748
+          }
+        },
+        {
+          "text": "业务速览 数据滞后 ≤ 0分钟 订单状态 共 0单 暂无订单 订单趋势 0日 0日 暂无数据",
+          "rect": {
+            "x": 889,
+            "y": 434,
+            "w": 985,
+            "h": 315,
+            "right": 1874,
+            "bottom": 748
+          }
+        }
+      ],
+      "quickButtons": [
+        {
+          "text": "一键同步全部 ⌘R",
+          "rect": {
+            "x": 261,
+            "y": 826,
+            "w": 162,
+            "h": 34,
+            "right": 423,
+            "bottom": 860
+          }
+        },
+        {
+          "text": "批量改价",
+          "rect": {
+            "x": 431,
+            "y": 826,
+            "w": 102,
+            "h": 34,
+            "right": 533,
+            "bottom": 860
+          }
+        },
+        {
+          "text": "AI 大模型改图",
+          "rect": {
+            "x": 541,
+            "y": 826,
+            "w": 130,
+            "h": 34,
+            "right": 671,
+            "bottom": 860
+          }
+        },
+        {
+          "text": "0采集",
+          "rect": {
+            "x": 679,
+            "y": 826,
+            "w": 83,
+            "h": 34,
+            "right": 762,
+            "bottom": 860
+          }
+        },
+        {
+          "text": "群发消息",
+          "rect": {
+            "x": 770,
+            "y": 826,
+            "w": 102,
+            "h": 34,
+            "right": 872,
+            "bottom": 860
+          }
+        },
+        {
+          "text": "批量上架",
+          "rect": {
+            "x": 880,
+            "y": 826,
+            "w": 102,
+            "h": 34,
+            "right": 981,
+            "bottom": 860
+          }
+        },
+        {
+          "text": "打印发货单",
+          "rect": {
+            "x": 989,
+            "y": 826,
+            "w": 115,
+            "h": 34,
+            "right": 1104,
+            "bottom": 860
+          }
+        }
+      ],
+      "bodySample": "QH 帮助中心 使用文档 公告 公告中心 浏览器插件 插件下载 当前门店 去绑定门店 会员权益 免费会员 极 极点 0 当前用户 未登录 仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 仪表盘 0· 周六 自动同步 · 上次 — 极点余额 0 全部同步 ⌘R 今日订单 0 — 持平 vs 昨日 今日 GMV ¥0 — 持平 vs 昨日 待打包 0 暂无积压 待发货 0 合计待处理 0 在售商品 0个 多店聚合 库存预警 0"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "route": "/ozon/announcements",
+  "validatedAt": "2026-07-04T21:35:00+08:00",
+  "scope": "announcements local cache without static sample data",
+  "sourceOfTruth": "browser DOM plus local state",
+  "localState": {
+    "announcementCacheIsArray": true,
+    "announcementCount": 0,
+    "summaryAnnouncements": 0,
+    "products": 580,
+    "postings": 466
+  },
+  "browserEvidence": {
+    "documentTitle": "QH",
+    "hasAnnouncementHeader": true,
+    "hasReadAllButton": true,
+    "hasEmptyState": true,
+    "visibleAnnouncementCards": 1,
+    "paginationVisible": false,
+    "staticVersionTitleVisible": false
+  },
+  "writeBoundary": {
+    "batchAnnouncementImportCalled": false,
+    "readAllCalledDuringValidation": false,
+    "sampleAnnouncementDataInserted": false,
+    "ozonWriteEndpointCalled": false
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "capturedAt": "2026-07-04T10:27:52.741Z",
+  "note": "No order row text persisted.",
+  "result": {
+    "initial": {
+      "activeLabel": "所有订单",
+      "tabs": [
+        {
+          "label": "所有订单",
+          "count": "462"
+        },
+        {
+          "label": "等待备货",
+          "count": "36"
+        },
+        {
+          "label": "等待发运",
+          "count": "41"
+        },
+        {
+          "label": "已超时",
+          "count": "0"
+        },
+        {
+          "label": "运输中",
+          "count": "314"
+        },
+        {
+          "label": "有争议的",
+          "count": "0"
+        },
+        {
+          "label": "已签收",
+          "count": "52"
+        },
+        {
+          "label": "已取消",
+          "count": "19"
+        }
+      ],
+      "visibleRows": 20,
+      "hasPagination": true,
+      "pageSize": "20 条/页"
+    },
+    "等待发运": {
+      "activeLabel": "等待发运",
+      "tabs": [
+        {
+          "label": "所有订单",
+          "count": "462"
+        },
+        {
+          "label": "等待备货",
+          "count": "36"
+        },
+        {
+          "label": "等待发运",
+          "count": "41"
+        },
+        {
+          "label": "已超时",
+          "count": "0"
+        },
+        {
+          "label": "运输中",
+          "count": "314"
+        },
+        {
+          "label": "有争议的",
+          "count": "0"
+        },
+        {
+          "label": "已签收",
+          "count": "52"
+        },
+        {
+          "label": "已取消",
+          "count": "19"
+        }
+      ],
+      "visibleRows": 20,
+      "hasPagination": true,
+      "pageSize": "20 条/页"
+    },
+    "已取消": {
+      "activeLabel": "已取消",
+      "tabs": [
+        {
+          "label": "所有订单",
+          "count": "462"
+        },
+        {
+          "label": "等待备货",
+          "count": "36"
+        },
+        {
+          "label": "等待发运",
+          "count": "41"
+        },
+        {
+          "label": "已超时",
+          "count": "0"
+        },
+        {
+          "label": "运输中",
+          "count": "314"
+        },
+        {
+          "label": "有争议的",
+          "count": "0"
+        },
+        {
+          "label": "已签收",
+          "count": "52"
+        },
+        {
+          "label": "已取消",
+          "count": "19"
+        }
+      ],
+      "visibleRows": 19,
+      "hasPagination": false,
+      "pageSize": ""
+    }
+  }
+}

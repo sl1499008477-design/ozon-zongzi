@@ -1,0 +1,27 @@
+{
+  "capturedAt": "2026-07-04T10:37:06.512Z",
+  "note": "Alias smoke only; no row data persisted.",
+  "results": [
+    {
+      "inputRoute": "/ozon/selection/market/",
+      "path": "/ozon/selection/market/",
+      "title": "QH",
+      "heading": "榜单选品",
+      "hasFallback": false,
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "bodyLength": 533
+    },
+    {
+      "inputRoute": "/ozon/ai-image/editor/",
+      "path": "/ozon/ai-image/editor/",
+      "title": "QH",
+      "heading": "AI 改图神器",
+      "hasFallback": false,
+      "hasRoot": true,
+      "hasErrorOverlay": false,
+      "bodyLength": 404
+    }
+  ],
+  "failures": []
+}

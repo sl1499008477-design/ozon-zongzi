@@ -1,0 +1,81 @@
+{
+  "capturedAt": "2026-07-04T09:05:15.029Z",
+  "binding": {
+    "currentStoreId": "[local-store-id]",
+    "storeCount": 1,
+    "clientId": "[client-id]",
+    "apiKeyMasked": "已保存"
+  },
+  "realCacheCounts": {
+    "products": 580,
+    "postings": 460,
+    "warehouses": 16,
+    "collectBox": 0
+  },
+  "uiMappingProof": {
+    "dashboardMetrics": {
+      "todayOrders": 460,
+      "productsOnSale": 580
+    },
+    "productListRows": 580,
+    "postingsRows": 460,
+    "storesRows": 1,
+    "stocksPageRowsAfterPatch": 580,
+    "previousWrongStocksBasis": 16,
+    "nonEmptyStockRows": 576,
+    "splitDistributionRows": 13,
+    "sampleStockRows": [
+      {
+        "sample": 1,
+        "id": "[product-id]",
+        "offer_id": "[offer-id]",
+        "total": 400,
+        "distribution": "FBS 400",
+        "status": "Продается"
+      },
+      {
+        "sample": 2,
+        "id": "[product-id]",
+        "offer_id": "[offer-id]",
+        "total": 401,
+        "distribution": "FBO 1 / FBS 400",
+        "status": "Продается"
+      },
+      {
+        "sample": 3,
+        "id": "[product-id]",
+        "offer_id": "[offer-id]",
+        "total": 10,
+        "distribution": "FBS 10",
+        "status": "Продается"
+      }
+    ]
+  },
+  "writeGuard": [
+    {
+      "path": "/ozon/products/import",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "message": "商品上架在本地复刻版中不会直接写入 Ozon。请先在后台绑定并确认真实写入链路后再启用。"
+    },
+    {
+      "path": "/ozon/stocks/import",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "message": "库存写入在本地复刻版中不会直接写入 Ozon。请先在后台绑定并确认真实写入链路后再启用。"
+    },
+    {
+      "path": "/ozon/products/import-by-sku",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "message": "按 SKU 上架在本地复刻版中不会直接写入 Ozon。请先在后台绑定并确认真实写入链路后再启用。"
+    },
+    {
+      "path": "/ozon/products/prepare-bundle-items",
+      "status": 409,
+      "code": "LOCAL_OZON_WRITE_DISABLED",
+      "message": "门户上架准备在本地复刻版中不会直接写入 Ozon。请先在后台绑定并确认真实写入链路后再启用。"
+    }
+  ],
+  "writeGuardOk": true
+}

@@ -1,0 +1,1798 @@
+{
+  "capturedAt": "2026-07-04T08:23:58.218Z",
+  "taskSpaceId": 49,
+  "controls": [
+    {
+      "key": "brand",
+      "token": "QH"
+    },
+    {
+      "key": "help",
+      "token": "帮助中心"
+    },
+    {
+      "key": "announcement",
+      "token": "公告"
+    },
+    {
+      "key": "plugin",
+      "token": "浏览器插件"
+    },
+    {
+      "key": "store",
+      "token": "当前门店"
+    },
+    {
+      "key": "membership",
+      "token": "会员权益"
+    },
+    {
+      "key": "points",
+      "token": "极点"
+    },
+    {
+      "key": "user",
+      "token": "当前用户"
+    }
+  ],
+  "summary": [
+    {
+      "key": "brand",
+      "token": "QH",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "QH",
+          "rect": {
+            "x": 16,
+            "y": 12,
+            "w": 63,
+            "h": 32
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "QH",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 216,
+            "h": 56
+          }
+        }
+      }
+    },
+    {
+      "key": "help",
+      "token": "帮助中心",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "帮助中心 使用文档",
+          "rect": {
+            "x": 819,
+            "y": 12,
+            "w": 98,
+            "h": 32
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "帮助中心 使用文档",
+          "rect": {
+            "x": 1224,
+            "y": 11,
+            "w": 84,
+            "h": 34
+          }
+        }
+      }
+    },
+    {
+      "key": "announcement",
+      "token": "公告",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "公告 公告中心",
+          "rect": {
+            "x": 917,
+            "y": 12,
+            "w": 96,
+            "h": 32
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "公告 公告中心",
+          "rect": {
+            "x": 1314,
+            "y": 11,
+            "w": 80,
+            "h": 34
+          }
+        }
+      }
+    },
+    {
+      "key": "plugin",
+      "token": "浏览器插件",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "浏览器插件 插件下载",
+          "rect": {
+            "x": 1013,
+            "y": 12,
+            "w": 98,
+            "h": 32
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/tools/plugin/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 2,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息 | 水印管理 浏览器插件",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "浏览器插件 插件下载",
+          "rect": {
+            "x": 1400,
+            "y": 11,
+            "w": 96,
+            "h": 34
+          }
+        }
+      }
+    },
+    {
+      "key": "store",
+      "token": "当前门店",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "当前门店 去绑定门店",
+          "rect": {
+            "x": 1111,
+            "y": 12,
+            "w": 110,
+            "h": 32
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": true,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "新增 API 授权门店 Client-Id Api-Key 标签 取 消 新 增",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": true,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "当前门店 去绑定门店",
+          "rect": {
+            "x": 1502,
+            "y": 11,
+            "w": 91,
+            "h": 34
+          }
+        }
+      }
+    },
+    {
+      "key": "membership",
+      "token": "会员权益",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 2,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 | 免费会员 永久体验期 店铺 1 / 1 累计上品 0 / 10终身 在线设备 1 / 1 立即升级",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "会员权益 免费会员",
+          "rect": {
+            "x": 1222,
+            "y": 6,
+            "w": 110,
+            "h": 44
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "会员权益 免费会员",
+          "rect": {
+            "x": 1599,
+            "y": 11,
+            "w": 84,
+            "h": 34
+          }
+        }
+      }
+    },
+    {
+      "key": "points",
+      "token": "极点",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 2,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 | 极 当前余额 0 极点 极点：用于购买增值服务（如 AI 改图神器 50 极点 / 张） 如需充值 极点，请联系客服 查看明细 ›",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "极 极点 0",
+          "rect": {
+            "x": 1332,
+            "y": 6,
+            "w": 82,
+            "h": 44
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "极 极点 0",
+          "rect": {
+            "x": 1689,
+            "y": 11,
+            "w": 70,
+            "h": 34
+          }
+        }
+      }
+    },
+    {
+      "key": "user",
+      "token": "当前用户",
+      "source": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 3,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息 | 未设置昵称 ••• 用户设置 店铺管理 AI 助手绑定 AI 执行记录 Browser Agent 账户管理 修改密码 退出登录 | 未设置昵称 ••• 用户设置 店铺管理 AI 助手绑定 AI 执行记录 Browser Agent 账户管理 修改密码 退出登录",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": true
+        },
+        "target": {
+          "text": "当前用户",
+          "rect": {
+            "x": 1473,
+            "y": 16,
+            "w": 38,
+            "h": 10
+          }
+        }
+      },
+      "local": {
+        "found": true,
+        "path": "/ozon/dashboard/",
+        "modal": false,
+        "drawer": false,
+        "dropdowns": 1,
+        "text": "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+        "tokens": {
+          "docs": true,
+          "announcementCenter": true,
+          "pluginDownload": true,
+          "bindModal": false,
+          "storeSettings": false,
+          "membershipPage": false,
+          "pointsPage": false,
+          "userMenu": false
+        },
+        "target": {
+          "text": "当前用户 未登录",
+          "rect": {
+            "x": 1765,
+            "y": 11,
+            "w": 84,
+            "h": 34
+          }
+        }
+      }
+    }
+  ],
+  "source": [
+    {
+      "origin": "source",
+      "key": "brand",
+      "token": "QH",
+      "found": true,
+      "target": {
+        "text": "QH",
+        "cls": "",
+        "tag": "A",
+        "score": 29.99609375,
+        "rect": {
+          "x": 16,
+          "y": 12,
+          "w": 63,
+          "h": 32
+        },
+        "x": 47,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153393099",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1167
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarInspect=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "help",
+      "token": "帮助中心",
+      "found": true,
+      "target": {
+        "text": "帮助中心 使用文档",
+        "cls": "ant-pro-global-header-header-actions-item  ant-pro-global-header-header-actions-hover",
+        "tag": "DIV",
+        "score": 109.8330078125,
+        "rect": {
+          "x": 819,
+          "y": 12,
+          "w": 98,
+          "h": 32
+        },
+        "x": 868,
+        "y": 28
+      },
+      "tabDelta": 1,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153396259",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1296
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarInspect=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "qh.jizhangerp.com/help/",
+            "url": "https://qh.jizhangerp.com/help/"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "announcement",
+      "token": "公告",
+      "found": true,
+      "target": {
+        "text": "公告 公告中心",
+        "cls": "ant-pro-global-header-header-actions-item  ant-pro-global-header-header-actions-hover",
+        "tag": "DIV",
+        "score": 109.8330078125,
+        "rect": {
+          "x": 917,
+          "y": 12,
+          "w": 96,
+          "h": 32
+        },
+        "x": 965,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153399540",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1296
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarInspect=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH帮助中心",
+            "url": "https://qh.jizhangerp.com/help/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "plugin",
+      "token": "浏览器插件",
+      "found": true,
+      "target": {
+        "text": "浏览器插件 插件下载",
+        "cls": "ant-pro-global-header-header-actions-item  ant-pro-global-header-header-actions-hover",
+        "tag": "DIV",
+        "score": 109.8330078125,
+        "rect": {
+          "x": 1013,
+          "y": 12,
+          "w": 98,
+          "h": 32
+        },
+        "x": 1062,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153402342",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1594
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarInspect=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH帮助中心",
+            "url": "https://qh.jizhangerp.com/help/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "store",
+      "token": "当前门店",
+      "found": true,
+      "target": {
+        "text": "当前门店 去绑定门店",
+        "cls": "ant-pro-global-header-header-actions-item  ant-pro-global-header-header-actions-hover",
+        "tag": "DIV",
+        "score": 109.8330078125,
+        "rect": {
+          "x": 1111,
+          "y": 12,
+          "w": 110,
+          "h": 32
+        },
+        "x": 1166,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153405227",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1296
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH帮助中心",
+            "url": "https://qh.jizhangerp.com/help/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "membership",
+      "token": "会员权益",
+      "found": true,
+      "target": {
+        "text": "会员权益 免费会员",
+        "cls": "ant-pro-global-header-header-actions-item  ant-pro-global-header-header-actions-hover",
+        "tag": "DIV",
+        "score": 103.8369140625,
+        "rect": {
+          "x": 1222,
+          "y": 6,
+          "w": 110,
+          "h": 44
+        },
+        "x": 1277,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153408184",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1167
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH帮助中心",
+            "url": "https://qh.jizhangerp.com/help/"
+          },
+          {
+            "title": "公告中心 - QH",
+            "url": "https://qh.jizhangerp.com/ozon/announcements/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+            "免费会员 永久体验期 店铺 1 / 1 累计上品 0 / 10终身 在线设备 1 / 1 立即升级"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "points",
+      "token": "极点",
+      "found": true,
+      "target": {
+        "text": "极 极点 0",
+        "cls": "ant-pro-global-header-header-actions-item  ant-pro-global-header-header-actions-hover",
+        "tag": "DIV",
+        "score": 103.8369140625,
+        "rect": {
+          "x": 1332,
+          "y": 6,
+          "w": 82,
+          "h": 44
+        },
+        "x": 1373,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153411083",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1167
+        },
+        "tabs": [
+          {
+            "title": "QH帮助中心",
+            "url": "https://qh.jizhangerp.com/help/"
+          },
+          {
+            "title": "公告中心 - QH",
+            "url": "https://qh.jizhangerp.com/ozon/announcements/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/settings/stores/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+            "极 当前余额 0 极点 极点：用于购买增值服务（如 AI 改图神器 50 极点 / 张） 如需充值 极点，请联系客服 查看明细 ›"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "source",
+      "key": "user",
+      "token": "当前用户",
+      "found": true,
+      "target": {
+        "text": "当前用户",
+        "cls": "jsx-2003071953",
+        "tag": "SPAN",
+        "score": 18.951171875,
+        "rect": {
+          "x": 1473,
+          "y": 16,
+          "w": 38,
+          "h": 10
+        },
+        "x": 1492,
+        "y": 21
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=1783153415128",
+          "title": "QH",
+          "w": 1580,
+          "h": 754,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1561,
+          "ph": 1296
+        },
+        "tabs": [
+          {
+            "title": "公告中心 - QH",
+            "url": "https://qh.jizhangerp.com/ozon/announcements/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/settings/stores/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息",
+            "未设置昵称 ••• 用户设置 店铺管理 AI 助手绑定 AI 执行记录 Browser Agent 账户管理 修改密码 退出登录",
+            "未设置昵称 ••• 用户设置 店铺管理 AI 助手绑定 AI 执行记录 Browser Agent 账户管理 修改密码 退出登录"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": true
+          }
+        }
+      }
+    }
+  ],
+  "local": [
+    {
+      "origin": "local",
+      "key": "brand",
+      "token": "QH",
+      "found": true,
+      "target": {
+        "text": "QH",
+        "cls": "qh-brand",
+        "tag": "A",
+        "score": 118.00390625,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 216,
+          "h": 56
+        },
+        "x": 108,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1873,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/settings/stores/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "help",
+      "token": "帮助中心",
+      "found": true,
+      "target": {
+        "text": "帮助中心 使用文档",
+        "cls": "qh-header-action tone-blue",
+        "tag": "BUTTON",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1224,
+          "y": 11,
+          "w": 84,
+          "h": 34
+        },
+        "x": 1266,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=1783153420525",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1873,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/settings/stores/"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "announcement",
+      "token": "公告",
+      "found": true,
+      "target": {
+        "text": "公告 公告中心",
+        "cls": "qh-header-action tone-default",
+        "tag": "BUTTON",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1314,
+          "y": 11,
+          "w": 80,
+          "h": 34
+        },
+        "x": 1354,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=1783153423011",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1873,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "plugin",
+      "token": "浏览器插件",
+      "found": true,
+      "target": {
+        "text": "浏览器插件 插件下载",
+        "cls": "qh-header-action tone-blue",
+        "tag": "BUTTON",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1400,
+          "y": 11,
+          "w": 96,
+          "h": 34
+        },
+        "x": 1448,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/tools/plugin/",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1896,
+          "ph": 904
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/tools/plugin/"
+          }
+        ],
+        "data": {
+          "path": "/ozon/tools/plugin/",
+          "href": "http://127.0.0.1:5173/ozon/tools/plugin/",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 水印管理 浏览器插件 消息",
+            "水印管理 浏览器插件"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "store",
+      "token": "当前门店",
+      "found": true,
+      "target": {
+        "text": "当前门店 去绑定门店",
+        "cls": "qh-header-action tone-orange",
+        "tag": "BUTTON",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1502,
+          "y": 11,
+          "w": 91,
+          "h": 34
+        },
+        "x": 1547,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=1783153428095",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1896,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "https://qh.jizhangerp.com/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/tools/plugin/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "新增 API 授权门店 Client-Id Api-Key 标签 取 消 新 增",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": true,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": true,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "membership",
+      "token": "会员权益",
+      "found": true,
+      "target": {
+        "text": "会员权益 免费会员",
+        "cls": "qh-header-action tone-default",
+        "tag": "BUTTON",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1599,
+          "y": 11,
+          "w": 84,
+          "h": 34
+        },
+        "x": 1641,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=1783153430686",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1873,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/tools/plugin/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "points",
+      "token": "极点",
+      "found": true,
+      "target": {
+        "text": "极 极点 0",
+        "cls": "qh-points",
+        "tag": "DIV",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1689,
+          "y": 11,
+          "w": 70,
+          "h": 34
+        },
+        "x": 1724,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=1783153433159",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1873,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/tools/plugin/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    },
+    {
+      "origin": "local",
+      "key": "user",
+      "token": "当前用户",
+      "found": true,
+      "target": {
+        "text": "当前用户 未登录",
+        "cls": "qh-user",
+        "tag": "DIV",
+        "score": 109.001953125,
+        "rect": {
+          "x": 1765,
+          "y": 11,
+          "w": 84,
+          "h": 34
+        },
+        "x": 1807,
+        "y": 28
+      },
+      "tabDelta": 0,
+      "state": {
+        "info": {
+          "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=1783153435642",
+          "title": "QH",
+          "w": 1896,
+          "h": 904,
+          "sx": 0,
+          "sy": 0,
+          "pw": 1873,
+          "ph": 1457
+        },
+        "tabs": [
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/tools/plugin/"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          },
+          {
+            "title": "QH",
+            "url": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••"
+          }
+        ],
+        "data": {
+          "path": "/ozon/dashboard/",
+          "href": "http://127.0.0.1:5173/ozon/dashboard/?topbarAudit=•••",
+          "modalText": "",
+          "drawerText": "",
+          "dropdowns": [
+            "仪表盘 商品 选品 AI 工具 推荐 促销 订单 工具 消息"
+          ],
+          "hasModal": false,
+          "hasDrawer": false,
+          "bodyTokens": {
+            "docs": true,
+            "announcementCenter": true,
+            "pluginDownload": true,
+            "bindModal": false,
+            "storeSettings": false,
+            "membershipPage": false,
+            "pointsPage": false,
+            "userMenu": false
+          }
+        }
+      }
+    }
+  ],
+  "screenshots": {
+    "source": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-topbar-current-20260704.png",
+    "local": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-topbar-current-20260704.png"
+  },
+  "note": "Long numeric/account/store identifiers are masked before persistence."
+}

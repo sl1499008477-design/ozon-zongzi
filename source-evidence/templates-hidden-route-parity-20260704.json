@@ -1,0 +1,66 @@
+{
+  "capturedAt": "2026-07-04T07:12:00.000Z",
+  "route": "/ozon/templates/",
+  "purpose": "hidden extension/openFrontend route parity for product templates",
+  "noSampleData": true,
+  "source": {
+    "url": "https://qh.jizhangerp.com/ozon/templates/",
+    "domEvidence": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-templates-retry-20260704.json",
+    "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/source-templates-retry-20260704.png",
+    "title": "QH",
+    "keyTokens": [
+      "新建模板",
+      "导入模板",
+      "刷新",
+      "模板名称",
+      "默认",
+      "重 置",
+      "查 询",
+      "展开",
+      "店铺",
+      "创建时间",
+      "更新时间",
+      "操作"
+    ],
+    "visibleDefaultFilters": [
+      "模板名称",
+      "默认"
+    ],
+    "panelShape": {
+      "mainCardCount": 1,
+      "sourceWidth": 1237,
+      "sourceHeight": 378
+    }
+  },
+  "local": {
+    "url": "http://127.0.0.1:5173/ozon/templates/",
+    "domEvidence": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-templates-single-card-20260704.json",
+    "screenshot": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/local-templates-single-card-20260704.png",
+    "sideBySide": "/Users/songliang/Documents/sonli ozon3.0/source-evidence/templates-side-by-side-single-card-20260704.png",
+    "title": "QH",
+    "missingSourceTokens": [],
+    "visibleDefaultFilters": [
+      "模板名称",
+      "默认"
+    ],
+    "panelShape": {
+      "mainCardCount": 1,
+      "tableToolbarButtonCount": 3,
+      "hasSourceStyleActionRow": true,
+      "hasSinglePanelForActionsQueryAndTable": true
+    },
+    "sidebarState": {
+      "menuParent": null,
+      "clearsOpenMenuWhenNavigated": true
+    },
+    "emptyState": [
+      "暂无数据"
+    ]
+  },
+  "changesVerified": [
+    "Local page exposes the source-visible default filter label 默认 instead of hiding it behind expanded filters.",
+    "Local action row, query filter, toolbar icons, table headers, and empty table now live inside one source-style panel rather than three stacked cards.",
+    "Local hidden route no longer maps to the 消息 menu parent, so old submenu open state is cleared when the route is opened or reached from another page.",
+    "Local route keeps zero business rows and only shows source-style empty state before the user binds a store."
+  ]
+}

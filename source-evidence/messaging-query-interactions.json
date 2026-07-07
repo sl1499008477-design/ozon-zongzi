@@ -1,0 +1,566 @@
+{
+  "capturedAt": "2026-07-04T04:34:00.754Z",
+  "taskSpaceId": 21,
+  "note": "Sanitized messaging-query and modal evidence only. Save/send buttons were not clicked.",
+  "results": [
+    {
+      "label": "source-templates",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+      "action": "initial",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "labels": [
+          "模板名称",
+          "模板名称",
+          "分类",
+          "分类",
+          "内容预览",
+          "内容预览",
+          "更新时间",
+          "更新时间"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "新建模板"
+        ],
+        "links": [
+          "仪表盘",
+          "公告中心",
+          "消息模板",
+          "发送记录",
+          "QH",
+          "收起"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请选择"
+        ],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "source-templates",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+      "action": "expand",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "labels": [
+          "模板名称",
+          "模板名称",
+          "分类",
+          "分类",
+          "内容预览",
+          "内容预览",
+          "更新时间",
+          "更新时间"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "新建模板"
+        ],
+        "links": [
+          "仪表盘",
+          "公告中心",
+          "消息模板",
+          "发送记录",
+          "QH",
+          "收起"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请选择"
+        ],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "source-templates",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/templates/",
+      "action": "new-template",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "labels": [
+          "模板名称",
+          "模板名称",
+          "分类",
+          "分类",
+          "内容预览",
+          "内容预览",
+          "更新时间",
+          "更新时间",
+          "模板名称",
+          "模板名称",
+          "所属分类",
+          "所属分类",
+          "消息内容",
+          "消息内容"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "新建模板",
+          "取 消",
+          "保 存"
+        ],
+        "links": [
+          "仪表盘",
+          "公告中心",
+          "消息模板",
+          "发送记录",
+          "QH",
+          "收起"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请选择",
+          "给模板起个名字，例如：发货通知",
+          "输入消息内容，支持变量：{customer_name}, {order_id}, {tracking_number}"
+        ],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "modalTitles": [
+          "新建模板"
+        ],
+        "modalLabels": [
+          "模板名称",
+          "模板名称",
+          "所属分类",
+          "所属分类",
+          "消息内容",
+          "消息内容"
+        ],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "local-templates",
+      "url": "http://127.0.0.1:5173/ozon/messaging/templates/",
+      "action": "initial",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "labels": [
+          "模板名称",
+          "模板名称",
+          "分类",
+          "分类",
+          "内容预览",
+          "内容预览",
+          "更新时间",
+          "更新时间"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "重 置",
+          "查 询",
+          "新建模板",
+          "⌘K"
+        ],
+        "links": [
+          "QH",
+          "展开"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入"
+        ],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "local-templates",
+      "url": "http://127.0.0.1:5173/ozon/messaging/templates/",
+      "action": "expand",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "labels": [
+          "模板名称",
+          "模板名称",
+          "分类",
+          "分类",
+          "内容预览",
+          "内容预览",
+          "更新时间",
+          "更新时间"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "重 置",
+          "查 询",
+          "新建模板",
+          "⌘K"
+        ],
+        "links": [
+          "QH",
+          "收起"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入"
+        ],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "local-templates",
+      "url": "http://127.0.0.1:5173/ozon/messaging/templates/",
+      "action": "new-template",
+      "data": {
+        "path": "/ozon/messaging/templates/",
+        "labels": [
+          "模板名称",
+          "模板名称",
+          "分类",
+          "分类",
+          "内容预览",
+          "内容预览",
+          "更新时间",
+          "更新时间",
+          "模板名称",
+          "模板名称",
+          "所属分类",
+          "所属分类",
+          "消息内容",
+          "消息内容"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "重 置",
+          "查 询",
+          "新建模板",
+          "⌘K",
+          "取 消",
+          "保 存"
+        ],
+        "links": [
+          "QH",
+          "收起"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "给模板起个名字，例如：发货通知",
+          "输入消息内容，支持变量：{customer_name}, {order_id}, {tracking_number}"
+        ],
+        "tableHeaders": [
+          "模板名称",
+          "分类",
+          "内容预览",
+          "更新时间",
+          "操作"
+        ],
+        "modalTitles": [
+          "新建模板"
+        ],
+        "modalLabels": [
+          "模板名称",
+          "模板名称",
+          "所属分类",
+          "所属分类",
+          "消息内容",
+          "消息内容"
+        ],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "source-history",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/history/",
+      "action": "initial",
+      "data": {
+        "path": "/ozon/messaging/history/",
+        "labels": [
+          "接收人",
+          "接收人",
+          "使用模板",
+          "使用模板",
+          "发送内容",
+          "发送内容",
+          "状态",
+          "状态",
+          "发送时间",
+          "发送时间"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发"
+        ],
+        "links": [
+          "仪表盘",
+          "公告中心",
+          "消息模板",
+          "发送记录",
+          "QH",
+          "收起",
+          "1",
+          "2"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请输入",
+          "请选择"
+        ],
+        "tableHeaders": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "source-history",
+      "url": "https://qh.jizhangerp.com/ozon/messaging/history/",
+      "action": "expand",
+      "data": {
+        "path": "/ozon/messaging/history/",
+        "labels": [
+          "接收人",
+          "接收人",
+          "使用模板",
+          "使用模板",
+          "发送内容",
+          "发送内容",
+          "状态",
+          "状态",
+          "发送时间",
+          "发送时间"
+        ],
+        "buttons": [
+          "重 置",
+          "查 询",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发",
+          "重发"
+        ],
+        "links": [
+          "仪表盘",
+          "公告中心",
+          "消息模板",
+          "发送记录",
+          "QH",
+          "收起",
+          "1",
+          "2"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请输入",
+          "请选择"
+        ],
+        "tableHeaders": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "local-history",
+      "url": "http://127.0.0.1:5173/ozon/messaging/history/",
+      "action": "initial",
+      "data": {
+        "path": "/ozon/messaging/history/",
+        "labels": [
+          "接收人",
+          "接收人",
+          "使用模板",
+          "使用模板",
+          "发送内容",
+          "发送内容",
+          "状态",
+          "状态",
+          "发送时间",
+          "发送时间"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "重 置",
+          "查 询",
+          "⌘K"
+        ],
+        "links": [
+          "QH",
+          "展开"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请输入"
+        ],
+        "tableHeaders": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    },
+    {
+      "label": "local-history",
+      "url": "http://127.0.0.1:5173/ozon/messaging/history/",
+      "action": "expand",
+      "data": {
+        "path": "/ozon/messaging/history/",
+        "labels": [
+          "接收人",
+          "接收人",
+          "使用模板",
+          "使用模板",
+          "发送内容",
+          "发送内容",
+          "状态",
+          "状态",
+          "发送时间",
+          "发送时间"
+        ],
+        "buttons": [
+          "帮助中心使用文档",
+          "公告公告中心",
+          "浏览器插件插件下载",
+          "当前门店去绑定门店",
+          "会员权益免费会员",
+          "重 置",
+          "查 询",
+          "⌘K"
+        ],
+        "links": [
+          "QH",
+          "收起"
+        ],
+        "placeholders": [
+          "请输入",
+          "请输入",
+          "请输入"
+        ],
+        "tableHeaders": [
+          "接收人",
+          "使用模板",
+          "发送内容",
+          "状态",
+          "发送时间",
+          "操作"
+        ],
+        "modalTitles": [],
+        "modalLabels": [],
+        "hasGlobalHead": false
+      }
+    }
+  ]
+}
