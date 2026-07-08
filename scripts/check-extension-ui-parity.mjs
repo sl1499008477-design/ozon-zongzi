@@ -7,14 +7,8 @@ const sourceDir = process.env.QH_SOURCE_EXTENSION_DIR || "/Users/songliang/Deskt
 const localDir = "extension";
 
 const exactUiFiles = [
-  "popup/popup.html",
   "popup/popup.css",
-  "icons/icon16.png",
-  "icons/icon48.png",
-  "icons/icon128.png",
-  "batch-upload/index.html",
   "batch-upload/index.css",
-  "batch-upload/index.js",
   "content/jzc-calc.css",
   "content/ozon-product.css",
   "content/ozon-search.css",
@@ -39,13 +33,64 @@ const assertSameFile = (rel) => {
   assert.equal(hashFile(local), hashFile(source), `extension UI file must match source exactly: ${rel}`);
 };
 
+const assertPng = (rel, width, height) => {
+  const file = path.join(localDir, rel);
+  assert.ok(existsSync(file), `local PNG missing: ${rel}`);
+  const bytes = readFileSync(file);
+  assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", `invalid PNG signature: ${rel}`);
+  assert.equal(bytes.readUInt32BE(16), width, `unexpected PNG width: ${rel}`);
+  assert.equal(bytes.readUInt32BE(20), height, `unexpected PNG height: ${rel}`);
+};
+
+const normalizeBatchUploadHtml = (source) => source.split("sonli").join("QH");
+
+const normalizeBatchUploadJs = (source) =>
+  source
+    .split("sonli")
+    .join("QH")
+    .replace("document.title：brand 占位符", "document.title：QH 占位符");
+
+const normalizePopupHtml = (source) =>
+  source
+    .split("sonli")
+    .join("QH")
+    .replace(
+      '<div class="login-tabs" style="display:none;">\n' +
+        '            <button class="tab-btn" data-tab="sms">短信登录</button>\n' +
+        '            <button class="tab-btn active" data-tab="password">账号登录</button>\n' +
+        "          </div>",
+      '<div class="login-tabs">\n' +
+        '            <button class="tab-btn active" data-tab="sms">短信登录</button>\n' +
+        '            <button class="tab-btn" data-tab="password">密码登录</button>\n' +
+        "          </div>",
+    )
+    .replace('<div class="tab-panel" id="tab-sms">', '<div class="tab-panel active" id="tab-sms">')
+    .replace('<div class="tab-panel active" id="tab-password">', '<div class="tab-panel" id="tab-password">')
+    .replace(
+      '<span>账号</span>\n' +
+        '              <input type="text" id="login-phone" placeholder="请输入管理员分配的账号" autocomplete="username" />',
+      '<span>手机号</span>\n' +
+        '              <input type="tel" id="login-phone" placeholder="请输入手机号" autocomplete="tel" />',
+    );
+
 const normalizePopupJs = (source) =>
   source
+    .replace("(store.jizhangerp.com / sonli)", "(store.jizhangerp.com / 极掌)")
+    .replace(
+      '  const BRAND_DISPLAY_NAME = _brandFallback("sonli", "sonli");\n',
+      '  const BRAND_DISPLAY_NAME = _brandFallback("QH", "极掌");\n',
+    )
+    .replace("popup.html 里的 brand 静态占位符", "popup.html 里的 QH 静态占位符")
     .replace(
       '  const LOCAL_FRONTEND_BASE_URL = "http://127.0.0.1:5173";\n' +
         '  const isLocalBackendUrl = (value) => /^(?:http:\\/\\/)?(?:localhost|127\\.0\\.0\\.1):3001\\b/.test(String(value || ""));\n',
       "",
     )
+    .replace('      showTip("请输入账号");', '      showTip("请输入手机号");')
+    .replace('        err.includes("[403]") ||\n', "")
+    .replace('        err.includes("未登录") ||\n', "")
+    .replace('        err.includes("过期") ||\n', "")
+    .replace('        err.includes("停用") ||\n', "")
     .replace(
       '  let FRONTEND_BASE_URL = LOCAL_FRONTEND_BASE_URL;',
       '  let FRONTEND_BASE_URL = "https://" + BRAND_WEB_HOST;',
@@ -64,6 +109,29 @@ const normalizePopupJs = (source) =>
 requireExistingSource();
 
 for (const rel of exactUiFiles) assertSameFile(rel);
+
+assertPng("icons/icon16.png", 16, 16);
+assertPng("icons/icon48.png", 48, 48);
+assertPng("icons/icon128.png", 128, 128);
+assertPng("icons/sonli-logo.png", 1254, 1254);
+
+assert.equal(
+  normalizePopupHtml(readFileSync(path.join(localDir, "popup/popup.html"), "utf8")),
+  readFileSync(path.join(sourceDir, "popup/popup.html"), "utf8"),
+  "popup.html must only differ by sonli branding and local account-login UI substitutions",
+);
+
+assert.equal(
+  normalizeBatchUploadHtml(readFileSync(path.join(localDir, "batch-upload/index.html"), "utf8")),
+  readFileSync(path.join(sourceDir, "batch-upload/index.html"), "utf8"),
+  "batch-upload/index.html must only differ by sonli branding substitutions",
+);
+
+assert.equal(
+  normalizeBatchUploadJs(readFileSync(path.join(localDir, "batch-upload/index.js"), "utf8")),
+  readFileSync(path.join(sourceDir, "batch-upload/index.js"), "utf8"),
+  "batch-upload/index.js must only differ by sonli branding substitutions",
+);
 
 const sourcePopup = readFileSync(path.join(sourceDir, "popup/popup.js"), "utf8");
 const localPopup = readFileSync(path.join(localDir, "popup/popup.js"), "utf8");

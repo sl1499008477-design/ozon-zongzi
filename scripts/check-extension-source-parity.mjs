@@ -9,7 +9,10 @@ const localDir = "extension";
 const allowedDiffs = new Set([
   "background/service-worker.js",
   "background/sync/sync-engine.js",
+  "batch-upload/index.html",
+  "batch-upload/index.js",
   "content/alibaba-1688.js",
+  "content/collector/db.js",
   "content/jizhangerp-bridge.js",
   "content/jzc-calc.js",
   "content/ozon-data-panel.js",
@@ -17,13 +20,18 @@ const allowedDiffs = new Set([
   "content/ozon-product.js",
   "content/ozon-search.js",
   "content/shared-utils.js",
+  "icons/icon128.png",
+  "icons/icon16.png",
+  "icons/icon48.png",
   "lib/cn-source-panel.js",
   "manifest.json",
+  "popup/popup.html",
   "popup/popup.js",
 ]);
 
 const allowedLocalOnly = new Set([
   "background/__tests__/follow-sell-dry-run-route.test.js",
+  "icons/sonli-logo.png",
   "package.json",
   "popup/__tests__/popup-routing.smoke.test.js",
   "tests/jizhangerp-bridge-follow-sell.test.js",
@@ -77,10 +85,12 @@ if (problems.length) {
 
 const sourceManifest = JSON.parse(readFileSync(path.join(sourceDir, "manifest.json"), "utf8"));
 const localManifest = JSON.parse(readFileSync(path.join(localDir, "manifest.json"), "utf8"));
-assert.equal(localManifest.name, sourceManifest.name);
+assert.equal(localManifest.name, "sonli");
+assert.equal(localManifest.description, "sonli");
 assert.equal(localManifest.version, sourceManifest.version);
 assert.deepEqual(localManifest.permissions, sourceManifest.permissions);
 assert.equal(localManifest.update_url, undefined);
+assert.equal(localManifest.action?.default_title, "sonli");
 assert.ok(localManifest.host_permissions.includes("http://localhost:3000/*"));
 assert.ok(localManifest.host_permissions.includes("http://store.localhost:3000/*"));
 assert.ok(localManifest.host_permissions.includes("http://127.0.0.1:5173/*"));

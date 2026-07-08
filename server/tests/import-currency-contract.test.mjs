@@ -38,6 +38,15 @@ let importPayload = null;
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
+  currentAccountId: "acct_currency_test",
+  sessionIssuedAt: "2026-01-01T00:00:00.000Z",
+  accounts: [{
+    id: "acct_currency_test",
+    username: "currency-test",
+    displayName: "Currency Test",
+    role: "admin",
+    status: "active",
+  }],
   currentStoreId: storeId,
   stores: [{ id: storeId, label: "currency-store", clientId: "currency-client", apiKey: "currency-key" }],
   caches: {

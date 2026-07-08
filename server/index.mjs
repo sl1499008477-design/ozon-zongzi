@@ -1,10 +1,23 @@
+import "./env.mjs";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
+import {
+  loadPersistedState,
+  persistenceHealth,
+  persistenceMode,
+  savePersistedState,
+} from "./persistence.mjs";
+import {
+  getObjectStream,
+  objectStorageHealth,
+  objectStorageInfo,
+  putObjectFromBase64,
+  removeObject,
+} from "./object-storage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -39,6 +52,7 @@ const defaultState = () => ({
     messageHistory: [],
     productTemplates: [],
     watermarkTemplates: [],
+    files: [],
   },
   hashes: {},
   leases: {},
@@ -134,8 +148,8 @@ function ensureAccountState(state) {
 
 async function loadState() {
   try {
-    const raw = await fs.readFile(dataFile, "utf8");
-    const parsed = JSON.parse(raw);
+    const parsed = await loadPersistedState({ dataFile });
+    if (!parsed) return ensureAccountState(defaultState());
     const base = defaultState();
     return ensureAccountState({
       ...base,
@@ -155,8 +169,7 @@ async function loadState() {
 
 async function saveState(state) {
   state.updatedAt = new Date().toISOString();
-  await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(dataFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await savePersistedState({ dataDir, dataFile, state });
 }
 
 function sendJson(res, status, data, extraHeaders = {}) {
@@ -186,6 +199,30 @@ async function readBody(req) {
     err.status = 400;
     throw err;
   }
+}
+
+function contentDispositionFileName(name) {
+  return `inline; filename*=UTF-8''${encodeURIComponent(String(name || "file"))}`;
+}
+
+function publicLocalFile(file = {}) {
+  return {
+    id: file.id,
+    key: file.key,
+    name: file.name,
+    contentType: file.contentType,
+    size: file.size,
+    bucket: file.bucket,
+    storage: file.storage || "minio",
+    createdAt: file.createdAt,
+    createdBy: file.createdBy || "",
+    url: file.key ? `/local/files/${encodeURIComponent(file.key)}` : "",
+  };
+}
+
+function ensureFilesCache(state) {
+  state.caches.files = Array.isArray(state.caches.files) ? state.caches.files : [];
+  return state.caches.files;
 }
 
 function publicStore(store, state = null) {
@@ -416,6 +453,7 @@ function summarize(state) {
     messageHistory: state.caches.messageHistory?.length || 0,
     productTemplates: state.caches.productTemplates?.length || 0,
     watermarkTemplates: state.caches.watermarkTemplates?.length || 0,
+    files: state.caches.files?.length || 0,
     lastSyncAt: state.reports.findLast?.((r) => r.status === "SUCCESS" && syncTypes.has(r.type))?.createdAt || null,
   };
 }
@@ -466,6 +504,7 @@ function localStatePayload(state, options = {}) {
       messageHistory: state.caches.messageHistory || [],
       productTemplates: state.caches.productTemplates || [],
       watermarkTemplates: state.caches.watermarkTemplates || [],
+      files: state.caches.files || [],
     },
     jobs: state.jobs || {},
     updatedAt: state.updatedAt,
@@ -1956,7 +1995,33 @@ async function handle(req, res) {
   const state = await loadState();
 
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, service: "qh-local-api", version: "0.13.46.1-local" });
+    sendJson(res, 200, {
+      ok: true,
+      service: "qh-local-api",
+      version: "0.13.46.1-local",
+      persistence: persistenceMode(),
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/local/storage/health") {
+    let persistence;
+    let objectStorage;
+    try {
+      persistence = await persistenceHealth({ dataFile });
+    } catch (error) {
+      persistence = { ok: false, mode: persistenceMode(), message: error.message };
+    }
+    try {
+      objectStorage = await objectStorageHealth();
+    } catch (error) {
+      objectStorage = { ok: false, ...objectStorageInfo(), message: error.message };
+    }
+    sendJson(res, persistence.ok && objectStorage.ok ? 200 : 503, {
+      ok: Boolean(persistence.ok && objectStorage.ok),
+      persistence,
+      objectStorage,
+    });
     return;
   }
 
@@ -1967,6 +2032,83 @@ async function handle(req, res) {
       account,
       includeAccounts: account?.role === "admin",
     }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/local/files") {
+    requireAuth(req, state);
+    sendJson(res, 200, { ok: true, files: ensureFilesCache(state).map(publicLocalFile) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/local/files") {
+    const account = requireAuth(req, state);
+    const body = await readBody(req);
+    const name = String(body.name || body.fileName || "").trim();
+    const base64 = body.base64 || body.content || body.data;
+    if (!name || !base64) {
+      sendError(res, 400, "文件名称和 base64 内容必填");
+      return;
+    }
+    const stored = await putObjectFromBase64({
+      name,
+      contentType: body.contentType || body.mimeType || "",
+      base64,
+    });
+    const file = {
+      id: `file_${crypto.randomUUID()}`,
+      key: stored.key,
+      name,
+      contentType: stored.contentType,
+      size: stored.size,
+      bucket: stored.bucket,
+      storage: "minio",
+      createdAt: new Date().toISOString(),
+      createdBy: account.id,
+    };
+    ensureFilesCache(state).unshift(file);
+    await saveState(state);
+    sendJson(res, 200, { ok: true, file: publicLocalFile(file), state: localStatePayload(state) });
+    return;
+  }
+
+  const localFileMatch = url.pathname.match(/^\/local\/files\/(.+)$/);
+  if (localFileMatch && req.method === "GET") {
+    requireAuth(req, state);
+    const key = decodeURIComponent(localFileMatch[1]);
+    const file = ensureFilesCache(state).find((item) => item.key === key);
+    if (!file) {
+      sendError(res, 404, "文件不存在", "LOCAL_FILE_NOT_FOUND");
+      return;
+    }
+    const stream = await getObjectStream(key);
+    const headers = {
+      "Content-Type": file.contentType || "application/octet-stream",
+      "Content-Disposition": contentDispositionFileName(file.name),
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-ozon-store-id, x-device-fingerprint",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    };
+    if (file.size) headers["Content-Length"] = String(file.size);
+    res.writeHead(200, headers);
+    for await (const chunk of stream) res.write(chunk);
+    res.end();
+    return;
+  }
+
+  if (localFileMatch && req.method === "DELETE") {
+    requireAuth(req, state);
+    const key = decodeURIComponent(localFileMatch[1]);
+    const files = ensureFilesCache(state);
+    const index = files.findIndex((item) => item.key === key);
+    if (index < 0) {
+      sendError(res, 404, "文件不存在", "LOCAL_FILE_NOT_FOUND");
+      return;
+    }
+    await removeObject(key);
+    const [removed] = files.splice(index, 1);
+    await saveState(state);
+    sendJson(res, 200, { ok: true, removed: publicLocalFile(removed), state: localStatePayload(state) });
     return;
   }
 

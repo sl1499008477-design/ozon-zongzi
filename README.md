@@ -18,6 +18,41 @@ No sample shop, product, order, GMV, inventory, or customer data is inserted. Th
 
 Credentials are written only to `server-data/local-state.json` on this Mac. `server-data/` is ignored by git and is not bundled into the frontend build.
 
+When PostgreSQL environment variables are configured, the local API stores the same state document in PostgreSQL table `local_state` instead of `server-data/local-state.json`. If the table is empty and the JSON file already exists, the API imports the JSON state on first boot.
+
+Local files are stored through MinIO by the `/local/files` API. Existing browser-side utilities that only process files in memory still work without uploading anything.
+
+## Local Persistent Storage
+
+Docker Desktop is required for the PostgreSQL and MinIO services.
+
+Copy the environment template once:
+
+```bash
+cp .env.example .env
+```
+
+Start local storage:
+
+```bash
+docker compose up -d postgres minio minio-init
+```
+
+Default endpoints:
+
+- PostgreSQL: `127.0.0.1:5432`, database `sonli_local`, user `sonli`
+- MinIO API: `http://127.0.0.1:9000`
+- MinIO console: `http://127.0.0.1:9001`
+- MinIO bucket: `sonli-local-files`
+
+Health check:
+
+```bash
+curl http://127.0.0.1:3001/local/storage/health
+```
+
+If `.env` is absent, the API keeps using JSON file storage.
+
 ## Run Locally
 
 Use one command from the workspace root:

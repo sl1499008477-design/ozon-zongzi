@@ -39,6 +39,15 @@ let attributeCalls = 0;
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
+  currentAccountId: "acct_preview_test",
+  sessionIssuedAt: "2026-01-01T00:00:00.000Z",
+  accounts: [{
+    id: "acct_preview_test",
+    username: "preview-test",
+    displayName: "Preview Test",
+    role: "admin",
+    status: "active",
+  }],
   currentStoreId: storeId,
   stores: [{ id: storeId, label: "preview-store", clientId: "preview-client", apiKey: "preview-key" }],
   caches: {},

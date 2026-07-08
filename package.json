@@ -11,5 +11,9 @@
     "compat-proxy": "node scripts/frontend-compat-proxy.mjs",
     "package-extension": "node scripts/package-extension.mjs",
     "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "minio": "^8.0.6",
+    "pg": "^8.16.3"
   }
 }
