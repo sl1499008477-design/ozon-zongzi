@@ -32,9 +32,9 @@
   const RECHARGE_PATH = "/ozon/settings/jidian";
   const MEMBERSHIP_PATH = "/ozon/settings/membership";
   const BATCH_UPLOAD_LISTING_CFG_KEY = "batch-upload-listing-config-v1";
-  const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test("QH")
+  const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test("sonli")
     ? "平台"
-    : "QH";
+    : "sonli";
 
   // ─── State ──────────────────────────────────────
   const state = {
@@ -1371,7 +1371,7 @@
   // 头栏 logo + 标题：按 brand 配置渲染（分销商扩展看到自家 logo/名称，
   // 而不是固定的"极"方块和"极掌"文案）。
   //   - tb-icon：有 brand.logoUrl 用 <img>，否则用 displayName[0] 占位字符
-  //   - document.title：QH 占位符在主插件 build.js /
+  //   - document.title：brand 占位符在主插件 build.js /
   //     分销商 extension-build.service.ts textual replace 流程会被替换；dev
   //     加载源码时占位符没替换，这里 runtime 兜底
   function renderBrandHeader() {
@@ -1394,8 +1394,8 @@
       }
     }
     // dev 加载源码时占位符没被 build 替换 → 兜底
-    if (document.title.includes("QH")) {
-      document.title = document.title.split("QH").join(displayName);
+    if (document.title.includes("sonli")) {
+      document.title = document.title.split("sonli").join(displayName);
     }
   }
 

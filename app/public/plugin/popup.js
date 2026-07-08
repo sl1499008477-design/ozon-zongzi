@@ -1,14 +1,14 @@
 (() => {
   // dev 直接加载源码时 build.js 没跑,brand 占位符保持字面量 → 运行时兜底成平台默认。
   // 用 /__BRAND/ 探测而不写全占位符:build 的 textual replace 会把出现的全占位符全换掉,
-  // 若把探测串也写全,分销商 build 会被错误兜底成平台默认(store.jizhangerp.com / 极掌)。
+  // 若把探测串也写全,分销商 build 会被错误兜底成平台默认(store.jizhangerp.com / sonli)。
   const _brandFallback = (val, fb) => (/__BRAND/.test(val) ? fb : val);
   const BRAND_WEB_HOST = _brandFallback("qh.jizhangerp.com", "store.jizhangerp.com");
-  const BRAND_DISPLAY_NAME = _brandFallback("QH", "极掌");
+  const BRAND_DISPLAY_NAME = _brandFallback("sonli", "sonli");
   const LOCAL_FRONTEND_BASE_URL = "http://127.0.0.1:5173";
   const isLocalBackendUrl = (value) => /^(?:http:\/\/)?(?:localhost|127\.0\.0\.1):3001\b/.test(String(value || ""));
 
-  // popup.html 里的 QH 静态占位符(标题/logo/按钮文案)在 dev 源码
+  // popup.html 里的 brand 静态占位符(标题/logo/按钮文案)在 dev 源码
   // 加载时不会被 build 替换 → 运行时扫一遍文本节点 + title + img[alt] 兜底替换。
   const applyBrandToDom = () => {
     const PH = "__BRAND" + "_DISPLAY_NAME__"; // 拆写,避免被 build textual replace 命中

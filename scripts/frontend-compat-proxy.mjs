@@ -26,7 +26,7 @@ const proxyRequest = (req, res) => {
 
   upstream.on("error", (error) => {
     res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-    res.end(`QH frontend compatibility proxy failed: ${error.message}`);
+    res.end(`sonli frontend compatibility proxy failed: ${error.message}`);
   });
 
   req.pipe(upstream);

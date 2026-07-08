@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"qh","displayName":"QH","productName":"QH","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":null};
 /**
  * ozon-premium-hook.js — 数据透视眼（Ozon Premium 客户端伪造）。
  *
@@ -28,7 +28,7 @@ globalThis.__JZ_BRAND__ = {"code":"qh","displayName":"QH","productName":"QH","pr
   window.__JZC_PREMIUM_HOOK_INSTALLED__ = true;
   const BRAND_DISPLAY_NAME =
     (globalThis.__JZ_BRAND__ && globalThis.__JZ_BRAND__.displayName) ||
-    (/__BRAND/.test("QH") ? "平台" : "QH");
+    (/__BRAND/.test("sonli") ? "平台" : "sonli");
 
   function escapeHtml(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => {

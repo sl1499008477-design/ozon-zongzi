@@ -949,9 +949,9 @@
     const runtime = globalThis.__JZ_BRAND__ || {};
     // dev 源码加载时 build.js 没跑,占位符保持字面量 → 运行时兜底平台品牌。
     // /__BRAND/ 探测避免被 build textual replace 命中(否则分销商 build 被误兜底)。
-    const displayNameFallback = /__BRAND/.test("QH")
+    const displayNameFallback = /__BRAND/.test("sonli")
       ? "平台"
-      : "QH";
+      : "sonli";
     const displayName = runtime.displayName || displayNameFallback;
     const webHost = runtime.webHost || (/__BRAND/.test('qh.jizhangerp.com') ? 'store.jizhangerp.com' : 'qh.jizhangerp.com');
     const primaryColor = runtime.primaryColor || '#2168ff';

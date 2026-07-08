@@ -11,18 +11,18 @@ const js = read("popup/popup.js");
 const manifest = JSON.parse(read("manifest.json"));
 
 const actionLabels = {
-  dashboard: "打开 QH ERP",
+  dashboard: "打开 sonli ERP",
   products: "商品列表",
   "collect-box": "采集箱",
   "batch-upload": "批量上架",
   "import-history": "上架记录",
   reshelf: "下架重上",
-  pricing: "QH 算价",
+  pricing: "sonli 算价",
   watermark: "水印管理",
   stores: "店铺管理",
   "premium-pivot": "数据透视眼",
   "data-panel": "数据面板",
-  collector: "QH 采集器",
+  collector: "sonli 采集器",
 };
 
 for (const [action, label] of Object.entries(actionLabels)) {

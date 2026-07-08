@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"qh","displayName":"QH","productName":"QH","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
 // Electron host compatibility shim — Electron 36+ extension system 不实现
 // chrome.contextMenus / chrome.cookies / chrome.notifications,SW 顶层调到
 // chrome.contextMenus.onClicked.addListener 会抛 TypeError 导致整个 SW 注册失败。
@@ -1802,7 +1802,10 @@ try {
         // 都视为登录失效：清 token + storeId，让前端显示重登提示。
         // 之前只识别 TOKEN_REVOKED，导致 jwt expired 等场景静默失败、
         // 用户继续看到挂死状态。
-        if (response.status === 401) {
+        if (
+          response.status === 401 ||
+          (response.status === 403 && /AUTH|LOGIN|ACCOUNT|未登录|登录|过期|停用/i.test(`${errorCode || ''} ${errorMsg || ''}`))
+        ) {
           await removeStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
           if (errorCode == null) errorCode = 'AUTH_EXPIRED';
         }
@@ -2697,7 +2700,7 @@ try {
       getDeviceKey: async () => getExtensionFingerprint(),
       getDeviceName: async () => {
         const manifest = chrome.runtime.getManifest() || {};
-        return `${manifest.name || '极掌'} / Chrome`;
+        return `${manifest.name || 'sonli'} / Chrome`;
       },
     });
   };

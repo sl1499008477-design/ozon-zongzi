@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "QH",
+  "name": "sonli",
   "version": "0.13.46.1",
-  "description": "QH",
+  "description": "sonli",
   "permissions": [
     "storage",
     "contextMenus",
@@ -91,7 +91,7 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "QH"
+    "default_title": "sonli"
   },
   "content_scripts": [
     {

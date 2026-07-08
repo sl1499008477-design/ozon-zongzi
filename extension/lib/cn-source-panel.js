@@ -15,7 +15,7 @@
 
   function getBrand() {
     const runtime = globalThis.__JZ_BRAND__ || {};
-    const displayName = runtime.displayName || (/__BRAND/.test("QH") ? "极掌" : "QH");
+    const displayName = runtime.displayName || (/__BRAND/.test("sonli") ? "sonli" : "sonli");
     const webHost = runtime.webHost || (/__BRAND/.test("qh.jizhangerp.com") ? "store.jizhangerp.com" : "qh.jizhangerp.com");
     return {
       displayName,
@@ -460,15 +460,15 @@
     root.id = "jzc-cn-source-panel";
     const logo = brand.logoUrl
       ? `<span class="jzc-cn-logo"><img src="${escapeHtml(brand.logoUrl)}" alt="${escapeHtml(brand.displayName)}"></span>`
-      : `<span class="jzc-cn-logo">${escapeHtml((brand.displayName || "极掌").slice(0, 1))}</span>`;
+      : `<span class="jzc-cn-logo">${escapeHtml((brand.displayName || "sonli").slice(0, 1))}</span>`;
     const ball = brand.logoUrl
       ? `<img src="${escapeHtml(brand.logoUrl)}" alt="${escapeHtml(brand.displayName)}">`
-      : escapeHtml((brand.displayName || "极掌").slice(0, 1));
+      : escapeHtml((brand.displayName || "sonli").slice(0, 1));
     root.innerHTML = `
       <div class="jzc-cn-card">
         <div class="jzc-cn-brand">
           ${logo}
-          <span class="jzc-cn-name">${escapeHtml(brand.displayName || "极掌")}</span>
+          <span class="jzc-cn-name">${escapeHtml(brand.displayName || "sonli")}</span>
           <span class="jzc-cn-collapse" data-action="collapse" title="收起">—</span>
         </div>
         <div class="jzc-cn-divider"></div>
@@ -486,7 +486,7 @@
           <span class="jzc-cn-hot">HOT</span>
         </button>
       </div>
-      <div class="jzc-cn-ball" title="展开${escapeHtml(brand.displayName || "极掌")}">${ball}</div>
+      <div class="jzc-cn-ball" title="展开${escapeHtml(brand.displayName || "sonli")}">${ball}</div>
     `;
 
     async function collectCurrentProduct(options = {}) {

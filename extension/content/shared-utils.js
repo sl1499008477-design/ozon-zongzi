@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"qh","displayName":"QH","productName":"QH","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
 // Shared utility functions for 极掌 (JiZhang) Extension
 // This file is loaded before other content scripts via manifest.json
 
@@ -7,12 +7,12 @@ globalThis.__JZ_BRAND__ = {"code":"qh","displayName":"QH","productName":"QH","pr
 // 静态 inline 成实际 brand 对象,该 if 判断恒为 false,赋值被 DCE。
 // per-field 兜底:防止某个 brand build 漏配字段(如 distributor 配置只有
 // displayName/logoUrl 没 webHost)→ `https://${undefined}` 这种线上 bug。
-const BRAND_DISPLAY_NAME_FALLBACK = /__BRAND/.test("QH")
+const BRAND_DISPLAY_NAME_FALLBACK = /__BRAND/.test("sonli")
   ? "平台"
-  : "QH";
-const BRAND_PRODUCT_NAME_FALLBACK = /__BRAND/.test("QH")
+  : "sonli";
+const BRAND_PRODUCT_NAME_FALLBACK = /__BRAND/.test("sonli")
   ? `${BRAND_DISPLAY_NAME_FALLBACK}算价`
-  : "QH";
+  : "sonli";
 const __JZ_BRAND_DEFAULTS__ = {
   code: "platform",
   displayName: BRAND_DISPLAY_NAME_FALLBACK,

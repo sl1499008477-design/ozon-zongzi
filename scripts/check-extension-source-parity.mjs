@@ -90,7 +90,7 @@ assert.equal(localManifest.content_scripts.length, sourceManifest.content_script
 const bridgeScript = localManifest.content_scripts.find((script) =>
   script.matches?.includes("http://127.0.0.1:5173/*") && script.js?.includes("content/jizhangerp-bridge.js"),
 );
-assert.ok(bridgeScript, "local QH bridge content script missing");
+assert.ok(bridgeScript, "local sonli bridge content script missing");
 assert.ok(bridgeScript.matches.includes("http://localhost:3000/*"));
 assert.ok(bridgeScript.matches.includes("http://store.localhost:3000/*"));
 assert.deepEqual(bridgeScript.js, [

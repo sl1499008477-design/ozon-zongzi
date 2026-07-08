@@ -106,7 +106,7 @@ function createHarness(overrides = {}) {
   const qhScriptGroup = manifest.content_scripts.find((group) =>
     (group.js || []).includes("content/jizhangerp-bridge.js"),
   );
-  assert.ok(qhScriptGroup, "manifest should inject jizhangerp bridge on QH pages");
+  assert.ok(qhScriptGroup, "manifest should inject jizhangerp bridge on sonli pages");
   assert.deepStrictEqual(
     qhScriptGroup.js,
     [
@@ -115,7 +115,7 @@ function createHarness(overrides = {}) {
       "lib/sku-collect.js",
       "content/jizhangerp-bridge.js",
     ],
-    "QH bridge dependencies must load before the bridge",
+    "sonli bridge dependencies must load before the bridge",
   );
 
   const harness = createHarness();

@@ -1356,7 +1356,7 @@
     const sheetXml = _buildSheetXml(rows, fields, images.length);
     const zipBytes = _zipStore(_xlsxStaticFiles(sheetXml, images));
     const blob = new Blob([zipBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const filenameBase = opts.filename || `${globalThis.__JZ_BRAND__?.displayName || '极掌'}采集_${new Date().toISOString().slice(0, 10)}`;
+    const filenameBase = opts.filename || `${globalThis.__JZ_BRAND__?.displayName || 'sonli'}采集_${new Date().toISOString().slice(0, 10)}`;
     const filename = `${filenameBase}.xlsx`;
 
     if (typeof window.showSaveFilePicker === 'function') {

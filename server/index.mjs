@@ -15,9 +15,14 @@ const OZON_API_BASE = "https://api-seller.ozon.ru";
 const DESCRIPTION_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const descriptionCategoryTreeCache = new Map();
 const descriptionCategoryAttributesCache = new Map();
+const DEFAULT_ADMIN_USERNAME = process.env.SONLI_ADMIN_USERNAME || "admin";
+const DEFAULT_ADMIN_PASSWORD = process.env.SONLI_ADMIN_PASSWORD || "admin123456";
 
 const defaultState = () => ({
   token: "",
+  currentAccountId: "",
+  sessionIssuedAt: "",
+  accounts: [],
   currentStoreId: "",
   stores: [],
   caches: {
@@ -43,12 +48,96 @@ const defaultState = () => ({
   updatedAt: new Date().toISOString(),
 });
 
+function createPasswordHash(password, salt = crypto.randomBytes(16).toString("hex")) {
+  return {
+    passwordSalt: salt,
+    passwordHash: crypto.scryptSync(String(password || ""), salt, 32).toString("hex"),
+    passwordAlgorithm: "scrypt",
+  };
+}
+
+function verifyPassword(password, account = {}) {
+  if (!account.passwordHash || !account.passwordSalt) return false;
+  const hash = crypto.scryptSync(String(password || ""), account.passwordSalt, 32);
+  const expected = Buffer.from(account.passwordHash, "hex");
+  return expected.length === hash.length && crypto.timingSafeEqual(expected, hash);
+}
+
+function createAccountRecord({ username, password, displayName, role = "user", expiresAt = "", status = "active" }) {
+  const now = new Date().toISOString();
+  return {
+    id: `acct_${crypto.randomUUID()}`,
+    username: String(username || "").trim(),
+    displayName: String(displayName || username || "").trim(),
+    role: role === "admin" ? "admin" : "user",
+    status: status === "disabled" ? "disabled" : "active",
+    expiresAt: normalizeAccountExpiresAt(expiresAt),
+    ...createPasswordHash(password),
+    createdAt: now,
+    updatedAt: now,
+    lastLoginAt: "",
+  };
+}
+
+function normalizeAccountExpiresAt(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    const err = new Error("登录期限不是有效时间");
+    err.status = 400;
+    throw err;
+  }
+  return date.toISOString();
+}
+
+function isAccountExpired(account = {}, now = Date.now()) {
+  if (!account.expiresAt) return false;
+  const expiresAt = new Date(account.expiresAt).getTime();
+  return Number.isFinite(expiresAt) && expiresAt <= now;
+}
+
+function publicAccount(account = {}) {
+  if (!account?.id) return null;
+  return {
+    id: account.id,
+    username: account.username,
+    displayName: account.displayName || account.username,
+    role: account.role === "admin" ? "admin" : "user",
+    status: account.status === "disabled" ? "disabled" : "active",
+    expiresAt: account.expiresAt || "",
+    expired: isAccountExpired(account),
+    createdAt: account.createdAt || "",
+    updatedAt: account.updatedAt || "",
+    lastLoginAt: account.lastLoginAt || "",
+  };
+}
+
+function ensureAccountState(state) {
+  state.accounts = Array.isArray(state.accounts) ? state.accounts : [];
+  const hasAdmin = state.accounts.some((account) => account.role === "admin");
+  if (!hasAdmin) {
+    state.accounts.unshift(createAccountRecord({
+      username: DEFAULT_ADMIN_USERNAME,
+      password: DEFAULT_ADMIN_PASSWORD,
+      displayName: "管理员",
+      role: "admin",
+    }));
+  }
+  if (!state.accounts.some((account) => account.id === state.currentAccountId)) {
+    state.currentAccountId = "";
+    state.sessionIssuedAt = "";
+    state.token = "";
+  }
+  return state;
+}
+
 async function loadState() {
   try {
     const raw = await fs.readFile(dataFile, "utf8");
     const parsed = JSON.parse(raw);
     const base = defaultState();
-    return {
+    return ensureAccountState({
       ...base,
       ...parsed,
       caches: { ...base.caches, ...(parsed.caches || {}) },
@@ -57,9 +146,10 @@ async function loadState() {
       browserAgents: { ...base.browserAgents, ...(parsed.browserAgents || {}) },
       jobs: { ...base.jobs, ...(parsed.jobs || {}) },
       reports: Array.isArray(parsed.reports) ? parsed.reports : base.reports,
-    };
+      accounts: Array.isArray(parsed.accounts) ? parsed.accounts : base.accounts,
+    });
   } catch {
-    return defaultState();
+    return ensureAccountState(defaultState());
   }
 }
 
@@ -125,8 +215,14 @@ function publicStore(store, state = null) {
 
 function localAuthPayload(state) {
   const store = activeStore(state);
-  if (!state.token || !store) {
-    const err = new Error("本地复刻版请先在网页端绑定 Ozon 门店");
+  const account = activeAccount(state);
+  if (!state.token || !account) {
+    const err = new Error("请先登录 sonli");
+    err.status = 401;
+    throw err;
+  }
+  if (!store) {
+    const err = new Error("请先在网页端绑定 Ozon 门店");
     err.status = 400;
     throw err;
   }
@@ -137,8 +233,8 @@ function localAuthPayload(state) {
     currentOzonStoreId: store.id,
     storeId: store.id,
     user: {
-      id: "local-user",
-      name: "当前用户",
+      id: account.id,
+      name: account.displayName || account.username,
       phoneNumber: "",
       platform: "local",
     },
@@ -148,6 +244,16 @@ function localAuthPayload(state) {
 
 function activeStore(state, storeId = state.currentStoreId) {
   return state.stores.find((store) => String(store.id) === String(storeId)) || null;
+}
+
+function activeAccount(state, accountId = state.currentAccountId) {
+  return (state.accounts || []).find((account) => String(account.id) === String(accountId)) || null;
+}
+
+function findAccountByUsername(state, username) {
+  const key = String(username || "").trim().toLowerCase();
+  if (!key) return null;
+  return (state.accounts || []).find((account) => String(account.username || "").toLowerCase() === key) || null;
 }
 
 function createStoreId(clientId) {
@@ -166,10 +272,49 @@ function bearerToken(req) {
 function requireAuth(req, state) {
   const token = bearerToken(req);
   if (!state.token || token !== state.token) {
-    const err = new Error("未授权，请先在本地后台绑定门店");
+    const err = new Error("未登录，请先登录 sonli");
     err.status = 401;
     throw err;
   }
+  const account = activeAccount(state);
+  if (!account) {
+    const err = new Error("登录状态已失效，请重新登录");
+    err.status = 401;
+    throw err;
+  }
+  if (account.status === "disabled") {
+    const err = new Error("账号已被停用，请联系管理员");
+    err.status = 403;
+    throw err;
+  }
+  if (isAccountExpired(account)) {
+    state.token = "";
+    state.currentAccountId = "";
+    state.sessionIssuedAt = "";
+    const err = new Error("账号登录期限已过期，请联系管理员");
+    err.status = 403;
+    throw err;
+  }
+  return account;
+}
+
+function optionalAuth(req, state) {
+  if (!bearerToken(req)) return null;
+  try {
+    return requireAuth(req, state);
+  } catch {
+    return null;
+  }
+}
+
+function requireAdmin(req, state) {
+  const account = requireAuth(req, state);
+  if (account.role !== "admin") {
+    const err = new Error("仅管理员可操作账号");
+    err.status = 403;
+    throw err;
+  }
+  return account;
 }
 
 const dayKeyFormatter = new Intl.DateTimeFormat("en-CA", {
@@ -275,10 +420,34 @@ function summarize(state) {
   };
 }
 
-function localStatePayload(state) {
+function limitedLocalStatePayload(state) {
+  const empty = defaultState();
+  return {
+    ok: true,
+    requiresLogin: true,
+    token: "",
+    account: null,
+    accounts: [],
+    currentStoreId: "",
+    binding: null,
+    stores: [],
+    summary: summarize(empty),
+    caches: empty.caches,
+    jobs: {},
+    updatedAt: state.updatedAt,
+  };
+}
+
+function localStatePayload(state, options = {}) {
+  const authenticated = options.authenticated ?? true;
+  const account = authenticated ? (options.account || activeAccount(state)) : null;
+  if (!authenticated || !account) return limitedLocalStatePayload(state);
+  const includeAccounts = options.includeAccounts ?? account.role === "admin";
   return {
     ok: true,
     token: state.token || "",
+    account: publicAccount(account),
+    accounts: includeAccounts ? (state.accounts || []).map(publicAccount) : [],
     currentStoreId: state.currentStoreId || "",
     binding: publicStore(activeStore(state), state),
     stores: state.stores.map((store) => publicStore(store, state)),
@@ -1792,11 +1961,139 @@ async function handle(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/local/state") {
-    sendJson(res, 200, localStatePayload(state));
+    const account = optionalAuth(req, state);
+    sendJson(res, 200, localStatePayload(state, {
+      authenticated: Boolean(account),
+      account,
+      includeAccounts: account?.role === "admin",
+    }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/local/accounts/login") {
+    const body = await readBody(req);
+    const username = String(body.username || body.phoneNumber || body.phone || "").trim();
+    const password = String(body.password || "");
+    const account = findAccountByUsername(state, username);
+    if (!account || !verifyPassword(password, account)) {
+      sendError(res, 401, "账号或密码错误", "LOCAL_LOGIN_FAILED");
+      return;
+    }
+    if (account.status === "disabled") {
+      sendError(res, 403, "账号已被停用，请联系管理员", "LOCAL_ACCOUNT_DISABLED");
+      return;
+    }
+    if (isAccountExpired(account)) {
+      sendError(res, 403, "账号登录期限已过期，请联系管理员", "LOCAL_ACCOUNT_EXPIRED");
+      return;
+    }
+    const now = new Date().toISOString();
+    state.token = createToken();
+    state.currentAccountId = account.id;
+    state.sessionIssuedAt = now;
+    account.lastLoginAt = now;
+    account.updatedAt = now;
+    await saveState(state);
+    sendJson(res, 200, {
+      ok: true,
+      token: state.token,
+      account: publicAccount(account),
+      state: localStatePayload(state, { authenticated: true, account, includeAccounts: account.role === "admin" }),
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/local/accounts/logout") {
+    state.token = "";
+    state.currentAccountId = "";
+    state.sessionIssuedAt = "";
+    await saveState(state);
+    sendJson(res, 200, { ok: true, state: limitedLocalStatePayload(state) });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/local/accounts") {
+    requireAdmin(req, state);
+    sendJson(res, 200, { ok: true, accounts: state.accounts.map(publicAccount) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/local/accounts") {
+    requireAdmin(req, state);
+    const body = await readBody(req);
+    const username = String(body.username || "").trim();
+    const password = String(body.password || "");
+    if (!username || !password) {
+      sendError(res, 400, "账号和初始密码必填");
+      return;
+    }
+    if (findAccountByUsername(state, username)) {
+      sendError(res, 409, "账号已存在", "LOCAL_ACCOUNT_EXISTS");
+      return;
+    }
+    const account = createAccountRecord({
+      username,
+      password,
+      displayName: body.displayName || username,
+      role: body.role || "user",
+      expiresAt: body.expiresAt || "",
+      status: body.status || "active",
+    });
+    state.accounts.push(account);
+    await saveState(state);
+    sendJson(res, 200, { ok: true, account: publicAccount(account), accounts: state.accounts.map(publicAccount) });
+    return;
+  }
+
+  const accountMatch = url.pathname.match(/^\/local\/accounts\/([^/]+)$/);
+  if (accountMatch && req.method === "PATCH") {
+    const admin = requireAdmin(req, state);
+    const accountId = decodeURIComponent(accountMatch[1]);
+    const account = state.accounts.find((item) => item.id === accountId);
+    if (!account) {
+      sendError(res, 404, "账号不存在");
+      return;
+    }
+    const body = await readBody(req);
+    if (body.displayName !== undefined) account.displayName = String(body.displayName || account.username).trim();
+    if (body.role !== undefined) account.role = body.role === "admin" ? "admin" : "user";
+    if (body.status !== undefined) account.status = body.status === "disabled" ? "disabled" : "active";
+    if (body.expiresAt !== undefined) account.expiresAt = normalizeAccountExpiresAt(body.expiresAt);
+    if (body.password) Object.assign(account, createPasswordHash(body.password));
+    if (account.id === admin.id && account.status === "disabled") {
+      sendError(res, 400, "不能停用当前登录的管理员账号");
+      return;
+    }
+    if (account.id === admin.id && account.role !== "admin") {
+      sendError(res, 400, "不能取消当前登录账号的管理员权限");
+      return;
+    }
+    account.updatedAt = new Date().toISOString();
+    await saveState(state);
+    sendJson(res, 200, { ok: true, account: publicAccount(account), accounts: state.accounts.map(publicAccount) });
+    return;
+  }
+
+  if (accountMatch && req.method === "DELETE") {
+    const admin = requireAdmin(req, state);
+    const accountId = decodeURIComponent(accountMatch[1]);
+    if (accountId === admin.id) {
+      sendError(res, 400, "不能删除当前登录的管理员账号");
+      return;
+    }
+    const before = state.accounts.length;
+    state.accounts = state.accounts.filter((account) => account.id !== accountId);
+    if (state.accounts.length === before) {
+      sendError(res, 404, "账号不存在");
+      return;
+    }
+    await saveState(state);
+    sendJson(res, 200, { ok: true, accounts: state.accounts.map(publicAccount) });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/local/binding") {
+    requireAuth(req, state);
     const body = await readBody(req);
     const requestedLabel = String(body.storeName || body.label || "").trim();
     const clientId = String(body.clientId || "").trim();
@@ -1822,7 +2119,6 @@ async function handle(req, res) {
     };
     state.stores = [store, ...state.stores.filter((item) => item.id !== id)];
     state.currentStoreId = id;
-    state.token = state.token || createToken();
     try {
       await syncStoreProfile(state, store);
       delete store.profileSyncError;
@@ -1835,7 +2131,7 @@ async function handle(req, res) {
   }
 
   if (req.method === "DELETE" && url.pathname === "/local/binding") {
-    state.token = "";
+    requireAuth(req, state);
     state.currentStoreId = "";
     state.stores = [];
     state.caches = defaultState().caches;
@@ -1891,9 +2187,6 @@ async function handle(req, res) {
     state.stores = state.stores.filter((store) => String(store.id) !== String(storeId));
     if (String(state.currentStoreId || "") === String(storeId)) {
       state.currentStoreId = state.stores[0]?.id || "";
-      if (!state.currentStoreId) {
-        state.token = "";
-      }
     }
     await saveState(state);
     sendJson(res, 200, { ok: true, state: localStatePayload(state) });
@@ -1902,6 +2195,7 @@ async function handle(req, res) {
 
   const localSyncMatch = url.pathname.match(/^\/local\/sync\/([^/]+)$/);
   if (req.method === "POST" && localSyncMatch) {
+    requireAuth(req, state);
     const body = await readBody(req);
     const report = await runLocalSync(state, localSyncMatch[1], body.storeId || state.currentStoreId, body);
     sendJson(res, 200, { ok: true, job: report, state: localStatePayload(await loadState()) });
@@ -1951,24 +2245,42 @@ async function handle(req, res) {
 
   if (req.method === "POST" && url.pathname === "/auth/send-code") {
     await readBody(req);
-    try {
-      const auth = localAuthPayload(state);
-      sendJson(res, 200, {
-        ok: true,
-        local: true,
-        message: "本地复刻版无需真实短信验证码，输入任意验证码即可登录",
-        data: { captchaPassed: true, currentOzonStoreId: auth.currentOzonStoreId },
-      });
-    } catch (error) {
-      sendError(res, error.status || 400, error.message, "LOCAL_BINDING_REQUIRED");
-    }
+    sendError(res, 400, "本地版不支持短信登录，请使用管理员分配的账号密码登录", "LOCAL_SMS_DISABLED");
     return;
   }
 
-  if (req.method === "POST" && ["/auth/login-password", "/auth/sms/verify"].includes(url.pathname)) {
+  if (req.method === "POST" && url.pathname === "/auth/sms/verify") {
     await readBody(req);
+    sendError(res, 400, "本地版不支持短信登录，请使用账号密码登录", "LOCAL_SMS_DISABLED");
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/login-password") {
+    const body = await readBody(req);
+    const username = String(body.username || body.phoneNumber || body.phone || "").trim();
+    const password = String(body.password || "");
+    const account = findAccountByUsername(state, username);
+    if (!account || !verifyPassword(password, account)) {
+      sendError(res, 401, "账号或密码错误", "LOCAL_LOGIN_FAILED");
+      return;
+    }
+    if (account.status === "disabled") {
+      sendError(res, 403, "账号已被停用，请联系管理员", "LOCAL_ACCOUNT_DISABLED");
+      return;
+    }
+    if (isAccountExpired(account)) {
+      sendError(res, 403, "账号登录期限已过期，请联系管理员", "LOCAL_ACCOUNT_EXPIRED");
+      return;
+    }
+    const now = new Date().toISOString();
+    state.token = createToken();
+    state.currentAccountId = account.id;
+    state.sessionIssuedAt = now;
+    account.lastLoginAt = now;
+    account.updatedAt = now;
+    await saveState(state);
     try {
-      sendJson(res, 200, { ok: true, local: true, ...localAuthPayload(state) });
+      sendJson(res, 200, { ok: true, local: true, ...localAuthPayload(state), account: publicAccount(account) });
     } catch (error) {
       sendError(res, error.status || 400, error.message, "LOCAL_BINDING_REQUIRED");
     }

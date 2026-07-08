@@ -53,6 +53,69 @@ kbd {
   min-height: 100vh;
 }
 
+.sonli-login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  background: #f5f7fb;
+}
+
+.sonli-login-card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgba(20, 32, 48, 0.08);
+}
+
+.sonli-login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.sonli-login-brand img {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+
+.sonli-login-brand div {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.sonli-login-brand strong {
+  color: rgba(0, 0, 0, 0.88);
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.sonli-login-brand span,
+.sonli-login-note {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+
+.sonli-login-note {
+  margin: 14px 0 0;
+  line-height: 1.7;
+}
+
+.sonli-login-checking {
+  min-height: 156px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .qh-shell {
   min-height: 100vh;
   background: #f5f7fb;
@@ -1430,6 +1493,32 @@ kbd {
 
 .announcement-page {
   padding-top: 48px;
+}
+
+.account-name-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.account-name-cell strong,
+.account-name-cell span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-name-cell strong {
+  color: rgba(0, 0, 0, 0.78);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-name-cell span {
+  color: rgba(0, 0, 0, 0.42);
+  font-size: 12px;
 }
 
 .announcement-list {

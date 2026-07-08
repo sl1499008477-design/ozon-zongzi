@@ -218,6 +218,7 @@ const pageTitles = {
   "/ozon/messaging/history": "发送记录",
   "/ozon/templates": "商品模板",
   "/ozon/settings/stores": "我的 Ozon 门店",
+  "/ozon/settings/accounts": "账号管理",
   "/404": "404",
 };
 
@@ -238,6 +239,7 @@ const routeAliases = {
   "/ozon/tools/stores": "/ozon/products/stocks",
   "/ozon/messages": "/ozon/messaging/templates",
   "/ozon/settings": "/ozon/settings/stores",
+  "/login": "/ozon/dashboard",
 };
 
 const normalizePath = (value) => {
@@ -348,6 +350,14 @@ const clearLocalAuthStorage = () => {
   localStorage.removeItem("currentOzonStoreId");
   localStorage.setItem("jz_logout_signal", String(Date.now()));
   window.dispatchEvent(new Event("jizhang-erp:logout"));
+  return true;
+};
+
+const clearStoreStorage = () => {
+  const hadStore = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("currentOzonStoreId");
+  if (!hadStore) return false;
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem("currentOzonStoreId");
   return true;
 };
 
@@ -634,6 +644,10 @@ const requiredSteps = [
 function AppShell() {
   const { message, modal } = AntApp.useApp();
   const [route, setRoute] = useState(() => normalizePath(window.location.pathname));
+  const [account, setAccount] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
   const [binding, setBinding] = useState(() => {
     const stored = readJson(STORAGE_KEY, null);
     return stored ? { ...stored, storeName: visibleStoreName(stored.storeName, stored.clientId) } : null;
@@ -655,49 +669,65 @@ function AppShell() {
   const pageTitle = pageTitles[route] || "仪表盘";
   const currentDate = useMemo(() => formatDate(), []);
 
+  const applyLocalState = async (state) => {
+    const nextAccount = state?.account || null;
+    setAccount(nextAccount);
+    setAccounts(state?.accounts || []);
+    setLocalData({
+      currentStoreId: state?.currentStoreId || "",
+      stores: state?.stores || [],
+      summary: state?.summary || emptyLocalData.summary,
+      caches: state?.caches || emptyLocalData.caches,
+      jobs: state?.jobs || {},
+    });
+    if (!nextAccount) {
+      setBinding(null);
+      setAccounts([]);
+      setLocalData(emptyLocalData);
+      if (clearLocalAuthStorage()) await logoutExtension();
+      setAuthChecked(true);
+      return;
+    }
+    if (state?.token) localStorage.setItem("token", state.token);
+    if (state?.binding) {
+      const storeName = visibleStoreName(state.binding.label || state.binding.companyName, state.binding.clientId);
+      const nextBinding = {
+        id: state.binding.id,
+        storeName,
+        clientId: state.binding.clientId || "",
+        apiKeyMasked: state.binding.apiKeyMasked || "",
+        currency: state.binding.currency || state.binding.currencyCode || state.binding.companyCurrency || "",
+        currencyCode: state.binding.currencyCode || state.binding.currency || state.binding.companyCurrency || "",
+        companyCurrency: state.binding.companyCurrency || state.binding.currency || state.binding.currencyCode || "",
+        savedAt: state.binding.savedAt,
+      };
+      setBinding(nextBinding);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
+      const restoredStoreId = state.currentStoreId || nextBinding.id || "";
+      if (restoredStoreId) localStorage.setItem("currentOzonStoreId", restoredStoreId);
+      if (state.token && restoredStoreId) {
+        syncAuthToExtension({ token: state.token, storeId: restoredStoreId });
+      }
+    } else {
+      setBinding(null);
+      if (clearStoreStorage()) await logoutExtension();
+    }
+    if (state?.summary?.lastSyncAt) {
+      const nextSettings = { ...settings, lastSync: state.summary.lastSyncAt };
+      setSettings(nextSettings);
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(nextSettings));
+    }
+    setAuthChecked(true);
+  };
+
   const refreshLocalState = async ({ silent = true } = {}) => {
     try {
       const state = await apiRequest("/local/state");
-      setLocalData({
-        currentStoreId: state.currentStoreId || "",
-        stores: state.stores || [],
-        summary: state.summary || emptyLocalData.summary,
-        caches: state.caches || emptyLocalData.caches,
-        jobs: state.jobs || {},
-      });
-      if (state.binding) {
-        const storeName = visibleStoreName(state.binding.label || state.binding.companyName, state.binding.clientId);
-        const nextBinding = {
-          id: state.binding.id,
-          storeName,
-          clientId: state.binding.clientId || "",
-          apiKeyMasked: state.binding.apiKeyMasked || "",
-          currency: state.binding.currency || state.binding.currencyCode || state.binding.companyCurrency || "",
-          currencyCode: state.binding.currencyCode || state.binding.currency || state.binding.companyCurrency || "",
-          companyCurrency: state.binding.companyCurrency || state.binding.currency || state.binding.currencyCode || "",
-          savedAt: state.binding.savedAt,
-        };
-        setBinding(nextBinding);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
-        const restoredToken = state.token || "";
-        const restoredStoreId = state.currentStoreId || nextBinding.id || "";
-        if (restoredToken) localStorage.setItem("token", restoredToken);
-        if (restoredStoreId) localStorage.setItem("currentOzonStoreId", restoredStoreId);
-        if (restoredToken && restoredStoreId) {
-          syncAuthToExtension({ token: restoredToken, storeId: restoredStoreId });
-        }
-      } else {
-        setBinding(null);
-        if (clearLocalAuthStorage()) logoutExtension();
-      }
-      if (state.summary?.lastSyncAt) {
-        const nextSettings = { ...settings, lastSync: state.summary.lastSyncAt };
-        setSettings(nextSettings);
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(nextSettings));
-      }
+      await applyLocalState(state);
       return state;
     } catch (error) {
       if (!silent) message.error(`本地 API 未启动: ${error.message}`);
+      setAuthChecked(true);
       return null;
     }
   };
@@ -718,7 +748,7 @@ function AppShell() {
       document.title = "404: This page could not be found.";
       return;
     }
-    document.title = route === "/datascreen" ? "QH · 订单数据大屏" : "QH";
+    document.title = route === "/datascreen" ? "sonli · 订单数据大屏" : "sonli";
   }, [route]);
 
   useEffect(() => {
@@ -767,6 +797,44 @@ function AppShell() {
     const parent = routeParent[normalized];
     setOpenKeys(parent ? [parent] : []);
     window.history.pushState({}, "", `${normalized}/${nextSearch}`);
+  };
+
+  const handleAccountLogin = async (values) => {
+    if (loggingIn) return;
+    setLoggingIn(true);
+    try {
+      const response = await apiRequest("/local/accounts/login", {
+        method: "POST",
+        body: {
+          username: values.username,
+          password: values.password,
+        },
+      });
+      if (response.token) localStorage.setItem("token", response.token);
+      await applyLocalState(response.state || {});
+      message.success("登录成功");
+      if (route === "/404") navigate("/ozon/dashboard");
+    } catch (error) {
+      message.error(error.message || "登录失败");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleAccountLogout = async () => {
+    try {
+      await apiRequest("/local/accounts/logout", { method: "POST" }).catch(() => {});
+      clearLocalAuthStorage();
+      await logoutExtension();
+      setAccount(null);
+      setAccounts([]);
+      setBinding(null);
+      setLocalData(emptyLocalData);
+      setAuthChecked(true);
+      message.success("已退出登录");
+    } catch (error) {
+      message.error(`退出失败: ${error.message}`);
+    }
   };
 
   const handleSync = async () => {
@@ -897,7 +965,7 @@ function AppShell() {
         await apiRequest("/local/binding", { method: "DELETE" }).catch(() => {});
         setBinding(null);
         setLocalData(emptyLocalData);
-        clearLocalAuthStorage();
+        clearStoreStorage();
         await logoutExtension();
         message.success("已解除绑定");
       },
@@ -963,22 +1031,13 @@ function AppShell() {
   const userPopover = (
     <div className="topbar-popover user-popover">
       <div className="user-popover-head">
-        <strong>未设置昵称</strong>
-        <span>{hasStore ? visibleStoreName(binding?.storeName, binding?.clientId) : "未登录"}</span>
+        <strong>{account?.displayName || account?.username || "未登录"}</strong>
+        <span>{account?.role === "admin" ? "管理员账号" : "普通账号"}</span>
       </div>
       {[
-        ["用户设置", () => navigate("/ozon/settings/stores")],
+        ...(account?.role === "admin" ? [["账号管理", () => navigate("/ozon/settings/accounts")]] : []),
         ["店铺管理", () => navigate("/ozon/settings/stores")],
-        ["AI 助手绑定", () => navigate("/ozon/tools/ai-poster-records")],
-        ["AI 执行记录", () => navigate("/ozon/tools/ai-poster-records")],
-        ["Browser Agent", () => navigate("/extension")],
-        ["修改密码", () => modal.info({
-          title: "修改密码",
-          icon: null,
-          content: "当前账号沿用源站登录态，本地不保存登录密码。",
-          okText: "我知道了",
-        })],
-        ["退出登录", () => (hasStore ? clearBinding() : message.info("当前未登录"))],
+        ["退出登录", handleAccountLogout],
       ].map(([label, onClick]) => (
         <button className="user-popover-item" type="button" onClick={onClick} key={label}>
           {label}
@@ -986,6 +1045,22 @@ function AppShell() {
       ))}
     </div>
   );
+
+  if (!authChecked) {
+    return (
+      <ConfigProvider autoInsertSpaceInButton={false} locale={zhCN} theme={themeConfig}>
+        <LoginPage checking />
+      </ConfigProvider>
+    );
+  }
+
+  if (!account) {
+    return (
+      <ConfigProvider autoInsertSpaceInButton={false} locale={zhCN} theme={themeConfig}>
+        <LoginPage loading={loggingIn} onLogin={handleAccountLogin} />
+      </ConfigProvider>
+    );
+  }
 
   if (route === "/datascreen") {
     return (
@@ -1009,8 +1084,8 @@ function AppShell() {
       <Layout className="qh-shell">
         <Header className="qh-topbar">
           <a className="qh-brand" onClick={() => navigate("/ozon/dashboard")}>
-            <img src="/icons/icon48.png" alt="QH" />
-            <span>QH</span>
+            <img src="/icons/icon48.png" alt="sonli" />
+            <span>sonli</span>
           </a>
           <div className="qh-top-actions">
             <HeaderAction
@@ -1039,7 +1114,7 @@ function AppShell() {
                 <UserOutlined />
                 <div>
                   <span>当前用户</span>
-                  <strong>{hasStore ? "已登录" : "未登录"}</strong>
+                  <strong>已登录</strong>
                 </div>
               </div>
             </Popover>
@@ -1101,6 +1176,8 @@ function AppShell() {
                 onClear={clearBinding}
                 onSwitchStore={switchCurrentStore}
                 onRefresh={refreshLocalState}
+                account={account}
+                accounts={accounts}
                 navigate={navigate}
               />
             )}
@@ -1176,6 +1253,49 @@ function HeaderAction({ icon, title, subtitle, tone = "default", onClick }) {
         <em>{subtitle}</em>
       </div>
     </button>
+  );
+}
+
+function LoginPage({ checking = false, loading = false, onLogin }) {
+  return (
+    <div className="sonli-login-page">
+      <div className="sonli-login-card">
+        <div className="sonli-login-brand">
+          <img src="/icons/icon48.png" alt="sonli" />
+          <div>
+            <strong>sonli</strong>
+            <span>Ozon 本地管理后台</span>
+          </div>
+        </div>
+        {checking ? (
+          <div className="sonli-login-checking">
+            <SyncOutlined spin />
+            <span>正在检查登录状态...</span>
+          </div>
+        ) : (
+          <Form layout="vertical" onFinish={onLogin} requiredMark={false}>
+            <Form.Item
+              label="账号"
+              name="username"
+              rules={[{ required: true, message: "请输入管理员分配的账号" }]}
+            >
+              <Input prefix={<UserOutlined />} placeholder="请输入账号" autoComplete="username" />
+            </Form.Item>
+            <Form.Item
+              label="密码"
+              name="password"
+              rules={[{ required: true, message: "请输入密码" }]}
+            >
+              <Input.Password prefix={<LoginOutlined />} placeholder="请输入密码" autoComplete="current-password" />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" block loading={loading}>
+              登 录
+            </Button>
+            <p className="sonli-login-note">账号由管理员统一分配，超出登录期限后将无法继续登录。</p>
+          </Form>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1280,7 +1400,7 @@ function DashboardPage({
           <div className="feature-head">
             <span>功能入口</span>
             <Space size={6}>
-              <Tag color="blue">QH功能</Tag>
+              <Tag color="blue">sonli功能</Tag>
               <Tag>外部资源</Tag>
             </Space>
           </div>
@@ -1313,7 +1433,7 @@ function DashboardPage({
               },
               {
                 title: "安装浏览器插件",
-                content: "QH助手已安装",
+                content: "sonli助手已安装",
                 onClick: onPlugin,
               },
               {
@@ -1358,7 +1478,7 @@ function MetricCard({ metric, compact = false }) {
   );
 }
 
-function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, navigate }) {
+function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, navigate, account, accounts }) {
   if (route === "/extension") {
     return (
       <Card className="panel-card">
@@ -1367,7 +1487,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
     );
   }
 
-  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, navigate };
+  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, navigate, account, accounts };
   if (route === "/ozon/products/list") return <ProductListPage {...pageProps} />;
   if (route.startsWith("/ozon/products/collect/edit")) return <CollectEditPage {...pageProps} />;
   if (route === "/ozon/products/collect") return <CollectPage {...pageProps} />;
@@ -1391,6 +1511,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
   if (route === "/ozon/messaging/history") return <MessageHistoryPage {...pageProps} />;
   if (route === "/ozon/templates") return <ProductTemplatesPage {...pageProps} />;
   if (route === "/ozon/settings/stores") return <StoresSettingsPage {...pageProps} />;
+  if (route === "/ozon/settings/accounts") return <AccountSettingsPage {...pageProps} />;
   if (route === "/ozon/tools/watermark") return <WatermarkPage {...pageProps} />;
   if (route === "/datascreen") return <DataScreenPage {...pageProps} />;
 
@@ -3310,7 +3431,7 @@ function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
       },
     },
     {
-      title: "价格",
+      title: "售价",
       dataIndex: "价格",
       width: 108,
       render: (value, row) => (
@@ -7824,6 +7945,276 @@ function ProductTemplatesPage({ hasStore, binding, localData, onRefresh }) {
   );
 }
 
+const accountDateText = (value) => {
+  if (!value) return "长期有效";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+};
+
+const accountLastLoginText = (value) => {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+};
+
+const toDatetimeLocalValue = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+const fromDatetimeLocalValue = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+};
+
+function AccountSettingsPage({ account, accounts = [], onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [rows, setRows] = useState(accounts || []);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [form] = Form.useForm();
+
+  useEffect(() => {
+    setRows(accounts || []);
+  }, [accounts]);
+
+  const reloadAccounts = async () => {
+    setLoading(true);
+    try {
+      const response = await apiRequest("/local/accounts");
+      setRows(response.accounts || []);
+      await onRefresh?.({ silent: true });
+    } catch (error) {
+      message.error(`加载失败: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openCreate = () => {
+    setEditingAccount(null);
+    form.resetFields();
+    form.setFieldsValue({ role: "user", status: "active", expiresAt: "" });
+    setModalOpen(true);
+  };
+
+  const openEdit = (record) => {
+    setEditingAccount(record);
+    form.resetFields();
+    form.setFieldsValue({
+      username: record.username,
+      displayName: record.displayName,
+      role: record.role || "user",
+      status: record.status || "active",
+      expiresAt: toDatetimeLocalValue(record.expiresAt),
+      password: "",
+    });
+    setModalOpen(true);
+  };
+
+  const saveAccount = async (values) => {
+    setSaving(true);
+    try {
+      const body = {
+        username: String(values.username || "").trim(),
+        displayName: String(values.displayName || "").trim(),
+        role: values.role || "user",
+        status: values.status || "active",
+        expiresAt: fromDatetimeLocalValue(values.expiresAt),
+        password: values.password || "",
+      };
+      if (!body.password) delete body.password;
+      const response = editingAccount
+        ? await apiRequest(`/local/accounts/${encodeURIComponent(editingAccount.id)}`, { method: "PATCH", body })
+        : await apiRequest("/local/accounts", { method: "POST", body });
+      setRows(response.accounts || []);
+      setModalOpen(false);
+      await onRefresh?.({ silent: true });
+      message.success(editingAccount ? "账号已更新" : "账号已新增");
+    } catch (error) {
+      message.error(`保存失败: ${error.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteAccount = (record) => {
+    Modal.confirm({
+      title: "删除账号",
+      content: `确认删除「${record.displayName || record.username}」？删除后该账号无法继续登录。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          const response = await apiRequest(`/local/accounts/${encodeURIComponent(record.id)}`, { method: "DELETE" });
+          setRows(response.accounts || []);
+          await onRefresh?.({ silent: true });
+          message.success("账号已删除");
+        } catch (error) {
+          message.error(`删除失败: ${error.message}`);
+        }
+      },
+    });
+  };
+
+  if (account?.role !== "admin") {
+    return (
+      <div className="source-page hidden-route-page">
+        <Card className="panel-card source-card">
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="仅管理员可管理账号" />
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="source-page hidden-route-page account-settings-page">
+      <Card className="panel-card source-card">
+        <div className="card-title-row">
+          <span>账号管理 <em>{rows.length}/999</em></span>
+          <Space wrap>
+            <Button onClick={reloadAccounts} loading={loading}>刷 新</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增账号</Button>
+          </Space>
+        </div>
+        <Table
+          rowKey="id"
+          className="source-table account-table"
+          loading={loading}
+          dataSource={rows}
+          pagination={false}
+          scroll={{ x: 920 }}
+          tableLayout="fixed"
+          columns={[
+            {
+              title: "账号",
+              dataIndex: "username",
+              width: 150,
+              render: (value, record) => (
+                <div className="account-name-cell">
+                  <strong>{value}</strong>
+                  <span>{record.id === account?.id ? "当前登录账号" : "管理员分配账号"}</span>
+                </div>
+              ),
+            },
+            { title: "昵称", dataIndex: "displayName", width: 150 },
+            {
+              title: "角色",
+              dataIndex: "role",
+              width: 100,
+              render: (value) => <Tag color={value === "admin" ? "blue" : "default"}>{value === "admin" ? "管理员" : "普通账号"}</Tag>,
+            },
+            {
+              title: "状态",
+              dataIndex: "status",
+              width: 110,
+              render: (value, record) => {
+                const expired = record.expired;
+                if (expired) return <Tag color="red">已过期</Tag>;
+                return <Tag color={value === "disabled" ? "default" : "green"}>{value === "disabled" ? "已停用" : "可登录"}</Tag>;
+              },
+            },
+            {
+              title: "登录期限",
+              dataIndex: "expiresAt",
+              width: 180,
+              render: accountDateText,
+            },
+            {
+              title: "最后登录",
+              dataIndex: "lastLoginAt",
+              width: 180,
+              render: accountLastLoginText,
+            },
+            {
+              title: "操作",
+              width: 150,
+              fixed: "right",
+              render: (_, record) => (
+                <Space size={6}>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+                  <Button
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    disabled={record.id === account?.id}
+                    onClick={() => deleteAccount(record)}
+                  >
+                    删除
+                  </Button>
+                </Space>
+              ),
+            },
+          ]}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无账号" /> }}
+        />
+      </Card>
+
+      <Modal
+        title={editingAccount ? "编辑账号" : "新增账号"}
+        open={modalOpen}
+        onCancel={() => setModalOpen(false)}
+        onOk={() => form.submit()}
+        okText={editingAccount ? "保存" : "新增"}
+        cancelText="取消"
+        confirmLoading={saving}
+        destroyOnHidden
+      >
+        <Form form={form} layout="vertical" onFinish={saveAccount} requiredMark={false}>
+          <Form.Item
+            label="账号"
+            name="username"
+            rules={[{ required: !editingAccount, message: "请输入账号" }]}
+          >
+            <Input disabled={Boolean(editingAccount)} placeholder="例如 user01" autoComplete="off" />
+          </Form.Item>
+          <Form.Item label="昵称" name="displayName">
+            <Input placeholder="展示名称" maxLength={40} />
+          </Form.Item>
+          <Form.Item
+            label={editingAccount ? "新密码" : "初始密码"}
+            name="password"
+            rules={[{ required: !editingAccount, message: "请输入初始密码" }]}
+          >
+            <Input.Password placeholder={editingAccount ? "留空则不修改" : "请输入初始密码"} autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item label="角色" name="role">
+            <Select
+              options={[
+                { value: "user", label: "普通账号" },
+                { value: "admin", label: "管理员" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="状态" name="status">
+            <Select
+              options={[
+                { value: "active", label: "可登录" },
+                { value: "disabled", label: "停用" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="登录期限" name="expiresAt">
+            <Input type="datetime-local" />
+          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            message="不设置登录期限表示长期有效；超过期限后该账号不能再登录后台或插件。"
+          />
+        </Form>
+      </Modal>
+    </div>
+  );
+}
+
 function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, onRefresh }) {
   const { message } = AntApp.useApp();
   const [showDisabledStores, setShowDisabledStores] = useState(false);
@@ -7934,7 +8325,7 @@ function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onCl
             const token = localStorage.getItem("token");
             await syncAuthToExtension({ token, storeId: nextStoreId });
           } else {
-            clearLocalAuthStorage();
+            clearStoreStorage();
             await logoutExtension();
           }
           message.success("门店已删除");
@@ -8076,9 +8467,9 @@ function DataScreenPage({ navigate, localData, hasStore }) {
       <div className="datascreen-shell">
         <div className="datascreen-head">
           <div className="datascreen-brandline">
-            <img src="/icons/icon48.png" alt="QH" />
+            <img src="/icons/icon48.png" alt="sonli" />
             <div>
-              <h2>QH · 订单数据中心</h2>
+              <h2>sonli · 订单数据中心</h2>
               <p>ORDER COMMAND CENTER · 全部店铺 · 数据每 60s 自动刷新</p>
             </div>
           </div>
@@ -8320,9 +8711,9 @@ function PluginPanel() {
   return (
     <div className="plugin-panel">
       <div className="plugin-hero">
-        <img src="/icons/icon128.png" alt="QH" />
+        <img src="/icons/icon128.png" alt="sonli" />
         <div>
-          <h2>QH 浏览器插件</h2>
+          <h2>sonli 浏览器插件</h2>
           <p>版本 0.13.46.1</p>
           <Space size={8} wrap>
             <Tag color="green">已复制到本地项目</Tag>
@@ -8372,7 +8763,7 @@ function PluginPanel() {
       <div className="plugin-actions">
         <a
           className="ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid plugin-download"
-          href="/qh-extension-0.13.46.1.zip"
+          href="/sonli-extension-0.13.46.1.zip"
           download
         >
           <DownloadOutlined />
@@ -8384,7 +8775,7 @@ function PluginPanel() {
       </div>
       <div className="plugin-package-status">
         <CheckOutlined />
-        <span>下载包 qh-extension-0.13.46.1.zip 已与本地 extension 目录逐文件校验一致</span>
+        <span>下载包 sonli-extension-0.13.46.1.zip 已与本地 extension 目录逐文件校验一致</span>
       </div>
       <div className="plugin-capabilities">
         {[

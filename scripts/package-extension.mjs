@@ -6,7 +6,7 @@ import process from "node:process";
 const rootDir = process.cwd();
 const extensionDir = path.join(rootDir, "extension");
 const manifest = JSON.parse(await readFile(path.join(extensionDir, "manifest.json"), "utf8"));
-const fileName = `qh-extension-${manifest.version}.zip`;
+const fileName = `sonli-extension-${manifest.version}.zip`;
 const targets = [
   path.join(rootDir, "app", "public", fileName),
   path.join(rootDir, "app", "dist", fileName),

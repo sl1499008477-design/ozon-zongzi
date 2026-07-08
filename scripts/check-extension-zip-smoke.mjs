@@ -6,7 +6,7 @@ import process from "node:process";
 
 const rootDir = process.cwd();
 const manifest = JSON.parse(await readFile(path.join(rootDir, "extension", "manifest.json"), "utf8"));
-const fileName = `qh-extension-${manifest.version}.zip`;
+const fileName = `sonli-extension-${manifest.version}.zip`;
 const zipPaths = [
   path.join(rootDir, "app", "public", fileName),
   path.join(rootDir, "app", "dist", fileName),
@@ -16,7 +16,7 @@ let failed = false;
 
 for (const zipPath of zipPaths) {
   const label = path.relative(rootDir, zipPath);
-  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "qh-extension-zip-"));
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "sonli-extension-zip-"));
   try {
     const unzip = spawnSync("unzip", ["-q", zipPath, "-d", tmpDir], {
       stdio: "inherit",
