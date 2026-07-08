@@ -1,12 +1,17 @@
 import { promises as fs } from "node:fs";
+import {
+  encryptionHealth,
+  protectStateForStorage,
+  stateNeedsSecretProtection,
+  unprotectStateFromStorage,
+} from "./crypto-secrets.mjs";
+import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
+import { ensureFormalSchema, formalPersistenceHealth, mirrorStateToRelationalTables } from "./formal-persistence.mjs";
 
 const STATE_ROW_ID = "local-state";
-let poolPromise = null;
 let schemaReady = false;
-
-function postgresEnabled() {
-  return Boolean(process.env.DATABASE_URL || process.env.POSTGRES_HOST);
-}
+let formalBackfillComplete = false;
+let formalBackfillError = "";
 
 function stateTableName() {
   const name = process.env.POSTGRES_STATE_TABLE || "local_state";
@@ -16,39 +21,6 @@ function stateTableName() {
   return name;
 }
 
-function postgresConfig() {
-  if (process.env.DATABASE_URL) {
-    return {
-      connectionString: process.env.DATABASE_URL,
-      ssl: postgresSslConfig(),
-    };
-  }
-  return {
-    host: process.env.POSTGRES_HOST || "127.0.0.1",
-    port: Number(process.env.POSTGRES_PORT || 5432),
-    database: process.env.POSTGRES_DB || "sonli_local",
-    user: process.env.POSTGRES_USER || "sonli",
-    password: process.env.POSTGRES_PASSWORD || "sonli_password",
-    ssl: postgresSslConfig(),
-  };
-}
-
-function postgresSslConfig() {
-  const value = String(process.env.POSTGRES_SSL || "false").toLowerCase();
-  return value === "1" || value === "true" ? { rejectUnauthorized: false } : false;
-}
-
-async function getPool() {
-  if (!poolPromise) {
-    poolPromise = import("pg")
-      .then(({ Pool }) => new Pool(postgresConfig()))
-      .catch((error) => {
-        throw new Error(`PostgreSQL 依赖未安装或不可用，请先执行 pnpm install。原始错误: ${error.message}`);
-      });
-  }
-  return poolPromise;
-}
-
 async function ensureSchema(pool) {
   if (schemaReady) return;
   const table = stateTableName();
@@ -56,17 +28,20 @@ async function ensureSchema(pool) {
     CREATE TABLE IF NOT EXISTS ${table} (
       id TEXT PRIMARY KEY,
       state JSONB NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1`);
+  await ensureFormalSchema(pool);
   schemaReady = true;
 }
 
 async function readJsonState(dataFile) {
   try {
     const raw = await fs.readFile(dataFile, "utf8");
-    return JSON.parse(raw);
+    return unprotectStateFromStorage(JSON.parse(raw));
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
@@ -80,11 +55,44 @@ export function persistenceMode() {
 export async function loadPersistedState({ dataFile }) {
   if (!postgresEnabled()) return readJsonState(dataFile);
 
-  const pool = await getPool();
+  const pool = await getPostgresPool();
   await ensureSchema(pool);
   const table = stateTableName();
-  const result = await pool.query(`SELECT state FROM ${table} WHERE id = $1`, [STATE_ROW_ID]);
-  if (result.rows[0]?.state) return result.rows[0].state;
+  const result = await pool.query(`SELECT state, version FROM ${table} WHERE id = $1`, [STATE_ROW_ID]);
+  if (result.rows[0]?.state) {
+    let version = Number(result.rows[0].version) || 1;
+    const state = unprotectStateFromStorage(result.rows[0].state);
+    if (stateNeedsSecretProtection(result.rows[0].state)) {
+      const protectedState = protectStateForStorage(state);
+      const update = await pool.query(
+        `
+          UPDATE ${table}
+          SET state = $1::jsonb, version = version + 1, updated_at = NOW()
+          WHERE id = $2 AND version = $3
+          RETURNING version
+        `,
+        [JSON.stringify(protectedState), STATE_ROW_ID, version],
+      );
+      version = Number(update.rows[0]?.version || version);
+    }
+    Object.defineProperty(state, "__storageVersion", {
+      value: version,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    if (!formalBackfillComplete) {
+      try {
+        await mirrorStateToRelationalTables(pool, state);
+        formalBackfillComplete = true;
+        formalBackfillError = "";
+      } catch (error) {
+        formalBackfillError = String(error?.message || error).slice(0, 500);
+        console.warn(`正式数据表回填失败: ${formalBackfillError}`);
+      }
+    }
+    return state;
+  }
 
   const legacyState = await readJsonState(dataFile);
   if (legacyState) await savePersistedState({ state: legacyState });
@@ -92,24 +100,70 @@ export async function loadPersistedState({ dataFile }) {
 }
 
 export async function savePersistedState({ dataDir, dataFile, state }) {
+  const protectedState = protectStateForStorage(state);
   if (!postgresEnabled()) {
     await fs.mkdir(dataDir, { recursive: true });
-    await fs.writeFile(dataFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await fs.writeFile(dataFile, `${JSON.stringify(protectedState, null, 2)}\n`, "utf8");
     return;
   }
 
-  const pool = await getPool();
+  const pool = await getPostgresPool();
   await ensureSchema(pool);
   const table = stateTableName();
-  await pool.query(
-    `
-      INSERT INTO ${table} (id, state, updated_at)
-      VALUES ($1, $2::jsonb, NOW())
-      ON CONFLICT (id)
-      DO UPDATE SET state = EXCLUDED.state, updated_at = NOW()
-    `,
-    [STATE_ROW_ID, JSON.stringify(state)]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["sonli-local-state"]);
+    const currentVersion = Number(state?.__storageVersion || 0);
+    let nextVersion = currentVersion + 1;
+    if (currentVersion > 0) {
+      const result = await client.query(
+        `
+          UPDATE ${table}
+          SET state = $1::jsonb, version = version + 1, updated_at = NOW()
+          WHERE id = $2 AND version = $3
+          RETURNING version
+        `,
+        [JSON.stringify(protectedState), STATE_ROW_ID, currentVersion]
+      );
+      if (!result.rowCount) {
+        const err = new Error("本地状态已被其他操作更新，请刷新后重试");
+        err.code = "LOCAL_STATE_VERSION_CONFLICT";
+        err.status = 409;
+        throw err;
+      }
+      nextVersion = Number(result.rows[0]?.version || nextVersion);
+    } else {
+      const result = await client.query(
+        `
+          INSERT INTO ${table} (id, state, version, updated_at)
+          VALUES ($1, $2::jsonb, 1, NOW())
+          ON CONFLICT (id)
+          DO UPDATE SET state = EXCLUDED.state, version = ${table}.version + 1, updated_at = NOW()
+          RETURNING version
+        `,
+        [STATE_ROW_ID, JSON.stringify(protectedState)]
+      );
+      nextVersion = Number(result.rows[0]?.version || 1);
+    }
+    await client.query("COMMIT");
+    Object.defineProperty(state, "__storageVersion", {
+      value: nextVersion,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Preserve the original save failure.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+  await mirrorStateToRelationalTables(pool, state);
 }
 
 export async function persistenceHealth({ dataFile } = {}) {
@@ -131,9 +185,15 @@ export async function persistenceHealth({ dataFile } = {}) {
     };
   }
 
-  const pool = await getPool();
+  const pool = await getPostgresPool();
   await ensureSchema(pool);
   await pool.query("SELECT 1");
+  let formal;
+  try {
+    formal = await formalPersistenceHealth(pool);
+  } catch (error) {
+    formal = { ok: false, message: error.message };
+  }
   return {
     ok: true,
     mode: "postgres",
@@ -141,5 +201,11 @@ export async function persistenceHealth({ dataFile } = {}) {
     port: Number(process.env.POSTGRES_PORT || 5432),
     database: process.env.POSTGRES_DB || "",
     table: stateTableName(),
+    formal,
+    encryption: encryptionHealth(),
+    backfill: {
+      completed: formalBackfillComplete,
+      error: formalBackfillError,
+    },
   };
 }

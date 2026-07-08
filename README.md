@@ -18,9 +18,21 @@ No sample shop, product, order, GMV, inventory, or customer data is inserted. Th
 
 Credentials are written only to `server-data/local-state.json` on this Mac. `server-data/` is ignored by git and is not bundled into the frontend build.
 
-When PostgreSQL environment variables are configured, the local API stores the same state document in PostgreSQL table `local_state` instead of `server-data/local-state.json`. If the table is empty and the JSON file already exists, the API imports the JSON state on first boot.
+When PostgreSQL environment variables are configured, the local API stores the compatibility state document in PostgreSQL table `local_state` instead of `server-data/local-state.json`. If the table is empty and the JSON file already exists, the API imports the JSON state on first boot.
 
-Local files are stored through MinIO by the `/local/files` API. Existing browser-side utilities that only process files in memory still work without uploading anything.
+The production data model is mirrored into relational PostgreSQL tables on every save:
+
+- `accounts`, `sessions`
+- `stores`, `store_credentials`
+- `products`, `product_prices`
+- `warehouses`, `product_stocks`
+- `orders`, `order_items`
+- `files`, `product_assets`（商品主图、图库图、视频资源）
+- `sync_jobs`
+
+Ozon `Api-Key` values are encrypted before they are written to `local_state` or `store_credentials`. Set `APP_ENCRYPTION_KEY` in `.env` before using real stores in a deployable environment. If this value changes, previously encrypted credentials cannot be decrypted and must be re-bound.
+
+Local files are stored through MinIO by the `/local/files` API. Product image and video resources synced from Ozon are mirrored into `product_assets` with their external `origin_url`; locally uploaded images/videos can be linked later through `file_id`. Existing browser-side utilities that only process files in memory still work without uploading anything.
 
 ## Local Persistent Storage
 
@@ -38,6 +50,14 @@ Start local storage:
 docker compose up -d postgres minio minio-init
 ```
 
+Apply database migrations explicitly when needed:
+
+```bash
+pnpm db:migrate
+```
+
+The API also runs pending migrations automatically on startup when PostgreSQL is enabled.
+
 Default endpoints:
 
 - PostgreSQL: `127.0.0.1:5432`, database `sonli_local`, user `sonli`
@@ -50,6 +70,8 @@ Health check:
 ```bash
 curl http://127.0.0.1:3001/local/storage/health
 ```
+
+The health response includes relational table row counts, product image/video asset counts, and encryption status. In production, `encryption.configured` should be `true`.
 
 If `.env` is absent, the API keeps using JSON file storage.
 

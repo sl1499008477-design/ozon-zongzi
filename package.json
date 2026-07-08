@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "server": "node server/index.mjs",
+    "db:migrate": "node server/db/migrate.mjs",
     "app": "pnpm --dir app dev -- --port 5173",
     "build": "pnpm --dir app build",
     "compat-proxy": "node scripts/frontend-compat-proxy.mjs",

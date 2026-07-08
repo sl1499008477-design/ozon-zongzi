@@ -90,6 +90,7 @@ export async function putObjectFromBase64({ key, name, contentType, base64 }) {
   const { buffer, dataUrlType } = decodeBase64Payload(base64);
   const objectKey = key || buildObjectKey(name);
   const type = contentType || dataUrlType || "application/octet-stream";
+  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   const client = await getClient();
   await client.putObject(
     bucketName(),
@@ -106,6 +107,7 @@ export async function putObjectFromBase64({ key, name, contentType, base64 }) {
     bucket: bucketName(),
     contentType: type,
     size: buffer.length,
+    sha256,
   };
 }
 
