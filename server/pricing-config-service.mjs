@@ -582,18 +582,28 @@ export async function calculateWithActivePricing(input, context = {}) {
   return { config, result };
 }
 
-export async function savePricingSnapshot({ accountId = null, storeId = null, productId = null, draftId = null, submissionSnapshotId = null, input, result, config, transactionPool = null }) {
+export async function savePricingSnapshot({ accountId = null, storeId = null, productId = null, draftId = null, submissionSnapshotId = null, input, result, config, idempotencyKey = "", payloadHash = "", transactionPool = null }) {
   const snapshot = { id: id("pcs"), accountId, storeId, productId, draftId, submissionSnapshotId, configVersionId: config.id, mode: result.mode, input, result, config, createdAt: new Date().toISOString() };
   if (!transactionPool && !postgresEnabled()) return snapshot;
   const pool = transactionPool || await getPostgresPool();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (idempotencyKey) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${accountId}:${storeId || ""}:PRICING_SNAPSHOT:${idempotencyKey}`]);
+      const existing = await client.query("SELECT payload_hash,response_json FROM pricing_write_idempotency WHERE account_id=$1 AND store_scope=$2 AND action='PRICING_SNAPSHOT' AND idempotency_key=$3 FOR UPDATE", [accountId, storeId || "", idempotencyKey]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].payload_hash !== payloadHash) throw Object.assign(new Error("幂等键已用于不同请求"), { status: 409, code: "IDEMPOTENCY_KEY_REUSED" });
+        await client.query("COMMIT");
+        return existing.rows[0].response_json;
+      }
+    }
     await updateScopedPricingSnapshotTargets({ pool: client, accountId, storeId, draftId, submissionSnapshotId, pricingSnapshot: snapshot });
     await client.query(`INSERT INTO pricing_calculation_snapshots
       (id, account_id, store_id, product_id, draft_id, submission_snapshot_id, config_version_id, mode, input_json, result_json, config_snapshot_json)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb)`,
     [snapshot.id, accountId, storeId, productId, draftId, submissionSnapshotId, config.id, result.mode, JSON.stringify(input), JSON.stringify(result), JSON.stringify(config)]);
+    if (idempotencyKey) await client.query("INSERT INTO pricing_write_idempotency (account_id,store_scope,action,idempotency_key,payload_hash,response_json) VALUES ($1,$2,'PRICING_SNAPSHOT',$3,$4,$5::jsonb)", [accountId, storeId || "", idempotencyKey, payloadHash, JSON.stringify(snapshot)]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

@@ -208,12 +208,21 @@ export async function getFxStatus() {
   return { probes, rate, intervalMinutes: 120, staleAfterMinutes: STALE_AFTER_MS / 60_000 };
 }
 
-export async function ingestFxObservations({ observations = [], errors = [], accountId = null, deviceId = "" } = {}) {
+export async function ingestFxObservations({ observations = [], errors = [], accountId = null, deviceId = "", idempotencyKey = "", payloadHash = "" } = {}) {
   if (!Array.isArray(observations) || !Array.isArray(errors)) throw fxError("采价结果格式错误");
   const pool = await getPostgresPool();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (idempotencyKey) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${accountId}:FX_OBSERVATION:${idempotencyKey}`]);
+      const existing = await client.query("SELECT payload_hash,response_json FROM pricing_write_idempotency WHERE account_id=$1 AND store_scope='' AND action='FX_OBSERVATION' AND idempotency_key=$2 FOR UPDATE", [accountId, idempotencyKey]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].payload_hash !== payloadHash) throw Object.assign(new Error("幂等键已用于不同请求"), { status: 409, code: "IDEMPOTENCY_KEY_REUSED" });
+        await client.query("COMMIT");
+        return existing.rows[0].response_json;
+      }
+    }
     const active = await client.query("SELECT * FROM pricing_fx_probes WHERE status='ACTIVE' ORDER BY id FOR UPDATE");
     const bySku = new Map(active.rows.map((row) => [row.sku, row]));
     const previousResult = await client.query(
@@ -276,9 +285,11 @@ export async function ingestFxObservations({ observations = [], errors = [], acc
       );
       rate = mapRate(inserted.rows[0]);
     }
+    const response = { rate: rate || await getLatestLiveExchangeRate({ bypassCache: true }), accepted: computed.accepted.length, rejected: computed.rejected.length, errors: errors.length };
+    if (idempotencyKey) await client.query("INSERT INTO pricing_write_idempotency (account_id,store_scope,action,idempotency_key,payload_hash,response_json) VALUES ($1,'','FX_OBSERVATION',$2,$3,$4::jsonb)", [accountId, idempotencyKey, payloadHash, JSON.stringify(response)]);
     await client.query("COMMIT");
     latestCache = { at: Date.now(), value: rate || await getLatestLiveExchangeRate({ bypassCache: true }) };
-    return { rate: latestCache.value, accepted: computed.accepted.length, rejected: computed.rejected.length, errors: errors.length };
+    return response;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

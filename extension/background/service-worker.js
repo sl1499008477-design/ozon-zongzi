@@ -38,6 +38,8 @@ try {
   importScripts(
     // cdn-buster 必须在 backend-client 之前 — 后者运行时读 globalThis.JzCdnBuster。
     '../lib/cdn-buster.js',
+    '../lib/web-bridge-policy.js',
+    '../lib/seller-identity-policy.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
     'sync/opi-client.js',
@@ -724,27 +726,11 @@ try {
   };
 
   const getSellerCompanyIdCandidates = async (options = {}) => {
-    const candidates = [];
-    const addCookies = (cookies = []) => {
-      for (const cookie of cookies || []) pushSellerCompanyIdCandidate(candidates, cookie?.value);
-    };
-
-    pushSellerCompanyIdCandidates(candidates, await readSellerCompanyIdsFromTab(options.tabId));
-
+    if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
     try {
-      const sellerTabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
-      const orderedTabs = [...sellerTabs].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
-      for (const tab of orderedTabs.slice(0, 8)) {
-        pushSellerCompanyIdCandidates(candidates, await readSellerCompanyIdsFromTab(tab.id));
-      }
-    } catch {}
-
-    try { addCookies(await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' })); } catch {}
-    try { addCookies(await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/app/dashboard/main', name: 'sc_company_id' })); } catch {}
-    try { addCookies(await chrome.cookies.getAll({ domain: '.ozon.ru', name: 'sc_company_id' })); } catch {}
-    try { addCookies(await chrome.cookies.getAll({ name: 'sc_company_id' })); } catch {}
-
-    return candidates;
+      const cookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
+      return [globalThis.JzSellerIdentityPolicy.resolveTrustedSellerCompanyId(cookies)];
+    } catch { return []; }
   };
 
   // 解析当前登录店铺的 sc_company_id(门户接口都要它)
@@ -1866,6 +1852,7 @@ try {
     if (token) headers.Authorization = `Bearer ${token}`;
     if (storeId) headers['x-ozon-store-id'] = storeId;
     if (EXT_VERSION) headers['x-jz-ext-version'] = EXT_VERSION;
+    if (body?.idempotencyKey) headers['Idempotency-Key'] = String(body.idempotencyKey);
 
     const controller = new AbortController();
     let timedOut = false;
@@ -2779,7 +2766,8 @@ try {
   };
 
   let lastFxRefreshError = '';
-  const refreshExchangeRate = async () => {
+  let fxRefreshInFlight = null;
+  const performExchangeRateRefresh = async () => {
     try {
       lastFxRefreshError = '';
       const stored = await getStorage([STORAGE_KEYS.token]);
@@ -2806,7 +2794,7 @@ try {
       const result = await apiRequest(
         'POST',
         `${backendUrl}/pricing/fx/observations`,
-        { observations, errors, deviceId },
+        { observations, errors, deviceId, idempotencyKey: `fx-observation:${deviceId}:${Math.floor(Date.now() / (FX_REFRESH_INTERVAL_MINUTES * 60_000))}` },
         token,
         null,
         60_000,
@@ -2829,6 +2817,12 @@ try {
       console.warn('[jzc-fx] refresh failed:', e?.message || e);
       return null;
     }
+  };
+  const refreshExchangeRate = async () => {
+    if (!fxRefreshInFlight) {
+      fxRefreshInFlight = performExchangeRateRefresh().finally(() => { fxRefreshInFlight = null; });
+    }
+    return fxRefreshInFlight;
   };
 
   const setupFxAlarm = () => {
@@ -3142,6 +3136,13 @@ try {
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.webBridge) {
+      const policy = globalThis.JzWebBridgePolicy;
+      if (!policy?.isAllowedWebBridgeAction(message.action) || !policy.isTrustedWebBridgeSender(sender)) {
+        sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
+        return false;
+      }
+    }
     // 极掌算价：手动重拉汇率（content/jzc-calc.js 走 message.type 路由，
     // 与现有 message.action dispatch 完全独立）
     if (message?.type === 'jzc:refreshFx') {
@@ -4549,15 +4550,16 @@ try {
         }
         case 'getPricingConfig': {
           const pricingStoreId = message.storeId || storeId;
+          const response = await apiRequest(
+            'GET',
+            `${backendUrl}/pricing/config/active?storeId=${encodeURIComponent(pricingStoreId || '')}`,
+            null,
+            token,
+            pricingStoreId,
+          );
           return {
             ok: true,
-            data: await apiRequest(
-              'GET',
-              `${backendUrl}/pricing/config/active?storeId=${encodeURIComponent(pricingStoreId || '')}`,
-              null,
-              token,
-              pricingStoreId,
-            ),
+            data: { ...response, cacheScope: { backendOrigin: new URL(backendUrl).origin, accountId: response?.scope?.accountId || '', storeId: response?.scope?.storeId || '' } },
           };
         }
         case 'calculatePricing': {
@@ -4575,12 +4577,13 @@ try {
         }
         case 'savePricingSnapshot': {
           const pricingStoreId = message.storeId || storeId;
+          const idempotencyKey = String(message.body?.idempotencyKey || `pricing-snapshot:${pricingStoreId || 'none'}:${hashString(JSON.stringify(message.body || {}))}`);
           return {
             ok: true,
             data: await apiRequest(
               'POST',
               `${backendUrl}/pricing/snapshots`,
-              { ...(message.body || {}), storeId: pricingStoreId || '' },
+              { ...(message.body || {}), storeId: pricingStoreId || '', idempotencyKey },
               token,
               pricingStoreId,
             ),
@@ -5223,42 +5226,19 @@ try {
           }
         }
         case 'syncSellerCookies': {
-          // Three-way query to cover all possible cookie storage locations
-          const [byName, byUrl, byDomain] = await Promise.all([
-            chrome.cookies.getAll({ name: "sc_company_id" }),
-            chrome.cookies.getAll({ url: "https://seller.ozon.ru/app/dashboard/main" }),
-            chrome.cookies.getAll({ domain: ".ozon.ru" }),
-          ]);
-          // Deduplicate by name+domain
-          const seen = new Set();
-          const sellerCookies = [];
-          for (const c of [...byUrl, ...byDomain]) {
-            const key = `${c.name}@${c.domain}`;
-            if (!seen.has(key)) { seen.add(key); sellerCookies.push(c); }
+          let identity;
+          try {
+            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity(sender, (details) => chrome.cookies.getAll(details));
+          } catch (error) {
+            return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };
           }
-
-          if (!sellerCookies.length && !byName.length) {
-            return { ok: false, error: '未检测到 Ozon 登录状态，请先在浏览器中登录 seller.ozon.ru' };
-          }
-
-          // Include byName results in cookie string if not already present
-          for (const c of byName) {
-            const key = `${c.name}@${c.domain}`;
-            if (!seen.has(key)) { seen.add(key); sellerCookies.push(c); }
-          }
-
+          const sellerCookies = identity.cookies;
           const cookieStr = sellerCookies.map(c => `${c.name}=${c.value}`).join('; ');
           // SECURITY: never log cookie *values* — they're bearer credentials for
           // seller.ozon.ru. Names + counts are enough to debug sync issues.
           console.log('[syncSellerCookies] cookie names:', sellerCookies.map(c => c.name).join(', '));
           console.log('[syncSellerCookies] cookie count:', sellerCookies.length);
-          // Prefer name-based query (most reliable), fallback to merged list
-          const companyIdCookie = byName[0] || sellerCookies.find(c => c.name === 'sc_company_id');
-          const scCompanyId = companyIdCookie?.value || null;
-
-          if (!scCompanyId) {
-            return { ok: false, error: '未找到 sc_company_id，请确认已登录 Ozon 卖家中心' };
-          }
+          const scCompanyId = identity.companyId;
 
           if (!storeId) {
             return { ok: false, error: '请先选择店铺' };
@@ -5271,21 +5251,19 @@ try {
           return { ok: true, data: { sc_company_id: scCompanyId, cookie_count: sellerCookies.length } };
         }
         case 'checkSellerCookies': {
-          const [byName, byUrl, byDomain] = await Promise.all([
-            chrome.cookies.getAll({ name: "sc_company_id" }),
-            chrome.cookies.getAll({ url: "https://seller.ozon.ru/app/dashboard/main" }),
-            chrome.cookies.getAll({ domain: ".ozon.ru" }),
-          ]);
-          const allCookies = [...byUrl, ...byDomain];
-          const sellerCompanyIds = await getSellerCompanyIdCandidates({ tabId: sender?.tab?.id });
-          const companyId = sellerCompanyIds[0] || byName[0]?.value || allCookies.find(c => c.name === 'sc_company_id')?.value || null;
+          let identity;
+          try {
+            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity(sender, (details) => chrome.cookies.getAll(details));
+          } catch (error) {
+            return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };
+          }
           return {
             ok: true,
             data: {
-              has_cookies: allCookies.length > 0 || byName.length > 0,
-              cookie_count: allCookies.length,
-              sc_company_id: companyId,
-              sellerCompanyIds,
+              has_cookies: identity.cookies.length > 0,
+              cookie_count: identity.cookies.length,
+              sc_company_id: identity.companyId,
+              sellerCompanyIds: [identity.companyId],
               userAgent: navigator.userAgent,
             },
           };

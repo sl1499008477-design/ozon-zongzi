@@ -3478,16 +3478,18 @@
     const settings = await _loadCalcSettings();
     let remoteConfig = null;
     try {
-      const response = await window.sendMessage('getPricingConfig', {});
-      remoteConfig = response?.config || response?.data?.config || null;
-      if (remoteConfig?.id) {
-        try { chrome.storage.local.set({ sonli_pricing_config_cache_v1: { config: remoteConfig, cachedAt: Date.now() } }); } catch {}
-      }
+      const firstResponse = await window.sendMessage('getPricingConfig', {});
+      const firstPayload = firstResponse?.data || firstResponse || {};
+      const scope = firstPayload.cacheScope;
+      const cache = globalThis.JzPricingConfigCache?.createPricingConfigCache({
+        read: async (key) => new Promise((resolve) => chrome.storage.local.get([key], (value) => resolve(value?.[key]))),
+        write: async (key, value) => new Promise((resolve) => chrome.storage.local.set({ [key]: value }, resolve)),
+      });
+      if (!cache || !scope?.backendOrigin || !scope?.accountId || !scope?.storeId) throw new Error('PRICING_CONFIG_UNAVAILABLE');
+      remoteConfig = await cache.load(scope, async () => firstPayload.config || null);
     } catch (_) {
-      try {
-        const cached = await new Promise((resolve) => chrome.storage.local.get(['sonli_pricing_config_cache_v1'], (value) => resolve(value?.sonli_pricing_config_cache_v1)));
-        remoteConfig = cached?.config || null;
-      } catch {}
+      // No scope or no fresh same-scope cache is a hard miss: never reuse another store's pricing rules.
+      remoteConfig = null;
     }
     const pricingDefaults = remoteConfig?.defaults || {};
     const remoteExchangeRate = Number(remoteConfig?.exchangeRate?.rate || 0) || _CALC_DEFAULT_EXCHANGE;

@@ -28,7 +28,6 @@
     "http://localhost:3000/*",
     "http://127.0.0.1:3000/*",
     "http://store.localhost:3000/*",
-    "https://open.er-api.com/*",
     "https://*.1688.com/*",
     "https://item.jd.com/*",
     "https://item.m.jd.com/*",
@@ -124,8 +123,8 @@
         "content/jzc-calc.js",
         "content/collector/l1-shadow-db.js",
         "content/collector/l1-bridge.js",
-        "content/collector/l1-diff.js",
         "lib/cdn-buster.js",
+        "lib/pricing-config-cache.js",
         "lib/watermark-templates.js",
         "lib/follow-sell-content-copy.js",
         "lib/ozon-video-extract.js",
@@ -156,7 +155,7 @@
         "content/collector/task-queue.js",
         "content/collector/l1-shadow-db.js",
         "content/collector/l1-bridge.js",
-        "content/collector/l1-diff.js",
+        "lib/pricing-config-cache.js",
         "lib/sidebar-section-toggle.js",
         "content/ozon-search.js"
       ],
@@ -186,6 +185,7 @@
       "js": [
         "content/shared-utils.js",
         "content/collector/task-queue.js",
+        "lib/pricing-config-cache.js",
         "lib/sidebar-section-toggle.js",
         "content/ozon-data-panel.js"
       ],
@@ -233,6 +233,7 @@
         "http://store.localhost:3000/*"
       ],
       "js": [
+        "lib/web-bridge-policy.js",
         "content/sync-auth.js"
       ],
       "run_at": "document_start"

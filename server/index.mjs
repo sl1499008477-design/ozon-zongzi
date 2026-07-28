@@ -3218,7 +3218,7 @@ async function handle(req, res) {
     const account = requireAuth(req, state);
     const storeId = storeIdForAccountRequest(state, account, url.searchParams.get("storeId"));
     const config = await getActivePricingConfig({ accountId: account.id, storeId });
-    sendJson(res, 200, { ok: true, config }, config.configHash ? { ETag: `"${config.configHash}"` } : {});
+    sendJson(res, 200, { ok: true, config, scope: { accountId: account.id, storeId } }, config.configHash ? { ETag: `"${config.configHash}"` } : {});
     return;
   }
 
@@ -3235,11 +3235,15 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/pricing/fx/observations") {
     const account = requireAuth(req, state);
     const body = await readBody(req);
+    const idempotencyKey = String(req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || "").trim();
+    if (!idempotencyKey) throw Object.assign(new Error("缺少 Idempotency-Key"), { status: 422, code: "IDEMPOTENCY_KEY_REQUIRED" });
     const result = await ingestFxObservations({
       observations: body.observations || [],
       errors: body.errors || [],
       accountId: account.id,
       deviceId: body.deviceId || "",
+      idempotencyKey,
+      payloadHash: crypto.createHash("sha256").update(JSON.stringify({ observations: body.observations || [], errors: body.errors || [], deviceId: body.deviceId || "" })).digest("hex"),
     });
     sendJson(res, 201, { ok: true, ...result });
     return;
@@ -3257,6 +3261,8 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/pricing/snapshots") {
     const account = requireAuth(req, state);
     const body = await readBody(req);
+    const idempotencyKey = String(req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || "").trim();
+    if (!idempotencyKey) throw Object.assign(new Error("缺少 Idempotency-Key"), { status: 422, code: "IDEMPOTENCY_KEY_REQUIRED" });
     const storeId = storeIdForAccountRequest(state, account, body.storeId);
     const { config, result } = await calculateWithActivePricing(body.input || body, { accountId: account.id, storeId });
     const snapshot = await savePricingSnapshot({
@@ -3268,6 +3274,8 @@ async function handle(req, res) {
       input: body.input || body,
       result,
       config,
+      idempotencyKey,
+      payloadHash: crypto.createHash("sha256").update(JSON.stringify(body)).digest("hex"),
     });
     sendJson(res, 201, { ok: true, snapshot });
     return;

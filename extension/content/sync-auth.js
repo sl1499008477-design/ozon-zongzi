@@ -78,19 +78,6 @@
     });
   };
 
-  const restoreFromExtension = async () => {
-    const resp = await sendToExtension({ action: 'getAuth' });
-    const auth = resp?.data || null;
-    if (!auth?.token) return false;
-
-    // Write extension's token into frontend localStorage so the app boots logged in.
-    localStorage.setItem('token', auth.token);
-    if (auth.storeId) {
-      localStorage.setItem('currentOzonStoreId', auth.storeId);
-    }
-    return true;
-  };
-
   const RESTORE_GUARD_KEY = 'ozonHelperRestoredOnce';
 
   // 网页主动登出标记(由 frontend clearAuthAndNotifyExtension 写入)。跳转到
@@ -137,14 +124,8 @@
       return;
     }
 
-    // Web is unauthenticated — try to restore from extension before the app
-    // redirects to /login.
-    const restored = await restoreFromExtension();
-    if (restored) {
-      sessionStorage.setItem(RESTORE_GUARD_KEY, '1');
-      console.log('[sync-auth] Restored token from extension, reloading page');
-      location.reload();
-    }
+    // Page bridge must never receive extension bearer credentials. Web login is
+    // deliberately one-way (web → extension); an unauthenticated page stays so.
   };
 
   init();
@@ -187,13 +168,17 @@
         '*',
       );
     };
+    if (!globalThis.JzWebBridgePolicy?.isAllowedWebBridgeAction(data.action)) {
+      respond(null, '不允许的扩展桥接动作');
+      return;
+    }
     try {
       if (!chrome?.runtime?.id) {
         respond(null, '扩展已重新加载，请刷新当前页面');
         return;
       }
       chrome.runtime.sendMessage(
-        { action: data.action, ...(data.payload || {}) },
+        { action: data.action, webBridge: true, ...(data.payload || {}) },
         (resp) => {
           const err = chrome.runtime.lastError?.message;
           respond(resp, err || '');
