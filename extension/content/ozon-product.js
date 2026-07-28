@@ -10502,7 +10502,7 @@
     if (!listContainer) return;
 
     const keywords = extractKeywords();
-    
+
     if (keywords.length === 0) {
       listContainer.innerHTML = '<div class="ozon-helper-panel-empty">未找到主题标签</div>';
       return;
@@ -10664,12 +10664,12 @@
   async function loadRecommendations(type) {
     const panel = document.querySelector('.ozon-helper-recommendation-panel');
     const content = panel.querySelector('.ozon-helper-recommendation-content');
-    
+
     content.innerHTML = '<div class="ozon-helper-recommendation-loading">加载中...</div>';
 
     try {
       const response = await window.sendMessage('getRecommendations', { type });
-      
+
       if (!response.ok || !response.data?.products || response.data.products.length === 0) {
         content.innerHTML = '<div class="ozon-helper-panel-empty">暂无推荐商品</div>';
         return;

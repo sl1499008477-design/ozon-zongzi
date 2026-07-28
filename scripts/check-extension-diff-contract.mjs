@@ -11,7 +11,7 @@ const localDir = "extension";
 
 const diffContract = {
   "background/__tests__/dedupe.smoke.test.js": { hunks: 9, added: 42, removed: 5 },
-  "background/service-worker.js": { hunks: 49, added: 426, removed: 167 },
+  "background/service-worker.js": { hunks: 51, added: 428, removed: 169 },
   "background/sync/backend-client.js": { hunks: 4, added: 4, removed: 4 },
   "background/sync/sync-engine.js": { hunks: 3, added: 10, removed: 1 },
   "batch-upload/index.html": { hunks: 4, added: 4, removed: 4 },
@@ -22,7 +22,7 @@ const diffContract = {
   "content/jzc-calc.js": { hunks: 3, added: 7, removed: 13 },
   "content/ozon-data-panel.js": { hunks: 18, added: 4, removed: 490 },
   "content/ozon-premium-hook.js": { hunks: 2, added: 2, removed: 2 },
-  "content/ozon-product.js": { hunks: 40, added: 222, removed: 141 },
+  "content/ozon-product.js": { hunks: 43, added: 225, removed: 144 },
   "content/ozon-search.js": { hunks: 22, added: 5, removed: 681 },
   "content/shared-utils.js": { hunks: 7, added: 9, removed: 13 },
   "content/sync-auth.js": { hunks: 4, added: 34, removed: 38 },

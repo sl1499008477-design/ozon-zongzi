@@ -5347,8 +5347,8 @@ try {
           // shape 漂移不会再让登录挂死。
           // portalHost(2026-06-11 串号修复):SW 直调 api.* 时,后端 extractHost 的
           // Origin 是 chrome-extension:// 被跳过 → host 落 api.* → 一律判平台直营,
-          // 分销商定制版用户在 popup 登录会被自注册进平台直营空账号(实锤:时渡
-          // [REDACTED PERSONAL INFORMATION]
+          // 用户身份信息已脱敏。
+          // 用户联系方式已脱敏。
           // store.jizhangerp.com)随 body 显式声明登录门户,后端优先用它解析
           // distributorId。dev 源码加载无 brand 注入 → undefined → 后端走原 host
           // 链路,行为不变。
