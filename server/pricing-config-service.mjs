@@ -582,14 +582,24 @@ export async function calculateWithActivePricing(input, context = {}) {
   return { config, result };
 }
 
-export async function savePricingSnapshot({ accountId = null, storeId = null, productId = null, draftId = null, submissionSnapshotId = null, input, result, config }) {
+export async function savePricingSnapshot({ accountId = null, storeId = null, productId = null, draftId = null, submissionSnapshotId = null, input, result, config, transactionPool = null }) {
   const snapshot = { id: id("pcs"), accountId, storeId, productId, draftId, submissionSnapshotId, configVersionId: config.id, mode: result.mode, input, result, config, createdAt: new Date().toISOString() };
-  if (!postgresEnabled()) return snapshot;
-  const pool = await getPostgresPool();
-  await pool.query(`INSERT INTO pricing_calculation_snapshots
-    (id, account_id, store_id, product_id, draft_id, submission_snapshot_id, config_version_id, mode, input_json, result_json, config_snapshot_json)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb)`,
-  [snapshot.id, accountId, storeId, productId, draftId, submissionSnapshotId, config.id, result.mode, JSON.stringify(input), JSON.stringify(result), JSON.stringify(config)]);
-  await updateScopedPricingSnapshotTargets({ pool, accountId, storeId, draftId, submissionSnapshotId, pricingSnapshot: snapshot });
+  if (!transactionPool && !postgresEnabled()) return snapshot;
+  const pool = transactionPool || await getPostgresPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await updateScopedPricingSnapshotTargets({ pool: client, accountId, storeId, draftId, submissionSnapshotId, pricingSnapshot: snapshot });
+    await client.query(`INSERT INTO pricing_calculation_snapshots
+      (id, account_id, store_id, product_id, draft_id, submission_snapshot_id, config_version_id, mode, input_json, result_json, config_snapshot_json)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb)`,
+    [snapshot.id, accountId, storeId, productId, draftId, submissionSnapshotId, config.id, result.mode, JSON.stringify(input), JSON.stringify(result), JSON.stringify(config)]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
   return snapshot;
 }

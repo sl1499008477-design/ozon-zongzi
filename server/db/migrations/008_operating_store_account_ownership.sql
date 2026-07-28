@@ -20,7 +20,8 @@ SET owner_account_id=legacy_ownership.owner_account_id
 FROM legacy_ownership
 WHERE target.id=legacy_ownership.store_id
   AND target.owner_account_id IS NULL
-  AND EXISTS (SELECT 1 FROM accounts WHERE id=legacy_ownership.owner_account_id);
+  AND EXISTS (SELECT 1 FROM accounts WHERE id=legacy_ownership.owner_account_id)
+  AND (SELECT COUNT(*) FROM accounts) = 1;
 
 UPDATE stores
 SET owner_account_id=(
