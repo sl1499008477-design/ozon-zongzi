@@ -6,7 +6,6 @@ export function createStoreDeletionCleanup({
   logoutExtension,
 }) {
   return async function onStoreDeleted({ deletedStore, state }) {
-    clearStoreStorage(deletedStore);
     const nextStoreId = state?.currentStoreId || "";
     if (nextStoreId) {
       setCurrentStoreId(nextStoreId);
@@ -17,6 +16,7 @@ export function createStoreDeletionCleanup({
       if (!synchronized) throw new Error("扩展认证同步失败");
       return;
     }
+    clearStoreStorage(deletedStore);
     const loggedOut = await logoutExtension();
     if (!loggedOut) throw new Error("扩展登出失败");
   };

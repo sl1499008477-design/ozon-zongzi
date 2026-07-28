@@ -5,12 +5,25 @@ import { createStoreDeletionController } from "../src/store-deletion-controller.
 
 const deletedStore = { id: "store-a", label: "Store A" };
 
-test("successor store cleanup clears deleted-store storage, syncs the successor, and does not log out", async () => {
+test("successor store cleanup preserves the refreshed successor binding, syncs it, and does not log out", async () => {
   const calls = [];
+  const storage = new Map([
+    ["qh-local-binding-v1", JSON.stringify({ id: "store-b", storeName: "Store B" })],
+    ["currentOzonStoreId", "store-b"],
+    ["token", "token-b"],
+  ]);
+  let globalClearCalls = 0;
   const cleanup = createStoreDeletionCleanup({
-    clearStoreStorage: (store) => calls.push(["clear", store]),
-    readToken: () => "token-b",
-    setCurrentStoreId: (storeId) => calls.push(["current", storeId]),
+    clearStoreStorage: () => {
+      globalClearCalls += 1;
+      storage.delete("qh-local-binding-v1");
+      storage.delete("currentOzonStoreId");
+    },
+    readToken: () => storage.get("token"),
+    setCurrentStoreId: (storeId) => {
+      storage.set("currentOzonStoreId", storeId);
+      calls.push(["current", storeId]);
+    },
     syncAuthToExtension: async (payload) => {
       calls.push(["sync", payload]);
       return true;
@@ -20,8 +33,9 @@ test("successor store cleanup clears deleted-store storage, syncs the successor,
 
   await cleanup({ deletedStore, state: { currentStoreId: "store-b" } });
 
+  assert.equal(globalClearCalls, 0);
+  assert.equal(storage.get("qh-local-binding-v1"), JSON.stringify({ id: "store-b", storeName: "Store B" }));
   assert.deepEqual(calls, [
-    ["clear", deletedStore],
     ["current", "store-b"],
     ["sync", { token: "token-b", storeId: "store-b" }],
   ]);
