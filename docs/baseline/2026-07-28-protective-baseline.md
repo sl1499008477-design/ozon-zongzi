@@ -49,6 +49,8 @@ f683e1f fix: keep environment blockers fail closed
 e6bcdeb chore: redact personal information from extension source
 7f5f907 chore: preserve generated runtime assets
 93e7942 docs: record protective baseline verification
+0500790 docs: record green baseline verification
+f489330 fix: redact historical source evidence
 ```
 
 文件类别对应关系如下；每个提交都归入其所在分组：
@@ -63,6 +65,7 @@ e6bcdeb chore: redact personal information from extension source
 - 架构与交付文档：`8a3f2fa`，保存当前架构边界、历史计划/spec 和桌面交付说明。
 - 生成产物、历史工作资产与脱敏：`e6bcdeb`、`7f5f907`，先修复当前源码/contract 中的个人信息与空白问题，再保存从源码生成的公开分发资产和计划启动前的历史工作记录。
 - 首次基线报告：`93e7942`，保存离线安装桌面依赖前的根验证证据，包括当时由缺少 `cheerio` 导致的唯一红项。
+- 最终验证与补充脱敏：`0500790`、`f489330`，记录离线恢复依赖后的全绿结果，并脱敏四个历史 `source-evidence` JSON、把跟踪文本和 ZIP 的个人信息扫描纳入根门禁。
 
 ## 文件分类
 
@@ -78,6 +81,7 @@ e6bcdeb chore: redact personal information from extension source
 | 测试与门禁 | `54fa50c..f683e1f` | 87 | app/server/extension/desktop 测试、test inventory、打包与根验证脚本 |
 | 文档 | `f683e1f..8a3f2fa` | 15 | 架构、设计、历史 plans/specs 与桌面交付 Markdown |
 | 生成产物、历史资产与脱敏 | `8a3f2fa..7f5f907` | 412 | 108 个 `app/public/` 路径、301 个历史 `.superpowers/` 路径、3 个源码/contract 脱敏修复路径 |
+| 最终个人信息修复与门禁 | `0500790..f489330` | 7 | 4 个 `source-evidence` JSON、个人信息/凭据扫描器、根验证接入和回归测试 |
 
 Task 9 的运行/历史资产提交本身包含 409 个路径（108 个 `app/public/`、301 个历史 `.superpowers/`），另一个脱敏提交包含 3 个路径。当前计划的 `.superpowers/sdd/2026-07-28-protective-baseline-classification/` 和忽略的 `app/dist/` 都是 `0` 个 tracked、`0` 个 staged 路径。
 
@@ -88,7 +92,8 @@ Task 9 的运行/历史资产提交本身包含 409 个路径（108 个 `app/pub
 - 根验证使用显式 `QH_SOURCE_EXTENSION_DIR` 后，上游源码 contract、UI、diff contract、源码与公开解压副本、两份 ZIP parity 以及两份 ZIP bridge smoke 均通过。显式上游目录是 contract 参照，不要求其文件总数等于本地完整分发树。
 - `app/public/plugin/popup.js` 是 `/plugin/popup.html` 使用的独立静态入口，不由扩展打包脚本覆盖。
 - `desktop/dist` 与 `desktop/dist-electron` 当前缺少已确认的源码重建命令，且 Electron 入口直接依赖 `desktop/dist-electron/main.js`，因此继续作为受控运行资产；它们不能被当作普通、可随时删除重建的构建缓存。
-- 当前 HEAD、扩展源码、公开副本、四份 ZIP 和纳入范围的历史文本扫描结果为 0 个已知敏感模式命中。旧提交 `5addb7602a0d0d8f5af00c4d103dddbe3872c891` 仍包含历史个人信息；本阶段没有重写 Git 历史。彻底清除需要单独授权破坏性历史重写，因此不能宣称敏感信息已从整个 Git 历史完全清除。
+- 最终复审发现四个 tracked `source-evidence` JSON 仍有同一条个人信息，共 31 处；`f489330` 已机械替换为脱敏占位符，JSON 解析和逐字节预期替换检查均通过。新增门禁会扫描全部 Git 跟踪文本和跟踪 ZIP，只报告文件与数量、不输出敏感值，并排除长十六进制摘要中的手机号形状假阳性。
+- 当前 HEAD、扩展源码、公开副本、跟踪 ZIP 和纳入范围的历史文本均为 0 个可操作个人信息/凭据命中。多个可达旧提交（包括 `5addb7602a0d0d8f5af00c4d103dddbe3872c891` 和 `7f5f907`）仍包含修复前的历史个人信息；本阶段没有重写 Git 历史。彻底清除需要单独授权破坏性历史重写，因此不能宣称敏感信息已从整个 Git 历史完全清除。
 
 ## 验证结果
 
@@ -108,7 +113,7 @@ PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockf
 
 该命令退出码为 `0`：lockfile 已是最新状态，387 个包全部 reused、downloaded 0，安装得到 ignored 的 `desktop/node_modules`，其中 `cheerio` 版本为 1.2.0。安装未改源码、package manifest、lockfile 或任何 Git tracked/staged 路径；本机依赖目录没有进入提交。
 
-离线安装后再次执行同一条带显式 `QH_SOURCE_EXTENSION_DIR` 的根验证命令。当前最终状态为 **PASS（退出码 0）**：`scripts/verify.mjs` 的 19 个内部检查全部通过，active suite 为 186 tests、186 passed、0 failed，modern Ozon parser test 已通过，最终输出 `All verification checks passed.`。下表的 19 个内部检查对应 `scripts/verify.mjs` 的实际清单；离线安装是环境准备，不算第 20 个检查。
+离线安装后再次执行同一条带显式 `QH_SOURCE_EXTENSION_DIR` 的根验证命令，当时 19 个内部检查和 186 个 tests 全部通过。最终复审补充个人信息门禁后又运行同一根验证：当前最终状态为 **PASS（退出码 0）**，仍为 19 个内部检查全部通过；test inventory 为 101 active、13 historical/manual，active suite 为 189 tests、189 passed、0 failed，modern Ozon parser 和新增敏感扫描 3 个用例均通过，最终输出 `All verification checks passed.`。新增统一门禁替换原 credential-only 门禁，因此内部检查总数仍为 19。
 
 | 检查 | 状态 | 证据或原因 |
 | --- | --- | --- |
@@ -119,8 +124,8 @@ PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockf
 | `scripts/check-extension-zip.mjs` | PASS，退出码 0 | public 与 ignored dist ZIP 均匹配扩展树，各 106 文件 |
 | `scripts/check-extension-zip-smoke.mjs` | PASS，退出码 0 | public 与 dist 两份 ZIP 的 bridge follow-sell 和 dry-run route guard 均通过 |
 | `node --check server/index.mjs` | PASS，退出码 0 | 服务端入口语法通过 |
-| `scripts/check-test-inventory.mjs` | PASS，退出码 0 | `100 active, 13 historical/manual` |
-| 完整 active suite：`node --test --test-concurrency=1 <activeTestFiles>` | PASS，退出码 0 | 186 tests：186 passed、0 failed；`desktop/tests/parse-modern-ozon.test.mjs` 和 modern Ozon parser 断言通过 |
+| `scripts/check-test-inventory.mjs` | PASS，退出码 0 | `101 active, 13 historical/manual` |
+| 完整 active suite：`node --test --test-concurrency=1 <activeTestFiles>` | PASS，退出码 0 | 189 tests：189 passed、0 failed；modern Ozon parser 和个人信息扫描回归均通过 |
 | `docker compose config --quiet` | PASS，退出码 0 | 仅完成 Compose 配置插值；未启动容器 |
 | `scripts/check-import-history-types.mjs` | PASS，退出码 0 | import history type filter 通过 |
 | `scripts/check-plugin-readiness-gate.mjs` | PASS，退出码 0 | plugin readiness gate 通过 |
@@ -130,9 +135,9 @@ PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockf
 | `node --check extension/content/jizhangerp-bridge.js` | PASS，退出码 0 | bridge 语法通过 |
 | manifest JSON 解析 | PASS，退出码 0 | 输出 `manifest ok` |
 | `git diff --check -- app/src app/tests server extension app/public` | PASS，退出码 0 | 目标运行/测试/公开资产范围无空白错误 |
-| credential literal scan | PASS，实际 `rg` 退出码 1 | 退出码 1 表示无匹配，正是该门禁的预期状态；匹配时的退出码 0 会被 fail-closed 策略判为失败 |
+| `scripts/check-personal-data.mjs` | PASS，退出码 0 | 全部 Git 跟踪文本和跟踪 ZIP 无可操作手机号命中；原 credential literal 检查范围继续受保护，扫描结果不回显敏感值 |
 
-根验证之外的分类范围与资产只读复核也通过：八类范围计数分别为 12、64、24、48、75、87、15、412；migration 为 19；public/dist ZIP SHA-256 相同。
+根验证之外的分类范围与资产只读复核也通过：原八类范围计数分别为 12、64、24、48、75、87、15、412，最终个人信息修复范围为 7；migration 为 19；public/dist ZIP SHA-256 相同。
 
 ## 外部依赖与未验证范围
 
@@ -149,15 +154,15 @@ PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockf
 ## 回归风险
 
 - 当前分支保存的是计划启动前已经存在的大规模改动，并在审查中补充了租户隔离、权限、幂等、外部写安全、浏览器 bridge、FX replay、门店删除、桌面采集生命周期、Excel 路径归属和根门禁等核心回归保护。
-- 分类提交提升了可审查性、可追溯性和独立回退能力；当前根验证已全绿，19 个内部检查和 186 个 active tests 均通过。但真实数据库、浏览器、Electron GUI、Windows/打包和外部系统仍未集成验证。
+- 分类提交提升了可审查性、可追溯性和独立回退能力；当前根验证已全绿，19 个内部检查和 189 个 active tests 均通过。但真实数据库、浏览器、Electron GUI、Windows/打包和外部系统仍未集成验证。
 - 当前门禁全绿也不可能保证以后任意改动绝不影响其他功能。自动测试只能证明已覆盖的输入、contract 和环境，不能证明未知路径不存在回归；大于 500 kB 的构建 chunk 仍是非阻断性能风险。
 - 下一阶段每次改动仍必须先确认业务目标与影响面（页面、接口、数据、权限、配置、外部服务），再执行对应单元/集成/构建/回归验证，并预先说明可执行的回滚或数据恢复方法。
-- 当前 HEAD 和资产已经脱敏，但 Git 历史仍保留旧个人信息；共享仓库、镜像或归档前应单独评估并授权历史重写，且需要协调所有使用者重新同步。
+- 当前 HEAD 和资产已经脱敏并由自动门禁保护，但 Git 历史仍保留修复前的个人信息；共享仓库、镜像或归档前应单独评估并授权历史重写，且需要协调所有使用者重新同步。
 
 ## 恢复方法
 
-- 保留整个保护性基线时，以提交标题 `docs: record green baseline verification` 对应的最终报告提交为锚点；该提交之后的任何功能改动都应建立在其上。首次缺少桌面依赖导致的红色结果作为历史证据保留，但不是当前已知红项。
+- 保留整个保护性基线时，以提交标题 `docs: update final sensitive-data verification` 对应的最终报告提交为锚点；该提交之后的任何功能改动都应建立在其上。首次缺少桌面依赖导致的红色结果和最终复审发现的个人信息缺口都作为历史证据保留，但不是当前 HEAD 的已知红项。
 - 取消单个类别或修复时，先用 `git log --reverse --oneline 84861df..HEAD` 确认实际提交和依赖，再从最新相关提交开始按逆序执行 `git revert <commit-sha>`。不要使用 `git reset --hard`，不要通过重放外部请求恢复数据。
 - 完整撤销的推荐类别逆序为：基线报告；生成产物/历史资产与脱敏；文档；测试门禁；桌面端；扩展及关联安全 contract；Web；服务端与迁移；基础设施。每一类内部也按日志逆序 revert。
-- 回退 `e6bcdeb` 会把已脱敏内容重新带回当前 HEAD，不建议执行；如确需回退，必须先评估敏感数据影响。旧 Git 历史的彻底清理不是普通 `git revert` 能完成的，需要另行授权和协同历史重写。
+- 回退 `e6bcdeb` 或 `f489330` 会把已脱敏内容重新带回当前 HEAD，不建议执行；如确需回退，必须先评估敏感数据影响。旧 Git 历史的彻底清理不是普通 `git revert` 能完成的，需要另行授权和协同历史重写。
 - 本阶段没有执行外部写入，因此 Git revert 不需要、也不会自动恢复或重放 PostgreSQL、Ozon、对象存储、店铺或生产部署状态；未来若这些系统产生副作用，必须使用各自的审计记录和专门恢复流程。
