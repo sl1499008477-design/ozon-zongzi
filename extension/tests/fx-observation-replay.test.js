@@ -6,20 +6,23 @@ assert.match(worker, /replay\.run\(/);
 
 ;(async () => {
   const data = new Map(); let collects = 0; let sends = 0; let fail = true;
-  const replay = createFxObservationReplay({
+const replay = createFxObservationReplay({
     get: async (key) => data.get(key),
     set: async (key, value) => data.set(key, value),
     remove: async (key) => data.delete(key),
-    makeKey: () => 'key-1',
+  makeKey: () => 'key-1',
+  now: () => 10_000,
   });
-  const scope = { accountId: 'account-a', deviceId: 'device-a', action: 'FX_OBSERVATION' };
+  const scope = { backendOrigin: 'https://api.example', accountId: 'account-a', deviceId: 'device-a', action: 'FX_OBSERVATION' };
   const collect = async () => ({ observations: [{ observedAt: 'first' }] });
   await assert.rejects(() => replay.run(scope, async () => { collects += 1; return collect(); }, async () => { sends += 1; if (fail) throw new Error('lost'); return { ok: true }; }), /lost/);
   assert.equal(collects, 1);
   fail = false;
   await replay.run(scope, async () => { collects += 1; return { observations: [{ observedAt: 'second' }] }; }, async (body) => { sends += 1; assert.equal(body.observations[0].observedAt, 'first'); assert.equal(body.idempotencyKey, 'key-1'); return { ok: true }; });
   assert.equal(collects, 1);
-  assert.equal(data.size, 0);
+assert.equal(data.size, 0);
+data.set('jz:fx-pending:https%3A%2F%2Fapi.example:account-a:device-a:FX_OBSERVATION', { schemaVersion: 0 });
+await replay.run({ ...scope, backendOrigin: 'https://api.example' }, async () => ({ observations: [] }), async () => ({ ok: true }));
   await Promise.all([replay.run(scope, async () => { collects += 1; return {}; }, async () => { sends += 1; return { ok: true }; }), replay.run(scope, async () => { collects += 1; return {}; }, async () => { sends += 1; return { ok: true }; })]);
   assert.equal(collects, 2);
   assert.equal(sends, 3);

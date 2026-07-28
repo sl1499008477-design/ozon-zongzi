@@ -2777,18 +2777,21 @@ try {
       if (!token) throw new Error('请先登录 sonli');
       const backendUrl = await getBackendUrl();
       const deviceId = await getExtensionFingerprint();
-      const scope = { accountId: hashString(token), deviceId, action: 'FX_OBSERVATION' };
+      let probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);
+      const accountId = String(probeResponse?.scope?.accountId || '').trim();
+      if (!accountId) throw new Error('FX_REPLAY_SCOPE_REQUIRED');
+      const backendOrigin = new URL(backendUrl).origin;
+      if (!backendOrigin) throw new Error('FX_REPLAY_SCOPE_REQUIRED');
+      const scope = { backendOrigin, accountId, deviceId, action: 'FX_OBSERVATION' };
       const replay = globalThis.JzFxObservationReplay.createFxObservationReplay({
         get: async (key) => (await getStorage([key]))[key],
         set: async (key, value) => setStorage({ [key]: value }),
         remove: async (key) => removeStorage([key]),
         makeKey: () => `fx-observation:${deviceId}:${crypto.randomUUID()}`,
       });
-      let probeResponse = null;
       const result = await replay.run(
         scope,
         async () => {
-          probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);
           const probes = Array.isArray(probeResponse?.probes) ? probeResponse.probes : [];
           if (!probes.length) return { observations: [], errors: [] };
           const observations = []; const errors = [];

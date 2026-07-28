@@ -3223,12 +3223,12 @@ async function handle(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/pricing/fx/probes/active") {
-    requireAuth(req, state);
+    const account = requireAuth(req, state);
     const [probes, status] = await Promise.all([
       listFxProbes({ includeDisabled: false }),
       getFxStatus(),
     ]);
-    sendJson(res, 200, { ok: true, probes, rate: status.rate, intervalMinutes: status.intervalMinutes });
+    sendJson(res, 200, { ok: true, probes, rate: status.rate, intervalMinutes: status.intervalMinutes, scope: { accountId: account.id } });
     return;
   }
 
