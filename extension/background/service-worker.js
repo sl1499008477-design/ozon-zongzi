@@ -40,6 +40,7 @@ try {
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
     '../lib/seller-identity-policy.js',
+    '../lib/fx-observation-replay.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
     'sync/opi-client.js',
@@ -2774,33 +2775,34 @@ try {
       const token = stored[STORAGE_KEYS.token];
       if (!token) throw new Error('请先登录 sonli');
       const backendUrl = await getBackendUrl();
-      const probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);
-      const probes = Array.isArray(probeResponse?.probes) ? probeResponse.probes : [];
-      if (!probes.length) {
-        console.info('[jzc-fx] 未配置汇率 SKU，跳过本轮采价');
-        return Number(probeResponse?.rate?.rate || 0) || null;
-      }
-      const observations = [];
-      const errors = [];
-      for (const probe of probes) {
-        try {
-          observations.push(await collectFxProbe(probe.sku));
-        } catch (error) {
-          errors.push({ sku: probe.sku, error: error?.message || String(error) });
-        }
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
       const deviceId = await getExtensionFingerprint();
-      const result = await apiRequest(
-        'POST',
-        `${backendUrl}/pricing/fx/observations`,
-        { observations, errors, deviceId, idempotencyKey: `fx-observation:${deviceId}:${Math.floor(Date.now() / (FX_REFRESH_INTERVAL_MINUTES * 60_000))}` },
-        token,
-        null,
-        60_000,
+      const scope = { accountId: hashString(token), deviceId, action: 'FX_OBSERVATION' };
+      const replay = globalThis.JzFxObservationReplay.createFxObservationReplay({
+        get: async (key) => (await getStorage([key]))[key],
+        set: async (key, value) => setStorage({ [key]: value }),
+        remove: async (key) => removeStorage([key]),
+        makeKey: () => `fx-observation:${deviceId}:${crypto.randomUUID()}`,
+      });
+      let probeResponse = null;
+      const result = await replay.run(
+        scope,
+        async () => {
+          probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);
+          const probes = Array.isArray(probeResponse?.probes) ? probeResponse.probes : [];
+          if (!probes.length) return { observations: [], errors: [] };
+          const observations = []; const errors = [];
+          for (const probe of probes) {
+            try { observations.push(await collectFxProbe(probe.sku)); }
+            catch (error) { errors.push({ sku: probe.sku, error: error?.message || String(error) }); }
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          return { observations, errors, deviceId };
+        },
+        (body) => apiRequest('POST', `${backendUrl}/pricing/fx/observations`, body, token, null, 60_000),
       );
+      if (!probeResponse && !(result?.rate?.rate > 0)) throw new Error('本轮没有可用汇率');
       const rate = Number(result?.rate?.rate || probeResponse?.rate?.rate || 0);
-      if (!(rate > 0)) throw new Error(errors[0]?.error || '本轮没有可用汇率');
+      if (!(rate > 0)) throw new Error('本轮没有可用汇率');
       await setStorage({
         [FX_STORAGE_KEY]: {
           rate,
@@ -2810,7 +2812,7 @@ try {
           confidence: result?.rate?.confidence || 'LOW',
         },
       });
-      console.info(`[jzc-fx] rate=${rate} accepted=${result?.accepted || 0} rejected=${result?.rejected || 0} errors=${errors.length}`);
+      console.info(`[jzc-fx] rate=${rate} accepted=${result?.accepted || 0} rejected=${result?.rejected || 0}`);
       return rate;
     } catch (e) {
       lastFxRefreshError = e?.message || String(e);
