@@ -18,6 +18,26 @@ function dateOrNull(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function dateOnlyOrNull(value) {
+  const iso = dateOrNull(value);
+  return iso ? iso.slice(0, 10) : null;
+}
+
+function addDaysDateOnly(value, days) {
+  const dateOnly = dateOnlyOrNull(value);
+  if (!dateOnly) return null;
+  const [year, month, day] = dateOnly.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function apiKeyCreatedAt(store = {}) {
+  return dateOnlyOrNull(store.apiKeyCreatedAt || store.savedAt || store.createdAt || store.updatedAt);
+}
+
+function apiKeyExpiresAt(store = {}) {
+  return dateOnlyOrNull(store.apiKeyExpiresAt) || addDaysDateOnly(apiKeyCreatedAt(store), 180);
+}
+
 function bool(value, fallback = false) {
   if (value === true || value === false) return value;
   if (typeof value === "string") {
@@ -30,8 +50,18 @@ function bool(value, fallback = false) {
 
 function num(value) {
   if (value && typeof value === "object") return num(value.price || value.value);
-  const parsed = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+  const normalized = String(value ?? "").replace(/[^\d.-]/g, "");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function firstPositiveNum(...values) {
+  for (const value of values) {
+    const parsed = num(value);
+    if (parsed !== null && parsed > 0) return parsed;
+  }
+  return null;
 }
 
 function int(value, fallback = 0) {
@@ -378,33 +408,38 @@ function productCurrency(product = {}, store = {}) {
 }
 
 function currentProductPrice(product = {}) {
-  const candidates = [
+  return firstPositiveNum(
+    product.price_info?.price?.marketing_seller_price,
+    product.price_info?.marketing_seller_price,
+    product.marketing_seller_price,
     product.price_info?.price?.marketing_price,
     product.price_info?.marketing_price,
     product.marketing_price,
     product.price_info?.price?.price,
     product.price_info?.price,
     product.price,
-  ];
-  return candidates.map(num).find((value) => value !== null) ?? null;
+  );
 }
 
 function originalProductPrice(product = {}) {
-  return [
+  return firstPositiveNum(
     product.price_info?.price?.old_price,
     product.price_info?.old_price,
     product.old_price,
     product.price_info?.price?.retail_price,
     product.retail_price,
-  ].map(num).find((value) => value !== null) ?? null;
+  );
 }
 
 function marketingProductPrice(product = {}) {
-  return [
+  return firstPositiveNum(
+    product.price_info?.price?.marketing_seller_price,
+    product.price_info?.marketing_seller_price,
+    product.marketing_seller_price,
     product.price_info?.price?.marketing_price,
     product.price_info?.marketing_price,
     product.marketing_price,
-  ].map(num).find((value) => value !== null) ?? null;
+  );
 }
 
 function stockRows(product = {}) {
@@ -443,6 +478,24 @@ function productIdentity(product = {}, state = {}) {
     sku,
     offerId,
   };
+}
+
+async function existingProductDbId(client, identity = {}) {
+  if (identity.storeId && identity.productId) {
+    const row = await client.query(
+      "SELECT id FROM products WHERE store_id = $1 AND product_id = $2 LIMIT 1",
+      [identity.storeId, identity.productId],
+    );
+    if (row.rows[0]?.id) return row.rows[0].id;
+  }
+  if (identity.storeId && identity.sku) {
+    const row = await client.query(
+      "SELECT id FROM products WHERE store_id = $1 AND sku = $2 LIMIT 1",
+      [identity.storeId, identity.sku],
+    );
+    if (row.rows[0]?.id) return row.rows[0].id;
+  }
+  return identity.id;
 }
 
 function warehouseIdentity(row = {}, storeId = "") {
@@ -517,6 +570,93 @@ export async function ensureFormalSchema(pool) {
   formalSchemaReady = true;
 }
 
+export async function deleteRemovedAccountScopes(client, state = {}) {
+  const scopes = Array.isArray(state.__deletedAccountScopes)
+    ? state.__deletedAccountScopes
+    : [];
+  for (const scope of scopes) {
+    const accountId = text(scope?.accountId, 240);
+    if (!accountId) continue;
+
+    const formalStores = await client.query(
+      "SELECT id FROM stores WHERE owner_account_id=$1",
+      [accountId],
+    );
+    const storeIds = [...new Set([
+      ...(Array.isArray(scope?.storeIds) ? scope.storeIds : []),
+      ...(formalStores.rows || []).map((row) => row.id),
+    ].map((storeId) => text(storeId, 240)).filter(Boolean))];
+    const collectionStores = await client.query(
+      "SELECT data_collection_store_id FROM account_data_collection_stores WHERE account_id=$1",
+      [accountId],
+    );
+    const dataCollectionStoreIds = [...new Set(
+      (collectionStores.rows || [])
+        .map((row) => text(row.data_collection_store_id, 240))
+        .filter(Boolean),
+    )];
+    const scopeParams = [accountId, storeIds];
+    const accountOrStore = "(account_id=$1 OR store_id=ANY($2::text[]))";
+
+    await client.query(
+      `DELETE FROM outbox_events
+       WHERE aggregate_id IN (
+         SELECT id FROM submission_jobs WHERE ${accountOrStore}
+         UNION SELECT id FROM submission_snapshots WHERE ${accountOrStore}
+         UNION SELECT id FROM collect_items WHERE ${accountOrStore}
+       )`,
+      scopeParams,
+    );
+    await client.query(`DELETE FROM submission_jobs WHERE ${accountOrStore}`, scopeParams);
+    await client.query(`DELETE FROM submission_snapshots WHERE ${accountOrStore}`, scopeParams);
+
+    for (const table of [
+      "collector_exports",
+      "collector_task_items",
+      "collector_task_events",
+      "collector_market_snapshots",
+      "collector_category_mappings",
+      "collector_task_runs",
+      "collector_tasks",
+    ]) {
+      await client.query(
+        `DELETE FROM ${table} WHERE account_id=$1 OR operating_store_id=ANY($2::text[])`,
+        scopeParams,
+      );
+    }
+    await client.query("DELETE FROM collector_devices WHERE account_id=$1", [accountId]);
+
+    await client.query(`DELETE FROM collect_requests WHERE ${accountOrStore}`, scopeParams);
+    await client.query(`DELETE FROM collect_raw_payloads WHERE ${accountOrStore}`, scopeParams);
+    await client.query(`DELETE FROM collect_items WHERE ${accountOrStore}`, scopeParams);
+    await client.query(
+      `DELETE FROM pricing_calculation_snapshots WHERE ${accountOrStore}`,
+      scopeParams,
+    );
+    await client.query("DELETE FROM pricing_fx_observations WHERE account_id=$1", [accountId]);
+    await client.query(
+      "DELETE FROM collection_store_verifications WHERE account_id=$1 OR data_collection_store_id=ANY($2::text[])",
+      [accountId, dataCollectionStoreIds],
+    );
+    await client.query("DELETE FROM sync_jobs WHERE store_id=ANY($1::text[])", [storeIds]);
+    await client.query("DELETE FROM files WHERE created_by=$1", [accountId]);
+    await client.query(
+      "DELETE FROM stores WHERE owner_account_id=$1 OR id=ANY($2::text[])",
+      scopeParams,
+    );
+    await client.query("DELETE FROM accounts WHERE id=$1", [accountId]);
+    await client.query(
+      `DELETE FROM data_collection_stores
+       WHERE id=ANY($1::text[])
+         AND NOT EXISTS (
+           SELECT 1 FROM account_data_collection_stores membership
+           WHERE membership.data_collection_store_id=data_collection_stores.id
+         )`,
+      [dataCollectionStoreIds],
+    );
+  }
+}
+
 async function mirrorAccounts(client, state = {}) {
   for (const account of state.accounts || []) {
     await client.query(
@@ -556,34 +696,118 @@ async function mirrorAccounts(client, state = {}) {
       ],
     );
   }
-  if (state.token && state.currentAccountId) {
+  const sessions = state.sessions && typeof state.sessions === "object" && !Array.isArray(state.sessions)
+    ? { ...state.sessions }
+    : {};
+  if (state.token && state.currentAccountId && !sessions[state.token]) {
+    sessions[state.token] = {
+      token: state.token,
+      accountId: state.currentAccountId,
+      issuedAt: state.sessionIssuedAt,
+      legacy: true,
+    };
+  }
+  for (const [token, session] of Object.entries(sessions)) {
+    const accountId = text(session?.accountId, 240);
+    if (!token || !accountId) continue;
     await client.query(
       `
-        INSERT INTO sessions (token, account_id, issued_at, last_seen_at, raw)
-        VALUES ($1,$2,$3,NOW(),$4::jsonb)
+        INSERT INTO sessions (token, account_id, issued_at, expires_at, last_seen_at, raw)
+        VALUES ($1,$2,$3,$4,COALESCE($5::timestamptz,NOW()),$6::jsonb)
         ON CONFLICT (token) DO UPDATE SET
           account_id = EXCLUDED.account_id,
           issued_at = EXCLUDED.issued_at,
-          last_seen_at = NOW(),
+          expires_at = EXCLUDED.expires_at,
+          last_seen_at = EXCLUDED.last_seen_at,
           raw = EXCLUDED.raw
       `,
-      [state.token, state.currentAccountId, dateOrNull(state.sessionIssuedAt), json({ current: true })],
+      [
+        token,
+        accountId,
+        dateOrNull(session?.issuedAt || state.sessionIssuedAt),
+        dateOrNull(session?.expiresAt),
+        dateOrNull(session?.lastSeenAt),
+        json({ ...session, current: token === state.token }),
+      ],
     );
   }
 }
 
 async function mirrorStores(client, state = {}) {
-  for (const store of state.stores || []) {
+  const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+  const accountIds = new Set(accounts.map((account) => text(account?.id, 240)).filter(Boolean));
+  const currentAccountId = text(state.currentAccountId, 240);
+  const defaultOwnerAccountId = (
+    accounts.some((account) => text(account?.id, 240) === currentAccountId)
+      ? currentAccountId
+      : text(accounts.find((account) => account?.role === "admin")?.id || accounts[0]?.id, 240)
+  );
+  const rawStores = Array.isArray(state.stores) ? state.stores : [];
+  const storeIds = rawStores.map((store) => text(store?.id, 240)).filter(Boolean);
+  const existingOwners = new Map();
+  if (storeIds.length) {
+    const existing = await client.query(
+      "SELECT id, owner_account_id FROM stores WHERE id=ANY($1::text[])",
+      [[...new Set(storeIds)]],
+    );
+    for (const row of existing.rows || []) {
+      const storeId = text(row?.id, 240);
+      const ownerAccountId = text(row?.owner_account_id, 240);
+      if (storeId && ownerAccountId) existingOwners.set(storeId, ownerAccountId);
+    }
+  }
+  const stores = rawStores.map((store) => {
+    const storeId = text(store?.id, 240);
+    const explicitOwnerAccountId = text(store?.ownerAccountId, 240);
+    const existingOwnerAccountId = existingOwners.get(storeId) || "";
+    if (explicitOwnerAccountId && !accountIds.has(explicitOwnerAccountId)) {
+      const error = new Error(`经营店铺 ${storeId || "(missing id)"} 引用了不存在的账号`);
+      error.code = "STORE_OWNER_ACCOUNT_NOT_FOUND";
+      throw error;
+    }
+    if (
+      explicitOwnerAccountId
+      && existingOwnerAccountId
+      && explicitOwnerAccountId !== existingOwnerAccountId
+    ) {
+      const error = new Error(`经营店铺 ${storeId || "(missing id)"} 的账号归属与正式数据不一致`);
+      error.code = "STORE_OWNER_CONFLICT";
+      throw error;
+    }
+    // Existing relational ownership is authoritative for legacy local_state.
+    // Only a genuinely new store in a single-account state may be inferred.
+    const ownerAccountId = explicitOwnerAccountId
+      || existingOwnerAccountId
+      || (accountIds.size === 1 ? defaultOwnerAccountId : "");
+    if (!ownerAccountId || !accountIds.has(ownerAccountId)) {
+      const error = new Error(`经营店铺 ${storeId || "(missing id)"} 缺少可确认的账号归属`);
+      error.code = "STORE_OWNER_REQUIRED";
+      throw error;
+    }
+    // loadPersistedState mirrors before index.mjs normalizes the state. Keep
+    // the authoritative owner on that same in-memory object so a later login
+    // save cannot reassign a legacy store to whichever account is current.
+    if (store && typeof store === "object") store.ownerAccountId = ownerAccountId;
+    return { ...store, ownerAccountId };
+  });
+  const ownerAccountIds = [...new Set(stores.map((store) => store.ownerAccountId).filter(Boolean))];
+  if (ownerAccountIds.length) {
+    await client.query("UPDATE stores SET is_current=FALSE WHERE owner_account_id=ANY($1::text[]) AND is_current", [ownerAccountIds]);
+  }
+  for (const store of stores) {
     const currency = text(store.currencyCode || store.currency || store.companyCurrency || "RUB", 12).toUpperCase();
+    const keyCreatedAt = apiKeyCreatedAt(store);
+    const keyExpiresAt = apiKeyExpiresAt(store);
     await client.query(
       `
         INSERT INTO stores (
-          id, label, company_name, legal_name, client_id, inn, tax_id, currency_code,
+          id, owner_account_id, label, company_name, legal_name, client_id, inn, tax_id, currency_code,
           is_premium, status, is_current, seller_company_id, saved_at, updated_at,
-          profile_synced_at, raw
+          profile_synced_at, api_key_created_at, api_key_expires_at, raw
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)
         ON CONFLICT (id) DO UPDATE SET
+          owner_account_id = EXCLUDED.owner_account_id,
           label = EXCLUDED.label,
           company_name = EXCLUDED.company_name,
           legal_name = EXCLUDED.legal_name,
@@ -597,10 +821,13 @@ async function mirrorStores(client, state = {}) {
           seller_company_id = EXCLUDED.seller_company_id,
           updated_at = EXCLUDED.updated_at,
           profile_synced_at = EXCLUDED.profile_synced_at,
+          api_key_created_at = EXCLUDED.api_key_created_at,
+          api_key_expires_at = EXCLUDED.api_key_expires_at,
           raw = EXCLUDED.raw
       `,
       [
         store.id,
+        text(store.ownerAccountId, 240),
         text(store.label, 240),
         text(store.companyName || store.label, 240),
         text(store.legalName || store.companyName || store.label, 240),
@@ -610,11 +837,13 @@ async function mirrorStores(client, state = {}) {
         currency,
         store.isPremium === true,
         text(store.status, 80),
-        String(state.currentStoreId || "") === String(store.id),
+        String(state.currentStoreIdsByAccount?.[store.ownerAccountId] || state.currentStoreId || "") === String(store.id),
         text(store.sellerCompanyId, 160),
         dateOrNull(store.savedAt),
         dateOrNull(store.updatedAt || store.savedAt),
         dateOrNull(store.profileSyncedAt),
+        keyCreatedAt,
+        keyExpiresAt,
         json({ ...store, apiKey: store.apiKey ? "__encrypted__" : "" }),
       ],
     );
@@ -623,9 +852,10 @@ async function mirrorStores(client, state = {}) {
       await client.query(
         `
           INSERT INTO store_credentials (
-            store_id, client_id, encrypted_api_key, iv, auth_tag, algorithm, key_version, updated_at
+            store_id, client_id, encrypted_api_key, iv, auth_tag, algorithm, key_version,
+            api_key_created_at, api_key_expires_at, updated_at
           )
-          VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
           ON CONFLICT (store_id) DO UPDATE SET
             client_id = EXCLUDED.client_id,
             encrypted_api_key = EXCLUDED.encrypted_api_key,
@@ -633,6 +863,8 @@ async function mirrorStores(client, state = {}) {
             auth_tag = EXCLUDED.auth_tag,
             algorithm = EXCLUDED.algorithm,
             key_version = EXCLUDED.key_version,
+            api_key_created_at = EXCLUDED.api_key_created_at,
+            api_key_expires_at = EXCLUDED.api_key_expires_at,
             updated_at = NOW()
         `,
         [
@@ -643,6 +875,8 @@ async function mirrorStores(client, state = {}) {
           encrypted.authTag,
           encrypted.algorithm,
           encrypted.keyVersion,
+          keyCreatedAt,
+          keyExpiresAt,
         ],
       );
     }
@@ -720,15 +954,25 @@ async function upsertWarehouse(client, storeId, row = {}) {
 }
 
 async function mirrorWarehouses(client, state = {}) {
+  const idsByStore = new Map();
   for (const warehouse of state.caches?.warehouses || []) {
-    await upsertWarehouse(client, text(warehouse.storeId || warehouse.store_id || state.currentStoreId, 160), warehouse);
+    const storeId = text(warehouse.storeId || warehouse.store_id || state.currentStoreId, 160);
+    const identity = await upsertWarehouse(client, storeId, warehouse);
+    if (!idsByStore.has(storeId)) idsByStore.set(storeId, new Set());
+    idsByStore.get(storeId).add(identity.id);
   }
+  return idsByStore;
 }
 
 async function mirrorProducts(client, state = {}) {
   const stores = storeById(state);
+  const productIdsByStore = new Map();
+  const warehouseIdsByStore = new Map();
   for (const product of state.caches?.products || []) {
     const identity = productIdentity(product, state);
+    const productDbId = await existingProductDbId(client, identity);
+    if (!productIdsByStore.has(identity.storeId)) productIdsByStore.set(identity.storeId, new Set());
+    productIdsByStore.get(identity.storeId).add(productDbId);
     const store = stores.get(identity.storeId) || {};
     const currencyCode = productCurrency(product, store);
     await client.query(
@@ -759,7 +1003,7 @@ async function mirrorProducts(client, state = {}) {
           raw = EXCLUDED.raw
       `,
       [
-        identity.id,
+        productDbId,
         identity.storeId || null,
         identity.productId,
         identity.sku,
@@ -778,7 +1022,7 @@ async function mirrorProducts(client, state = {}) {
         json(product),
       ],
     );
-    for (const price of productPriceRows(product, identity.id, identity.storeId, currencyCode)) {
+    for (const price of productPriceRows(product, productDbId, identity.storeId, currencyCode)) {
       await client.query(
         `
           INSERT INTO product_prices (
@@ -831,8 +1075,8 @@ async function mirrorProducts(client, state = {}) {
             raw = EXCLUDED.raw
         `,
         [
-          stableId("asset", [identity.id, imageUrl, index]),
-          identity.id,
+          stableId("asset", [productDbId, imageUrl, index]),
+          productDbId,
           index === 0 ? "main_image" : "gallery_image",
           index,
           text(imageUrl, 1200),
@@ -862,8 +1106,8 @@ async function mirrorProducts(client, state = {}) {
             raw = EXCLUDED.raw
         `,
         [
-          stableId("asset", [identity.id, "video", asset.url, index]),
-          identity.id,
+          stableId("asset", [productDbId, "video", asset.url, index]),
+          productDbId,
           index,
           text(asset.url, 1200),
           text(asset.mimeType, 120),
@@ -878,6 +1122,8 @@ async function mirrorProducts(client, state = {}) {
     }
     for (const row of stockRows(product)) {
       const warehouse = await upsertWarehouse(client, identity.storeId, row);
+      if (!warehouseIdsByStore.has(identity.storeId)) warehouseIdsByStore.set(identity.storeId, new Set());
+      warehouseIdsByStore.get(identity.storeId).add(warehouse.id);
       await client.query(
         `
           INSERT INTO product_stocks (
@@ -893,7 +1139,7 @@ async function mirrorProducts(client, state = {}) {
             raw = EXCLUDED.raw
         `,
         [
-          identity.id,
+          productDbId,
           warehouse.id,
           identity.storeId || null,
           text(row.sku || identity.sku, 160),
@@ -905,6 +1151,36 @@ async function mirrorProducts(client, state = {}) {
         ],
       );
     }
+  }
+  return { productIdsByStore, warehouseIdsByStore };
+}
+
+function mergeSnapshotIds(target, source) {
+  for (const [storeId, ids] of source || []) {
+    if (!target.has(storeId)) target.set(storeId, new Set());
+    for (const id of ids) target.get(storeId).add(id);
+  }
+  return target;
+}
+
+async function pruneStoreCatalogSnapshots(client, state, productIdsByStore, warehouseIdsByStore) {
+  for (const store of state.stores || []) {
+    const storeId = text(store.id, 160);
+    if (!storeId) continue;
+    const productIds = [...(productIdsByStore.get(storeId) || [])];
+    const warehouseIds = [...(warehouseIdsByStore.get(storeId) || [])];
+    await client.query(
+      `DELETE FROM products
+       WHERE store_id=$1
+         AND NOT (id = ANY($2::text[]))`,
+      [storeId, productIds],
+    );
+    await client.query(
+      `DELETE FROM warehouses
+       WHERE store_id=$1
+         AND NOT (id = ANY($2::text[]))`,
+      [storeId, warehouseIds],
+    );
   }
 }
 
@@ -1003,18 +1279,133 @@ async function mirrorJobs(client, state = {}) {
   }
 }
 
+async function mirrorAuditEvents(client, state = {}) {
+  for (const event of state.auditEvents || []) {
+    const eventId = text(event.eventId || event.id, 200);
+    if (!eventId) continue;
+    await client.query(
+      `
+        INSERT INTO audit_events (
+          event_id, account_id, store_id, action, status, actor_type, actor_id,
+          device_id, source, entity_type, entity_id, correlation_id, metadata,
+          occurred_at, created_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$14)
+        ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING
+      `,
+      [
+        eventId,
+        event.accountId || null,
+        event.storeId || null,
+        text(event.action || "UNKNOWN", 120),
+        text(event.status || "UNKNOWN", 80),
+        text(event.actorType || "account", 80),
+        text(event.actorId, 160),
+        text(event.deviceId, 200),
+        text(event.source || "local-api", 80),
+        text(event.entityType || "operation", 120),
+        text(event.entityId, 240),
+        text(event.correlationId || eventId, 200),
+        json(event.metadata),
+        dateOrNull(event.createdAt) || new Date().toISOString(),
+      ],
+    );
+  }
+}
+
+function hydratedProductRow(row = {}) {
+  const raw = row.raw && typeof row.raw === "object" ? row.raw : {};
+  return {
+    ...raw,
+    id: raw.id || raw.product_id || row.product_id || row.id,
+    storeId: row.store_id || raw.storeId || raw.store_id || "",
+    store_id: row.store_id || raw.store_id || raw.storeId || "",
+    product_id: row.product_id || raw.product_id || raw.id || "",
+    sku: row.sku || raw.sku || "",
+    offer_id: row.offer_id || raw.offer_id || raw.offerId || "",
+    name: row.name || raw.name || raw.title || "",
+    status: row.status || raw.status || "",
+    visibility: row.visibility || raw.visibility || raw.visibilityFilter || "",
+    visibilityFilter: row.visibility || raw.visibilityFilter || raw.visibility || "",
+    is_archived: row.is_archived === true,
+    currency_code: row.currency_code || raw.currency_code || raw.currencyCode || "",
+    price: row.current_price ?? raw.price ?? raw.current_price ?? "",
+    current_price: row.current_price ?? raw.current_price ?? raw.price ?? "",
+    original_price: row.original_price ?? raw.original_price ?? "",
+    marketing_price: row.marketing_price ?? raw.marketing_price ?? "",
+    stock: row.stock_total ?? raw.stock ?? "",
+    stock_total: row.stock_total ?? raw.stock_total ?? raw.stock ?? "",
+    image: row.image_url || raw.image || raw.primary_image || "",
+    image_url: row.image_url || raw.image_url || raw.image || "",
+    syncedAt: row.synced_at || raw.syncedAt || raw.updated_at || "",
+  };
+}
+
+function hydratedWarehouseRow(row = {}) {
+  const raw = row.raw && typeof row.raw === "object" ? row.raw : {};
+  return {
+    ...raw,
+    id: raw.id || raw.warehouse_id || row.warehouse_id || row.id,
+    storeId: row.store_id || raw.storeId || raw.store_id || "",
+    store_id: row.store_id || raw.store_id || raw.storeId || "",
+    warehouse_id: row.warehouse_id || raw.warehouse_id || raw.id || "",
+    name: row.name || raw.name || raw.warehouse_name || "",
+    warehouse_type: row.warehouse_type || raw.warehouse_type || raw.type || "",
+    status: row.status || raw.status || raw.state || "",
+    is_active: row.is_active !== false,
+    is_archived: row.is_archived === true,
+    syncedAt: row.synced_at || raw.syncedAt || raw.updated_at || "",
+  };
+}
+
+export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) {
+  await ensureFormalSchema(pool);
+  const [products, warehouses] = await Promise.all([
+    pool.query(`
+      SELECT id, store_id, product_id, sku, offer_id, name, status, visibility,
+             is_archived, currency_code, current_price, original_price,
+             marketing_price, stock_total, image_url, synced_at, raw
+      FROM products
+      ORDER BY store_id, updated_at DESC, id
+    `),
+    pool.query(`
+      SELECT id, store_id, warehouse_id, name, warehouse_type, status,
+             is_active, is_archived, synced_at, raw
+      FROM warehouses
+      ORDER BY store_id, updated_at DESC, id
+    `),
+  ]);
+  state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
+  state.caches.products = products.rows.map(hydratedProductRow);
+  state.caches.warehouses = warehouses.rows.map(hydratedWarehouseRow);
+  return state;
+}
+
+export async function mirrorStateToRelationalTablesInTransaction(client, state = {}) {
+  await deleteRemovedAccountScopes(client, state);
+  await mirrorAccounts(client, state);
+  await mirrorStores(client, state);
+  await mirrorFiles(client, state);
+  const warehouseIdsByStore = await mirrorWarehouses(client, state);
+  const productSnapshot = await mirrorProducts(client, state);
+  mergeSnapshotIds(warehouseIdsByStore, productSnapshot.warehouseIdsByStore);
+  await pruneStoreCatalogSnapshots(
+    client,
+    state,
+    productSnapshot.productIdsByStore,
+    warehouseIdsByStore,
+  );
+  await mirrorOrders(client, state);
+  await mirrorJobs(client, state);
+  await mirrorAuditEvents(client, state);
+}
+
 export async function mirrorStateToRelationalTables(pool, state = {}) {
   await ensureFormalSchema(pool);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await mirrorAccounts(client, state);
-    await mirrorStores(client, state);
-    await mirrorFiles(client, state);
-    await mirrorWarehouses(client, state);
-    await mirrorProducts(client, state);
-    await mirrorOrders(client, state);
-    await mirrorJobs(client, state);
+    await mirrorStateToRelationalTablesInTransaction(client, state);
     await client.query("COMMIT");
   } catch (error) {
     try {

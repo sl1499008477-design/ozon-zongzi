@@ -6,6 +6,7 @@ import { closePostgresPool, getPostgresPool, postgresEnabled } from "./connectio
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, "migrations");
+const MIGRATION_LOCK_KEY = "sonli-schema-migrations-v1";
 
 async function migrationFiles() {
   const files = await fs.readdir(migrationsDir);
@@ -21,6 +22,27 @@ async function ensureMigrationsTable(client) {
   `);
 }
 
+async function applyMigration(client, sql, version) {
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await client.query(sql);
+    await client.query("INSERT INTO schema_migrations (version) VALUES ($1)", [version]);
+    await client.query("COMMIT");
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the migration error; it is more useful than a rollback error.
+      }
+    }
+    throw error;
+  }
+}
+
 export async function runMigrations(pool = null) {
   if (!postgresEnabled()) {
     return { ok: true, skipped: true, applied: [] };
@@ -28,7 +50,14 @@ export async function runMigrations(pool = null) {
   const resolvedPool = pool || await getPostgresPool();
   const client = await resolvedPool.connect();
   const applied = [];
+  let lockAcquired = false;
+  let migrationError = null;
   try {
+    // A transaction-scoped lock would be released after each migration. Keep a
+    // session lock on this exact connection so the initial scan and every
+    // per-file transaction form one serialized migration run.
+    await client.query("SELECT pg_advisory_lock(hashtext($1))", [MIGRATION_LOCK_KEY]);
+    lockAcquired = true;
     await ensureMigrationsTable(client);
     const current = await client.query("SELECT version FROM schema_migrations");
     const completed = new Set(current.rows.map((row) => row.version));
@@ -36,22 +65,35 @@ export async function runMigrations(pool = null) {
       const version = file.replace(/\.sql$/, "");
       if (completed.has(version)) continue;
       const sql = await fs.readFile(path.join(migrationsDir, file), "utf8");
-      await client.query("BEGIN");
-      await client.query(sql);
-      await client.query("INSERT INTO schema_migrations (version) VALUES ($1)", [version]);
-      await client.query("COMMIT");
+      await applyMigration(client, sql, version);
+      completed.add(version);
       applied.push(version);
     }
     return { ok: true, skipped: false, applied };
   } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Ignore rollback errors; the original migration error is more useful.
-    }
+    migrationError = error;
     throw error;
   } finally {
-    client.release();
+    let finalizationError = null;
+    if (lockAcquired) {
+      try {
+        const result = await client.query(
+          "SELECT pg_advisory_unlock(hashtext($1)) AS unlocked",
+          [MIGRATION_LOCK_KEY],
+        );
+        if (result.rows[0]?.unlocked !== true) {
+          throw new Error("PostgreSQL migration advisory lock was not held by this session");
+        }
+      } catch (error) {
+        finalizationError = error;
+      }
+    }
+    try {
+      client.release(finalizationError || undefined);
+    } catch (error) {
+      finalizationError ||= error;
+    }
+    if (!migrationError && finalizationError) throw finalizationError;
   }
 }
 

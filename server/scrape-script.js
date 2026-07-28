@@ -98,6 +98,57 @@ try {
     r.sku = pathParts ? pathParts[1] : '${sku}';
     r.url = window.location.href;
 
+    // 4.1 Extract sibling SKU variants from Ozon aspects state. This keeps the
+    // backend-only SKU collection path aligned with the browser extension flow.
+    try {
+      var variantMap = {};
+      function normalizeImage(url) {
+        return String(url || '').replace(/\\/wc\\d+\\//, '/wc1000/');
+      }
+      function variantText(v) {
+        if (!v) return '';
+        if (v.data && Array.isArray(v.data.textRs)) {
+          return v.data.textRs.map(function(t) { return t && t.content ? t.content : ''; }).join('');
+        }
+        return (v.data && (v.data.searchableText || v.data.title || v.data.text)) || '';
+      }
+      function addAspects(aspects) {
+        if (!Array.isArray(aspects)) return;
+        aspects.forEach(function(aspect) {
+          var aspectName = aspect.aspectName || aspect.title || aspect.name || '';
+          (aspect.variants || []).forEach(function(v) {
+            var skuValue = String(v.sku || (v.data && (v.data.sku || v.data.id)) || '').trim();
+            if (!skuValue) return;
+            var d = v.data || {};
+            if (!variantMap[skuValue]) {
+              variantMap[skuValue] = {
+                sku: skuValue,
+                title: d.title || d.name || variantText(v) || '',
+                price: d.price || d.priceText || '',
+                image: normalizeImage(d.coverImage || d.image || ''),
+                coverImage: normalizeImage(d.coverImage || d.image || ''),
+                link: v.link ? new URL(v.link, location.origin).href : '',
+                availability: v.availability || '',
+                active: v.active === true,
+                aspectValues: {}
+              };
+            }
+            var text = variantText(v);
+            if (aspectName && text) variantMap[skuValue].aspectValues[aspectName] = text;
+          });
+        });
+      }
+      document.querySelectorAll('[data-state]').forEach(function(el) {
+        try {
+          var state = JSON.parse(el.getAttribute('data-state') || '{}');
+          if (Array.isArray(state.aspects)) addAspects(state.aspects);
+        } catch(e) {}
+      });
+      r.variants = Object.keys(variantMap).map(function(key) { return variantMap[key]; });
+    } catch(e) {
+      r.variants = [];
+    }
+
     // 5. Try to get images from data-state if JSON-LD didn't have them
     if (!r.primaryImage) {
       try {

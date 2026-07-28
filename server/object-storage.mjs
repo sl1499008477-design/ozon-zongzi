@@ -28,13 +28,18 @@ function bucketName() {
 
 async function getClient() {
   if (!clientPromise) {
+    const required = ["MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET"];
+    const missing = required.filter((name) => !String(process.env[name] || "").trim());
+    if (missing.length) {
+      throw new Error(`MinIO 文件存储缺少配置：${missing.join("、")}`);
+    }
     clientPromise = import("minio")
       .then(({ Client }) => new Client({
-        endPoint: process.env.MINIO_ENDPOINT || "127.0.0.1",
+        endPoint: process.env.MINIO_ENDPOINT,
         port: minioPort(),
         useSSL: minioUseSsl(),
-        accessKey: process.env.MINIO_ACCESS_KEY || "sonli_minio",
-        secretKey: process.env.MINIO_SECRET_KEY || "sonli_minio_password",
+        accessKey: process.env.MINIO_ACCESS_KEY,
+        secretKey: process.env.MINIO_SECRET_KEY,
       }))
       .catch((error) => {
         throw new Error(`MinIO 依赖未安装或不可用，请先执行 pnpm install。原始错误: ${error.message}`);
@@ -86,17 +91,33 @@ export function buildObjectKey(name) {
 }
 
 export async function putObjectFromBase64({ key, name, contentType, base64 }) {
-  await ensureBucket();
   const { buffer, dataUrlType } = decodeBase64Payload(base64);
+  return putObjectFromBuffer({ key, name, contentType: contentType || dataUrlType, buffer });
+}
+
+export async function putObjectFromBuffer({ key, name, contentType, buffer }) {
+  await ensureBucket();
+  const content = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+  if (!content.length) {
+    const error = new Error("文件内容为空");
+    error.status = 400;
+    throw error;
+  }
+  const maxBytes = Number(process.env.LOCAL_FILE_MAX_BYTES || 50 * 1024 * 1024);
+  if (content.length > maxBytes) {
+    const error = new Error(`文件超过本地上传限制 ${Math.round(maxBytes / 1024 / 1024)}MB`);
+    error.status = 413;
+    throw error;
+  }
   const objectKey = key || buildObjectKey(name);
-  const type = contentType || dataUrlType || "application/octet-stream";
-  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  const type = contentType || "application/octet-stream";
+  const sha256 = crypto.createHash("sha256").update(content).digest("hex");
   const client = await getClient();
   await client.putObject(
     bucketName(),
     objectKey,
-    Readable.from(buffer),
-    buffer.length,
+    Readable.from(content),
+    content.length,
     {
       "Content-Type": type,
       "X-Amz-Meta-Original-Name": String(name || ""),
@@ -106,7 +127,7 @@ export async function putObjectFromBase64({ key, name, contentType, base64 }) {
     key: objectKey,
     bucket: bucketName(),
     contentType: type,
-    size: buffer.length,
+    size: content.length,
     sha256,
   };
 }

@@ -6,7 +6,15 @@ import {
   unprotectStateFromStorage,
 } from "./crypto-secrets.mjs";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
-import { ensureFormalSchema, formalPersistenceHealth, mirrorStateToRelationalTables } from "./formal-persistence.mjs";
+import {
+  ensureFormalSchema,
+  formalPersistenceHealth,
+  hydrateStoreCatalogFromRelationalTables,
+  mirrorStateToRelationalTables,
+  mirrorStateToRelationalTablesInTransaction,
+} from "./formal-persistence.mjs";
+import { persistPostgresStateAtomically } from "./postgres-state-transaction.mjs";
+import { writeJsonAtomically } from "./json-state-writer.mjs";
 
 const STATE_ROW_ID = "local-state";
 let schemaReady = false;
@@ -52,6 +60,75 @@ export function persistenceMode() {
   return postgresEnabled() ? "postgres" : "json";
 }
 
+export async function revokePersistedSessions({ token = "", accountId = "", reason = "logout" } = {}) {
+  const normalizedToken = String(token || "").trim();
+  const normalizedAccountId = String(accountId || "").trim();
+  if (!normalizedToken && !normalizedAccountId) return { revoked: 0, mode: persistenceMode() };
+  if (!postgresEnabled()) return { revoked: 0, mode: "json" };
+
+  const pool = await getPostgresPool();
+  await ensureSchema(pool);
+  const result = normalizedToken
+    ? await pool.query(
+      `UPDATE sessions
+       SET revoked_at=COALESCE(revoked_at,NOW()),
+           last_seen_at=NOW(),
+           raw=raw || jsonb_build_object('revokedReason',$2::text)
+       WHERE token=$1 AND revoked_at IS NULL`,
+      [normalizedToken, String(reason || "logout").slice(0, 80)],
+    )
+    : await pool.query(
+      `UPDATE sessions
+       SET revoked_at=COALESCE(revoked_at,NOW()),
+           last_seen_at=NOW(),
+           raw=raw || jsonb_build_object('revokedReason',$2::text)
+       WHERE account_id=$1 AND revoked_at IS NULL`,
+      [normalizedAccountId, String(reason || "account-change").slice(0, 80)],
+    );
+  return { revoked: Number(result.rowCount || 0), mode: "postgres" };
+}
+
+export async function disablePersistedOperatingStores({ accountId = "", storeIds = [] } = {}) {
+  const normalizedAccountId = String(accountId || "").trim();
+  const normalizedStoreIds = [...new Set((Array.isArray(storeIds) ? storeIds : [storeIds])
+    .map((storeId) => String(storeId || "").trim())
+    .filter(Boolean))];
+  if (!normalizedAccountId || !normalizedStoreIds.length) return { disabled: 0, credentialsRemoved: 0, mode: persistenceMode() };
+  if (!postgresEnabled()) return { disabled: 0, credentialsRemoved: 0, mode: "json" };
+
+  const pool = await getPostgresPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const disabled = await client.query(
+      `UPDATE stores
+       SET status='disabled', is_current=FALSE, updated_at=NOW()
+       WHERE owner_account_id=$1 AND id=ANY($2::text[])`,
+      [normalizedAccountId, normalizedStoreIds],
+    );
+    const credentials = await client.query(
+      `DELETE FROM store_credentials credentials
+       USING stores
+       WHERE credentials.store_id=stores.id
+         AND stores.owner_account_id=$1
+         AND stores.id=ANY($2::text[])`,
+      [normalizedAccountId, normalizedStoreIds],
+    );
+    await client.query("COMMIT");
+    return {
+      disabled: Number(disabled.rowCount || 0),
+      credentialsRemoved: Number(credentials.rowCount || 0),
+      mode: "postgres",
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function loadPersistedState({ dataFile }) {
   if (!postgresEnabled()) return readJsonState(dataFile);
 
@@ -91,6 +168,11 @@ export async function loadPersistedState({ dataFile }) {
         console.warn(`正式数据表回填失败: ${formalBackfillError}`);
       }
     }
+    try {
+      await hydrateStoreCatalogFromRelationalTables(pool, state);
+    } catch (error) {
+      console.warn(`正式商品/仓库数据恢复失败: ${String(error?.message || error).slice(0, 500)}`);
+    }
     return state;
   }
 
@@ -102,8 +184,7 @@ export async function loadPersistedState({ dataFile }) {
 export async function savePersistedState({ dataDir, dataFile, state }) {
   const protectedState = protectStateForStorage(state);
   if (!postgresEnabled()) {
-    await fs.mkdir(dataDir, { recursive: true });
-    await fs.writeFile(dataFile, `${JSON.stringify(protectedState, null, 2)}\n`, "utf8");
+    await writeJsonAtomically({ dataDir, dataFile, value: protectedState });
     return;
   }
 
@@ -112,43 +193,66 @@ export async function savePersistedState({ dataDir, dataFile, state }) {
   const table = stateTableName();
   const client = await pool.connect();
   try {
+    await persistPostgresStateAtomically({
+      client,
+      table,
+      state,
+      protectedState,
+      mirror: mirrorStateToRelationalTablesInTransaction,
+    });
+  } finally {
+    client.release();
+  }
+}
+
+export async function savePersistedCollectBox({ dataDir, dataFile, state }) {
+  state.updatedAt = new Date().toISOString();
+  if (!postgresEnabled()) {
+    await savePersistedState({ dataDir, dataFile, state });
+    return;
+  }
+
+  const pool = await getPostgresPool();
+  await ensureSchema(pool);
+  const table = stateTableName();
+  const currentVersion = Number(state?.__storageVersion || 0);
+  if (currentVersion <= 0) {
+    await savePersistedState({ dataDir, dataFile, state });
+    return;
+  }
+
+  const protectedCollectBox = protectStateForStorage({
+    caches: { collectBox: Array.isArray(state?.caches?.collectBox) ? state.caches.collectBox : [] },
+  }).caches.collectBox;
+  const client = await pool.connect();
+  try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["sonli-local-state"]);
-    const currentVersion = Number(state?.__storageVersion || 0);
-    let nextVersion = currentVersion + 1;
-    if (currentVersion > 0) {
-      const result = await client.query(
-        `
-          UPDATE ${table}
-          SET state = $1::jsonb, version = version + 1, updated_at = NOW()
-          WHERE id = $2 AND version = $3
-          RETURNING version
-        `,
-        [JSON.stringify(protectedState), STATE_ROW_ID, currentVersion]
-      );
-      if (!result.rowCount) {
-        const err = new Error("本地状态已被其他操作更新，请刷新后重试");
-        err.code = "LOCAL_STATE_VERSION_CONFLICT";
-        err.status = 409;
-        throw err;
-      }
-      nextVersion = Number(result.rows[0]?.version || nextVersion);
-    } else {
-      const result = await client.query(
-        `
-          INSERT INTO ${table} (id, state, version, updated_at)
-          VALUES ($1, $2::jsonb, 1, NOW())
-          ON CONFLICT (id)
-          DO UPDATE SET state = EXCLUDED.state, version = ${table}.version + 1, updated_at = NOW()
-          RETURNING version
-        `,
-        [STATE_ROW_ID, JSON.stringify(protectedState)]
-      );
-      nextVersion = Number(result.rows[0]?.version || 1);
+    const result = await client.query(
+      `
+        UPDATE ${table}
+        SET state = jsonb_set(
+              jsonb_set(state, '{caches,collectBox}', $1::jsonb, true),
+              '{updatedAt}',
+              to_jsonb($2::text),
+              true
+            ),
+            version = version + 1,
+            updated_at = NOW()
+        WHERE id = $3 AND version = $4
+        RETURNING version
+      `,
+      [JSON.stringify(protectedCollectBox), state.updatedAt, STATE_ROW_ID, currentVersion],
+    );
+    if (!result.rowCount) {
+      const error = new Error("本地状态已被其他操作更新，请刷新后重试");
+      error.code = "LOCAL_STATE_VERSION_CONFLICT";
+      error.status = 409;
+      throw error;
     }
     await client.query("COMMIT");
     Object.defineProperty(state, "__storageVersion", {
-      value: nextVersion,
+      value: Number(result.rows[0]?.version || currentVersion + 1),
       enumerable: false,
       configurable: true,
       writable: true,
@@ -163,7 +267,6 @@ export async function savePersistedState({ dataDir, dataFile, state }) {
   } finally {
     client.release();
   }
-  await mirrorStateToRelationalTables(pool, state);
 }
 
 export async function persistenceHealth({ dataFile } = {}) {
@@ -195,7 +298,7 @@ export async function persistenceHealth({ dataFile } = {}) {
     formal = { ok: false, message: error.message };
   }
   return {
-    ok: true,
+    ok: Boolean(formal?.ok && !formalBackfillError),
     mode: "postgres",
     host: process.env.POSTGRES_HOST || "DATABASE_URL",
     port: Number(process.env.POSTGRES_PORT || 5432),

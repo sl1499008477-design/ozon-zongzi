@@ -4,6 +4,13 @@ const TYPE_MATCH_SCORE = {
   STEM: 1.5,
   PARTIAL: 1,
 };
+const OZON_NO_BRAND_VALUE = "Нет бренда";
+const RICH_CONTENT_ATTRIBUTE_ID = 11254;
+const HASHTAGS_ATTRIBUTE_ID = 23171;
+const LEGACY_HASHTAGS_ATTRIBUTE_ID = 22508;
+const HASHTAGS_ATTRIBUTE_IDS = new Set([HASHTAGS_ATTRIBUTE_ID, LEGACY_HASHTAGS_ATTRIBUTE_ID]);
+const MAX_HASHTAGS = 30;
+const MAX_HASHTAG_LENGTH = 30;
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -37,6 +44,20 @@ function normalizeName(value) {
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isNoBrandValue(value) {
+  const text = normalizeName(value);
+  return text === "нет бренда" ||
+    text === "без бренда" ||
+    text === "нет торговой марки" ||
+    text === "без торговой марки" ||
+    text === "no brand" ||
+    text === "无品牌";
+}
+
+function isHashtagAttributeId(id) {
+  return HASHTAGS_ATTRIBUTE_IDS.has(Number(id));
 }
 
 function stemNameToken(token) {
@@ -166,6 +187,109 @@ function normalizeAttribute(raw, fallbackComplexId = 0) {
     id,
     values,
   };
+}
+
+function stripRichContentNode(value) {
+  if (Array.isArray(value)) {
+    const out = value
+      .map(stripRichContentNode)
+      .filter((item) => item !== undefined);
+    return out.length ? out : undefined;
+  }
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string") {
+      const text = cleanText(value);
+      return text || undefined;
+    }
+    return value === undefined || value === null ? undefined : value;
+  }
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "version") continue;
+    const normalized = stripRichContentNode(child);
+    if (normalized === undefined) continue;
+    if (normalized && typeof normalized === "object" && !Array.isArray(normalized) && !Object.keys(normalized).length) continue;
+    out[key] = normalized;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function normalizeRichContentWidget(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const widgetName = cleanText(raw.widgetName);
+  const type = cleanText(raw.type);
+  const blocks = asArray(raw.blocks)
+    .map(stripRichContentNode)
+    .filter((block) => block && typeof block === "object" && !Array.isArray(block) && Object.keys(block).length);
+  if (!widgetName || !type || !blocks.length) return null;
+  return { widgetName, type, blocks };
+}
+
+function normalizeRichContentValue(value) {
+  const text = cleanText(value, 0);
+  if (!text) return "";
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return "";
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+  const widget = normalizeRichContentWidget(parsed) ||
+    asArray(parsed.content).map(normalizeRichContentWidget).find(Boolean);
+  return widget ? JSON.stringify(widget) : "";
+}
+
+function flattenHashtagInput(value) {
+  if (Array.isArray(value)) return value.flatMap(flattenHashtagInput);
+  const text = cleanText(value);
+  if (!text) return [];
+  return text
+    .replace(/#/g, " #")
+    .split(/[\s,，;；、]+/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function normalizeHashtag(value) {
+  const text = cleanText(value)
+    .replace(/^#+/u, "")
+    .replace(/[^\p{L}\p{N}_]+/gu, "");
+  if (!text) return "";
+  return `#${text.slice(0, MAX_HASHTAG_LENGTH - 1)}`;
+}
+
+function normalizeHashtags(value) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of flattenHashtagInput(value)) {
+    const tag = normalizeHashtag(raw);
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase("ru-RU");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+    if (out.length >= MAX_HASHTAGS) break;
+  }
+  return out;
+}
+
+function normalizeUploadAttribute(raw, fallbackComplexId = 0) {
+  const attr = normalizeAttribute(raw, fallbackComplexId);
+  if (!attr) return null;
+  if (attr.id === RICH_CONTENT_ATTRIBUTE_ID) {
+    const richContent = normalizeRichContentValue(attr.values.map((value) => value?.value).find(Boolean));
+    return richContent
+      ? { complex_id: 0, id: RICH_CONTENT_ATTRIBUTE_ID, values: [{ value: richContent }] }
+      : null;
+  }
+  if (isHashtagAttributeId(attr.id)) {
+    const hashtags = normalizeHashtags(attr.values.map((value) => value?.value));
+    return hashtags.length
+      ? { complex_id: 0, id: attr.id, values: hashtags.map((value) => ({ value })) }
+      : null;
+  }
+  return attr;
 }
 
 function attributeKey(attr) {
@@ -379,6 +503,208 @@ async function allowedAttributeIds(descriptionCategoryId, typeId, ctx) {
   return new Set(attrs.map((attr) => Number(attr.id)).filter(Boolean));
 }
 
+async function categoryAttributeContext(descriptionCategoryId, typeId, ctx) {
+  if (!descriptionCategoryId || !typeId || typeof ctx.getCategoryAttributes !== "function") {
+    return { allowedIds: null, metaById: new Map() };
+  }
+  const attrs = await ctx.getCategoryAttributes(descriptionCategoryId, typeId);
+  if (!asArray(attrs).length) return { allowedIds: null, metaById: new Map() };
+  const metaById = new Map();
+  const ids = [];
+  for (const attr of attrs) {
+    const id = toPositiveNumber(firstFilled(attr?.id, attr?.attribute_id, attr?.attributeId));
+    if (!id) continue;
+    ids.push(id);
+    metaById.set(id, attr);
+  }
+  return {
+    allowedIds: ids.length ? new Set(ids) : null,
+    metaById,
+  };
+}
+
+function attributeDictionaryId(meta = {}) {
+  return [
+    meta.dictionary_id,
+    meta.dictionaryId,
+    meta.dictionary?.id,
+    meta.dictionary?.dictionary_id,
+    meta.dictionary?.dictionaryId,
+  ].map(toPositiveNumber).find(Boolean) || 0;
+}
+
+function boolish(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    return text === "true" || text === "1" || text === "yes";
+  }
+  return false;
+}
+
+function isRequiredAttribute(meta = {}) {
+  return [
+    meta.is_required,
+    meta.required,
+    meta.isRequired,
+    meta.is_required_attribute,
+    meta.isRequiredAttribute,
+  ].some(boolish);
+}
+
+function attributeDisplayName(meta = {}, id = "") {
+  return cleanText(firstFilled(
+    meta.name,
+    meta.attribute_name,
+    meta.attributeName,
+    meta.title,
+    meta.description,
+  )) || `Ozon 属性 ${id}`;
+}
+
+function isHashtagAttributeMeta(meta = {}, id = "") {
+  if (isHashtagAttributeId(id)) return true;
+  const label = normalizeName(attributeDisplayName(meta, id));
+  return label.includes("хештег") ||
+    label.includes("hashtag") ||
+    label.includes("主题标签") ||
+    label.includes("话题标签");
+}
+
+function findHashtagAttributeId(allowedIds, metaById = new Map()) {
+  for (const [id, meta] of metaById.entries()) {
+    if (hasAllowedAttribute(allowedIds, id) && isHashtagAttributeMeta(meta, id)) return Number(id);
+  }
+  for (const id of HASHTAGS_ATTRIBUTE_IDS) {
+    if (hasAllowedAttribute(allowedIds, id)) return id;
+  }
+  return 0;
+}
+
+function compactErrorMessage(error) {
+  return cleanText(error?.message || String(error) || "未知错误", 240);
+}
+
+const SAFE_CATEGORY_ERROR_CODES = new Set([
+  "OZON_CATEGORY_TREE_UNAVAILABLE",
+  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+  "OZON_CATEGORY_VALUES_UNAVAILABLE",
+  "OZON_CATEGORY_DATA_INVALID",
+  "OZON_CATEGORY_TYPE_NOT_FOUND",
+]);
+
+function isSafeCategoryError(error) {
+  return SAFE_CATEGORY_ERROR_CODES.has(String(error?.code || ""));
+}
+
+function unresolvedRequiredDictionaryError() {
+  const error = new Error("必填字典属性未匹配到 Ozon 字典值，请检查后重试");
+  error.status = 422;
+  error.code = "OZON_CATEGORY_DATA_INVALID";
+  error.body = { operation: "REQUIRED_DICTIONARY_VALUE" };
+  error.cause = null;
+  return error;
+}
+
+function appendNormalizationWarning(ctx, warning) {
+  const text = cleanText(warning, 500);
+  if (!text || !Array.isArray(ctx?.warnings) || ctx.warnings.includes(text)) return;
+  ctx.warnings.push(text);
+}
+
+function matchDictionaryValue(options, value) {
+  const wanted = cleanText(value);
+  if (!wanted) return null;
+  const wantedNormalized = normalizeName(wanted);
+  const wantedNoBrand = isNoBrandValue(wanted);
+  if (wantedNoBrand) {
+    const canonicalNoBrand = asArray(options).find((option) => {
+      const optionValue = cleanText(firstFilled(option?.value, option?.name, option?.title, option?.label));
+      return normalizeName(optionValue) === normalizeName(OZON_NO_BRAND_VALUE);
+    });
+    if (canonicalNoBrand) return canonicalNoBrand;
+  }
+  for (const option of asArray(options)) {
+    const optionValue = cleanText(firstFilled(option?.value, option?.name, option?.title, option?.label));
+    if (!optionValue) continue;
+    const optionNormalized = normalizeName(optionValue);
+    if (optionNormalized === wantedNormalized) return option;
+    if (wantedNoBrand && isNoBrandValue(optionValue)) return option;
+  }
+  return null;
+}
+
+async function resolveDictionaryAttributeValues(attributes, {
+  descriptionCategoryId,
+  typeId,
+  metaById,
+  ctx,
+} = {}) {
+  if (typeof ctx?.getCategoryAttributeValues !== "function") return attributes;
+  const cache = new Map();
+  const out = [];
+  for (const attr of asArray(attributes)) {
+    const meta = metaById?.get?.(Number(attr?.id)) || {};
+    const dictionaryId = attributeDictionaryId(meta);
+    if (!dictionaryId || !asArray(attr?.values).some((value) => !toPositiveNumber(value?.dictionary_value_id))) {
+      out.push(attr);
+      continue;
+    }
+    const cacheKey = `${descriptionCategoryId}:${typeId}:${attr.id}`;
+    if (!cache.has(cacheKey)) {
+      try {
+        cache.set(cacheKey, await ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, attr.id));
+      } catch (error) {
+        if (isSafeCategoryError(error)) throw error;
+        const required = isRequiredAttribute(meta);
+        const label = attributeDisplayName(meta, attr.id);
+        if (required) {
+          const warning = `获取必填字典属性「${label}」可选值失败：${compactErrorMessage(error)}`;
+          if (!ctx.allowUnresolvedRequiredDictionaryValues) throw new Error(warning);
+          appendNormalizationWarning(ctx, warning);
+        }
+        continue;
+      }
+    }
+    const options = cache.get(cacheKey);
+    const required = isRequiredAttribute(meta);
+    const nextValues = attr.values.map((value) => {
+      if (toPositiveNumber(value?.dictionary_value_id)) return value;
+      const matched = matchDictionaryValue(options, value?.value);
+      const matchedId = toPositiveNumber(firstFilled(matched?.id, matched?.dictionary_value_id, matched?.dictionaryValueId));
+      if (!matchedId) return value;
+      return {
+        value: cleanText(firstFilled(matched?.value, matched?.name, matched?.title, matched?.label, value?.value)),
+        dictionary_value_id: matchedId,
+      };
+    });
+    const unresolvedValues = nextValues.filter((value) => !toPositiveNumber(value?.dictionary_value_id));
+    if (unresolvedValues.length) {
+      if (required) {
+        const label = attributeDisplayName(meta, attr.id);
+        const warning = `必填字典属性「${label}」未匹配到 Ozon 字典值：${unresolvedValues.map((value) => value?.value).filter(Boolean).join("、") || "空值"}`;
+        if (!ctx.allowUnresolvedRequiredDictionaryValues) throw unresolvedRequiredDictionaryError();
+        appendNormalizationWarning(ctx, warning);
+        const resolvedValues = nextValues.filter((value) => toPositiveNumber(value?.dictionary_value_id));
+        if (resolvedValues.length) out.push({ ...attr, values: resolvedValues });
+        continue;
+      }
+      const resolvedValues = nextValues.filter((value) => toPositiveNumber(value?.dictionary_value_id));
+      if (!resolvedValues.length) continue;
+      out.push({
+        ...attr,
+        values: resolvedValues,
+      });
+      continue;
+    }
+    out.push({
+      ...attr,
+      values: nextValues,
+    });
+  }
+  return out;
+}
+
 function sourceComplexAttributes(item, allowedIds) {
   const groups = new Map();
   const all = [
@@ -387,7 +713,7 @@ function sourceComplexAttributes(item, allowedIds) {
     ...asArray(bundleItemOf(item).attributes).filter((attr) => toPositiveNumber(attr?.complex_id)),
   ];
   for (const raw of all) {
-    const attr = normalizeAttribute(raw);
+    const attr = normalizeUploadAttribute(raw);
     if (!attr || !hasAllowedAttribute(allowedIds, attr.id)) continue;
     const complexId = Number(attr.complex_id) || 0;
     if (!complexId) continue;
@@ -397,22 +723,22 @@ function sourceComplexAttributes(item, allowedIds) {
   return [...groups.values()].map((attributes) => ({ attributes }));
 }
 
-function buildAttributes(item, allowedIds) {
+function buildAttributes(item, allowedIds, metaById = new Map()) {
   const attrs = new Map();
 
   for (const raw of asArray(item.attributes)) {
-    const attr = normalizeAttribute(raw);
+    const attr = normalizeUploadAttribute(raw);
     if (attr && hasAllowedAttribute(allowedIds, attr.id)) upsertAttribute(attrs, attr, { overwrite: true });
   }
 
   for (const raw of asArray(bundleItemOf(item).attributes)) {
     if (toPositiveNumber(raw?.complex_id)) continue;
-    const attr = normalizeAttribute(raw);
+    const attr = normalizeUploadAttribute(raw);
     if (attr && hasAllowedAttribute(allowedIds, attr.id)) upsertAttribute(attrs, attr);
   }
 
   for (const raw of sourceAttributesOf(item)) {
-    const attr = normalizeAttribute(raw);
+    const attr = normalizeUploadAttribute(raw);
     if (attr && hasAllowedAttribute(allowedIds, attr.id)) upsertAttribute(attrs, attr);
   }
 
@@ -421,9 +747,9 @@ function buildAttributes(item, allowedIds) {
     upsertAttribute(attrs, { complex_id: 0, id: 4191, values: [{ value: description }] }, { overwrite: true });
   }
 
-  const richContent = cleanText(firstFilled(item.richContent, item.rich_content, sourceAttributeText(item, 11254)));
-  if (richContent && hasAllowedAttribute(allowedIds, 11254)) {
-    upsertAttribute(attrs, { complex_id: 0, id: 11254, values: [{ value: richContent }] }, { overwrite: true });
+  const richContent = normalizeRichContentValue(firstFilled(item.richContent, item.rich_content, sourceAttributeText(item, RICH_CONTENT_ATTRIBUTE_ID)));
+  if (richContent && hasAllowedAttribute(allowedIds, RICH_CONTENT_ATTRIBUTE_ID)) {
+    upsertAttribute(attrs, { complex_id: 0, id: RICH_CONTENT_ATTRIBUTE_ID, values: [{ value: richContent }] }, { overwrite: true });
   }
 
   const modelName = cleanText(firstFilled(item.scraped_model_name, item.model_name, item.offer_id, item.scraped_sku));
@@ -431,14 +757,12 @@ function buildAttributes(item, allowedIds) {
     upsertAttribute(attrs, { complex_id: 0, id: 9048, values: [{ value: modelName }] }, { overwrite: true });
   }
 
-  const hashtags = asArray(item._aiHashtags)
-    .map((tag) => cleanText(tag).replace(/^#/, ""))
-    .filter(Boolean)
-    .slice(0, 15);
-  if (hashtags.length && hasAllowedAttribute(allowedIds, 23171)) {
+  const hashtags = normalizeHashtags(item._aiHashtags);
+  const hashtagAttributeId = findHashtagAttributeId(allowedIds, metaById);
+  if (hashtags.length && hashtagAttributeId) {
     upsertAttribute(
       attrs,
-      { complex_id: 0, id: 23171, values: hashtags.map((value) => ({ value })) },
+      { complex_id: 0, id: hashtagAttributeId, values: hashtags.map((value) => ({ value })) },
       { overwrite: true },
     );
   }
@@ -507,7 +831,7 @@ async function normalizeOneImportItem(item, ctx) {
     throw new Error(`${sku ? `SKU ${sku} ` : ""}${detail}`);
   }
 
-  const allowedIds = await allowedAttributeIds(descriptionCategoryId, typeId, ctx);
+  const { allowedIds, metaById } = await categoryAttributeContext(descriptionCategoryId, typeId, ctx);
   const images = normalizeImages(item.images);
   const source = sourceVariantOf(item);
   const bundle = bundleItemOf(item);
@@ -517,6 +841,13 @@ async function normalizeOneImportItem(item, ctx) {
   const depth = positiveInt(item.depth, sourceAttributeText(item, 9454), item.scraped_depth, bundle.depth, 100);
   const width = positiveInt(item.width, sourceAttributeText(item, 9455), item.scraped_width, bundle.width, 100);
   const height = positiveInt(item.height, sourceAttributeText(item, 9456), item.scraped_height, bundle.height, 100);
+
+  const attributes = await resolveDictionaryAttributeValues(buildAttributes(item, allowedIds, metaById), {
+    descriptionCategoryId,
+    typeId,
+    metaById,
+    ctx,
+  });
 
   const normalized = {
     offer_id: cleanText(item.offer_id || item.offerId || `jz-${item.scraped_sku || Date.now()}`),
@@ -537,7 +868,7 @@ async function normalizeOneImportItem(item, ctx) {
     width,
     height,
     dimension_unit: "mm",
-    attributes: buildAttributes(item, allowedIds),
+    attributes,
     complex_attributes: sourceComplexAttributes(item, allowedIds),
   };
 
@@ -547,11 +878,12 @@ async function normalizeOneImportItem(item, ctx) {
 export async function normalizeOzonImportItems(items, ctx = {}) {
   const normalizedItems = [];
   const warnings = [];
+  const normalizationContext = { ...ctx, warnings };
   for (const item of asArray(items)) {
     try {
-      normalizedItems.push(await normalizeOneImportItem(item, ctx));
+      normalizedItems.push(await normalizeOneImportItem(item, normalizationContext));
     } catch (error) {
-      if (ctx.strictTypeMatch) throw error;
+      if (ctx.strictTypeMatch || isSafeCategoryError(error)) throw error;
       warnings.push(error?.message || String(error));
     }
   }
@@ -563,4 +895,9 @@ export const testExports = {
   collectTypeCandidates,
   matchTypeCandidate,
   buildAttributes,
+  normalizeHashtags,
+  normalizeRichContentValue,
+  findHashtagAttributeId,
+  isSafeCategoryError,
+  unresolvedRequiredDictionaryError,
 };

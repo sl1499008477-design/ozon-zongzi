@@ -1,0 +1,5 @@
+ALTER TABLE pricing_official_category_mappings
+  DROP CONSTRAINT IF EXISTS pricing_official_category_map_version_id_source_import_id_d_key;
+
+CREATE INDEX IF NOT EXISTS pricing_official_category_mappings_source_idx
+  ON pricing_official_category_mappings(version_id, source_import_id);

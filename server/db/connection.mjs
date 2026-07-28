@@ -16,12 +16,17 @@ export function postgresConfig() {
       ssl: postgresSslConfig(),
     };
   }
+  const required = ["POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"];
+  const missing = required.filter((name) => !String(process.env[name] || "").trim());
+  if (missing.length) {
+    throw new Error(`PostgreSQL 已启用但缺少配置：${missing.join("、")}`);
+  }
   return {
-    host: process.env.POSTGRES_HOST || "127.0.0.1",
+    host: process.env.POSTGRES_HOST,
     port: Number(process.env.POSTGRES_PORT || 5432),
-    database: process.env.POSTGRES_DB || "sonli_local",
-    user: process.env.POSTGRES_USER || "sonli",
-    password: process.env.POSTGRES_PASSWORD || "sonli_password",
+    database: process.env.POSTGRES_DB,
+    user: process.env.POSTGRES_USER,
+    password: process.env.POSTGRES_PASSWORD,
     ssl: postgresSslConfig(),
   };
 }
