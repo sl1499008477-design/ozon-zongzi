@@ -12,6 +12,7 @@ import {
   Tooltip,
 } from "antd";
 import { apiRequest, postMessageRequest } from "./client-transport.js";
+import { createStoreDeletionController } from "./store-deletion-controller.js";
 import SourceTable from "./SourceTable.jsx";
 import { displayApiKeyDeadline } from "./store-date.js";
 import {
@@ -19,7 +20,7 @@ import {
   renderSourceTextCell,
 } from "./table-text.jsx";
 
-export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, onRefresh }) {
+export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted }) {
   const { message } = AntApp.useApp();
   const [collectionForm] = Form.useForm();
   const [refreshingStores, setRefreshingStores] = useState(false);
@@ -249,17 +250,12 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
       cancelText: "取消",
       onOk: async () => {
         try {
-          const response = await apiRequest(`/local/stores/${encodeURIComponent(storeId)}`, { method: "DELETE" });
-          const state = await onRefresh?.({ silent: true }) || response?.state || {};
-          const nextStoreId = state?.currentStoreId || "";
-          if (nextStoreId) {
-            localStorage.setItem("currentOzonStoreId", nextStoreId);
-            const token = localStorage.getItem("token");
-            await syncAuthToExtension({ token, storeId: nextStoreId });
-          } else {
-            clearStoreStorage();
-            await logoutExtension();
-          }
+          const controller = createStoreDeletionController({
+            deleteStore: (id) => apiRequest(`/local/stores/${encodeURIComponent(id)}`, { method: "DELETE" }),
+            refresh: onRefresh,
+            onStoreDeleted,
+          });
+          await controller.delete(store);
           message.success("门店已删除");
         } catch (error) {
           message.error(`删除失败: ${error.message}`);

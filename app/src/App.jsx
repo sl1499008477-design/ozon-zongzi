@@ -791,6 +791,18 @@ function AppShell() {
     }
   };
 
+  const handleStoreDeleted = async ({ state }) => {
+    const nextStoreId = state?.currentStoreId || "";
+    if (nextStoreId) {
+      localStorage.setItem("currentOzonStoreId", nextStoreId);
+      const token = localStorage.getItem("token");
+      await syncAuthToExtension({ token, storeId: nextStoreId });
+      return;
+    }
+    clearStoreStorage();
+    await logoutExtension();
+  };
+
   useEffect(() => {
     const onPop = () => {
       const normalized = normalizePath(window.location.pathname);
@@ -1339,6 +1351,7 @@ function AppShell() {
                 onClear={clearBinding}
                 onSwitchStore={switchCurrentStore}
                 onRefresh={refreshLocalState}
+                onStoreDeleted={handleStoreDeleted}
                 account={account}
                 accounts={accounts}
                 navigate={navigate}
@@ -1679,7 +1692,7 @@ function MetricCard({ metric, compact = false }) {
   );
 }
 
-function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, navigate, account, accounts }) {
+function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted, navigate, account, accounts }) {
   if (route === "/extension") {
     return (
       <Card className="panel-card">
@@ -1688,7 +1701,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
     );
   }
 
-  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, navigate, account, accounts };
+  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted, navigate, account, accounts };
   if (route === "/ozon/products/list") return <ProductListPage {...pageProps} />;
   if (route.startsWith("/ozon/products/collect/edit")) return <CollectEditPage {...pageProps} />;
   if (route === "/ozon/products/collect") return <CollectPage {...pageProps} />;
