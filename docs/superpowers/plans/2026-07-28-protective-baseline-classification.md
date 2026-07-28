@@ -14,7 +14,7 @@
 - 基线阶段只整理文件归属、依赖和验证环境，不改变业务行为。
 - 不使用 `git reset --hard`、强制检出、递归删除或清空工作区。
 - 每次提交只包含一个类别，提交前必须检查 `git diff --cached --name-status`。
-- 当前工作分支必须是 `codex/baseline-stabilization`，保护设计提交 `84861df` 必须保持为 `HEAD` 的祖先。
+- 当前工作分支必须是 `codex/baseline-stabilization`，保护设计提交 `319726e` 必须保持为 `HEAD` 的祖先。
 - 真实 Ozon 写操作、真实店铺同步、生产迁移、对象存储写入和密钥变更一律不执行。
 - 验证失败必须记录真实退出码和原因，不能把环境阻塞标记为通过。
 - 本阶段不修改产品规则、接口 contract、数据库结构或运行逻辑。
@@ -64,7 +64,7 @@ Run:
 
 ```bash
 git branch --show-current
-git merge-base --is-ancestor 84861df HEAD
+git merge-base --is-ancestor 319726e HEAD
 git log --oneline --decorate -5
 ```
 
@@ -74,7 +74,7 @@ Expected:
 codex/baseline-stabilization
 ```
 
-`git merge-base --is-ancestor` 的退出码必须为 `0`；最近日志必须包含 `84861df docs: design baseline stabilization` 和本计划的提交。
+`git merge-base --is-ancestor` 的退出码必须为 `0`；最近日志必须包含 `319726e docs: design baseline stabilization` 和本计划的提交。
 
 - [ ] **Step 2: 验证 index 为空**
 
@@ -621,7 +621,7 @@ Expected: 提交成功，生成/运行资产可以与源码提交分开审查和
 Run:
 
 ```bash
-git log --reverse --oneline 84861df..HEAD
+git log --reverse --oneline 319726e..HEAD
 ```
 
 Expected: 按顺序列出计划准备提交，以及基础设施、服务端、Web、扩展、桌面端、测试、文档、运行资产提交。
@@ -646,13 +646,13 @@ Use `apply_patch` to create the file with this exact section structure:
 ## 起点
 
 - 分支：`codex/baseline-stabilization`
-- 保护设计提交：`84861df`
+- 保护设计提交：`319726e`
 - 整理前状态：63 个已跟踪改动，313 个未跟踪文件。
 - 外部副作用：未执行真实 Ozon 写入、真实店铺同步、生产迁移、对象存储写入或密钥变更。
 
 ## 分类提交
 
-记录 `git log --reverse --oneline 84861df..HEAD` 的实际输出，并为每个提交说明文件类别。
+记录 `git log --reverse --oneline 319726e..HEAD` 的实际输出，并为每个提交说明文件类别。
 
 ## 文件分类
 
@@ -709,7 +709,7 @@ Run:
 
 ```bash
 git status --short
-git log --reverse --oneline 84861df..HEAD
+git log --reverse --oneline 319726e..HEAD
 ```
 
 Expected: `git status --short` 无输出；本计划被明确排除的临时 SDD workspace 仍然存在但受忽略。日志包含计划准备提交、八个分类提交和一个基线报告提交。若根验证仍有环境失败，报告必须明确这些失败，不能宣称“稳定基线全绿”。
@@ -725,9 +725,26 @@ git status --short
 
 Expected: 只删除本计划在执行开始时创建的已知临时目录，其他 `.superpowers` 历史资料保持已提交；随后 `git status --short` 无输出。
 
+## 2026-07-29 授权历史重写
+
+用户于 2026-07-29 明确授权清除旧提交中的个人信息。重写必须同时覆盖
+`main` 与 `codex/baseline-stabilization`，并移除仍指向旧对象的 Codex
+内部检查点引用；不得只修当前文件树。
+
+执行结果以 `docs/baseline/2026-07-28-protective-baseline.md` 为唯一当前
+证据。所有本计划中的提交编号已机械更新为重写后的编号；重写前编号不得
+再用于 merge、revert 或恢复。历史清理门禁包括：
+
+- 两个分支提交数量、主题与顺序保持不变；
+- 18 个污染 blob 的 45 处个人信息全部脱敏；
+- 3 个历史 ZIP 条目清单不变，且各仅一个目标条目变化；
+- 重写后的全部可达 blob 和提交说明扫描为 0；
+- 原仓库切换后重新运行完整根验证；
+- 最终删除包含旧历史的临时 bundle、mirror、reflog 和不可达对象。
+
 ## Rollback Order
 
-若需要完整撤销本计划的提交，先用 `git log --reverse --oneline 84861df..HEAD` 取得实际 SHA，然后从最新到最旧逐个执行 `git revert <commit-sha>`。推荐逆序：
+若需要完整撤销本计划的提交，先用 `git log --reverse --oneline 319726e..HEAD` 取得实际 SHA，然后从最新到最旧逐个执行 `git revert <commit-sha>`。推荐逆序：
 
 1. 基线报告
 2. 生成产物与历史工作资产
