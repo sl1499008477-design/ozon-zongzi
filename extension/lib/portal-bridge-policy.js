@@ -17,13 +17,34 @@
     }
     throw new Error('PORTAL_BRIDGE_FORBIDDEN');
   };
+  const routePortalRuntimeMessage = ({ message = {}, senderUrl } = {}) => {
+    if (!trusted(senderUrl)) {
+      if (message?.portalProtocol || message?.webBridge) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+      return { source: 'EXTENSION', route: 'INTERNAL', message };
+    }
+    if (!message?.portalProtocol) {
+      if (message?.webBridge) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+      return { source: 'EXTENSION_CONTENT', route: 'INTERNAL', message };
+    }
+    const normalized = normalizePortalBridgeMessage({
+      protocol: message.portalProtocol,
+      message,
+      senderUrl,
+    });
+    const route = normalized.protocol === 'SONLI_WEB_CONTROL'
+      ? 'SONLI_WEB_CONTROL'
+      : normalized.type === 'jzManualSync'
+        ? 'JZ_MANUAL_SYNC'
+        : 'JZ_FOLLOW_SELL';
+    return { source: 'PORTAL', route, message: normalized };
+  };
   const sanitizePortalBridgeResponse = (response) => {
     if (!response || typeof response !== 'object') return response;
     const data = response.data && typeof response.data === 'object' ? { ...response.data } : response.data;
     if (data && typeof data === 'object') { delete data.token; delete data.accessToken; delete data.access_token; delete data.authorization; }
     return { ...response, data };
   };
-  const api = Object.freeze({ normalizePortalBridgeMessage, sanitizePortalBridgeResponse });
+  const api = Object.freeze({ normalizePortalBridgeMessage, routePortalRuntimeMessage, sanitizePortalBridgeResponse });
   root.JzPortalBridgePolicy = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : self);

@@ -5,6 +5,17 @@ import { writeJsonAtomically } from "./json-state-writer.mjs";
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const pathLocks = new Map();
 
+async function withPathLock(absoluteDataFile, operation) {
+  const previous = pathLocks.get(absoluteDataFile) || Promise.resolve();
+  const flight = previous.catch(() => {}).then(operation);
+  pathLocks.set(absoluteDataFile, flight);
+  try {
+    return await flight;
+  } finally {
+    if (pathLocks.get(absoluteDataFile) === flight) pathLocks.delete(absoluteDataFile);
+  }
+}
+
 export function createPricingIdempotencyState({ dataFile, fsApi = fs } = {}) {
   if (!dataFile) throw new Error("pricing idempotency dataFile required");
   const absoluteDataFile = path.resolve(dataFile);
@@ -15,9 +26,7 @@ export function createPricingIdempotencyState({ dataFile, fsApi = fs } = {}) {
   async function run(scope, payloadHash, write) {
     const key = scopeKey(scope);
     if (!scope.accountId || !scope.storeId || scope.action !== "PRICING_SNAPSHOT" || !scope.key) throw new Error("PRICING_IDEMPOTENCY_SCOPE_REQUIRED");
-    const lockKey = `${absoluteDataFile}:${key}`;
-    if (pathLocks.has(lockKey)) return pathLocks.get(lockKey);
-    const flight = (async () => {
+    return withPathLock(absoluteDataFile, async () => {
       const state = await read();
       state.records ||= {};
       const now = Date.now();
@@ -33,9 +42,7 @@ export function createPricingIdempotencyState({ dataFile, fsApi = fs } = {}) {
       state.records[key] = { payloadHash, response, createdAt: now, expiresAt: now + RETENTION_MS };
       await writeJsonAtomically({ fsApi, dataDir: path.dirname(absoluteDataFile), dataFile: absoluteDataFile, value: state });
       return response;
-    })();
-    pathLocks.set(lockKey, flight);
-    try { return await flight; } finally { pathLocks.delete(lockKey); }
+    });
   }
   return Object.freeze({ run });
 }

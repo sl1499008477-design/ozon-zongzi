@@ -2784,9 +2784,9 @@ try {
       if (!backendOrigin) throw new Error('FX_REPLAY_SCOPE_REQUIRED');
       const scope = { backendOrigin, accountId, deviceId, action: 'FX_OBSERVATION' };
       const replay = globalThis.JzFxObservationReplay.createFxObservationReplay({
-        get: async (key) => (await getStorage([key]))[key],
+        list: async () => getStorage(null),
         set: async (key, value) => setStorage({ [key]: value }),
-        remove: async (key) => removeStorage([key]),
+        remove: async (keys) => removeStorage(Array.isArray(keys) ? keys : [keys]),
         makeKey: () => `fx-observation:${deviceId}:${crypto.randomUUID()}`,
       });
       const result = await replay.run(
@@ -3142,22 +3142,24 @@ try {
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (globalThis.JzWebBridgePolicy?.isTrustedWebBridgeSender(sender)) {
+    const webBridgePolicy = globalThis.JzWebBridgePolicy;
+    const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
+    let portalRoute = 'INTERNAL';
+    if (senderIsWebPortal) {
       try {
-        message = globalThis.JzPortalBridgePolicy.normalizePortalBridgeMessage({
-          protocol: message?.portalProtocol,
+        const routed = globalThis.JzPortalBridgePolicy.routePortalRuntimeMessage({
           message,
           senderUrl: sender.url,
         });
+        message = routed.message;
+        portalRoute = routed.route;
       } catch {
         sendResponse({ ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' });
         return false;
       }
     }
-    const webBridgePolicy = globalThis.JzWebBridgePolicy;
-    const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
-    if (message?.webBridge || senderIsWebPortal) {
-      if (!webBridgePolicy?.isAllowedWebBridgeAction(message.action) || !senderIsWebPortal) {
+    if (message?.webBridge || portalRoute === 'SONLI_WEB_CONTROL') {
+      if (portalRoute !== 'SONLI_WEB_CONTROL' || !webBridgePolicy?.isAllowedWebBridgeAction(message.action)) {
         sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
         return false;
       }
@@ -3381,7 +3383,7 @@ try {
     //     fire-and-forget 会瞬间起 15+ 并发 Ozon 请求 → 撞 antibot / 429。
     //     manualSyncSem 限制同时 ≤ 3 个 runOneType,多余排队。lease-busy / crash
     //     的状态上报维持原逻辑(在 runOneType 落地后)。
-    if (message?.type === 'jzManualSync') {
+    if (portalRoute === 'JZ_MANUAL_SYNC') {
       (async () => {
         try {
           const storeId = String(message?.storeId || '').trim();

@@ -15,5 +15,5 @@ assert.deepEqual(sanitizeWebBridgeResponse({ ok: true, data: { token: 'secret', 
 assert.match(syncAuthSource, /\{ \.\.\.\(data\.payload \|\| \{\}\), action: data\.action, webBridge: true, portalProtocol: 'SONLI_WEB_CONTROL' \}/);
 assert.match(syncAuthSource, /sanitizeWebBridgeResponse\(resp\)/);
 const workerSource = fs.readFileSync('extension/background/service-worker.js', 'utf8');
-assert.match(workerSource, /message\?\.webBridge \|\| senderIsWebPortal/);
+assert.match(workerSource, /message\?\.webBridge \|\| portalRoute === 'SONLI_WEB_CONTROL'/);
 console.log('web bridge policy tests passed');
