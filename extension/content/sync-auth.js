@@ -17,7 +17,7 @@
 (() => {
   const sendToExtension = (payload) => new Promise((resolve) => {
     try {
-      chrome.runtime.sendMessage(payload, (resp) => resolve(resp));
+      chrome.runtime.sendMessage({ ...payload, portalProtocol: 'SONLI_WEB_CONTROL' }, (resp) => resolve(resp));
     } catch {
       resolve(null);
     }
@@ -178,7 +178,7 @@
         return;
       }
       chrome.runtime.sendMessage(
-        { ...(data.payload || {}), action: data.action, webBridge: true },
+        { ...(data.payload || {}), action: data.action, webBridge: true, portalProtocol: 'SONLI_WEB_CONTROL' },
         (resp) => {
           const err = chrome.runtime.lastError?.message;
           respond(resp, err || '');

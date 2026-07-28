@@ -233,6 +233,7 @@
         "http://store.localhost:3000/*"
       ],
       "js": [
+        "lib/portal-bridge-policy.js",
         "lib/web-bridge-policy.js",
         "content/sync-auth.js"
       ],
@@ -253,6 +254,7 @@
         "lib/follow-sell-content-copy.js",
         "lib/v3-payload.js",
         "lib/sku-collect.js",
+        "lib/portal-bridge-policy.js",
         "content/jizhangerp-bridge.js"
       ],
       "run_at": "document_start",

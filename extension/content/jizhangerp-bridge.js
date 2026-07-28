@@ -106,6 +106,7 @@
     try {
       const resp = await sendToSw({
         type: "jzManualSync",
+        portalProtocol: "JZ_ERP",
         storeId: String(storeId),
         syncType: String(syncType).toUpperCase(),
         ...(postingsOptions || {}),
@@ -193,6 +194,7 @@
 
       const followSellRequest = {
         action: "followSell",
+        portalProtocol: "JZ_ERP",
         storeId,
         items: [built.item],
         strictTypeMatch: true,
@@ -204,7 +206,7 @@
       if (stocks.length) {
         followSellRequest.stocks = stocks;
       }
-      const resp = await sendToSw(followSellRequest);
+      const resp = globalThis.JzPortalBridgePolicy.sanitizePortalBridgeResponse(await sendToSw(followSellRequest));
       if (!resp?.ok) {
         reply(reqId, "follow-sell.response", {
           ok: false,

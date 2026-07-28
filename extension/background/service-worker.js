@@ -40,6 +40,7 @@ try {
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
     '../lib/seller-identity-policy.js',
+    '../lib/portal-bridge-policy.js',
     '../lib/fx-observation-replay.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
@@ -3138,6 +3139,18 @@ try {
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (globalThis.JzWebBridgePolicy?.isTrustedWebBridgeSender(sender)) {
+      try {
+        message = globalThis.JzPortalBridgePolicy.normalizePortalBridgeMessage({
+          protocol: message?.portalProtocol,
+          message,
+          senderUrl: sender.url,
+        });
+      } catch {
+        sendResponse({ ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' });
+        return false;
+      }
+    }
     const webBridgePolicy = globalThis.JzWebBridgePolicy;
     const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
     if (message?.webBridge || senderIsWebPortal) {
