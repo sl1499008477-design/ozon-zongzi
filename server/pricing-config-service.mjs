@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { calculatePricing, validatePricingConfig } from "./pricing-engine.mjs";
 import { applyLiveExchangeRate } from "./pricing-fx-service.mjs";
 import { updateScopedPricingSnapshotTargets } from "./pricing-snapshot-scope.mjs";
+import { createPricingIdempotencyState } from "./pricing-idempotency-state.mjs";
 
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const jsonHash = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -582,9 +584,13 @@ export async function calculateWithActivePricing(input, context = {}) {
   return { config, result };
 }
 
-export async function savePricingSnapshot({ accountId = null, storeId = null, productId = null, draftId = null, submissionSnapshotId = null, input, result, config, idempotencyKey = "", payloadHash = "", transactionPool = null }) {
+export async function savePricingSnapshot({ accountId = null, storeId = null, productId = null, draftId = null, submissionSnapshotId = null, input, result, config, idempotencyKey = "", payloadHash = "", transactionPool = null, localIdempotencyAdapter = null }) {
   const snapshot = { id: id("pcs"), accountId, storeId, productId, draftId, submissionSnapshotId, configVersionId: config.id, mode: result.mode, input, result, config, createdAt: new Date().toISOString() };
-  if (!transactionPool && !postgresEnabled()) return snapshot;
+  if (!transactionPool && !postgresEnabled()) {
+    if (!idempotencyKey) return snapshot;
+    const adapter = localIdempotencyAdapter || createPricingIdempotencyState({ dataFile: process.env.PRICING_IDEMPOTENCY_STATE_FILE || path.resolve("data/pricing-idempotency.json") });
+    return adapter.run({ accountId, storeId: storeId || "", action: "PRICING_SNAPSHOT", key: idempotencyKey }, payloadHash, async () => snapshot);
+  }
   const pool = transactionPool || await getPostgresPool();
   const client = await pool.connect();
   try {
