@@ -1,0 +1,11 @@
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  sharp: true
+supportedArchitectures:
+  os:
+    - darwin
+    - win32
+  cpu:
+    - arm64
+    - x64
