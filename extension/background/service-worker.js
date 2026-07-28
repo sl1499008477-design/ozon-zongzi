@@ -5229,7 +5229,10 @@ try {
         case 'syncSellerCookies': {
           let identity;
           try {
-            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity(sender, (details) => chrome.cookies.getAll(details));
+            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity({
+              findSellerTabs: () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' }),
+              getCookies: (details) => chrome.cookies.getAll(details),
+            });
           } catch (error) {
             return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };
           }
@@ -5254,7 +5257,10 @@ try {
         case 'checkSellerCookies': {
           let identity;
           try {
-            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity(sender, (details) => chrome.cookies.getAll(details));
+            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity({
+              findSellerTabs: () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' }),
+              getCookies: (details) => chrome.cookies.getAll(details),
+            });
           } catch (error) {
             return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };
           }
