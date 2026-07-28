@@ -32,21 +32,9 @@ const checks = [
   ["Manifest JSON", "node", ["-e", "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8')); console.log('manifest ok')"]],
   ["Diff whitespace", "git", ["diff", "--check", "--", "app/src", "app/tests", "server", "extension", "app/public"]],
   [
-    "Credential literal scan",
-    "rg",
-    [
-      "-n",
-      "-i",
-      "(api[-_ ]?key|apikey|client[-_ ]?id).{0,80}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{6,})",
-      "app/src",
-      "server",
-      "extension",
-      "scripts",
-      "README.md",
-      "design-qa.md",
-      "package.json",
-    ],
-    { expectedExitCode: 1 },
+    "Personal data and credential scan",
+    "node",
+    ["scripts/check-personal-data.mjs"],
   ],
 ];
 
