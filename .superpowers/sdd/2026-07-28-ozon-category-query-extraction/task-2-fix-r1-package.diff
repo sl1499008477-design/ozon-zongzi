@@ -1,0 +1,397 @@
+# Task 2 fix round 1 current scoped files
+
+diff --git a/server/ozon-category-service.mjs b/server/ozon-category-service.mjs
+new file mode 100644
+index 0000000..2eab62d
+--- /dev/null
++++ b/server/ozon-category-service.mjs
+@@ -0,0 +1,190 @@
++import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs";
++
++export const DEFAULT_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
++
++const CATEGORY_UNAVAILABLE_MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
++
++function categoryError(operation, status, code) {
++  const error = new Error(CATEGORY_UNAVAILABLE_MESSAGE);
++  error.status = status;
++  error.code = code;
++  error.body = { operation };
++  error.cause = null;
++  return error;
++}
++
++function unavailableError(operation, source) {
++  const status = source?.code === "OZON_TIMEOUT"
++    ? 504
++    : source?.status === 429
++      ? 503
++      : 502;
++  const code = {
++    TREE: "OZON_CATEGORY_TREE_UNAVAILABLE",
++    ATTRIBUTES: "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
++    VALUES: "OZON_CATEGORY_VALUES_UNAVAILABLE",
++  }[operation];
++  return categoryError(operation, status, code);
++}
++
++function normalizedLanguageOf(language) {
++  return String(language || "DEFAULT").trim() || "DEFAULT";
++}
++
++function positiveIdOf(value) {
++  const id = Number(value);
++  return Number.isFinite(id) && id > 0 ? id : 0;
++}
++
++function findDescriptionCategoryIdByTypeId(tree, typeId) {
++  const wantedTypeId = positiveIdOf(typeId);
++  if (!wantedTypeId) return 0;
++
++  const visit = (node, parentDescriptionCategoryId = 0) => {
++    if (!node) return 0;
++    const descriptionCategoryId = positiveIdOf(node.description_category_id) || parentDescriptionCategoryId;
++    if (positiveIdOf(node.type_id) === wantedTypeId) return descriptionCategoryId;
++    for (const child of Array.isArray(node.children) ? node.children : []) {
++      const found = visit(child, descriptionCategoryId);
++      if (found) return found;
++    }
++    return 0;
++  };
++
++  for (const root of tree) {
++    const found = visit(root);
++    if (found) return found;
++  }
++  return 0;
++}
++
++export function createOzonCategoryService({
++  callOzonSellerApi = defaultCallOzonSellerApi,
++  now = () => Date.now(),
++  cacheTtlMs = DEFAULT_CATEGORY_CACHE_TTL_MS,
++} = {}) {
++  const cache = new Map();
++  const requestedCacheTtlMs = Number(cacheTtlMs);
++  const effectiveCacheTtlMs = Number.isFinite(requestedCacheTtlMs) && requestedCacheTtlMs > 0
++    ? Math.min(requestedCacheTtlMs, DEFAULT_CATEGORY_CACHE_TTL_MS)
++    : DEFAULT_CATEGORY_CACHE_TTL_MS;
++
++  function scopeOf({ accountId, store }) {
++    const ownerAccountId = String(store?.ownerAccountId || store?.accountId || "");
++    if (!accountId || !store?.id || ownerAccountId !== String(accountId)) {
++      throw categoryError("SCOPE", 403, "OZON_CATEGORY_STORE_FORBIDDEN");
++    }
++    return [String(accountId), String(store.id)];
++  }
++
++  function cacheKey(...parts) {
++    return JSON.stringify(parts);
++  }
++
++  function readCache(key) {
++    const entry = cache.get(key);
++    if (!entry || now() >= entry.expiresAtMs) {
++      cache.delete(key);
++      return null;
++    }
++    return {
++      items: structuredClone(entry.items),
++      meta: { ...entry.meta, source: "OZON_CACHE" },
++    };
++  }
++
++  function writeCache(key, items) {
++    const fetchedAtMs = now();
++    const entry = {
++      items: structuredClone(items),
++      expiresAtMs: fetchedAtMs + effectiveCacheTtlMs,
++      meta: {
++        source: "OZON_API",
++        fetchedAt: new Date(fetchedAtMs).toISOString(),
++        expiresAt: new Date(fetchedAtMs + effectiveCacheTtlMs).toISOString(),
++      },
++    };
++    cache.set(key, entry);
++    return { items: structuredClone(entry.items), meta: { ...entry.meta } };
++  }
++
++  async function getCategoryTree({ accountId, store, language } = {}) {
++    const normalizedLanguage = normalizedLanguageOf(language);
++    const key = cacheKey(scopeOf({ accountId, store }), "tree", normalizedLanguage);
++    const cached = readCache(key);
++    if (cached) return cached;
++
++    let data;
++    try {
++      data = await callOzonSellerApi(
++        store,
++        "/v1/description-category/tree",
++        { language: normalizedLanguage },
++        120000,
++      );
++    } catch (source) {
++      throw unavailableError("TREE", source);
++    }
++    if (!Array.isArray(data?.result) || data.result.length === 0) {
++      throw categoryError("TREE", 502, "OZON_CATEGORY_DATA_INVALID");
++    }
++    return writeCache(key, data.result);
++  }
++
++  async function getCategoryAttributes({
++    accountId,
++    store,
++    descriptionCategoryId,
++    typeId,
++    language,
++  } = {}) {
++    const normalizedDescriptionCategoryId = positiveIdOf(descriptionCategoryId);
++    const normalizedTypeId = positiveIdOf(typeId);
++    const normalizedLanguage = normalizedLanguageOf(language);
++    const key = cacheKey(
++      scopeOf({ accountId, store }),
++      "attributes",
++      normalizedLanguage,
++      normalizedDescriptionCategoryId,
++      normalizedTypeId,
++    );
++    const cached = readCache(key);
++    if (cached) return cached;
++
++    let data;
++    try {
++      data = await callOzonSellerApi(
++        store,
++        "/v1/description-category/attribute",
++        {
++          description_category_id: normalizedDescriptionCategoryId,
++          type_id: normalizedTypeId,
++          language: normalizedLanguage,
++        },
++        60000,
++      );
++    } catch (source) {
++      throw unavailableError("ATTRIBUTES", source);
++    }
++    if (!Array.isArray(data?.result)) {
++      throw categoryError("ATTRIBUTES", 502, "OZON_CATEGORY_DATA_INVALID");
++    }
++    return writeCache(key, data.result);
++  }
++
++  async function getCategoryAttributeValues() {
++    throw categoryError("VALUES", 502, "OZON_CATEGORY_VALUES_UNAVAILABLE");
++  }
++
++  async function resolveDescriptionCategoryId({ accountId, store, typeId, language } = {}) {
++    const { items } = await getCategoryTree({ accountId, store, language });
++    return findDescriptionCategoryIdByTypeId(items, typeId);
++  }
++
++  return {
++    getCategoryTree,
++    getCategoryAttributes,
++    getCategoryAttributeValues,
++    resolveDescriptionCategoryId,
++  };
++}
+diff --git a/server/tests/ozon-category-service.test.mjs b/server/tests/ozon-category-service.test.mjs
+new file mode 100644
+index 0000000..a745e73
+--- /dev/null
++++ b/server/tests/ozon-category-service.test.mjs
+@@ -0,0 +1,193 @@
++import assert from "node:assert/strict";
++import { createOzonCategoryService } from "../ozon-category-service.mjs";
++
++const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
++let nowMs = Date.parse("2026-07-28T00:00:00.000Z");
++const calls = [];
++const callOzonSellerApi = async (store, apiPath, body) => {
++  calls.push({ storeId: store.id, apiPath, body });
++  if (apiPath.endsWith("/tree")) {
++    return {
++      result: [{
++        description_category_id: 10,
++        category_name: "Home",
++        children: [{ type_id: 20, type_name: "Cup", children: [] }],
++      }],
++    };
++  }
++  return { result: [{ id: 30, name: "Brand", dictionary_id: 40, is_required: true }] };
++};
++
++function input({ accountId = "acct-a", storeId = "store-a", language = "ZH_HANS" } = {}) {
++  const store = { id: storeId, ownerAccountId: accountId };
++  Object.defineProperty(store, "apiKey", {
++    enumerable: true,
++    get() {
++      assert.fail("category cache must not read an API key");
++    },
++  });
++  return { accountId, store, language };
++}
++
++const service = createOzonCategoryService({
++  callOzonSellerApi,
++  now: () => nowMs,
++  cacheTtlMs: CACHE_TTL_MS,
++});
++
++const treeInput = input();
++const firstTree = await service.getCategoryTree(treeInput);
++assert.equal(firstTree.meta.source, "OZON_API");
++assert.equal(firstTree.items[0].description_category_id, 10);
++assert.deepEqual(firstTree.meta, {
++  source: "OZON_API",
++  fetchedAt: "2026-07-28T00:00:00.000Z",
++  expiresAt: "2026-07-28T06:00:00.000Z",
++});
++
++const cachedTree = await service.getCategoryTree(treeInput);
++assert.equal(cachedTree.meta.source, "OZON_CACHE");
++assert.equal(calls.length, 1);
++
++const attributesInput = { ...input(), descriptionCategoryId: 10, typeId: 20 };
++const firstAttributes = await service.getCategoryAttributes(attributesInput);
++assert.equal(firstAttributes.meta.source, "OZON_API");
++assert.deepEqual(firstAttributes.items, [{ id: 30, name: "Brand", dictionary_id: 40, is_required: true }]);
++const cachedAttributes = await service.getCategoryAttributes(attributesInput);
++assert.equal(cachedAttributes.meta.source, "OZON_CACHE");
++assert.equal(calls.length, 2);
++
++await service.getCategoryTree(input({ language: "DEFAULT" }));
++await service.getCategoryTree(input({ accountId: "acct-b", storeId: "store-a" }));
++await service.getCategoryTree(input({ accountId: "acct-b", storeId: "store-b" }));
++assert.equal(calls.length, 5);
++
++const descriptionCategoryId = await service.resolveDescriptionCategoryId({ ...input(), typeId: 20 });
++assert.equal(descriptionCategoryId, 10);
++assert.equal(calls.length, 5);
++
++nowMs += CACHE_TTL_MS;
++const expiredTree = await service.getCategoryTree(treeInput);
++assert.equal(expiredTree.meta.source, "OZON_API");
++assert.equal(calls.length, 6);
++
++await assert.rejects(
++  () => service.getCategoryTree({ accountId: "acct-a", store: { id: "store-a", ownerAccountId: "acct-b" } }),
++  (error) => {
++    assert.equal(error.status, 403);
++    assert.equal(error.code, "OZON_CATEGORY_STORE_FORBIDDEN");
++    assert.deepEqual(error.body, { operation: "SCOPE" });
++    assert.equal(error.cause, null);
++    return true;
++  },
++);
++
++const sensitiveValue = "secret-upstream-response";
++const unavailable = createOzonCategoryService({
++  callOzonSellerApi: async () => {
++    throw Object.assign(new Error(sensitiveValue), { status: 429 });
++  },
++});
++await assert.rejects(
++  () => unavailable.getCategoryTree(input()),
++  (error) => {
++    assert.equal(error.status, 503);
++    assert.equal(error.code, "OZON_CATEGORY_TREE_UNAVAILABLE");
++    assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
++    assert.deepEqual(error.body, { operation: "TREE" });
++    assert.equal(error.cause, null);
++    assert.equal(JSON.stringify(error).includes(sensitiveValue), false);
++    return true;
++  },
++);
++
++const invalid = createOzonCategoryService({ callOzonSellerApi: async () => ({ result: [] }) });
++await assert.rejects(
++  () => invalid.getCategoryTree(input()),
++  (error) => error.status === 502 &&
++    error.code === "OZON_CATEGORY_DATA_INVALID" &&
++    error.cause === null &&
++    JSON.stringify(error.body) === JSON.stringify({ operation: "TREE" }),
++);
++
++let ttlNowMs = Date.parse("2026-07-28T00:00:00.000Z");
++const nonPositiveTtlService = createOzonCategoryService({
++  callOzonSellerApi: async () => ({ result: [{ description_category_id: 49, children: [] }] }),
++  now: () => ttlNowMs,
++  cacheTtlMs: 0,
++});
++const nonPositiveTtlTree = await nonPositiveTtlService.getCategoryTree(input({ storeId: "non-positive-ttl-store" }));
++assert.equal(
++  Date.parse(nonPositiveTtlTree.meta.expiresAt) - Date.parse(nonPositiveTtlTree.meta.fetchedAt),
++  CACHE_TTL_MS,
++);
++
++const longTtlService = createOzonCategoryService({
++  callOzonSellerApi: async () => ({ result: [{ description_category_id: 50, children: [] }] }),
++  now: () => ttlNowMs,
++  cacheTtlMs: 12 * 60 * 60 * 1000,
++});
++const longTtlTree = await longTtlService.getCategoryTree(input({ storeId: "ttl-store" }));
++assert.equal(
++  Date.parse(longTtlTree.meta.expiresAt) - Date.parse(longTtlTree.meta.fetchedAt),
++  CACHE_TTL_MS,
++);
++
++let collisionApiCalls = 0;
++const collisionService = createOzonCategoryService({
++  callOzonSellerApi: async () => ({
++    result: [{ description_category_id: ++collisionApiCalls, children: [] }],
++  }),
++});
++const firstCollision = await collisionService.getCategoryTree(input({ accountId: "a:b", storeId: "c" }));
++const secondCollision = await collisionService.getCategoryTree(input({ accountId: "a", storeId: "b:c" }));
++assert.equal(firstCollision.items[0].description_category_id, 1);
++assert.equal(secondCollision.meta.source, "OZON_API");
++assert.equal(secondCollision.items[0].description_category_id, 2);
++assert.equal(collisionApiCalls, 2);
++
++let staleNowMs = Date.parse("2026-07-28T00:00:00.000Z");
++let staleRefreshFails = false;
++const staleService = createOzonCategoryService({
++  now: () => staleNowMs,
++  callOzonSellerApi: async () => {
++    if (staleRefreshFails) throw Object.assign(new Error("stale-upstream-secret"), { code: "OZON_TIMEOUT" });
++    return { result: [{ description_category_id: 60, children: [] }] };
++  },
++});
++const staleInput = input({ storeId: "stale-store" });
++await staleService.getCategoryTree(staleInput);
++assert.equal((await staleService.getCategoryTree(staleInput)).meta.source, "OZON_CACHE");
++staleNowMs += CACHE_TTL_MS;
++staleRefreshFails = true;
++await assert.rejects(
++  () => staleService.getCategoryTree(staleInput),
++  (error) => {
++    assert.equal(error.status, 504);
++    assert.equal(error.code, "OZON_CATEGORY_TREE_UNAVAILABLE");
++    assert.equal(error.message, "未能从 Ozon 获取真实类目数据，请重试");
++    assert.deepEqual(error.body, { operation: "TREE" });
++    assert.equal(error.cause, null);
++    assert.equal("items" in error, false);
++    return true;
++  },
++);
++
++const upstreamTree = [{
++  description_category_id: 70,
++  children: [{ type_id: 71, type_name: "Cup", children: [] }],
++}];
++const cloneService = createOzonCategoryService({
++  callOzonSellerApi: async () => ({ result: upstreamTree }),
++});
++const cloneInput = input({ storeId: "clone-store" });
++const apiTree = await cloneService.getCategoryTree(cloneInput);
++apiTree.items[0].children[0].type_name = "mutated API result";
++upstreamTree[0].children[0].type_name = "mutated upstream result";
++const cloneCachedTree = await cloneService.getCategoryTree(cloneInput);
++assert.equal(cloneCachedTree.items[0].children[0].type_name, "Cup");
++cloneCachedTree.items[0].children[0].type_name = "mutated cache result";
++const cloneCachedTreeAgain = await cloneService.getCategoryTree(cloneInput);
++assert.equal(cloneCachedTreeAgain.items[0].children[0].type_name, "Cup");
++
++console.log("ozon category service tests passed");

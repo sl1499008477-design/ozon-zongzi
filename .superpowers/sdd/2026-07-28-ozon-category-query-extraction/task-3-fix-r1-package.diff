@@ -1,0 +1,92 @@
+# Task 3 fix round 1 scoped review package
+
+## Safety snapshot
+
+Before-edit copies are in `snapshots/task-3-fix-r1-before/`:
+
+```text
+287d5991fa34ccec5f1b0e4063c663b8419b4731a3254afa39fe75f27cbdc067  2026-07-28-ozon-category-query-extraction.md
+55cce53968cb353fc86b3e2a350fc61971b1f200d870dece27f7e7c10b1e9a33  ozon-category-service.mjs
+151efa986e8fb8d299b7c83e93c68a760eca5f4e8dd71f1f421ccab70fefce96  ozon-category-service.test.mjs
+7195ab8e5e0ff440d299d1b8ae250b6a11c02152fd10aaa955aaa086d1c4d910  task-3-report.md
+```
+
+## Service diff
+
+```diff
+@@ -257,12 +257,14 @@ export function createOzonCategoryService({
+           lastPageItem?.valueId,
+       );
+       const hasNext = Boolean(data?.has_next || data?.result?.has_next);
+-      if (!hasNext || values.length === safeLimit) break;
+-      if (!nextCursor || seenCursors.has(nextCursor)) {
+-        throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
++      if (hasNext) {
++        if (!nextCursor || seenCursors.has(nextCursor)) {
++          throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
++        }
++        seenCursors.add(nextCursor);
++        lastValueId = nextCursor;
+       }
+-      seenCursors.add(nextCursor);
+-      lastValueId = nextCursor;
++      if (!hasNext || values.length === safeLimit) break;
+     }
+```
+
+## Focused test diff
+
+```diff
+@@ -323,4 +323,47 @@ const validAfterInvalid = await invalidValuesService.getCategoryAttributeValues(
+ assert.equal(validAfterInvalid.meta.source, "OZON_API");
+ assert.equal(invalidValuesCalls, 2);
+
++const invalidBoundaryCursorCalls = [];
++const invalidBoundaryCursorService = createOzonCategoryService({
++  callOzonSellerApi: async (_store, _apiPath, body) => {
++    invalidBoundaryCursorCalls.push(body);
++    return invalidBoundaryCursorCalls.length === 1
++      ? { result: [{ id: 0, value: "invalid-cursor" }], has_next: true }
++      : { result: [{ id: 2, value: "recovered" }], has_next: false };
++  },
++});
++const invalidBoundaryCursorInput = { ...valuesInput, limit: 1 };
++await assert.rejects(
++  () => invalidBoundaryCursorService.getCategoryAttributeValues(invalidBoundaryCursorInput),
++  (error) => error.code === "OZON_CATEGORY_DATA_INVALID" && error.cause === null,
++);
++const recoveredAfterInvalidBoundaryCursor = await invalidBoundaryCursorService.getCategoryAttributeValues(invalidBoundaryCursorInput);
++assert.equal(recoveredAfterInvalidBoundaryCursor.meta.source, "OZON_API");
++assert.equal("last_value_id" in invalidBoundaryCursorCalls[1], false);
++
++const duplicateBoundaryCursorCalls = [];
++const duplicateBoundaryCursorService = createOzonCategoryService({
++  callOzonSellerApi: async (_store, _apiPath, body) => {
++    duplicateBoundaryCursorCalls.push(body);
++    if (duplicateBoundaryCursorCalls.length === 1) {
++      return { result: [{ id: 1, value: "One" }], has_next: true };
++    }
++    if (duplicateBoundaryCursorCalls.length === 2) {
++      return {
++        result: [{ id: 2, value: "Two" }, { id: 1, value: "One" }],
++        has_next: true,
++      };
++    }
++    return { result: [{ id: 3, value: "recovered" }], has_next: false };
++  },
++});
++const duplicateBoundaryCursorInput = { ...valuesInput, limit: 2 };
++await assert.rejects(
++  () => duplicateBoundaryCursorService.getCategoryAttributeValues(duplicateBoundaryCursorInput),
++  (error) => error.code === "OZON_CATEGORY_DATA_INVALID" && error.cause === null,
++);
++const recoveredAfterDuplicateBoundaryCursor = await duplicateBoundaryCursorService.getCategoryAttributeValues(duplicateBoundaryCursorInput);
++assert.equal(recoveredAfterDuplicateBoundaryCursor.meta.source, "OZON_API");
++assert.equal("last_value_id" in duplicateBoundaryCursorCalls[2], false);
+```
+
+## Review result
+
+- The plan file is byte-identical to its fix-before snapshot; no checkbox or other plan content changed in this fix.
+- The report was appended with RED/GREEN, scope, commands, validation, recovery, and residual-risk evidence.
+- No route, database, dependency, configuration, credential, or Git change is part of this package.

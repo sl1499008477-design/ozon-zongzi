@@ -1,0 +1,35 @@
+diff --git a/server/ozon-import-normalizer.mjs b/server/ozon-import-normalizer.mjs
+@@ safe category errors @@
++const SAFE_CATEGORY_ERROR_CODES = new Set(["OZON_CATEGORY_TREE_UNAVAILABLE", "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE", "OZON_CATEGORY_VALUES_UNAVAILABLE", "OZON_CATEGORY_DATA_INVALID", "OZON_CATEGORY_TYPE_NOT_FOUND"]);
++function isSafeCategoryError(error) { return SAFE_CATEGORY_ERROR_CODES.has(String(error?.code || "")); }
++function unresolvedRequiredDictionaryError() {
++  const error = new Error("必填字典属性未匹配到 Ozon 字典值，请检查后重试");
++  error.status = 422;
++  error.code = "OZON_CATEGORY_DATA_INVALID";
++  error.body = { operation: "REQUIRED_DICTIONARY_VALUE" };
++  error.cause = null;
++  return error;
++}
+@@ dictionary fetch / outer normalizer catches @@
++if (isSafeCategoryError(error)) throw error;
++if (ctx.strictTypeMatch || isSafeCategoryError(error)) throw error;
+diff --git a/server/index.mjs b/server/index.mjs
+@@ preview/final strictness @@
+-strictTypeMatch: true,
++strictTypeMatch: !!body.strictTypeMatch,
+@@ queueCollectSubmissionV3 test seam @@
++async function queueCollectSubmissionV3(..., dependencies = {}) {
++  const categoryService = dependencies.categoryService || ozonCategoryService;
++  const createSubmission = dependencies.createSubmissionV3 || createSubmissionV3;
++  // normalizer precedes createSubmission in production and tests
++}
++export const testExports = { ..., queueCollectSubmissionV3 };
+diff --git a/server/tests/ozon-import-normalizer.test.mjs b/server/tests/ozon-import-normalizer.test.mjs
+@@
++// Exact 503/504 OZON_CATEGORY_VALUES_UNAVAILABLE propagation, fixed unresolved
++// required dictionary contract, and strictTypeMatch:false non-category warning regression.
+diff --git a/server/tests/category-listing-readiness.test.mjs b/server/tests/category-listing-readiness.test.mjs
+@@
++// Direct formal-preparation calls inject category failures and a createSubmissionV3
++// spy: both category failure and unresolved required dictionary reject before zero
++// snapshot/job creation calls, with local jobs and external writes still zero.

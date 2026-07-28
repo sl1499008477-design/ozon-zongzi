@@ -1,0 +1,52 @@
+# Task 8 fix r1 scoped review package — immutable readiness scope and restored-draft revalidation
+
+# Base snapshots
+# - snapshots/task-8-fix-r1-before/category-readiness.js
+# - snapshots/task-8-fix-r1-before/category-readiness.test.js
+# - snapshots/task-8-fix-r1-before/1688-ai-wizard.js
+# - snapshots/task-8-fix-r1-before/check-extension-diff-contract.mjs
+# - snapshots/task-8-fix-r1-before/sonli-extension-0.13.46.1.zip
+
+diff --git a/extension/lib/category-readiness.js b/extension/lib/category-readiness.js
+@@ immutable scope contract
++captureReadyScope(state) calls requireReady(), captures a non-empty store ID,
++the exact category object reference and stable category IDs, and returns a frozen scope.
++requireReadyScope(state, scope) revalidates ready/error/category, object identity,
++store ID and IDs and throws the fixed Ozon error on any change.
++invalidateRestored(state) drops tree/readiness/attribute data and records the fixed
++visible error while preserving category/path for real-data revalidation.
+
+diff --git a/extension/tests/category-readiness.test.js b/extension/tests/category-readiness.test.js
+@@ behavior tests
++unchanged captured scope succeeds.
++failAttributes(), store change and replacement by a same-ID category object reject.
++restored invalidation preserves category but clears tree/attributes and cannot be ready.
+
+diff --git a/extension/content/1688-ai-wizard.js b/extension/content/1688-ai-wizard.js
+@@ action continuations
++runPipeline(), runRewriteOnly(), runPublishOnly() and aiFillAttrs() capture a scope at entry.
++Each category-dependent async continuation revalidates before writing category-dependent
++state or proceeding. Pipeline revalidates after attribute fill, before building, and
++immediately before followSell; a failed runtime guard throws into the existing catch,
++so followSell is not reached.
+@@ restored drafts
++ready, tree and attribute schema/value state are no longer persisted or restored.
++restore invalidates readiness and open() starts revalidateRestoredCategory().
++The revalidation request is sequence/store/category/ID scoped, accepts only a non-empty
++real tree containing the restored category, then loads authentic attributes before markReady.
++Late store/category changes discard the response; real failure invokes failTree/failAttributes.
+
+diff --git a/scripts/check-extension-diff-contract.mjs b/scripts/check-extension-diff-contract.mjs
+@@ exact audited external-source diff
+- "content/1688-ai-wizard.js": { hunks: 19, added: 63, removed: 15 }
++ "content/1688-ai-wizard.js": { hunks: 41, added: 158, removed: 29 }
+
+# Snapshot comparison evidence
+# - r1 wizard: 33 hunks, 110 added lines, 29 removed lines
+# - r1 helper: 3 hunks, 49 added lines, 0 removed lines
+# - no manifest-order, prompt, fallback-data, server, app, DB, config or dependency change
+
+# Generated only through package-extension
+# - app/public/sonli-extension-0.13.46.1/
+# - app/public/sonli-extension-0.13.46.1.zip
+# - app/dist/sonli-extension-0.13.46.1.zip

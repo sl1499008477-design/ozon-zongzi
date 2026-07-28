@@ -1,0 +1,4 @@
+43eaff7c9c09f92c231e6bc525288fbda64399cad618c51ce55be352f29c38de  server/tests/module-boundaries.test.mjs
+d7eb9780cb6c5990c062de4a2e2a95a6a118df6a508f9b089ef5c58093f73d7f  docs/architecture/module-boundaries.md
+5d7254e4e96cace8874048847621417a21a24b1090fcd04781efb2e440de76cc  docs/superpowers/specs/2026-07-28-ozon-category-query-extraction-design.md
+4af03d910f71cbc1bf8548b4b7a6527fe326e8db4c0411d4fa7c8940d0fb80a1  docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md

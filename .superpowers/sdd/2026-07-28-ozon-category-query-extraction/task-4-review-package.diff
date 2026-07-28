@@ -1,0 +1,495 @@
+diff --git a/server/ozon-category-routes.mjs b/server/ozon-category-routes.mjs
+new file mode 100644
+index 0000000..8909f00
+--- /dev/null
++++ b/server/ozon-category-routes.mjs
+@@ -0,0 +1,151 @@
++function requestContext(dependencies, req, state, url) {
++  const account = dependencies.requireAuth(req, state);
++  const storeId = dependencies.storeIdForAccountRequest(
++    state,
++    account,
++    url.searchParams.get("storeId") || req.headers["x-ozon-store-id"] || "",
++  );
++  const store = dependencies.activeStore(state, storeId, account.id);
++  if (!store) {
++    const error = new Error("店铺不存在或不属于当前账号");
++    error.status = 404;
++    error.code = "STORE_NOT_FOUND";
++    throw error;
++  }
++  return { account, store };
++}
++
++async function respondCategory(dependencies, res, operation) {
++  try {
++    await operation();
++  } catch (error) {
++    if (STABLE_CATEGORY_ERROR_CODES.has(error?.code)) {
++      const status = Number(error.status);
++      dependencies.sendError(
++        res,
++        CATEGORY_ERROR_STATUSES.has(status) ? status : 502,
++        CATEGORY_ERROR_MESSAGE,
++        error.code,
++      );
++      return;
++    }
++    throw error;
++  }
++}
++
++export function createOzonCategoryRouteHandler(dependencies) {
++  return async function handleOzonCategoryRoute({ req, res, url, state }) {
++    if (req.method === "GET" && url.pathname === "/ozon/categories/tree") {
++      await respondCategory(dependencies, res, async () => {
++        const { account, store } = requestContext(dependencies, req, state, url);
++        const language = url.searchParams.get("language") || "DEFAULT";
++        const result = await dependencies.categoryService.getCategoryTree({
++          accountId: account.id,
++          store,
++          language,
++        });
++        dependencies.sendJson(res, 200, {
++          data: result.items,
++          items: result.items,
++          total: result.items.length,
++          language,
++          meta: result.meta,
++        });
++      });
++      return true;
++    }
++
++    const attributesMatch = url.pathname.match(
++      /^\/ozon\/description-category\/([^/]+)\/attributes$/,
++    );
++    if (req.method === "GET" && attributesMatch) {
++      await respondCategory(dependencies, res, async () => {
++        const { account, store } = requestContext(dependencies, req, state, url);
++        const typeId = decodeURIComponent(attributesMatch[1]);
++        const requestedCategoryId =
++          url.searchParams.get("descriptionCategoryId")
++          || url.searchParams.get("description_category_id")
++          || "";
++        const descriptionCategoryId = requestedCategoryId || (
++          await dependencies.categoryService.resolveDescriptionCategoryId({
++            accountId: account.id,
++            store,
++            typeId,
++            language: "DEFAULT",
++          })
++        );
++        const verifiedContext = requestContext(dependencies, req, state, url);
++        const result = await dependencies.categoryService.getCategoryAttributes({
++          accountId: verifiedContext.account.id,
++          store: verifiedContext.store,
++          descriptionCategoryId,
++          typeId,
++          language: "DEFAULT",
++        });
++        dependencies.sendJson(res, 200, {
++          data: result.items,
++          items: result.items,
++          total: result.items.length,
++          typeId,
++          categoryId: descriptionCategoryId,
++          meta: result.meta,
++        });
++      });
++      return true;
++    }
++
++    const valuesMatch = url.pathname.match(
++      /^\/ozon\/description-category\/([^/]+)\/attributes\/([^/]+)\/values$/,
++    );
++    if (req.method === "GET" && valuesMatch) {
++      await respondCategory(dependencies, res, async () => {
++        const { account, store } = requestContext(dependencies, req, state, url);
++        const typeId = decodeURIComponent(valuesMatch[1]);
++        const attributeId = decodeURIComponent(valuesMatch[2]);
++        const requestedCategoryId =
++          url.searchParams.get("descriptionCategoryId")
++          || url.searchParams.get("description_category_id")
++          || "";
++        const descriptionCategoryId = requestedCategoryId || (
++          await dependencies.categoryService.resolveDescriptionCategoryId({
++            accountId: account.id,
++            store,
++            typeId,
++            language: "DEFAULT",
++          })
++        );
++        const verifiedContext = requestContext(dependencies, req, state, url);
++        const result = await dependencies.categoryService.getCategoryAttributeValues({
++          accountId: verifiedContext.account.id,
++          store: verifiedContext.store,
++          descriptionCategoryId,
++          typeId,
++          attributeId,
++          language: "DEFAULT",
++          limit: url.searchParams.get("limit") || 1000,
++        });
++        dependencies.sendJson(res, 200, {
++          data: result.items,
++          items: result.items,
++          total: result.items.length,
++          typeId,
++          categoryId: descriptionCategoryId,
++          attributeId,
++          meta: result.meta,
++        });
++      });
++      return true;
++    }
++
++    return false;
++  };
++}
++const STABLE_CATEGORY_ERROR_CODES = new Set([
++  "OZON_CATEGORY_TREE_UNAVAILABLE",
++  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
++  "OZON_CATEGORY_VALUES_UNAVAILABLE",
++  "OZON_CATEGORY_DATA_INVALID",
++  "OZON_CATEGORY_TYPE_NOT_FOUND",
++]);
++const CATEGORY_ERROR_MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
++const CATEGORY_ERROR_STATUSES = new Set([422, 502, 503, 504]);
+diff --git a/server/tests/ozon-category-routes.test.mjs b/server/tests/ozon-category-routes.test.mjs
+new file mode 100644
+index 0000000..15cfb93
+--- /dev/null
++++ b/server/tests/ozon-category-routes.test.mjs
+@@ -0,0 +1,307 @@
++import assert from "node:assert/strict";
++import { createOzonCategoryRouteHandler } from "../ozon-category-routes.mjs";
++
++const meta = {
++  source: "OZON_API",
++  fetchedAt: "2026-07-28T00:00:00.000Z",
++  expiresAt: "2026-07-28T06:00:00.000Z",
++};
++
++function createFixture({
++  requireAuth = () => ({ id: "acct-auth" }),
++  activeStore = (_state, storeId, accountId) => (
++    storeId === "store-query" && accountId === "acct-auth"
++      ? { id: "store-query", ownerAccountId: "acct-auth" }
++      : null
++  ),
++  categoryService: categoryServiceOverride = {},
++} = {}) {
++  const calls = {
++    activeStore: [],
++    categoryService: [],
++    sendError: [],
++    sendJson: [],
++    storeSelection: [],
++  };
++  const categoryService = {
++    getCategoryTree: async (input) => {
++      calls.categoryService.push({ method: "getCategoryTree", input });
++      return { items: [{ description_category_id: 10 }], meta };
++    },
++    getCategoryAttributes: async (input) => {
++      calls.categoryService.push({ method: "getCategoryAttributes", input });
++      return { items: [{ id: 30 }], meta };
++    },
++    getCategoryAttributeValues: async (input) => {
++      calls.categoryService.push({ method: "getCategoryAttributeValues", input });
++      return { items: [{ id: 40, value: "No brand" }], meta };
++    },
++    resolveDescriptionCategoryId: async (input) => {
++      calls.categoryService.push({ method: "resolveDescriptionCategoryId", input });
++      return 10;
++    },
++    ...categoryServiceOverride,
++  };
++  const handler = createOzonCategoryRouteHandler({
++    categoryService,
++    requireAuth,
++    storeIdForAccountRequest: (state, account, requestedStoreId) => {
++      calls.storeSelection.push({ state, account, requestedStoreId });
++      return requestedStoreId || "store-current";
++    },
++    activeStore: (state, storeId, accountId) => {
++      calls.activeStore.push({ state, storeId, accountId });
++      return activeStore(state, storeId, accountId);
++    },
++    sendJson: (res, status, body) => calls.sendJson.push({ res, status, body }),
++    sendError: (res, status, message, code) => calls.sendError.push({ res, status, message, code }),
++  });
++  return { calls, handler };
++}
++
++function request(path, { method = "GET", headers = {} } = {}) {
++  return {
++    req: { method, headers },
++    res: { id: "response" },
++    state: { id: "state" },
++    url: new URL(`http://local.test${path}`),
++  };
++}
++
++{
++  const { calls, handler } = createFixture();
++  const handled = await handler(request("/ozon/categories/tree/"));
++  assert.equal(handled, false);
++  assert.deepEqual(calls, {
++    activeStore: [],
++    categoryService: [],
++    sendError: [],
++    sendJson: [],
++    storeSelection: [],
++  });
++}
++
++{
++  const { calls, handler } = createFixture();
++  const handled = await handler(request(
++    "/ozon/categories/tree?storeId=store-query&language=ZH_HANS&accountId=acct-forged",
++    { headers: { "x-ozon-store-id": "store-header" } },
++  ));
++  assert.equal(handled, true);
++  assert.deepEqual(calls.storeSelection[0].requestedStoreId, "store-query");
++  assert.deepEqual(calls.activeStore[0], {
++    state: { id: "state" },
++    storeId: "store-query",
++    accountId: "acct-auth",
++  });
++  assert.deepEqual(calls.categoryService, [{
++    method: "getCategoryTree",
++    input: {
++      accountId: "acct-auth",
++      store: { id: "store-query", ownerAccountId: "acct-auth" },
++      language: "ZH_HANS",
++    },
++  }]);
++  assert.deepEqual(calls.sendJson, [{
++    res: { id: "response" },
++    status: 200,
++    body: {
++      data: [{ description_category_id: 10 }],
++      items: [{ description_category_id: 10 }],
++      total: 1,
++      language: "ZH_HANS",
++      meta,
++    },
++  }]);
++}
++
++{
++  const { calls, handler } = createFixture();
++  const handled = await handler(request(
++    "/ozon/description-category/20/attributes?storeId=store-query&description_category_id=10&account_id=acct-forged",
++  ));
++  assert.equal(handled, true);
++  assert.deepEqual(calls.categoryService, [{
++    method: "getCategoryAttributes",
++    input: {
++      accountId: "acct-auth",
++      store: { id: "store-query", ownerAccountId: "acct-auth" },
++      descriptionCategoryId: "10",
++      typeId: "20",
++      language: "DEFAULT",
++    },
++  }]);
++  assert.deepEqual(calls.sendJson[0].body, {
++    data: [{ id: 30 }],
++    items: [{ id: 30 }],
++    total: 1,
++    typeId: "20",
++    categoryId: "10",
++    meta,
++  });
++}
++
++{
++  const { calls, handler } = createFixture();
++  const handled = await handler(request(
++    "/ozon/description-category/20/attributes/30/values?storeId=store-query&limit=77",
++  ));
++  assert.equal(handled, true);
++  assert.deepEqual(calls.categoryService, [
++    {
++      method: "resolveDescriptionCategoryId",
++      input: {
++        accountId: "acct-auth",
++        store: { id: "store-query", ownerAccountId: "acct-auth" },
++        typeId: "20",
++        language: "DEFAULT",
++      },
++    },
++    {
++      method: "getCategoryAttributeValues",
++      input: {
++        accountId: "acct-auth",
++        store: { id: "store-query", ownerAccountId: "acct-auth" },
++        descriptionCategoryId: 10,
++        typeId: "20",
++        attributeId: "30",
++        language: "DEFAULT",
++        limit: "77",
++      },
++    },
++  ]);
++  assert.deepEqual(calls.sendJson[0].body, {
++    data: [{ id: 40, value: "No brand" }],
++    items: [{ id: 40, value: "No brand" }],
++    total: 1,
++    typeId: "20",
++    categoryId: 10,
++    attributeId: "30",
++    meta,
++  });
++}
++
++{
++  let ownershipChecks = 0;
++  const { calls, handler } = createFixture({
++    activeStore: () => {
++      ownershipChecks += 1;
++      return ownershipChecks === 1 ? { id: "store-query", ownerAccountId: "acct-auth" } : null;
++    },
++  });
++  await assert.rejects(
++    () => handler(request("/ozon/description-category/20/attributes?storeId=store-query")),
++    (error) => error.status === 404 && error.code === "STORE_NOT_FOUND",
++  );
++  assert.deepEqual(calls.categoryService.map(({ method }) => method), ["resolveDescriptionCategoryId"]);
++  assert.equal(calls.activeStore.length, 2);
++  assert.deepEqual(calls.sendJson, []);
++}
++
++{
++  let ownershipChecks = 0;
++  const { calls, handler } = createFixture({
++    activeStore: () => {
++      ownershipChecks += 1;
++      return ownershipChecks === 1 ? { id: "store-query", ownerAccountId: "acct-auth" } : null;
++    },
++  });
++  await assert.rejects(
++    () => handler(request("/ozon/description-category/20/attributes/30/values?storeId=store-query")),
++    (error) => error.status === 404 && error.code === "STORE_NOT_FOUND",
++  );
++  assert.deepEqual(calls.categoryService.map(({ method }) => method), ["resolveDescriptionCategoryId"]);
++  assert.equal(calls.activeStore.length, 2);
++  assert.deepEqual(calls.sendJson, []);
++}
++
++{
++  const { calls, handler } = createFixture({
++    requireAuth: () => {
++      throw Object.assign(new Error("需要登录"), { status: 401 });
++    },
++  });
++  await assert.rejects(() => handler(request("/ozon/categories/tree?storeId=store-query")), /需要登录/);
++  assert.deepEqual(calls.categoryService, []);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, []);
++}
++
++{
++  const { calls, handler } = createFixture({ activeStore: () => null });
++  await assert.rejects(
++    () => handler(request("/ozon/categories/tree?storeId=store-foreign")),
++    (error) => error.status === 404 && error.code === "STORE_NOT_FOUND" &&
++      error.message === "店铺不存在或不属于当前账号",
++  );
++  assert.deepEqual(calls.categoryService, []);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, []);
++}
++
++{
++  const categoryError = Object.assign(new Error("未能从 Ozon 获取真实类目数据，请重试"), {
++    status: 502,
++    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
++    body: { operation: "TREE" },
++    cause: null,
++  });
++  const { calls, handler } = createFixture({
++    categoryService: { getCategoryTree: async () => { throw categoryError; } },
++  });
++  const handled = await handler(request("/ozon/categories/tree?storeId=store-query"));
++  assert.equal(handled, true);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, [{
++    res: { id: "response" },
++    status: 502,
++    message: "未能从 Ozon 获取真实类目数据，请重试",
++    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
++  }]);
++}
++
++{
++  const unsafeStableCodeError = Object.assign(new Error("raw upstream credential text"), {
++    status: 200,
++    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
++  });
++  const { calls, handler } = createFixture({
++    categoryService: { getCategoryTree: async () => { throw unsafeStableCodeError; } },
++  });
++  const handled = await handler(request("/ozon/categories/tree?storeId=store-query"));
++  assert.equal(handled, true);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, [{
++    res: { id: "response" },
++    status: 502,
++    message: "未能从 Ozon 获取真实类目数据，请重试",
++    code: "OZON_CATEGORY_TREE_UNAVAILABLE",
++  }]);
++}
++
++{
++  const unknownCategoryError = Object.assign(new Error("unexpected category error"), {
++    status: 502,
++    code: "OZON_CATEGORY_UNEXPECTED",
++  });
++  const { calls, handler } = createFixture({
++    categoryService: { getCategoryTree: async () => { throw unknownCategoryError; } },
++  });
++  await assert.rejects(
++    () => handler(request("/ozon/categories/tree?storeId=store-query")),
++    /unexpected category error/,
++  );
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, []);
++}
++
++{
++  const { calls, handler } = createFixture({
++    categoryService: { getCategoryTree: async () => { throw new Error("programmer error"); } },
++  });
++  await assert.rejects(() => handler(request("/ozon/categories/tree?storeId=store-query")), /programmer error/);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, []);
++}
++
++console.log("ozon category routes tests passed");
+diff --git a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-before/2026-07-28-ozon-category-query-extraction.md b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+index f93d003..e1b6297 100644
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-before/2026-07-28-ozon-category-query-extraction.md
++++ b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+@@ -664 +664 @@ Inspect the scoped diff for:
+-- [ ] **Step 1: Write failing route tests with pure stubs**
++- [x] **Step 1: Write failing route tests with pure stubs**
+@@ -694 +694 @@ Assert:
+-- [ ] **Step 2: Add failing auth and ownership tests**
++- [x] **Step 2: Add failing auth and ownership tests**
+@@ -703 +703 @@ Assert:
+-- [ ] **Step 3: Add failing service-error mapping tests**
++- [x] **Step 3: Add failing service-error mapping tests**
+@@ -728 +728 @@ No route may transform this into HTTP 200 or `items: []`.
+-- [ ] **Step 4: Run route tests and verify RED**
++- [x] **Step 4: Run route tests and verify RED**
+@@ -738 +738 @@ Expected: FAIL because `server/ozon-category-routes.mjs` does not exist.
+-- [ ] **Step 5: Implement exact route matching and response mapping**
++- [x] **Step 5: Implement exact route matching and response mapping**
+@@ -886 +886 @@ Catch only category service errors that the handler can map. Let unrelated progr
+-- [ ] **Step 6: Run route and service tests**
++- [x] **Step 6: Run route and service tests**
+@@ -898 +898 @@ Expected: all pass.
+-- [ ] **Step 7: Review checkpoint**
++- [x] **Step 7: Review checkpoint**

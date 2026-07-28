@@ -1,0 +1,33 @@
+# Task 7 fix r2 scoped review package
+# Base: snapshots/task-7-fix-r2-before/{App.jsx,category-readiness.js,category-readiness.test.mjs}
+# Reviewed issue: prevent a locally stale A item/preview from being consumed while
+# binding/localStorage have moved to B. No store-name matching is introduced.
+
+diff --git a/app/src/category-readiness.js b/app/src/category-readiness.js
+@@
++export function categoryItemScopeIsCurrent({ currentStoreId, localStateStoreId, itemStoreId } = {}) {
++  const current = String(currentStoreId || "");
++  const local = String(localStateStoreId || "");
++  const item = String(itemStoreId || "");
++  return Boolean(current && local && item && current === local && local === item);
++}
+
+diff --git a/app/tests/category-readiness.test.mjs b/app/tests/category-readiness.test.mjs
+@@
++test("requires explicit matching local and item store scope before consuming an item", () => {
++  // B/B/B is accepted; B/A/A and B/B/empty are rejected.
++});
+
+diff --git a/app/src/App.jsx b/app/src/App.jsx
+@@ candidate selection before item consumption
++const currentStoreId = localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || "";
++const localStateStoreId = localData?.currentStoreId || "";
++const candidateStoreId = collectEditFirst(candidateItem?.storeId, candidateItem?.store_id, candidateItem?.ozonStoreId, candidateItem?.ozon_store_id, candidateItem?.bindingId, candidateItem?.binding_id);
++const itemScopeCurrent = categoryItemScopeIsCurrent({ currentStoreId, localStateStoreId, itemStoreId: candidateStoreId });
++const item = itemScopeCurrent ? candidateItem : null;
++const scopedPreviewItem = itemScopeCurrent ? previewItem : null;
+@@ category and write gates
++// Category IDs, labels, and attribute rows use scopedPreviewItem; item fallback is
++// safe because item is null until the explicit triple-ID proof succeeds.
++if (!itemScopeCurrent) return; // preview/publish and automatic-matching guards
++if (!itemScopeCurrent || !item?.id || !isCollectItem) throw new Error("当前商品店铺数据未就绪，暂不能写回草稿");

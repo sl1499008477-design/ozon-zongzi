@@ -1,0 +1,246 @@
+# Task 3 scoped diff
+
+--- .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-3-before/ozon-category-service.mjs	2026-07-28 14:15:32
++++ server/ozon-category-service.mjs	2026-07-28 14:18:07
+@@ -172,8 +172,99 @@
+     return writeCache(key, data.result);
+   }
+
+-  async function getCategoryAttributeValues() {
+-    throw categoryError("VALUES", 502, "OZON_CATEGORY_VALUES_UNAVAILABLE");
++  async function getCategoryAttributeValues({
++    accountId,
++    store,
++    descriptionCategoryId,
++    typeId,
++    attributeId,
++    language,
++    limit,
++  } = {}) {
++    const normalizedDescriptionCategoryId = positiveIdOf(descriptionCategoryId);
++    const normalizedTypeId = positiveIdOf(typeId);
++    const normalizedAttributeId = positiveIdOf(attributeId);
++    const normalizedLanguage = normalizedLanguageOf(language);
++    const requestedLimit = Number(limit);
++    const safeLimit = Number.isFinite(requestedLimit)
++      ? Math.min(Math.max(Math.floor(requestedLimit), 1), 5000)
++      : 1000;
++    const key = cacheKey(
++      scopeOf({ accountId, store }),
++      "values",
++      normalizedLanguage,
++      normalizedDescriptionCategoryId,
++      normalizedTypeId,
++      normalizedAttributeId,
++      safeLimit,
++    );
++    const cached = readCache(key);
++    if (cached) return cached;
++
++    const values = [];
++    const seenValues = new Set();
++    const seenCursors = new Set();
++    let lastValueId = 0;
++    while (values.length < safeLimit) {
++      const pageLimit = Math.min(1000, safeLimit - values.length);
++      let data;
++      try {
++        data = await callOzonSellerApi(
++          store,
++          "/v1/description-category/attribute/values",
++          {
++            description_category_id: normalizedDescriptionCategoryId,
++            type_id: normalizedTypeId,
++            attribute_id: normalizedAttributeId,
++            language: normalizedLanguage,
++            limit: pageLimit,
++            ...(lastValueId ? { last_value_id: lastValueId } : {}),
++          },
++          60000,
++        );
++      } catch (source) {
++        throw unavailableError("VALUES", source);
++      }
++      const page = Array.isArray(data?.result)
++        ? data.result
++        : Array.isArray(data?.result?.values)
++          ? data.result.values
++          : null;
++      if (!page) throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
++      if (page.length === 0) break;
++
++      for (const item of page) {
++        const id = item?.id ?? item?.dictionary_value_id ?? item?.dictionaryValueId ?? item?.value_id ?? item?.valueId ?? "";
++        const value = item?.value ?? item?.name ?? item?.title ?? item?.label ?? "";
++        const valueKey = `${id || ""}:${value || ""}`;
++        if ((!id && !value) || seenValues.has(valueKey)) continue;
++        seenValues.add(valueKey);
++        values.push({
++          id,
++          value,
++          info: item?.info ?? "",
++          picture: item?.picture ?? "",
++        });
++        if (values.length === safeLimit) break;
++      }
++
++      const lastPageItem = page.at(-1);
++      const nextCursor = positiveIdOf(
++        lastPageItem?.id ??
++          lastPageItem?.dictionary_value_id ??
++          lastPageItem?.dictionaryValueId ??
++          lastPageItem?.value_id ??
++          lastPageItem?.valueId,
++      );
++      const hasNext = Boolean(data?.has_next || data?.result?.has_next);
++      if (!hasNext || values.length === safeLimit) break;
++      if (!nextCursor || seenCursors.has(nextCursor)) {
++        throw categoryError("VALUES", 502, "OZON_CATEGORY_DATA_INVALID");
++      }
++      seenCursors.add(nextCursor);
++      lastValueId = nextCursor;
++    }
++    return writeCache(key, values);
+   }
+
+   async function resolveDescriptionCategoryId({ accountId, store, typeId, language } = {}) {
+--- .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-3-before/ozon-category-service.test.mjs	2026-07-28 14:15:32
++++ server/tests/ozon-category-service.test.mjs	2026-07-28 14:17:29
+@@ -190,4 +190,137 @@
+ const cloneCachedTreeAgain = await cloneService.getCategoryTree(cloneInput);
+ assert.equal(cloneCachedTreeAgain.items[0].children[0].type_name, "Cup");
+
++const valuesInput = {
++  ...input({ storeId: "values-store" }),
++  descriptionCategoryId: 10,
++  typeId: 20,
++  attributeId: 30,
++  limit: 5000,
++};
++const valuePages = [
++  {
++    result: {
++      values: [{ id: 1, value: "One" }, { dictionary_value_id: 2, name: "Two" }],
++      has_next: true,
++    },
++  },
++  {
++    result: [{ id: 3, value: "Three" }],
++    has_next: false,
++  },
++];
++const valueCalls = [];
++const paginatedValuesService = createOzonCategoryService({
++  callOzonSellerApi: async (_store, apiPath, body) => {
++    valueCalls.push({ apiPath, body });
++    return valuePages.shift();
++  },
++});
++const paginatedValues = await paginatedValuesService.getCategoryAttributeValues(valuesInput);
++assert.deepEqual(paginatedValues.items.map((item) => item.id), [1, 2, 3]);
++assert.equal(valueCalls[0].apiPath, "/v1/description-category/attribute/values");
++assert.equal(valueCalls[0].body.limit, 1000);
++assert.equal(valueCalls[1].body.last_value_id, 2);
++assert.equal(paginatedValues.meta.source, "OZON_API");
++
++const duplicateValuesService = createOzonCategoryService({
++  callOzonSellerApi: async () => ({
++    result: [
++      { id: 1, value: "One" },
++      { id: 1, value: "One" },
++      { dictionary_value_id: 2, name: "Two" },
++    ],
++  }),
++});
++const duplicateValues = await duplicateValuesService.getCategoryAttributeValues(valuesInput);
++assert.deepEqual(duplicateValues.items, [
++  { id: 1, value: "One", info: "", picture: "" },
++  { id: 2, value: "Two", info: "", picture: "" },
++]);
++
++const limitCalls = [];
++const limitService = createOzonCategoryService({
++  callOzonSellerApi: async (_store, _apiPath, body) => {
++    limitCalls.push(body);
++    return { result: [] };
++  },
++});
++await limitService.getCategoryAttributeValues({ ...valuesInput, limit: 0 });
++await limitService.getCategoryAttributeValues({ ...valuesInput, limit: 6000 });
++assert.equal(limitCalls[0].limit, 1);
++assert.equal(limitCalls[1].limit, 1000);
++
++const partialFailureCalls = [];
++let partialFailureAttempt = 0;
++const partialFailureService = createOzonCategoryService({
++  callOzonSellerApi: async (_store, _apiPath, body) => {
++    partialFailureCalls.push(body);
++    partialFailureAttempt += 1;
++    if (partialFailureAttempt === 2) throw new Error("upstream failure after first page");
++    if (partialFailureAttempt === 1 || partialFailureAttempt === 3) {
++      return { result: [{ id: 1, value: "One" }], has_next: true };
++    }
++    return { result: [{ id: 2, value: "Two" }], has_next: false };
++  },
++});
++await assert.rejects(
++  () => partialFailureService.getCategoryAttributeValues(valuesInput),
++  (error) => error.code === "OZON_CATEGORY_VALUES_UNAVAILABLE" && error.cause === null,
++);
++const recoveredValues = await partialFailureService.getCategoryAttributeValues(valuesInput);
++assert.deepEqual(recoveredValues.items.map((item) => item.id), [1, 2]);
++assert.equal("last_value_id" in partialFailureCalls[2], false);
++
++const repeatedCursorService = createOzonCategoryService({
++  callOzonSellerApi: async () => ({
++    result: [{ id: 1, value: "One" }],
++    has_next: true,
++  }),
++});
++await assert.rejects(
++  () => repeatedCursorService.getCategoryAttributeValues(valuesInput),
++  (error) => {
++    assert.equal(error.code, "OZON_CATEGORY_DATA_INVALID");
++    assert.equal(error.cause, null);
++    return true;
++  },
++);
++
++let valuesNowMs = Date.parse("2026-07-28T00:00:00.000Z");
++let valuesRefreshFails = false;
++const expiredValuesService = createOzonCategoryService({
++  now: () => valuesNowMs,
++  callOzonSellerApi: async () => {
++    if (valuesRefreshFails) throw new Error("stale-values-secret");
++    return { result: [{ id: 1, value: "One" }] };
++  },
++});
++const expiredValuesInput = { ...valuesInput, store: input({ storeId: "expired-values-store" }).store };
++await expiredValuesService.getCategoryAttributeValues(expiredValuesInput);
++valuesNowMs += CACHE_TTL_MS;
++valuesRefreshFails = true;
++await assert.rejects(
++  () => expiredValuesService.getCategoryAttributeValues(expiredValuesInput),
++  (error) => error.code === "OZON_CATEGORY_VALUES_UNAVAILABLE" && error.cause === null && !("items" in error),
++);
++
++let invalidValuesCalls = 0;
++const invalidValuesService = createOzonCategoryService({
++  callOzonSellerApi: async () => {
++    invalidValuesCalls += 1;
++    return invalidValuesCalls === 1 ? { result: {} } : { result: [{ id: 1, value: "One" }] };
++  },
++});
++await assert.rejects(
++  () => invalidValuesService.getCategoryAttributeValues(valuesInput),
++  (error) => {
++    assert.equal(error.code, "OZON_CATEGORY_DATA_INVALID");
++    assert.equal(error.cause, null);
++    return true;
++  },
++);
++const validAfterInvalid = await invalidValuesService.getCategoryAttributeValues(valuesInput);
++assert.equal(validAfterInvalid.meta.source, "OZON_API");
++assert.equal(invalidValuesCalls, 2);
++
+ console.log("ozon category service tests passed");

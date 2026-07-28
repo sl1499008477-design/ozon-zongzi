@@ -1,0 +1,21 @@
+# Task 3 review package
+
+- Commits: none; the user forbids commits.
+- Before snapshots:
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-3-before-index.mjs`
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-3-before-ozon-client.mjs`
+- Current modified files:
+  - `server/index.mjs`
+  - `server/ozon-client.mjs`
+- New file:
+  - `server/tests/ozon-client.test.mjs`
+- Required scoped comparisons:
+  - compare the before/current index and client snapshots;
+  - inspect the complete new test.
+- Review focus:
+  - POST contract remains compatible for `listing-worker.mjs`.
+  - GET sends neither body nor Content-Type.
+  - Missing credentials, real AbortError behavior, network failures, response-read failures, non-JSON failures, and HTTP failures have stable `status/code/body/cause`.
+  - No API key or client ID is included in errors or logs.
+  - All remaining entry POST call payloads/timeouts are unchanged.
+  - No duplicate Ozon HTTP implementation remains in `server/index.mjs`.

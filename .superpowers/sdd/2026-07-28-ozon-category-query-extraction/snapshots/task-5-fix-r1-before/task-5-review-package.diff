@@ -1,0 +1,36 @@
+diff --git a/server/index.mjs b/server/index.mjs
+--- a/server/index.mjs (Task 1 snapshot)
++++ b/server/index.mjs (Task 5)
+@@ imports/shared services @@
++import { createOzonCategoryService } from "./ozon-category-service.mjs";
++const ozonCategoryService = createOzonCategoryService();
+@@ previewOzonProductImport @@
+-    strictTypeMatch: !!body.strictTypeMatch,
++    strictTypeMatch: true,
+-    allowUnresolvedRequiredDictionaryValues: body.entry === "COLLECT_EDIT_AUTO_CATEGORY",
+-    getCategoryTree: () => getOzonDescriptionCategoryTree(store, "DEFAULT"),
++    getCategoryTree: async () => (await ozonCategoryService.getCategoryTree({ accountId: store.ownerAccountId, store, language: "DEFAULT" })).items,
++    getCategoryAttributes: (descriptionCategoryId, typeId) => ozonCategoryService.getCategoryAttributes({ accountId: store.ownerAccountId, store, descriptionCategoryId, typeId, language: "DEFAULT" }).then(({ items }) => items),
++    getCategoryAttributeValues: (descriptionCategoryId, typeId, attributeId) => ozonCategoryService.getCategoryAttributeValues({ accountId: store.ownerAccountId, store, descriptionCategoryId, typeId, attributeId, language: "DEFAULT", limit: 5000 }).then(({ items }) => items),
+-  if (body.entry !== "COLLECT_EDIT_AUTO_CATEGORY" && normalized.items.length !== rawItems.length) {
++  if (normalized.items.length !== rawItems.length) {
+@@ queueCollectSubmissionV3 @@
+-    strictTypeMatch: !!body.strictTypeMatch,
++    strictTypeMatch: true,
+-    getCategoryTree: () => getOzonDescriptionCategoryTree(store, "DEFAULT"),
++    getCategoryTree: async () => (await ozonCategoryService.getCategoryTree({ accountId: store.ownerAccountId, store, language: "DEFAULT" })).items,
++    getCategoryAttributes: (descriptionCategoryId, typeId) => ozonCategoryService.getCategoryAttributes({ accountId: store.ownerAccountId, store, descriptionCategoryId, typeId, language: "DEFAULT" }).then(({ items }) => items),
++    getCategoryAttributeValues: (descriptionCategoryId, typeId, attributeId) => ozonCategoryService.getCategoryAttributeValues({ accountId: store.ownerAccountId, store, descriptionCategoryId, typeId, attributeId, language: "DEFAULT", limit: 5000 }).then(({ items }) => items),
+@@ safe route errors @@
++        ...(error?.code ? { code: error.code } : {}),
+diff --git a/server/tests/category-listing-readiness.test.mjs b/server/tests/category-listing-readiness.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/server/tests/category-listing-readiness.test.mjs
+@@
++// Temporary local state and mocked fetch prove a category 503 becomes a stable
++// non-200 OZON_CATEGORY_* preview error; an unresolved required dictionary
++// value in COLLECT_EDIT_AUTO_CATEGORY also fails; jobs and writes remain zero.
+diff --git a/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+@@ Task 5 @@
++- [x] Steps 1 through 7 only

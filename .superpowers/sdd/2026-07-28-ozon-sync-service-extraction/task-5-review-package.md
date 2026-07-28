@@ -1,0 +1,22 @@
+# Task 5 review package
+
+- Commits: none; the user forbids commits.
+- Before snapshots:
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-5-before-index.mjs`
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-5-before-sync-service.mjs`
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-5-before-sync-test.mjs`
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-5-before-check-store-data-isolation.mjs`
+- Current files:
+  - `server/index.mjs`
+  - `server/ozon-sync-service.mjs`
+  - `server/tests/ozon-sync-service.test.mjs`
+  - `scripts/check-store-data-isolation.mjs`
+- Review focus:
+  - Product list pagination, details, price, FBO and FBS inventory merge preserve existing endpoint/payload/timeout contracts.
+  - Any required page failure leaves the old target-store product cache unchanged.
+  - Other stores and accounts remain unchanged on success and failure.
+  - RUNNING/SUCCESS/FAILED and terminal audit records are coherent.
+  - The entry delegates PRODUCTS before creating its legacy report, while other types retain legacy behavior.
+  - No product helper duplication remains in the entry.
+  - The static verifier moved only its product-sync source target.
+  - Task 7 remains responsible for conflict retries and final ownership revalidation.

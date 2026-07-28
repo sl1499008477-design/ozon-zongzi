@@ -1,0 +1,47 @@
+# Task 8 fix r2 scoped review package — auto-category late-response isolation
+
+# Base snapshots
+# - snapshots/task-8-fix-r2-before/category-readiness.js
+# - snapshots/task-8-fix-r2-before/category-readiness.test.js
+# - snapshots/task-8-fix-r2-before/1688-ai-wizard.js
+# - snapshots/task-8-fix-r2-before/check-extension-diff-contract.mjs
+# - snapshots/task-8-fix-r2-before/sonli-extension-0.13.46.1.zip
+
+diff --git a/extension/lib/category-readiness.js b/extension/lib/category-readiness.js
+@@ async category operation scope
++asyncCategoryScopeIsCurrent({ expectedStoreId, currentStoreId, expectedTree,
++  currentTree, requestId, currentRequestId }) returns true only for a non-empty
++  matching store ID, the same tree object and the same request sequence.
+
+diff --git a/extension/tests/category-readiness.test.js b/extension/tests/category-readiness.test.js
+@@ VM behavior tests
++matching store/tree/request succeeds; changing any one independently returns false.
+
+diff --git a/extension/content/1688-ai-wizard.js b/extension/content/1688-ai-wizard.js
+@@ invalidation
++catAutoReqSeq invalidates on wizard reset, manual pick, category reset, every
++tree-load start, restored-category revalidation and every store selection.
++store selection also advances catTreeReqSeq even when empty or not reloading.
+@@ tree loading
++responses now require both matching tree request ID and the captured store ID.
+@@ automatic matching
++suggest/verify/setAutoCategory use both the captured tree request and auto
++request, plus the exact tree object and store. Late responses return without
++writing catAuto/category or starting attribute loading; setAutoCategory repeats
++the final current check immediately before mutation.
+
+diff --git a/scripts/check-extension-diff-contract.mjs b/scripts/check-extension-diff-contract.mjs
+@@ exact audited external-source diff
+- "content/1688-ai-wizard.js": { hunks: 41, added: 158, removed: 29 }
++ "content/1688-ai-wizard.js": { hunks: 55, added: 208, removed: 35 }
+
+# Snapshot comparison evidence
+# - r2 wizard: 19 hunks, 50 added lines, 6 removed lines
+# - r2 helper: 2 hunks, 17 added lines, 0 removed lines
+# - r2 helper test: 1 hunk, 20 added lines, 0 removed lines
+# - manifest helper-before-wizard order is unchanged and verified in packaged ZIP
+
+# Generated only through package-extension
+# - app/public/sonli-extension-0.13.46.1/
+# - app/public/sonli-extension-0.13.46.1.zip
+# - app/dist/sonli-extension-0.13.46.1.zip

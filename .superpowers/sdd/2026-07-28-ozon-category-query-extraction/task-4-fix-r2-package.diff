@@ -1,0 +1,54 @@
+diff --git a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-fix-r2-before/ozon-category-routes.test.mjs b/server/tests/ozon-category-routes.test.mjs
+index 15cfb93..d734975 100644
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-fix-r2-before/ozon-category-routes.test.mjs
++++ b/server/tests/ozon-category-routes.test.mjs
+@@ -200,0 +201,36 @@ function request(path, { method = "GET", headers = {} } = {}) {
++{
++  let authChecks = 0;
++  const { calls, handler } = createFixture({
++    requireAuth: () => {
++      authChecks += 1;
++      if (authChecks === 2) throw Object.assign(new Error("revoked-session"), { status: 401 });
++      return { id: "acct-auth" };
++    },
++  });
++  await assert.rejects(
++    () => handler(request("/ozon/description-category/20/attributes?storeId=store-query")),
++    /revoked-session/,
++  );
++  assert.deepEqual(calls.categoryService.map(({ method }) => method), ["resolveDescriptionCategoryId"]);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, []);
++}
++
++{
++  let authChecks = 0;
++  const { calls, handler } = createFixture({
++    requireAuth: () => {
++      authChecks += 1;
++      if (authChecks === 2) throw Object.assign(new Error("revoked-session"), { status: 401 });
++      return { id: "acct-auth" };
++    },
++  });
++  await assert.rejects(
++    () => handler(request("/ozon/description-category/20/attributes/30/values?storeId=store-query")),
++    /revoked-session/,
++  );
++  assert.deepEqual(calls.categoryService.map(({ method }) => method), ["resolveDescriptionCategoryId"]);
++  assert.deepEqual(calls.sendJson, []);
++  assert.deepEqual(calls.sendError, []);
++}
++
+diff --git a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-fix-r2-before/task-4-report.md b/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/task-4-report.md
+index 13466d8..786be30 100644
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-fix-r2-before/task-4-report.md
++++ b/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/task-4-report.md
+@@ -71,0 +72,8 @@ Recovery is restoring the new route/test removal, restoring the plan from the Ta
++
++## Fix round 2 — authentication revoked after category resolution
++
++Independent review requested two focused coverage cases for the second `requestContext` call. Before editing, snapshots were saved at `.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-4-fix-r2-before/` for the route test and this report. The test snapshot SHA-256 is `2b83c747e898c97eea3a19b90927e7d2ca0370c5c76336488b57993f3aba0cae`; the report snapshot SHA-256 is `e835db0f976c68824624f1eaef6d7b7bd7b46678e3d55fda231f534444cdf463`.
++
++This is a coverage-only addition, so no artificial RED was created. The two new tests make `requireAuth` return `acct-auth` for category resolution and throw `revoked-session` with status 401 on its second invocation. One test exercises attributes and one exercises dictionary values, both without `descriptionCategoryId` so resolution is required. The fixed-runtime route test was GREEN: each request rejected with `revoked-session`, recorded only `resolveDescriptionCategoryId`, made no attributes/value service call, and sent neither JSON nor an error response.
++
++No production implementation, plan checkbox, database, configuration, dependency, external service, or Git state changed in this fix. The scoped artifact is `.superpowers/sdd/2026-07-28-ozon-category-query-extraction/task-4-fix-r2-package.diff`; recovery is restoring the two files from the r2 snapshot directory.

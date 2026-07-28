@@ -1,0 +1,183 @@
+# Task 7 scoped review package
+# Base snapshots: snapshots/task-7-before/App.jsx and ozon-category-query-extraction-plan.md
+# This is a review-oriented scoped diff summary, not an apply-ready patch; the
+# authoritative exact comparison is the snapshot-level diff command in task-7-report.md.
+# Reviewed product-file scope: App import/state/loader, automatic matching gate,
+# preview/publish guard, category alert/control, and Task 7 checkbox-only plan edits.
+# No global CSS, API path, server, extension, dependency, configuration, or deployment diff.
+
+diff --git a/app/src/category-readiness.js b/app/src/category-readiness.js
+new file mode 100644
+--- /dev/null
++++ b/app/src/category-readiness.js
+@@
++export const CATEGORY_DATA_ERROR_MESSAGE =
++  "未能从 Ozon 获取真实类目数据，请重试";
++
++const itemsOf = (response) => {
++  const items = Array.isArray(response?.items)
++    ? response.items
++    : Array.isArray(response?.data)
++      ? response.data
++      : [];
++  return structuredClone(items);
++};
++
++export async function loadRealCategoryTrees({ readTree }) {
++  try {
++    const [zhResponse, ruResponse] = await Promise.all([
++      readTree("ZH_HANS"),
++      readTree("RU"),
++    ]);
++    const zhTree = itemsOf(zhResponse);
++    const ruTree = itemsOf(ruResponse);
++    if (!zhTree.length || !ruTree.length) throw new Error("empty category tree");
++    return { zhTree, ruTree };
++  } catch {
++    const error = new Error(CATEGORY_DATA_ERROR_MESSAGE);
++    error.code = "OZON_CATEGORY_UI_UNAVAILABLE";
++    throw error;
++  }
++}
++
++export function categoryReadiness(input = {}) {
++  const ready = Boolean(
++    input.descriptionCategoryId
++    && input.typeId
++    && !input.loading
++    && !input.error
++    && Number(input.treeCount) > 0,
++  );
++  return { ready, message: ready ? "" : CATEGORY_DATA_ERROR_MESSAGE };
++}
++
++export function requireCategoryReadiness(input) {
++  const result = categoryReadiness(input);
++  if (!result.ready) {
++    const error = new Error(result.message);
++    error.code = "OZON_CATEGORY_UI_UNAVAILABLE";
++    throw error;
++  }
++  return true;
++}
+
+diff --git a/app/tests/category-readiness.test.mjs b/app/tests/category-readiness.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/app/tests/category-readiness.test.mjs
+@@
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  CATEGORY_DATA_ERROR_MESSAGE,
++  categoryReadiness,
++  loadRealCategoryTrees,
++  requireCategoryReadiness,
++} from "../src/category-readiness.js";
++
++const validTree = [{
++  description_category_id: 10,
++  children: [{ type_id: 20, children: [] }],
++}];
++
++test("loads non-empty Ozon items trees for both languages as independent clones", async () => {
++  const loaded = await loadRealCategoryTrees({
++    readTree: async (language) => ({
++      items: structuredClone(validTree),
++      meta: { source: "OZON_API", language },
++    }),
++  });
++  assert.equal(loaded.zhTree[0].description_category_id, 10);
++  assert.equal(loaded.ruTree[0].children[0].type_id, 20);
++  assert.notStrictEqual(loaded.zhTree, validTree);
++  assert.notStrictEqual(loaded.zhTree[0].children, validTree[0].children);
++  loaded.zhTree[0].children[0].type_id = 99;
++  assert.equal(validTree[0].children[0].type_id, 20);
++  assert.equal(loaded.ruTree[0].children[0].type_id, 20);
++});
++
++test("accepts the existing data array response contract", async () => {
++  const loaded = await loadRealCategoryTrees({
++    readTree: async () => ({ data: structuredClone(validTree) }),
++  });
++  assert.equal(loaded.zhTree.length, 1);
++  assert.equal(loaded.ruTree.length, 1);
++});
++
++test("rejects a missing language tree without accepting a fallback shape", async () => {
++  await assert.rejects(
++    () => loadRealCategoryTrees({
++      readTree: async (language) => language === "RU"
++        ? Promise.reject(new Error("offline"))
++        : { items: structuredClone(validTree) },
++    }),
++    (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE" && error.message === CATEGORY_DATA_ERROR_MESSAGE,
++  );
++  await assert.rejects(
++    () => loadRealCategoryTrees({ readTree: async () => ({ items: [], fallback: structuredClone(validTree) }) }),
++    (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE",
++  );
++});
++
++test("requires a selected category and a non-empty authentic tree for preview and publish", () => {
++  assert.deepEqual(categoryReadiness({ descriptionCategoryId: 10, typeId: 20, loading: false, error: "", treeCount: 1 }), { ready: true, message: "" });
++  for (const input of [
++    { descriptionCategoryId: 10, typeId: 20, loading: true, error: "", treeCount: 1 },
++    { descriptionCategoryId: 10, typeId: 20, loading: false, error: "offline", treeCount: 1 },
++    { descriptionCategoryId: 10, typeId: 20, loading: false, error: "", treeCount: 0 },
++    { descriptionCategoryId: "", typeId: 20, loading: false, error: "", treeCount: 1 },
++    { descriptionCategoryId: 10, typeId: "", loading: false, error: "", treeCount: 1 },
++  ]) assert.throws(() => requireCategoryReadiness(input), (error) => error.code === "OZON_CATEGORY_UI_UNAVAILABLE" && error.message === CATEGORY_DATA_ERROR_MESSAGE);
++});
+
+diff --git a/app/src/App.jsx b/app/src/App.jsx
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-7-before/App.jsx
++++ b/app/src/App.jsx
+@@ category loader
++import { CATEGORY_DATA_ERROR_MESSAGE, categoryReadiness, loadRealCategoryTrees, requireCategoryReadiness } from "./category-readiness.js";
++const [categoryTreeStoreId, setCategoryTreeStoreId] = useState("");
++const [categoryDataError, setCategoryDataError] = useState("");
++const loadCategoryTrees = React.useCallback(async function() {
++  // The unchanged ZH_HANS/RU paths are read once through loadRealCategoryTrees.
++  // A failed/empty response clears both state trees and keeps the fixed alert visible.
++}, [currentStoreId, hasStore]);
+@@ category action gates
++const categoryTreeReady = Boolean(!categoryTreeLoading && !categoryDataError && String(categoryTreeStoreId) === String(currentStoreId) && categoryTreeZh.length && categoryTreeRu.length);
++const categoryReadinessState = categoryReadiness({ descriptionCategoryId: categoryDescriptionId, typeId: categoryTypeId, loading: categoryTreeLoading, error: categoryDataError, treeCount: categoryTreeReady ? Math.min(categoryTreeZh.length, categoryTreeRu.length) : 0 });
++// Automatic matching uses categoryTreeReady only: it must be able to create IDs.
++if (!categoryTreeReady) return null;
++// Preview and publish use the complete runtime readiness guard.
++requireCategoryReadiness(categoryReadinessInput);
+@@ category UI
++{categoryDataError ? <Alert type="error" showIcon message="未能从 Ozon 获取真实类目数据" description="请检查店铺凭据或网络后重试。获取成功前不能预检或上架。" action={<Button size="small" loading={categoryTreeLoading} onClick={loadCategoryTrees}>重试</Button>} /> : null}
++<Cascader disabled={!categoryTreeReady} />
++<Button disabled={!categoryReadinessState.ready} aria-label="上架预检">内容体检</Button>
++<Button type="primary" disabled={listingSubmitDisabled} aria-label="提交上架到 Ozon">上架到 Ozon</Button>
+
+diff --git a/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-7-before/ozon-category-query-extraction-plan.md
++++ b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+@@ Task 7
+- [ ] **Step 1: Write failing behavior tests against the real readiness module**
++ [x] **Step 1: Write failing behavior tests against the real readiness module**
+@@
+- [ ] **Step 2: Run and verify RED**
++ [x] **Step 2: Run and verify RED**
+@@
+- [ ] **Step 3: Implement the minimal executable readiness module**
++ [x] **Step 3: Implement the minimal executable readiness module**
+@@
+- [ ] **Step 4: Use the tested loader in the existing page component**
++ [x] **Step 4: Use the tested loader in the existing page component**
+@@
+- [ ] **Step 5: Render the explicit error and retry**
++ [x] **Step 5: Render the explicit error and retry**
+@@
+- [ ] **Step 6: Block category-dependent actions**
++ [x] **Step 6: Block category-dependent actions**
+@@
+- [ ] **Step 7: Run behavior tests and build**
++ [x] **Step 7: Run behavior tests and build**
+@@
+- [ ] **Step 8: Review checkpoint**
++ [x] **Step 8: Review checkpoint**

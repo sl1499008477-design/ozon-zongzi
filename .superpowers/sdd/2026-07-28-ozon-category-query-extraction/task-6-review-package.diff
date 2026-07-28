@@ -1,0 +1,467 @@
+diff --git a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-6-before/server-index.mjs b/server/index.mjs
+index 4145a1c..fdde19a 100644
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-6-before/server-index.mjs
++++ b/server/index.mjs
+@@ -8,6 +8,7 @@ import crypto from "node:crypto";
+ import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
+ import { callOzonSellerApi } from "./ozon-client.mjs";
+ import { createOzonCategoryService } from "./ozon-category-service.mjs";
++import { createOzonCategoryRouteHandler } from "./ozon-category-routes.mjs";
+ import { createOzonSyncService } from "./ozon-sync-service.mjs";
+ import { summarizeOrderMoney } from "./order-money-summary.mjs";
+ import { appendAuditEvent } from "./audit-event.mjs";
+@@ -142,11 +143,7 @@ const dataDir = process.env.QH_LOCAL_DATA_DIR || path.join(rootDir, "server-data
+ const dataFile = path.join(dataDir, "local-state.json");
+ const port = Number(process.env.QH_LOCAL_API_PORT || process.env.PORT || 3001);
+ const listenHost = process.env.QH_LOCAL_API_HOST || "127.0.0.1";
+-const DESCRIPTION_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+-const descriptionCategoryTreeCache = new Map();
+-const descriptionCategoryAttributesCache = new Map();
+ let collectionStoreBackfillComplete = false;
+-const descriptionCategoryAttributeValuesCache = new Map();
+ const DEFAULT_ADMIN_USERNAME = process.env.SONLI_ADMIN_USERNAME || "admin";
+ const DEFAULT_ADMIN_PASSWORD = String(process.env.SONLI_ADMIN_PASSWORD || "");
+ let collectV3BackfillDone = false;
+@@ -418,6 +415,15 @@ function sendError(res, status, message, code = "LOCAL_ERROR") {
+   sendJson(res, status, { ok: false, message, code });
+ }
+
++const handleOzonCategoryRoute = createOzonCategoryRouteHandler({
++  categoryService: ozonCategoryService,
++  requireAuth,
++  storeIdForAccountRequest,
++  activeStore,
++  sendJson,
++  sendError,
++});
++
+ async function readBody(req, { maxBytes = 10 * 1024 * 1024 } = {}) {
+   const chunks = [];
+   let size = 0;
+@@ -1413,130 +1419,6 @@ async function scrapeOzonProductDetail(sku) {
+ }
+
+
+-function cacheKeyForStore(store, suffix) {
+-  return `${store?.clientId || store?.id || "unknown"}:${suffix}`;
+-}
+-
+-async function getOzonDescriptionCategoryTree(store, language = "DEFAULT") {
+-  const cacheKey = cacheKeyForStore(store, `tree:${language}`);
+-  const cached = descriptionCategoryTreeCache.get(cacheKey);
+-  if (cached && Date.now() - cached.at < DESCRIPTION_CATEGORY_CACHE_TTL_MS) {
+-    return cached.data;
+-  }
+-  const data = await callOzonSellerApi(store, "/v1/description-category/tree", { language }, 120000);
+-  const tree = Array.isArray(data?.result) ? data.result : [];
+-  descriptionCategoryTreeCache.set(cacheKey, { at: Date.now(), data: tree });
+-  return tree;
+-}
+-
+-function findDescriptionCategoryIdByTypeId(tree, typeId) {
+-  const wantedTypeId = Number(typeId);
+-  if (!Number.isFinite(wantedTypeId) || wantedTypeId <= 0) return 0;
+-  let found = 0;
+-  const visit = (node, activeDescriptionCategoryId = 0) => {
+-    if (!node || found) return;
+-    const currentDescriptionCategoryId = Number(node.description_category_id) || activeDescriptionCategoryId;
+-    if (Number(node.type_id) === wantedTypeId) {
+-      found = currentDescriptionCategoryId;
+-      return;
+-    }
+-    for (const child of Array.isArray(node.children) ? node.children : []) {
+-      visit(child, currentDescriptionCategoryId);
+-      if (found) return;
+-    }
+-  };
+-  for (const root of Array.isArray(tree) ? tree : []) {
+-    visit(root, 0);
+-    if (found) break;
+-  }
+-  return found;
+-}
+-
+-async function getOzonDescriptionCategoryAttributes(store, descriptionCategoryId, typeId, language = "DEFAULT") {
+-  const descCatId = Number(descriptionCategoryId);
+-  const targetTypeId = Number(typeId);
+-  if (!Number.isFinite(descCatId) || descCatId <= 0 || !Number.isFinite(targetTypeId) || targetTypeId <= 0) {
+-    return [];
+-  }
+-  const cacheKey = cacheKeyForStore(store, `attrs:${language}:${descCatId}:${targetTypeId}`);
+-  const cached = descriptionCategoryAttributesCache.get(cacheKey);
+-  if (cached && Date.now() - cached.at < DESCRIPTION_CATEGORY_CACHE_TTL_MS) {
+-    return cached.data;
+-  }
+-  const data = await callOzonSellerApi(
+-    store,
+-    "/v1/description-category/attribute",
+-    { description_category_id: descCatId, type_id: targetTypeId, language },
+-    60000,
+-  );
+-  const attrs = Array.isArray(data?.result) ? data.result : [];
+-  descriptionCategoryAttributesCache.set(cacheKey, { at: Date.now(), data: attrs });
+-  return attrs;
+-}
+-
+-async function getOzonDescriptionCategoryAttributeValues(store, descriptionCategoryId, typeId, attributeId, language = "DEFAULT", limit = 1000) {
+-  const descCatId = Number(descriptionCategoryId);
+-  const targetTypeId = Number(typeId);
+-  const targetAttributeId = Number(attributeId);
+-  if (
+-    !Number.isFinite(descCatId) || descCatId <= 0 ||
+-    !Number.isFinite(targetTypeId) || targetTypeId <= 0 ||
+-    !Number.isFinite(targetAttributeId) || targetAttributeId <= 0
+-  ) {
+-    return [];
+-  }
+-  const safeLimit = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+-  const cacheKey = cacheKeyForStore(store, `attr-values:${language}:${descCatId}:${targetTypeId}:${targetAttributeId}:${safeLimit}`);
+-  const cached = descriptionCategoryAttributeValuesCache.get(cacheKey);
+-  if (cached && Date.now() - cached.at < DESCRIPTION_CATEGORY_CACHE_TTL_MS) {
+-    return cached.data;
+-  }
+-
+-  const values = [];
+-  const seen = new Set();
+-  let hasNext = true;
+-  let lastValueId = 0;
+-  while (hasNext && values.length < safeLimit) {
+-    const pageLimit = Math.min(1000, safeLimit - values.length);
+-    const data = await callOzonSellerApi(
+-      store,
+-      "/v1/description-category/attribute/values",
+-      {
+-        description_category_id: descCatId,
+-        type_id: targetTypeId,
+-        attribute_id: targetAttributeId,
+-        language,
+-        limit: pageLimit,
+-        ...(lastValueId ? { last_value_id: lastValueId } : {}),
+-      },
+-      60000,
+-    );
+-    const rawValues = Array.isArray(data?.result)
+-      ? data.result
+-      : Array.isArray(data?.result?.values)
+-        ? data.result.values
+-        : [];
+-    if (!rawValues.length) break;
+-    for (const item of rawValues) {
+-      const id = item?.id ?? item?.dictionary_value_id ?? item?.dictionaryValueId ?? item?.value_id ?? item?.valueId ?? "";
+-      const value = item?.value ?? item?.name ?? item?.title ?? item?.label ?? "";
+-      const key = `${id || ""}:${value || ""}`;
+-      if ((!value && !id) || seen.has(key)) continue;
+-      seen.add(key);
+-      values.push({
+-        id,
+-        value,
+-        info: item?.info ?? "",
+-        picture: item?.picture ?? "",
+-      });
+-    }
+-    lastValueId = Number(rawValues.at(-1)?.id ?? rawValues.at(-1)?.dictionary_value_id ?? rawValues.at(-1)?.value_id ?? 0) || 0;
+-    hasNext = Boolean(data?.has_next || data?.result?.has_next) && Boolean(lastValueId);
+-  }
+-  descriptionCategoryAttributeValuesCache.set(cacheKey, { at: Date.now(), data: values });
+-  return values;
+-}
+-
+ function getRequestStore(state, req, fallbackStoreId) {
+   const storeId = req.headers["x-ozon-store-id"] || fallbackStoreId || state.currentStoreId;
+   const store = activeStore(state, storeId);
+@@ -4314,134 +4196,7 @@ async function handle(req, res) {
+     return;
+   }
+
+-  // === 类目树端点：尝试调用 Ozon API，失败时返回空 ===
+-  if (req.method === "GET" && url.pathname === "/ozon/categories/tree") {
+-    const account = requireAuth(req, state);
+-    const language = url.searchParams.get("language") || "DEFAULT";
+-    const storeId = storeIdForAccountRequest(
+-      state,
+-      account,
+-      url.searchParams.get("storeId") || req.headers["x-ozon-store-id"] || "",
+-    );
+-    const store = activeStore(state, storeId, account.id);
+-    if (store) {
+-      try {
+-        const tree = await getOzonDescriptionCategoryTree(store, language);
+-        sendJson(res, 200, { data: tree, items: tree, total: tree.length, language });
+-        return;
+-      } catch (err) {
+-        // Ozon API 可能对类目树端点返回 404，回退到从商品数据推断
+-      }
+-    }
+-    // 从已同步的商品数据中提取类目信息
+-    const catMap = new Map();
+-    for (const p of cacheItemsForStore(state.caches.products, store)) {
+-      const catId = p.description_category_id;
+-      const typeId = p.type_id;
+-      if (catId) {
+-        const key = String(catId);
+-        if (!catMap.has(key)) {
+-          catMap.set(key, {
+-            id: catId,
+-            type_id: typeId,
+-            name: p.category || "",
+-            title: p.category || "",
+-            children: [],
+-          });
+-        }
+-      }
+-    }
+-    const tree = [...catMap.values()];
+-    sendJson(res, 200, { data: tree, items: tree, total: tree.length, language, inferred: true });
+-    return;
+-  }
+-
+-  const categoryAttributesMatch = url.pathname.match(/^\/ozon\/description-category\/([^/]+)\/attributes$/);
+-  if (req.method === "GET" && categoryAttributesMatch) {
+-    const account = requireAuth(req, state);
+-    const typeId = decodeURIComponent(categoryAttributesMatch[1]);
+-    const storeId = storeIdForAccountRequest(
+-      state,
+-      account,
+-      url.searchParams.get("storeId") || req.headers["x-ozon-store-id"] || "",
+-    );
+-    const store = activeStore(state, storeId, account.id);
+-    if (store) {
+-      let catId = Number(url.searchParams.get("descriptionCategoryId") || url.searchParams.get("description_category_id")) || 0;
+-      if (!catId) {
+-        try {
+-          const tree = await getOzonDescriptionCategoryTree(store, "DEFAULT");
+-          catId = findDescriptionCategoryIdByTypeId(tree, typeId);
+-        } catch {
+-          catId = 0;
+-        }
+-      }
+-      if (!catId) {
+-        const product = cacheItemsForStore(state.caches.products, store).find(
+-          (p) => String(p.type_id) === String(typeId)
+-        );
+-        catId = Number(product?.description_category_id) || 0;
+-      }
+-      if (catId) {
+-        try {
+-          const attrs = await getOzonDescriptionCategoryAttributes(store, catId, typeId, "DEFAULT");
+-          sendJson(res, 200, { data: attrs, items: attrs, total: attrs.length, typeId, categoryId: catId });
+-          return;
+-        } catch (err) {
+-          // 回退到空
+-        }
+-      }
+-    }
+-    sendJson(res, 200, { data: [], items: [], total: 0, typeId });
+-    return;
+-  }
+-
+-  const categoryAttributeValuesMatch = url.pathname.match(/^\/ozon\/description-category\/([^/]+)\/attributes\/([^/]+)\/values$/);
+-  if (req.method === "GET" && categoryAttributeValuesMatch) {
+-    const account = requireAuth(req, state);
+-    const typeId = decodeURIComponent(categoryAttributeValuesMatch[1]);
+-    const attributeId = decodeURIComponent(categoryAttributeValuesMatch[2]);
+-    const storeId = storeIdForAccountRequest(
+-      state,
+-      account,
+-      url.searchParams.get("storeId") || req.headers["x-ozon-store-id"] || "",
+-    );
+-    const store = activeStore(state, storeId, account.id);
+-    let catId = Number(url.searchParams.get("descriptionCategoryId") || url.searchParams.get("description_category_id")) || 0;
+-    if (!catId) {
+-      try {
+-        const tree = await getOzonDescriptionCategoryTree(store, "DEFAULT");
+-        catId = findDescriptionCategoryIdByTypeId(tree, typeId);
+-      } catch {
+-        catId = 0;
+-      }
+-    }
+-    if (!catId) {
+-      const product = cacheItemsForStore(state.caches.products, store).find(
+-        (p) => String(p.type_id) === String(typeId)
+-      );
+-      catId = Number(product?.description_category_id) || 0;
+-    }
+-    if (catId) {
+-      try {
+-        const values = await getOzonDescriptionCategoryAttributeValues(
+-          store,
+-          catId,
+-          typeId,
+-          attributeId,
+-          "DEFAULT",
+-          Number(url.searchParams.get("limit") || 1000),
+-        );
+-        sendJson(res, 200, { data: values, items: values, total: values.length, typeId, categoryId: catId, attributeId });
+-        return;
+-      } catch (err) {
+-        sendJson(res, 200, { data: [], items: [], total: 0, typeId, categoryId: catId, attributeId, error: String(err?.message || err) });
+-        return;
+-      }
+-    }
+-    sendJson(res, 200, { data: [], items: [], total: 0, typeId, attributeId });
+-    return;
+-  }
++  if (await handleOzonCategoryRoute({ req, res, url, state })) return;
+
+   if (req.method === "GET" && url.pathname === "/ozon/collect-box") {
+     const account = requireAuth(req, state);
+diff --git a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-6-before/cache-route-isolation.test.mjs b/server/tests/cache-route-isolation.test.mjs
+index f948996..a72fdc7 100644
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-6-before/cache-route-isolation.test.mjs
++++ b/server/tests/cache-route-isolation.test.mjs
+@@ -63,16 +63,16 @@ const fixture = {
+   currentStoreId: "",
+   currentStoreIdsByAccount: { acct_a: "store_a", acct_b: "store_b" },
+   stores: [
+-    { id: "store_a", ownerAccountId: "acct_a", clientId: "client_a", label: "A store" },
+-    { id: "store_b", ownerAccountId: "acct_b", clientId: "client_b", label: "B store" },
++    { id: "store_a", ownerAccountId: "acct_a", clientId: "client_a", apiKey: "mock-key-a", label: "A store" },
++    { id: "store_b", ownerAccountId: "acct_b", clientId: "client_b", apiKey: "mock-key-b", label: "B store" },
+   ],
+   currentDataCollectionStoreId: "",
+   currentDataCollectionStoreIdsByAccount: {},
+   dataCollectionStores: [],
+   caches: {
+     products: [
+-      { id: "product_a", accountId: "acct_a", storeId: "store_a", description_category_id: "category_a", type_id: "type_a" },
+-      { id: "product_b", accountId: "acct_b", storeId: "store_b", description_category_id: "category_b", type_id: "type_b" },
++      { id: "product_a", accountId: "acct_a", storeId: "store_a", description_category_id: "category_a", type_id: "type_a", category: "Local inferred category A" },
++      { id: "product_b", accountId: "acct_b", storeId: "store_b", description_category_id: "category_b", type_id: "type_b", category: "Local inferred category B" },
+     ],
+     postings: scopedPair("posting"),
+     warehouses: scopedPair("warehouse"),
+@@ -102,6 +102,13 @@ const fixture = {
+   updatedAt: "2026-07-27T00:00:00.000Z",
+ };
+
++const originalFetch = globalThis.fetch;
++const ozonRequests = [];
++globalThis.fetch = async (url) => {
++  ozonRequests.push(String(url));
++  return new Response(JSON.stringify({ code: "OZON_UNAVAILABLE" }), { status: 503 });
++};
++
+ const firstId = (payload) => {
+   const list = Array.isArray(payload) ? payload : payload?.data || payload?.items || payload?.records || [];
+   return list.map((item) => item.id);
+@@ -189,19 +196,34 @@ try {
+   );
+   assert.deepEqual(firstId(importTasks.body), ["import_a"], "import task history must be account scoped");
+
+-  const categoryTree = await requestJson(
+-    handle,
+-    "GET",
+-    "/ozon/categories/tree",
+-    undefined,
+-    "token_a",
+-    "store_a",
+-  );
+-  assert.deepEqual(
+-    (categoryTree.body.data || []).map((item) => item.id),
+-    ["category_a"],
+-    "category fallback data must only use products from the selected store",
+-  );
++  for (const [pathname, expectedCode] of [
++    ["/ozon/categories/tree", "OZON_CATEGORY_TREE_UNAVAILABLE"],
++    ["/ozon/description-category/type_a/attributes", "OZON_CATEGORY_TREE_UNAVAILABLE"],
++    ["/ozon/description-category/type_a/attributes/attribute_a/values", "OZON_CATEGORY_TREE_UNAVAILABLE"],
++  ]) {
++    const categoryResponse = await requestJson(
++      handle,
++      "GET",
++      pathname,
++      undefined,
++      "token_a",
++      "store_a",
++    );
++    assert.notEqual(categoryResponse.status, 200, `${pathname} must fail closed when Ozon is unavailable`);
++    assert.equal(categoryResponse.body.code, expectedCode);
++    const serialized = JSON.stringify(categoryResponse.body);
++    for (const localValue of [
++      "category_a",
++      "category_b",
++      "type_a",
++      "type_b",
++      "Local inferred category A",
++      "Local inferred category B",
++    ]) {
++      assert.equal(serialized.includes(localValue), false, `${pathname} must not expose ${localValue}`);
++    }
++  }
++  assert.equal(ozonRequests.length >= 3, true, "category routes must use only the mocked Ozon client");
+
+   const createTemplate = await requestJson(
+     handle,
+@@ -249,5 +271,6 @@ try {
+
+   console.log("cache route account isolation test passed");
+ } finally {
++  globalThis.fetch = originalFetch;
+   await rm(dataDir, { recursive: true, force: true });
+ }
+diff --git a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-6-before/ozon-category-query-extraction-plan.md b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+index 44c2e47..dd6fa3d 100644
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-6-before/ozon-category-query-extraction-plan.md
++++ b/docs/superpowers/plans/2026-07-28-ozon-category-query-extraction.md
+@@ -1052,7 +1052,7 @@ Expected:
+ - Consumes: Task 4 route handler, Task 5 shared service instance.
+ - Produces: entry-level delegation and proof that local product caches are never category data sources.
+
+-- [ ] **Step 1: Add a failing real-entry route test**
++- [x] **Step 1: Add a failing real-entry route test**
+
+ In a temporary state, create:
+
+@@ -1085,7 +1085,7 @@ assert.equal(JSON.stringify(response.body).includes("local-category"), false);
+
+ Add attributes and values cases without explicit `descriptionCategoryId`; Ozon tree failure must not fall back to `local-product`.
+
+-- [ ] **Step 2: Run and verify RED**
++- [x] **Step 2: Run and verify RED**
+
+ Run:
+
+@@ -1096,7 +1096,7 @@ node server/tests/cache-route-isolation.test.mjs
+
+ Expected: the old tree fallback test or new strict assertion fails before entry replacement.
+
+-- [ ] **Step 3: Create and wire one route handler**
++- [x] **Step 3: Create and wire one route handler**
+
+ After `sendJson` and `sendError` are available, create:
+
+@@ -1119,7 +1119,7 @@ route:
+ if (await handleOzonCategoryRoute({ req, res, url, state })) return;
+ ```
+
+-- [ ] **Step 4: Delete the complete inline category boundary**
++- [x] **Step 4: Delete the complete inline category boundary**
+
+ Remove from `server/index.mjs`:
+
+@@ -1140,7 +1140,7 @@ the product type_id -> description_category_id fallback
+
+ Do not delete unrelated collection, AI, import or listing code.
+
+-- [ ] **Step 5: Update the old isolation test to the new rule**
++- [x] **Step 5: Update the old isolation test to the new rule**
+
+ Replace the old assertion:
+
+@@ -1156,7 +1156,7 @@ category queries must never expose or use local product categories when Ozon is
+
+ The test must assert a non-2xx category error and absence of both account A and account B local category IDs.
+
+-- [ ] **Step 6: Run route, isolation and syntax regression**
++- [x] **Step 6: Run route, isolation and syntax regression**
+
+ Run:
+
+@@ -1170,7 +1170,7 @@ node scripts/check-store-data-isolation.mjs
+
+ Expected: all pass.
+
+-- [ ] **Step 7: Review checkpoint**
++- [x] **Step 7: Review checkpoint**
+
+ Run:

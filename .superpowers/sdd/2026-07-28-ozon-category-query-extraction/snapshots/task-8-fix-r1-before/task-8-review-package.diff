@@ -1,0 +1,70 @@
+# Task 8 scoped review package — 1688 AI wizard category failure gate
+
+# Base snapshots
+# - snapshots/task-8-before/1688-ai-wizard.js
+# - snapshots/task-8-before/manifest.json
+# - snapshots/task-8-before/check-extension-source-parity.mjs
+# - snapshots/task-8-before/check-extension-diff-contract.mjs
+# - snapshots/task-8-before/sonli-extension-0.13.46.1.zip
+
+# Reviewed product scope only
+# - new dependency-free extension/lib/category-readiness.js
+# - 1688 wizard category-tree/attribute failure transitions and action guards
+# - the matching 1688 manifest content-script order
+# - exact source-parity/diff contracts and direct helper test
+# - Task 8 checkbox-only plan change
+
+diff --git a/extension/lib/category-readiness.js b/extension/lib/category-readiness.js
+new file mode 100644
+@@
++(() => {
++  const MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
++  function failTree(state) { /* clears tree, path, selection and attribute state */ }
++  function failAttributes(state) { /* retains category, clears attribute state */ }
++  function markReady(state) { /* explicit successful-authentic-data state */ }
++  function requireReady(state) { /* rejects missing category or unready/error state */ }
++  globalThis.SonliCategoryReadiness = { failTree, failAttributes, markReady, requireReady };
++})();
+
+diff --git a/extension/content/1688-ai-wizard.js b/extension/content/1688-ai-wizard.js
+@@ category readiness state and persisted draft
++categoryDataError: ''
++categoryDataReady: false
+@@ tree loading
++empty, non-ok and thrown tree responses call failTree(), render the fixed error and return.
++autoMatchCategory() runs only after a non-empty authentic tree is accepted.
+@@ attribute loading
++non-ok, malformed and thrown responses call failAttributes(), render and return.
++an authentic array response, including [], creates the rows and then calls markReady().
+@@ category-dependent actions
++runPipeline(), runRewriteOnly(), runPublishOnly() and aiFillAttrs() call requireReady
++through requireCategoryDataReady() before continuation.
+@@ visible state
++attribute failure renders the fixed retryable error instead of an empty attribute form.
+
+diff --git a/extension/manifest.json b/extension/manifest.json
+@@ 1688 detail content scripts
+ [ "content/alibaba-1688.js",
++  "lib/category-readiness.js",
+   "content/1688-ai-wizard.js" ]
+
+diff --git a/scripts/check-extension-source-parity.mjs b/scripts/check-extension-source-parity.mjs
+@@ audited extension differences
++content/1688-ai-wizard.js is an allowed source difference.
++lib/category-readiness.js and tests/category-readiness.test.js are allowed local-only files.
+
+diff --git a/scripts/check-extension-diff-contract.mjs b/scripts/check-extension-diff-contract.mjs
+@@ exact contract
++content/1688-ai-wizard.js: { hunks: 19, added: 63, removed: 15 }
++manifest.json: { hunks: 15, added: 11, removed: 19 }
++manifest required patterns assert helper-before-wizard ordering.
+
+# Snapshot comparison evidence
+# - wizard: 19 hunks, 63 added lines, 15 removed lines
+# - manifest, source-parity and diff-contract changes are intentional contract updates
+# - no AI prompt, fallback category data, server/app/database/config/dependency change
+
+# Generated artifacts (existing package-extension script only)
+# - app/public/sonli-extension-0.13.46.1/
+# - app/public/sonli-extension-0.13.46.1.zip
+# - app/dist/sonli-extension-0.13.46.1.zip

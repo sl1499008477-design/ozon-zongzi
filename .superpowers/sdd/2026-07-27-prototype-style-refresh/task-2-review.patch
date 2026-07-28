@@ -1,0 +1,221 @@
+diff --git a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-before/app/src/App.jsx b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-after/app/src/App.jsx
+index 5931e4f..c9a288b 100644
+--- a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-before/app/src/App.jsx
++++ b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-after/app/src/App.jsx
+@@ -1313,7 +1313,7 @@ function AppShell() {
+       locale={zhCN}
+       theme={themeConfig}
+     >
+-      <Layout className="qh-shell">
++      <Layout className="qh-shell prototype-shell">
+         <Header className="qh-topbar">
+           <a className="qh-brand" onClick={() => navigate("/ozon/dashboard")}>
+             <img src="/icons/icon48.png" alt="sonli" />
+@@ -1370,7 +1370,11 @@ function AppShell() {
+             {route === "/ozon/dashboard" ? (
+               <div className="qh-page-head">
+                 <div>
++                  <span className="prototype-eyebrow">OZON SELLER WORKSPACE</span>
+                   <h1>{pageTitle}</h1>
++                  <p className="prototype-page-subtitle">
++                    先看经营结果，再处理今天最重要的异常
++                  </p>
+                   <div className="qh-date-row">
+                     <span>{currentDate}</span>
+                     <span className="qh-dot" />
+diff --git a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-before/app/src/styles.css b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-after/app/src/styles.css
+index 40040b0..eb09851 100644
+--- a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-before/app/src/styles.css
++++ b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-after/app/src/styles.css
+@@ -4706,3 +4706,165 @@ kbd {
+     margin-left: 0;
+   }
+ }
++
++/* Prototype shell overrides */
++.prototype-shell {
++  min-height: 100vh;
++  background: var(--prototype-page-bg);
++  color: var(--prototype-ink);
++}
++
++.prototype-shell .qh-sider {
++  top: 24px;
++  bottom: 24px;
++  left: 24px;
++  height: calc(100vh - 48px);
++  padding: 20px 12px;
++  overflow: auto;
++  border: 1px solid var(--prototype-border);
++  border-radius: 26px;
++  background: rgba(255, 255, 255, 0.96);
++  box-shadow: var(--prototype-shadow);
++}
++
++.prototype-shell .qh-topbar {
++  inset: 24px 24px auto 292px;
++  height: 64px;
++  padding: 0;
++  border: 0;
++  background: transparent;
++  box-shadow: none;
++}
++
++.prototype-shell .qh-content {
++  margin-left: 292px;
++  padding: 112px 24px 48px 0;
++  overflow-x: clip;
++  background: var(--prototype-page-bg);
++}
++
++.prototype-shell .qh-sider .ant-menu-item,
++.prototype-shell .qh-sider .ant-menu-submenu-title {
++  height: 48px !important;
++  margin: 4px 0 !important;
++  border-radius: 17px !important;
++  color: var(--prototype-ink-secondary);
++}
++
++.prototype-shell .qh-sider .ant-menu-item-selected {
++  color: var(--prototype-primary) !important;
++  background: linear-gradient(90deg, #e9f2ff, #f2f7ff) !important;
++}
++
++.prototype-shell .qh-sider .ant-layout-sider-children {
++  padding-top: 56px;
++}
++
++.prototype-shell .qh-brand {
++  top: 40px;
++  left: 44px;
++  width: 168px;
++  height: 40px;
++  padding: 0;
++  border: 0;
++  border-radius: 14px;
++  background: transparent;
++  color: var(--prototype-ink);
++}
++
++.prototype-shell .qh-brand img {
++  width: 36px;
++  height: 36px;
++  border-radius: 12px;
++}
++
++.prototype-shell .qh-brand span {
++  font-size: 20px;
++  letter-spacing: -0.02em;
++}
++
++.prototype-shell .qh-top-actions {
++  height: 64px;
++  gap: 8px;
++}
++
++.prototype-shell .qh-header-action,
++.prototype-shell .qh-user {
++  height: 44px;
++  padding: 6px 10px;
++  border-color: var(--prototype-border);
++  border-radius: 14px;
++  background: var(--prototype-surface);
++  color: var(--prototype-ink-secondary);
++  box-shadow: 0 2px 8px rgba(24, 79, 151, 0.03);
++}
++
++.prototype-shell .qh-header-action.tone-blue {
++  border-color: var(--prototype-border-strong);
++  background: var(--prototype-primary-soft);
++}
++
++.prototype-shell .qh-header-action.tone-orange {
++  background: var(--prototype-surface-muted);
++}
++
++.prototype-shell .qh-header-action:hover,
++.prototype-shell .qh-user:hover {
++  border-color: var(--prototype-primary);
++  background: var(--prototype-primary-soft);
++  color: var(--prototype-ink);
++}
++
++.prototype-shell .qh-header-action > span,
++.prototype-shell .qh-user > .anticon,
++.prototype-shell .qh-header-action.tone-blue > span,
++.prototype-shell .qh-header-action.tone-orange > span {
++  color: var(--prototype-primary);
++}
++
++.prototype-shell .qh-header-action strong,
++.prototype-shell .qh-user span {
++  color: var(--prototype-ink);
++}
++
++.prototype-shell .qh-header-action em,
++.prototype-shell .qh-user strong {
++  color: var(--prototype-ink-secondary);
++}
++
++.prototype-shell .qh-page-head {
++  margin-bottom: 24px;
++}
++
++.prototype-shell .qh-page-head h1 {
++  margin-top: 5px;
++  color: var(--prototype-ink);
++  font-size: 32px;
++  font-weight: 700;
++  letter-spacing: -0.03em;
++}
++
++.prototype-eyebrow {
++  display: block;
++  color: var(--prototype-primary);
++  font-size: 11px;
++  font-weight: 700;
++  letter-spacing: 0.12em;
++  line-height: 1.4;
++}
++
++.prototype-page-subtitle {
++  margin: 7px 0 0;
++  color: var(--prototype-ink-secondary);
++  font-size: 14px;
++  line-height: 1.6;
++}
++
++.prototype-shell .qh-date-row {
++  margin-top: 10px;
++  color: var(--prototype-ink-light);
++}
++
++.prototype-shell .qh-dot {
++  background: var(--prototype-border-strong);
++}
+diff --git a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-before/app/tests/prototype-style-contract.test.mjs b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-after/app/tests/prototype-style-contract.test.mjs
+index 5feeb93..8dd6bce 100644
+--- a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-before/app/tests/prototype-style-contract.test.mjs
++++ b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-2-after/app/tests/prototype-style-contract.test.mjs
+@@ -36,3 +36,21 @@ test("maps Ant Design to the approved prototype palette", () => {
+   assert.match(appSource, /colorBorder:\s*"#dce8f7"/);
+   assert.match(appSource, /borderRadiusLG:\s*18/);
+ });
++
++test("scopes the visual refresh to the authenticated application shell", () => {
++  assert.match(appSource, /className="qh-shell prototype-shell"/);
++  assert.match(appSource, /className="prototype-eyebrow"/);
++  assert.match(appSource, /OZON SELLER WORKSPACE/);
++});
++
++test("defines the prototype application shell selectors", () => {
++  for (const selector of [
++    ".prototype-shell",
++    ".prototype-shell .qh-sider",
++    ".prototype-shell .qh-topbar",
++    ".prototype-shell .qh-content",
++    ".prototype-shell .qh-sider .ant-menu-item-selected",
++  ]) {
++    assert.ok(cssSource.includes(selector), selector);
++  }
++});

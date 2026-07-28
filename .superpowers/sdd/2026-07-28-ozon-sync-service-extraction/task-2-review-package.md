@@ -1,0 +1,22 @@
+# Task 2 review package
+
+- Commits: none; the user forbids commits in this dirty `main` workspace.
+- Before snapshot:
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-2-before-index.mjs`
+  - `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/task-2-before-check-store-data-isolation.mjs`
+- Current modified files:
+  - `server/index.mjs`
+  - `scripts/check-store-data-isolation.mjs`
+- New files:
+  - `server/store-cache-scope.mjs`
+  - `server/tests/store-cache-scope.test.mjs`
+- Required scoped comparisons:
+  - `diff -u task-2-before-index.mjs server/index.mjs`
+  - `diff -u task-2-before-check-store-data-isolation.mjs scripts/check-store-data-isolation.mjs`
+- Review focus:
+  - The five helpers moved without behavior changes.
+  - `server/index.mjs` imports them and no longer defines them.
+  - `testExports` remains stable.
+  - The static verifier still checks the same isolation rule, now against the new module.
+  - Tests cover same-ID cross-store coexistence and same-store update.
+  - No unrelated files or runtime contracts changed.

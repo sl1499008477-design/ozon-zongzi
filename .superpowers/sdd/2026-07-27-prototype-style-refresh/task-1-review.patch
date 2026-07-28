@@ -1,0 +1,111 @@
+diff --git a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-before/app/src/App.jsx b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/src/App.jsx
+index 1227604..5931e4f 100644
+--- a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-before/app/src/App.jsx
++++ b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/src/App.jsx
+@@ -1199,10 +1199,18 @@ function AppShell() {
+   const completeStepCount = [hasStore, settings.pluginInstalled, Boolean(settings.lastSync), false].filter(Boolean).length;
+   const themeConfig = {
+     token: {
+-      colorPrimary: "#1677ff",
+-      borderRadius: 6,
++      colorPrimary: "#005af8",
++      colorPrimaryHover: "#004fe0",
++      colorText: "#071737",
++      colorTextSecondary: "#65718a",
++      colorBorder: "#dce8f7",
++      colorBgLayout: "#f6fafe",
++      colorBgContainer: "#ffffff",
++      borderRadius: 12,
++      borderRadiusLG: 18,
++      boxShadowSecondary: "0 12px 38px rgba(24, 79, 151, 0.08)",
+       fontFamily:
+-        '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif',
++        'Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, -apple-system, sans-serif',
+     },
+     components: {
+       Layout: {
+@@ -1211,7 +1219,7 @@ function AppShell() {
+         triggerBg: "#fff",
+       },
+       Card: {
+-        borderRadiusLG: 12,
++        borderRadiusLG: 18,
+       },
+     },
+   };
+diff --git a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-before/app/src/styles.css b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/src/styles.css
+index 2e7db03..40040b0 100644
+--- a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-before/app/src/styles.css
++++ b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/src/styles.css
+@@ -1,8 +1,25 @@
+ :root {
+   color-scheme: light;
++  --prototype-page-bg: #f6fafe;
++  --prototype-surface: #ffffff;
++  --prototype-surface-muted: #f7fafe;
++  --prototype-primary: #005af8;
++  --prototype-primary-hover: #004fe0;
++  --prototype-primary-soft: #eef5ff;
++  --prototype-ink: #071737;
++  --prototype-ink-secondary: #65718a;
++  --prototype-ink-light: #8c98ac;
++  --prototype-border: #dce8f7;
++  --prototype-border-strong: #cbdcf2;
++  --prototype-success: #14994a;
++  --prototype-warning: #b76708;
++  --prototype-danger: #d93632;
++  --prototype-purple: #6c4de6;
++  --prototype-shadow: 0 12px 38px rgba(24, 79, 151, 0.06),
++    0 1px 2px rgba(24, 79, 151, 0.04);
+   font-family:
+-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+-    Arial, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
++    Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC",
++    system-ui, -apple-system, sans-serif;
+   background: #f5f7fb;
+   color: rgba(0, 0, 0, 0.88);
+ }
+diff --git a/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/tests/prototype-style-contract.test.mjs b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/tests/prototype-style-contract.test.mjs
+new file mode 100644
+index 0000000..5feeb93
+--- /dev/null
++++ b/.superpowers/sdd/2026-07-27-prototype-style-refresh/task-1-after/app/tests/prototype-style-contract.test.mjs
+@@ -0,0 +1,38 @@
++import assert from "node:assert/strict";
++import { readFileSync } from "node:fs";
++import test from "node:test";
++
++const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
++const cssSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
++
++const requiredTokens = new Map([
++  ["--prototype-page-bg", "#f6fafe"],
++  ["--prototype-surface", "#ffffff"],
++  ["--prototype-surface-muted", "#f7fafe"],
++  ["--prototype-primary", "#005af8"],
++  ["--prototype-primary-hover", "#004fe0"],
++  ["--prototype-primary-soft", "#eef5ff"],
++  ["--prototype-ink", "#071737"],
++  ["--prototype-ink-secondary", "#65718a"],
++  ["--prototype-ink-light", "#8c98ac"],
++  ["--prototype-border", "#dce8f7"],
++  ["--prototype-border-strong", "#cbdcf2"],
++  ["--prototype-success", "#14994a"],
++  ["--prototype-warning", "#b76708"],
++  ["--prototype-danger", "#d93632"],
++  ["--prototype-purple", "#6c4de6"],
++]);
++
++test("declares the approved prototype token values", () => {
++  const normalized = cssSource.toLowerCase();
++  for (const [name, value] of requiredTokens) {
++    assert.match(normalized, new RegExp(`${name}:\\s*${value.replace("#", "\\#")}`), name);
++  }
++});
++
++test("maps Ant Design to the approved prototype palette", () => {
++  assert.match(appSource, /colorPrimary:\s*"#005af8"/);
++  assert.match(appSource, /colorText:\s*"#071737"/);
++  assert.match(appSource, /colorBorder:\s*"#dce8f7"/);
++  assert.match(appSource, /borderRadiusLG:\s*18/);
++});

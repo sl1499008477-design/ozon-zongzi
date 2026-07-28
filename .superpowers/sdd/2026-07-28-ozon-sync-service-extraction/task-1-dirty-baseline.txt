@@ -1,0 +1,174 @@
+ M .env.example
+ M README.md
+ M app/package.json
+ M app/public/plugin/popup.js
+ M app/public/sonli-extension-0.13.46.1.zip
+ M app/src/App.jsx
+ M app/src/styles.css
+ M app/vite.config.mjs
+ M design-qa.md
+ M docker-compose.yml
+ M extension/background/__tests__/dedupe.smoke.test.js
+ M extension/background/service-worker.js
+ M extension/background/sync/backend-client.js
+ M extension/background/sync/sync-engine.js
+ M extension/content/alibaba-1688.js
+ D extension/content/collector/anti-ban.js
+ D extension/content/collector/auto-scroller.js
+ D extension/content/collector/db.js
+ D extension/content/collector/keyword-pilot.js
+ D extension/content/collector/panel.css
+ D extension/content/collector/panel.js
+ M extension/content/jizhangerp-bridge.js
+ M extension/content/jzc-calc.js
+ M extension/content/ozon-data-panel.js
+ M extension/content/ozon-premium-hook.js
+ M extension/content/ozon-product.js
+ M extension/content/ozon-search.js
+ M extension/content/shared-utils.js
+ M extension/content/sync-auth.js
+ M extension/lib/cn-source-panel.js
+ M extension/manifest.json
+ M extension/popup/__tests__/popup-routing.smoke.test.js
+ M extension/popup/popup.css
+ M extension/popup/popup.html
+ M extension/popup/popup.js
+ D extension/tests/collector-manual-start.test.js
+ M extension/tests/jizhangerp-bridge-follow-sell.test.js
+ M package.json
+ M pnpm-lock.yaml
+ M scripts/check-collect-edit-listing-contract.mjs
+ M scripts/check-extension-diff-contract.mjs
+ M scripts/check-extension-source-parity.mjs
+ M scripts/check-extension-ui-parity.mjs
+ M scripts/check-extension-zip-smoke.mjs
+ M scripts/check-import-history-types.mjs
+ M scripts/check-plugin-readiness-gate.mjs
+ M scripts/dev.mjs
+ D scripts/frontend-compat-proxy.mjs
+ M scripts/package-extension.mjs
+ M scripts/verify.mjs
+ M server/db/connection.mjs
+ M server/db/migrate.mjs
+ M server/formal-persistence.mjs
+ M server/index.mjs
+ M server/object-storage.mjs
+ M server/ozon-import-normalizer.mjs
+ M server/persistence.mjs
+ M server/scrape-script.js
+ M server/tests/import-currency-contract.test.mjs
+ M server/tests/ozon-import-normalizer.test.mjs
+?? .dockerignore
+?? Dockerfile
+?? app/public/sonli-extension-0.13.46.1/
+?? app/src/AccountSettingsPage.jsx
+?? app/src/DataScreenPage.jsx
+?? app/src/PricingSettingsPage.jsx
+?? app/src/ProfitTrendPage.jsx
+?? app/src/SourceTable.jsx
+?? app/src/StoresSettingsPage.jsx
+?? app/src/client-transport.js
+?? app/src/dashboard-money.js
+?? app/src/order-analytics.js
+?? app/src/order-money.js
+?? app/src/store-date.js
+?? app/src/table-text.jsx
+?? app/tests/
+?? design-reference-option-3.png
+?? desktop/
+?? docker/
+?? docs/
+?? extension/background/__tests__/fx-probe.smoke.test.js
+?? extension/lib/fx-probe.js
+?? extension/tests/collector-removed.test.js
+?? pnpm-workspace.yaml
+?? scripts/check-collect-delete-persistence.mjs
+?? scripts/check-store-data-isolation.mjs
+?? scripts/check-test-inventory.mjs
+?? scripts/test-manifest.mjs
+?? server/account-context.mjs
+?? server/account-deletion.mjs
+?? server/audit-event.mjs
+?? server/browser-agent-policy.mjs
+?? server/collection-pipeline.mjs
+?? server/collector-artifact-routes.mjs
+?? server/collector-desktop-service.mjs
+?? server/collector-excel-service.mjs
+?? server/collector-export-service.mjs
+?? server/collector-routes.mjs
+?? server/collector-selection-service.mjs
+?? server/db/migrations/002_api_key_dates.sql
+?? server/db/migrations/003_listing_pipeline_v3.sql
+?? server/db/migrations/004_listing_pipeline_hardening.sql
+?? server/db/migrations/005_collection_pipeline_v4.sql
+?? server/db/migrations/006_dynamic_pricing_config.sql
+?? server/db/migrations/007_collector_desktop.sql
+?? server/db/migrations/008_operating_store_account_ownership.sql
+?? server/db/migrations/009_collector_market_snapshot_scope.sql
+?? server/db/migrations/010_collection_security_scope.sql
+?? server/db/migrations/011_official_commission_imports.sql
+?? server/db/migrations/012_official_commission_mapping_duplicates.sql
+?? server/db/migrations/013_local_state_store_owner_backfill.sql
+?? server/db/migrations/014_collector_task_configuration_cleanup.sql
+?? server/db/migrations/015_dynamic_fx_probes.sql
+?? server/db/migrations/016_audit_event_contract.sql
+?? server/db/migrations/017_pricing_rule_confirmation.sql
+?? server/json-state-writer.mjs
+?? server/listing-pipeline.mjs
+?? server/listing-queue.mjs
+?? server/listing-worker.mjs
+?? server/object-cleanup-queue.mjs
+?? server/object-cleanup-worker.mjs
+?? server/order-money-summary.mjs
+?? server/ozon-client.mjs
+?? server/ozon-import-status.mjs
+?? server/permissions.mjs
+?? server/postgres-state-transaction.mjs
+?? server/pricing-config-service.mjs
+?? server/pricing-engine.mjs
+?? server/pricing-fx-service.mjs
+?? server/pricing-official-import.mjs
+?? server/pricing-routes.mjs
+?? server/runtime-config.mjs
+?? server/sync-lease-policy.mjs
+?? server/tests/account-deletion-postgres.integration.mjs
+?? server/tests/account-deletion-relational.test.mjs
+?? server/tests/account-deletion.test.mjs
+?? server/tests/account-multi-session.test.mjs
+?? server/tests/account-store-isolation.test.mjs
+?? server/tests/audit-event.test.mjs
+?? server/tests/audit-route-integration.test.mjs
+?? server/tests/browser-agent-isolation.test.mjs
+?? server/tests/browser-agent-policy.test.mjs
+?? server/tests/cache-route-isolation.test.mjs
+?? server/tests/collect-listing-submit-failure.test.mjs
+?? server/tests/collect-multivariant-ingest.test.mjs
+?? server/tests/collect-multivariant-payload.test.mjs
+?? server/tests/collection-pipeline-v4.integration.mjs
+?? server/tests/collector-artifact-routes.test.mjs
+?? server/tests/collector-desktop.integration.mjs
+?? server/tests/collector-excel-service.test.mjs
+?? server/tests/collector-export-service.test.mjs
+?? server/tests/collector-routes.test.mjs
+?? server/tests/collector-selection-service.test.mjs
+?? server/tests/external-write-safety.test.mjs
+?? server/tests/formal-persistence-legacy-store.test.mjs
+?? server/tests/import-status-route.test.mjs
+?? server/tests/infrastructure-config.test.mjs
+?? server/tests/json-state-writer.test.mjs
+?? server/tests/listing-pipeline-v3.integration.mjs
+?? server/tests/migrate-concurrency.test.mjs
+?? server/tests/module-boundaries.test.mjs
+?? server/tests/object-cleanup-queue.test.mjs
+?? server/tests/object-cleanup-worker.test.mjs
+?? server/tests/order-money-summary.test.mjs
+?? server/tests/ozon-import-status-v3.test.mjs
+?? server/tests/permissions.test.mjs
+?? server/tests/persistence-atomicity.test.mjs
+?? server/tests/pricing-collector-contract.test.mjs
+?? server/tests/pricing-config.integration.mjs
+?? server/tests/pricing-engine.test.mjs
+?? server/tests/pricing-fx-service.test.mjs
+?? server/tests/pricing-fx.integration.mjs
+?? server/tests/pricing-official-import.test.mjs
+?? server/tests/sync-lease-isolation.test.mjs

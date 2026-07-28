@@ -1,0 +1,6 @@
+0a07f59fbf210d3f52f3111b1d4a2fbbded7b8c1946e2152bc9c0bbdb3427d62  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-8-before/1688-ai-wizard.js
+1adc60030e268698ac65772991495e7057bac70853f5c0eb8630557c903910e3  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-8-before/check-extension-diff-contract.mjs
+09ca5c6f2e194b43d5d0a9b204a96bac2226c3d4747c9fe6f1c38710752e75dd  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-8-before/check-extension-source-parity.mjs
+720c244804860bc5c0da1f27144b7372c2048f6d5e2d174a39c776958796eb7b  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-8-before/distributed-manifest.json
+720c244804860bc5c0da1f27144b7372c2048f6d5e2d174a39c776958796eb7b  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-8-before/manifest.json
+4b6ebec9d770c5b5f05018c9e93f958e78445f0194869cc067f5ce79930d3392  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-8-before/sonli-extension-0.13.46.1.zip

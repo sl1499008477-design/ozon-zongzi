@@ -1,0 +1,52 @@
+# Task 7 boundary fix r3 scoped review package
+# Base: snapshots/task-7-fix-r3-before/App.jsx
+# New focused files: app/src/use-category-tree-readiness.js and
+# app/tests/category-tree-readiness-hook.test.mjs
+# Guard remains server/tests/module-boundaries.test.mjs <= 9850 and is not edited.
+
+diff --git a/app/src/use-category-tree-readiness.js b/app/src/use-category-tree-readiness.js
+new file mode 100644
+@@ focused hook boundary
++// Owns category tree states/refs, cloned current-store trees, dual-language load,
++// retry transitions, stale request invalidation, and automatic-match request tokens.
++export function useCategoryTreeReadiness({ hasStore, currentStoreId, itemId, readTree }) {
++  // Reuses categoryRequestScope/categoryRequestIsCurrent, tree transitions,
++  // loadRealCategoryTrees, and scopedCategoryTrees from category-readiness.js.
++  return {
++    scopedTrees,
++    categoryTreeLoading,
++    categoryDataError,
++    categoryTreeReady,
++    loadCategoryTrees,
++    categoryAutoLoading,
++    beginCategoryAutoRequest,
++    categoryAutoRequestIsCurrent,
++    finishCategoryAutoRequest,
++  };
++}
+
+diff --git a/app/tests/category-tree-readiness-hook.test.mjs b/app/tests/category-tree-readiness-hook.test.mjs
+new file mode 100644
+@@
++test("exports the focused category tree readiness hook", () => {
++  assert.equal(typeof useCategoryTreeReadiness, "function");
++});
+
+diff --git a/app/src/App.jsx b/app/src/App.jsx
+--- a/.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/task-7-fix-r3-before/App.jsx
++++ b/app/src/App.jsx
+@@ category tree boundary
+-// Inline Task 7 tree state, refs, scoped-tree memo, load/apply/effects, and auto token refs.
++import { useCategoryTreeReadiness } from "./use-category-tree-readiness.js";
++const categoryTree = useCategoryTreeReadiness({ hasStore, currentStoreId, itemId, readTree: readCategoryTree });
++// Page keeps API adapter, form state, item scope, labels, draft, preview and publish logic.
+@@ automatic matching
+-// Inline request ID/scope ref mutation and loading state writes.
++const request = beginCategoryAutoRequest();
++const requestIsCurrent = () => categoryAutoRequestIsCurrent(request);
++// Result and catch retain currentness guards; finally delegates to finish so an old
++// request cannot close a newer request's loading state.
++finishCategoryAutoRequest(request);
+@@ guard result
+-// 9953 App lines exceeded unchanged <=9850 guard.
++// 9849 App lines; unchanged module boundary test passes.

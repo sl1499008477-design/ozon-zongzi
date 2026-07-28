@@ -1,0 +1,4 @@
+8405eb3a1dbbf8d58ae9a38d221007a0f1f7b58db98a37c4365741151267e202  App.jsx
+7521a93f6db74532a7e17cd86281e1578b990d8fd0b9fc2903c95d557d444b24  category-dictionary-readiness.test.mjs
+77605d988b30ab9dfea28856d173bb2a9f1a5711f21cdf7381f264d7cb940d2b  task-10-fix-r1-report.md
+189c2aabf1feb32726ea89ac865042031d62f57bade159fe95669978fe74c5ba  use-category-dictionary-readiness.js

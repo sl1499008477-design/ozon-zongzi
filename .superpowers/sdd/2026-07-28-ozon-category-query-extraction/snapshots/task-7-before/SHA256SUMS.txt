@@ -1,0 +1,2 @@
+12a825919ec77fc939384ee106151ea44e5b4e57f9fe43048e0b7269ba654ce8  App.jsx
+c7d92e0320c0aba600fb39ef64ababd25e0eff3649e920d6859429582bdccd65  ozon-category-query-extraction-plan.md

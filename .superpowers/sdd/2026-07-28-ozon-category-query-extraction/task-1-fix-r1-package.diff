@@ -1,0 +1,28 @@
+# Task 1 fix round 1 package
+
+## Added snapshots
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/1688-ai-wizard.js
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/App.jsx
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/cache-route-isolation.test.mjs
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/check-extension-diff-contract.mjs
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/check-extension-source-parity.mjs
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/manifest.json
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/module-boundaries.md
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/module-boundaries.test.mjs
+.superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/server-index.mjs
+
+## Snapshot hashes
+0a07f59fbf210d3f52f3111b1d4a2fbbded7b8c1946e2152bc9c0bbdb3427d62  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/1688-ai-wizard.js
+12a825919ec77fc939384ee106151ea44e5b4e57f9fe43048e0b7269ba654ce8  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/App.jsx
+d3c590bfbc149d3ac2535b80b535e60fe791c8eee811b119082e0fe891d78b8d  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/cache-route-isolation.test.mjs
+1adc60030e268698ac65772991495e7057bac70853f5c0eb8630557c903910e3  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/check-extension-diff-contract.mjs
+09ca5c6f2e194b43d5d0a9b204a96bac2226c3d4747c9fe6f1c38710752e75dd  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/check-extension-source-parity.mjs
+720c244804860bc5c0da1f27144b7372c2048f6d5e2d174a39c776958796eb7b  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/manifest.json
+d7eb9780cb6c5990c062de4a2e2a95a6a118df6a508f9b089ef5c58093f73d7f  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/module-boundaries.md
+43eaff7c9c09f92c231e6bc525288fbda64399cad618c51ce55be352f29c38de  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/module-boundaries.test.mjs
+9d62b2dbadcce1c12bb56b542351af63ce5f879de38cae928dc5b06ef265c971  .superpowers/sdd/2026-07-28-ozon-category-query-extraction/snapshots/before/server-index.mjs
+
+## Current matching checks
+manifest.json identical
+source parity script identical
+diff contract script identical

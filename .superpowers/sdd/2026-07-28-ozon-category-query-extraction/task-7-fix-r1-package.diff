@@ -1,0 +1,61 @@
+# Task 7 fix r1 scoped review package
+# Base: snapshots/task-7-fix-r1-before/{App.jsx,category-readiness.js,category-readiness.test.mjs}
+# Review result: three Important findings addressed without API-path, style, server,
+# extension, dependency, configuration, deployment, or global-component changes.
+
+diff --git a/app/src/category-readiness.js b/app/src/category-readiness.js
+@@
++export function categoryRequestScope({ storeId, itemId } = {}) {
++  return JSON.stringify([String(storeId || ""), String(itemId || "")]);
++}
++
++export function categoryRequestIsCurrent({ requestId, scope, currentRequestId, currentScope } = {}) {
++  return Number(requestId) === Number(currentRequestId) && scope === currentScope;
++}
++
++export function scopedCategoryTrees({ treeStoreId, currentStoreId, zhTree, ruTree } = {}) {
++  if (String(treeStoreId || "") !== String(currentStoreId || "")) return { zhTree: [], ruTree: [] };
++  return { zhTree: structuredClone(Array.isArray(zhTree) ? zhTree : []), ruTree: structuredClone(Array.isArray(ruTree) ? ruTree : []) };
++}
++
++export function categoryTreeLoadStart(error = "") {
++  return { zhTree: [], ruTree: [], treeStoreId: "", loading: true, error };
++}
++
++export function categoryTreeLoadSuccess({ zhTree, ruTree, storeId } = {}) {
++  return { zhTree: structuredClone(Array.isArray(zhTree) ? zhTree : []), ruTree: structuredClone(Array.isArray(ruTree) ? ruTree : []), treeStoreId: String(storeId || ""), loading: false, error: "" };
++}
++
++export function categoryTreeLoadFailure() {
++  return { zhTree: [], ruTree: [], treeStoreId: "", loading: false, error: CATEGORY_DATA_ERROR_MESSAGE };
++}
+
+diff --git a/app/tests/category-readiness.test.mjs b/app/tests/category-readiness.test.mjs
+@@
++test("rejects a late category-match response after its request or store-item scope changed", () => {
++  // The exact request can write; a replaced request or scope cannot.
++});
++
++test("returns only cloned trees scoped to the current store", () => {
++  // Same-store copies are isolated; a different store gets two empty trees.
++});
++
++test("keeps a visible retry error while loading and changes it only on current completion", () => {
++  // Start retains error; success clears it; failure restores the fixed message.
++});
+
+diff --git a/app/src/App.jsx b/app/src/App.jsx
+@@ category tree loading
++// Start transitions clear stale trees/scope immediately while retaining categoryDataError.
++applyCategoryTreeLoadState(categoryTreeLoadStart(categoryDataErrorRef.current));
++// Only the current request may commit the helper's success/failure transition.
++if (categoryTreeLoadRequestRef.current !== requestId) return;
++applyCategoryTreeLoadState(categoryTreeLoadSuccess({ zhTree, ruTree, storeId: currentStoreId }));
+@@ tree consumers
++const scopedTrees = useMemo(() => scopedCategoryTrees({ treeStoreId: categoryTreeStoreId, currentStoreId, zhTree: categoryTreeZh, ruTree: categoryTreeRu }), [categoryTreeStoreId, currentStoreId, categoryTreeZh, categoryTreeRu]);
++// Options, paths, readiness count, and draft labels are derived from scopedTrees only.
+@@ automatic matching
++const categoryAutoScope = categoryRequestScope({ storeId: currentStoreId, itemId });
++// A render-time scope change invalidates the old token before its promise can write state.
++if (categoryAutoRequestRef.current.scope !== categoryAutoScope) categoryAutoRequestRef.current = { requestId: categoryAutoRequestRef.current.requestId + 1, scope: categoryAutoScope };
++// result/catch/finally check categoryRequestIsCurrent before updating preview, error, or loading.
