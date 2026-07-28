@@ -13,6 +13,12 @@ const replay = await adapter.run(scope, "hash-a", async () => ({ id: "snapshot-"
 assert.deepEqual(replay, first); assert.equal(writes, 1);
 await assert.rejects(() => adapter.run(scope, "hash-b", async () => ({})), (e) => e?.status === 409 && e?.code === "IDEMPOTENCY_KEY_REUSED");
 assert.notDeepEqual(await adapter.run({ ...scope, storeId: "s2" }, "hash-a", async () => ({ id: "snapshot-" + (++writes) })), first);
+const adapterTwo = createPricingIdempotencyState({ dataFile: path.join(dir, "state.json") });
+const concurrent = await Promise.all([
+  adapter.run({ ...scope, key: "shared" }, "same", async () => ({ id: "shared-" + (++writes) })),
+  adapterTwo.run({ ...scope, key: "shared" }, "same", async () => ({ id: "shared-" + (++writes) })),
+]);
+assert.deepEqual(concurrent[0], concurrent[1]);
 const args = { accountId: "local-a", storeId: "local-s", input: {}, result: { mode: "profit" }, config: { id: "cfg" }, idempotencyKey: "local-key", payloadHash: "local-hash", localIdempotencyAdapter: adapter };
 const saved = await savePricingSnapshot(args);
 assert.deepEqual(await savePricingSnapshot(args), saved);
