@@ -85,6 +85,7 @@ import DataScreenPage from "./DataScreenPage.jsx";
 import PricingSettingsPage from "./PricingSettingsPage.jsx";
 import AccountSettingsPage from "./AccountSettingsPage.jsx";
 import StoresSettingsPage from "./StoresSettingsPage.jsx";
+import { createStoreDeletionCleanup } from "./store-deletion-cleanup.js";
 import ProfitTrendPage from "./ProfitTrendPage.jsx";
 import SourceTable, {
   SourceMetricStrip,
@@ -791,17 +792,13 @@ function AppShell() {
     }
   };
 
-  const handleStoreDeleted = async ({ state }) => {
-    const nextStoreId = state?.currentStoreId || "";
-    if (nextStoreId) {
-      localStorage.setItem("currentOzonStoreId", nextStoreId);
-      const token = localStorage.getItem("token");
-      await syncAuthToExtension({ token, storeId: nextStoreId });
-      return;
-    }
-    clearStoreStorage();
-    await logoutExtension();
-  };
+  const handleStoreDeleted = createStoreDeletionCleanup({
+    clearStoreStorage,
+    readToken: () => localStorage.getItem("token"),
+    setCurrentStoreId: (storeId) => localStorage.setItem("currentOzonStoreId", storeId),
+    syncAuthToExtension,
+    logoutExtension,
+  });
 
   useEffect(() => {
     const onPop = () => {

@@ -23,7 +23,8 @@ test("successful local deletion refreshes state before notifying AppShell once w
 
   const result = await controller.delete(deletedStore);
 
-  assert.equal(result, refreshedState);
+  assert.equal(result.state, refreshedState);
+  assert.equal(result.cleanupError, null);
   assert.deepEqual(calls, [
     ["delete", "store-a"],
     ["refresh", { silent: true }],
@@ -44,4 +45,20 @@ test("failed local deletion does not refresh or notify AppShell cleanup", async 
 
   await assert.rejects(controller.delete(deletedStore), /delete rejected/);
   assert.deepEqual(calls, ["delete"]);
+});
+
+test("cleanup failure preserves the successful deletion state instead of rejecting as a deletion failure", async () => {
+  const refreshedState = { currentStoreId: "store-b" };
+  const controller = createStoreDeletionController({
+    deleteStore: async () => ({ state: {} }),
+    refresh: async () => refreshedState,
+    onStoreDeleted: async () => {
+      throw new Error("extension cleanup failed");
+    },
+  });
+
+  const result = await controller.delete(deletedStore);
+
+  assert.equal(result.state, refreshedState);
+  assert.match(result.cleanupError?.message || "", /extension cleanup failed/);
 });

@@ -4,8 +4,12 @@ export function createStoreDeletionController({ deleteStore, refresh, onStoreDel
       const storeId = store?.id || store?.storeId;
       const response = await deleteStore(storeId);
       const state = await refresh?.({ silent: true }) || response?.state || {};
-      await onStoreDeleted?.({ deletedStore: store, state });
-      return state;
+      try {
+        await onStoreDeleted?.({ deletedStore: store, state });
+        return { state, cleanupError: null };
+      } catch (cleanupError) {
+        return { state, cleanupError };
+      }
     },
   };
 }

@@ -255,8 +255,11 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
             refresh: onRefresh,
             onStoreDeleted,
           });
-          await controller.delete(store);
+          const result = await controller.delete(store);
           message.success("门店已删除");
+          if (result.cleanupError) {
+            message.warning(`门店已删除，但扩展清理失败: ${result.cleanupError.message}`);
+          }
         } catch (error) {
           message.error(`删除失败: ${error.message}`);
         }
