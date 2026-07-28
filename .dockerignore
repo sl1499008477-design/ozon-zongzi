@@ -1,0 +1,10 @@
+.git
+.env
+node_modules
+app/node_modules
+app/dist
+server-data
+.pnpm-store
+source-evidence
+*.png
+*.log

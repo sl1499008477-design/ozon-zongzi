@@ -7,6 +7,7 @@ This workspace contains a local QH Ozon dashboard clone and a copied QH browser 
 - `app/`: React + Vite + Ant Design local dashboard.
 - `server/`: local Node API shim for binding stores, read-only Ozon sync, sync leases, and extension cache endpoints.
 - `extension/`: copied QH browser extension source, version `0.13.46.1`.
+- `desktop/`: sonli 统一账号的 macOS/Windows Ozon 采集助手。
 - `app/public/qh-extension-0.13.46.1.zip`: downloadable extension bundle used by the dashboard plugin page.
 - `implementation-dashboard.png`: latest local dashboard screenshot.
 - `interaction-plugin-drawer.png`: latest plugin drawer interaction screenshot.
@@ -29,6 +30,18 @@ The production data model is mirrored into relational PostgreSQL tables on every
 - `orders`, `order_items`
 - `files`, `product_assets`（商品主图、图库图、视频资源）
 - `sync_jobs`
+
+正式上架链路使用独立的 V3 关系模型，不再把 `local_state` JSONB 当作任务事实来源：
+
+- `collect_raw_payloads`：每次真实采集产生一份不可变原始快照
+- `collect_items`：采集箱索引、归属和当前状态
+- `product_drafts`、`product_draft_revisions`、`product_draft_variants`：当前预处理草稿、修订历史和逐变体数据
+- `submission_snapshots`、`submission_items`：提交时冻结的不可变请求快照和逐变体结果
+- `submission_jobs`、`submission_events`：任务状态机和完整事件历史
+- `outbox_events`：事务内可靠投递事件
+- `audit_events`：账号、店铺和提交操作审计
+
+`local_state` 目前只保留为尚未迁完的旧页面兼容缓存。采集箱和上架记录读取时由关系表覆盖，后续可在其余页面全部关系化后删除该兼容表。
 
 Ozon `Api-Key` values are encrypted before they are written to `local_state` or `store_credentials`. Set `APP_ENCRYPTION_KEY` in `.env` before using real stores in a deployable environment. If this value changes, previously encrypted credentials cannot be decrypted and must be re-bound.
 
@@ -68,7 +81,7 @@ Default endpoints:
 Health check:
 
 ```bash
-curl http://127.0.0.1:3001/local/storage/health
+curl http://127.0.0.1:3000/api/local/storage/health
 ```
 
 The health response includes relational table row counts, product image/video asset counts, and encryption status. In production, `encryption.configured` should be `true`.
@@ -85,11 +98,23 @@ pnpm dev
 
 This starts:
 
-- local API: `http://127.0.0.1:3001`
-- dashboard: `http://127.0.0.1:5173/ozon/dashboard/`
-- source-plugin-compatible proxy: `http://localhost:3000/ozon/dashboard/`
+- 统一入口: `http://127.0.0.1:3000`（API 统一位于 `/api`，容器内 `3001` 不对外发布）
+- listing Worker: PostgreSQL Outbox relay + `pg-boss` consumer
+- unified dashboard entry: `http://127.0.0.1:3000/ozon/dashboard/`
 
 The dashboard binding form saves Ozon `Client ID` and `API Key` to the local API. `全部同步` starts the copied browser extension sync when the extension is installed; if the extension is not detected, it falls back to the local API's read-only Ozon Seller API sync for products, postings, and warehouses.
+
+## Desktop Collector
+
+The cross-platform collector lives in `desktop/`. It uses the Sonli account/session, account-owned operating store and verified Seller data store. Tasks, runs, leases, events, item results, Seller Analytics snapshots, 63-column Excel exports and collect-box ingestion are persisted through the Sonli API.
+
+- Verify: `pnpm --dir desktop verify`
+- macOS Intel/ARM ZIP: `pnpm --dir desktop run dist:mac:zip`
+- Windows x64 setup/portable: `pnpm --dir desktop run dist:win`
+
+Generated packages are written to `desktop/release/`. Direct `batchCreateGoods` publishing is intentionally excluded; qualified results enter the Sonli collect box and continue through the existing draft/listing queue.
+
+The exact delivery matrix, verified package checksums and known external-dependency gaps are recorded in `desktop/IMPLEMENTATION_STATUS.md`.
 
 ## Browser Extension
 
@@ -104,9 +129,8 @@ The downloadable bundle is regenerated from the same directory:
 The local copy has been adjusted to recognize:
 
 - `http://localhost:3000/*`
+- `http://127.0.0.1:3000/*`
 - `http://store.localhost:3000/*`
-- `http://127.0.0.1:5173/*`
-- `http://localhost:5173/*`
 
 and to open the local dashboard when the local API is detected.
 
@@ -116,11 +140,9 @@ Chrome loading checklist:
 2. Load the unpacked extension directory above, or click reload on the existing local QH extension card.
 3. Open the local plugin page and click `重新检测`.
 
-After loading/reloading the unpacked extension in Chrome, open either local URL:
+After loading/reloading the unpacked extension in Chrome, open the unified local URL:
 
-`http://127.0.0.1:5173/ozon/dashboard/`
-
-`http://localhost:3000/ozon/dashboard/`
+`http://127.0.0.1:3000/ozon/dashboard/`
 
 Click `全部同步`. If the extension bridge is active, the page should show that the plugin sync task started. If it shows `插件未响应，改用本地只读同步`, Chrome is still not running this local unpacked extension.
 
@@ -140,6 +162,25 @@ The preferred local-extension path performs `SKU sourceVariant collection -> V3 
 
 The final `提交上架到 Ozon` button uses the same collection/build path and then submits to `/ozon/products/import`. The local store currently used for listing tests is `数据 01test`; credentials are kept only in ignored local state and must not be committed.
 
+The V3 flow is `server-side validation -> draft revision -> immutable snapshot -> Outbox -> pg-boss -> independent Worker -> Ozon item-level reconciliation`. The API process never calls `/v3/product/import` for V3 jobs. Start a production API and Worker as separate processes:
+
+```bash
+pnpm server
+pnpm worker
+```
+
+Do not run more than one compatibility JSON writer during migration. Multiple API/Worker replicas are supported for V3 submission jobs because row leases, Outbox locking, idempotency keys, and pg-boss singleton jobs protect the formal pipeline.
+
+The same code can run as production-style containers. Set production secrets in `.env`, then start the application profile:
+
+```bash
+docker compose --profile application up -d --build
+```
+
+This starts PostgreSQL, MinIO, API, the independent listing Worker, and an Nginx-served production frontend at `http://127.0.0.1:3000`. Never keep the example administrator password or encryption key in a deployed environment.
+
+When `NODE_ENV=production`, the API refuses to start unless PostgreSQL, MinIO, a random encryption key of at least 32 characters, and a non-default administrator password are configured. The Worker also refuses to start without PostgreSQL, encryption, and the V3 pipeline.
+
 To regenerate extension zips after extension edits:
 
 ```bash
@@ -154,12 +195,8 @@ Run the focused local verification suite:
 pnpm verify
 ```
 
-It checks the app build, source-extension parity, extension zip parity, server/proxy/bridge syntax, manifest JSON, follow-sell bridge smoke, batch-upload smoke, popup smoke, diff whitespace, and secret scanning.
+It checks the app build, source-extension parity, extension zip parity, server/bridge syntax, manifest JSON, follow-sell bridge smoke, batch-upload smoke, popup smoke, diff whitespace, and secret scanning.
 
 ## Current Local URL
 
-`http://127.0.0.1:5173/ozon/dashboard/`
-
-Compatibility entry:
-
-`http://localhost:3000/ozon/dashboard/`
+`http://127.0.0.1:3000/ozon/dashboard/`

@@ -6,15 +6,20 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "server": "node server/index.mjs",
+    "worker": "node server/listing-worker.mjs",
+    "test:pipeline": "node server/tests/listing-pipeline-v3.integration.mjs",
+    "test:collection-pipeline": "node server/tests/collection-pipeline-v4.integration.mjs",
     "db:migrate": "node server/db/migrate.mjs",
-    "app": "pnpm --dir app dev -- --port 5173",
+    "app": "pnpm --dir app dev",
     "build": "pnpm --dir app build",
-    "compat-proxy": "node scripts/frontend-compat-proxy.mjs",
     "package-extension": "node scripts/package-extension.mjs",
     "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "minio": "^8.0.6",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "pg-boss": "^12.25.1",
+    "sharp": "^0.34.5"
   }
 }

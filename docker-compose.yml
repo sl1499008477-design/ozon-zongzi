@@ -6,9 +6,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sonli_local}
       POSTGRES_USER: ${POSTGRES_USER:-sonli}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sonli_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:?Set POSTGRES_PORT in .env}:5432"
     volumes:
       - sonli_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,11 +23,11 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-sonli_minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-sonli_minio_password}
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:?Set MINIO_PORT in .env}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:?Set MINIO_CONSOLE_PORT in .env}:9001"
     volumes:
       - sonli_minio_data:/data
     healthcheck:
@@ -44,10 +44,88 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-sonli_minio} ${MINIO_SECRET_KEY:-sonli_minio_password};
+      mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env} ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env};
       mc mb --ignore-existing local/${MINIO_BUCKET:-sonli-local-files};
       "
     restart: "no"
+
+  api:
+    profiles: ["application"]
+    build:
+      context: .
+      target: backend
+    restart: unless-stopped
+    command: ["node", "server/index.mjs"]
+    environment: &application-environment
+      NODE_ENV: production
+      QH_LOCAL_API_HOST: 0.0.0.0
+      QH_LOCAL_API_PORT: 3001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-sonli_local}
+      POSTGRES_USER: ${POSTGRES_USER:-sonli}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_SSL: "false"
+      POSTGRES_STATE_TABLE: local_state
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-sonli-local-files}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      APP_ENCRYPTION_KEY_VERSION: ${APP_ENCRYPTION_KEY_VERSION:-v1}
+      SONLI_ADMIN_USERNAME: ${SONLI_ADMIN_USERNAME:-admin}
+      SONLI_ADMIN_PASSWORD: ${SONLI_ADMIN_PASSWORD:?Set SONLI_ADMIN_PASSWORD in .env}
+      LISTING_PIPELINE_V3: "1"
+      PG_BOSS_SCHEMA: ${PG_BOSS_SCHEMA:-sonli_queue}
+      LISTING_WORKER_CONCURRENCY: ${LISTING_WORKER_CONCURRENCY:-2}
+      LISTING_MAX_STATUS_CHECKS: ${LISTING_MAX_STATUS_CHECKS:-240}
+      OZON_CATEGORY_RULE_VERSION: ${OZON_CATEGORY_RULE_VERSION:-2026-07-v1}
+      OZON_DICTIONARY_VERSION: ${OZON_DICTIONARY_VERSION:-live-api}
+      OZON_RICH_CONTENT_RULE_VERSION: ${OZON_RICH_CONTENT_RULE_VERSION:-2026-07-v1}
+    expose:
+      - "3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/local/storage/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    profiles: ["application"]
+    build:
+      context: .
+      target: backend
+    restart: unless-stopped
+    command: ["node", "server/listing-worker.mjs"]
+    environment: *application-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  web:
+    profiles: ["application"]
+    build:
+      context: .
+      target: web
+      args:
+        VITE_LOCAL_API_BASE: /api
+    restart: unless-stopped
+    ports:
+      - "${WEB_PUBLISH_HOST:-127.0.0.1}:${WEB_PORT:?Set WEB_PORT in .env}:80"
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   sonli_postgres_data:

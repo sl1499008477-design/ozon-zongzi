@@ -3,8 +3,8 @@ import process from "node:process";
 
 const commands = [
   ["server", "node", ["server/index.mjs"]],
+  ["worker", "node", ["server/listing-worker.mjs"]],
   ["app", "pnpm", ["--dir", "app", "dev"]],
-  ["compat", "node", ["scripts/frontend-compat-proxy.mjs"]],
 ];
 
 const children = commands.map(([name, cmd, args]) => {
