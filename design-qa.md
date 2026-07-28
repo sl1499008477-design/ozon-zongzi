@@ -338,3 +338,52 @@ final result: in_progress
 - Added a source-plugin compatibility listing path: when the installed source plugin lacks local `follow-sell.request`, `上架预检` / `提交上架到 Ozon` now use `prefetch.request` to collect the SKU's sourceVariant, build a local import item from source attributes/images/dimensions/barcode, and call `/ozon/products/import/preview` or `/ozon/products/import` directly. The full local unpacked extension remains the preferred path because it uses copied `buildV3Item` inside the extension.
 - Added `scripts/check-plugin-readiness-gate.mjs` to `pnpm verify` so this distinction is guarded automatically: local bridge capabilities must be advertised by ping, source-plugin fallback must go through `prefetch` plus local preview/import endpoints, and listing actions stay available when either the full local bridge or source-plugin fallback is usable.
 - Added a persistent `collect-listing-result` status panel on the collect edit page so `上架预检` / `提交上架到 Ozon` outcomes remain visible after Ant message toasts disappear. The readiness gate now also guards that visible result state is rendered.
+
+# 2026-07-27 Prototype Style Refresh Design QA
+
+> 本节记录 2026-07-27 样式任务当时的验收结果，不代表 2026-07-29 整个仓库验证全绿。
+> 当前基线测试、环境阻塞和未验证范围以最终保护性基线报告为准。
+
+- reference: `http://localhost:5173/` (captured earlier in this work session before the local reference server became unavailable)
+- target: local Sonli Ozon app at `http://127.0.0.1:3000/`
+- desktop viewports: 1440px, 1280px
+- mobile viewport: 390px
+- automated contract: passed, 15/15
+- app build: passed
+- route smoke: passed
+- interaction smoke: passed
+- P0/P1/P2 remaining: 0
+- final result for this style-refresh work package: passed
+
+## Visual comparison
+
+The reference and target were compared at matching desktop and mobile widths for shell hierarchy, navigation geometry, blue/white palette, typography, surface radius, borders, shadow strength, spacing, density, and responsive behavior. The target retains the reference's light blue background, floating rounded navigation, white card surfaces, blue primary actions, restrained borders, and compact operational density.
+
+At 1280px the target keeps page-level horizontal overflow at zero instead of copying the reference prototype's horizontal clipping. At 390px the fixed sidebar is replaced by an accessible navigation drawer, content collapses to one column, and wide business tables retain local horizontal scrolling.
+
+Scope note: the historical P1 near the top of this file concerns the earlier `qh.jizhangerp.com` clone and its ego-browser viewport calibration. It is not a finding against this separate `ozon-operations-prototype` style-refresh work package. The new prototype reference was opened and inspected live at 1440px, 1280px, and 390px before its local server disappeared; a later attempt to reopen the hosted copy reached its ChatGPT sign-in gate, so the target captures below are the persistent artifacts from this pass.
+
+## Captured target evidence
+
+Screenshots are stored in `.superpowers/sdd/2026-07-27-prototype-style-refresh/qa/` and cover dashboard (1440/1280/390), product list (1440/390), orders, profit, stores, pricing, messaging, an opened review-template Modal, and an opened task-monitor Drawer.
+
+## Route and interaction smoke
+
+The dashboard, product list, collection, listing history, orders, profit trend, stores, pricing, messaging, extension, and 404 routes rendered without a fatal application error. Desktop and mobile navigation reached the expected routes. Product status tabs, query input, pagination, topbar store menu, topbar account menu, and the mobile navigation drawer responded without invoking sync, publish, import, delete, binding, or other external-write operations.
+
+The mobile drawer opened at 390px, navigated to the product list, closed after navigation, and became non-interactive when resizing above the mobile breakpoint. No new uncaught runtime exception was observed.
+
+## Automated verification
+
+- `node --test app/tests/prototype-style-contract.test.mjs`: passed, 15/15
+- `pnpm --dir app build`: passed
+- `git diff --check`: passed
+- scoped credential literal scan: passed
+- `pnpm verify`: app build and the relevant frontend/server smoke checks passed, but the repository-wide command exited with three unrelated environment/baseline failures:
+  - the existing extension diff contract expects an older `popup/popup.css` diff shape
+  - dynamic exchange-rate persistence could not connect to PostgreSQL at `127.0.0.1:5432`
+  - pricing-config persistence could not connect to PostgreSQL at `127.0.0.1:5432`
+
+## Optional P3 follow-ups
+
+The existing development console reports Ant Design deprecation warnings and an existing table-row key warning on some routes. These are not uncaught runtime failures and were left outside this visual-only work package.
