@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
@@ -18,6 +19,7 @@ const host = "127.0.0.1";
 const upstreamPort = 5173;
 const proxyPort = 3000;
 let upgradeReceived = false;
+let clientFramePayload = null;
 const upstreamSockets = new Set();
 const upstream = http.createServer((request, response) => {
   response.writeHead(200, { "content-type": "text/plain" });
@@ -31,14 +33,25 @@ upstream.on("connection", (socket) => {
 
 upstream.on("upgrade", (request, socket) => {
   upgradeReceived = request.url === "/hmr";
+  const key = request.headers["sec-websocket-key"];
+  assert.equal(typeof key, "string", "the proxy must forward the WebSocket key");
+  const accept = createHash("sha1")
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest("base64");
   socket.write(
     "HTTP/1.1 101 Switching Protocols\r\n" +
       "Connection: Upgrade\r\n" +
       "Upgrade: websocket\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n` +
       "\r\n",
   );
+  let bufferedFrames = Buffer.alloc(0);
   socket.on("data", (chunk) => {
-    if (chunk.toString() === "ping") socket.write("pong");
+    bufferedFrames = Buffer.concat([bufferedFrames, chunk]);
+    const frame = parseWebSocketFrame(bufferedFrames, true);
+    if (!frame) return;
+    clientFramePayload = frame.payload.toString("utf8");
+    socket.write(createServerTextFrame("pong"));
   });
 });
 
@@ -54,10 +67,18 @@ try {
   const httpBody = await requestBody(`http://${host}:${proxyPort}/health`);
   assert.equal(httpBody, "upstream /health", "the proxy must forward ordinary HTTP requests");
 
-  const websocketBody = await websocketHandshake(host, proxyPort);
-  assert.match(websocketBody, /^HTTP\/1\.1 101 Switching Protocols/m, "the proxy must forward WebSocket upgrades");
-  assert.match(websocketBody, /pong$/, "the upgraded connection must relay upstream data back to the client");
+  const websocket = await websocketHandshake(host, proxyPort);
+  assert.match(websocket.headers, /^HTTP\/1\.1 101 Switching Protocols/m, "the proxy must forward WebSocket upgrades");
+  assert.match(websocket.headers, /\r\nUpgrade: websocket\r\n/i, "the proxy must preserve the WebSocket Upgrade response");
+  assert.match(websocket.headers, /\r\nConnection: Upgrade\r\n/i, "the proxy must preserve the WebSocket Connection response");
+  assert.match(
+    websocket.headers,
+    /\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=\r\n/i,
+    "the browser handshake must receive the RFC6455 acceptance value",
+  );
+  assert.equal(websocket.payload, "pong", "the upgraded connection must relay a valid upstream WebSocket frame");
   assert.equal(upgradeReceived, true, "the upstream must receive the WebSocket upgrade request");
+  assert.equal(clientFramePayload, "ping", "the upstream must receive a valid masked client WebSocket frame");
 } finally {
   for (const socket of upstreamSockets) socket.destroy();
   await stopChild(proxy);
@@ -116,7 +137,7 @@ function requestBody(url) {
 function websocketHandshake(hostname, port) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: hostname, port });
-    let response = "";
+    let response = Buffer.alloc(0);
     let finished = false;
     let pingSent = false;
     let totalTimeout;
@@ -126,7 +147,6 @@ function websocketHandshake(hostname, port) {
       clearTimeout(totalTimeout);
       callback(value);
     };
-    socket.setEncoding("utf8");
     totalTimeout = setTimeout(() => {
       socket.destroy();
       finish(reject, new Error("WebSocket handshake timed out"));
@@ -137,20 +157,23 @@ function websocketHandshake(hostname, port) {
           `Host: ${hostname}:${port}\r\n` +
           "Connection: Upgrade\r\n" +
           "Upgrade: websocket\r\n" +
-          "Sec-WebSocket-Key: smoke-test\r\n" +
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
           "Sec-WebSocket-Version: 13\r\n" +
           "\r\n",
       );
     });
     socket.on("data", (chunk) => {
-      response += chunk;
-      if (!pingSent && response.includes("\r\n\r\n")) {
+      response = Buffer.concat([response, chunk]);
+      const headerEnd = response.indexOf("\r\n\r\n");
+      if (!pingSent && headerEnd >= 0) {
         pingSent = true;
-        socket.write("ping");
+        socket.write(createMaskedTextFrame("ping"));
       }
-      if (response.endsWith("pong")) {
+      if (headerEnd < 0) return;
+      const frame = parseWebSocketFrame(response.subarray(headerEnd + 4), false);
+      if (frame?.payload.toString("utf8") === "pong") {
         socket.end();
-        finish(resolve, response);
+        finish(resolve, { headers: response.subarray(0, headerEnd + 4).toString("ascii"), payload: frame.payload.toString("utf8") });
       }
     });
     socket.on("close", () => {
@@ -158,4 +181,39 @@ function websocketHandshake(hostname, port) {
     });
     socket.on("error", (error) => finish(reject, error));
   });
+}
+
+function createMaskedTextFrame(text) {
+  const payload = Buffer.from(text, "utf8");
+  const mask = Buffer.from([0x12, 0x34, 0x56, 0x78]);
+  const frame = Buffer.alloc(2 + mask.length + payload.length);
+  frame[0] = 0x81;
+  frame[1] = 0x80 | payload.length;
+  mask.copy(frame, 2);
+  for (let index = 0; index < payload.length; index += 1) {
+    frame[6 + index] = payload[index] ^ mask[index % mask.length];
+  }
+  return frame;
+}
+
+function createServerTextFrame(text) {
+  const payload = Buffer.from(text, "utf8");
+  return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+}
+
+function parseWebSocketFrame(buffer, expectMasked) {
+  if (buffer.length < 2) return null;
+  const payloadLength = buffer[1] & 0x7f;
+  const masked = (buffer[1] & 0x80) !== 0;
+  const maskLength = masked ? 4 : 0;
+  const frameLength = 2 + maskLength + payloadLength;
+  if (buffer.length < frameLength) return null;
+  assert.equal(buffer[0], 0x81, "the smoke traffic must use a final text WebSocket frame");
+  assert.equal(masked, expectMasked, expectMasked ? "client frames must be masked" : "server frames must be unmasked");
+  const payload = Buffer.from(buffer.subarray(2 + maskLength, frameLength));
+  if (masked) {
+    const mask = buffer.subarray(2, 6);
+    for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % mask.length];
+  }
+  return { payload };
 }
