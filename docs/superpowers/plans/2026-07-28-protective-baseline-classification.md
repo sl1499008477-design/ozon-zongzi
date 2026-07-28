@@ -93,7 +93,7 @@ Run:
 ```bash
 git status --porcelain=v1 | awk 'substr($0,1,2)=="??"{u++} substr($0,1,2)!="??"{t++} END{print "tracked_changes=" t; print "untracked_entries=" u}'
 git ls-files --others --exclude-standard | rg -v '^\.superpowers/sdd/2026-07-28-protective-baseline-classification/' | wc -l
-git ls-files --others --exclude-standard | rg '^\.superpowers/sdd/2026-07-28-protective-baseline-classification/' | wc -l
+git ls-files --others --ignored --exclude-standard .superpowers/sdd/2026-07-28-protective-baseline-classification | wc -l
 ```
 
 Expected after the SDD workspace is created:
@@ -576,11 +576,12 @@ Expected: ZIP 输出一个 SHA-256；扩展解压副本当前包含 `92` 个文�
 Run:
 
 ```bash
-git add -- app/public/plugin/popup.js app/public/sonli-extension-0.13.46.1.zip app/public/sonli-extension-0.13.46.1 .superpowers/ozon-sync-extraction .superpowers/sdd/.gitignore .superpowers/sdd/2026-07-27-prototype-style-refresh .superpowers/sdd/2026-07-28-ozon-category-query-extraction .superpowers/sdd/2026-07-28-ozon-sync-service-extraction
+git add -- app/public/plugin/popup.js app/public/sonli-extension-0.13.46.1.zip app/public/sonli-extension-0.13.46.1 .superpowers/ozon-sync-extraction .superpowers/sdd/.gitignore
+git add -f -- .superpowers/sdd/2026-07-27-prototype-style-refresh .superpowers/sdd/2026-07-28-ozon-category-query-extraction .superpowers/sdd/2026-07-28-ozon-sync-service-extraction
 git diff --cached --name-status
 ```
 
-Expected: 只包含 `app/public/` 和上述执行前已有的 `.superpowers/` 路径；不得包含 `.superpowers/sdd/2026-07-28-protective-baseline-classification/`。
+Expected: 只包含 `app/public/` 和上述执行前已有的 `.superpowers/` 路径；`-f` 仅用于用户明确要求保留的三个历史 SDD 目录，不得包含 `.superpowers/sdd/2026-07-28-protective-baseline-classification/`。
 
 - [ ] **Step 3: 验证扩展源码和分发副本**
 
@@ -688,7 +689,7 @@ git diff --check
 git diff --cached --check
 ```
 
-Expected before staging the report: 只显示 `?? docs/baseline/` 和被明确排除的 `.superpowers/sdd/2026-07-28-protective-baseline-classification/`；不得再有原先 63 个已跟踪改动或 313 个未跟踪文件。
+Expected before staging the report: 只显示 `?? docs/baseline/`；本计划临时 SDD workspace 受 `.superpowers/sdd/.gitignore` 排除，不出现在普通 status 中。不得再有原先 63 个已跟踪改动或 313 个未跟踪文件。
 
 - [ ] **Step 5: 提交基线报告**
 
@@ -711,7 +712,7 @@ git status --short
 git log --reverse --oneline 84861df..HEAD
 ```
 
-Expected: 在最终分支评审前，`git status --short` 只显示本计划被明确排除的临时 SDD workspace；日志包含计划准备提交、八个分类提交和一个基线报告提交。若根验证仍有环境失败，报告必须明确这些失败，不能宣称“稳定基线全绿”。
+Expected: `git status --short` 无输出；本计划被明确排除的临时 SDD workspace 仍然存在但受忽略。日志包含计划准备提交、八个分类提交和一个基线报告提交。若根验证仍有环境失败，报告必须明确这些失败，不能宣称“稳定基线全绿”。
 
 ## SDD Final Review Gate
 
