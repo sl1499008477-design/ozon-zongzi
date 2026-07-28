@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
 
-const sourceDir = process.env.QH_SOURCE_EXTENSION_DIR || "/Users/songliang/Desktop/0.13.46.1";
+const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-ui-parity.mjs");
+if (!sourceDir) process.exit(2);
 const localDir = "extension";
 
 const exactUiFiles = [

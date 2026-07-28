@@ -80,8 +80,10 @@ await writeState({
 });
 
 const originalFetch = globalThis.fetch;
+const fetchRequests = [];
 globalThis.fetch = async (url) => {
   const href = String(url);
+  fetchRequests.push(href);
   if (href.endsWith("/v1/product/import/info")) {
     if (mode === "success") {
       return new Response(JSON.stringify({
@@ -102,7 +104,7 @@ globalThis.fetch = async (url) => {
       headers: { "Content-Type": "application/json" },
     });
   }
-  return originalFetch(url);
+  throw new Error(`Unexpected test fetch URL: ${href}`);
 };
 
 process.env.QH_LOCAL_DATA_DIR = dataDir;
@@ -199,6 +201,12 @@ try {
   state = JSON.parse(await readFile(dataFile, "utf8"));
   assert.equal(state.jobs.job_missing.status, "QUEUED");
   assert.match(state.jobs.job_missing.statusCheckError, /task not found|Ozon 404/);
+  assert.equal(fetchRequests.length, 3, "each status request must perform exactly one allowlisted lookup");
+  assert.equal(
+    fetchRequests.every((href) => href.endsWith("/v1/product/import/info")),
+    true,
+    "status tests may call only the import-info endpoint",
+  );
 
   console.log("import status route smoke passed");
   process.exitCode = 0;

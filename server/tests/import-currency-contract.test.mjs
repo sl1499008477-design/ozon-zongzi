@@ -62,8 +62,10 @@ await writeFile(dataFile, `${JSON.stringify({
 }, null, 2)}\n`, "utf8");
 
 const originalFetch = globalThis.fetch;
+const fetchRequests = [];
 globalThis.fetch = async (url, options = {}) => {
   const href = String(url);
+  fetchRequests.push(href);
   if (href.endsWith("/v1/description-category/attribute")) {
     return new Response(JSON.stringify({
       result: [
@@ -76,7 +78,7 @@ globalThis.fetch = async (url, options = {}) => {
       ],
     }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
-  return originalFetch(url, options);
+  throw new Error(`Unexpected test fetch URL: ${href}`);
 };
 
 process.env.QH_LOCAL_DATA_DIR = dataDir;
@@ -114,6 +116,8 @@ try {
   assert.equal(response.body.ok, true);
   assert.equal(response.body.items?.[0]?.currency_code, "CNY");
   assert.equal(response.body.items?.[0]?.currencyCode, undefined, "Ozon payload should only keep currency_code after normalization");
+  assert.equal(fetchRequests.length, 1, "preview validation must perform exactly one allowlisted attribute lookup");
+  assert.equal(fetchRequests[0].endsWith("/v1/description-category/attribute"), true);
 
   console.log("import currency contract smoke passed");
   process.exitCode = 0;

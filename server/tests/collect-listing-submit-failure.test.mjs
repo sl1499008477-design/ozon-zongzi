@@ -89,8 +89,10 @@ await writeFile(dataFile, `${JSON.stringify({
 
 const originalFetch = globalThis.fetch;
 let externalWriteCalls = 0;
+const fetchRequests = [];
 globalThis.fetch = async (url) => {
   const href = String(url);
+  fetchRequests.push(href);
   if (href.endsWith("/v1/description-category/attribute")) {
     return new Response(JSON.stringify({
       result: [
@@ -109,7 +111,7 @@ globalThis.fetch = async (url) => {
     error.cause = { code: "UND_ERR_SOCKET", message: "other side closed" };
     throw error;
   }
-  return originalFetch(url);
+  throw new Error(`Unexpected test fetch URL: ${href}`);
 };
 
 process.env.QH_LOCAL_DATA_DIR = dataDir;
@@ -134,6 +136,7 @@ try {
   assert.equal(response.body.code, "LISTING_PIPELINE_REQUIRED");
   assert.match(response.body.message, /安全上架任务队列/);
   assert.equal(externalWriteCalls, 0);
+  assert.deepEqual(fetchRequests, [], "fail-closed route must not make any external request");
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));
   const item = state.caches.collectBox.find((row) => row.id === collectId);

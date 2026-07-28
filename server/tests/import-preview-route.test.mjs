@@ -36,6 +36,7 @@ const token = "local-test-token";
 const storeId = "local_test_store";
 let importCalls = 0;
 let attributeCalls = 0;
+const fetchRequests = [];
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
@@ -61,6 +62,7 @@ await writeFile(dataFile, `${JSON.stringify({
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (url, options = {}) => {
   const href = String(url);
+  fetchRequests.push(href);
   if (href.endsWith("/v3/product/import")) {
     importCalls += 1;
     throw new Error("preview route must not call real product import");
@@ -80,7 +82,7 @@ globalThis.fetch = async (url, options = {}) => {
       ],
     }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
-  return originalFetch(url, options);
+  throw new Error(`Unexpected test fetch URL: ${href}`);
 };
 
 process.env.QH_LOCAL_DATA_DIR = dataDir;
@@ -123,6 +125,8 @@ try {
   assert.equal(response.body.items[0].attributeCount > 0, true);
   assert.equal(importCalls, 0, "preview route must not call Ozon product import");
   assert.equal(attributeCalls, 1, "preview route should validate attributes once");
+  assert.equal(fetchRequests.length, 1, "preview route must make only the allowlisted attribute request");
+  assert.equal(fetchRequests[0].endsWith("/v1/description-category/attribute"), true);
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));
   assert.deepEqual(state.jobs, {}, "preview route must not create import jobs");

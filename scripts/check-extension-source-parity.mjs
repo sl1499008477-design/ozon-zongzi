@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
 
-const sourceDir = process.env.QH_SOURCE_EXTENSION_DIR || "/Users/songliang/Desktop/0.13.46.1";
+const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-source-parity.mjs");
+if (!sourceDir) process.exit(2);
 const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
 
 const allowedDiffs = new Set([
@@ -31,6 +33,7 @@ const allowedDiffs = new Set([
   "popup/popup.html",
   "popup/popup.css",
   "popup/popup.js",
+  "tests/fleet-collect-attrs-merge.test.js",
 ]);
 
 const allowedLocalOnly = new Set([
@@ -67,7 +70,6 @@ const removedCollectorFiles = new Set([
   "content/collector/panel.css",
   "content/collector/panel.js",
   "tests/collector-manual-start.test.js",
-  "tests/fleet-collect-attrs-merge.test.js",
   "tests/keyword-pilot-ownership.test.js",
 ]);
 

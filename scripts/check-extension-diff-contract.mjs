@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
 
-const sourceDir = process.env.QH_SOURCE_EXTENSION_DIR || "/Users/songliang/Desktop/0.13.46.1";
+const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-diff-contract.mjs");
+if (!sourceDir) process.exit(2);
 const localDir = "extension";
 
 const diffContract = {
@@ -32,6 +34,7 @@ const diffContract = {
   "popup/popup.css": { hunks: 285, added: 812, removed: 600 },
   "popup/popup.html": { hunks: 24, added: 118, removed: 110 },
   "popup/popup.js": { hunks: 38, added: 88, removed: 133 },
+  "tests/fleet-collect-attrs-merge.test.js": { hunks: 6, added: 80, removed: 31 },
 };
 
 const requiredPatterns = {

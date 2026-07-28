@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { activeTestFiles } from "./test-manifest.mjs";
+import { evaluateCheckResult } from "./verify-result-policy.mjs";
 
 const checks = [
   [
@@ -45,7 +46,7 @@ const checks = [
       "design-qa.md",
       "package.json",
     ],
-    { allowExitCode: 1 },
+    { expectedExitCode: 1 },
   ],
 ];
 
@@ -60,22 +61,22 @@ for (const [label, command, args, options = {}] of checks) {
     shell: false,
     cwd: options.cwd || process.cwd(),
   });
-  if (result.error) {
-    failed += 1;
-    const kind = result.error.code === "ENOENT" ? "blocked by missing command" : "could not start";
-    console.error(`\n${label} ${kind}: ${result.error.message}`);
-    continue;
-  }
-  if (result.signal) {
-    failed += 1;
-    console.error(`\n${label} terminated by signal ${result.signal}`);
-    continue;
-  }
-  const code = result.status ?? 1;
-  if (code !== 0 && code !== options.allowExitCode) {
-    failed += 1;
-    const kind = code === 2 ? "blocked by environment" : "failed";
-    console.error(`\n${label} ${kind} with exit code ${code}`);
+  const evaluation = evaluateCheckResult(result, options.expectedExitCode ?? 0);
+  if (evaluation.ok) continue;
+
+  failed += 1;
+  if (evaluation.kind === "missing-command") {
+    console.error(`\n${label} blocked by missing command: ${evaluation.detail}`);
+  } else if (evaluation.kind === "spawn-error") {
+    console.error(`\n${label} could not start: ${evaluation.detail}`);
+  } else if (evaluation.kind === "signal") {
+    console.error(`\n${label} terminated by signal ${evaluation.detail}`);
+  } else if (evaluation.kind === "missing-status") {
+    console.error(`\n${label} failed without an exit status`);
+  } else if (evaluation.kind === "environment-blocker") {
+    console.error(`\n${label} blocked by environment with exit code ${evaluation.code}`);
+  } else {
+    console.error(`\n${label} failed with exit code ${evaluation.code}`);
   }
 }
 
