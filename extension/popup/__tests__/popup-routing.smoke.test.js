@@ -22,7 +22,6 @@ const actionLabels = {
   stores: "店铺管理",
   "premium-pivot": "数据透视眼",
   "data-panel": "数据面板",
-  collector: "sonli 采集器",
 };
 
 for (const [action, label] of Object.entries(actionLabels)) {
@@ -61,7 +60,8 @@ assert(
 );
 assert(js.includes("await togglePremiumPivot();"), "premium-pivot should toggle the Ozon premium hook");
 assert(js.includes("await toggleDataPanel();"), "data-panel should toggle the Ozon data panel");
-assert(js.includes("await toggleCollector();"), "collector should toggle the collector panel");
+assert(!html.includes("sonli 采集器"), "popup must not expose the removed collector");
+assert(!js.includes("toggleCollector"), "popup must not retain the removed collector toggle");
 assert(js.includes("await openJzcCalc();"), "pricing should open the Ozon calculator on product pages");
 assert(
   js.includes("chrome.tabs.create({ url: `${FRONTEND_BASE_URL}/ozon/dashboard/` });"),
@@ -69,7 +69,7 @@ assert(
 );
 
 const bridgeScript = manifest.content_scripts.find((script) =>
-  script.matches?.includes("http://127.0.0.1:5173/*") &&
+  script.matches?.includes("http://127.0.0.1:3000/*") &&
   script.js?.includes("content/jizhangerp-bridge.js"),
 );
 assert(bridgeScript, "manifest should inject bridge into the local frontend");

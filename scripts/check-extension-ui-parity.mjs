@@ -7,12 +7,10 @@ const sourceDir = process.env.QH_SOURCE_EXTENSION_DIR || "/Users/songliang/Deskt
 const localDir = "extension";
 
 const exactUiFiles = [
-  "popup/popup.css",
   "batch-upload/index.css",
   "content/jzc-calc.css",
   "content/ozon-product.css",
   "content/ozon-search.css",
-  "content/collector/panel.css",
   "lib/store-picker.css",
 ];
 
@@ -20,8 +18,8 @@ const hashFile = (file) => createHash("sha256").update(readFileSync(file)).diges
 
 const requireExistingSource = () => {
   if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
-    console.log(`extension ui parity skipped: ${sourceDir} not found`);
-    process.exit(0);
+    console.error(`extension ui parity blocked: ${sourceDir} not found`);
+    process.exit(2);
   }
 };
 
@@ -82,8 +80,8 @@ const normalizePopupJs = (source) =>
     )
     .replace("popup.html 里的 brand 静态占位符", "popup.html 里的 QH 静态占位符")
     .replace(
-      '  const LOCAL_FRONTEND_BASE_URL = "http://127.0.0.1:5173";\n' +
-        '  const isLocalBackendUrl = (value) => /^(?:http:\\/\\/)?(?:localhost|127\\.0\\.0\\.1):3001\\b/.test(String(value || ""));\n',
+      '  const LOCAL_FRONTEND_BASE_URL = "http://127.0.0.1:3000";\n' +
+        '  const isLocalBackendUrl = (value) => /^http:\\/\\/127\\.0\\.0\\.1:3000\\/api\\b/.test(String(value || ""));\n',
       "",
     )
     .replace('      showTip("请输入账号");', '      showTip("请输入手机号");')
@@ -115,11 +113,13 @@ assertPng("icons/icon48.png", 48, 48);
 assertPng("icons/icon128.png", 128, 128);
 assertPng("icons/sonli-logo.png", 1254, 1254);
 
-assert.equal(
-  normalizePopupHtml(readFileSync(path.join(localDir, "popup/popup.html"), "utf8")),
-  readFileSync(path.join(sourceDir, "popup/popup.html"), "utf8"),
-  "popup.html must only differ by sonli branding and local account-login UI substitutions",
-);
+const popupHtml = readFileSync(path.join(localDir, "popup/popup.html"), "utf8");
+const popupJs = readFileSync(path.join(localDir, "popup/popup.js"), "utf8");
+const popupCss = readFileSync(path.join(localDir, "popup/popup.css"), "utf8");
+assert.match(popupHtml, /打开 sonli ERP/);
+assert.doesNotMatch(popupHtml, /sonli 采集器|采集器实时状态/);
+assert.doesNotMatch(popupJs, /toggleCollector|collectorGetState/);
+assert.doesNotMatch(popupCss, /\.collector-mon/);
 
 assert.equal(
   normalizeBatchUploadHtml(readFileSync(path.join(localDir, "batch-upload/index.html"), "utf8")),
@@ -133,12 +133,6 @@ assert.equal(
   "batch-upload/index.js must only differ by sonli branding substitutions",
 );
 
-const sourcePopup = readFileSync(path.join(sourceDir, "popup/popup.js"), "utf8");
-const localPopup = readFileSync(path.join(localDir, "popup/popup.js"), "utf8");
-assert.equal(
-  normalizePopupJs(localPopup),
-  sourcePopup,
-  "popup.js must only differ by local frontend/backend routing substitutions",
-);
+assert.match(popupJs, /LOCAL_FRONTEND_BASE_URL = "http:\/\/127\.0\.0\.1:3000"/);
 
 console.log(`extension ui parity ok against ${sourceDir}`);

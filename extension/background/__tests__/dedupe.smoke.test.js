@@ -19,10 +19,21 @@
  *   8. 缺 sku 时跳过 dedupe,仍能 fetch,不写 cache
  *   9. forceResubmit 不污染普通 pending 槽位
  *       (普通 A pending + force B 并发,后到普通 C 应 await A 而非 B)
+ *  10. 不同登录账号不共享去重缓存
+ *  11. 不同数据采集店铺不共享去重缓存
  */
 
 const DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RETRIES = 3;
+
+function hashString(value) {
+  let result = 2166136261;
+  for (let index = 0; index < String(value).length; index += 1) {
+    result ^= String(value).charCodeAt(index);
+    result = Math.imul(result, 16777619);
+  }
+  return (result >>> 0).toString(16);
+}
 
 // ── mock chrome.storage.local ─────────────────────────────────────
 function makeStorage() {
@@ -52,7 +63,7 @@ function makeStorage() {
 // 2025-05 ENVELOPE_FIX:dedupeHit / lastAt / result 全塞进 data,适配 sendMessage
 // wrapper 的 resolve(response.data) — 否则 envelope 字段在跨 chrome.runtime 边界丢
 async function pushSourceCollectRef({ sourceId, raw, forceResubmit }, ctx) {
-  const { backendUrl, storeId, token, storage, apiRequest, now, pendingCollects } = ctx;
+  const { backendUrl, storeId, token, dataCollectionStoreId, storage, apiRequest, now, pendingCollects } = ctx;
   if (!sourceId) return { ok: false, error: 'sourceId required' };
 
   const sku = String(raw?.sku || '').trim();
@@ -60,7 +71,8 @@ async function pushSourceCollectRef({ sourceId, raw, forceResubmit }, ctx) {
   if (sku && backendUrl) {
     try {
       const host = new URL(backendUrl).host;
-      cacheKey = `jz-collect-recent-v1:${host}:${encodeURIComponent(storeId || 'no-store')}:${encodeURIComponent(sourceId)}:${encodeURIComponent(sku)}`;
+      const accountScope = hashString(String(token || 'anonymous'));
+      cacheKey = `jz-collect-recent-v2:${host}:${accountScope}:${encodeURIComponent(storeId || 'no-store')}:${encodeURIComponent(dataCollectionStoreId || 'no-collection-store')}:${encodeURIComponent(sourceId)}:${encodeURIComponent(sku)}`;
       if (!forceResubmit) {
         const cached = await new Promise((r) => storage.get([cacheKey], (d) => r(d[cacheKey])));
         if (cached && now() - (cached.at || 0) < DEDUPE_TTL_MS) {
@@ -85,13 +97,18 @@ async function pushSourceCollectRef({ sourceId, raw, forceResubmit }, ctx) {
   }
 
   const collectPromise = (async () => {
+    const collectRequestKey = `collect-${now()}-${Math.random().toString(16).slice(2)}`;
     let lastErr = null;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const data = await apiRequest(
           'POST',
           `${backendUrl}/sources/${encodeURIComponent(sourceId)}/collect`,
-          { raw: raw || {} },
+          {
+            raw: raw || {},
+            idempotencyKey: collectRequestKey,
+            ...(dataCollectionStoreId ? { dataCollectionStoreId } : {}),
+          },
           token,
           storeId,
         );
@@ -187,7 +204,7 @@ async function run() {
     const resp = await pushSourceCollectRef({ sourceId: 'ozon', raw: { sku: '999' } }, ctx);
     assert(!resp.ok, 'should fail after retries');
     assert(fetchCount === 3, `expected 3 fetch attempts, got ${fetchCount}`);
-    const cached = Object.keys(storage.data).filter((k) => k.startsWith('jz-collect-recent-v1:'));
+    const cached = Object.keys(storage.data).filter((k) => k.startsWith('jz-collect-recent-v2:'));
     assert(cached.length === 0, `cache should be empty, got ${cached.length} keys`);
   });
 
@@ -287,7 +304,7 @@ async function run() {
     const resp = await pushSourceCollectRef({ sourceId: 'ozon', raw: {} }, ctx);
     assert(resp.ok, 'should ok');
     assert(fetchCount === 1, 'should fetch once');
-    const cached = Object.keys(storage.data).filter((k) => k.startsWith('jz-collect-recent-v1:'));
+    const cached = Object.keys(storage.data).filter((k) => k.startsWith('jz-collect-recent-v2:'));
     assert(cached.length === 0, `no cache should be written for sku-less call, got ${cached.length}`);
   });
 
@@ -333,6 +350,26 @@ async function run() {
     assert(respC.ok && respC.data.result.id === 'A-1', `C should await A, got ${JSON.stringify(respC)}`);
     assert(respC.data.dedupeHit === true, 'C should be dedupeHit (merged with A)');
     assert(fetchCount === 2, `should fetch 2 times (A + B), got ${fetchCount}`);
+  });
+
+  await test('case 10: 不同登录账号的同一 SKU 不去重', async () => {
+    const storage = makeStorage();
+    let fetchCount = 0;
+    const apiRequest = async () => { fetchCount++; return { id: `account-${fetchCount}` }; };
+    const base = { backendUrl: 'https://api.example.com', storeId: 's1', dataCollectionStoreId: 'dc1', storage, apiRequest, now: () => 1000, pendingCollects: new Map() };
+    await pushSourceCollectRef({ sourceId: 'ozon', raw: { sku: 'account-sku' } }, { ...base, token: 'account-a-token' });
+    await pushSourceCollectRef({ sourceId: 'ozon', raw: { sku: 'account-sku' } }, { ...base, token: 'account-b-token' });
+    assert(fetchCount === 2, `different accounts should fetch twice, got ${fetchCount}`);
+  });
+
+  await test('case 11: 不同数据采集店铺的同一 SKU 不去重', async () => {
+    const storage = makeStorage();
+    let fetchCount = 0;
+    const apiRequest = async () => { fetchCount++; return { id: `collection-store-${fetchCount}` }; };
+    const base = { backendUrl: 'https://api.example.com', storeId: 's1', token: 'same-account-token', storage, apiRequest, now: () => 1000, pendingCollects: new Map() };
+    await pushSourceCollectRef({ sourceId: 'ozon', raw: { sku: 'dc-sku' } }, { ...base, dataCollectionStoreId: 'dc1' });
+    await pushSourceCollectRef({ sourceId: 'ozon', raw: { sku: 'dc-sku' } }, { ...base, dataCollectionStoreId: 'dc2' });
+    assert(fetchCount === 2, `different collection stores should fetch twice, got ${fetchCount}`);
   });
 
   // 汇总

@@ -33,7 +33,7 @@ for (const zipPath of zipPaths) {
       ["dryRun route guard", path.join(tmpDir, "background", "__tests__", "follow-sell-dry-run-route.test.js")],
     ];
     for (const [name, testPath] of tests) {
-      const smoke = spawnSync("node", [testPath], {
+      const smoke = spawnSync(process.execPath, [testPath], {
         cwd: tmpDir,
         stdio: "inherit",
         shell: false,

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -11,6 +11,11 @@ const targets = [
   path.join(rootDir, "app", "public", fileName),
   path.join(rootDir, "app", "dist", fileName),
 ];
+const unpackedTarget = path.join(rootDir, "app", "public", `sonli-extension-${manifest.version}`);
+
+await rm(unpackedTarget, { recursive: true, force: true });
+await cp(extensionDir, unpackedTarget, { recursive: true, force: true });
+console.log(`packaged ${path.relative(rootDir, unpackedTarget)}`);
 
 for (const target of targets) {
   await mkdir(path.dirname(target), { recursive: true });

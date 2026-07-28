@@ -22,7 +22,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const nextTick = () => new Promise((resolve) => setImmediate(resolve));
 
 function createHarness(overrides = {}) {
-  const origin = "http://127.0.0.1:5173";
+  const origin = "http://127.0.0.1:3000";
   const listeners = [];
   const posted = [];
   const sentToSw = [];
@@ -90,6 +90,9 @@ function createHarness(overrides = {}) {
     String,
     Number,
     Date,
+    JzPortalBridgePolicy: {
+      sanitizePortalBridgeResponse: (response) => response,
+    },
   };
   vm.runInNewContext(bridgeSource, context, { filename: "jizhangerp-bridge.js" });
 
@@ -113,6 +116,7 @@ function createHarness(overrides = {}) {
       "lib/follow-sell-content-copy.js",
       "lib/v3-payload.js",
       "lib/sku-collect.js",
+      "lib/portal-bridge-policy.js",
       "content/jizhangerp-bridge.js",
     ],
     "sonli bridge dependencies must load before the bridge",
@@ -151,6 +155,7 @@ function createHarness(overrides = {}) {
   assert.strictEqual(harness.sentToSw.length, 1, "follow-sell should call service worker once");
   assert.deepStrictEqual(plain(harness.sentToSw[0]), {
     action: "followSell",
+    portalProtocol: "JZ_ERP",
     storeId: "local_test_store",
     items: [
       {

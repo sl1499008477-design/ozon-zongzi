@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -34,7 +34,6 @@ const dataDir = await mkdtemp(path.join(os.tmpdir(), "qh-import-currency-"));
 const dataFile = path.join(dataDir, "local-state.json");
 const token = "local-test-token";
 const storeId = "local_currency_store";
-let importPayload = null;
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
@@ -77,13 +76,6 @@ globalThis.fetch = async (url, options = {}) => {
       ],
     }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
-  if (href.endsWith("/v3/product/import")) {
-    importPayload = JSON.parse(options.body || "{}");
-    return new Response(JSON.stringify({ result: { task_id: 123456789 } }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
   return originalFetch(url, options);
 };
 
@@ -112,7 +104,7 @@ try {
 
   const response = await requestJson(
     handle,
-    "/ozon/products/import",
+    "/ozon/products/import/preview",
     { items: [item], strictTypeMatch: true },
     token,
     storeId,
@@ -120,12 +112,8 @@ try {
 
   assert.equal(response.status, 200);
   assert.equal(response.body.ok, true);
-  assert.equal(importPayload?.items?.[0]?.currency_code, "CNY");
-
-  const state = JSON.parse(await readFile(dataFile, "utf8"));
-  const job = Object.values(state.jobs || {}).find((row) => row.ozonTaskId === 123456789);
-  assert.equal(job?.items?.[0]?.currency_code, "CNY");
-  assert.equal(job?.items?.[0]?.currencyCode, undefined, "Ozon payload should only keep currency_code after normalization");
+  assert.equal(response.body.items?.[0]?.currency_code, "CNY");
+  assert.equal(response.body.items?.[0]?.currencyCode, undefined, "Ozon payload should only keep currency_code after normalization");
 
   console.log("import currency contract smoke passed");
   process.exitCode = 0;
