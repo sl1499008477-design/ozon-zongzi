@@ -4,6 +4,7 @@ import process from "node:process";
 const commands = [
   ["server", "node", ["server/index.mjs"]],
   ["worker", "node", ["server/listing-worker.mjs"]],
+  ["frontend-compat-proxy", "node", ["scripts/frontend-compat-proxy.mjs"]],
   ["app", "pnpm", ["--dir", "app", "dev"]],
 ];
 
