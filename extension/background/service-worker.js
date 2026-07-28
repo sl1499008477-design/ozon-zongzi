@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
 // Electron host compatibility shim — Electron 36+ extension system 不实现
 // chrome.contextMenus / chrome.cookies / chrome.notifications,SW 顶层调到
 // chrome.contextMenus.onClicked.addListener 会抛 TypeError 导致整个 SW 注册失败。
@@ -38,6 +38,7 @@ try {
   importScripts(
     // cdn-buster 必须在 backend-client 之前 — 后者运行时读 globalThis.JzCdnBuster。
     '../lib/cdn-buster.js',
+    '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
     'sync/opi-client.js',
     'sync/backend-client.js',
@@ -62,20 +63,19 @@ try {
 
   // Backend 路由策略:
   //   - dev (直接加载 extension/ 源码,不跑 build.js) → globalThis.__JZ_PROD_BUILD__
-  //     未定义 → 候选包含 localhost:3001,detectBackendUrl 优先试 localhost,联通即用
+  //     未定义 → 固定使用统一入口 127.0.0.1:3000/api
   //   - prod (走 npm run build 出的 dist/zip,esbuild define 把
   //     globalThis.__JZ_PROD_BUILD__ 替换成 "true") → 只走 api.jizhangerp.com,
   //     不再 fallback localhost。防止从 jizhangerp.com 下载安装的扩展在用户本地
-  //     恰好开着 dev backend 时被劫持到 localhost:3001。
-  const LOCAL_FRONTEND_BASE_URL = 'http://127.0.0.1:5173';
+  //     不再暴露或探测独立的 3001 API 入口。
+  const LOCAL_FRONTEND_BASE_URL = 'http://127.0.0.1:3000';
   const LOCAL_FRONTEND_TAB_URLS = [
     'http://localhost:3000/*',
+    'http://127.0.0.1:3000/*',
     'http://store.localhost:3000/*',
-    'http://localhost:5173/*',
-    'http://127.0.0.1:5173/*',
   ];
-  const BACKEND_URLS = ['http://localhost:3001', 'http://127.0.0.1:3001'];
-  const isLocalBackendUrl = (value) => /^(?:http:\/\/)?(?:localhost|127\.0\.0\.1):3001\b/.test(String(value || ''));
+  const BACKEND_URLS = ['http://127.0.0.1:3000/api'];
+  const isLocalBackendUrl = (value) => /^http:\/\/127\.0\.0\.1:3000\/api\b/.test(String(value || ''));
 
   // dev 直接加载源码时 build.js 没跑,qh.jizhangerp.com 保持字面量 → 运行时兜底平台默认。
   // 影响:tryWebSync 抓 store.jizhangerp.com 标签页登录态、openFrontend 跳转域名。
@@ -132,23 +132,17 @@ try {
   const HEARTBEAT_ALARM = 'device-heartbeat';
   const HEARTBEAT_INTERVAL_MINUTES = 5;
 
-  // 采集器实时大屏：tab → 最近一次 heartbeat 状态（不持久化，sw 休眠后会清空，
-  // 但前台每 30s 会重发心跳，恢复也快）
-  const COLLECTOR_STALE_MS = 90 * 1000;
-  const collectorTabs = new Map(); // tabId → { tabId, stats, currentKeyword, autoScrollerRunning, bucketCount, url, title, ts }
-
   // pushSourceCollect in-flight 合并(plan v3 子项 ② P1 修复):
   // chrome.storage 的 dedupe 只在请求完成写 cache 后才命中。如果用户快速连点 5 次,
   // 5 次都可能在第一次 fetch 返回前 miss cache,各自发请求 → backend 收到 5 次重复 upsert。
   // 加 SW 内存级 Map:key 命中时 await 同一个 in-flight Promise,合并并发。
   const pendingCollects = new Map(); // cacheKey → Promise<{ok, dedupeHit, data, ...}>
 
-  // ── 极掌算价：CNY→RUB 实时汇率 ──
-  // 每日刷新一次写入 chrome.storage.local。content/jzc-calc.js 监听 storage 变化自动重算
+  // ── sonli 算价：用配置 SKU 的 Ozon 前台 RUB/CNY 实价计算动态汇率 ──
+  // 每两小时刷新一次写入 chrome.storage.local。content/jzc-calc.js 监听 storage 变化自动重算。
   const FX_STORAGE_KEY = 'jz_calc_fx_rate_v1';
   const FX_ALARM = 'jzc-fx-refresh';
-  const FX_API_URL = 'https://open.er-api.com/v6/latest/CNY';
-  const FX_REFRESH_INTERVAL_MINUTES = 24 * 60;
+  const FX_REFRESH_INTERVAL_MINUTES = 2 * 60;
 
   // ── client-side sync(扩展端跑同步,取代后端 BullMQ cron)──
   // 三个独立 alarm,各类型独立频率。SW 重启自动 re-create alarm,
@@ -649,12 +643,127 @@ try {
       _bundlePortalOpts(preferTabId),
     );
 
+  const normalizeSellerCompanyId = (value) => String(value || '').trim().replace(/[^\d]/g, '');
+
+  const pushSellerCompanyIdCandidate = (list, value) => {
+    const id = normalizeSellerCompanyId(value);
+    if (id && !list.includes(id)) list.push(id);
+  };
+
+  const pushSellerCompanyIdCandidates = (list, values) => {
+    for (const value of Array.isArray(values) ? values : [values]) {
+      pushSellerCompanyIdCandidate(list, value);
+    }
+  };
+
+  const readSellerCompanyIdsFromTab = async (tabId) => {
+    if (!tabId) return [];
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const ids = [];
+          const push = (value) => {
+            const id = String(value || '').trim().replace(/[^\d]/g, '');
+            if (id && id.length >= 4 && id.length <= 15 && !ids.includes(id)) ids.push(id);
+          };
+          const scan = (value) => {
+            const text = String(value || '');
+            if (!text) return;
+            const patterns = [
+              /(?:sc_company_id|sellerCompanyId|seller_company_id|companyId|company_id|company-id|clientId|client_id)["'=:\\s%]*([0-9]{4,15})/gi,
+              /(?:company|seller|client)[^0-9]{0,28}([0-9]{4,15})/gi,
+            ];
+            for (const pattern of patterns) {
+              let match;
+              while ((match = pattern.exec(text))) push(match[1]);
+            }
+          };
+
+          for (const part of document.cookie.split(';')) {
+            const [name, ...rest] = part.trim().split('=');
+            if (/^(sc_company_id|company_id|companyId|seller_company_id|sellerCompanyId)$/i.test(name || '')) {
+              push(rest.join('='));
+            }
+          }
+
+          try {
+            const url = new URL(location.href);
+            for (const key of ['sc_company_id', 'company_id', 'companyId', 'seller_company_id', 'sellerCompanyId', 'client_id', 'clientId']) {
+              push(url.searchParams.get(key));
+            }
+            scan(url.href);
+          } catch {}
+
+          for (const storage of [localStorage, sessionStorage]) {
+            try {
+              for (let i = 0; i < storage.length; i += 1) {
+                const key = storage.key(i);
+                if (!/(company|seller|client|sc_company)/i.test(key || '')) continue;
+                scan(key);
+                scan(storage.getItem(key));
+              }
+            } catch {}
+          }
+
+          try {
+            const scripts = Array.from(document.scripts || [])
+              .filter((script) => !script.src && script.textContent && /(company|seller|client|sc_company)/i.test(script.textContent))
+              .slice(0, 20);
+            for (const script of scripts) scan(script.textContent.slice(0, 200000));
+          } catch {}
+
+          return ids;
+        },
+        world: 'MAIN',
+      });
+      return Array.isArray(results?.[0]?.result) ? results[0].result : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const getSellerCompanyIdCandidates = async (options = {}) => {
+    const candidates = [];
+    const addCookies = (cookies = []) => {
+      for (const cookie of cookies || []) pushSellerCompanyIdCandidate(candidates, cookie?.value);
+    };
+
+    pushSellerCompanyIdCandidates(candidates, await readSellerCompanyIdsFromTab(options.tabId));
+
+    try {
+      const sellerTabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
+      const orderedTabs = [...sellerTabs].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+      for (const tab of orderedTabs.slice(0, 8)) {
+        pushSellerCompanyIdCandidates(candidates, await readSellerCompanyIdsFromTab(tab.id));
+      }
+    } catch {}
+
+    try { addCookies(await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' })); } catch {}
+    try { addCookies(await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/app/dashboard/main', name: 'sc_company_id' })); } catch {}
+    try { addCookies(await chrome.cookies.getAll({ domain: '.ozon.ru', name: 'sc_company_id' })); } catch {}
+    try { addCookies(await chrome.cookies.getAll({ name: 'sc_company_id' })); } catch {}
+
+    return candidates;
+  };
+
   // 解析当前登录店铺的 sc_company_id(门户接口都要它)
-  const resolveSellerCompanyId = async () => {
-    const scCookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-    const companyId = scCookies[0]?.value || '';
+  const resolveSellerCompanyId = async (options = {}) => {
+    const companyId = (await getSellerCompanyIdCandidates(options))[0] || '';
     if (!companyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
     return companyId;
+  };
+
+  const getOzonSellerLoginState = async (options = {}) => {
+    const sellerCompanyIds = await getSellerCompanyIdCandidates(options);
+    const sellerCompanyId = sellerCompanyIds[0] || '';
+    if (!sellerCompanyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
+    return {
+      loggedIn: true,
+      sellerCompanyId: String(sellerCompanyId),
+      sellerCompanyIds,
+      source: 'seller.ozon.ru:sc_company_id',
+    };
   };
 
   /**
@@ -2649,22 +2758,74 @@ try {
     });
   };
 
-  // ── 极掌算价：拉取 CNY→RUB 实时汇率 ──
+  // ── sonli 算价：按 SKU 采集 Ozon 前台 RUB/CNY 实价 ──
+  const collectFxProbe = async (sku) => {
+    if (!globalThis.JzFxProbe?.extractFrontendPricePair) throw new Error('汇率采价组件未加载');
+    const buyerTab = await ensureBuyerTab();
+    const productPath = `/product/${encodeURIComponent(String(sku))}/`;
+    const apiUrl = `https://www.ozon.ru/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(productPath)}`;
+    const response = await fetchOzonWwwViaTab({ tab: buyerTab }, apiUrl, 30_000);
+    if (!response.ok) throw new Error(response.error || `Ozon ${response.status || '请求失败'}`);
+    const pair = globalThis.JzFxProbe.extractFrontendPricePair(response.data, sku);
+    if (!pair.ok) throw new Error(pair.error || '未取得同一售价基准的 RUB/CNY 前台价');
+    return {
+      sku: String(sku),
+      rubPrice: pair.rubPrice,
+      cnyPrice: pair.cnyPrice,
+      observedAt: new Date().toISOString(),
+      source: 'ozon_buyer_bff_variant_frontend',
+      raw: pair.evidence,
+    };
+  };
+
+  let lastFxRefreshError = '';
   const refreshExchangeRate = async () => {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10_000);
-      const r = await fetch(FX_API_URL, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      const rate = Number(data?.rates?.RUB);
-      if (!isFinite(rate) || rate <= 0) throw new Error('invalid rate');
+      lastFxRefreshError = '';
+      const stored = await getStorage([STORAGE_KEYS.token]);
+      const token = stored[STORAGE_KEYS.token];
+      if (!token) throw new Error('请先登录 sonli');
+      const backendUrl = await getBackendUrl();
+      const probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);
+      const probes = Array.isArray(probeResponse?.probes) ? probeResponse.probes : [];
+      if (!probes.length) {
+        console.info('[jzc-fx] 未配置汇率 SKU，跳过本轮采价');
+        return Number(probeResponse?.rate?.rate || 0) || null;
+      }
+      const observations = [];
+      const errors = [];
+      for (const probe of probes) {
+        try {
+          observations.push(await collectFxProbe(probe.sku));
+        } catch (error) {
+          errors.push({ sku: probe.sku, error: error?.message || String(error) });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      const deviceId = await getExtensionFingerprint();
+      const result = await apiRequest(
+        'POST',
+        `${backendUrl}/pricing/fx/observations`,
+        { observations, errors, deviceId },
+        token,
+        null,
+        60_000,
+      );
+      const rate = Number(result?.rate?.rate || probeResponse?.rate?.rate || 0);
+      if (!(rate > 0)) throw new Error(errors[0]?.error || '本轮没有可用汇率');
       await setStorage({
-        [FX_STORAGE_KEY]: { rate, ts: Date.now(), source: 'open.er-api.com' },
+        [FX_STORAGE_KEY]: {
+          rate,
+          ts: Date.now(),
+          source: 'ozon_sku_frontend',
+          sampleCount: Number(result?.rate?.acceptedCount || 0),
+          confidence: result?.rate?.confidence || 'LOW',
+        },
       });
+      console.info(`[jzc-fx] rate=${rate} accepted=${result?.accepted || 0} rejected=${result?.rejected || 0} errors=${errors.length}`);
       return rate;
     } catch (e) {
+      lastFxRefreshError = e?.message || String(e);
       console.warn('[jzc-fx] refresh failed:', e?.message || e);
       return null;
     }
@@ -2979,11 +3140,6 @@ try {
       collapse1688ImageSearchResultTab({ ...tab, id: tabId });
     });
   }
-
-  // Clean collector heartbeat cache when a tab is closed.
-  chrome.tabs.onRemoved.addListener((tabId) => {
-    if (collectorTabs.has(tabId)) collectorTabs.delete(tabId);
-  });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // 极掌算价：手动重拉汇率（content/jzc-calc.js 走 message.type 路由，
@@ -3556,6 +3712,13 @@ try {
             return { ok: false, error: e?.message || 'open seller portal failed' };
           }
         }
+        case 'getOzonSellerLoginState': {
+          try {
+            return { ok: true, data: await getOzonSellerLoginState({ tabId: sender?.tab?.id }) };
+          } catch (e) {
+            return { ok: false, error: e?.message || 'ozon seller login not detected' };
+          }
+        }
         case 'refreshBackend': {
           resolvedBackendUrl = null;
           const url = await detectBackendUrl();
@@ -3587,8 +3750,8 @@ try {
           // raw scraped payload. Backend's source provider does normalization.
           //
           // 客户端去重 + 失败重试(plan v3 子项 ②):
-          // - dedupe key 含 backendHost(extension 无 tenantId,用 host 作环境隔离)
-          //   + storeId + sourceId + sku,24h TTL
+          // - dedupe key 含 backendHost + 登录账号 token 摘要 + 经营店铺
+          //   + 已验证的数据采集店铺 + sourceId + sku,24h TTL
           // - 内存级 pendingCollects 合并 in-flight 并发(快速连点 5 次合并为 1 次 POST)
           // - 网络层失败(5xx / 408 / 429 / network)指数退避,attempt 1 失败等 1s
           //   再试,attempt 2 失败等 2s 再试,attempt 3 失败直接放弃。总共最多 2 次等待。
@@ -3603,6 +3766,36 @@ try {
           // followSell 等其他 action 的 `message.storeId || storeId` 写法。否则
           // 1688 采集会落到全局店铺或 null,前端采集箱按所选店铺过滤就看不到。
           const effStoreId = message.storeId || storeId;
+          const collectRequestKey = String(message.requestId || `collect-${crypto.randomUUID()}`);
+          let verifiedDataCollectionStoreId = '';
+          if (sourceId.toLowerCase() === 'ozon') {
+            let sellerLogin = null;
+            try {
+              sellerLogin = await getOzonSellerLoginState({ tabId: sender?.tab?.id });
+            } catch (e) {
+              return {
+                ok: false,
+                error: e?.message || '请先登录 seller.ozon.ru 并切换到数据采集店铺',
+              };
+            }
+            try {
+              const verifyResp = await apiRequest(
+                'POST',
+                `${backendUrl}/local/data-collection-stores/verify`,
+                {
+                  sellerCompanyId: sellerLogin.sellerCompanyId,
+                  sellerCompanyIds: sellerLogin.sellerCompanyIds || [],
+                  requestId: collectRequestKey,
+                },
+                token,
+                effStoreId,
+                20_000,
+              );
+              verifiedDataCollectionStoreId = verifyResp?.dataCollectionStoreId || verifyResp?.store?.id || '';
+            } catch (e) {
+              return { ok: false, error: e?.message || '数据采集店铺校验失败' };
+            }
+          }
           const DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
 
           let cacheKey = null;
@@ -3611,7 +3804,8 @@ try {
               const host = new URL(backendUrl).host;
               // sku / sourceId 走 encodeURIComponent,防止 1688/PDD 等 sku 含 `:` `/` 时
               // 切坏 tuple 边界(当前 ozon sku 都是数字串,留作扩展防御)。
-              cacheKey = `jz-collect-recent-v1:${host}:${encodeURIComponent(effStoreId || 'no-store')}:${encodeURIComponent(sourceId)}:${encodeURIComponent(sku)}`;
+              const accountScope = hashString(String(token || 'anonymous'));
+              cacheKey = `jz-collect-recent-v2:${host}:${accountScope}:${encodeURIComponent(effStoreId || 'no-store')}:${encodeURIComponent(verifiedDataCollectionStoreId || 'no-collection-store')}:${encodeURIComponent(sourceId)}:${encodeURIComponent(sku)}`;
               if (!forceResubmit) {
                 const cached = await new Promise((resolve) => {
                   chrome.storage.local.get([cacheKey], (d) => resolve(d?.[cacheKey]));
@@ -3646,10 +3840,36 @@ try {
           const collectPromise = (async () => {
             const MAX_RETRIES = 3;
             let lastErr = null;
+            const recoverRequestResult = async () => {
+              for (let poll = 0; poll < 3; poll += 1) {
+                try {
+                  const recovered = await apiRequest(
+                    'GET',
+                    `${backendUrl}/local/collect-requests/${encodeURIComponent(collectRequestKey)}`,
+                    null,
+                    token,
+                    effStoreId,
+                    5_000,
+                  );
+                  const request = recovered?.request || recovered?.data?.request || recovered;
+                  if (request?.status === 'SUCCEEDED') return request.response?.item || request.response || null;
+                  if (request?.status === 'FAILED') {
+                    const failure = new Error(request.error_message || '采集请求处理失败');
+                    failure.status = 422;
+                    throw failure;
+                  }
+                } catch (recoveryError) {
+                  if (recoveryError?.status === 422) throw recoveryError;
+                }
+                if (poll < 2) await new Promise((resolve) => setTimeout(resolve, 500));
+              }
+              return null;
+            };
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
               try {
-                const body = { raw: message.raw || {} };
+                const body = { raw: message.raw || {}, idempotencyKey: collectRequestKey };
                 if (effStoreId) body.storeId = effStoreId;   // 后端 body.storeId 优先于 header
+                if (verifiedDataCollectionStoreId) body.dataCollectionStoreId = verifiedDataCollectionStoreId;
                 if (message.resetDraft === true) body.resetDraft = true;
                 const data = await apiRequest(
                   'POST',
@@ -3679,6 +3899,17 @@ try {
                 // 4xx 业务错误(非 408/429)立即失败,不重试
                 if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
                   return { ok: false, error: error.message, status };
+                }
+                try {
+                  const recovered = await recoverRequestResult();
+                  if (recovered) {
+                    if (cacheKey) {
+                      await new Promise((resolve) => chrome.storage.local.set({ [cacheKey]: { at: Date.now() } }, resolve));
+                    }
+                    return { ok: true, data: { dedupeHit: false, recoveredAfterTimeout: true, lastAt: null, result: recovered } };
+                  }
+                } catch (recoveryError) {
+                  return { ok: false, error: recoveryError.message, status: recoveryError.status || 422 };
                 }
                 if (attempt < MAX_RETRIES) {
                   await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
@@ -3721,62 +3952,6 @@ try {
           } catch (error) {
             return { ok: false, error: error.message };
           }
-        }
-        case 'pushSourceCollectBatch': {
-          // 采集器批量推送(2026-05-30):走多源批量端点,每条 raw 经 provider
-          // validatePayload + normalize(prune variantData + RUB→CNY + sourceId='ozon'
-          // + sourceExternalId 唯一索引去重),替代旧 /ozon/collect-box/batch。
-          // 返回 { results:[{action}], errors:[{index,reason}] },上层换算新增/更新/跳过。
-          const sourceId = message.sourceId || 'ozon';
-          const rawItems = message.items || [];
-          if (rawItems.length === 0) return { ok: true, data: { results: [], errors: [] } };
-          try {
-            const body = { items: rawItems.map((raw) => ({ raw })) };
-            const data = await apiRequest('POST', `${backendUrl}/sources/${encodeURIComponent(sourceId)}/collect/batch`, body, token, storeId);
-            return { ok: true, data };
-          } catch (error) {
-            return { ok: false, error: error.message };
-          }
-        }
-        case 'collectorHeartbeat': {
-          // content script → bg：上报当前 tab 的采集器状态
-          const tabId = sender?.tab?.id;
-          if (!tabId) return { ok: false, error: 'no tab id' };
-          const heartbeatActive =
-            !!message.running ||
-            !!message.autoScrollerRunning ||
-            !!message.currentKeyword;
-          if (!heartbeatActive) {
-            collectorTabs.delete(tabId);
-            return { ok: true };
-          }
-          collectorTabs.set(tabId, {
-            tabId,
-            url: sender?.tab?.url || message.url || '',
-            title: sender?.tab?.title || message.title || '',
-            stats: message.stats || null,
-            currentKeyword: message.currentKeyword || null,
-            autoScrollerRunning: !!message.autoScrollerRunning,
-            bucketCount: message.bucketCount ?? null,
-            running: !!message.running,
-            ts: Date.now(),
-          });
-          return { ok: true };
-        }
-        case 'collectorGetState': {
-          // popup → bg：拉取所有活跃采集器 tab
-          const now = Date.now();
-          const tabs = [];
-          for (const [tabId, state] of collectorTabs) {
-            if (now - state.ts > COLLECTOR_STALE_MS) {
-              collectorTabs.delete(tabId);
-              continue;
-            }
-            tabs.push(state);
-          }
-          // 按最近活跃排序
-          tabs.sort((a, b) => b.ts - a.ts);
-          return { ok: true, data: { tabs } };
         }
         case 'browserAgentGetState': {
           if (!globalThis.JzBrowserAgentRuntime) {
@@ -4372,8 +4547,47 @@ try {
           const id = encodeURIComponent(message.itemId);
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/collect-box/${id}/ai-listing-draft/publish`, message.body || {}, token, aiStoreId, 120_000) };
         }
+        case 'getPricingConfig': {
+          const pricingStoreId = message.storeId || storeId;
+          return {
+            ok: true,
+            data: await apiRequest(
+              'GET',
+              `${backendUrl}/pricing/config/active?storeId=${encodeURIComponent(pricingStoreId || '')}`,
+              null,
+              token,
+              pricingStoreId,
+            ),
+          };
+        }
+        case 'calculatePricing': {
+          const pricingStoreId = message.storeId || storeId;
+          return {
+            ok: true,
+            data: await apiRequest(
+              'POST',
+              `${backendUrl}/pricing/calculate`,
+              { ...(message.input || {}), storeId: pricingStoreId || '' },
+              token,
+              pricingStoreId,
+            ),
+          };
+        }
+        case 'savePricingSnapshot': {
+          const pricingStoreId = message.storeId || storeId;
+          return {
+            ok: true,
+            data: await apiRequest(
+              'POST',
+              `${backendUrl}/pricing/snapshots`,
+              { ...(message.body || {}), storeId: pricingStoreId || '' },
+              token,
+              pricingStoreId,
+            ),
+          };
+        }
         case 'getFxRate': {
-          // CNY→RUB 实时汇率（复用「极掌算价」的 FX 缓存 jz_calc_fx_rate_v1）。
+          // CNY→RUB 动态汇率（复用 SKU 前台实价探针缓存）。
           // 给 1688 AI 采集向导按店铺货币定价用：成本是人民币，需换算成店铺货币。
           // 缓存缺失/过期则即时刷新一次。
           try {
@@ -4391,6 +4605,12 @@ try {
           } catch (e) {
             return { ok: false, error: e?.message || String(e) };
           }
+        }
+        case 'refreshFxProbes': {
+          const rate = await refreshExchangeRate();
+          return rate
+            ? { ok: true, data: { rate, base: 'CNY', quote: 'RUB' } }
+            : { ok: false, error: lastFxRefreshError || 'SKU 前台采价失败，请查看探针错误' };
         }
         case 'getFeatureFlags': {
           // 当前用户的灰度开关 map { flagKey: bool }。面板/向导按 flag 决定是否显示新功能。
@@ -5057,13 +5277,15 @@ try {
             chrome.cookies.getAll({ domain: ".ozon.ru" }),
           ]);
           const allCookies = [...byUrl, ...byDomain];
-          const companyId = byName[0] || allCookies.find(c => c.name === 'sc_company_id');
+          const sellerCompanyIds = await getSellerCompanyIdCandidates({ tabId: sender?.tab?.id });
+          const companyId = sellerCompanyIds[0] || byName[0]?.value || allCookies.find(c => c.name === 'sc_company_id')?.value || null;
           return {
             ok: true,
             data: {
               has_cookies: allCookies.length > 0 || byName.length > 0,
               cookie_count: allCookies.length,
-              sc_company_id: companyId?.value || null,
+              sc_company_id: companyId,
+              sellerCompanyIds,
               userAgent: navigator.userAgent,
             },
           };

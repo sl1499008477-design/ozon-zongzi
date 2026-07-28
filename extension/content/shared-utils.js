@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
 // Shared utility functions for 极掌 (JiZhang) Extension
 // This file is loaded before other content scripts via manifest.json
 
@@ -18,8 +18,8 @@ const __JZ_BRAND_DEFAULTS__ = {
   displayName: BRAND_DISPLAY_NAME_FALLBACK,
   productName: BRAND_PRODUCT_NAME_FALLBACK,
   primaryColor: "#1677ff",
-  apiHost: "localhost:3001",
-  webHost: "127.0.0.1:5173",
+  apiHost: "127.0.0.1:3000/api",
+  webHost: "127.0.0.1:3000",
   logoUrl: null,
 };
 if (!globalThis.__JZ_BRAND__) {
@@ -967,7 +967,7 @@ if (!globalThis.__JZ_BRAND__) {
     // 内部可达 90s+,默认 60s 会让 content 侧先超时拿不到结果 → 放宽。
     // importFromPublic:公开页取数(fetchOzonWwwViaTab ≤15s)+ 后端服务端类目/属性解析
     // (apiRequest ≤120s),合计远超默认 60s → 放宽,避免已入队却被 content 侧误判超时报"提交失败"。
-    const LONG_ACTIONS = ['followSell', 'importBySku', 'pushSourceCollectBatch', 'uploadFollowSellVideo', 'importFromPublic', 'followFromPublic'];
+    const LONG_ACTIONS = ['followSell', 'importBySku', 'uploadFollowSellVideo', 'importFromPublic', 'followFromPublic'];
     const timeoutMs = LONG_ACTIONS.includes(action) ? 600000 : 60000;
     console.log(`[sendMessage] sending action=${action}`);
     return new Promise((resolve, reject) => {
@@ -2999,7 +2999,7 @@ if (!globalThis.__JZ_BRAND__) {
           <span class="oh-modal-title-text">\u8ddf\u5356\u5546\u5bb6\u5217\u8868</span>
           <span class="oh-modal-title-count">${totalCount}</span>
         </div>
-        <button class="oh-modal-close" type="button" aria-label="\u5173\u95ed">&times;</button>
+        <button class="oh-modal-close" type="button" aria-label="\u3000\u95ed">&times;</button>
       </div>
       <div class="oh-modal-tabs" role="tablist" aria-label="\u8ddf\u5356\u5546\u5bb6\u5206\u7c7b">
         <button class="oh-modal-tab" type="button" data-seller-mode="delivery" role="tab" aria-selected="false">

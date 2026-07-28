@@ -120,19 +120,19 @@
   }
 
   // 复用现有的 cache import 端点 — 后端 OzonCacheService 已实现
-  async function importPostings({ storeId, items }) {
+  async function importPostings({ storeId, leaseId, deviceId, items }) {
     return authedFetch("/ozon/postings/cache/import", {
       method: "POST",
       headers: { "x-ozon-store-id": storeId },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ storeId, type: "POSTINGS", leaseId, deviceId, items }),
     });
   }
 
-  async function importWarehouses({ storeId, items }) {
+  async function importWarehouses({ storeId, leaseId, deviceId, items }) {
     return authedFetch("/ozon/warehouses/cache/import", {
       method: "POST",
       headers: { "x-ozon-store-id": storeId },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ storeId, type: "WAREHOUSES", leaseId, deviceId, items }),
     });
   }
 

@@ -31,8 +31,8 @@
 
   // 主插件发布 >= 此版本时，算价停用
   const MAIN_EXT_STABLE_VERSION = '1.0.0';
-  const MAIN_EXT_UPDATE_URL = 'http://127.0.0.1:3001/extension/latest';
-  const MAIN_EXT_INSTALL_URL_FALLBACK = 'http://127.0.0.1:5173/extension';
+  const MAIN_EXT_UPDATE_URL = 'http://127.0.0.1:3000/api/extension/latest';
+  const MAIN_EXT_INSTALL_URL_FALLBACK = 'http://127.0.0.1:3000/extension';
   const MAIN_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
   const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test('sonli')
     ? 'sonli'

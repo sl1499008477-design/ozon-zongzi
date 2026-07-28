@@ -178,8 +178,20 @@
         });
         return;
       }
+      const stocks = Array.isArray(payload?.stocks)
+        ? payload.stocks
+            .map((row) => ({
+              ...row,
+              warehouse_id: row?.warehouse_id ?? row?.warehouseId,
+              stock: Math.max(0, Number(row?.stock ?? row?.present ?? 0) || 0),
+            }))
+            .filter((row) => row.warehouse_id)
+        : [];
+      if (stocks.length) {
+        built.item.stocks = stocks;
+      }
 
-      const resp = await sendToSw({
+      const followSellRequest = {
         action: "followSell",
         storeId,
         items: [built.item],
@@ -188,7 +200,11 @@
         applyWatermark: !!payload?.applyWatermark,
         applyPoster: !!payload?.applyPoster,
         applyAiRewrite: !!payload?.applyAiRewrite,
-      });
+      };
+      if (stocks.length) {
+        followSellRequest.stocks = stocks;
+      }
+      const resp = await sendToSw(followSellRequest);
       if (!resp?.ok) {
         reply(reqId, "follow-sell.response", {
           ok: false,

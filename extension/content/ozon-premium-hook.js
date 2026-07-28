@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"localhost:3001","webHost":"127.0.0.1:5173","logoUrl":null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":null};
 /**
  * ozon-premium-hook.js — 数据透视眼（Ozon Premium 客户端伪造）。
  *

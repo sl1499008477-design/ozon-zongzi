@@ -88,6 +88,8 @@
     catTree: null,             // Ozon 类目树(getCategoryTree)
     catTreeLoading: false,
     catTreeError: '',
+    categoryDataError: '',
+    categoryDataReady: false,
     catPath: [],               // 已逐级选中的类目节点链
     category: null,            // 选定叶子类目 {typeId, descCatId, name}
     categoryVisualTags: [],     // suggest-category 主图视觉标签,供属性填充复用
@@ -106,6 +108,7 @@
     aiEngine: 'AI 智能体',
   };
   let catTreeReqSeq = 0;
+  let catAutoReqSeq = 0;
   let warehousesReqSeq = 0;
 
   const WIZARD_DRAFT_CACHE_VERSION = 1;
@@ -205,6 +208,7 @@
   }
 
   function resetWizardState(raw) {
+    catAutoReqSeq += 1;
     W.raw = raw || {};
     W.step = 2;
     W.view = 'workbench';
@@ -218,7 +222,7 @@
     W.fxRate = null;
     W.stores = [];
     W.warehouses = [];
-    W.catTree = null; W.catTreeLoading = false; W.catTreeError = '';
+    W.catTree = null; W.catTreeLoading = false; W.catTreeError = ''; W.categoryDataError = ''; W.categoryDataReady = false;
     W.catPath = []; W.category = null; W.categoryVisualTags = []; W.attrsSchema = []; W.reqAttrs = []; W.ratingAttrs = []; W.attrFilling = false; W.catAuto = '';
   }
 
@@ -234,14 +238,9 @@
       warehouses: cloneJson(W.warehouses),
       opts: cloneJson(W.opts),
       fxRate: W.fxRate,
-      catTree: W.catTree,
-      catTreeError: W.catTreeError || '',
       catPath: W.catPath,
       category: cloneJson(W.category),
       categoryVisualTags: cloneJson(W.categoryVisualTags),
-      attrsSchema: cloneJson(W.attrsSchema),
-      reqAttrs: cloneJson(W.reqAttrs),
-      ratingAttrs: cloneJson(W.ratingAttrs),
       packageInfo: cloneJson(W.packageInfo),
       generatedContent: cloneJson(W.generatedContent),
       step: W.step,
@@ -252,15 +251,14 @@
     };
     wizardDraftCache.set(key, draft);
     try {
-      const light = { ...draft, catTree: null, catPath: [] };
-      sessionStorage.setItem(key, JSON.stringify(light));
+      sessionStorage.setItem(key, JSON.stringify(draft));
     } catch {}
   }
 
   function restoreWizardDraft(raw) {
     const key = wizardDraftCacheKey(raw);
     const draft = wizardDraftCache.get(key);
-    if (!draft || draft.version !== WIZARD_DRAFT_CACHE_VERSION || !draft.catTree) return false;
+    if (!draft || draft.version !== WIZARD_DRAFT_CACHE_VERSION) return false;
     W.raw = raw || {};
     W.step = Number(draft.step) || 2;
     W.view = draft.view || 'workbench';
@@ -272,21 +270,22 @@
     W.warehouses = Array.isArray(draft.warehouses) ? cloneJson(draft.warehouses) : [];
     W.opts = { ...defaultWizardOpts(), ...(draft.opts || {}) };
     W.fxRate = draft.fxRate ?? null;
-    W.catTree = draft.catTree;
+    W.catTree = null;
     W.catTreeLoading = false;
-    W.catTreeError = draft.catTreeError || '';
+    W.catTreeError = '';
     W.catPath = Array.isArray(draft.catPath) ? draft.catPath : [];
     W.category = draft.category ? cloneJson(draft.category) : null;
     W.categoryVisualTags = Array.isArray(draft.categoryVisualTags) ? cloneJson(draft.categoryVisualTags) : [];
-    W.attrsSchema = Array.isArray(draft.attrsSchema) ? cloneJson(draft.attrsSchema) : [];
-    W.reqAttrs = Array.isArray(draft.reqAttrs) ? cloneJson(draft.reqAttrs) : [];
-    W.ratingAttrs = Array.isArray(draft.ratingAttrs) ? cloneJson(draft.ratingAttrs) : [];
+    W.attrsSchema = [];
+    W.reqAttrs = [];
+    W.ratingAttrs = [];
     W.packageInfo = draft.packageInfo ? cloneJson(draft.packageInfo) : packageInfoFromRaw(W.raw);
     W.generatedContent = draft.generatedContent ? cloneJson(draft.generatedContent) : null;
     W.batchPrice = { open: false, mode: 'set', value: '' };
     W.catAuto = draft.catAuto || '';
     W.aiEngine = draft.aiEngine || W.aiEngine;
-    return true;
+    window.SonliCategoryReadiness.invalidateRestored(W);
+    return !!(W.opts.storeId && W.category);
   }
 
   // 按店铺绑定货币给 1688 成本(人民币)定价。
@@ -497,7 +496,8 @@
     }
     mask.style.display = 'flex';
     render();
-    if (!restored) loadStores();
+    if (restored) revalidateRestoredCategory();
+    else loadStores();
     loadAiEngine();
     if (!restored || !W.fxRate) loadFxRate();
   }
@@ -635,6 +635,10 @@
     if (!W.category) {
       return `<div class="aiw-card"><div class="aiw-card-t">必填属性</div>
         <div class="aiw-note" style="margin-top:8px">请先在上方选择产品类目，选到末级后自动拉取该类目的必填属性。</div></div>`;
+    }
+    if (W.categoryDataError) {
+      return `<div class="aiw-card"><div class="aiw-card-t">必填属性</div>
+        <div class="aiw-note" style="margin-top:8px;color:#e5484d">${esc(W.categoryDataError)}</div></div>`;
     }
     const rows = W.reqAttrs.map((a, i) => {
       const valCell = a.dict
@@ -893,10 +897,11 @@
     }
   }
   function onPickCat(level, node) {
+    catAutoReqSeq += 1;
     W.catAuto = '';                                 // 手动选 → 清掉 AI 自动匹配标记
     W.catPath = W.catPath.slice(0, level);          // 截断到本级
     if (node) W.catPath.push(node);
-    W.category = null; W.categoryVisualTags = []; W.attrsSchema = []; W.reqAttrs = [];
+    W.category = null; W.categoryVisualTags = []; W.attrsSchema = []; W.reqAttrs = []; W.ratingAttrs = []; W.categoryDataError = ''; W.categoryDataReady = false;
     const leaf = W.catPath[W.catPath.length - 1];
     if (isLeaf(leaf)) {
       W.category = {
@@ -909,9 +914,11 @@
     renderBody();   // 重渲染（级联 + 属性卡片）
   }
   async function loadCategoryTree() {
-    const storeId = W.opts.storeId;
+    const storeId = String(W.opts.storeId || '');
     const reqId = ++catTreeReqSeq;
-    W.catTree = null; W.catTreeError = ''; W.catTreeLoading = true;
+    catAutoReqSeq += 1;
+    W.catAuto = '';
+    W.catTree = null; W.catTreeError = ''; W.catTreeLoading = true; W.categoryDataError = ''; W.categoryDataReady = false;
     W.catPath = []; W.category = null; W.categoryVisualTags = []; W.attrsSchema = []; W.reqAttrs = []; W.ratingAttrs = [];
     renderCatCascade();
     if (!storeId) {
@@ -922,24 +929,92 @@
     }
     try {
       const scopedResp = await bg({ action: 'getCategoryTree', storeId, language: 'ZH_HANS' });
-      if (reqId !== catTreeReqSeq) return;
+      if (reqId !== catTreeReqSeq || String(W.opts.storeId || '') !== storeId) return;
       W.catTreeLoading = false;
       if (scopedResp.ok) {
         W.catTree = normalizeCategoryTree(scopedResp.data);
-        W.catTreeError = W.catTree.children.length ? '' : '类目树为空，请检查店铺权限';
+        if (!W.catTree.children.length) {
+          window.SonliCategoryReadiness.failTree(W, new Error('empty category tree'));
+          renderBody();
+          return;
+        }
+        W.catTreeError = '';
         renderCatCascade();
-        if (!W.category && !W.catTreeError) autoMatchCategory();
+        if (!W.category) autoMatchCategory();
       } else {
-        W.catTreeError = `类目树加载失败：${scopedResp.error || '未知错误'}`;
-        renderCatCascade();
+        window.SonliCategoryReadiness.failTree(W, scopedResp.error);
+        renderBody();
         log('getCategoryTree failed', scopedResp.error);
       }
     } catch (e) {
-      if (reqId !== catTreeReqSeq) return;
-      W.catTreeLoading = false;
-      W.catTreeError = `类目树加载失败：${e?.message || String(e)}`;
-      renderCatCascade();
+      if (reqId !== catTreeReqSeq || String(W.opts.storeId || '') !== storeId) return;
+      window.SonliCategoryReadiness.failTree(W, e);
+      renderBody();
       log('getCategoryTree error', e);
+    }
+  }
+
+  function restoredCategoryScopeIsCurrent(scope, reqId) {
+    const category = W.category;
+    return reqId === catTreeReqSeq
+      && String(W.opts.storeId || '') === scope.storeId
+      && category === scope.category
+      && String(category?.typeId || '') === scope.typeId
+      && String(category?.descCatId || '') === scope.descCatId;
+  }
+
+  async function revalidateRestoredCategory() {
+    const storeId = String(W.opts.storeId || '');
+    const category = W.category;
+    if (!storeId || !category) return;
+    const scope = {
+      storeId,
+      category,
+      typeId: String(category.typeId || ''),
+      descCatId: String(category.descCatId || ''),
+    };
+    const reqId = ++catTreeReqSeq;
+    catAutoReqSeq += 1;
+    W.catAuto = '';
+    W.catTree = null;
+    W.catTreeLoading = true;
+    renderBody();
+    try {
+      const resp = await bg({ action: 'getCategoryTree', storeId, language: 'ZH_HANS' });
+      if (!restoredCategoryScopeIsCurrent(scope, reqId)) return;
+      W.catTreeLoading = false;
+      if (!resp.ok) {
+        window.SonliCategoryReadiness.failTree(W, resp.error);
+        renderBody();
+        return;
+      }
+      W.catTree = normalizeCategoryTree(resp.data);
+      if (!W.catTree.children.length) {
+        window.SonliCategoryReadiness.failTree(W, new Error('empty category tree'));
+        renderBody();
+        return;
+      }
+      const path = findPathByCategoryId(scope.typeId, scope.descCatId);
+      if (!path?.length) {
+        window.SonliCategoryReadiness.failTree(W, new Error('restored category missing'));
+        renderBody();
+        return;
+      }
+      const leaf = path[path.length - 1];
+      W.catPath = path;
+      W.category = {
+        typeId: Number(leaf.type_id),
+        descCatId: inheritedDescCatId(path),
+        name: path.map((node) => node.title).join(' / '),
+      };
+      W.categoryDataError = '';
+      W.categoryDataReady = false;
+      renderBody();
+      await loadCategoryAttrs();
+    } catch (error) {
+      if (!restoredCategoryScopeIsCurrent(scope, reqId)) return;
+      window.SonliCategoryReadiness.failTree(W, error);
+      renderBody();
     }
   }
   // 把采集的 1688 商品属性拼成一段「商品画像」文本，喂给 AI 判类目 / 填属性。
@@ -1031,7 +1106,26 @@
     let hit = 0; ng.forEach((g) => { if (qg.has(g)) hit++; });
     return s + hit * 6;
   }
-  function setAutoCategory(path, kind) {
+  function autoCategoryScopeIsCurrent(scope) {
+    return window.SonliCategoryReadiness.asyncCategoryScopeIsCurrent({
+      expectedStoreId: scope?.storeId,
+      currentStoreId: String(W.opts.storeId || ''),
+      expectedTree: scope?.treeRef,
+      currentTree: W.catTree,
+      requestId: scope?.treeRequestId,
+      currentRequestId: catTreeReqSeq,
+    }) && window.SonliCategoryReadiness.asyncCategoryScopeIsCurrent({
+      expectedStoreId: scope?.storeId,
+      currentStoreId: String(W.opts.storeId || ''),
+      expectedTree: scope?.treeRef,
+      currentTree: W.catTree,
+      requestId: scope?.autoRequestId,
+      currentRequestId: catAutoReqSeq,
+    });
+  }
+
+  function setAutoCategory(path, kind, scope) {
+    if (scope && !autoCategoryScopeIsCurrent(scope)) return false;
     W.catPath = path;
     const leaf = path[path.length - 1], parent = path[path.length - 2];
     W.category = {
@@ -1040,8 +1134,11 @@
       name: path.map((n) => n.title).join(' / '),
     };
     W.catAuto = 'done:' + leaf.title;
+    W.categoryDataError = '';
+    W.categoryDataReady = false;
     renderBody();
     loadCategoryAttrs();
+    return true;
   }
   function findPathByCategoryId(typeId, descCatId) {
     const targetType = Number(typeId) || 0;
@@ -1067,6 +1164,13 @@
   // 本地粗筛取最高分叶子兜底，不至于完全失败（badge 会标"本地预选"提示去核对）。
   async function autoMatchCategory() {
     if (!W.catTree || W.category) return;
+    const scope = {
+      storeId: String(W.opts.storeId || ''),
+      treeRef: W.catTree,
+      treeRequestId: catTreeReqSeq,
+      autoRequestId: ++catAutoReqSeq,
+    };
+    if (!autoCategoryScopeIsCurrent(scope)) return;
     W.catAuto = 'matching'; renderBody();
     const title = W.raw.title || '', attributes = specsText();
     const resp = await bg({
@@ -1084,6 +1188,7 @@
         topK: 20,
       },
     });
+    if (!autoCategoryScopeIsCurrent(scope)) return;
     W.categoryVisualTags = (resp.ok && Array.isArray(resp.data?.visualTags))
       ? resp.data.visualTags.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 24)
       : [];
@@ -1094,25 +1199,48 @@
         const confidence = Number(selected.confidence || 0);
         if (confidence >= 0.45 && confidence < 0.75) {
           try {
+            if (!autoCategoryScopeIsCurrent(scope)) return;
             const imageUrl = (W.raw.mainImages && W.raw.mainImages[0]) || '';
             const vr = await bg({ action: 'verifyCategory', storeId: W.opts.storeId, body: { title, attributes, chosenPath: path.map((n) => n.title).join(' > '), imageUrl } });
+            if (!autoCategoryScopeIsCurrent(scope)) return;
             if (vr.ok && vr.data && vr.data.ok === false) {
               W.catAuto = 'AI 置信度偏低，请手选'; renderBody(); return;
             }
-          } catch (e) { /* 低置信复核失败时保留候选,让用户可手动改 */ }
+          } catch (e) {
+            if (!autoCategoryScopeIsCurrent(scope)) return;
+          }
         }
-        return setAutoCategory(path, 'done');
+        if (!autoCategoryScopeIsCurrent(scope)) return;
+        return setAutoCategory(path, 'done', scope);
       }
     }
 
     // v2 没拿到可映射叶子时不做本地兜底，避免误选类目。
+    if (!autoCategoryScopeIsCurrent(scope)) return;
     W.catAuto = 'AI 未能判断类目，请手选'; renderBody();
   }
   async function loadCategoryAttrs() {
     if (!W.category) return;
-    const resp = await bg({ action: 'getCategoryAttributes', typeId: W.category.typeId, storeId: W.opts.storeId });
-    const schema = resp.ok ? (resp.data?.result || resp.data || []) : [];
-    W.attrsSchema = Array.isArray(schema) ? schema : [];
+    const category = W.category;
+    const storeId = String(W.opts.storeId || '');
+    W.categoryDataError = '';
+    W.categoryDataReady = false;
+    try {
+      const resp = await bg({ action: 'getCategoryAttributes', typeId: category.typeId, storeId });
+      if (W.category !== category || String(W.opts.storeId || '') !== storeId) return;
+      const schema = resp.ok ? (resp.data?.result || resp.data?.items || resp.data || []) : [];
+      if (!resp.ok || !Array.isArray(schema)) {
+        window.SonliCategoryReadiness.failAttributes(W, resp.error);
+        renderBody();
+        return;
+      }
+      W.attrsSchema = schema;
+    } catch (error) {
+      if (W.category !== category || String(W.opts.storeId || '') !== storeId) return;
+      window.SonliCategoryReadiness.failAttributes(W, error);
+      renderBody();
+      return;
+    }
     // 筛必填，建可编辑行；换类目清掉上一个类目的内容评级属性
     W.reqAttrs = W.attrsSchema.filter(isSchemaRequiredAttr).map((a) => ({
       id: Number(a.id), name: a.name || ('属性' + a.id),
@@ -1121,6 +1249,7 @@
       needsManual: false, manualReason: '', suggestedLabel: '',
     }));
     W.ratingAttrs = [];
+    window.SonliCategoryReadiness.markReady(W);
     renderBody();
   }
 
@@ -1384,6 +1513,8 @@
     if (W.running) return;
     if (!W.opts.storeId) { toast('请先选择上架店铺', 'error'); W.view = 'workbench'; render(); return; }
     if (!W.category) { toast('请先选择类目', 'error'); W.view = 'workbench'; render(); return; }
+    const categoryScope = captureCategoryDataReadyScope();
+    if (!categoryScope) return;
     const it = selectedListingItem();
     if (!it) { toast('请至少保留一个商品', 'error'); return; }
 
@@ -1408,6 +1539,7 @@
           modules: ['title', 'description', 'hashtags'],
         },
       });
+      if (!requireCategoryDataReady(categoryScope)) return;
       if (!resp.ok) throw new Error(resp.error);
       const mod = resp.data?.modules || {};
       if (mod.title?.value) title = mod.title.value;
@@ -1433,6 +1565,8 @@
     if (!selected.length) { toast('请至少勾选一个商品', 'error'); return; }
     if (!W.opts.storeId) { toast('请先选择上架店铺', 'error'); W.view = 'workbench'; render(); return; }
     if (!W.category) { toast('请先把产品类目选到末级', 'error'); W.view = 'workbench'; render(); return; }
+    const categoryScope = captureCategoryDataReadyScope();
+    if (!categoryScope) return;
 
     W.running = true;
     setStep(3);
@@ -1453,13 +1587,16 @@
       const description = content.description || '';
       const hashtags = Array.isArray(content.hashtags) ? content.hashtags : [];
       const attributes = okAttrs.map(submitAttributeOf).filter(Boolean);
+      if (!requireCategoryDataReady(categoryScope)) return;
       const built = buildPublishItems(selected, { title, description, hashtags, attributes });
+      if (!requireCategoryDataReady(categoryScope)) return;
       const pubResp = await bg({
         action: 'followSell', storeId: W.opts.storeId, items: built.items,
         applyPoster: W.opts.imageTranslate, posterPrimaryOnly: true, applyWatermark: false,
         applyAiRewrite: false, strictTypeMatch: false,
         stocks: built.stocks.length ? built.stocks : undefined,
       });
+      if (!requireCategoryDataReady(categoryScope)) return;
       if (!pubResp.ok) throw new Error('提交上架失败：' + pubResp.error);
       const taskId = pubResp.data?.result?.task_id || pubResp.data?.task_id || '';
       const offerIds = built.items.map((item) => item.offer_id).join('、');
@@ -1478,6 +1615,8 @@
   async function aiFillAttrs(attrScope = 'required-and-rating', opts = {}) {
     if (!W.opts.storeId) { toast('请先选择上架店铺（AI 填充需带店铺）', 'error'); return; }
     if (!W.category) { toast('请先选择类目', 'error'); return; }
+    const categoryScope = captureCategoryDataReadyScope();
+    if (!categoryScope) return;
     if (opts.logTitle) {
       W.view = 'workbench';
       setStep(Math.max(W.step || 2, 3));
@@ -1502,6 +1641,7 @@
           modules: ['attrs'],
         },
       });
+      if (!requireCategoryDataReady(categoryScope)) return;
       if (!resp.ok) throw new Error(resp.error);
       const filled = resp.data?.modules?.attrs?.filled || [];
       let nReq = 0, nManual = 0; const rating = [];
@@ -1609,12 +1749,15 @@
   }
 
   function resetCategorySelection() {
-    W.catTree = null; W.catTreeLoading = false; W.catTreeError = '';
+    catAutoReqSeq += 1;
+    W.catTree = null; W.catTreeLoading = false; W.catTreeError = ''; W.categoryDataError = ''; W.categoryDataReady = false;
     W.catPath = []; W.category = null; W.categoryVisualTags = []; W.attrsSchema = []; W.reqAttrs = []; W.ratingAttrs = [];
     W.catAuto = ''; W.attrFilling = false;
   }
 
   function selectStore(storeId, opts = {}) {
+    catTreeReqSeq += 1;
+    catAutoReqSeq += 1;
     const next = String(storeId || '');
     W.opts.storeId = next;
     const sel = W.stores.find((s) => String(s.id) === next);
@@ -1723,12 +1866,35 @@
 
   function setStep(n) { W.step = n; }
 
+  function captureCategoryDataReadyScope() {
+    try {
+      return window.SonliCategoryReadiness.captureReadyScope(W);
+    } catch (error) {
+      toast(error.message, 'error');
+      renderBody();
+      return null;
+    }
+  }
+
+  function requireCategoryDataReady(scope) {
+    try {
+      if (scope) return window.SonliCategoryReadiness.requireReadyScope(W, scope);
+      return window.SonliCategoryReadiness.requireReady(W);
+    } catch (error) {
+      toast(error.message, 'error');
+      renderBody();
+      return false;
+    }
+  }
+
   async function runPipeline() {
     if (W.running) return;
     const selected = W.items.filter((it) => it.checked);
     if (!selected.length) { toast('请至少勾选一个商品', 'error'); return; }
     if (!W.opts.storeId) { toast('请先选择上架店铺', 'error'); W.view = 'workbench'; render(); return; }
     if (!W.category) { toast('请先把产品类目选到末级', 'error'); W.view = 'workbench'; render(); return; }
+    const categoryScope = captureCategoryDataReadyScope();
+    if (!categoryScope) return;
 
     W.running = true;
     setStep(3);
@@ -1746,6 +1912,7 @@
         action: 'pushSourceCollect', sourceId: '1688', raw: W.raw,
         forceResubmit: true, resetDraft: true, storeId: W.opts.storeId,
       });
+      if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
       if (collectResp.ok) pushLog(`✓ 已入采集箱 id=${String(collectResp.data?.result?.id || '').slice(0, 8)}…`);
       else pushLog(`⚠ 入采集箱失败：${collectResp.error}（不影响上架）`);
 
@@ -1764,6 +1931,7 @@
           modules: ['title', 'description', 'hashtags'],
         },
       });
+      if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
       if (rwResp.ok) {
         const mod = rwResp.data?.modules || {};
         if (mod.title?.value) { title = mod.title.value; pushLog(`· 标题：${title}`); }
@@ -1794,6 +1962,7 @@
       if (W.attrsSchema.length && (missingRequired || missingRating)) {
         pushLog(`\n— AI 填充属性（必填 + 内容评级）—`);
         await aiFillAttrs('required-and-rating');
+        if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
       }
 
       // 4) 属性：必填(tier1) + 内容评级(tier2)，AI 填充/手填的，一起带上架
@@ -1850,6 +2019,7 @@
               variantData: { attributes: vdAttrs, pricingSnapshot },
             },
           });
+          if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
           if (upd.ok) pushLog(`✓ 已回写采集箱:标题 + ${vdAttrs.length} 条属性`);
           else pushLog(`⚠ 回写采集箱失败：${upd.error}（可去采集箱手动补）`);
         } else {
@@ -1860,7 +2030,9 @@
       } else {
         pushLog(`\n— 直上：拼装并提交 import —`);
         const attributes = okAttrs.map(submitAttributeOf).filter(Boolean);
+        if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
         const built = buildPublishItems(selected, { title, description, hashtags, attributes });
+        if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
         const pubResp = await bg({
           action: 'followSell', storeId: W.opts.storeId, items: built.items,
           // 「图片翻译」走后端海报/改图：正确字段是 applyPoster（applyAiImage 已下线、import 不读）
@@ -1868,6 +2040,7 @@
           applyAiRewrite: false, strictTypeMatch: false,
           stocks: built.stocks.length ? built.stocks : undefined,
         });
+        if (!requireCategoryDataReady(categoryScope)) throw new Error('未能从 Ozon 获取真实类目数据，请重试');
         if (!pubResp.ok) throw new Error('提交上架失败：' + pubResp.error);
         const r = pubResp.data || {};
         const taskId = r.result?.task_id || r.task_id || '';

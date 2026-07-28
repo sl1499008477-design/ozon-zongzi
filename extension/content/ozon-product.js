@@ -1441,7 +1441,8 @@
   // 注意:下面的 Phase A SSR 展开块是 toggleFollowSellPanel(§Phase A,约 7397-7480)
   // 的精简镜像(去掉了与 Phase B worker pool 的交错,改为展开完再统一 collectBySkus)。
   // 若 Ozon 改 aspects/SSR 格式,两处需同步更新。
-  async function collectAllVariants(btn) {
+  async function collectAllVariants(btn, options = {}) {
+    const forceSingleResubmit = Boolean(options.forceResubmit);
     const setBtn = (text) => {
       if (btn) btn.innerHTML = `<span class="oh-btn-icon">${_lucideSvg('refresh-cw')}</span>${text}`;
     };
@@ -1568,7 +1569,7 @@
 
     // 单/无变体 → 走现有单采(sv 优先已在其中),保持原行为
     if (variants.length <= 1) {
-      return await performProductCollect();
+      return await performProductCollect({ forceResubmit: forceSingleResubmit });
     }
 
     // ── Phase B:逐变体抓 sv(search+bundle)──
@@ -1615,9 +1616,18 @@
       return {
         sku,
         sv,
+        sourceVariant: sv || undefined,
         name: name || v.title || '',
         image: svCat?.mainImage || v.coverImage || undefined,
         images: images.length ? images : undefined,
+        description: distilled?.description || undefined,
+        richContent: distilled?.richContent || undefined,
+        barcode: distilled?.barcode || undefined,
+        weight: distilled?.weight || undefined,
+        depth: distilled?.depth || undefined,
+        width: distilled?.width || undefined,
+        height: distilled?.height || undefined,
+        bundleComplexAttrs: distilled?._bundleComplexAttrs || sv?._bundleComplexAttrs || undefined,
         // 价格口径同单采/后端:RUB 源送原卢布 + 'RUB'(后端 ×汇率);
         //   CNY 源(含 Ozon 跨境页默认人民币)送原人民币 + 'CNY'(后端原值保留);其它外币留空不猜。
         price: v.priceRub
@@ -1637,8 +1647,9 @@
     const anchorRow = rows.find((r) => r.sku === anchorSku) || rows[0];
     const anchorSv = anchorRow?.sv || null;
 
-    // variantData.variants 只存轻量行(不带每变体完整 sv,避免 JSONB 膨胀;
-    // 共享 attributes/类目/尺寸走母体顶层 anchorSv)。
+    // 每个变体必须保留自己的完整 seller 源快照。除合并变体型号外，类目、属性、
+    // 媒体、条码和物理尺寸都可能不同；如果这里只保留轻量行，编辑页和正式上架
+    // 只能退回锚点变体数据，最终会把多个 SKU 错误地上传成相同商品。
     const variantRows = rows.map((r) => ({
       sku: r.sku,
       name: r.name || undefined,
@@ -1647,6 +1658,15 @@
       ...(r.sku === anchorSku ? buildMarketingPricePayload(anchorProduct) : {}),
       image: r.image,
       images: r.images,
+      description: r.description,
+      richContent: r.richContent,
+      barcode: r.barcode,
+      weight: r.weight,
+      depth: r.depth,
+      width: r.width,
+      height: r.height,
+      bundleComplexAttrs: r.bundleComplexAttrs,
+      sourceVariant: r.sourceVariant,
       aspectValues: r.aspectValues,
       link: r.link,
     }));
@@ -1717,13 +1737,16 @@
       // 强制重推,否则 variantData.variants 永远落不进库,合并采集静默失败(P1)。
       const resp = await window.sendMessage('pushSourceCollect', { sourceId: 'ozon', raw: payload, forceResubmit: true });
       dedupeHit = !!resp?.dedupeHit;
+      const itemId = resp?.result?.id || resp?.result?.data?.id || null;
       // SW envelope 现不返 created/updated 区分,统一记一次成功。
       created = 1;
+      return { ok: true, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, itemId, bucketRecord };
     } catch (e) {
       console.error('[ozon-helper] collectAll push failed:', e?.message || e);
       failed = 1;
+      return { ok: false, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, itemId: null, bucketRecord, error: e?.message || String(e) };
     }
-    return { ok: failed === 0, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, bucketRecord };
+    return { ok: false, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, itemId: null, bucketRecord, error: '多变体采集失败' };
   }
 
   // 抓当前 PDP gallery 的 .mp4 并经 SW 转存成卖家自有 Ozon 视频(ir.ozone.ru/s3),返回自有 URL。
@@ -1797,7 +1820,8 @@
   window.jzCaptureAndTransferPageVideo = captureAndTransferPageVideo;
 
   // 抽自原 collectBtn click handler，便于 popup 远程触发同一逻辑
-  async function performProductCollect() {
+  async function performProductCollect(options = {}) {
+    const forceResubmit = Boolean(options.forceResubmit);
     // 采集流程对 SW composer-api 缓存的依赖现在是**软依赖**:DOM + JSON-LD + og:meta
     // 一般能独立拿全(7 层 fallback)。所以策略改:
     //   1. 先 sync 跑 extractProductData
@@ -1950,13 +1974,19 @@
     // 不要再检查 resp.ok — 那是 envelope fix 之前 SW 平铺返回的残留,resp 现在不再有 ok。
     // forceResubmit:视频/简介/富内容/标签任一存在时强制重推 —— 否则 24h dedupe
     // 命中会早返不调后端 upsert,旧采集记录里的空简介不会被新提取结果覆盖。
-    const resp = await window.sendMessage('pushSourceCollect', { sourceId: 'ozon', raw: collectPayload, forceResubmit: collectForceResubmit });
+    const resp = await window.sendMessage('pushSourceCollect', { sourceId: 'ozon', raw: collectPayload, forceResubmit: forceResubmit || collectForceResubmit });
     const bucketRecord = buildPdpBucketRecord(product, {
       name: collectName || product.title,
       image: collectMainImage,
       hashtags: collectHashtags,
     });
-    return { ok: true, dedupeHit: !!resp?.dedupeHit, lastAt: resp?.lastAt || null, bucketRecord };
+    return {
+      ok: true,
+      dedupeHit: !!resp?.dedupeHit,
+      lastAt: resp?.lastAt || null,
+      itemId: resp?.result?.id || resp?.result?.data?.id || null,
+      bucketRecord,
+    };
   }
 
   function createActionBar() {
@@ -1989,15 +2019,6 @@
       collectBtn.innerHTML = `<span class="oh-btn-icon">${_lucideSvg('refresh-cw')}</span>采集中...`;
       try {
         const result = await collectAllVariants(collectBtn);
-        try {
-          const bucketRecord = result?.bucketRecord;
-          if (bucketRecord?.sku) {
-            try { await window.JZCollectorDB?.init(); } catch {}
-            await window.JZCollectorDB?.putSale(bucketRecord);
-          }
-        } catch (e) {
-          console.warn('[ozon-helper] action-bar local-bucket write failed:', e);
-        }
         collectBtn.disabled = false;
         collectBtn.innerHTML = original;
         if (result?.multiVariant) {
@@ -2288,7 +2309,7 @@
     keywordBtn.dataset.color = 'green';
 
     const erpBtn = createActionButton(_ICONS.erp, '进入ERP', () => {
-      window.open('http://127.0.0.1:5173/ozon/dashboard/', '_blank');
+      window.open('http://127.0.0.1:3000/ozon/dashboard/', '_blank');
     });
     erpBtn.dataset.color = 'teal';
 
@@ -2372,7 +2393,7 @@
     profitBtn.dataset.color = 'indigo';
 
     const erpBtn = createActionButton(_ICONS.erp, '进入ERP', () => {
-      window.open('http://127.0.0.1:5173/ozon/dashboard/', '_blank');
+      window.open('http://127.0.0.1:3000/ozon/dashboard/', '_blank');
     });
     erpBtn.dataset.color = 'teal';
 
@@ -3065,103 +3086,16 @@
       editBtn.textContent = '⏳ 采集中...';
       editBtn.disabled = true;
       try {
-        // 跟主 performProductCollect 一样的前置:让 ensurePdpState 先把 webAddToCart/
-        // webGallery 等 composer-api 数据拉好,再 extractProductData,否则慢网下
-        // title/images/sku 全空,后端 reject 用户看到"采集失败"。
-        // (Codex round 13 P1 #3:之前 ac94cd0 只修了主路径,这个侧栏按钮漏了)
-        if (window.ensurePdpState) {
-          try { await window.ensurePdpState(); } catch {}
-        }
-        const product = extractProductData();
-        // 字段校验:title / images / sku 缺一不可,缺了就别白白调后端。
-        const missing = [];
-        if (!product.title) missing.push('标题');
-        if (!product.images?.length) missing.push('主图');
-        if (!product.sku) missing.push('SKU');
-        if (missing.length > 0) {
-          editBtn.textContent = `× 缺 ${missing.join('、')}`;
-          editBtn.disabled = false;
-          editListInFlight = false;
-          setTimeout(() => { editBtn.textContent = originalText; }, 2500);
-          return;
-        }
-        const variantResp = product.sku
-          ? await window.sendMessage('searchVariants', { sku: product.sku }).catch(() => null)
-          : null;
-        const variantItems = variantResp?.items || variantResp?.data?.items || [];
-        const variantMatch = variantItems.find(it => String(it.variant_id) === product.sku) || variantItems[0] || null;
-
-        // 跟卖视频:抓当前 PDP 视频转存成自有 Ozon 视频,随采集存进采集箱 → 编辑页预填、上架带视频。
-        editBtn.textContent = '⏳ 转存视频...';
-        const editCollectVideoMedia = await captureAndTransferPageVideoMedia();
-        const editCollectVideoUrl = editCollectVideoMedia?.videoUrl || null;
-        const editCollectVideoCover = editCollectVideoMedia?.videoCover || null;
-        editBtn.textContent = '⏳ 采集中...';
-
-        // 源富内容(11254):同主采集路径,注入 variantData → 编辑页预填 + 上架下发。
-        const editCollectRichContent = await jzCollectPageRichContent();
-        let editCollectVariantData = jzInjectRichContentAttr(
-          variantMatch,
-          editCollectRichContent,
-        );
-        const contentCopy = window.JZFollowSellContentCopy;
-        const editCollectDescription = contentCopy?.pickFollowSellDescription
-          ? contentCopy.pickFollowSellDescription({
-              customDescription: '',
-              sourceVariant: editCollectVariantData || variantMatch,
-              richContent: editCollectRichContent,
-              fallbackName: '',
-              max: 4096,
-            })
-          : '';
-        editCollectVariantData = contentCopy?.mergeSourceDescriptionIntoVariant
-          ? contentCopy.mergeSourceDescriptionIntoVariant(
-              editCollectVariantData || variantMatch || {},
-              editCollectDescription,
-            )
-          : editCollectVariantData;
-        mergeMarketingPriceIntoVariantData(editCollectVariantData, product);
-        const editCollectHashtags = extractKeywords();
-        contentCopy?.mergeSourceHashtagsIntoVariant?.(editCollectVariantData, editCollectHashtags);
-        const editCollectForceResubmit = contentCopy?.shouldForceCollectRefresh
-          ? contentCopy.shouldForceCollectRefresh({
-              videoUrl: editCollectVideoUrl,
-              videoCover: editCollectVideoCover,
-              description: editCollectDescription,
-              richContent: editCollectRichContent,
-              hashtags: editCollectHashtags,
-            })
-          : !!(editCollectVideoUrl || editCollectVideoCover);
-
-        const collectPayload = {
-          sku: product.sku,
-          url: product.url,
-          name: product.title,
-          price: product.price != null ? String(product.price) : undefined,
-          // 页面币种随价上传,后端据此决定是否 ×汇率(修 CNY 价被当 RUB 砍 ~12 倍)。
-          priceCurrency: _detectPageCurrency() || undefined,
-          originalPrice: product.originalPrice != null ? String(product.originalPrice) : undefined,
-          ...buildMarketingPricePayload(product),
-          image: product.images?.[0] || getMainImageUrl(product) || undefined,
-          images: product.images?.length ? product.images : undefined,
-          videoUrl: editCollectVideoUrl || undefined,
-          videoCover: editCollectVideoCover || undefined,
-          variantData: editCollectVariantData || undefined,
-          sellerName: product.seller?.name || undefined,
-          sellerLink: product.seller?.link || undefined,
-        };
-        // SW envelope (c55083b ENVELOPE_FIX):resp 是 { dedupeHit, lastAt, result }
-        // itemId 在 result.id。旧写法 resp?.id 一直拿不到 → fallback 跳通用采集箱页
-        // 而不是直接打开刚采集那条。
-        // forceResubmit:视频/简介/富内容/标签任一存在时强制重推,否则 24h dedupe
-        // 命中会打开旧采集记录,看起来像简介仍然没有抓到。
-        const resp = await window.sendMessage('pushSourceCollect', { sourceId: 'ozon', raw: collectPayload, forceResubmit: editCollectForceResubmit });
-        const itemId = resp?.result?.id;
+        // 编辑上架必须复用“采集所有变体”的链路。旧实现只抓当前 SKU,即使页面是
+        // 多规格商品,写入采集箱的 variantData 也只有单个 SKU,后台编辑页只能显示 1 行。
+        const result = await collectAllVariants(editBtn, { forceResubmit: true });
+        if (!result?.ok) throw new Error(result?.error || '采集失败');
+        const itemId = result?.itemId;
         // 从 brand webHost 直接构造,不要从 backendUrl 反推 — 旧 `.replace('/api','')`
         // 会把 `https://api.jizhangerp.com` 中的 `://api` 后 4 字符 `/api` 误删,
         // 得到 `https:/.jizhangerp.com` 这个残缺 URL,浏览器按相对路径解析 →
         // 拼到 ozon.ru 域名下变成 `https://www.ozon.ru/.jizhangerp.com/...`。
-        const frontendUrl = 'http://127.0.0.1:5173';
+        const frontendUrl = 'http://127.0.0.1:3000';
         if (itemId) {
           window.open(`${frontendUrl}/ozon/products/collect/edit?id=${itemId}`, '_blank');
         } else {
@@ -3182,8 +3116,7 @@
       editListInFlight = false;
     });
 
-    // 「采集」按钮:把当前商品数据写入 IndexedDB 本地桶。绕过 collectorRunning gate
-    // (用户主动点 = 显式同意)。无销量过滤,直接 putSale。
+    // 「采集」按钮与 action bar 共用正式采集链路，只写入后台采集箱。
     let collectInFlight = false;
     card.querySelector('[data-action="collect-one"]')?.addEventListener('click', async (e) => {
       if (collectInFlight) return;
@@ -3194,17 +3127,7 @@
         // PDP 侧栏数据卡片跟 action bar 上的「一键采集」在同一个 PDP 页、同一份页面
         // 状态,复用同一个 collectAllVariants() — 采当前商品的所有变体 SKU,进度写在
         // 该按钮上;单/无变体页内部自动委托单采。
-        // 顺手保留本地 IndexedDB 单品写入,给「极掌采集器」关键词巡航的桶视图复用。
         const result = await collectAllVariants(btn);
-        try {
-          const bucketRecord = result?.bucketRecord;
-          if (bucketRecord?.sku) {
-            try { await window.JZCollectorDB?.init(); } catch {}
-            await window.JZCollectorDB?.putSale(bucketRecord);
-          }
-        } catch (bucketErr) {
-          console.warn('[ozon-helper] sidebar collect-one local-bucket failed:', bucketErr);
-        }
         btn.classList.add('is-collected');
         const label = result?.multiVariant
           ? (result.failed
@@ -3525,12 +3448,53 @@
     ).join('');
   }
 
+  function _buildRemoteCommissionOptions(config, selected) {
+    const grouped = new Map();
+    for (const rule of config?.commissionRules || []) {
+      const categoryId = String(rule.ozonCategoryId || '*');
+      const key = `${categoryId}|${String(rule.fulfillmentType || 'RFBS')}`;
+      if (!grouped.has(key)) grouped.set(key, { categoryId, fulfillmentType: rule.fulfillmentType || 'RFBS', name: rule.ruleName || `类目 ${categoryId}`, rules: [] });
+      grouped.get(key).rules.push(rule);
+    }
+    if (!grouped.size) return _buildCommissionOptions(selected);
+    return [...grouped.values()].map((group) => {
+      const rates = group.rules.sort((a, b) => Number(a.minPriceRub || 0) - Number(b.minPriceRub || 0)).map((rule) => Number(rule.commissionRate || 0)).join('/');
+      const value = `${group.categoryId}|${group.fulfillmentType}`;
+      return `<option value="${_escHtml(value)}" ${value === selected ? 'selected' : ''}>${_escHtml(`${group.name} · ${rates}%`)}</option>`;
+    }).join('');
+  }
+
+  function _remoteLogisticsOptions(config, selected) {
+    const providers = [...new Set((config?.logisticsRules || []).map((rule) => String(rule.provider || '').trim()).filter(Boolean))];
+    if (!providers.length) return null;
+    return providers.map((provider) => `<option value="${_escHtml(provider)}" ${provider === selected ? 'selected' : ''}>${_escHtml(provider)}</option>`).join('');
+  }
+
   // ─── Create Tabbed Panel ───────────────────────────────
   async function createProfitPanel() {
     let panel = document.querySelector('.ozon-helper-profit-panel');
     if (panel) return panel;
 
     const settings = await _loadCalcSettings();
+    let remoteConfig = null;
+    try {
+      const response = await window.sendMessage('getPricingConfig', {});
+      remoteConfig = response?.config || response?.data?.config || null;
+      if (remoteConfig?.id) {
+        try { chrome.storage.local.set({ sonli_pricing_config_cache_v1: { config: remoteConfig, cachedAt: Date.now() } }); } catch {}
+      }
+    } catch (_) {
+      try {
+        const cached = await new Promise((resolve) => chrome.storage.local.get(['sonli_pricing_config_cache_v1'], (value) => resolve(value?.sonli_pricing_config_cache_v1)));
+        remoteConfig = cached?.config || null;
+      } catch {}
+    }
+    const pricingDefaults = remoteConfig?.defaults || {};
+    const remoteExchangeRate = Number(remoteConfig?.exchangeRate?.rate || 0) || _CALC_DEFAULT_EXCHANGE;
+    const remoteCommissionSelection = settings.pIndustry && String(settings.pIndustry).includes('|')
+      ? settings.pIndustry
+      : `${remoteConfig?.commissionRules?.[0]?.ozonCategoryId || '*'}|${remoteConfig?.commissionRules?.[0]?.fulfillmentType || 'RFBS'}`;
+    const remoteProviders = [...new Set((remoteConfig?.logisticsRules || []).map((rule) => String(rule.provider || '').trim()).filter(Boolean))];
     const product = extractProductData();
     const chars = extractCharacteristics();
     // Try to find weight from characteristics (name contains "вес" or "weight" or "масса")
@@ -3553,6 +3517,7 @@
 
     panel = document.createElement('div');
     panel.className = 'ozon-helper-panel ozon-helper-profit-panel';
+    panel.__sonliPricingConfig = remoteConfig;
 
     const _calcBrand = globalThis.__JZ_BRAND__;
     const _calcMark = _calcBrand.logoUrl
@@ -3563,7 +3528,7 @@
         <div class="ozon-helper-calc-brand-row">
           ${_calcMark}
           <span class="ozon-helper-calc-brand-name">${_calcBrand.displayName}算价</span>
-          <span class="ozon-helper-calc-brand-sub">定价 · 利润 · 安全线</span>
+          <span class="ozon-helper-calc-brand-sub">定价 · 利润 · ${remoteConfig?.id ? `配置 V${remoteConfig.versionNo}` : '本地备用公式'}</span>
           <span class="ozon-helper-calc-brand-spacer"></span>
           <button class="ozon-helper-close-btn" data-action="close">&times;</button>
         </div>
@@ -3581,7 +3546,7 @@
           <div class="ozon-helper-calc-row">
             <label>所属行业</label>
             <div class="ozon-helper-calc-field">
-              <select data-pf="p-industry">${_buildCommissionOptions(settings.pIndustry || 'beauty_mid')}</select>
+              <select data-pf="p-industry">${remoteConfig ? _buildRemoteCommissionOptions(remoteConfig, remoteCommissionSelection) : _buildCommissionOptions(settings.pIndustry || '美容与健康')}</select>
             </div>
           </div>
           <div class="ozon-helper-calc-row">
@@ -3602,14 +3567,14 @@
             <div class="ozon-helper-calc-row">
               <label>毛利</label>
               <div class="ozon-helper-calc-field">
-                <input type="number" min="0" max="99" step="1" data-pf="p-margin" value="${settings.pMargin ?? 20}" />
+                <input type="number" min="0" max="99" step="1" data-pf="p-margin" value="${settings.pMargin ?? pricingDefaults.targetMarginRate ?? 20}" />
                 <span class="ozon-helper-calc-unit">%</span>
               </div>
             </div>
             <div class="ozon-helper-calc-row">
               <label>前台折扣</label>
               <div class="ozon-helper-calc-field">
-                <input type="number" min="1" max="100" step="1" data-pf="p-discount" value="${settings.pDiscount ?? 50}" />
+                <input type="number" min="1" max="100" step="1" data-pf="p-discount" value="${settings.pDiscount ?? pricingDefaults.frontendDiscountRate ?? 50}" />
                 <span class="ozon-helper-calc-unit">%</span>
               </div>
             </div>
@@ -3628,7 +3593,7 @@
               <label>物流方式</label>
               <div class="ozon-helper-calc-field">
                 <select data-pf="p-logistics">
-                  ${_CALC_XY_LOGISTICS.map(l => `<option value="${l.value}" ${l.value === (settings.pLogistics || 'xs') ? 'selected' : ''}>${_escHtml(l.label)}</option>`).join('')}
+                  ${_remoteLogisticsOptions(remoteConfig, settings.pLogistics || remoteProviders[0] || 'XY') || _CALC_XY_LOGISTICS.map(l => `<option value="${l.value}" ${l.value === (settings.pLogistics || 'xs') ? 'selected' : ''}>${_escHtml(l.label)}</option>`).join('')}
                 </select>
               </div>
             </div>
@@ -3636,14 +3601,14 @@
               <div class="ozon-helper-calc-row">
                 <label>广告费</label>
                 <div class="ozon-helper-calc-field">
-                  <input type="number" min="0" max="100" step="1" data-pf="p-ad" value="${settings.pAd ?? 0}" />
+                  <input type="number" min="0" max="100" step="1" data-pf="p-ad" value="${settings.pAd ?? pricingDefaults.adRate ?? 0}" />
                   <span class="ozon-helper-calc-unit">%</span>
                 </div>
               </div>
               <div class="ozon-helper-calc-row">
                 <label>提现费</label>
                 <div class="ozon-helper-calc-field">
-                  <input type="number" min="0" max="100" step="1" data-pf="p-withdraw" value="${settings.pWithdraw ?? 3}" />
+                  <input type="number" min="0" max="100" step="1" data-pf="p-withdraw" value="${settings.pWithdraw ?? pricingDefaults.withdrawalRate ?? 3}" />
                   <span class="ozon-helper-calc-unit">%</span>
                 </div>
               </div>
@@ -3652,7 +3617,7 @@
               <div class="ozon-helper-calc-row">
                 <label>退货率</label>
                 <div class="ozon-helper-calc-field">
-                  <input type="number" min="0" max="100" step="1" data-pf="p-return" value="${settings.pReturn ?? 2}" />
+                  <input type="number" min="0" max="100" step="1" data-pf="p-return" value="${settings.pReturn ?? pricingDefaults.returnLossRate ?? 2}" />
                   <span class="ozon-helper-calc-unit">%</span>
                 </div>
               </div>
@@ -3734,7 +3699,7 @@
           <div class="ozon-helper-calc-row">
             <label>类目佣金</label>
             <div class="ozon-helper-calc-field">
-              <select data-pf="lp-commission">${_buildCommissionOptions(settings.lpCommission || 'beauty_mid')}</select>
+              <select data-pf="lp-commission">${remoteConfig ? _buildRemoteCommissionOptions(remoteConfig, settings.lpCommission || remoteCommissionSelection) : _buildCommissionOptions(settings.lpCommission || '美容与健康')}</select>
             </div>
           </div>
           <div class="ozon-helper-calc-row">
@@ -3748,7 +3713,7 @@
             <label>跨境物流商</label>
             <div class="ozon-helper-calc-field">
               <select data-pf="lp-logistics">
-                ${_CALC_PROFIT_LOGISTICS.map(p => `<option value="${p.value}" ${p.value === (settings.lpLogistics || 'guoo') ? 'selected' : ''}>${_escHtml(p.label)}</option>`).join('')}
+                ${_remoteLogisticsOptions(remoteConfig, settings.lpLogistics || remoteProviders[0] || 'GUOO') || _CALC_PROFIT_LOGISTICS.map(p => `<option value="${p.value}" ${p.value === (settings.lpLogistics || 'guoo') ? 'selected' : ''}>${_escHtml(p.label)}</option>`).join('')}
               </select>
             </div>
           </div>
@@ -3773,7 +3738,7 @@
             <div class="ozon-helper-calc-row">
               <label>广告费</label>
               <div class="ozon-helper-calc-field">
-                <input type="number" min="0" max="100" step="1" data-pf="lp-ad" value="${settings.lpAd ?? 0}" />
+                <input type="number" min="0" max="100" step="1" data-pf="lp-ad" value="${settings.lpAd ?? pricingDefaults.adRate ?? 0}" />
                 <span class="ozon-helper-calc-unit">%</span>
               </div>
             </div>
@@ -3790,7 +3755,7 @@
             <label>汇率</label>
             <div class="ozon-helper-calc-field">
               <span class="ozon-helper-calc-unit">¥1 =</span>
-              <input type="number" min="0" step="0.01" data-pf="lp-exchange" value="${settings.lpExchange || _CALC_DEFAULT_EXCHANGE}" />
+              <input type="number" min="0" step="0.01" data-pf="lp-exchange" value="${settings.lpExchange || remoteExchangeRate}" />
               <span class="ozon-helper-calc-unit">₽</span>
             </div>
           </div>
@@ -3879,6 +3844,123 @@
     if (activePage.dataset.page === 'pricing') _recalcPricing(panel);
     else if (activePage.dataset.page === 'profit') _recalcProfitCalc(panel);
     _saveCalcSettings(panel);
+    _scheduleServerPricing(panel);
+  }
+
+  const _pricingServerTimers = new WeakMap();
+  const _pricingServerSequences = new WeakMap();
+
+  function _pricingSelection(panel, field) {
+    const raw = String(panel.querySelector(`[data-pf="${field}"]`)?.value || '*|RFBS');
+    const [categoryId, fulfillmentType] = raw.split('|');
+    return { categoryId: categoryId || '*', fulfillmentType: fulfillmentType || 'RFBS' };
+  }
+
+  function _serverPricingInput(panel, mode) {
+    const value = (field) => parseFloat(panel.querySelector(`[data-pf="${field}"]`)?.value) || 0;
+    if (mode === 'pricing') {
+      return {
+        mode,
+        ..._pricingSelection(panel, 'p-industry'),
+        purchaseCostCny: value('p-purchase'),
+        weightG: value('p-weight'),
+        targetMarginRate: value('p-margin'),
+        frontendDiscountRate: value('p-discount'),
+        domesticShippingCny: value('p-domestic'),
+        logisticsProvider: panel.querySelector('[data-pf="p-logistics"]')?.value || 'XY',
+        adRate: value('p-ad'),
+        withdrawalRate: value('p-withdraw'),
+        returnLossRate: value('p-return'),
+        otherFixedFeeCny: value('p-other'),
+        configVersionId: panel.__sonliPricingConfig?.id || undefined,
+      };
+    }
+    return {
+      mode,
+      ..._pricingSelection(panel, 'lp-commission'),
+      sellingPriceCny: value('lp-price'),
+      purchaseCostCny: value('lp-purchase'),
+      weightG: value('lp-weight'),
+      logisticsProvider: panel.querySelector('[data-pf="lp-logistics"]')?.value || 'GUOO',
+      domesticShippingCny: value('lp-domestic'),
+      adRate: value('lp-ad'),
+      otherFeeRate: value('lp-other'),
+      exchangeRate: value('lp-exchange'),
+      configVersionId: panel.__sonliPricingConfig?.id || undefined,
+    };
+  }
+
+  function _setServerPricingStatus(panel, text, isError = false) {
+    const target = panel.querySelector('.ozon-helper-calc-brand-sub');
+    if (!target) return;
+    target.textContent = text;
+    target.style.color = isError ? 'var(--oh-red)' : '';
+  }
+
+  function _applyServerPricingResult(panel, result) {
+    const field = (name) => panel.querySelector(`[data-pf="${name}"]`);
+    const setMoney = (name, value) => { const el = field(name); if (el) el.textContent = _fmtCny(Number(value || 0)); };
+    if (result.mode === 'pricing') {
+      setMoney('r-before', result.originalPriceCny);
+      setMoney('r-after', result.sellingPriceCny);
+      setMoney('r-gross', result.netProfitCny);
+      const margin = field('r-margin-pct');
+      if (margin) margin.textContent = `${Number(result.profitMarginRate || 0).toFixed(2)}%`;
+      const beforeRub = field('r-before-rub');
+      const afterRub = field('r-after-rub');
+      if (beforeRub) beforeRub.textContent = `₽ ${Number(result.originalPriceRub || 0).toFixed(2)}`;
+      if (afterRub) afterRub.textContent = `₽ ${Number(result.sellingPriceRub || 0).toFixed(2)}`;
+      setMoney('d-purchase', result.purchaseCostCny);
+      setMoney('d-domestic', Number(result.domestic?.domesticShippingCny || 0) + Number(result.domestic?.labelingFeeCny || 0) + Number(result.domestic?.packagingFeeCny || 0) + Number(result.domestic?.operationFeeCny || 0));
+      setMoney('d-logistics', result.logistics?.amount);
+      setMoney('d-commission', result.commissionFeeCny);
+      setMoney('d-ad', result.adFeeCny);
+      setMoney('d-withdraw', result.withdrawalFeeCny);
+      setMoney('d-return', result.returnLossCny);
+      setMoney('d-other', Number(result.otherVariableFeeCny || 0));
+    } else {
+      setMoney('lr-profit', result.netProfitCny);
+      const margin = field('lr-margin');
+      if (margin) margin.innerHTML = `利润率: <span style="font-weight:600;">${Number(result.profitMarginRate || 0).toFixed(2)}%</span>`;
+      const exchange = field('lr-exchange-info');
+      if (exchange) exchange.textContent = `当前汇率: ¥1 = ₽${result.exchangeRate}`;
+      const rub = field('lr-rub-ref');
+      if (rub) rub.textContent = `售价约 ₽${Number(result.sellingPriceRub || 0).toFixed(2)} | 利润约 ₽${(Number(result.netProfitCny || 0) * Number(result.exchangeRate || 0)).toFixed(2)}`;
+      setMoney('ld-profit', result.netProfitCny);
+      setMoney('ld-purchase', result.purchaseCostCny);
+      setMoney('ld-commission', result.commissionFeeCny);
+      setMoney('ld-logistics', result.logistics?.amount);
+      setMoney('ld-domestic', Number(result.domestic?.domesticShippingCny || 0) + Number(result.domestic?.labelingFeeCny || 0) + Number(result.domestic?.packagingFeeCny || 0) + Number(result.domestic?.operationFeeCny || 0));
+      setMoney('ld-ad', result.adFeeCny);
+      setMoney('ld-other', Number(result.otherVariableFeeCny || 0) + Number(result.withdrawalFeeCny || 0) + Number(result.returnLossCny || 0));
+    }
+    _setServerPricingStatus(panel, `服务端配置 V${result.configVersionNo} · ${result.commissionRate}% 佣金`);
+  }
+
+  function _scheduleServerPricing(panel) {
+    if (!panel?.__sonliPricingConfig?.id || typeof window.sendMessage !== 'function') return;
+    const currentTimer = _pricingServerTimers.get(panel);
+    if (currentTimer) clearTimeout(currentTimer);
+    const timer = setTimeout(async () => {
+      const activePage = panel.querySelector('.ozon-helper-calc-page.is-active');
+      const mode = activePage?.dataset.page === 'pricing' ? 'pricing' : 'profit';
+      const input = _serverPricingInput(panel, mode);
+      if (mode === 'pricing' && !(input.purchaseCostCny > 0)) return;
+      if (mode === 'profit' && !(input.sellingPriceCny > 0)) return;
+      const sequence = (_pricingServerSequences.get(panel) || 0) + 1;
+      _pricingServerSequences.set(panel, sequence);
+      _setServerPricingStatus(panel, `配置 V${panel.__sonliPricingConfig.versionNo} · 计算中…`);
+      try {
+        const response = await window.sendMessage('calculatePricing', { input });
+        if (_pricingServerSequences.get(panel) !== sequence) return;
+        const result = response?.result || response?.data?.result;
+        if (result) _applyServerPricingResult(panel, result);
+      } catch (error) {
+        if (_pricingServerSequences.get(panel) !== sequence) return;
+        _setServerPricingStatus(panel, `服务端计算失败，暂用本地结果：${error?.message || error}`, true);
+      }
+    }, 250);
+    _pricingServerTimers.set(panel, timer);
   }
 
   // ─── Pricing Tab Calculation ───────────────────────────
@@ -5902,7 +5984,7 @@
                   </div>
                   <div class="ozon-helper-mv-duration-hint">
                     <span class="ozon-helper-mv-duration-icon">\u23f1</span>
-                    <span>\u7ea6 5\u201310 \u5206\u949f\u51fa\u56fe\uff0c\u671f\u95f4\u9875\u9762\u53ef\u5173\u95ed</span>
+                    <span>\u7ea6 5\u201310 \u5206\u949f\u51fa\u56fe\uff0c\u671f\u95f4\u9875\u9762\u53ef\u3000\u95ed</span>
                   </div>
                 </div>
                 <div class="ozon-helper-mv-poster-disabled-hint" data-field="poster-disabled-hint">
@@ -7614,7 +7696,7 @@
       if (res && !res.error) {
         // V1 \u65e7\u7248 ai-image-quota span \u5df2\u5220\uff08\u4ec5 V2 \u6d77\u62a5\uff0c70 \u6781\u70b9 / \u5f20\u9759\u6001\u663e\u793a\uff09
         const rewriteQuotaEl = panel.querySelector('[data-field="ai-rewrite-quota"]');
-        // \u5b9e\u9645\u5f00\u5173\u662f apply-ai-rewrite(\u65e7\u4ee3\u7801\u67e5\u7684 ai-rewrite-enabled \u4e0d\u5b58\u5728,\u662f\u6b7b\u9009\u62e9\u5668)\u3002
+        // \u5b9e\u9645\u5f00\u3000\u662f apply-ai-rewrite(\u65e7\u4ee3\u7801\u67e5\u7684 ai-rewrite-enabled \u4e0d\u5b58\u5728,\u662f\u6b7b\u9009\u62e9\u5668)\u3002
         const rewriteToggle = panel.querySelector('[data-field="apply-ai-rewrite"]');
         if (rewriteQuotaEl && res.aiRewrite) {
           // 2026-07:AI \u91cd\u5199\u6309\u6b21\u6263\u6781\u70b9(\u4e0d\u518d\u662f\u4f1a\u5458\u6743\u76ca)\u3002\u4f59\u989d\u5145\u8db3 \u2192 \u9ed8\u8ba4\u52fe\u9009

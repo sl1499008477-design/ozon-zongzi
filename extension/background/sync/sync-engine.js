@@ -343,6 +343,8 @@
 
       const imp = await JzBackendClient.importPostings({
         storeId,
+        leaseId,
+        deviceId,
         items: postings,
       });
       totalFetched += imp?.imported || 0;
@@ -404,6 +406,8 @@
 
     const imp = await JzBackendClient.importWarehouses({
       storeId,
+      leaseId,
+      deviceId,
       items: warehouses,
     });
 

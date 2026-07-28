@@ -444,7 +444,7 @@
     const openResp = await sendRuntimeMessage({ action: "openFrontend", path });
     if (openResp?.ok) return;
 
-    const frontendUrl = "http://127.0.0.1:5173";
+    const frontendUrl = "http://127.0.0.1:3000";
     window.open(`${frontendUrl}${path}`, "_blank");
   }
 

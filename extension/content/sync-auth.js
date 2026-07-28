@@ -175,21 +175,32 @@
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.__jzcExt !== 1 || !data.id || !data.action) return;
-    chrome.runtime.sendMessage(
-      { action: data.action, ...(data.payload || {}) },
-      (resp) => {
-        const err = chrome.runtime.lastError?.message;
-        window.postMessage(
-          {
-            __jzcExtResp: 1,
-            id: data.id,
-            ok: !err && resp?.ok !== false,
-            data: resp?.data,
-            error: err || resp?.error,
-          },
-          '*',
-        );
-      },
-    );
+    const respond = (resp, error = '') => {
+      window.postMessage(
+        {
+          __jzcExtResp: 1,
+          id: data.id,
+          ok: !error && resp?.ok !== false,
+          data: resp?.data,
+          error: error || resp?.error,
+        },
+        '*',
+      );
+    };
+    try {
+      if (!chrome?.runtime?.id) {
+        respond(null, '扩展已重新加载，请刷新当前页面');
+        return;
+      }
+      chrome.runtime.sendMessage(
+        { action: data.action, ...(data.payload || {}) },
+        (resp) => {
+          const err = chrome.runtime.lastError?.message;
+          respond(resp, err || '');
+        },
+      );
+    } catch {
+      respond(null, '扩展已重新加载，请刷新当前页面');
+    }
   });
 })();
