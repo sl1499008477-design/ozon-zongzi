@@ -48,6 +48,7 @@ f683e1f fix: keep environment blockers fail closed
 8a3f2fa docs: preserve architecture and delivery baseline
 e6bcdeb chore: redact personal information from extension source
 7f5f907 chore: preserve generated runtime assets
+93e7942 docs: record protective baseline verification
 ```
 
 文件类别对应关系如下；每个提交都归入其所在分组：
@@ -61,6 +62,7 @@ e6bcdeb chore: redact personal information from extension source
 - 测试与门禁：`5b14700`、`3d690d4`、`f683e1f`，保存测试清单、根验证、安全门禁和 fail-closed 结果策略。
 - 架构与交付文档：`8a3f2fa`，保存当前架构边界、历史计划/spec 和桌面交付说明。
 - 生成产物、历史工作资产与脱敏：`e6bcdeb`、`7f5f907`，先修复当前源码/contract 中的个人信息与空白问题，再保存从源码生成的公开分发资产和计划启动前的历史工作记录。
+- 首次基线报告：`93e7942`，保存离线安装桌面依赖前的根验证证据，包括当时由缺少 `cheerio` 导致的唯一红项。
 
 ## 文件分类
 
@@ -90,17 +92,26 @@ Task 9 的运行/历史资产提交本身包含 409 个路径（108 个 `app/pub
 
 ## 验证结果
 
-根验证实际执行：
+首次根验证在桌面依赖尚未安装时实际执行：
 
 ```text
 QH_SOURCE_EXTENSION_DIR='/Users/songliang/Desktop/0.13.46.1' /Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node scripts/verify.mjs
 ```
 
-总体状态为 **FAIL（退出码 1）**：19 个检查中 18 个通过、1 个失败。唯一失败是完整 active suite；不得把缺少 `cheerio` 的环境阻塞描述为通过。
+首次结果为 **FAIL（退出码 1）**：19 个内部检查中 18 个通过、1 个失败；active suite 为 186 tests、185 passed、1 failed。唯一失败是 `desktop/tests/parse-modern-ozon.test.mjs`，首因是桌面依赖尚未安装，`desktop/dist-electron/services/collection/ozon-list-parser.core.js` 导入不到 `cheerio`（`ERR_MODULE_NOT_FOUND`）。这是保留的历史环境证据，不是当前最终状态。
+
+随后仅从本机 pnpm store 离线恢复桌面依赖：
+
+```text
+PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockfile
+```
+
+该命令退出码为 `0`：lockfile 已是最新状态，387 个包全部 reused、downloaded 0，安装得到 ignored 的 `desktop/node_modules`，其中 `cheerio` 版本为 1.2.0。安装未改源码、package manifest、lockfile 或任何 Git tracked/staged 路径；本机依赖目录没有进入提交。
+
+离线安装后再次执行同一条带显式 `QH_SOURCE_EXTENSION_DIR` 的根验证命令。当前最终状态为 **PASS（退出码 0）**：`scripts/verify.mjs` 的 19 个内部检查全部通过，active suite 为 186 tests、186 passed、0 failed，modern Ozon parser test 已通过，最终输出 `All verification checks passed.`。下表的 19 个内部检查对应 `scripts/verify.mjs` 的实际清单；离线安装是环境准备，不算第 20 个检查。
 
 | 检查 | 状态 | 证据或原因 |
 | --- | --- | --- |
-| 根 `scripts/verify.mjs` | FAIL，退出码 1 | 汇总输出为 `1 verification check(s) failed.`；失败来自完整 active suite |
 | App build：`vite build` | PASS，退出码 0 | Vite 6.4.2 转换 4820 modules 并完成构建；仅有单 chunk 大于 500 kB 的性能警告 |
 | `scripts/check-extension-source-parity.mjs` | PASS，退出码 0 | 显式 upstream parity 通过；`extension/` 与公开解压副本 distribution parity 通过 |
 | `scripts/check-extension-ui-parity.mjs` | PASS，退出码 0 | 与显式 upstream 的 UI parity 通过 |
@@ -109,7 +120,7 @@ QH_SOURCE_EXTENSION_DIR='/Users/songliang/Desktop/0.13.46.1' /Users/songliang/.c
 | `scripts/check-extension-zip-smoke.mjs` | PASS，退出码 0 | public 与 dist 两份 ZIP 的 bridge follow-sell 和 dry-run route guard 均通过 |
 | `node --check server/index.mjs` | PASS，退出码 0 | 服务端入口语法通过 |
 | `scripts/check-test-inventory.mjs` | PASS，退出码 0 | `100 active, 13 historical/manual` |
-| 完整 active suite：`node --test --test-concurrency=1 <activeTestFiles>` | FAIL，退出码 1 | 186 tests：185 passed、1 failed；唯一失败为 `desktop/tests/parse-modern-ozon.test.mjs`，首因是 `desktop/dist-electron/services/collection/ozon-list-parser.core.js` 导入不到 `cheerio`（`ERR_MODULE_NOT_FOUND`） |
+| 完整 active suite：`node --test --test-concurrency=1 <activeTestFiles>` | PASS，退出码 0 | 186 tests：186 passed、0 failed；`desktop/tests/parse-modern-ozon.test.mjs` 和 modern Ozon parser 断言通过 |
 | `docker compose config --quiet` | PASS，退出码 0 | 仅完成 Compose 配置插值；未启动容器 |
 | `scripts/check-import-history-types.mjs` | PASS，退出码 0 | import history type filter 通过 |
 | `scripts/check-plugin-readiness-gate.mjs` | PASS，退出码 0 | plugin readiness gate 通过 |
@@ -120,31 +131,32 @@ QH_SOURCE_EXTENSION_DIR='/Users/songliang/Desktop/0.13.46.1' /Users/songliang/.c
 | manifest JSON 解析 | PASS，退出码 0 | 输出 `manifest ok` |
 | `git diff --check -- app/src app/tests server extension app/public` | PASS，退出码 0 | 目标运行/测试/公开资产范围无空白错误 |
 | credential literal scan | PASS，实际 `rg` 退出码 1 | 退出码 1 表示无匹配，正是该门禁的预期状态；匹配时的退出码 0 会被 fail-closed 策略判为失败 |
-| 分类范围与资产只读复核 | PASS，退出码 0 | 八类范围计数分别为 12、64、24、48、75、87、15、412；migration 为 19；public/dist ZIP SHA-256 相同 |
+
+根验证之外的分类范围与资产只读复核也通过：八类范围计数分别为 12、64、24、48、75、87、15、412；migration 为 19；public/dist ZIP SHA-256 相同。
 
 ## 外部依赖与未验证范围
 
 - React/Vite 依赖在本次根验证环境可用，App build 已通过；大 chunk 警告尚未作为失败门禁。
-- 桌面端声明的 `cheerio` 当前无法从受控运行资产解析，导致唯一 active test 失败。未联网安装依赖，也未修改源码或清单来掩盖该结果。
+- 桌面端声明的 `cheerio` 1.2.0 当前可从 ignored 的 `desktop/node_modules` 解析，modern Ozon parser test 已通过。依赖由本机 pnpm store 以 `--offline --frozen-lockfile` 恢复，387 个包全部 reused、downloaded 0；依赖目录没有提交，换机或清理 ignored 文件后必须按 lockfile 重新恢复。
 - Docker CLI 与 Compose 插值可用；未启动 Docker engine 中的服务、PostgreSQL、MinIO 或任何容器。
 - PostgreSQL：19 个 migration 已清点，但未在真实/一次性 PostgreSQL 上执行 migration、事务、advisory-lock 并发或回滚验证；六个 PostgreSQL integration 属于 historical/manual 清单，未运行。
 - 本地 JSON pricing 幂等已覆盖同一 Node 进程内的文件级互斥，但多 Node 进程/多副本共享同一文件的操作系统级文件锁边界未实现、未验证。
 - 浏览器：未运行七个 Playwright historical/manual 测试，未加载真实 Chrome 扩展，也未验证 reload、alarm、cookie、content-script 隔离世界或真实站点生命周期。
-- 桌面端：未启动 Electron GUI，未验证真实 dialog、renderer IPC sender/origin、Windows 文件系统、打包/安装器或已安装依赖下的 parser。
+- 桌面端：未启动 Electron GUI，未验证真实 dialog、renderer IPC sender/origin、Windows 文件系统、打包或安装器；parser 的纯 Node 回归通过不等同于 GUI/打包集成验证。
 - 外部系统：未调用 Ozon/Seller/1688 API，未进行真实店铺同步、上架、对象存储写入、生产数据读写、生产部署或凭据变更；其可用性和恢复流程未被本阶段证明。
 - 权限：管理权限已有集中 matrix，路由也有认证、账号过滤和门店归属保护；但 `tenant.operate` 尚未在所有现有业务路由中普遍强制，不能把当前覆盖范围描述成统一后端授权完成。
 
 ## 回归风险
 
 - 当前分支保存的是计划启动前已经存在的大规模改动，并在审查中补充了租户隔离、权限、幂等、外部写安全、浏览器 bridge、FX replay、门店删除、桌面采集生命周期、Excel 路径归属和根门禁等核心回归保护。
-- 分类提交提升了可审查性、可追溯性和独立回退能力，但根验证仍为红色；缺少 `cheerio` 的桌面解析路径未通过 active suite，真实数据库、浏览器、Electron 和外部系统也未集成验证。
-- 即使当前所有门禁将来全绿，也不可能保证以后任意改动绝不影响其他功能。自动测试只能证明已覆盖的输入、contract 和环境，不能证明未知路径不存在回归。
+- 分类提交提升了可审查性、可追溯性和独立回退能力；当前根验证已全绿，19 个内部检查和 186 个 active tests 均通过。但真实数据库、浏览器、Electron GUI、Windows/打包和外部系统仍未集成验证。
+- 当前门禁全绿也不可能保证以后任意改动绝不影响其他功能。自动测试只能证明已覆盖的输入、contract 和环境，不能证明未知路径不存在回归；大于 500 kB 的构建 chunk 仍是非阻断性能风险。
 - 下一阶段每次改动仍必须先确认业务目标与影响面（页面、接口、数据、权限、配置、外部服务），再执行对应单元/集成/构建/回归验证，并预先说明可执行的回滚或数据恢复方法。
 - 当前 HEAD 和资产已经脱敏，但 Git 历史仍保留旧个人信息；共享仓库、镜像或归档前应单独评估并授权历史重写，且需要协调所有使用者重新同步。
 
 ## 恢复方法
 
-- 保留整个保护性基线时，以提交标题 `docs: record protective baseline verification` 对应的报告提交为锚点；该提交之后的任何功能改动都应建立在其上，并保留本报告记录的已知红项。
+- 保留整个保护性基线时，以提交标题 `docs: record green baseline verification` 对应的最终报告提交为锚点；该提交之后的任何功能改动都应建立在其上。首次缺少桌面依赖导致的红色结果作为历史证据保留，但不是当前已知红项。
 - 取消单个类别或修复时，先用 `git log --reverse --oneline 84861df..HEAD` 确认实际提交和依赖，再从最新相关提交开始按逆序执行 `git revert <commit-sha>`。不要使用 `git reset --hard`，不要通过重放外部请求恢复数据。
 - 完整撤销的推荐类别逆序为：基线报告；生成产物/历史资产与脱敏；文档；测试门禁；桌面端；扩展及关联安全 contract；Web；服务端与迁移；基础设施。每一类内部也按日志逆序 revert。
 - 回退 `e6bcdeb` 会把已脱敏内容重新带回当前 HEAD，不建议执行；如确需回退，必须先评估敏感数据影响。旧 Git 历史的彻底清理不是普通 `git revert` 能完成的，需要另行授权和协同历史重写。
