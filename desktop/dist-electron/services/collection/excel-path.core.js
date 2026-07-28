@@ -1,9 +1,11 @@
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
 
 const MAX_EXCEL_PATH_LENGTH = 2048;
-const MAX_TASK_ID_LENGTH = 120;
+const MAX_TASK_ID_BYTES = 96;
 const MAX_DISPLAY_SLUG_LENGTH = 80;
+const MAX_EXCEL_FILENAME_BYTES = 240;
 
 function sanitizeFilePart(value, fallback, maxLength) {
     const normalized = String(value || '')
@@ -22,6 +24,52 @@ function assertInside(root, target) {
         throw new Error('Excel 文件必须位于受控目录内');
 }
 
+function truncateUtf8(value, maxBytes) {
+    let result = '';
+    let size = 0;
+    for (const character of value) {
+        const characterSize = Buffer.byteLength(character, 'utf8');
+        if (size + characterSize > maxBytes)
+            break;
+        result += character;
+        size += characterSize;
+    }
+    return result;
+}
+
+function hasUnpairedSurrogate(value) {
+    for (let index = 0; index < value.length; index += 1) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+            const next = value.charCodeAt(index + 1);
+            if (!(next >= 0xdc00 && next <= 0xdfff))
+                return true;
+            index += 1;
+        }
+        else if (code >= 0xdc00 && code <= 0xdfff) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function normalizeTaskId(value) {
+    const id = String(value || '').trim();
+    if (!id
+        || Buffer.byteLength(id, 'utf8') > MAX_TASK_ID_BYTES
+        || /[\u0000-\u001f\u007f]/.test(id)
+        || hasUnpairedSurrogate(id)) {
+        throw new Error('任务 ID 无效');
+    }
+    return id;
+}
+
+export function taskIdFilenameSegment(taskId) {
+    const id = normalizeTaskId(taskId);
+    const bytes = Buffer.from(id, 'utf8');
+    return `id${bytes.length}_${bytes.toString('hex')}`;
+}
+
 export function getExcelRoot(userDataPath) {
     const userData = String(userDataPath || '').trim();
     if (!userData)
@@ -30,11 +78,13 @@ export function getExcelRoot(userDataPath) {
 }
 
 export function buildTaskExcelPath(userDataPath, taskId, displayName) {
-    const id = sanitizeFilePart(taskId, '', MAX_TASK_ID_LENGTH);
-    if (!id)
-        throw new Error('生成 Excel 文件需要可信任务 ID');
-    const slug = sanitizeFilePart(displayName, 'task', MAX_DISPLAY_SLUG_LENGTH);
-    return assertManagedExcelPath(userDataPath, `${id}_${slug}.xlsx`);
+    const id = taskIdFilenameSegment(taskId);
+    const slugLimit = MAX_EXCEL_FILENAME_BYTES - Buffer.byteLength(`${id}--.xlsx`, 'utf8');
+    const slug = truncateUtf8(
+        sanitizeFilePart(displayName, 'task', MAX_DISPLAY_SLUG_LENGTH),
+        slugLimit,
+    );
+    return assertManagedExcelPath(userDataPath, `${id}--${slug}.xlsx`);
 }
 
 export function assertManagedExcelPath(userDataPath, candidate) {
@@ -68,11 +118,11 @@ export function assertExistingManagedExcelFile(userDataPath, candidate) {
 }
 
 export function assertTaskOwnsManagedExcelFile(userDataPath, taskId, candidate) {
-    const id = sanitizeFilePart(taskId, '', MAX_TASK_ID_LENGTH);
-    if (!id)
-        throw new Error('校验 Excel 文件需要可信任务 ID');
+    const id = taskIdFilenameSegment(taskId);
     const target = assertExistingManagedExcelFile(userDataPath, candidate);
-    if (!basename(target).startsWith(`${id}_`))
+    const fileName = basename(target, '.xlsx');
+    const separator = fileName.indexOf('--');
+    if (separator < 0 || fileName.slice(0, separator) !== id)
         throw new Error('Excel 文件与请求任务不匹配');
     return target;
 }
@@ -86,12 +136,9 @@ export function normalizeExcelDownloadRequest(payload) {
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload))
         throw new Error('Excel 下载请求格式无效');
-    const taskId = String(payload.taskId || '').trim();
-    if (taskId) {
-        if (taskId.length > MAX_TASK_ID_LENGTH)
-            throw new Error('Excel 下载请求缺少有效任务 ID');
-        return { taskId };
-    }
+    const rawTaskId = String(payload.taskId || '').trim();
+    if (rawTaskId)
+        return { taskId: normalizeTaskId(rawTaskId) };
     const filePath = String(payload.filePath || '').trim();
     if (filePath) {
         if (filePath.length > MAX_EXCEL_PATH_LENGTH)

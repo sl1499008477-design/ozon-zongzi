@@ -17,8 +17,88 @@ test('task Excel names use a trusted ID and sanitized display slug', () => {
     '../../季度/报表',
   );
 
-  assert.equal(basename(filePath), 'task-123_季度_报表.xlsx');
+  assert.equal(
+    basename(filePath),
+    'id8_7461736b2d313233--季度_报表.xlsx',
+  );
   assert.equal(filePath.startsWith(pathModule.getExcelRoot(userData)), true);
+});
+
+test('task ownership has exact boundaries without sanitize or Unicode collisions', () => {
+  assert.ok(pathModule, 'central Excel path contract must exist');
+  const userData = mkdtempSync(join(tmpdir(), 'sonli-excel-owner-'));
+  const root = pathModule.getExcelRoot(userData);
+  mkdirSync(root, { recursive: true });
+
+  const prefixOwner = pathModule.buildTaskExcelPath(userData, 'task', 'safe');
+  const prefixOther = pathModule.buildTaskExcelPath(userData, 'task_1', 'safe');
+  const slashId = pathModule.buildTaskExcelPath(userData, 'shop/a', 'safe');
+  const underscoreId = pathModule.buildTaskExcelPath(userData, 'shop_a', 'safe');
+  const composedId = pathModule.buildTaskExcelPath(userData, '\u00e9', 'safe');
+  const decomposedId = pathModule.buildTaskExcelPath(userData, 'e\u0301', 'safe');
+  for (const filePath of [
+    prefixOwner,
+    prefixOther,
+    slashId,
+    underscoreId,
+    composedId,
+    decomposedId,
+  ])
+    writeFileSync(filePath, 'xlsx');
+
+  assert.notEqual(prefixOwner, prefixOther);
+  assert.notEqual(slashId, underscoreId);
+  assert.notEqual(composedId, decomposedId);
+  assert.equal(
+    pathModule.assertTaskOwnsManagedExcelFile(userData, 'task', prefixOwner),
+    prefixOwner,
+  );
+  assert.throws(
+    () => pathModule.assertTaskOwnsManagedExcelFile(userData, 'task', prefixOther),
+    /不匹配|任务/,
+  );
+  assert.throws(
+    () => pathModule.assertTaskOwnsManagedExcelFile(userData, 'shop\/a', underscoreId),
+    /不匹配|任务/,
+  );
+  assert.throws(
+    () => pathModule.assertTaskOwnsManagedExcelFile(userData, '\u00e9', decomposedId),
+    /不匹配|任务/,
+  );
+});
+
+test('encoded task filenames stay within a portable byte limit', () => {
+  assert.ok(pathModule, 'central Excel path contract must exist');
+  const userData = mkdtempSync(join(tmpdir(), 'sonli-excel-length-'));
+  const filePath = pathModule.buildTaskExcelPath(
+    userData,
+    'x'.repeat(96),
+    '报'.repeat(80),
+  );
+
+  assert.equal(Buffer.byteLength(basename(filePath), 'utf8') <= 240, true);
+});
+
+test('task filename encoding rejects empty, control and oversized IDs', () => {
+  assert.ok(pathModule, 'central Excel path contract must exist');
+  const userData = mkdtempSync(join(tmpdir(), 'sonli-excel-id-'));
+
+  assert.throws(
+    () => pathModule.buildTaskExcelPath(userData, ' ', 'safe'),
+    /任务 ID/,
+  );
+  assert.throws(
+    () => pathModule.buildTaskExcelPath(userData, 'task\u0000id', 'safe'),
+    /任务 ID/,
+  );
+  assert.throws(
+    () => pathModule.buildTaskExcelPath(userData, '\ud800', 'safe'),
+    /任务 ID/,
+  );
+  assert.throws(
+    () => pathModule.buildTaskExcelPath(userData, 'x'.repeat(97), 'safe'),
+    /任务 ID/,
+  );
 });
 
 test('managed Excel validation rejects traversal, absolute escape, encoded traversal and non-xlsx', () => {

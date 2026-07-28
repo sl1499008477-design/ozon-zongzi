@@ -18,6 +18,7 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     import { join } from 'node:path';
     import { TaskManager } from ${JSON.stringify(taskManagerUrl)};
     import { SysTemUtils } from ${JSON.stringify(new URL('../dist-electron/utils/system.js', import.meta.url).href)};
+    import { buildTaskExcelPath } from ${JSON.stringify(new URL('../dist-electron/services/collection/excel-path.core.js', import.meta.url).href)};
 
     const manager = new TaskManager();
     const taskId = await manager.addTask({ taskName: '../../unsafe display', categoryIds: [] });
@@ -47,7 +48,11 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
 
     const excelRoot = join(process.env.DESKTOP_TEST_USER_DATA, 'excel');
     mkdirSync(excelRoot, { recursive: true });
-    const cachedPath = join(excelRoot, 'lifecycle_done.xlsx');
+    const cachedPath = buildTaskExcelPath(
+      process.env.DESKTOP_TEST_USER_DATA,
+      'lifecycle',
+      'done',
+    );
     writeFileSync(cachedPath, 'xlsx');
     let cleared = 0;
     const lifecycleTask = {
@@ -86,15 +91,53 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
       filePath: filePath + '.exported',
     });
 
-    manager.filePathList.set('wrong-task', {
-      taskId: 'wrong-task',
-      filePath: cachedPath,
+    const prefixCollisionPath = buildTaskExcelPath(
+      process.env.DESKTOP_TEST_USER_DATA,
+      'task_1',
+      'other',
+    );
+    writeFileSync(prefixCollisionPath, 'xlsx');
+    manager.filePathList.set('task', {
+      taskId: 'task',
+      filePath: prefixCollisionPath,
     });
     await assert.rejects(
-      () => manager.downloadExcel({ taskId: 'wrong-task' }),
+      () => manager.downloadExcel({ taskId: 'task' }),
       /任务|受控|Excel/,
     );
-    manager.filePathList.delete('wrong-task');
+    manager.filePathList.delete('task');
+
+    const sanitizeCollisionPath = buildTaskExcelPath(
+      process.env.DESKTOP_TEST_USER_DATA,
+      'shop_a',
+      'other',
+    );
+    writeFileSync(sanitizeCollisionPath, 'xlsx');
+    manager.filePathList.set('shop/a', {
+      taskId: 'shop/a',
+      filePath: sanitizeCollisionPath,
+    });
+    await assert.rejects(
+      () => manager.downloadExcel({ taskId: 'shop/a' }),
+      /任务|受控|Excel/,
+    );
+    manager.filePathList.delete('shop/a');
+
+    const exactPath = buildTaskExcelPath(
+      process.env.DESKTOP_TEST_USER_DATA,
+      'exact-task',
+      'exact',
+    );
+    writeFileSync(exactPath, 'xlsx');
+    manager.filePathList.set('exact-task', {
+      taskId: 'exact-task',
+      filePath: exactPath,
+    });
+    assert.equal(
+      (await manager.downloadExcel({ taskId: 'exact-task' })).status,
+      'saved',
+    );
+    manager.filePathList.delete('exact-task');
 
     let prepared = 0;
     const queuedTask = {
