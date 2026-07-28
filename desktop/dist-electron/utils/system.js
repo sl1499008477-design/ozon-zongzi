@@ -343,19 +343,12 @@ export class SysTemUtils {
                 ]
             });
             if (canceled || !savePath)
-                return;
-            try {
-                if (existsSync(filePath)) {
-                    copyFileSync(filePath, savePath);
-                    log.info(savePath, '文件保存成功');
-                }
-                else {
-                    return Promise.reject('文件不存在');
-                }
-            }
-            catch (error) {
-                console.error('拷贝文件失败：', error);
-            }
+                return { status: 'cancelled' };
+            if (!existsSync(filePath))
+                throw new Error('Excel 源文件不存在');
+            copyFileSync(filePath, savePath);
+            log.info(savePath, '文件保存成功');
+            return { status: 'saved', filePath: savePath };
         },
         /**
          * 删除文件

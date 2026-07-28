@@ -38,7 +38,11 @@ const stubs = {
       encryptString: (value) => Buffer.from(value),
       decryptString: (value) => Buffer.from(value).toString(),
     };
-    export const dialog = { showSaveDialog: async () => ({ canceled: true }) };
+    export const dialog = {
+      showSaveDialog: async () => process.env.DESKTOP_TEST_DIALOG_MODE === 'save'
+        ? { canceled: false, filePath: process.env.DESKTOP_TEST_SAVE_PATH }
+        : { canceled: true },
+    };
     export const shell = { openExternal: async () => {}, openPath: async () => {} };
     export const clipboard = { writeText() {} };
     export const screen = {};

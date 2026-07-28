@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
-import { extname, isAbsolute, relative, resolve } from 'node:path';
+import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
 
 const MAX_EXCEL_PATH_LENGTH = 2048;
 const MAX_TASK_ID_LENGTH = 120;
@@ -64,6 +64,16 @@ export function assertExistingManagedExcelFile(userDataPath, candidate) {
     const realTarget = realpathSync(target);
     const realRoot = realpathSync(root);
     assertInside(realRoot, realTarget);
+    return target;
+}
+
+export function assertTaskOwnsManagedExcelFile(userDataPath, taskId, candidate) {
+    const id = sanitizeFilePart(taskId, '', MAX_TASK_ID_LENGTH);
+    if (!id)
+        throw new Error('校验 Excel 文件需要可信任务 ID');
+    const target = assertExistingManagedExcelFile(userDataPath, candidate);
+    if (!basename(target).startsWith(`${id}_`))
+        throw new Error('Excel 文件与请求任务不匹配');
     return target;
 }
 

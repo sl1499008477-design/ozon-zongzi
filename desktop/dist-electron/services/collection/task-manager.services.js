@@ -13,6 +13,7 @@ import {
 import os from 'os';
 import {
     assertExistingManagedExcelFile,
+    assertTaskOwnsManagedExcelFile,
     buildTaskExcelPath,
     normalizeExcelDownloadRequest,
 } from './excel-path.core.js';
@@ -184,6 +185,7 @@ export class TaskManager {
                 });
             const safeResult = JSON.parse(JSON.stringify(result));
             safeResult.filePath = this.existingExcelPath(safeResult.filePath);
+            safeResult.taskId = taskId;
             this.filePathList.set(taskId, safeResult);
         }
         catch (error) {
@@ -484,11 +486,16 @@ export class TaskManager {
             const task = this.tasks.get(request.taskId);
             const taskInfo = task?.getTaskInfo();
             const cached = this.filePathList.get(request.taskId);
+            const loadedTaskMatches = task
+                && String(taskInfo?._id || taskInfo?.id || '') === request.taskId;
+            const cachedTaskMatches = cached
+                && String(cached.taskId || '') === request.taskId;
             requestedPath = (typeof task?.getTableFilePath === 'function'
+                && loadedTaskMatches
                 ? await task.getTableFilePath()
                 : '')
-                || taskInfo?.tableFilePath
-                || cached?.filePath
+                || (loadedTaskMatches ? taskInfo?.tableFilePath : '')
+                || (cachedTaskMatches ? cached?.filePath : '')
                 || '';
             if (!requestedPath)
                 throw new Error('任务没有可导出的 Excel 文件');
@@ -496,26 +503,39 @@ export class TaskManager {
         else {
             requestedPath = request.filePath;
         }
-        const filePath = assertExistingManagedExcelFile(this.getUserDataPath(), requestedPath);
+        const filePath = request.taskId
+            ? assertTaskOwnsManagedExcelFile(this.getUserDataPath(), request.taskId, requestedPath)
+            : assertExistingManagedExcelFile(this.getUserDataPath(), requestedPath);
         const registeredPaths = [];
         for (const [taskId, task] of this.tasks) {
             const taskInfo = task?.getTaskInfo();
             const cached = this.filePathList.get(taskId);
+            const loadedTaskMatches = String(taskInfo?._id || taskInfo?.id || '') === String(taskId);
+            const cachedTaskMatches = String(cached?.taskId || '') === String(taskId);
             const taskFilePath = typeof task?.getTableFilePath === 'function'
+                && loadedTaskMatches
                 ? await task.getTableFilePath()
                 : '';
             registeredPaths.push(
                 taskFilePath,
-                taskInfo?.tableFilePath,
-                cached?.filePath,
+                loadedTaskMatches ? taskInfo?.tableFilePath : '',
+                cachedTaskMatches ? cached?.filePath : '',
             );
+        }
+        for (const [taskId, cached] of this.filePathList) {
+            if (String(cached?.taskId || '') === String(taskId))
+                registeredPaths.push(cached.filePath);
         }
         const isRegistered = registeredPaths.some((candidate) =>
             this.existingExcelPath(candidate) === filePath);
         if (!isRegistered)
             throw new Error('该 Excel 文件不属于已登记任务');
-        await SysTemUtils.fileOperations.copyFile(filePath);
-        return true;
+        const outcome = await SysTemUtils.fileOperations.copyFile(filePath);
+        if (outcome?.status === 'cancelled')
+            return { status: 'cancelled' };
+        if (outcome?.status === 'saved' && typeof outcome.filePath === 'string' && outcome.filePath)
+            return { status: 'saved', filePath: outcome.filePath };
+        throw new Error('Excel 文件复制返回了无效结果');
     }
     // 刷新队列
     refreshTaskQueue() {

@@ -14,9 +14,10 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
   const userData = mkdtempSync(join(tmpdir(), 'sonli-desktop-contract-'));
   const probe = `
     import assert from 'node:assert/strict';
-    import { mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+    import { mkdirSync, unlinkSync, writeFileSync, symlinkSync } from 'node:fs';
     import { join } from 'node:path';
     import { TaskManager } from ${JSON.stringify(taskManagerUrl)};
+    import { SysTemUtils } from ${JSON.stringify(new URL('../dist-electron/utils/system.js', import.meta.url).href)};
 
     const manager = new TaskManager();
     const taskId = await manager.addTask({ taskName: '../../unsafe display', categoryIds: [] });
@@ -44,10 +45,15 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
       sellerCompanyId: 'seller-1',
     });
 
+    const excelRoot = join(process.env.DESKTOP_TEST_USER_DATA, 'excel');
+    mkdirSync(excelRoot, { recursive: true });
+    const cachedPath = join(excelRoot, 'lifecycle_done.xlsx');
+    writeFileSync(cachedPath, 'xlsx');
     let cleared = 0;
     const lifecycleTask = {
       getTaskInfo: () => ({ taskStatus: 'completed', taskName: 'done' }),
-      run: async () => ({ filePath: '', progress: {} }),
+      getTableFilePath: async () => cachedPath,
+      run: async () => ({ filePath: cachedPath, progress: {} }),
       clearStatus: () => { cleared += 1; },
     };
     manager.tasks.set('lifecycle', lifecycleTask);
@@ -55,6 +61,40 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     assert.equal(cleared, 1);
     assert.equal(manager.activeTasks.has('lifecycle'), false);
     assert.equal(manager.tasks.has('lifecycle'), false);
+    assert.equal(manager.filePathList.get('lifecycle')?.filePath, cachedPath);
+
+    const originalCopyFile = SysTemUtils.fileOperations.copyFile;
+    SysTemUtils.fileOperations.copyFile = async (filePath) => ({
+      status: 'saved',
+      filePath: filePath + '.exported',
+    });
+    assert.equal(
+      (await manager.downloadExcel({ taskId: 'lifecycle' })).status,
+      'saved',
+    );
+    assert.equal(
+      (await manager.downloadExcel(cachedPath)).status,
+      'saved',
+    );
+    SysTemUtils.fileOperations.copyFile = async () => ({ status: 'cancelled' });
+    assert.deepEqual(
+      await manager.downloadExcel({ taskId: 'lifecycle' }),
+      { status: 'cancelled' },
+    );
+    SysTemUtils.fileOperations.copyFile = async (filePath) => ({
+      status: 'saved',
+      filePath: filePath + '.exported',
+    });
+
+    manager.filePathList.set('wrong-task', {
+      taskId: 'wrong-task',
+      filePath: cachedPath,
+    });
+    await assert.rejects(
+      () => manager.downloadExcel({ taskId: 'wrong-task' }),
+      /任务|受控|Excel/,
+    );
+    manager.filePathList.delete('wrong-task');
 
     let prepared = 0;
     const queuedTask = {
@@ -68,8 +108,6 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     await manager.startTaskById('queued');
     assert.equal(prepared, 1);
 
-    const excelRoot = join(process.env.DESKTOP_TEST_USER_DATA, 'excel');
-    mkdirSync(excelRoot, { recursive: true });
     const trustedPath = await collection.getTableFilePath();
     writeFileSync(trustedPath, 'xlsx');
     await manager.downloadExcel(trustedPath);
@@ -86,6 +124,32 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     const symlink = join(excelRoot, 'link.xlsx');
     symlinkSync(outside, symlink);
     await assert.rejects(() => manager.downloadExcel(symlink), /符号链接|受控|Excel/);
+
+    SysTemUtils.fileOperations.copyFile = async (filePath) => {
+      unlinkSync(filePath);
+      return originalCopyFile(filePath);
+    };
+    process.env.DESKTOP_TEST_DIALOG_MODE = 'save';
+    process.env.DESKTOP_TEST_SAVE_PATH = join(
+      process.env.DESKTOP_TEST_USER_DATA,
+      'late-copy.xlsx',
+    );
+    await assert.rejects(
+      () => manager.downloadExcel(cachedPath),
+      /不存在|源文件|ENOENT/,
+    );
+
+    writeFileSync(cachedPath, 'xlsx');
+    await manager.stopAllTasks();
+    await assert.rejects(
+      () => manager.downloadExcel({ taskId: 'lifecycle' }),
+      /任务|受控|Excel/,
+    );
+    await assert.rejects(
+      () => manager.downloadExcel(cachedPath),
+      /任务|受控|Excel/,
+    );
+    SysTemUtils.fileOperations.copyFile = originalCopyFile;
   `;
   const result = spawnSync(process.execPath, [
     '--experimental-loader',
