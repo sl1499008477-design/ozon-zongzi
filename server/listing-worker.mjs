@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { callOzonSellerApi } from "./ozon-client.mjs";
 import { deriveOzonImportStatus } from "./ozon-import-status.mjs";
+import { resolveSubmissionFailureDisposition } from "./listing-submission-policy.mjs";
 import { dispatchListingOutboxOnce, getListingBoss, stopListingBoss } from "./listing-queue.mjs";
 import {
   LISTING_QUEUE,
@@ -117,9 +118,12 @@ async function processSubmit(jobId) {
     if (work.collect_item_id) await patchLegacyCollectStatusV3(work.collect_item_id, collectPatch("CHECKING", { ...accepted, ozon_task_id: ozonTaskId }));
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
-    if (error?.body?.network && latest?.status === "SUBMITTING") {
-      await failSubmission(latest, error, "RECONCILING");
-    } else if ((error?.status === 429 || error?.status >= 500) && Number(latest?.attempt_count || 0) < 3) {
+    const disposition = latest?.status === "SUBMITTING"
+      ? resolveSubmissionFailureDisposition(error)
+      : "FAILED";
+    if (disposition === "RECONCILING") {
+      await failSubmission(latest || work, error, "RECONCILING");
+    } else if (disposition === "RETRY_PENDING" && Number(latest?.attempt_count || 0) < 3) {
       await transitionSubmissionJobV3(jobId, "RETRY_PENDING", {
         errorCode: error?.code || `OZON_HTTP_${error.status}`,
         errorMessage: error?.message || String(error),

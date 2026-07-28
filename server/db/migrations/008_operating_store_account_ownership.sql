@@ -24,12 +24,18 @@ WHERE target.id=legacy_ownership.store_id
 
 UPDATE stores
 SET owner_account_id=(
-  SELECT id FROM accounts
-  ORDER BY CASE WHEN role='admin' THEN 0 ELSE 1 END, created_at NULLS LAST, id
-  LIMIT 1
+  SELECT MIN(id) FROM accounts
 )
 WHERE owner_account_id IS NULL
-  AND EXISTS (SELECT 1 FROM accounts);
+  AND (SELECT COUNT(*) FROM accounts) = 1;
+
+DO $$
+BEGIN
+  IF (SELECT COUNT(*) FROM accounts) > 1
+     AND EXISTS (SELECT 1 FROM stores WHERE owner_account_id IS NULL) THEN
+    RAISE EXCEPTION 'stores with unknown owner require manual account mapping before ownership enforcement';
+  END IF;
+END $$;
 
 ALTER TABLE stores
   ALTER COLUMN owner_account_id SET NOT NULL;

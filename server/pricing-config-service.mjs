@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { calculatePricing, validatePricingConfig } from "./pricing-engine.mjs";
 import { applyLiveExchangeRate } from "./pricing-fx-service.mjs";
+import { updateScopedPricingSnapshotTargets } from "./pricing-snapshot-scope.mjs";
 
 const id = (prefix) => `${prefix}_${crypto.randomUUID()}`;
 const jsonHash = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -589,11 +590,6 @@ export async function savePricingSnapshot({ accountId = null, storeId = null, pr
     (id, account_id, store_id, product_id, draft_id, submission_snapshot_id, config_version_id, mode, input_json, result_json, config_snapshot_json)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb)`,
   [snapshot.id, accountId, storeId, productId, draftId, submissionSnapshotId, config.id, result.mode, JSON.stringify(input), JSON.stringify(result), JSON.stringify(config)]);
-  if (draftId) {
-    await pool.query("UPDATE product_drafts SET pricing_snapshot = $2::jsonb, updated_at = NOW() WHERE id = $1", [draftId, JSON.stringify(snapshot)]);
-  }
-  if (submissionSnapshotId) {
-    await pool.query("UPDATE submission_snapshots SET pricing_snapshot = $2::jsonb WHERE id = $1", [submissionSnapshotId, JSON.stringify(snapshot)]);
-  }
+  await updateScopedPricingSnapshotTargets({ pool, accountId, storeId, draftId, submissionSnapshotId, pricingSnapshot: snapshot });
   return snapshot;
 }

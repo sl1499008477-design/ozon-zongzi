@@ -111,6 +111,7 @@ import {
   updatePricingDraft,
   validatePricingVersion,
 } from "./pricing-config-service.mjs";
+import { resolveLegacyStoreOwner } from "./ownership-backfill-policy.mjs";
 import { handleCollectorPricingRoute } from "./pricing-routes.mjs";
 import { importOfficialCommissionFiles } from "./pricing-official-import.mjs";
 import {
@@ -262,21 +263,15 @@ function ensureAccountState(state) {
     !Array.isArray(state.currentStoreIdsByAccount)
       ? state.currentStoreIdsByAccount
       : {};
-  const defaultOwnerAccountId =
-    (state.currentAccountId && state.accounts.some((account) => account.id === state.currentAccountId)
-      ? state.currentAccountId
-      : "") ||
-    state.accounts.find((account) => account.role === "admin")?.id ||
-    state.accounts[0]?.id ||
-    "";
   state.dataCollectionStores = state.dataCollectionStores.map((store) => ({
     ...store,
-    ownerAccountId: store.ownerAccountId || defaultOwnerAccountId,
+    ownerAccountId: resolveLegacyStoreOwner(store, state.accounts),
   }));
   state.stores = state.stores.map((store) => ({
     ...store,
-    ownerAccountId: store.ownerAccountId || defaultOwnerAccountId,
+    ownerAccountId: resolveLegacyStoreOwner(store, state.accounts),
   }));
+  const defaultOwnerAccountId = state.accounts.length === 1 ? String(state.accounts[0]?.id || "") : "";
   if (defaultOwnerAccountId && state.currentStoreId && !state.currentStoreIdsByAccount[defaultOwnerAccountId]) {
     state.currentStoreIdsByAccount[defaultOwnerAccountId] = state.currentStoreId;
   }
