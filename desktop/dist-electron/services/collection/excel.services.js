@@ -1,13 +1,16 @@
 import { ExcelWriter } from '../../utils/excel.js';
-import { join } from 'path';
 import { SysTemUtils } from '../../utils/system.js';
 import log from '../../log/index.js';
-const excelDir = join(SysTemUtils.getAppInfo().userDataPath, 'excel');
+import { assertManagedExcelPath, buildTaskExcelPath } from './excel-path.core.js';
 export class ExcelService {
     excel = null;
     isInit = false;
-    constructor(tableName) {
-        this.excel = new ExcelWriter(join(excelDir, `${tableName}.xlsx`));
+    constructor(taskId, displayName) {
+        this.excel = new ExcelWriter(buildTaskExcelPath(
+            SysTemUtils.getAppInfo().userDataPath,
+            taskId,
+            displayName,
+        ));
     }
     // 初始化表格
     async initTable() {
@@ -178,7 +181,11 @@ export class ExcelService {
         return this.excel?.getFilePath() || '';
     }
     async DeleteFilled() {
-        await SysTemUtils.fileOperations.deleteFile(await this.getFilePath());
+        const filePath = assertManagedExcelPath(
+            SysTemUtils.getAppInfo().userDataPath,
+            await this.getFilePath(),
+        );
+        await SysTemUtils.fileOperations.deleteFile(filePath);
     }
     destroy() {
         this.excel = null;

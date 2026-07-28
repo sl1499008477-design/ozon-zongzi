@@ -9,7 +9,7 @@ import * as cheerio from 'cheerio';
 import { getAccountPartition } from './session.services.js';
 import { fetchSellerSkuAnalyticsBatch } from './seller-ozon.services.js';
 import { calculateCollectorPricing } from './collector-backend.services.js';
-const excelDir = join(SysTemUtils.getAppInfo().userDataPath, 'excel');
+import { buildTaskExcelPath } from './collection/excel-path.core.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -42,8 +42,12 @@ export class Collection {
     constructor(task, mainWindow) {
         this.collectionTask = { ...task };
         this.mainWindow = mainWindow;
-        this.excel = new ExcelWriter(join(excelDir, `${this.collectionTask.taskName}.xlsx`));
-        this.tableFilePath = join(excelDir, `${this.collectionTask.taskName}.xlsx`);
+        this.tableFilePath = buildTaskExcelPath(
+            SysTemUtils.getAppInfo().userDataPath,
+            this.collectionTask._id || this.collectionTask.id,
+            this.collectionTask.taskName,
+        );
+        this.excel = new ExcelWriter(this.tableFilePath);
     }
     // 添加挂起任务
     addPendingTask(task) {

@@ -5,6 +5,7 @@ import log from '../log/index.js';
 import { getShopList, getLogisticsList, getConfigList, getCategoryList } from '../services/collection/interface.services.js';
 import { join } from 'node:path';
 import { addCollectorResultsToCollectBox } from '../services/collector-backend.services.js';
+import { normalizeExcelDownloadRequest } from '../services/collection/excel-path.core.js';
 export const collectionIpc = (win) => {
     const taskManager = TaskManager.getInstance();
     taskManager.setMainWindow(win);
@@ -252,8 +253,8 @@ export const collectionIpc = (win) => {
         }
     });
     // 下载表格
-    ipcMain.handle('collection-download-excel', async (event, tableFilePath) => {
-        return await taskManager.downloadExcel(tableFilePath);
+    ipcMain.handle('collection-download-excel', async (_event, payload) => {
+        return await taskManager.downloadExcel(normalizeExcelDownloadRequest(payload));
     });
     // 将明确选择的结果，或本任务全部 QUALIFIED 结果加入 sonli 采集箱。
     ipcMain.handle('collection-add-to-collect-box', async (_event, payload = {}) => {

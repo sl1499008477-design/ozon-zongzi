@@ -11,8 +11,11 @@ import {
     updateCollectorTask,
 } from '../collector-backend.services.js';
 import os from 'os';
-import { join } from 'path';
-const excelDir = join(SysTemUtils.getAppInfo().userDataPath, 'excel');
+import {
+    assertExistingManagedExcelFile,
+    buildTaskExcelPath,
+    normalizeExcelDownloadRequest,
+} from './excel-path.core.js';
 export class TaskManager {
     static instance;
     tasks = new Map();
@@ -24,6 +27,19 @@ export class TaskManager {
     filePathList = new Map();
     constructor() {
         this.maxConcurrentTasks = (os.totalmem() / 1024 / 1024 / 1024) > 15 ? 8 : 4;
+    }
+    getUserDataPath() {
+        return SysTemUtils.getAppInfo().userDataPath;
+    }
+    existingExcelPath(candidate) {
+        if (!candidate)
+            return '';
+        try {
+            return assertExistingManagedExcelFile(this.getUserDataPath(), candidate);
+        }
+        catch {
+            return '';
+        }
     }
     static getInstance() {
         if (!TaskManager.instance) {
@@ -166,7 +182,9 @@ export class TaskManager {
                 this.mainWindow?.webContents.send('task-completed', {
                     message: `任务：${task.getTaskInfo().taskName}已完成`,
                 });
-            this.filePathList.set(taskId, JSON.parse(JSON.stringify(result)));
+            const safeResult = JSON.parse(JSON.stringify(result));
+            safeResult.filePath = this.existingExcelPath(safeResult.filePath);
+            this.filePathList.set(taskId, safeResult);
         }
         catch (error) {
             this.filePathList.set(taskId, JSON.parse(JSON.stringify(error)));
@@ -266,7 +284,7 @@ export class TaskManager {
                         task.taskStatus !== 'pending'
                             ? copyTask?.progress || { current: 0, total: 0, totalCount: 0 }
                             : { current: 0, total: 0, totalCount: 0 };
-                    task.tableFilePath = copyTask?.filePath;
+                    task.tableFilePath = this.existingExcelPath(copyTask?.filePath);
                     const collection = new Collection(task, this.mainWindow);
                     this.tasks.set(task._id, collection);
                 }
@@ -274,21 +292,27 @@ export class TaskManager {
                     const progress2 = JSON.parse(JSON.stringify(this.tasks.get(task._id)?.getTaskInfo().progress) || '{}');
                     const filePath = this.tasks.get(task._id)?.getTaskInfo()?.tableFilePath;
                     if (task.taskStatus === 'running' || task.taskStatus === 'pending') {
-                        if (filePath && SysTemUtils.fileOperations.exists(filePath))
-                            task.tableFilePath = filePath;
+                        const existingFilePath = this.existingExcelPath(filePath);
+                        if (existingFilePath)
+                            task.tableFilePath = existingFilePath;
                         task.progress = progress2;
                     }
                     else {
                         task.progress = copyTask?.progress || { current: 0, total: 0, totalCount: 0 };
-                        if (copyTask && SysTemUtils.fileOperations.exists(copyTask.filePath))
-                            task.tableFilePath = copyTask.filePath;
+                        const existingFilePath = this.existingExcelPath(copyTask?.filePath);
+                        if (existingFilePath)
+                            task.tableFilePath = existingFilePath;
                     }
                 }
                 if (!task.tableFilePath) {
-                    const tableName = `${task.taskName}_${task._id}.xlsx`;
-                    const filePath = join(excelDir, tableName);
-                    if (SysTemUtils.fileOperations.exists(filePath))
-                        task.tableFilePath = filePath;
+                    const filePath = buildTaskExcelPath(
+                        this.getUserDataPath(),
+                        task._id,
+                        task.taskName,
+                    );
+                    const existingFilePath = this.existingExcelPath(filePath);
+                    if (existingFilePath)
+                        task.tableFilePath = existingFilePath;
                 }
                 const collection = this.tasks.get(task._id);
                 if (collection)
@@ -387,8 +411,11 @@ export class TaskManager {
                 await deleteCollectorTask(id, task?.getTaskInfo()?.version);
                 successCount++;
                 try {
-                    const filePath = (await task?.getTableFilePath()) || task2?.filePath;
-                    await SysTemUtils.fileOperations.deleteFile(filePath);
+                    const filePath = this.existingExcelPath(
+                        (await task?.getTableFilePath()) || task2?.filePath,
+                    );
+                    if (filePath)
+                        await SysTemUtils.fileOperations.deleteFile(filePath);
                 }
                 catch (error) {
                     log.error('删除任务文件失败', error);
@@ -432,8 +459,11 @@ export class TaskManager {
                 if (!task && !task2)
                     continue;
                 try {
-                    const filePath = (await task?.getTableFilePath()) || task2?.filePath;
-                    await SysTemUtils.fileOperations.deleteFile(filePath);
+                    const filePath = this.existingExcelPath(
+                        (await task?.getTableFilePath()) || task2?.filePath,
+                    );
+                    if (filePath)
+                        await SysTemUtils.fileOperations.deleteFile(filePath);
                 }
                 catch (error) {
                     log.error('删除任务文件失败', error);
@@ -447,15 +477,45 @@ export class TaskManager {
         }
     }
     // 下载表格
-    async downloadExcel(filePath) {
-        if (!filePath)
-            return new Error('文件不存在！');
-        try {
-            SysTemUtils.fileOperations.copyFile(filePath);
+    async downloadExcel(payload) {
+        const request = normalizeExcelDownloadRequest(payload);
+        let requestedPath = '';
+        if (request.taskId) {
+            const task = this.tasks.get(request.taskId);
+            const taskInfo = task?.getTaskInfo();
+            const cached = this.filePathList.get(request.taskId);
+            requestedPath = (typeof task?.getTableFilePath === 'function'
+                ? await task.getTableFilePath()
+                : '')
+                || taskInfo?.tableFilePath
+                || cached?.filePath
+                || '';
+            if (!requestedPath)
+                throw new Error('任务没有可导出的 Excel 文件');
         }
-        catch (error) {
-            log.error('下载表格失败', error);
+        else {
+            requestedPath = request.filePath;
         }
+        const filePath = assertExistingManagedExcelFile(this.getUserDataPath(), requestedPath);
+        const registeredPaths = [];
+        for (const [taskId, task] of this.tasks) {
+            const taskInfo = task?.getTaskInfo();
+            const cached = this.filePathList.get(taskId);
+            const taskFilePath = typeof task?.getTableFilePath === 'function'
+                ? await task.getTableFilePath()
+                : '';
+            registeredPaths.push(
+                taskFilePath,
+                taskInfo?.tableFilePath,
+                cached?.filePath,
+            );
+        }
+        const isRegistered = registeredPaths.some((candidate) =>
+            this.existingExcelPath(candidate) === filePath);
+        if (!isRegistered)
+            throw new Error('该 Excel 文件不属于已登记任务');
+        await SysTemUtils.fileOperations.copyFile(filePath);
+        return true;
     }
     // 刷新队列
     refreshTaskQueue() {

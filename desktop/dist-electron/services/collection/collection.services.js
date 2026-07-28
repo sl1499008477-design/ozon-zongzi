@@ -66,7 +66,7 @@ export class Collection {
         this.mainWindowService = new MainWindowService(this.closeHandle);
         const itemConcurrency = Math.min(20, Math.max(2, Number(task.concurrency || task.maxConcurrent || 4)));
         this.taskQueueService = new TaskQueueService(this.taskHandle, itemConcurrency);
-        this.excelService = new ExcelService(`${task.taskName}_${this.task._id}`);
+        this.excelService = new ExcelService(this.task._id, task.taskName);
         this.dataProcessService = new DataProcessService(task);
         this.dataProcessService.setCancellationSignal(this.cancellationController.signal);
         this.parseService = new ParseService(this.mainWindowService);
