@@ -38,7 +38,13 @@
           && record.expiresAt > record.createdAt
           && typeof record.key === 'string'
           && record.key.length > 0
-          && record.body?.idempotencyKey === record.key;
+          && record.body
+          && typeof record.body === 'object'
+          && !Array.isArray(record.body)
+          && record.body.idempotencyKey === record.key
+          && Array.isArray(record.body.observations)
+          && Array.isArray(record.body.errors)
+          && record.body.deviceId === normalizedScope.deviceId;
         const staleKeys = Object.keys(stored || {})
           .filter((storedKey) => storedKey.startsWith(PENDING_PREFIX))
           .filter((storedKey) => storedKey !== key || !valid);

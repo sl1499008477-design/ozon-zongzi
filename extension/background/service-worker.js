@@ -41,6 +41,7 @@ try {
     '../lib/web-bridge-policy.js',
     '../lib/seller-identity-policy.js',
     '../lib/portal-bridge-policy.js',
+    '../lib/chrome-storage-promises.js',
     '../lib/fx-observation-replay.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
@@ -240,17 +241,10 @@ try {
     return `${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}`;
   }
 
-  const getStorage = (keys) => new Promise((resolve) => {
-    chrome.storage.local.get(keys, resolve);
-  });
-
-  const setStorage = (values) => new Promise((resolve) => {
-    chrome.storage.local.set(values, resolve);
-  });
-
-  const removeStorage = (keys) => new Promise((resolve) => {
-    chrome.storage.local.remove(keys, resolve);
-  });
+  const storagePromises = globalThis.JzChromeStoragePromises.createChromeStoragePromises(chrome);
+  const getStorage = (keys) => storagePromises.get(keys);
+  const setStorage = (values) => storagePromises.set(values);
+  const removeStorage = (keys) => storagePromises.remove(keys);
 
   // Debounced ozon tab reload — prevents rapid reload storms on auth state changes
   let _reloadTimer = null;
@@ -2793,7 +2787,7 @@ try {
         scope,
         async () => {
           const probes = Array.isArray(probeResponse?.probes) ? probeResponse.probes : [];
-          if (!probes.length) return { observations: [], errors: [] };
+          if (!probes.length) return { observations: [], errors: [], deviceId };
           const observations = []; const errors = [];
           for (const probe of probes) {
             try { observations.push(await collectFxProbe(probe.sku)); }
