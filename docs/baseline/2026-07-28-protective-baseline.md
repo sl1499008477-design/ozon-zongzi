@@ -53,6 +53,7 @@ d53f724 chore: preserve generated runtime assets
 e5d64df docs: record green baseline verification
 f60e92a fix: redact historical source evidence
 e0e0cb5 docs: update final sensitive-data verification
+cee4b08 docs: record authorized history rewrite
 ```
 
 文件类别对应关系如下；每个提交都归入其所在分组：
@@ -69,6 +70,7 @@ e0e0cb5 docs: update final sensitive-data verification
 - 首次基线报告：`9603c7d`，保存离线安装桌面依赖前的根验证证据，包括当时由缺少 `cheerio` 导致的唯一红项。
 - 最终验证与补充脱敏：`e5d64df`、`f60e92a`，记录离线恢复依赖后的全绿结果，并脱敏四个历史 `source-evidence` JSON、把跟踪文本和 ZIP 的个人信息扫描纳入根门禁。
 - 历史重写前报告：`e0e0cb5`，保留用户授权历史重写前的完整基线证据；本提交之后的报告提交记录实际重写和对象清理结果。
+- 授权历史重写报告：`cee4b08`，记录两分支切换、blob/ZIP 映射、可达历史扫描和旧提交编号替换。
 
 ## 文件分类
 
@@ -99,6 +101,7 @@ Task 9 的运行/历史资产提交本身包含 409 个路径（108 个 `app/pub
 - 授权后的历史重写覆盖两个分支合计 48 个可达提交：扫描 1,151 个原历史 blob，映射 18 个污染 blob、替换 45 处，其中 15 个文本 blob、3 个 ZIP blob。三个 ZIP 的条目清单保持不变，且各只有一个目标条目变化。
 - 重写后 mirror 与原仓库切换后的可达历史分别扫描 1,147 个 blob，个人信息命中均为 0，提交说明命中为 0。当前 HEAD、扩展源码、公开副本、跟踪 ZIP 和历史文本均通过统一个人信息/凭据门禁。
 - 三个仍指向旧对象的 Codex 内部检查点引用和两个导入用临时引用已删除。仓库未配置远程地址，因此没有执行 force-push；若其他副本曾复制旧历史，它们必须丢弃旧对象并以本仓库的重写后提交链重新同步。
+- 报告提交后已执行全量 reflog 过期和 `git gc --prune=now --aggressive`。旧污染 blob、旧污染提交和重写前两个分支头均无法再由 `git cat-file` 读取，`git fsck --no-dangling` 通过；新增报告提交后的 1,149 个可达 blob 再次扫描为 0。包含旧历史的临时恢复 bundle 已永久删除。
 
 ## 验证结果
 
@@ -144,7 +147,7 @@ PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockf
 
 根验证之外的分类范围与资产只读复核也通过：原八类范围计数分别为 12、64、24、48、75、87、15、412，最终个人信息修复范围为 7；migration 为 19；public/dist ZIP SHA-256 相同。
 
-历史重写专项验证也通过：`main` 保持 8 个提交，保护分支保持 48 个提交，两个分支的提交主题和顺序未变；保护分支重写前后最终文件树完全一致；18 个 blob 映射完整，3 个 ZIP 均能解压且非目标条目逐字节不变；原仓库切换后可达历史再次扫描为 0。
+历史重写专项验证也通过：`main` 保持 8 个提交，保护分支在报告提交前保持 48 个原有提交，两个分支的提交主题和顺序未变；保护分支重写前后最终文件树完全一致；18 个 blob 映射完整，3 个 ZIP 均能解压且非目标条目逐字节不变；原仓库切换、对象回收和新增报告后可达历史均再次扫描为 0。
 
 ## 外部依赖与未验证范围
 
@@ -168,7 +171,7 @@ PATH='<bundled node + pnpm>' pnpm --dir desktop install --offline --frozen-lockf
 
 ## 恢复方法
 
-- 保留整个保护性基线时，以提交标题 `docs: record authorized history rewrite` 对应的报告提交为锚点；该提交之后的任何功能改动都应建立在其上。首次缺少桌面依赖导致的红色结果和最终复审发现的个人信息缺口都作为历史证据保留，但不是当前 HEAD 的已知红项。
+- 保留整个保护性基线时，以提交标题 `docs: confirm rewritten history purge` 对应的最终报告提交为锚点；该提交之后的任何功能改动都应建立在其上。首次缺少桌面依赖导致的红色结果和最终复审发现的个人信息缺口都作为历史证据保留，但不是当前 HEAD 的已知红项。
 - 取消单个类别或修复时，先用 `git log --reverse --oneline 319726e..HEAD` 确认实际提交和依赖，再从最新相关提交开始按逆序执行 `git revert <commit-sha>`。不要使用 `git reset --hard`，不要通过重放外部请求恢复数据。
 - 完整撤销的推荐类别逆序为：基线报告；生成产物/历史资产与脱敏；文档；测试门禁；桌面端；扩展及关联安全 contract；Web；服务端与迁移；基础设施。每一类内部也按日志逆序 revert。
 - `b6342d3` 与 `f60e92a` 在重写后保留为审计节点；其父提交也已脱敏，不能再使用重写前的旧 SHA 执行恢复。历史重写本身不能通过普通 `git revert` 撤销，也不应从临时恢复包恢复污染对象。
