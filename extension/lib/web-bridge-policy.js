@@ -3,6 +3,7 @@
   const ALLOWED_ACTIONS = new Set([
     'syncAuthFromWeb',
     'logout',
+    'setMachineFingerprint',
     'getOzonSellerLoginState',
     'openSellerPortal',
     'refreshFxProbes',

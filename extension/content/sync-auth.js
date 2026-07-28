@@ -162,7 +162,7 @@
           __jzcExtResp: 1,
           id: data.id,
           ok: !error && resp?.ok !== false,
-          data: resp?.data,
+          data: globalThis.JzWebBridgePolicy?.sanitizeWebBridgeResponse(resp)?.data,
           error: error || resp?.error,
         },
         '*',
@@ -178,7 +178,7 @@
         return;
       }
       chrome.runtime.sendMessage(
-        { action: data.action, webBridge: true, ...(data.payload || {}) },
+        { ...(data.payload || {}), action: data.action, webBridge: true },
         (resp) => {
           const err = chrome.runtime.lastError?.message;
           respond(resp, err || '');

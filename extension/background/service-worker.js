@@ -3136,9 +3136,10 @@ try {
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.webBridge) {
-      const policy = globalThis.JzWebBridgePolicy;
-      if (!policy?.isAllowedWebBridgeAction(message.action) || !policy.isTrustedWebBridgeSender(sender)) {
+    const webBridgePolicy = globalThis.JzWebBridgePolicy;
+    const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
+    if (message?.webBridge || senderIsWebPortal) {
+      if (!webBridgePolicy?.isAllowedWebBridgeAction(message.action) || !senderIsWebPortal) {
         sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
         return false;
       }
