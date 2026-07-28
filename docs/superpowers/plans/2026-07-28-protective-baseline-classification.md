@@ -14,7 +14,7 @@
 - 基线阶段只整理文件归属、依赖和验证环境，不改变业务行为。
 - 不使用 `git reset --hard`、强制检出、递归删除或清空工作区。
 - 每次提交只包含一个类别，提交前必须检查 `git diff --cached --name-status`。
-- 当前工作分支必须是 `codex/baseline-stabilization`，起始保护提交必须是 `84861df`。
+- 当前工作分支必须是 `codex/baseline-stabilization`，保护设计提交 `84861df` 必须保持为 `HEAD` 的祖先。
 - 真实 Ozon 写操作、真实店铺同步、生产迁移、对象存储写入和密钥变更一律不执行。
 - 验证失败必须记录真实退出码和原因，不能把环境阻塞标记为通过。
 - 本阶段不修改产品规则、接口 contract、数据库结构或运行逻辑。
@@ -22,6 +22,7 @@
 - pnpm 命令使用 `/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm`。
 - 所有新建或修改的文档使用 `apply_patch`，不使用 shell 重定向覆盖文件。
 - 回退已提交分类时使用 `git revert` 并按提交逆序执行，不重放任何外部请求。
+- 根据用户在 2026-07-28 的执行前裁决，保留并提交本计划启动前已有的 `.superpowers` 历史资料，但不得暂存 `.superpowers/sdd/2026-07-28-protective-baseline-classification/`；该目录是本次子代理流程的临时台账与评审空间，最终评审后删除。
 
 ---
 
@@ -36,7 +37,7 @@
 | 桌面端运行资产 | `desktop/package.json`, `desktop/pnpm-lock.yaml`, `desktop/pnpm-workspace.yaml`, `desktop/electron/`, `desktop/dist/`, `desktop/dist-electron/`, `desktop/build/` | 当前 Electron 可运行包及其直接入口 |
 | 测试与门禁 | `app/tests/`, `server/tests/`, `extension/**/__tests__/`, `extension/tests/`, `desktop/tests/`, `desktop/scripts/`, `scripts/check-*.mjs`, `scripts/package-extension.mjs`, `scripts/test-manifest.mjs`, `scripts/verify.mjs` | 自动测试、测试清单和验证脚本 |
 | 文档 | `design-qa.md`, `docs/architecture/`, 既有 `docs/superpowers/plans/` 与 `docs/superpowers/specs/` | 架构依据、设计决策和交付记录 |
-| 生成产物与历史工作资产 | `app/public/plugin/popup.js`, `app/public/sonli-extension-0.13.46.1.zip`, `app/public/sonli-extension-0.13.46.1/`, `.superpowers/` | 扩展分发副本、ZIP、历史评审与执行快照 |
+| 生成产物与历史工作资产 | `app/public/plugin/popup.js`, `app/public/sonli-extension-0.13.46.1.zip`, `app/public/sonli-extension-0.13.46.1/`, 本计划启动前已有的 `.superpowers/` 内容 | 扩展分发副本、ZIP、历史评审与执行快照；排除本计划的临时 SDD workspace |
 | 基线报告 | `docs/baseline/2026-07-28-protective-baseline.md` | 文件统计、验证证据、依赖、风险和恢复说明 |
 
 `desktop/dist` 和 `desktop/dist-electron` 当前没有已确认的源码重建命令，并且 `desktop/package.json` 直接以 `dist-electron/main.js` 为入口，因此本阶段把它们当作受控运行资产保存，不按普通可删除构建目录处理。
@@ -63,17 +64,17 @@ Run:
 
 ```bash
 git branch --show-current
-git rev-parse --short HEAD
-git log -1 --oneline
+git merge-base --is-ancestor 84861df HEAD
+git log --oneline --decorate -5
 ```
 
 Expected:
 
 ```text
 codex/baseline-stabilization
-84861df
-84861df docs: design baseline stabilization
 ```
+
+`git merge-base --is-ancestor` 的退出码必须为 `0`；最近日志必须包含 `84861df docs: design baseline stabilization` 和本计划的提交。
 
 - [ ] **Step 2: 验证 index 为空**
 
@@ -91,18 +92,20 @@ Run:
 
 ```bash
 git status --porcelain=v1 | awk 'substr($0,1,2)=="??"{u++} substr($0,1,2)!="??"{t++} END{print "tracked_changes=" t; print "untracked_entries=" u}'
-git ls-files --others --exclude-standard | wc -l
+git ls-files --others --exclude-standard | rg -v '^\.superpowers/sdd/2026-07-28-protective-baseline-classification/' | wc -l
+git ls-files --others --exclude-standard | rg '^\.superpowers/sdd/2026-07-28-protective-baseline-classification/' | wc -l
 ```
 
-Expected at plan creation time:
+Expected after the SDD workspace is created:
 
 ```text
 tracked_changes=63
 untracked_entries=134
 313
+1
 ```
 
-The second count is the number of actual files; the first untracked count groups whole directories as status entries.
+The `313` is the original number of actual untracked files; the final `1` is this plan's known temporary ledger. The status entry count groups whole directories.
 
 - [ ] **Step 4: 确认不会调用真实外部副作用**
 
@@ -544,7 +547,12 @@ Expected: 提交成功，文档与源码分类分离。
 - Modify: `app/public/plugin/popup.js`
 - Modify: `app/public/sonli-extension-0.13.46.1.zip`
 - Add: `app/public/sonli-extension-0.13.46.1/`
-- Add: `.superpowers/`
+- Add: `.superpowers/ozon-sync-extraction/`
+- Add: `.superpowers/sdd/.gitignore`
+- Add: `.superpowers/sdd/2026-07-27-prototype-style-refresh/`
+- Add: `.superpowers/sdd/2026-07-28-ozon-category-query-extraction/`
+- Add: `.superpowers/sdd/2026-07-28-ozon-sync-service-extraction/`
+- Exclude: `.superpowers/sdd/2026-07-28-protective-baseline-classification/`
 
 **Interfaces:**
 - Consumes: Task 5 的扩展源码和既有执行历史。
@@ -557,21 +565,22 @@ Run:
 ```bash
 shasum -a 256 app/public/sonli-extension-0.13.46.1.zip
 find app/public/sonli-extension-0.13.46.1 -type f | wc -l
-find .superpowers -type f | wc -l
+find .superpowers -type f ! -path '.superpowers/sdd/2026-07-28-protective-baseline-classification/*' | wc -l
+find .superpowers/sdd/2026-07-28-protective-baseline-classification -type f | wc -l
 ```
 
-Expected: ZIP 输出一个 SHA-256；扩展解压副本当前包含 `92` 个文件；`.superpowers` 数量按实际输出记入最终报告。
+Expected: ZIP 输出一个 SHA-256；扩展解压副本当前包含 `92` 个文件；既有 `.superpowers` 和本计划临时 workspace 的数量分别记录，只有前者进入提交。
 
 - [ ] **Step 2: 暂存生成产物和历史工作资产**
 
 Run:
 
 ```bash
-git add -- app/public/plugin/popup.js app/public/sonli-extension-0.13.46.1.zip app/public/sonli-extension-0.13.46.1 .superpowers
+git add -- app/public/plugin/popup.js app/public/sonli-extension-0.13.46.1.zip app/public/sonli-extension-0.13.46.1 .superpowers/ozon-sync-extraction .superpowers/sdd/.gitignore .superpowers/sdd/2026-07-27-prototype-style-refresh .superpowers/sdd/2026-07-28-ozon-category-query-extraction .superpowers/sdd/2026-07-28-ozon-sync-service-extraction
 git diff --cached --name-status
 ```
 
-Expected: 只包含 `app/public/` 和 `.superpowers/`。
+Expected: 只包含 `app/public/` 和上述执行前已有的 `.superpowers/` 路径；不得包含 `.superpowers/sdd/2026-07-28-protective-baseline-classification/`。
 
 - [ ] **Step 3: 验证扩展源码和分发副本**
 
@@ -614,7 +623,7 @@ Run:
 git log --reverse --oneline 84861df..HEAD
 ```
 
-Expected: 按顺序列出基础设施、服务端、Web、扩展、桌面端、测试、文档、运行资产提交。
+Expected: 按顺序列出计划准备提交，以及基础设施、服务端、Web、扩展、桌面端、测试、文档、运行资产提交。
 
 - [ ] **Step 2: 运行根验证**
 
@@ -679,7 +688,7 @@ git diff --check
 git diff --cached --check
 ```
 
-Expected before staging the report: 只显示 `?? docs/baseline/`；不得再有原先 63 个已跟踪改动或 313 个未跟踪文件。
+Expected before staging the report: 只显示 `?? docs/baseline/` 和被明确排除的 `.superpowers/sdd/2026-07-28-protective-baseline-classification/`；不得再有原先 63 个已跟踪改动或 313 个未跟踪文件。
 
 - [ ] **Step 5: 提交基线报告**
 
@@ -702,7 +711,18 @@ git status --short
 git log --reverse --oneline 84861df..HEAD
 ```
 
-Expected: `git status --short` 无输出；日志包含八个分类提交和一个基线报告提交。若根验证仍有环境失败，工作区可以保持干净，但报告必须明确这些失败，不能宣称“稳定基线全绿”。
+Expected: 在最终分支评审前，`git status --short` 只显示本计划被明确排除的临时 SDD workspace；日志包含计划准备提交、八个分类提交和一个基线报告提交。若根验证仍有环境失败，报告必须明确这些失败，不能宣称“稳定基线全绿”。
+
+## SDD Final Review Gate
+
+全部任务完成后，按 `superpowers:subagent-driven-development` 生成从分支起点到 `HEAD` 的最终 review package，并由独立 reviewer 审查整条分支。最终评审及其唯一一次修复波次完成后，删除已知临时目录：
+
+```bash
+rm -rf "/Users/songliang/Documents/sonli ozon3.0/.superpowers/sdd/2026-07-28-protective-baseline-classification"
+git status --short
+```
+
+Expected: 只删除本计划在执行开始时创建的已知临时目录，其他 `.superpowers` 历史资料保持已提交；随后 `git status --short` 无输出。
 
 ## Rollback Order
 
