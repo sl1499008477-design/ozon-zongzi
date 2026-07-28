@@ -46,15 +46,20 @@ test("spawn errors, signals and missing status always fail closed", () => {
   });
 });
 
-test("exit code 2 is identified as an environment blocker unless explicitly expected", () => {
+test("exit code 2 is always an environment blocker regardless of the expected code", () => {
   assert.deepEqual(evaluateCheckResult({ status: 2 }), {
     ok: false,
     kind: "environment-blocker",
     code: 2,
   });
+  assert.deepEqual(evaluateCheckResult({ status: 2 }, 1), {
+    ok: false,
+    kind: "environment-blocker",
+    code: 2,
+  });
   assert.deepEqual(evaluateCheckResult({ status: 2 }, 2), {
-    ok: true,
-    kind: "passed",
+    ok: false,
+    kind: "environment-blocker",
     code: 2,
   });
 });
