@@ -12,7 +12,13 @@ test("public collection shape ignores forged legacyScope without trusted persist
     dataCollectionStoreId: "caller-data",
     sellerCompanyId: "caller-seller",
     payload: {
-      rows: [{ Client_Id: "forged-client", keep: "public" }],
+      rows: [{
+        Client_Id: "forged-client",
+        current_data_collection_store_id: "forged-current",
+        CURRENT_DATA_COLLECTION_STORE_IDS_BY_ACCOUNT: { forged: "value" },
+        dataCollectionStoreIds: ["forged-data"],
+        keep: "public",
+      }],
     },
     legacyScope: {
       operatingStoreId: "forged-operating",
@@ -45,6 +51,35 @@ test("persisted collection shape exposes only the trusted historical whitelist",
     legacyScope: {
       operatingStoreId: "persisted-operating",
       dataCollectionStoreId: "persisted-data",
+    },
+  });
+});
+
+test("persisted collection shape preserves only listing target client metadata", () => {
+  assert.deepEqual(publicPersistedCollectionItem({
+    id: "listing-item",
+    clientId: "forged-top-client",
+    sourceMetadata: { clientId: "forged-source-client", keep: "source" },
+    listingDraft: {
+      targetStore: {
+        id: "target-store",
+        label: "Target",
+        clientId: "valid-listing-client",
+        currencyCode: "RUB",
+      },
+      sourceMetadata: { clientId: "forged-draft-source", keep: "draft-source" },
+    },
+  }), {
+    id: "listing-item",
+    sourceMetadata: { keep: "source" },
+    listingDraft: {
+      targetStore: {
+        id: "target-store",
+        label: "Target",
+        clientId: "valid-listing-client",
+        currencyCode: "RUB",
+      },
+      sourceMetadata: { keep: "draft-source" },
     },
   });
 });

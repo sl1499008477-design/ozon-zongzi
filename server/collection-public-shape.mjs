@@ -1,4 +1,30 @@
-import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
+import { isRetiredCollectorScopeKey } from "./collector-scope-sanitizer.mjs";
+
+function canonicalPathKey(key) {
+  return String(key || "").replace(/[_-]/g, "").toLowerCase();
+}
+
+function isListingTargetClientId(path, key) {
+  return canonicalPathKey(key) === "clientid"
+    && path.length === 2
+    && canonicalPathKey(path[0]) === "listingdraft"
+    && canonicalPathKey(path[1]) === "targetstore";
+}
+
+function withoutPublicCollectionScope(value, path = []) {
+  if (Array.isArray(value)) {
+    return value.map((nested, index) => withoutPublicCollectionScope(nested, [...path, index]));
+  }
+  if (!value || typeof value !== "object") return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const result = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (isRetiredCollectorScopeKey(key) && !isListingTargetClientId(path, key)) continue;
+    result[key] = withoutPublicCollectionScope(nested, [...path, key]);
+  }
+  return result;
+}
 
 function cleanScopeValue(value) {
   return String(value ?? "").trim();
@@ -6,7 +32,7 @@ function cleanScopeValue(value) {
 
 export function publicCollectionItem(item = {}, { trustedLegacyScope = {} } = {}) {
   const result = item && typeof item === "object" && !Array.isArray(item)
-    ? withoutCollectorScope(item)
+    ? withoutPublicCollectionScope(item)
     : {};
   const operatingStoreId = cleanScopeValue(
     trustedLegacyScope.operatingStoreId,

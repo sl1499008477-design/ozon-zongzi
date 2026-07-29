@@ -95,7 +95,15 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     const poisoned = {
       keep: 'safe',
       clientId: 'retired',
-      nested: [{ seller_company: 'retired', keep: 'nested' }, { Legacy_Scope: { arbitrary: true } }],
+      nested: [{
+        seller_company: 'retired',
+        currentDataCollectionStoreId: 'retired-current',
+        CURRENT_DATA_COLLECTION_STORE_IDS_BY_ACCOUNT: { forged: 'retired-map' },
+        keep: 'nested',
+      }, {
+        data_collection_store_ids: ['retired-data'],
+        Legacy_Scope: { arbitrary: true },
+      }],
     };
     await heartbeatCollectorRun('run-1', 'lease-1', poisoned);
     await appendCollectorRunItem('run-1', 'lease-1', { sourceKey: 'sku-1', rawPayload: poisoned });
@@ -123,7 +131,8 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     const retiredKeys = new Set([
       'accountid', 'createdby', 'clientid', 'storeid', 'localstoreid',
       'operatingstoreid', 'datacollectionstoreid', 'datacollectionstore',
-      'datacollectionstores', 'sellercompanyid', 'sellercompany', 'legacyscope',
+      'datacollectionstores', 'datacollectionstoreids', 'currentdatacollectionstoreid',
+      'currentdatacollectionstoreidsbyaccount', 'sellercompanyid', 'sellercompany', 'legacyscope',
     ]);
     const assertScopeFree = (value, path = 'request') => {
       if (Array.isArray(value)) {

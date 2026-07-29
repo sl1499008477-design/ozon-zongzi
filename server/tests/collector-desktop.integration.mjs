@@ -60,7 +60,8 @@ const pool = await getPostgresPool();
 const retiredScopeKeys = new Set([
   "accountid", "createdby", "clientid", "storeid", "localstoreid",
   "operatingstoreid", "datacollectionstoreid", "datacollectionstore",
-  "datacollectionstores", "sellercompanyid", "sellercompany", "legacyscope",
+  "datacollectionstores", "datacollectionstoreids", "currentdatacollectionstoreid",
+  "currentdatacollectionstoreidsbyaccount", "sellercompanyid", "sellercompany", "legacyscope",
 ]);
 
 function assertScopeFree(value, path = "value") {
@@ -406,7 +407,13 @@ try {
     payload: {
       sku: `sku-${suffix}`,
       title: "Analytics row",
-      nested: [{ Data_Collection_Store: "retired", keep: "snapshot" }],
+      nested: [{
+        Data_Collection_Store: "retired",
+        currentDataCollectionStoreId: "retired-current",
+        CURRENT_DATA_COLLECTION_STORE_IDS_BY_ACCOUNT: { forged: "retired-map" },
+        data_collection_store_ids: ["retired-data"],
+        keep: "snapshot",
+      }],
     },
   });
   assert.equal(snapshot.operatingStoreId, null);

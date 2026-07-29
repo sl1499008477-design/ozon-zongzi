@@ -32,10 +32,13 @@ const dependencies = {
           nested: {
             Client_Id: "nested-client",
             dataCollectionStore: { id: "nested-data-store" },
+            currentDataCollectionStoreId: "nested-current-data-store",
+            CURRENT_DATA_COLLECTION_STORE_IDS_BY_ACCOUNT: { forged: "nested-current-map" },
             keep: true,
           },
           nestedArray: [{
             SELLER_COMPANY: "nested-seller",
+            data_collection_store_ids: ["nested-data-store"],
             legacy_scope: { arbitrary: "forged" },
             keep: "array-value",
           }],

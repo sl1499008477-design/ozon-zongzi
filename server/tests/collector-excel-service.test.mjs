@@ -223,6 +223,48 @@ assert.deepEqual(nestedScopeRow.analytics, {
 });
 assert.deepEqual(nestedScopeRow.nested, { keep: "export-value" });
 
+const fullJsonStringRow = resolveCollectorExcelRow(JSON.stringify({
+  id: "full-json-string",
+  analytics: {
+    rows: [{
+      Client_Id: "retired-client",
+      current_data_collection_store_id: "retired-current",
+      keep: "full-row",
+    }],
+  },
+}));
+assert.deepEqual(fullJsonStringRow.analytics, {
+  rows: [{ keep: "full-row" }],
+});
+const fullJsonStringValues = collectorExcelRowValues(JSON.stringify({
+  id: "full-json-values",
+  Client_Id: "retired-client",
+  currentDataCollectionStoreId: "retired-current",
+}));
+assert.equal(fullJsonStringValues[0], "full-json-values");
+
+const nestedJsonStringRow = resolveCollectorExcelRow({
+  id: "nested-json-string",
+  rawPayload: JSON.stringify({
+    nameLabel: "raw-json",
+    nested: [{
+      seller_company_id: "retired-seller",
+      CURRENT_DATA_COLLECTION_STORE_IDS_BY_ACCOUNT: { forged: "value" },
+      keep: "raw-json",
+    }],
+  }),
+  export_data: JSON.stringify({
+    nameLabel: "export-json",
+    nested: [{
+      DATA_COLLECTION_STORE: "retired-data",
+      data_collection_store_ids: ["retired-data"],
+      keep: "export-json",
+    }],
+  }),
+});
+assert.equal(nestedJsonStringRow.nameLabel, "export-json");
+assert.deepEqual(nestedJsonStringRow.nested, [{ keep: "export-json" }]);
+
 const rowValues = collectorExcelRowValues({
   rawPayload: { id: "raw", nameLabel: "raw title", price: 800 },
   exportData: { id: "export", nameLabel: "export title", price: 900, otherProfit: 12.5 },

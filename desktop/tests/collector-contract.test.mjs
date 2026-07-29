@@ -28,11 +28,14 @@ test('maps Sonli task status and preserves recovered configuration', () => {
             nested: {
                 operatingStoreId: 'nested-operating',
                 DATA_COLLECTION_STORE_ID: 'nested-data',
+                currentDataCollectionStoreId: 'nested-current-data',
+                CURRENT_DATA_COLLECTION_STORE_IDS_BY_ACCOUNT: { forged: 'nested-current-map' },
                 seller_company: 'nested-seller',
                 keep: true,
             },
             array: [{
                 dataCollectionStore: { id: 'forged-data-store' },
+                data_collection_store_ids: ['forged-data-store'],
                 legacy_scope: { arbitrary: 'forged' },
                 keep: 'array-value',
             }],
@@ -91,11 +94,14 @@ test('builds a store-neutral task payload and omits retired authorization scope'
         filters: {
             operatingStoreId: 'nested-operating',
             Data_Collection_Store_Id: 'nested-data',
+            Current_Data_Collection_Store_Id: 'nested-current-data',
+            current_data_collection_store_ids_by_account: { forged: 'nested-current-map' },
             SellerCompany: 'nested-seller',
             keep: true,
         },
         nestedArray: [{
             data_collection_store: { id: 'nested-store' },
+            DATA_COLLECTION_STORE_IDS: ['nested-store'],
             LegacyScope: { arbitrary: 'forged' },
             keep: 1,
         }],

@@ -342,26 +342,26 @@ function jsonObject(value) {
  * only fill fields not present in the export snapshot.
  */
 export function resolveCollectorExcelRow(item = {}) {
-  const direct = jsonObject(withoutCollectorScope(item));
+  const direct = withoutCollectorScope(jsonObject(item));
   if (!Object.keys(direct).length) return {};
 
-  const rawSnake = jsonObject(direct.raw_payload);
-  const rawCamel = jsonObject(direct.rawPayload);
-  const exportSnake = jsonObject(direct.export_data);
-  const exportCamel = jsonObject(direct.exportData);
+  const rawSnake = withoutCollectorScope(jsonObject(direct.raw_payload));
+  const rawCamel = withoutCollectorScope(jsonObject(direct.rawPayload));
+  const exportSnake = withoutCollectorScope(jsonObject(direct.export_data));
+  const exportCamel = withoutCollectorScope(jsonObject(direct.exportData));
   const wrapper = { ...direct };
   delete wrapper.raw_payload;
   delete wrapper.rawPayload;
   delete wrapper.export_data;
   delete wrapper.exportData;
 
-  const row = {
+  const row = withoutCollectorScope({
     ...wrapper,
     ...rawSnake,
     ...rawCamel,
     ...exportSnake,
     ...exportCamel,
-  };
+  });
   if ((row.id === undefined || row.id === null || row.id === "") && row.sourceSku) row.id = row.sourceSku;
   if ((row.link === undefined || row.link === null || row.link === "") && row.sourceUrl) row.link = row.sourceUrl;
   return row;

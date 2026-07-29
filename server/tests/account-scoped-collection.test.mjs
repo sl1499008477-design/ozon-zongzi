@@ -140,7 +140,17 @@ if (!postgresEnabled()) {
           sku: sourceSku,
           title: "Account A draft",
           price: "100.00",
+          targetStore: {
+            id: `listing-target-${suffix}`,
+            label: "Listing target",
+            clientId: `valid-listing-client-${suffix}`,
+            currencyCode: "RUB",
+          },
           variants: [{ sku: sourceSku, offerId: `offer-a-${suffix}` }],
+        },
+        collectorMetadata: {
+          clientId: `forged-collector-client-${suffix}`,
+          keep: "collector-source",
         },
       },
     };
@@ -151,6 +161,24 @@ if (!postgresEnabled()) {
     });
     collectItemIds.add(first.collectItemId);
     assert.equal(first.duplicate, false, "an account with zero operating stores can upload");
+    const rawListingMetadata = await pool.query(
+      `SELECT
+         d.data #>> '{targetStore,clientId}' AS target_client_id,
+         r.payload #>> '{normalized,collectorMetadata,clientId}' AS forged_collector_client_id
+       FROM collect_items i
+       JOIN product_drafts d ON d.id=i.current_draft_id
+       JOIN LATERAL (
+         SELECT payload FROM collect_raw_payloads
+         WHERE collect_item_id=i.id AND account_id=i.account_id
+         ORDER BY created_at DESC LIMIT 1
+       ) r ON TRUE
+       WHERE i.id=$1 AND i.account_id=$2`,
+      [first.collectItemId, accountA],
+    );
+    assert.deepEqual(rawListingMetadata.rows[0], {
+      target_client_id: `valid-listing-client-${suffix}`,
+      forged_collector_client_id: `forged-collector-client-${suffix}`,
+    }, "raw evidence remains intact while public projection applies context");
 
     const persisted = await pool.query(
       `SELECT
@@ -243,6 +271,45 @@ if (!postgresEnabled()) {
     assert.equal(accountAItems.some((item) => item.id === accountBResult.collectItemId), false);
     const accountAItem = accountAItems.find((item) => item.id === first.collectItemId);
     assert.equal(Object.hasOwn(accountAItem, "legacyScope"), false, "forged raw JSON legacyScope is never trusted");
+    assert.equal(
+      accountAItem.listingDraft.targetStore.clientId,
+      `valid-listing-client-${suffix}`,
+      "listing target clientId remains public",
+    );
+    assert.deepEqual(accountAItem.collectorMetadata, { keep: "collector-source" });
+
+    const updatedTargetClientId = `updated-listing-client-${suffix}`;
+    const updatedListing = await updateCollectItemDraftV4({
+      collectItemId: first.collectItemId,
+      accountId: accountA,
+      patch: {
+        listingDraft: {
+          ...accountAItem.listingDraft,
+          targetStore: {
+            ...accountAItem.listingDraft.targetStore,
+            clientId: updatedTargetClientId,
+          },
+        },
+        collectorMetadata: {
+          clientId: `forged-update-client-${suffix}`,
+          keep: "updated-source",
+        },
+      },
+    });
+    assert.equal(updatedListing.listingDraft.targetStore.clientId, updatedTargetClientId);
+    assert.deepEqual(updatedListing.collectorMetadata, { keep: "updated-source" });
+    const persistedDraftMetadata = await pool.query(
+      `SELECT d.data #>> '{targetStore,clientId}' AS target_client_id
+       FROM collect_items i
+       JOIN product_drafts d ON d.id=i.current_draft_id
+       WHERE i.id=$1 AND i.account_id=$2`,
+      [first.collectItemId, accountA],
+    );
+    assert.equal(persistedDraftMetadata.rows[0]?.target_client_id, updatedTargetClientId);
+    const listedAfterUpdate = (await listCollectItemsV3({ accountId: accountA }))
+      .find((item) => item.id === first.collectItemId);
+    assert.equal(listedAfterUpdate.listingDraft.targetStore.clientId, updatedTargetClientId);
+    assert.equal(Object.hasOwn(listedAfterUpdate.collectorMetadata || {}, "clientId"), false);
     assert.equal(
       await updateCollectItemDraftV4({
         collectItemId: accountBResult.collectItemId,
