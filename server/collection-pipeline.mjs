@@ -50,6 +50,92 @@ function canonicalJson(value) {
   return JSON.stringify(canonicalValue(value) ?? null);
 }
 
+const COLLECTOR_SCOPE_FIELDS = Object.freeze([
+  "accountId",
+  "createdBy",
+  "storeId",
+  "operatingStoreId",
+  "dataCollectionStoreId",
+  "sellerCompanyId",
+]);
+
+function collectorError(message, status, code) {
+  return Object.assign(new Error(message), { status, code });
+}
+
+function rejectCollectorScopeFields(input = {}) {
+  const forbidden = COLLECTOR_SCOPE_FIELDS.find((field) =>
+    Object.prototype.hasOwnProperty.call(input || {}, field));
+  if (forbidden) {
+    throw collectorError(
+      `采集请求不能指定账号或店铺范围：${forbidden}`,
+      400,
+      "COLLECTOR_SCOPE_FIELD_FORBIDDEN",
+    );
+  }
+}
+
+export function prepareCollectRequestV4({
+  authenticatedAccount,
+  input = {},
+  enforceScopeFields = true,
+} = {}) {
+  if (enforceScopeFields) {
+    rejectCollectorScopeFields(input);
+    rejectCollectorScopeFields(input?.payload);
+  }
+  const accountId = clean(authenticatedAccount?.id, 240);
+  if (!accountId) {
+    throw collectorError("请先登录 sonli", 401, "COLLECT_ACCOUNT_REQUIRED");
+  }
+  const sourceId = clean(input.source || "ozon", 80).toLowerCase();
+  const sourceSku = clean(input.sourceSku, 240);
+  if (!sourceSku) {
+    throw collectorError("采集数据缺少稳定来源标识", 422, "COLLECT_SOURCE_SKU_REQUIRED");
+  }
+  const sourceRequestId = clean(input.requestId, 240);
+  if (!sourceRequestId) {
+    throw collectorError("采集请求缺少 requestId", 422, "COLLECT_REQUEST_ID_REQUIRED");
+  }
+  const payload = input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)
+    ? input.payload
+    : {};
+  const contentHash = sha256(canonicalJson(payload));
+  const identity = {
+    accountId,
+    source: sourceId,
+    sourceSku,
+    requestId: sourceRequestId,
+  };
+  const idempotencyKey = sha256([
+    identity.accountId,
+    identity.source,
+    identity.sourceSku,
+    identity.requestId,
+  ].join("|"));
+  const identityKey = sha256([accountId, sourceId, sourceSku].join("|"));
+  return {
+    identity,
+    idempotencyKey,
+    identityKey,
+    contentHash,
+    requestHash: sha256(JSON.stringify({ ...identity, contentHash })),
+    collectId: stableId("collect", identityKey),
+    persistedRequestId: stableId("collectreq", idempotencyKey),
+    normalizedItem: {
+      ...payload,
+      id: stableId("collect", identityKey),
+      accountId,
+      createdBy: accountId,
+      source: sourceId,
+      sourceSku,
+      sourceUrl: clean(input.sourceUrl, 2000),
+      deviceFingerprint: clean(input.deviceFingerprint, 240),
+      capturedAt: clean(input.capturedAt, 120),
+    },
+  };
+}
+
 function normalizeCompanyId(value) {
   return clean(value, 80).replace(/[^\d]/g, "");
 }
@@ -371,109 +457,72 @@ export async function verifyCollectionStoreForAccount(accountId, companyIds = []
   }
 }
 
-export async function ingestCollectRequestV4({
-  accountId,
-  storeId = "",
-  dataCollectionStoreId = "",
-  source = "ozon",
-  item = {},
-  idempotencyKey = "",
-}) {
+export async function ingestCollectRequestV4(options = {}) {
   if (!postgresEnabled()) return null;
-  accountId = clean(accountId, 240);
-  if (!accountId) {
-    const error = new Error("请先登录 sonli");
-    error.status = 401;
-    error.code = "COLLECT_ACCOUNT_REQUIRED";
-    throw error;
-  }
-  storeId = clean(storeId, 240);
-  dataCollectionStoreId = clean(dataCollectionStoreId, 240);
-  const sourceId = clean(source || "ozon", 80).toLowerCase();
-  const sourceSku = clean(item.sku || item.sourceExternalId || item.id, 240);
-  if (!sourceSku) {
-    const error = new Error("采集数据缺少 SKU");
-    error.status = 422;
-    throw error;
-  }
-  const canonical = canonicalJson(item);
-  const contentHash = sha256(canonical);
-  const requestHash = sha256(JSON.stringify({ accountId, storeId, dataCollectionStoreId, sourceId, sourceSku, contentHash }));
-  const resolvedIdempotencyKey = clean(idempotencyKey, 240)
-    || `collect-${crypto.randomUUID()}`;
-  const identityKey = sha256([accountId, storeId, dataCollectionStoreId, sourceId, sourceSku].join("|"));
-  const collectId = stableId("collect", identityKey);
-  const requestId = stableId("collectreq", accountId, resolvedIdempotencyKey);
-  const normalizedItem = {
-    ...item,
-    id: collectId,
+  const usingAccountScopedContract = Boolean(options.authenticatedAccount || options.input);
+  const authenticatedAccount = options.authenticatedAccount || { id: options.accountId };
+  const legacyItem = options.item && typeof options.item === "object" ? options.item : {};
+  const input = usingAccountScopedContract
+    ? (options.input && typeof options.input === "object" ? options.input : {})
+    : {
+        source: options.source || "ozon",
+        sourceSku: legacyItem.sku || legacyItem.sourceExternalId || legacyItem.id,
+        sourceUrl: legacyItem.productUrl || legacyItem.url || legacyItem.sourceUrl,
+        requestId: options.idempotencyKey,
+        deviceFingerprint: legacyItem.deviceFingerprint,
+        capturedAt: legacyItem.capturedAt || legacyItem.collectedAt || legacyItem.createdAt,
+        payload: legacyItem,
+      };
+  const prepared = prepareCollectRequestV4({
+    authenticatedAccount,
+    input,
+    enforceScopeFields: usingAccountScopedContract,
+  });
+  const {
+    identity,
+    idempotencyKey: resolvedIdempotencyKey,
+    identityKey,
+    contentHash,
+    requestHash,
+    collectId,
+    persistedRequestId: requestId,
+    normalizedItem,
+  } = prepared;
+  const {
     accountId,
-    storeId,
-    localStoreId: storeId,
-    dataCollectionStoreId,
     source: sourceId,
-  };
-
-  if (sourceId === "ozon" && !dataCollectionStoreId) {
-    const error = new Error("Ozon 采集必须先验证并选择数据采集店铺");
-    error.status = 409;
-    error.code = "DATA_COLLECTION_STORE_REQUIRED";
-    throw error;
-  }
+    sourceSku,
+    requestId: sourceRequestId,
+  } = identity;
 
   try {
     return await transaction(async (client) => {
-      if (storeId) {
-        const operatingStore = await client.query(
-          `SELECT 1 FROM stores
-           WHERE id=$1 AND owner_account_id=$2 AND COALESCE(status,'')<>'disabled'`,
-          [storeId, accountId],
-        );
-        if (!operatingStore.rowCount) {
-          const error = new Error("经营店铺不存在、不属于当前账号或已停用");
-          error.status = 403;
-          error.code = "STORE_ACCOUNT_FORBIDDEN";
-          throw error;
-        }
-      }
-      if (dataCollectionStoreId) {
-        const membership = await client.query(
-          `SELECT 1 FROM account_data_collection_stores
-           WHERE account_id=$1 AND data_collection_store_id=$2 AND status='active'`,
-          [accountId, dataCollectionStoreId],
-        );
-        if (!membership.rowCount) {
-          const error = new Error("数据采集店铺不属于当前账号或已停用");
-          error.status = 409;
-          throw error;
-        }
-      }
       const inserted = await client.query(
         `INSERT INTO collect_requests (
            id,idempotency_key,account_id,store_id,data_collection_store_id,
            source,source_sku,request_hash,content_hash,status
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PROCESSING')
-         ON CONFLICT (account_id,idempotency_key) WHERE account_id IS NOT NULL
+         ) VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,'PROCESSING')
+         ON CONFLICT (account_id,source,source_sku,idempotency_key)
          DO NOTHING RETURNING id`,
-        [requestId, resolvedIdempotencyKey, accountId, storeId || null, dataCollectionStoreId || null, sourceId, sourceSku, requestHash, contentHash],
+        [requestId, resolvedIdempotencyKey, accountId, sourceId, sourceSku, requestHash, contentHash],
       );
       if (!inserted.rowCount) {
         const existing = await client.query(
-          "SELECT * FROM collect_requests WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE",
-          [accountId, resolvedIdempotencyKey],
+          `SELECT * FROM collect_requests
+           WHERE account_id=$1 AND source=$2 AND source_sku=$3 AND idempotency_key=$4
+           FOR UPDATE`,
+          [accountId, sourceId, sourceSku, resolvedIdempotencyKey],
         );
         const row = existing.rows[0];
         if (!row) {
-          const error = new Error("采集幂等请求冲突");
-          error.status = 409;
-          error.code = "COLLECT_IDEMPOTENCY_CONFLICT";
-          throw error;
+          throw collectorError("采集请求冲突", 409, "COLLECT_REQUEST_CONFLICT");
         }
-        if (row?.request_hash !== requestHash) {
-          const error = new Error("幂等键已被不同采集请求使用");
-          error.status = 409;
-          error.code = "IDEMPOTENCY_KEY_REUSED";
-          throw error;
+        if (row.content_hash !== contentHash) {
+          throw collectorError(
+            "相同采集请求标识已用于不同内容",
+            409,
+            "COLLECT_REQUEST_CONFLICT",
+          );
         }
         if (row?.status === "SUCCEEDED") {
           return { duplicate: true, requestId: row.id, item: row.response?.item || normalizedItem, collectItemId: row.collect_item_id };
@@ -488,12 +537,10 @@ export async function ingestCollectRequestV4({
         client,
         collectId,
         accountId,
-        storeId,
-        dataCollectionStoreId,
         source: sourceId,
         identityKey,
         contentHash,
-        requestId,
+        requestId: sourceRequestId,
         captureRaw: true,
         changeReason: "PREPROCESSED",
       });
@@ -517,13 +564,13 @@ export async function ingestCollectRequestV4({
       `INSERT INTO collect_requests (
          id,idempotency_key,account_id,store_id,data_collection_store_id,source,source_sku,
          request_hash,content_hash,status,error_code,error_message,completed_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'FAILED',$10,$11,NOW())
-       ON CONFLICT (account_id,idempotency_key) WHERE account_id IS NOT NULL DO UPDATE SET
+       ) VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,'FAILED',$8,$9,NOW())
+       ON CONFLICT (account_id,source,source_sku,idempotency_key) DO UPDATE SET
          status='FAILED',error_code=EXCLUDED.error_code,error_message=EXCLUDED.error_message,
          completed_at=NOW(),updated_at=NOW()
-       WHERE collect_requests.request_hash=EXCLUDED.request_hash
+       WHERE collect_requests.content_hash=EXCLUDED.content_hash
          AND collect_requests.status<>'SUCCEEDED'`,
-      [requestId, resolvedIdempotencyKey, accountId, error?.code === "STORE_ACCOUNT_FORBIDDEN" ? null : (storeId || null), dataCollectionStoreId || null, sourceId, sourceSku, requestHash, contentHash, clean(error.code || (error.status ? `HTTP_${error.status}` : "COLLECT_FAILED"), 120), clean(error.message || error, 2000)],
+      [requestId, resolvedIdempotencyKey, accountId, sourceId, sourceSku, requestHash, contentHash, clean(error.code || (error.status ? `HTTP_${error.status}` : "COLLECT_FAILED"), 120), clean(error.message || error, 2000)],
     ).catch(() => {});
     throw error;
   }

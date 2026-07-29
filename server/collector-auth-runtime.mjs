@@ -187,6 +187,25 @@ export function createCollectorAuthRuntime({
     sendJson,
   });
 
+  async function authenticateRequest(req, requiredPermission) {
+    const authorization = String(req?.headers?.authorization || "");
+    const match = authorization.match(/^Collector\s+(\S+)\s*$/i);
+    if (!match?.[1]) {
+      throw Object.assign(new Error("需要 Collector 采集认证"), {
+        status: 401,
+        code: "COLLECTOR_AUTH_REQUIRED",
+      });
+    }
+    const authenticated = await httpService.authenticate({
+      collectorToken: match[1],
+      requiredPermission,
+    });
+    return authenticated.account || {
+      id: authenticated.accountId,
+      displayName: authenticated.displayName || "",
+    };
+  }
+
   async function revokeCollectorSessions({
     parentSessionToken = "",
     parentSessionTokens = [],
@@ -255,6 +274,7 @@ export function createCollectorAuthRuntime({
   }
 
   return Object.freeze({
+    authenticateRequest,
     handleHttpRoute,
     revokeAccountSessions,
     revokeParentSession,

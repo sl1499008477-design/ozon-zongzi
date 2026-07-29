@@ -134,6 +134,7 @@ import {
 } from "./sync-lease-policy.mjs";
 import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
+import { createJsonAccountScopedCollectionHandler } from "./account-scoped-collection-routes.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
@@ -385,6 +386,15 @@ async function saveState(state) {
 
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
+const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollectionHandler({
+  authenticate: collectorAuthRuntime.authenticateRequest,
+  readJson: readBody,
+  normalizeItem: normalizeCollectItem,
+  saveState,
+  sendJson,
+  sendError,
+  countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
+});
 const ozonSyncService = createOzonSyncService({
   loadState,
   saveState,
@@ -2263,7 +2273,11 @@ async function handleFastCollectionRoute(req, res, url) {
   if (!sourceCollectMatch && !collectRequestMatch && !isVerify && !isCollectMutation) return false;
 
   try {
-    const account = await authenticateCollectionRequest(req);
+    const account = sourceCollectMatch
+      ? await collectorAuthRuntime.authenticateRequest(req, "collector.upload")
+      : collectRequestMatch
+        ? await collectorAuthRuntime.authenticateRequest(req, "collector.job.read")
+        : await authenticateCollectionRequest(req);
     if (isVerify) {
       const body = await readBody(req);
       const ids = normalizeDataCollectionCompanyIds([
@@ -2326,52 +2340,28 @@ async function handleFastCollectionRoute(req, res, url) {
       const sourceId = decodeURIComponent(sourceCollectMatch[1]);
       const body = await readBody(req);
       const isBatch = url.pathname.endsWith("/batch");
-      const rawItems = isBatch
+      const inputs = isBatch
         ? (Array.isArray(body.items) ? body.items : [])
-        : [body.raw || body.product || body];
-      if (!rawItems.length) {
+        : [body];
+      if (!inputs.length) {
         sendError(res, 422, "采集请求没有商品数据", "COLLECT_ITEMS_EMPTY");
         return true;
       }
-      const storeId = String(body.storeId || req.headers["x-ozon-store-id"] || "").trim();
-      let dataCollectionStoreId = String(body.dataCollectionStoreId || "").trim();
-      if (!dataCollectionStoreId && sourceId.toLowerCase() === "ozon") {
-        const stores = await listCollectionStoresForAccount(account.id);
-        dataCollectionStoreId = stores.find((store) => store.isActive && store.status !== "disabled")?.id || "";
-      }
-      const headerKey = String(req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || "").trim();
       const imported = [];
       const results = [];
       const errors = [];
-      for (let index = 0; index < rawItems.length; index += 1) {
-        const raw = rawItems[index] || {};
+      for (let index = 0; index < inputs.length; index += 1) {
+        const input = inputs[index] && typeof inputs[index] === "object" ? inputs[index] : {};
         try {
-          const item = normalizeCollectItem({
-            ...raw,
-            storeId: raw.storeId || storeId,
-            localStoreId: raw.localStoreId || storeId,
-            dataCollectionStoreId: raw.dataCollectionStoreId || dataCollectionStoreId,
-            raw,
-            sourceId,
-          }, sourceId);
-          const itemKey = String(
-            (Array.isArray(body.idempotencyKeys) ? body.idempotencyKeys[index] : "")
-            || body.idempotencyKey
-            || (headerKey ? `${headerKey}:${index}` : ""),
-          ).trim();
           const result = await ingestCollectRequestV4({
-            accountId: account.id,
-            storeId,
-            dataCollectionStoreId: item.dataCollectionStoreId || dataCollectionStoreId,
-            source: sourceId,
-            item,
-            idempotencyKey: itemKey,
+            authenticatedAccount: account,
+            input: { ...input, source: input.source || sourceId },
           });
           const importedItem = { ...result.item, collectRequestId: result.requestId, duplicate: result.duplicate };
           imported.push(importedItem);
           results.push({
             index,
-            sku: item.sku,
+            sku: input.sourceSku,
             action: result.action || (result.duplicate ? "updated" : "created"),
             collectItemId: result.collectItemId || result.item?.id || "",
             collectRequestId: result.requestId || "",
@@ -2380,7 +2370,7 @@ async function handleFastCollectionRoute(req, res, url) {
           if (!isBatch) throw error;
           errors.push({
             index,
-            sku: String(raw.sku || raw.productId || raw.product_id || raw.offer_id || ""),
+            sku: String(input.sourceSku || ""),
             code: error?.code || (error?.status ? `HTTP_${error.status}` : "COLLECT_FAILED"),
             reason: error?.message || "采集失败",
           });
@@ -2399,7 +2389,7 @@ async function handleFastCollectionRoute(req, res, url) {
 }
 
 const handleCollectorHttpRoute = createCollectorHttpHandler({
-  authenticate: authenticateCollectionRequest,
+  authenticate: collectorAuthRuntime.authenticateRequest,
   readJson: readBody,
   sendJson,
 });
@@ -2413,7 +2403,10 @@ async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
-    authenticate: authenticateCollectionRequest,
+    authenticate: (request) => collectorAuthRuntime.authenticateRequest(
+      request,
+      request.method === "GET" ? "collector.job.read" : "collector.upload",
+    ),
     readBody,
     sendJson,
     sendError,
@@ -4378,50 +4371,7 @@ async function handle(req, res) {
     return;
   }
 
-  const sourceCollectMatch = url.pathname.match(/^\/sources\/([^/]+)\/collect(?:\/batch)?$/);
-  if (req.method === "POST" && sourceCollectMatch) {
-    const account = requireAuth(req, state);
-    const sourceId = decodeURIComponent(sourceCollectMatch[1]);
-    const body = await readBody(req);
-    const isBatch = url.pathname.endsWith("/batch");
-    const rawItems = isBatch
-      ? (Array.isArray(body.items) ? body.items : [])
-      : [body.raw || body.product || body];
-    const imported = [];
-    const requestStoreId = storeIdForAccountRequest(
-      state,
-      account,
-      body.storeId || req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, requestStoreId, account.id);
-    const requestDataCollectionStoreId =
-      body.dataCollectionStoreId || currentDataCollectionStoreIdForAccount(state, account.id) || "";
-    for (const raw of rawItems) {
-      const item = normalizeCollectItem({
-        ...raw,
-        storeId: requestStoreId,
-        localStoreId: requestStoreId,
-        dataCollectionStoreId: raw?.dataCollectionStoreId || requestDataCollectionStoreId,
-        raw,
-        sourceId,
-      }, sourceId);
-      imported.push(item);
-    }
-    const saved = await saveCollectBoxBatchAtomic(imported, {
-      account,
-      store,
-      dataCollectionStoreId: requestDataCollectionStoreId,
-    });
-    sendJson(res, 200, isBatch
-      ? {
-          ok: true,
-          imported: saved.items.length,
-          data: saved.items,
-          total: cacheItemsForAccount(saved.state, "collectBox", account).length,
-        }
-      : { ok: true, data: saved.items[0] || null });
-    return;
-  }
+  if (await handleJsonAccountScopedCollectionRoute(req, res, url, state)) return;
 
   if (req.method === "GET" && url.pathname === "/ozon/favorites") {
     const account = requireAuth(req, state);
@@ -4943,7 +4893,10 @@ async function handle(req, res) {
   const importJobDetailMatch = url.pathname.match(/^\/ozon\/products\/import\/jobs\/([^/]+)$/);
   if (req.method === "GET" && importJobDetailMatch) {
     const account = requireAuth(req, state);
-    const job = await getSubmissionJobDetailV3(decodeURIComponent(importJobDetailMatch[1]));
+    const job = await getSubmissionJobDetailV3(
+      decodeURIComponent(importJobDetailMatch[1]),
+      account.id,
+    );
     if (!job) {
       sendError(res, 404, "上架任务不存在", "LISTING_JOB_NOT_FOUND");
       return;
@@ -4992,7 +4945,7 @@ async function handle(req, res) {
       sendError(res, 400, "缺少 task_id");
       return;
     }
-    const v3Job = await getSubmissionJobV3(taskId);
+    const v3Job = await getSubmissionJobV3(taskId, authenticatedAccount.id);
     if (v3Job) {
       if (String(v3Job.accountId || "") !== String(authenticatedAccount.id)) {
         sendError(res, 404, "上架任务不存在", "LISTING_JOB_NOT_FOUND");

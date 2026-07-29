@@ -112,12 +112,15 @@ export async function addSelectedCollectorItemsToCollectBox({
     try {
       const payload = collectPayload(item, run);
       const ingested = await service.ingestCollectRequestV4({
-        accountId,
-        storeId: run.operatingStoreId,
-        dataCollectionStoreId: run.dataCollectionStoreId,
-        source: payload.source,
-        item: payload,
-        idempotencyKey: `collector-select:${runId}:${item.id}`,
+        authenticatedAccount: { id: accountId },
+        input: {
+          source: payload.source,
+          sourceSku: payload.sku,
+          sourceUrl: payload.productUrl,
+          requestId: `collector-select:${runId}:${item.id}`,
+          capturedAt: payload.createdAt,
+          payload,
+        },
       });
       await service.linkCollectorItem(accountId, runId, item.id, ingested.collectItemId || ingested.item?.id || "");
       results.push({

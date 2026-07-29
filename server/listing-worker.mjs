@@ -67,7 +67,7 @@ async function failSubmission(work, error, status = "FAILED") {
     actorId: workerId,
     payload: { network: Boolean(error?.body?.network), status: error?.status || null },
   });
-  if (work.collect_item_id) await patchLegacyCollectStatusV3(work.collect_item_id, collectPatch(status, row));
+  if (work.collect_item_id) await patchLegacyCollectStatusV3(work.account_id, work.collect_item_id, collectPatch(status, row));
   return row;
 }
 
@@ -115,7 +115,7 @@ async function processSubmit(jobId) {
       actorId: workerId,
     });
     await enqueueSubmissionActionV3(jobId, "check", 5);
-    if (work.collect_item_id) await patchLegacyCollectStatusV3(work.collect_item_id, collectPatch("CHECKING", { ...accepted, ozon_task_id: ozonTaskId }));
+    if (work.collect_item_id) await patchLegacyCollectStatusV3(work.account_id, work.collect_item_id, collectPatch("CHECKING", { ...accepted, ozon_task_id: ozonTaskId }));
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
     const disposition = latest?.status === "SUBMITTING"
@@ -172,7 +172,7 @@ async function finishSuccessfulImport(work, statusInfo) {
     message: statusMessage || errorMessage || "Ozon 已返回最终结果",
     actorId: workerId,
   });
-  if (work.collect_item_id) await patchLegacyCollectStatusV3(work.collect_item_id, collectPatch(finalStatus, completed, { errorMessage, statusMessage }));
+  if (work.collect_item_id) await patchLegacyCollectStatusV3(work.account_id, work.collect_item_id, collectPatch(finalStatus, completed, { errorMessage, statusMessage }));
 }
 
 async function processCheck(jobId) {

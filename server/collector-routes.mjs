@@ -1,6 +1,11 @@
 import * as defaultCollectorService from "./collector-desktop-service.mjs";
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
+const permissionByAction = Object.freeze({
+  upload: "collector.upload",
+  readJob: "collector.job.read",
+  readConfig: "collector.config.read",
+});
 
 function routeError(message, status = 400, code = "COLLECTOR_ROUTE_INVALID_REQUEST") {
   return Object.assign(new Error(message), { status, code });
@@ -81,6 +86,21 @@ function errorResponse(error) {
 
 function compile(path, methods) {
   return { path, methods };
+}
+
+function requiredPermission(method, pathname) {
+  if (
+    method === "GET"
+    && (
+      /^\/collector\/health\/?$/.test(pathname)
+      || /^\/collector\/market-snapshots\/?$/.test(pathname)
+      || /^\/collector\/category-mappings\/?$/.test(pathname)
+    )
+  ) {
+    return permissionByAction.readConfig;
+  }
+  if (method === "GET") return permissionByAction.readJob;
+  return permissionByAction.upload;
 }
 
 export function createCollectorHttpHandler({
@@ -373,7 +393,9 @@ export function createCollectorHttpHandler({
       return true;
     }
     try {
-      const account = authenticatedAccount(await authenticate(req));
+      const account = authenticatedAccount(
+        await authenticate(req, requiredPermission(method, url.pathname)),
+      );
       const body = ["POST", "PUT", "PATCH"].includes(method) ? await readJson(req) : {};
       const result = await action({ account, body, match: route.match, req, res, url });
       const status = Number(result?.status || 200);

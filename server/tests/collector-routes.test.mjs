@@ -45,9 +45,11 @@ const service = new Proxy({}, {
 });
 
 let authenticateCount = 0;
+const requiredPermissions = [];
 const handler = createCollectorHttpHandler({
-  authenticate: async () => {
+  authenticate: async (_req, requiredPermission) => {
     authenticateCount += 1;
+    requiredPermissions.push(requiredPermission);
     return { id: "account-auth", role: "user" };
   },
   service,
@@ -93,6 +95,7 @@ assert.equal(authenticateCount, authBeforeWrongMethod, "错误方法不能进入
 const health = await invoke("GET", "/collector/health");
 assert.equal(health.res.statusCode, 200);
 assert.deepEqual(health.res.body, { ok: true, health: { ok: true, taskCount: 1 } });
+assert.equal(requiredPermissions.at(-1), "collector.config.read");
 
 const registered = await invoke("POST", "/collector/devices", {
   accountId: "account-evil",
@@ -106,8 +109,10 @@ assert.equal(lastCall("registerCollectorDevice").args[1].accountId, undefined);
 
 await invoke("GET", "/collector/devices");
 assert.equal(lastCall("listCollectorDevices").args[0], "account-auth");
+assert.equal(requiredPermissions.at(-1), "collector.job.read");
 await invoke("DELETE", "/collector/devices/device%2Fone");
 assert.deepEqual(lastCall("revokeCollectorDevice").args, ["account-auth", "device/one"]);
+assert.equal(requiredPermissions.at(-1), "collector.upload");
 
 const createdTask = await invoke("POST", "/collector/tasks", {
   accountId: "account-evil",
@@ -117,11 +122,13 @@ const createdTask = await invoke("POST", "/collector/tasks", {
   operatingStoreId: "store-1",
 });
 assert.equal(createdTask.res.statusCode, 201);
+assert.equal(requiredPermissions.at(-1), "collector.upload");
 const createTaskInput = lastCall("createCollectorTask").args[0];
 assert.equal(createTaskInput.accountId, "account-auth");
 assert.equal(createTaskInput.createdBy, "account-auth");
 
 await invoke("GET", "/collector/tasks?page=2&pageSize=25&taskName=phone&status=RUNNING&includeDeleted=true");
+assert.equal(requiredPermissions.at(-1), "collector.job.read");
 assert.deepEqual(lastCall("listCollectorTasksPageForAccount").args[0], {
   accountId: "account-auth",
   status: "RUNNING",
@@ -173,12 +180,14 @@ assert.deepEqual(lastCall("queueCollectorTaskRun").args[0], {
 
 await invoke("GET", "/collector/runs/run-1");
 assert.deepEqual(lastCall("getCollectorRunForAccount").args, ["account-auth", "run-1"]);
+assert.equal(requiredPermissions.at(-1), "collector.job.read");
 await invoke("POST", "/collector/runs/run-1/claim", {
   accountId: "account-evil",
   deviceId: "device-1",
   leaseSeconds: 120,
 });
 assert.equal(lastCall("claimCollectorRun").args[0].accountId, "account-auth");
+assert.equal(requiredPermissions.at(-1), "collector.upload");
 await invoke("POST", "/collector/runs/run-1/heartbeat", {
   accountId: "account-evil",
   deviceId: "device-1",
@@ -262,6 +271,7 @@ assert.equal(calls.some((call) => call.name === "updateCollectorExport"), false)
 
 await invoke("GET", "/collector/market-snapshots?operatingStoreId=store-1&dataCollectionStoreId=data-1&period=MONTHLY");
 assert.equal(lastCall("listCollectorMarketSnapshots").args[0].accountId, "account-auth");
+assert.equal(requiredPermissions.at(-1), "collector.config.read");
 await invoke("POST", "/collector/market-snapshots", {
   accountId: "account-evil",
   operatingStoreId: "store-1",
@@ -274,6 +284,7 @@ assert.equal(snapshotInput.accountId, "account-auth");
 
 await invoke("GET", "/collector/category-mappings?operatingStoreId=store-1&dataCollectionStoreId=data-1&rootCategoryId=root");
 assert.equal(lastCall("listCollectorCategoryMappings").args[0].accountId, "account-auth");
+assert.equal(requiredPermissions.at(-1), "collector.config.read");
 await invoke("POST", "/collector/category-mappings", {
   accountId: "account-evil",
   operatingStoreId: "store-1",
@@ -309,5 +320,26 @@ const unauthorized = await invoke("GET", "/collector/tasks", undefined, unauthor
 assert.equal(unauthorized.res.statusCode, 401);
 assert.equal(unauthorized.res.body.code, "AUTH_EXPIRED");
 assert.equal(unauthorizedServiceCalled, false);
+
+const permissionDeniedHandler = createCollectorHttpHandler({
+  authenticate: async (_req, requiredPermission) => {
+    if (requiredPermission === "collector.upload") {
+      throw Object.assign(new Error("采集会话没有所需权限"), {
+        status: 403,
+        code: "COLLECTOR_PERMISSION_DENIED",
+      });
+    }
+    return { id: "account-auth" };
+  },
+  service,
+});
+const permissionDenied = await invoke(
+  "POST",
+  "/collector/runs/run-1/items",
+  { items: [{ sourceKey: "blocked" }] },
+  permissionDeniedHandler,
+);
+assert.equal(permissionDenied.res.statusCode, 403);
+assert.equal(permissionDenied.res.body.code, "COLLECTOR_PERMISSION_DENIED");
 
 console.log("collector routes tests passed");

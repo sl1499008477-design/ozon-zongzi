@@ -141,12 +141,15 @@ try {
   assert.deepEqual(noStoreCollection.rows[0], { store_id: null, data_collection_store_id: null }, "采集阶段可不绑定经营店铺或数据采集店铺");
 
   const first = await ingestCollectRequestV4({
-    accountId: accountA,
-    storeId,
-    dataCollectionStoreId: collectionA.id,
-    source: "ozon",
-    item,
-    idempotencyKey: `idem-${suffix}`,
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: sku,
+      sourceUrl: `https://www.ozon.ru/product/${sku}/`,
+      requestId: `idem-${suffix}`,
+      capturedAt: item.collectedAt,
+      payload: item,
+    },
   });
   collectIds.push(first.collectItemId);
   assert.equal(first.duplicate, false);
@@ -154,42 +157,46 @@ try {
     "SELECT data_collection_store_id FROM collect_items WHERE id=$1",
     [first.collectItemId],
   );
-  assert.equal(historicalDataStore.rows[0]?.data_collection_store_id, collectionA.id, "已有采集记录保留原数据采集店铺证据");
+  assert.equal(historicalDataStore.rows[0]?.data_collection_store_id, null, "新采集记录不写入数据采集店铺");
 
   const duplicate = await ingestCollectRequestV4({
-    accountId: accountA,
-    storeId,
-    dataCollectionStoreId: collectionA.id,
-    source: "ozon",
-    item,
-    idempotencyKey: `idem-${suffix}`,
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: sku,
+      requestId: `idem-${suffix}`,
+      payload: item,
+    },
   });
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.collectItemId, first.collectItemId);
   await assert.rejects(
     ingestCollectRequestV4({
-      accountId: accountA,
-      storeId,
-      dataCollectionStoreId: collectionA.id,
-      source: "ozon",
-      item: { ...item, name: "不同请求内容" },
-      idempotencyKey: `idem-${suffix}`,
+      authenticatedAccount: { id: accountA },
+      input: {
+        source: "ozon",
+        sourceSku: sku,
+        requestId: `idem-${suffix}`,
+        payload: { ...item, name: "不同请求内容" },
+      },
     }),
-    (error) => error?.code === "IDEMPOTENCY_KEY_REUSED" && error?.status === 409,
+    (error) => error?.code === "COLLECT_REQUEST_CONFLICT" && error?.status === 409,
   );
   const afterReuse = await pool.query(
-    "SELECT status FROM collect_requests WHERE account_id=$1 AND idempotency_key=$2",
-    [accountA, `idem-${suffix}`],
+    "SELECT status FROM collect_requests WHERE account_id=$1 AND id=$2",
+    [accountA, first.requestId],
   );
   assert.equal(afterReuse.rows[0]?.status, "SUCCEEDED", "复用幂等键失败不能污染已成功请求");
 
   await ingestCollectRequestV4({
-    accountId: accountA,
-    storeId,
-    dataCollectionStoreId: collectionA.id,
-    source: "ozon",
-    item: { ...item, collectedAt: new Date(Date.now() + 1000).toISOString() },
-    idempotencyKey: `idem-content-${suffix}`,
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: sku,
+      requestId: `idem-content-${suffix}`,
+      capturedAt: new Date(Date.now() + 1000).toISOString(),
+      payload: item,
+    },
   });
   const rawCount = await pool.query("SELECT COUNT(*)::int count FROM collect_raw_payloads WHERE collect_item_id=$1", [first.collectItemId]);
   assert.equal(rawCount.rows[0].count, 1, "只改变采集时间不能新增原始内容版本");
@@ -217,29 +224,19 @@ try {
   });
   const collectionB = (await verifyCollectionStoreForAccount(accountB, [sellerCompanyIdB], `verify-b-${suffix}`)).store;
   assert.equal(collectionB.id, boundB.id);
-  await assert.rejects(
-    ingestCollectRequestV4({
-      accountId: accountB,
-      storeId,
-      dataCollectionStoreId: collectionB.id,
-      source: "ozon",
-      item,
-      idempotencyKey: `forbidden-store-${suffix}`,
-    }),
-    (error) => error?.code === "STORE_ACCOUNT_FORBIDDEN" && error?.status === 403,
-  );
   const originalRequest = await pool.query(
-    "SELECT status FROM collect_requests WHERE account_id=$1 AND idempotency_key=$2",
-    [accountA, `idem-${suffix}`],
+    "SELECT status FROM collect_requests WHERE account_id=$1 AND id=$2",
+    [accountA, first.requestId],
   );
   assert.equal(originalRequest.rows[0]?.status, "SUCCEEDED", "跨账号失败不能污染原账号幂等请求");
   const secondAccount = await ingestCollectRequestV4({
-    accountId: accountB,
-    storeId: storeIdB,
-    dataCollectionStoreId: collectionB.id,
-    source: "ozon",
-    item,
-    idempotencyKey: `idem-${suffix}`,
+    authenticatedAccount: { id: accountB },
+    input: {
+      source: "ozon",
+      sourceSku: sku,
+      requestId: `idem-${suffix}`,
+      payload: item,
+    },
   });
   collectIds.push(secondAccount.collectItemId);
   assert.notEqual(secondAccount.collectItemId, first.collectItemId, "不同账号采集相同 SKU 必须隔离");

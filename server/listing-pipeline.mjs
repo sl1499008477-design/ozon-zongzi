@@ -50,6 +50,20 @@ function clean(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
 }
 
+function withoutCollectionScope(value = {}) {
+  const result = { ...(value || {}) };
+  for (const field of [
+    "accountId",
+    "createdBy",
+    "storeId",
+    "localStoreId",
+    "operatingStoreId",
+    "dataCollectionStoreId",
+    "sellerCompanyId",
+  ]) delete result[field];
+  return result;
+}
+
 function legacyCollectStatus(status) {
   return {
     QUEUE_PENDING: "上架中",
@@ -147,47 +161,50 @@ function draftVariants(draft = {}, item = {}) {
 
 async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
     const collectId = clean(context.collectId || item.id, 240);
-    let accountId = clean(context.accountId || item.accountId, 240) || null;
-    let storeId = clean(context.storeId || item.storeId || item.localStoreId, 240) || null;
-    const dataCollectionStoreId = clean(context.dataCollectionStoreId || item.dataCollectionStoreId, 240);
-    const sourceSku = clean(item.sku || item.sourceExternalId, 240);
-    const sourceUrl = clean(item.productUrl || item.url || item.sourceUrl, 2000);
+    const accountId = clean(context.accountId || item.accountId, 240);
+    if (!accountId) {
+      throw Object.assign(new Error("采集记录缺少账号归属"), {
+        status: 401,
+        code: "COLLECT_ACCOUNT_REQUIRED",
+      });
+    }
+    const sourceSku = clean(context.sourceSku || item.sourceSku || item.sku || item.sourceExternalId, 240);
+    const sourceUrl = clean(context.sourceUrl || item.sourceUrl || item.productUrl || item.url, 2000);
     const rawPayload = collectRawPayload(item);
     const rawHash = clean(context.contentHash, 128) || hash(rawPayload);
     const rawId = stableId("raw", collectId, rawHash);
     const draft = collectDraft(item);
     const draftHash = hash(draftHashValue(draft));
     const draftId = stableId("draft", collectId);
-    if (accountId) {
-      const accountExists = await client.query("SELECT 1 FROM accounts WHERE id=$1", [accountId]);
-      if (!accountExists.rowCount) accountId = null;
-    }
-    if (storeId) {
-      const storeExists = await client.query("SELECT 1 FROM stores WHERE id=$1", [storeId]);
-      if (!storeExists.rowCount) storeId = null;
+    const accountExists = await client.query("SELECT 1 FROM accounts WHERE id=$1", [accountId]);
+    if (!accountExists.rowCount) {
+      throw Object.assign(new Error("采集账号不存在"), {
+        status: 401,
+        code: "COLLECT_ACCOUNT_REQUIRED",
+      });
     }
 
     const existingRaw = await client.query(
-      "SELECT id, payload_hash FROM collect_raw_payloads WHERE collect_item_id=$1 ORDER BY created_at DESC LIMIT 1",
-      [collectId],
+      `SELECT id, payload_hash FROM collect_raw_payloads
+       WHERE collect_item_id=$1 AND account_id=$2
+       ORDER BY created_at DESC LIMIT 1`,
+      [collectId, accountId],
     );
     const captureRaw = context.captureRaw === true || !existingRaw.rows[0];
     const rawChanged = existingRaw.rows[0]?.payload_hash !== rawHash;
     const shouldInsertRaw = captureRaw && rawChanged;
     const sourcePayloadId = shouldInsertRaw ? rawId : (existingRaw.rows[0]?.id || rawId);
     if (shouldInsertRaw) await client.query(
-      `INSERT INTO collect_raw_payloads (
-         id, collect_item_id, account_id, store_id, data_collection_store_id,
-         source_sku, source_url, payload_hash, content_hash, request_id,
-         collector_version, payload, collected_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
+       `INSERT INTO collect_raw_payloads (
+          id, collect_item_id, account_id, store_id, data_collection_store_id,
+          source_sku, source_url, payload_hash, content_hash, request_id,
+          collector_version, payload, collected_at
+       ) VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
        ON CONFLICT (collect_item_id, payload_hash) DO NOTHING`,
       [
         rawId,
         collectId,
         accountId,
-        storeId,
-        dataCollectionStoreId,
         sourceSku,
         sourceUrl,
         rawHash,
@@ -195,29 +212,26 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         clean(context.requestId, 240),
         clean(item.collectorVersion || item.extensionVersion, 120),
         json(rawPayload),
-        item.collectedAt || item.createdAt || new Date().toISOString(),
+        item.capturedAt || item.collectedAt || item.createdAt || new Date().toISOString(),
       ],
     );
-    await client.query(
+    const persistedItem = await client.query(
       `INSERT INTO collect_items (
          id, account_id, store_id, data_collection_store_id, source_sku, source_url,
          source, identity_key, status, created_at, updated_at, summary
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10::timestamptz,NOW()),NOW(),$11::jsonb)
+       ) VALUES ($1,$2,NULL,NULL,$3,$4,$5,$6,$7,COALESCE($8::timestamptz,NOW()),NOW(),$9::jsonb)
        ON CONFLICT (id) DO UPDATE SET
-         account_id = COALESCE(EXCLUDED.account_id, collect_items.account_id),
-         store_id = COALESCE(EXCLUDED.store_id, collect_items.store_id),
-         data_collection_store_id = EXCLUDED.data_collection_store_id,
          source_sku = EXCLUDED.source_sku,
          source_url = EXCLUDED.source_url,
          source = EXCLUDED.source,
          identity_key = EXCLUDED.identity_key,
          status = EXCLUDED.status,
-         updated_at = NOW(), deleted_at = NULL, summary = EXCLUDED.summary`,
+         updated_at = NOW(), deleted_at = NULL, summary = EXCLUDED.summary
+       WHERE collect_items.account_id=EXCLUDED.account_id
+       RETURNING id`,
       [
         collectId,
         accountId,
-        storeId,
-        dataCollectionStoreId,
         sourceSku,
         sourceUrl,
         clean(context.source || item.source || "ozon", 80),
@@ -227,6 +241,12 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         json({ name: item.name || item.title || "", image: item.image || item.primaryImage || "", source: context.source || item.source || "" }),
       ],
     );
+    if (!persistedItem.rowCount) {
+      throw Object.assign(new Error("采集记录不属于当前账号"), {
+        status: 404,
+        code: "COLLECT_ITEM_ACCOUNT_FORBIDDEN",
+      });
+    }
 
     const current = await client.query("SELECT version, data_hash FROM product_drafts WHERE id = $1 FOR UPDATE", [draftId]);
     let version = Number(current.rows[0]?.version || 0);
@@ -313,7 +333,10 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         await client.query("DELETE FROM product_draft_variants WHERE draft_id=$1", [draftId]);
       }
     }
-    await client.query("UPDATE collect_items SET current_draft_id=$2, updated_at=NOW() WHERE id=$1", [collectId, draftId]);
+    await client.query(
+      "UPDATE collect_items SET current_draft_id=$2, updated_at=NOW() WHERE id=$1 AND account_id=$3",
+      [collectId, draftId, accountId],
+    );
     return {
       collectId,
       rawId: sourcePayloadId,
@@ -333,13 +356,16 @@ export async function mirrorCollectItemV3(item = {}, context = {}) {
 
 export async function listCollectItemsV3({ accountId = "", includeDeleted = false, limit = 5000 } = {}) {
   if (!listingPipelineEnabled()) return [];
-  const pool = await poolReady();
-  const params = [];
-  const where = [];
-  if (accountId) {
-    params.push(accountId);
-    where.push(`c.account_id=$${params.length}`);
+  const scopedAccountId = clean(accountId, 240);
+  if (!scopedAccountId) {
+    throw Object.assign(new Error("采集列表必须指定账号范围"), {
+      status: 401,
+      code: "COLLECT_ACCOUNT_REQUIRED",
+    });
   }
+  const pool = await poolReady();
+  const params = [scopedAccountId];
+  const where = ["c.account_id=$1"];
   if (!includeDeleted) where.push("c.deleted_at IS NULL");
   params.push(Math.max(1, Math.min(10000, Number(limit) || 5000)));
   const result = await pool.query(
@@ -349,7 +375,8 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
      LEFT JOIN product_drafts d ON d.id=c.current_draft_id
      LEFT JOIN LATERAL (
        SELECT payload FROM collect_raw_payloads r
-       WHERE r.collect_item_id=c.id ORDER BY r.created_at DESC LIMIT 1
+       WHERE r.collect_item_id=c.id AND r.account_id=c.account_id
+       ORDER BY r.created_at DESC LIMIT 1
      ) raw ON TRUE
      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY c.updated_at DESC LIMIT $${params.length}`,
@@ -359,12 +386,16 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
     const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
     const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
     return {
-      ...normalized,
+      ...withoutCollectionScope(normalized),
       id: row.id,
       sku: row.source_sku || normalized.sku || "",
       productUrl: row.source_url || normalized.productUrl || "",
-      storeId: row.store_id || normalized.storeId || "",
-      dataCollectionStoreId: row.data_collection_store_id || normalized.dataCollectionStoreId || "",
+      ...(row.store_id || row.data_collection_store_id ? {
+        legacyScope: {
+          storeId: row.store_id || "",
+          dataCollectionStoreId: row.data_collection_store_id || "",
+        },
+      } : {}),
       status: legacyCollectStatus(row.status),
       listingDraft: row.draft_data || normalized.listingDraft || {},
       draftVersion: Number(row.draft_version || 1),
@@ -385,7 +416,8 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
        LEFT JOIN product_drafts d ON d.id=c.current_draft_id
        LEFT JOIN LATERAL (
          SELECT payload FROM collect_raw_payloads r
-         WHERE r.collect_item_id=c.id ORDER BY r.created_at DESC LIMIT 1
+         WHERE r.collect_item_id=c.id AND r.account_id=c.account_id
+         ORDER BY r.created_at DESC LIMIT 1
        ) raw ON TRUE
        WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
        FOR UPDATE OF c`,
@@ -396,19 +428,23 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
     const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
     const currentDraft = row.draft_data && typeof row.draft_data === "object" ? row.draft_data : {};
-    const listingDraft = patch.listingDraft && typeof patch.listingDraft === "object"
-      ? patch.listingDraft
-      : { ...currentDraft, ...patch };
+    const safePatch = withoutCollectionScope(patch);
+    const listingDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
+      ? safePatch.listingDraft
+      : { ...currentDraft, ...safePatch };
     const item = {
-      ...normalized,
-      ...patch,
+      ...withoutCollectionScope(normalized),
+      ...safePatch,
       id: row.id,
       accountId: row.account_id,
-      storeId: row.store_id || "",
-      localStoreId: row.store_id || "",
-      dataCollectionStoreId: row.data_collection_store_id || "",
-      sku: patch.sku || row.source_sku || normalized.sku || "",
-      productUrl: patch.productUrl || row.source_url || normalized.productUrl || "",
+      ...(row.store_id || row.data_collection_store_id ? {
+        legacyScope: {
+          storeId: row.store_id || "",
+          dataCollectionStoreId: row.data_collection_store_id || "",
+        },
+      } : {}),
+      sku: safePatch.sku || row.source_sku || normalized.sku || "",
+      productUrl: safePatch.productUrl || row.source_url || normalized.productUrl || "",
       status: row.status,
       listingDraft,
     };
@@ -416,8 +452,6 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
       client,
       collectId: row.id,
       accountId: row.account_id,
-      storeId: row.store_id || "",
-      dataCollectionStoreId: row.data_collection_store_id || "",
       source: row.source || "ozon",
       identityKey: row.identity_key || "",
       expectedVersion: expectedVersion === null ? Number(row.draft_version || 0) : expectedVersion,
@@ -447,16 +481,8 @@ export async function softDeleteCollectItemsForAccountV4(accountId, ids = []) {
   return result.rowCount;
 }
 
-export async function softDeleteCollectItemsV3(ids = []) {
-  if (!listingPipelineEnabled()) return 0;
-  const values = [...new Set(ids.map((id) => clean(id, 240)).filter(Boolean))];
-  if (!values.length) return 0;
-  const pool = await poolReady();
-  const result = await pool.query(
-    "UPDATE collect_items SET deleted_at=NOW(), status='DELETED', updated_at=NOW() WHERE id = ANY($1::text[]) AND deleted_at IS NULL",
-    [values],
-  );
-  return result.rowCount;
+export async function softDeleteCollectItemsV3(accountId, ids = []) {
+  return softDeleteCollectItemsForAccountV4(accountId, ids);
 }
 
 function publicJob(row = {}) {
@@ -516,6 +542,13 @@ export async function createSubmissionV3({
   retryFailed = false,
 }) {
   if (!listingPipelineEnabled()) return null;
+  accountId = clean(accountId, 240);
+  if (!accountId) {
+    throw Object.assign(new Error("准备上架必须指定账号范围"), {
+      status: 401,
+      code: "COLLECT_ACCOUNT_REQUIRED",
+    });
+  }
   const mirrored = await mirrorCollectItemV3(collectItem, { accountId, storeId, ...versions });
   return transaction(async (client) => {
     const items = Array.isArray(normalizedItems) ? normalizedItems : [];
@@ -537,9 +570,10 @@ export async function createSubmissionV3({
        JOIN submission_jobs j ON j.snapshot_id=s.id
        LEFT JOIN collect_items c ON c.id=j.collect_item_id
        WHERE s.store_id=$1 AND s.collect_item_id=$2 AND s.snapshot_hash=$3
+         AND s.account_id=$4 AND c.account_id=$4
        ORDER BY s.created_at DESC
        LIMIT 1`,
-      [storeId, collectItem.id, snapshotHash],
+      [storeId, collectItem.id, snapshotHash, accountId],
     );
     const latest = existing.rows[0];
     const retryableStatuses = new Set(["FAILED", "CANCELLED"]);
@@ -595,7 +629,10 @@ export async function createSubmissionV3({
        VALUES ($1,$2,'LISTING_SUBMIT','submission_job',$3,$4,$5::jsonb)`,
       [accountId || null, storeId, jobId, correlationId, json({ snapshotId, itemCount: items.length, retryOfJobId: latest?.id || "" })],
     );
-    await client.query("UPDATE collect_items SET status='QUEUE_PENDING', updated_at=NOW() WHERE id=$1", [collectItem.id]);
+    await client.query(
+      "UPDATE collect_items SET status='QUEUE_PENDING', updated_at=NOW() WHERE id=$1 AND account_id=$2",
+      [collectItem.id, accountId],
+    );
     const created = await client.query(
       `SELECT j.*, c.source_sku, '[]'::jsonb AS items FROM submission_jobs j
        LEFT JOIN collect_items c ON c.id=j.collect_item_id WHERE j.id=$1`,
@@ -633,7 +670,13 @@ export async function listSubmissionJobsV3({ storeId = "", accountId = "", limit
 
 export async function hydrateLegacyStateWithV3(state = {}) {
   if (!listingPipelineEnabled()) return state;
-  const relationalCollectItems = await listCollectItemsV3({ limit: 10000 });
+  const accountIds = [...new Set(
+    (state.accounts || []).map((account) => clean(account?.id, 240)).filter(Boolean),
+  )];
+  const relationalCollectItems = (
+    await Promise.all(accountIds.map((accountId) =>
+      listCollectItemsV3({ accountId, limit: 10000 })))
+  ).flat();
   const legacyById = new Map((state.caches?.collectBox || []).map((item) => [String(item.id), item]));
   state.caches = state.caches || {};
   state.caches.collectBox = relationalCollectItems.map((item) => ({
@@ -666,20 +709,20 @@ export async function hydrateLegacyStateWithV3(state = {}) {
   return state;
 }
 
-export async function getSubmissionJobV3(idOrTaskId) {
+export async function getSubmissionJobV3(idOrTaskId, accountId) {
   if (!listingPipelineEnabled()) return null;
   const pool = await poolReady();
   const result = await pool.query(
     `SELECT j.*, c.source_sku,
             COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
      FROM submission_jobs j LEFT JOIN collect_items c ON c.id=j.collect_item_id
-     WHERE j.id=$1 OR j.ozon_task_id=$1 LIMIT 1`,
-    [String(idOrTaskId || "")],
+     WHERE j.account_id=$2 AND (j.id=$1 OR j.ozon_task_id=$1) LIMIT 1`,
+    [String(idOrTaskId || ""), clean(accountId, 240)],
   );
   return result.rows[0] ? publicJob(result.rows[0]) : null;
 }
 
-export async function getSubmissionJobDetailV3(idOrTaskId) {
+export async function getSubmissionJobDetailV3(idOrTaskId, accountId) {
   if (!listingPipelineEnabled()) return null;
   const pool = await poolReady();
   const result = await pool.query(
@@ -690,8 +733,8 @@ export async function getSubmissionJobDetailV3(idOrTaskId) {
      FROM submission_jobs j
      JOIN submission_snapshots s ON s.id=j.snapshot_id
      LEFT JOIN collect_items c ON c.id=j.collect_item_id
-     WHERE j.id=$1 OR j.ozon_task_id=$1 LIMIT 1`,
-    [String(idOrTaskId || "")],
+     WHERE j.account_id=$2 AND (j.id=$1 OR j.ozon_task_id=$1) LIMIT 1`,
+    [String(idOrTaskId || ""), clean(accountId, 240)],
   );
   if (!result.rows[0]) return null;
   const row = result.rows[0];
@@ -818,7 +861,10 @@ export async function transitionSubmissionJobV3(jobId, toStatus, patch = {}, eve
       [jobId, fromStatus, toStatus, event.type || "submission.status_changed", event.message || patch.statusMessage || patch.errorMessage || "", event.actorType || "worker", event.actorId || "", json(event.payload || {})],
     );
     if (row.collect_item_id) {
-      await client.query("UPDATE collect_items SET status=$2, updated_at=NOW() WHERE id=$1", [row.collect_item_id, toStatus]);
+      await client.query(
+        "UPDATE collect_items SET status=$2, updated_at=NOW() WHERE id=$1 AND account_id=$3",
+        [row.collect_item_id, toStatus, row.account_id],
+      );
     }
     return result.rows[0];
   });
@@ -957,8 +1003,8 @@ export async function markOutboxFailedV3(eventId, error) {
   );
 }
 
-export async function patchLegacyCollectStatusV3(collectItemId, patch = {}) {
-  if (!postgresEnabled() || !collectItemId) return;
+export async function patchLegacyCollectStatusV3(accountId, collectItemId, patch = {}) {
+  if (!postgresEnabled() || !accountId || !collectItemId) return;
   const pool = await poolReady();
   const table = process.env.POSTGRES_STATE_TABLE || "local_state";
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) return;
@@ -968,13 +1014,20 @@ export async function patchLegacyCollectStatusV3(collectItemId, patch = {}) {
          state,
          '{caches,collectBox}',
          COALESCE((
-           SELECT jsonb_agg(CASE WHEN value->>'id'=$1 THEN value || $2::jsonb ELSE value END ORDER BY ordinality)
+           SELECT jsonb_agg(
+             CASE
+               WHEN value->>'id'=$1 AND value->>'accountId'=$3
+                 THEN value || $2::jsonb
+               ELSE value
+             END
+             ORDER BY ordinality
+           )
            FROM jsonb_array_elements(COALESCE(state #> '{caches,collectBox}','[]'::jsonb)) WITH ORDINALITY
          ),'[]'::jsonb),
          true
        ), version=version+1, updated_at=NOW()
      WHERE id='local-state'`,
-    [String(collectItemId), json(patch)],
+    [String(collectItemId), json(patch), String(accountId)],
   ).catch(() => {});
 }
 

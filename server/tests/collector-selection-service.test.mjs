@@ -44,12 +44,15 @@ const selected = await addSelectedCollectorItemsToCollectBox({
 assert.equal(selected.ok, false);
 assert.equal(selected.added, 1);
 assert.deepEqual(selected.missing, ["not-qualified"]);
-assert.equal(ingested[0].accountId, "acct-a");
-assert.equal(ingested[0].storeId, "store-a");
-assert.equal(ingested[0].dataCollectionStoreId, "data-a");
-assert.equal(ingested[0].item.name, "export title");
-assert.equal(ingested[0].item.price, 120);
-assert.equal(ingested[0].idempotencyKey, "collector-select:run-a:item-a");
+assert.deepEqual(ingested[0].authenticatedAccount, { id: "acct-a" });
+assert.equal(ingested[0].input.source, "ozon");
+assert.equal(ingested[0].input.sourceSku, "sku-a");
+assert.equal(ingested[0].input.requestId, "collector-select:run-a:item-a");
+assert.equal(ingested[0].input.payload.name, "export title");
+assert.equal(ingested[0].input.payload.price, 120);
+for (const field of ["accountId", "storeId", "dataCollectionStoreId"]) {
+  assert.equal(field in ingested[0].input, false);
+}
 assert.deepEqual(linked[0], ["acct-a", "run-a", "item-a", "collect-a"]);
 
 await assert.rejects(
