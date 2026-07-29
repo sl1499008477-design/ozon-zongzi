@@ -61,7 +61,6 @@ import {
   loadPersistedState,
   persistenceHealth,
   persistenceMode,
-  revokePersistedSessions,
   savePersistedCollectBox,
   savePersistedState,
 } from "./persistence.mjs";
@@ -136,6 +135,7 @@ import {
 import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
+import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
@@ -381,6 +381,8 @@ async function saveState(state) {
   state.updatedAt = new Date().toISOString();
   await savePersistedState({ dataDir, dataFile, state });
 }
+
+const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, readJson: readBody, sendJson });
 
 const ozonSyncService = createOzonSyncService({
   loadState,
@@ -2408,6 +2410,7 @@ async function handle(req, res) {
   }
 
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: authenticateCollectionRequest,
     readBody,
@@ -2641,7 +2644,9 @@ async function handle(req, res) {
     });
     removeSession(state, token);
     await saveState(state);
-    await revokePersistedSessions({ token, reason: "logout" });
+    await collectorAuthRuntime.revokeParentSession({
+      parentSessionToken: token, accountId: session?.accountId || "", reason: "WEB_LOGOUT", state,
+    });
     sendJson(res, 200, { ok: true, state: limitedLocalStatePayload(state) });
     return;
   }
@@ -2710,6 +2715,7 @@ async function handle(req, res) {
       return;
     }
     const sessionsMustBeRevoked = passwordChanged || account.status === "disabled" || isAccountExpired(account);
+    const accountSessionTokens = sessionsMustBeRevoked ? collectorParentSessionTokens(state, account.id) : [];
     if (sessionsMustBeRevoked) {
       revokeAccountSessions(state, account.id);
     }
@@ -2728,9 +2734,9 @@ async function handle(req, res) {
     });
     await saveState(state);
     if (sessionsMustBeRevoked) {
-      await revokePersistedSessions({
-        accountId: account.id,
-        reason: passwordChanged ? "password-changed" : "account-disabled-or-expired",
+      const collectorReason = collectorAccountChangeReason({ passwordChanged, accountExpired: isAccountExpired(account) });
+      await collectorAuthRuntime.revokeAccountSessions({
+        parentSessionTokens: accountSessionTokens, accountId: account.id, reason: collectorReason, state,
       });
     }
     sendJson(res, 200, { ok: true, account: publicAccount(account), accounts: state.accounts.map(publicAccount) });
@@ -2748,6 +2754,7 @@ async function handle(req, res) {
       sendError(res, 404, "账号不存在");
       return;
     }
+    const accountSessionTokens = collectorParentSessionTokens(state, accountId);
     const deletion = removeAccountScope(state, accountId);
     appendRequestAudit(state, req, admin, {
       action: "ACCOUNT_DELETED",
@@ -2761,6 +2768,9 @@ async function handle(req, res) {
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);
     await saveState(state);
+    await collectorAuthRuntime.revokeAccountSessions({
+      parentSessionTokens: accountSessionTokens, accountId, reason: "ACCOUNT_DELETED", state,
+    });
     const fileCleanup = await objectCleanupWorker.drain(state);
     sendJson(res, 200, {
       ok: true,

@@ -14,28 +14,30 @@ process.env.QH_LOCAL_NO_DOTENV = "1";
 delete process.env.DATABASE_URL;
 delete process.env.POSTGRES_HOST;
 
-async function requestJson(handle, method, pathname, body) {
+async function requestJson(handle, method, pathname, body, authorization = `Bearer ${token}`) {
   const payload = body === undefined ? "" : JSON.stringify(body);
   const req = Readable.from(payload ? [Buffer.from(payload)] : []);
   req.method = method;
   req.url = pathname;
   req.headers = {
-    authorization: `Bearer ${token}`,
+    authorization,
     "content-type": "application/json",
     "x-device-fingerprint": "device-audit",
   };
   const res = {
     status: 0,
+    headers: {},
     body: "",
-    writeHead(status) {
+    writeHead(status, headers = {}) {
       this.status = status;
+      this.headers = headers;
     },
     end(text = "") {
       this.body = String(text || "");
     },
   };
   await handle(req, res);
-  return { status: res.status, body: JSON.parse(res.body || "{}") };
+  return { status: res.status, headers: res.headers, body: JSON.parse(res.body || "{}") };
 }
 
 await writeFile(dataFile, JSON.stringify({
@@ -65,6 +67,47 @@ await writeFile(dataFile, JSON.stringify({
 
 try {
   const { handle } = await import("../index.mjs");
+  const issued = await requestJson(
+    handle,
+    "POST",
+    "/extension/collector-auth/ticket",
+    {
+      accountId: "body-account-must-not-win",
+      permissions: ["collector.admin"],
+    },
+  );
+  assert.equal(issued.status, 200);
+  assert.match(String(issued.headers["Access-Control-Allow-Headers"]), /Authorization/);
+  assert.equal(issued.headers["Access-Control-Allow-Origin"], "*");
+  const exchanged = await requestJson(
+    handle,
+    "POST",
+    "/extension/collector-auth/exchange",
+    {
+      ticket: issued.body.ticket,
+      deviceFingerprint: "device-audit",
+      extensionVersion: "3.0.0-test",
+    },
+    "",
+  );
+  assert.equal(exchanged.status, 200);
+  const collectorToken = exchanged.body.collectorToken;
+  const rejected = await requestJson(
+    handle,
+    "GET",
+    "/extension/collector-auth/status",
+    undefined,
+    "Collector cst_invalid-audit-token",
+  );
+  assert.equal(rejected.status, 401);
+  assert.equal((await requestJson(
+    handle,
+    "GET",
+    "/extension/collector-auth/status",
+    undefined,
+    `Collector ${collectorToken}`,
+  )).status, 200);
+
   assert.equal((await requestJson(
     handle,
     "POST",
@@ -90,20 +133,34 @@ try {
       apiKey: "body-secret",
     },
   )).status, 200);
+  assert.equal((await requestJson(
+    handle,
+    "POST",
+    "/local/accounts/logout",
+    {},
+  )).status, 200);
 
   const persisted = JSON.parse(await readFile(dataFile, "utf8"));
   const actions = persisted.auditEvents.map((event) => event.action);
   assert.ok(actions.includes("USAGE_TRACK"));
   assert.ok(actions.includes("SYNC_CREDENTIALS_READ"));
   assert.ok(actions.includes("SYNC_CLIENT_REPORT"));
-  for (const event of persisted.auditEvents) {
+  assert.ok(actions.includes("COLLECTOR_TICKET_ISSUED"));
+  assert.ok(actions.includes("COLLECTOR_TICKET_EXCHANGED"));
+  assert.ok(actions.includes("COLLECTOR_SESSION_REJECTED"));
+  assert.ok(actions.includes("COLLECTOR_SESSION_REVOKED"));
+  for (const event of persisted.auditEvents.filter((item) => (
+    ["USAGE_TRACK", "SYNC_CREDENTIALS_READ", "SYNC_CLIENT_REPORT"].includes(item.action)
+  ))) {
     assert.equal(event.accountId, "account-audit");
     assert.equal(event.storeId, "store-audit");
     assert.equal(event.deviceId, "device-audit");
     assert.equal(event.source, "extension");
   }
   const auditJson = JSON.stringify(persisted.auditEvents);
-  assert.doesNotMatch(auditJson, /api-key-must-not-enter-audit|body-secret/);
+  assert.doesNotMatch(auditJson, /api-key-must-not-enter-audit|body-secret|audit-token/);
+  assert.equal(auditJson.includes(issued.body.ticket), false);
+  assert.equal(auditJson.includes(collectorToken), false);
   console.log("audit route integration test passed");
 } finally {
   await rm(dataDir, { recursive: true });

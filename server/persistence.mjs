@@ -15,6 +15,7 @@ import {
 } from "./formal-persistence.mjs";
 import { persistPostgresStateAtomically } from "./postgres-state-transaction.mjs";
 import { writeJsonAtomically } from "./json-state-writer.mjs";
+import { normalizeCollectorRevokeReason } from "./collector-auth-service.mjs";
 
 const STATE_ROW_ID = "local-state";
 let schemaReady = false;
@@ -68,6 +69,21 @@ export async function revokePersistedSessions({ token = "", accountId = "", reas
 
   const pool = await getPostgresPool();
   await ensureSchema(pool);
+  const collectorResult = normalizedToken
+    ? await pool.query(
+      `UPDATE collector_sessions
+       SET revoked_at=COALESCE(revoked_at,NOW()),
+           revoked_reason=$2
+       WHERE parent_session_token=$1 AND revoked_at IS NULL`,
+      [normalizedToken, normalizeCollectorRevokeReason(reason, { secrets: [normalizedToken] })],
+    )
+    : await pool.query(
+      `UPDATE collector_sessions
+       SET revoked_at=COALESCE(revoked_at,NOW()),
+           revoked_reason=$2
+       WHERE account_id=$1 AND revoked_at IS NULL`,
+      [normalizedAccountId, normalizeCollectorRevokeReason(reason)],
+    );
   const result = normalizedToken
     ? await pool.query(
       `UPDATE sessions
@@ -85,7 +101,11 @@ export async function revokePersistedSessions({ token = "", accountId = "", reas
        WHERE account_id=$1 AND revoked_at IS NULL`,
       [normalizedAccountId, String(reason || "account-change").slice(0, 80)],
     );
-  return { revoked: Number(result.rowCount || 0), mode: "postgres" };
+  return {
+    revoked: Number(result.rowCount || 0),
+    collectorRevoked: Number(collectorResult.rowCount || 0),
+    mode: "postgres",
+  };
 }
 
 export async function disablePersistedOperatingStores({ accountId = "", storeIds = [] } = {}) {
