@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 import "../env.mjs";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
@@ -42,12 +43,14 @@ if (!postgresEnabled()) {
 const suffix = crypto.randomUUID();
 const accountA = `collector_account_a_${suffix}`;
 const accountB = `collector_account_b_${suffix}`;
+const accountCascade = `collector_account_cascade_${suffix}`;
 const operatingStoreId = `collector_operating_${suffix}`;
 const collectionStoreA = `collector_data_a_${suffix}`;
 const collectionStoreB = `collector_data_b_${suffix}`;
 const sellerCompanyA = `${Date.now()}`.slice(-10) + "11";
 const sellerCompanyB = `${Date.now()}`.slice(-10) + "22";
 const collectItemId = `collector_box_${suffix}`;
+const noStoreCollectItemId = `collector_no_store_${suffix}`;
 const foreignPricingVersionId = `collector_foreign_pricing_${suffix}`;
 const deviceKey = `collector-device-${suffix}`;
 const pool = await getPostgresPool();
@@ -62,7 +65,7 @@ async function cleanup() {
   await pool.query("DELETE FROM collector_task_runs WHERE account_id=ANY($1::text[])", [[accountA, accountB]]);
   await pool.query("DELETE FROM collector_tasks WHERE account_id=ANY($1::text[])", [[accountA, accountB]]);
   await pool.query("DELETE FROM collector_devices WHERE account_id=ANY($1::text[])", [[accountA, accountB]]);
-  await pool.query("DELETE FROM collect_items WHERE id=$1", [collectItemId]);
+  await pool.query("DELETE FROM collect_items WHERE id=ANY($1::text[])", [[collectItemId, noStoreCollectItemId]]);
   await pool.query("DELETE FROM pricing_config_versions WHERE id=$1", [foreignPricingVersionId]);
   await pool.query(
     "DELETE FROM account_data_collection_stores WHERE account_id=ANY($1::text[])",
@@ -73,7 +76,31 @@ async function cleanup() {
     [[collectionStoreA, collectionStoreB]],
   );
   await pool.query("DELETE FROM stores WHERE id=$1", [operatingStoreId]);
-  await pool.query("DELETE FROM accounts WHERE id=ANY($1::text[])", [[accountA, accountB]]);
+  await pool.query("DELETE FROM accounts WHERE id=ANY($1::text[])", [[accountA, accountB, accountCascade]]);
+}
+
+async function assertMigrationRejectsUnownedLegacyRow() {
+  const migration = await readFile(
+    new URL("../db/migrations/019_account_scoped_collection_and_collector_sessions.sql", import.meta.url),
+    "utf8",
+  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("ALTER TABLE collect_items ALTER COLUMN account_id DROP NOT NULL");
+    await client.query(
+      `INSERT INTO collect_items (id, account_id, source, identity_key, source_sku, summary)
+       VALUES ($1, NULL, 'ozon', '', 'unowned-sku', '{}'::jsonb)`,
+      [`unowned_collect_item_${suffix}`],
+    );
+    await assert.rejects(
+      client.query(migration),
+      (error) => error?.message.includes("collect_items") && error?.message.includes(`unowned_collect_item_${suffix}`),
+    );
+  } finally {
+    await client.query("ROLLBACK").catch(() => {});
+    client.release();
+  }
 }
 
 try {
@@ -81,9 +108,55 @@ try {
   await cleanup();
   await pool.query(
     `INSERT INTO accounts (id,username,display_name,role,status,created_at,updated_at)
-     VALUES ($1,$2,$2,'user','active',NOW(),NOW()),($3,$4,$4,'user','active',NOW(),NOW())`,
-    [accountA, `collector-a-${suffix}`, accountB, `collector-b-${suffix}`],
+     VALUES ($1,$2,$2,'user','active',NOW(),NOW()),($3,$4,$4,'user','active',NOW(),NOW()),($5,$6,$6,'user','active',NOW(),NOW())`,
+    [accountA, `collector-a-${suffix}`, accountB, `collector-b-${suffix}`, accountCascade, `collector-cascade-${suffix}`],
   );
+  await pool.query(
+    `INSERT INTO collect_items (id, account_id, store_id, data_collection_store_id, source, identity_key, source_sku, summary)
+     VALUES ($1, $2, NULL, NULL, 'ozon', $3, 'no-store-sku', '{}'::jsonb)`,
+    [noStoreCollectItemId, accountA, `no-store-identity-${suffix}`],
+  );
+  const noStoreCollection = await pool.query(
+    "SELECT store_id, data_collection_store_id FROM collect_items WHERE id=$1",
+    [noStoreCollectItemId],
+  );
+  assert.deepEqual(noStoreCollection.rows[0], { store_id: null, data_collection_store_id: null }, "采集阶段可不绑定经营店铺或数据采集店铺");
+  await pool.query("INSERT INTO sessions (token, account_id) VALUES ($1, $2)", [`ticket-parent-${suffix}`, accountA]);
+  await pool.query(
+    `INSERT INTO collector_auth_tickets (id, ticket_hash, account_id, parent_session_token, permissions, expires_at)
+     VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW() + INTERVAL '1 hour')`,
+    [`ticket-${suffix}`, `ticket-hash-${suffix}`, accountA, `ticket-parent-${suffix}`],
+  );
+  const consumed = await pool.query(
+    "UPDATE collector_auth_tickets SET consumed_at=NOW() WHERE ticket_hash=$1 AND consumed_at IS NULL RETURNING id",
+    [`ticket-hash-${suffix}`],
+  );
+  const consumedAgain = await pool.query(
+    "UPDATE collector_auth_tickets SET consumed_at=NOW() WHERE ticket_hash=$1 AND consumed_at IS NULL RETURNING id",
+    [`ticket-hash-${suffix}`],
+  );
+  assert.equal(consumed.rowCount, 1);
+  assert.equal(consumedAgain.rowCount, 0);
+  await pool.query("INSERT INTO sessions (token, account_id) VALUES ($1, $2)", [`cascade-parent-${suffix}`, accountCascade]);
+  await pool.query(
+    `INSERT INTO collector_sessions (
+       id, token_hash, account_id, parent_session_token, device_fingerprint, extension_version, permissions, expires_at
+     ) VALUES ($1, $2, $3, $4, 'cascade-device', 'test', '[]'::jsonb, NOW() + INTERVAL '1 hour')`,
+    [`collector-session-${suffix}`, `collector-session-hash-${suffix}`, accountCascade, `cascade-parent-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO collector_auth_tickets (id, ticket_hash, account_id, parent_session_token, permissions, expires_at)
+     VALUES ($1, $2, $3, $4, '[]'::jsonb, NOW() + INTERVAL '1 hour')`,
+    [`cascade-ticket-${suffix}`, `cascade-ticket-hash-${suffix}`, accountCascade, `cascade-parent-${suffix}`],
+  );
+  await pool.query("DELETE FROM accounts WHERE id=$1", [accountCascade]);
+  const cascadeCounts = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM collector_auth_tickets WHERE account_id=$1) AS ticket_count,
+       (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$1) AS session_count`,
+    [accountCascade],
+  );
+  assert.deepEqual(cascadeCounts.rows[0], { ticket_count: 0, session_count: 0 });
   await pool.query(
     `INSERT INTO stores (id,owner_account_id,label,client_id,status,updated_at)
      VALUES ($1,$2,'Collector Operating Store',$3,'active',NOW())`,
@@ -213,6 +286,11 @@ try {
      ) VALUES ($1,$2,$3,$4,'ozon',$5,$6,'COLLECTED','{}'::jsonb)`,
     [collectItemId, accountA, operatingStoreId, collectionStoreB, `identity-${suffix}`, `sku-${suffix}`],
   );
+  const historicalDataStore = await pool.query(
+    "SELECT data_collection_store_id FROM collect_items WHERE id=$1",
+    [collectItemId],
+  );
+  assert.equal(historicalDataStore.rows[0]?.data_collection_store_id, collectionStoreB, "已有采集记录保留原数据采集店铺证据");
   const firstItem = await upsertCollectorRunItem({
     accountId: accountA,
     runId: queued.run.id,
@@ -402,6 +480,7 @@ try {
   assert.equal(await getCollectorTaskForAccount(accountA, task.id), null);
   const collectItemStillExists = await pool.query("SELECT id FROM collect_items WHERE id=$1", [collectItemId]);
   assert.equal(collectItemStillExists.rowCount, 1, "删除任务不能级联删除采集箱商品");
+  await assertMigrationRejectsUnownedLegacyRow();
 
   console.log("collector desktop integration passed");
 } finally {

@@ -11,6 +11,7 @@ const TEST_ROOTS = [
 ];
 
 export const historicalTestExclusions = {
+  "server/tests/account-scoped-collection-migration.integration.mjs": "会创建临时 schema、执行迁移并验证失败关闭行为，只能在明确指定的专用 PostgreSQL 测试库中手工运行",
   "server/tests/account-deletion-postgres.integration.mjs": "会读取数据库配置并执行迁移、写入和删除，只能在明确指定的专用 PostgreSQL 测试库中手工运行",
   "server/tests/collection-pipeline-v4.integration.mjs": "会读取数据库配置并执行迁移、写入和删除，只能在明确指定的专用 PostgreSQL 测试库中手工运行",
   "server/tests/collector-desktop.integration.mjs": "会读取数据库配置并执行迁移、写入和删除，只能在明确指定的专用 PostgreSQL 测试库中手工运行",
