@@ -11,13 +11,41 @@ test('maps Sonli task status and preserves recovered configuration', () => {
         id: 'task-1',
         name: '类目采集',
         status: 'QUEUED',
+        storeId: 'legacy-store-alias',
+        client_id: 'legacy-client-id',
         operatingStoreId: 'store-1',
-        configuration: { targetCount: 20, sourceType: '0' },
+        dataCollectionStoreId: 'legacy-data-store',
+        sellerCompanyId: 'legacy-seller-company',
+        legacyScope: {
+            operatingStoreId: 'store-1',
+            dataCollectionStoreId: 'legacy-data-store',
+            sellerCompanyId: 'must-not-be-public',
+        },
+        configuration: {
+            targetCount: 20,
+            sourceType: '0',
+            nested: {
+                operatingStoreId: 'nested-operating',
+                dataCollectionStoreId: 'nested-data',
+                sellerCompanyId: 'nested-seller',
+                keep: true,
+            },
+        },
     });
     assert.equal(task._id, 'task-1');
     assert.equal(task.taskName, '类目采集');
     assert.equal(task.taskStatus, 'pending');
     assert.equal(task.targetCount, 20);
+    assert.equal(task.operatingStoreId, null);
+    assert.equal(Object.hasOwn(task, 'storeId'), false);
+    assert.equal(Object.hasOwn(task, 'client_id'), false);
+    assert.equal(Object.hasOwn(task, 'dataCollectionStoreId'), false);
+    assert.equal(Object.hasOwn(task, 'sellerCompanyId'), false);
+    assert.deepEqual(task.configuration.nested, { keep: true });
+    assert.deepEqual(task.legacyScope, {
+        operatingStoreId: 'store-1',
+        dataCollectionStoreId: 'legacy-data-store',
+    });
 });
 
 test('maps recovered UI task filters to the Sonli list contract', () => {
@@ -42,7 +70,7 @@ test('clamps task concurrency to 2-20 and defaults to 4', () => {
     assert.equal(toCollectorTaskPayload({ taskName: 'a', concurrency: 99 }).concurrency, 20);
 });
 
-test('removes direct publish controls from persisted task configuration', () => {
+test('builds a store-neutral task payload and omits retired authorization scope', () => {
     const legacyKey = ['isUse', 'Auto', 'Up', 'Goods'].join('');
     const payload = toCollectorTaskPayload({
         taskName: '安全任务',
@@ -50,11 +78,23 @@ test('removes direct publish controls from persisted task configuration', () => 
         token: 'must-not-persist',
         client_id: 'operating-store',
         dataCollectionStoreId: 'data-store',
+        sellerCompanyId: 'seller-company',
+        filters: {
+            operatingStoreId: 'nested-operating',
+            dataCollectionStoreId: 'nested-data',
+            sellerCompanyId: 'nested-seller',
+            keep: true,
+        },
     });
-    assert.equal(payload.operatingStoreId, 'operating-store');
-    assert.equal(payload.dataCollectionStoreId, 'data-store');
+    assert.equal(payload.operatingStoreId, null);
+    assert.equal(Object.hasOwn(payload, 'dataCollectionStoreId'), false);
+    assert.equal(Object.hasOwn(payload, 'sellerCompanyId'), false);
     assert.equal(Object.hasOwn(payload.configuration, legacyKey), false);
     assert.equal(Object.hasOwn(payload.configuration, 'token'), false);
+    assert.equal(Object.hasOwn(payload.configuration, 'client_id'), false);
+    assert.equal(Object.hasOwn(payload.configuration, 'dataCollectionStoreId'), false);
+    assert.equal(Object.hasOwn(payload.configuration, 'sellerCompanyId'), false);
+    assert.deepEqual(payload.configuration.filters, { keep: true });
 });
 
 test('does not recursively persist the previous server configuration', () => {

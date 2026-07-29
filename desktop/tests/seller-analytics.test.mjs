@@ -14,21 +14,30 @@ test('normalizes seller company cookie values', () => {
     assert.equal(normalizeSellerCompanyId('  abc-01  '), 'abc-01');
 });
 
-test('rejects a Seller store switch after a run has frozen its scope', () => {
+test('keys Seller Analytics context by account and stable source identity', () => {
     assert.doesNotThrow(() => assertSellerRunContext({
-        sellerCompanyId: 'company-1',
-        dataCollectionStoreId: 'data-1',
+        accountId: 'account-1',
+        sourceIdentity: 'seller-page:company-1',
+        sellerCompanyId: 'company-new-cookie',
     }, {
-        sellerCompanyId: 'company-1',
-        dataCollectionStoreId: 'data-1',
+        accountId: 'account-1',
+        sourceIdentity: 'seller-page:company-1',
+        sellerCompanyId: 'company-old-cookie',
     }));
     assert.throws(() => assertSellerRunContext({
-        sellerCompanyId: 'company-2',
-        dataCollectionStoreId: 'data-2',
+        accountId: 'account-2',
+        sourceIdentity: 'seller-page:company-1',
     }, {
-        sellerCompanyId: 'company-1',
-        dataCollectionStoreId: 'data-1',
-    }), (error) => error.code === 'SELLER_STORE_CHANGED');
+        accountId: 'account-1',
+        sourceIdentity: 'seller-page:company-1',
+    }), (error) => error.code === 'SELLER_SOURCE_CONTEXT_CHANGED');
+    assert.throws(() => assertSellerRunContext({
+        accountId: 'account-1',
+        sourceIdentity: 'seller-page:company-2',
+    }, {
+        accountId: 'account-1',
+        sourceIdentity: 'seller-page:company-1',
+    }), (error) => error.code === 'SELLER_SOURCE_CONTEXT_CHANGED');
 });
 
 test('builds monthly SKU payload with string paging fields', () => {

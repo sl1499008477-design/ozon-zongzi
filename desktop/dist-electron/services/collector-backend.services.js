@@ -17,19 +17,13 @@ function unwrapRun(payload) {
     return payload?.run || payload?.data?.run || payload?.data || payload;
 }
 
-async function hydrateTaskScope(data) {
-    if (data.operatingStoreId && data.dataCollectionStoreId)
-        return data;
-    const statePayload = await sonliRequest({ method: 'get', url: '/local/state' });
-    const state = statePayload?.state || statePayload?.data || statePayload || {};
-    data.operatingStoreId = data.operatingStoreId
-        || String(state.currentStoreId || state.binding?.id || '');
-    data.dataCollectionStoreId = data.dataCollectionStoreId
-        || String(state.currentDataCollectionStoreId || state.dataCollectionStore?.id || '');
-    if (!data.operatingStoreId)
-        throw new Error('请先在 sonli 经营店铺页面选择经营店铺');
-    if (!data.dataCollectionStoreId)
-        throw new Error('请先在 sonli 经营店铺页面设置数据采集店铺');
+function withoutRetiredScope(input = {}) {
+    const data = { ...(input || {}) };
+    delete data.accountId;
+    delete data.storeId;
+    delete data.operatingStoreId;
+    delete data.dataCollectionStoreId;
+    delete data.sellerCompanyId;
     return data;
 }
 
@@ -43,7 +37,7 @@ export function getDesktopDeviceId() {
 }
 
 export async function createCollectorTask(input) {
-    const data = await hydrateTaskScope(toCollectorTaskPayload(input));
+    const data = withoutRetiredScope(toCollectorTaskPayload(input));
     const payload = await sonliRequest({
         method: 'post',
         url: '/collector/tasks',
@@ -58,7 +52,7 @@ export async function getCollectorTask(id) {
 }
 
 export async function updateCollectorTask(id, input, expectedVersion) {
-    const data = toCollectorTaskPayload(input);
+    const data = withoutRetiredScope(toCollectorTaskPayload(input));
     if (expectedVersion != null)
         data.expectedVersion = expectedVersion;
     const payload = await sonliRequest({
@@ -110,7 +104,6 @@ export async function createCollectorRun(id, options = {}) {
         data: {
             idempotencyKey: options.idempotencyKey || randomUUID(),
             pricingConfigVersionId: options.pricingConfigVersionId || undefined,
-            dataCollectionStoreId: options.dataCollectionStoreId || undefined,
         },
     });
     return unwrapRun(payload);
@@ -206,36 +199,27 @@ export function cancelCollectorRun(runId, leaseToken, resultSummary = {}) {
     });
 }
 
-export function verifyDataCollectionStore(companyIds, requestId = randomUUID()) {
-    const ids = [...new Set((Array.isArray(companyIds) ? companyIds : [companyIds])
-        .map((value) => String(value || '').trim())
-        .filter(Boolean))];
+export function saveCollectorMarketSnapshot(snapshot) {
     return sonliRequest({
         method: 'post',
-        url: '/local/data-collection-stores/verify',
-        data: {
-            sellerCompanyId: ids[0] || '',
-            sellerCompanyIds: ids,
-            requestId,
-        },
+        url: '/collector/market-snapshots',
+        data: withoutRetiredScope(snapshot),
     });
 }
 
-export function saveCollectorMarketSnapshot(snapshot) {
-    return sonliRequest({ method: 'post', url: '/collector/market-snapshots', data: snapshot });
+export function getCollectorCategoryMappings(params = {}) {
+    return sonliRequest({
+        method: 'get',
+        url: '/collector/category-mappings',
+        params: withoutRetiredScope(params),
+    });
 }
 
-export async function getCollectorCategoryMappings(params = {}) {
-    const scopedParams = await hydrateTaskScope({ ...params });
-    return sonliRequest({ method: 'get', url: '/collector/category-mappings', params: scopedParams });
-}
-
-export async function saveCollectorCategoryMapping(mapping = {}) {
-    const scopedMapping = await hydrateTaskScope({ ...mapping });
+export function saveCollectorCategoryMapping(mapping = {}) {
     return sonliRequest({
         method: 'post',
         url: '/collector/category-mappings',
-        data: scopedMapping,
+        data: withoutRetiredScope(mapping),
     });
 }
 

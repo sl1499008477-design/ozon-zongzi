@@ -14,21 +14,59 @@ export function objectValue(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+const RETIRED_SCOPE_KEY = /^(?:accountId|createdBy|client_id|storeId|store_id|operatingStoreId|operating_store_id|dataCollectionStoreId|data_collection_store_id|sellerCompanyId|seller_company_id|legacyScope)$/i;
+
+function withoutRetiredScope(value) {
+    if (Array.isArray(value))
+        return value.map(withoutRetiredScope);
+    if (!value || typeof value !== 'object')
+        return value;
+    const result = {};
+    for (const [key, nested] of Object.entries(value)) {
+        if (!RETIRED_SCOPE_KEY.test(key))
+            result[key] = withoutRetiredScope(nested);
+    }
+    return result;
+}
+
 export function normalizeCollectorTask(raw = {}) {
     const source = objectValue(raw.task || raw);
     const configuration = objectValue(source.configuration || source.config || source.taskConfig);
     const id = String(source.id || source._id || source.taskId || '');
     const rawStatus = String(source.status || source.taskStatus || 'NOT_STARTED');
-    return {
-        ...configuration,
-        ...source,
+    const sourceLegacyScope = objectValue(source.legacyScope);
+    const legacyOperatingStoreId = sourceLegacyScope.operatingStoreId
+        || source.operatingStoreId
+        || source.storeId
+        || configuration.operatingStoreId
+        || configuration.storeId;
+    const legacyDataCollectionStoreId = sourceLegacyScope.dataCollectionStoreId
+        || source.dataCollectionStoreId
+        || configuration.dataCollectionStoreId;
+    const legacyScope = {
+        ...(legacyOperatingStoreId
+            ? { operatingStoreId: String(legacyOperatingStoreId) }
+            : {}),
+        ...(legacyDataCollectionStoreId
+            ? { dataCollectionStoreId: String(legacyDataCollectionStoreId) }
+            : {}),
+    };
+    const publicConfiguration = objectValue(withoutRetiredScope(configuration));
+    const publicSource = objectValue(withoutRetiredScope(source));
+    const normalized = {
+        ...publicConfiguration,
+        ...publicSource,
         _id: id,
         taskId: id,
         taskName: source.name || source.taskName || configuration.taskName || '未命名任务',
         taskStatus: FRONTEND_STATUS[rawStatus.toUpperCase()] || rawStatus,
-        operatingStoreId: source.operatingStoreId || configuration.operatingStoreId || '',
-        dataCollectionStoreId: source.dataCollectionStoreId || configuration.dataCollectionStoreId || '',
+        operatingStoreId: null,
+        configuration: publicConfiguration,
+        ...(Object.keys(legacyScope).length ? { legacyScope } : {}),
     };
+    delete normalized.dataCollectionStoreId;
+    delete normalized.sellerCompanyId;
+    return normalized;
 }
 
 export function toCollectorTaskPayload(input = {}) {
@@ -61,9 +99,8 @@ export function toCollectorTaskPayload(input = {}) {
     return {
         name: String(source.taskName || source.name || '未命名任务').trim(),
         taskType: String(source.taskType || (+source.isUseCategorySelect === 0 ? 'CATEGORY' : 'URL')).toUpperCase(),
-        operatingStoreId: String(source.operatingStoreId || source.storeId || source.client_id || ''),
-        dataCollectionStoreId: String(source.dataCollectionStoreId || ''),
-        configuration,
+        operatingStoreId: null,
+        configuration: withoutRetiredScope(configuration),
         concurrency,
     };
 }

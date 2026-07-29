@@ -5,6 +5,29 @@ import {
   XLSX_CONTENT_TYPE,
 } from "../collector-export-service.mjs";
 
+let missingAccountSideEffects = 0;
+await assert.rejects(
+  () => generateCollectorRunExcelExport({ runId: "run-without-account" }, {
+    service: {
+      createCollectorExport: async () => {
+        missingAccountSideEffects += 1;
+        return { id: "must-not-exist" };
+      },
+      updateCollectorExport: async () => {
+        missingAccountSideEffects += 1;
+        return { id: "must-not-exist" };
+      },
+      listCollectorRunItems: async () => {
+        missingAccountSideEffects += 1;
+        return [];
+      },
+    },
+    buildExcel: async () => Buffer.from("must-not-build"),
+  }),
+  (error) => error?.code === "COLLECTOR_ACCOUNT_REQUIRED",
+);
+assert.equal(missingAccountSideEffects, 0);
+
 const transitions = [];
 const pages = [
   [{ id: "item-1", exportData: { id: "sku-1" } }],

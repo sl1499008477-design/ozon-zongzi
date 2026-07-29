@@ -22,6 +22,16 @@ function sourceRow(item = {}) {
 
 function collectPayload(item, run) {
   const raw = sourceRow(item);
+  for (const field of [
+    "accountId",
+    "createdBy",
+    "storeId",
+    "operatingStoreId",
+    "dataCollectionStoreId",
+    "sellerCompanyId",
+  ]) {
+    delete raw[field];
+  }
   const sku = clean(raw.sku || raw.productId || raw.product_id || item.sourceSku || item.sourceKey, 240);
   if (!sku) throw selectionError("采集结果缺少 SKU", 422, "COLLECTOR_SELECTION_SKU_MISSING");
   const productUrl = clean(raw.productUrl || raw.url || raw.link || item.sourceUrl, 2000);

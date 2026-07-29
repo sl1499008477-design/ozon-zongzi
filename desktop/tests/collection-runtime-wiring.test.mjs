@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
 const loaderPath = fileURLToPath(new URL('./fixtures/desktop-module-loader.mjs', import.meta.url));
 const taskManagerUrl = new URL('../dist-electron/services/collection/task-manager.services.js', import.meta.url).href;
+const collectorBackendUrl = new URL('../dist-electron/services/collector-backend.services.js', import.meta.url).href;
 
 test('TaskManager wires the lease-aware Collection contract and cleans lifecycle state', () => {
   const userData = mkdtempSync(join(tmpdir(), 'sonli-desktop-contract-'));
@@ -17,6 +18,12 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     import { mkdirSync, unlinkSync, writeFileSync, symlinkSync } from 'node:fs';
     import { join } from 'node:path';
     import { TaskManager } from ${JSON.stringify(taskManagerUrl)};
+    import {
+      createCollectorTask,
+      createCollectorRun,
+      saveCollectorCategoryMapping,
+      saveCollectorMarketSnapshot,
+    } from ${JSON.stringify(collectorBackendUrl)};
     import { SysTemUtils } from ${JSON.stringify(new URL('../dist-electron/utils/system.js', import.meta.url).href)};
     import { buildTaskExcelPath } from ${JSON.stringify(new URL('../dist-electron/services/collection/excel-path.core.js', import.meta.url).href)};
 
@@ -33,18 +40,57 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     collection.restoreRun({
       id: 'run-1',
       status: 'QUEUED',
-      dataCollectionStoreId: 'store-1',
-      configurationSnapshot: { sellerCompanyId: 'seller-1' },
+      accountId: 'account-1',
+      source: 'ozon',
     });
     assert.equal(collection.getRunId(), 'run-1');
     collection.applyVerifiedSellerScope({
-      dataCollectionStoreId: 'store-1',
-      sellerCompanyId: 'seller-1',
+      accountId: 'account-1',
+      sourceIdentity: 'seller-page:company-1',
+      sellerCompanyId: 'company-1',
     });
     assert.deepEqual(collection.sellerContext, {
-      dataCollectionStoreId: 'store-1',
-      sellerCompanyId: 'seller-1',
+      accountId: 'account-1',
+      source: 'ozon_seller_analytics',
+      sourceIdentity: 'seller-page:company-1',
     });
+
+    globalThis.__DESKTOP_AXIOS_REQUESTS__ = [];
+    await createCollectorTask({
+      taskName: 'account only',
+      operatingStoreId: 'legacy-operating',
+      dataCollectionStoreId: 'legacy-data',
+      sellerCompanyId: 'legacy-company',
+    });
+    await createCollectorRun('task-1', {
+      idempotencyKey: 'run-intent-1',
+      dataCollectionStoreId: 'legacy-data',
+    });
+    await saveCollectorMarketSnapshot({
+      operatingStoreId: 'legacy-operating',
+      dataCollectionStoreId: 'legacy-data',
+      sellerCompanyId: 'legacy-company',
+      source: 'ozon_seller_analytics',
+      sourceSku: 'sku-1',
+      payload: { sku: 'sku-1' },
+    });
+    await saveCollectorCategoryMapping({
+      operatingStoreId: 'legacy-operating',
+      dataCollectionStoreId: 'legacy-data',
+      sellerCompanyId: 'legacy-company',
+      source: 'ozon_seller_analytics',
+      rootCategoryId: 'root',
+      leafCategoryId: 'leaf',
+    });
+    const requests = globalThis.__DESKTOP_AXIOS_REQUESTS__;
+    assert.equal(requests.some(({ url }) => url === '/local/state'), false);
+    const scopeFields = ['operatingStoreId', 'dataCollectionStoreId', 'sellerCompanyId'];
+    for (const request of requests) {
+      for (const field of scopeFields) {
+        assert.equal(Object.hasOwn(request.data || {}, field), false, request.url + ' must omit ' + field);
+        assert.equal(Object.hasOwn(request.params || {}, field), false, request.url + ' must omit query ' + field);
+      }
+    }
 
     const excelRoot = join(process.env.DESKTOP_TEST_USER_DATA, 'excel');
     mkdirSync(excelRoot, { recursive: true });

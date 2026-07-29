@@ -35,9 +35,6 @@ export class DataProcessService {
             });
             if (this.sellerContext?.runId) {
                 await Promise.allSettled(analytics.map((item) => saveCollectorMarketSnapshot({
-                    operatingStoreId: this.sellerContext.operatingStoreId,
-                    dataCollectionStoreId: this.sellerContext.dataCollectionStoreId,
-                    sellerCompanyId: this.sellerContext.sellerCompanyId,
                     taskId: this.sellerContext.taskId,
                     runId: this.sellerContext.runId,
                     sourceSku: String(item.sku || item.id || ''),
@@ -57,9 +54,6 @@ export class DataProcessService {
                     if (!rootCategoryId || !leafCategoryId)
                         return null;
                     return saveCollectorCategoryMapping({
-                        operatingStoreId: this.sellerContext.operatingStoreId,
-                        dataCollectionStoreId: this.sellerContext.dataCollectionStoreId,
-                        sellerCompanyId: this.sellerContext.sellerCompanyId,
                         rootCategoryId,
                         rootCategoryName: item.category1 || item.category2 || item.category3 || item.category4 || rootCategoryId,
                         leafCategoryId,
@@ -124,8 +118,6 @@ export class DataProcessService {
                 operation: upMode == 2 ? 'goodsFilter2' : 'goodsFilter',
                 mode: upMode == 2 ? 'profit' : 'pricing',
                 taskId,
-                operatingStoreId: this.task.operatingStoreId || this.task.storeId || '',
-                dataCollectionStoreId: this.task.dataCollectionStoreId || '',
                 task: this.task,
                 items: reqDatas,
             });

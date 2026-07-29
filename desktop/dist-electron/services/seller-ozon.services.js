@@ -2,7 +2,6 @@ import { BrowserWindow, session } from 'electron';
 import { runtimeConfig } from '../config/runtime.js';
 import { getAccountPartition } from './session.services.js';
 import { operationStore } from '../store/index.js';
-import { verifyDataCollectionStore } from './collector-backend.services.js';
 import {
     buildSellerLeaderboardPayload,
     buildSellerSkuPayload,
@@ -55,7 +54,21 @@ function abortable(promise, signal) {
 
 function accountIdentity() {
     const user = operationStore.get('user') || {};
-    return String(user._id || user.id || user.phone || 'anonymous');
+    return String(user._id || user.id || user.phone || '');
+}
+
+function sellerSourceContext(companyIds) {
+    const accountId = accountIdentity();
+    if (!accountId) {
+        const error = new Error('请先登录 sonli 账号');
+        error.code = 'SELLER_ACCOUNT_REQUIRED';
+        throw error;
+    }
+    return {
+        accountId,
+        source: 'ozon_seller_analytics',
+        sourceIdentity: `seller-page:${[...companyIds].map(normalizeSellerCompanyId).filter(Boolean).sort().join(',')}`,
+    };
 }
 
 function isOzonHttps(value) {
@@ -202,7 +215,7 @@ export async function getSellerSessionStatus({ verify = false } = {}) {
     let verificationError = '';
     if (verify && companyIds.length) {
         try {
-            verification = await verifyDataCollectionStore(companyIds);
+            verification = sellerSourceContext(companyIds);
         }
         catch (error) {
             verificationError = error.message;
@@ -235,22 +248,10 @@ export async function verifyCurrentSellerStore(expectedContext = {}) {
         error.code = 'SELLER_LOGIN_REQUIRED';
         throw error;
     }
-    const expectedCompanyId = normalizeSellerCompanyId(expectedContext.sellerCompanyId);
-    if (expectedCompanyId && !companyIds.includes(expectedCompanyId)) {
-        assertSellerRunContext({
-            sellerCompanyId: companyIds[0] || '',
-            dataCollectionStoreId: '',
-        }, expectedContext);
-    }
-    const verification = await verifyDataCollectionStore(companyIds);
     const result = {
-        ...verification,
+        ...sellerSourceContext(companyIds),
         companyIds,
-        sellerCompanyId: String(
-            verification?.matchedSellerCompanyId
-            || verification?.store?.sellerCompanyId
-            || companyIds[0],
-        ),
+        sellerCompanyId: String(companyIds[0]),
     };
     assertSellerRunContext(result, expectedContext);
     return result;

@@ -177,6 +177,33 @@ assert.equal(exportPriority.id, "export-camel");
 assert.equal(exportPriority.nameLabel, "export camel");
 assert.equal(exportPriority.price, 900);
 
+const legacyScopeRow = resolveCollectorExcelRow({
+  id: "legacy-wrapper",
+  operatingStoreId: "legacy-operating",
+  dataCollectionStoreId: "legacy-data",
+  rawPayload: {
+    operatingStoreId: "raw-operating",
+    dataCollectionStoreId: "raw-data",
+    sellerCompanyId: "raw-seller",
+  },
+  exportData: {
+    operatingStoreId: "export-operating",
+    dataCollectionStoreId: "export-data",
+    sellerCompanyId: "export-seller",
+  },
+  legacyScope: {
+    operatingStoreId: "legacy-operating",
+    dataCollectionStoreId: "legacy-data",
+  },
+});
+assert.equal(Object.hasOwn(legacyScopeRow, "operatingStoreId"), false);
+assert.equal(Object.hasOwn(legacyScopeRow, "dataCollectionStoreId"), false);
+assert.equal(Object.hasOwn(legacyScopeRow, "sellerCompanyId"), false);
+assert.deepEqual(legacyScopeRow.legacyScope, {
+  operatingStoreId: "legacy-operating",
+  dataCollectionStoreId: "legacy-data",
+});
+
 const rowValues = collectorExcelRowValues({
   rawPayload: { id: "raw", nameLabel: "raw title", price: 800 },
   exportData: { id: "export", nameLabel: "export title", price: 900, otherProfit: 12.5 },

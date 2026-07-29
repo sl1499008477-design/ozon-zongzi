@@ -795,8 +795,6 @@ export class Collection {
                 operation: this.collectionTask.upMode == 2 ? 'goodsFilter2' : 'goodsFilter',
                 mode: this.collectionTask.upMode == 2 ? 'profit' : 'pricing',
                 taskId: this.collectionTask._id,
-                operatingStoreId: this.collectionTask.operatingStoreId || this.collectionTask.storeId || '',
-                dataCollectionStoreId: this.collectionTask.dataCollectionStoreId || '',
                 task: this.collectionTask,
                 items: filteredData,
             });

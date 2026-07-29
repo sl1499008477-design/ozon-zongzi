@@ -6,6 +6,13 @@ const permissionByAction = Object.freeze({
   readJob: "collector.job.read",
   readConfig: "collector.config.read",
 });
+const RETIRED_SCOPE_FIELDS = Object.freeze([
+  "accountId",
+  "storeId",
+  "operatingStoreId",
+  "dataCollectionStoreId",
+  "sellerCompanyId",
+]);
 
 function routeError(message, status = 400, code = "COLLECTOR_ROUTE_INVALID_REQUEST") {
   return Object.assign(new Error(message), { status, code });
@@ -115,7 +122,10 @@ export function createCollectorHttpHandler({
 
   const routes = [
     compile(/^\/collector\/health\/?$/, {
-      GET: async () => ({ status: 200, payload: { health: await service.collectorDesktopHealth() } }),
+      GET: async ({ account }) => ({
+        status: 200,
+        payload: { health: await service.collectorDesktopHealth(account.id) },
+      }),
     }),
     compile(/^\/collector\/devices\/?$/, {
       GET: async ({ account }) => ({ devices: await service.listCollectorDevices(account.id) }),
@@ -135,8 +145,6 @@ export function createCollectorHttpHandler({
         status: url.searchParams.get("status") || "",
         query: url.searchParams.get("query") || "",
         taskName: url.searchParams.get("taskName") || url.searchParams.get("name") || "",
-        operatingStoreId: url.searchParams.get("operatingStoreId") || "",
-        dataCollectionStoreId: url.searchParams.get("dataCollectionStoreId") || "",
         includeDeleted: toBoolean(url.searchParams.get("includeDeleted")),
         page: toNumber(url.searchParams.get("page")) ?? 1,
         pageSize: toNumber(url.searchParams.get("pageSize")) ?? 50,
@@ -145,7 +153,7 @@ export function createCollectorHttpHandler({
         status: 201,
         payload: {
           task: await service.createCollectorTask({
-            ...withoutKeys(body, ["accountId", "createdBy"]),
+            ...withoutKeys(body, [...RETIRED_SCOPE_FIELDS, "createdBy"]),
             accountId: account.id,
             createdBy: account.id,
           }),
@@ -177,7 +185,6 @@ export function createCollectorHttpHandler({
         const result = await service.queueCollectorTaskRun({
           accountId: account.id,
           taskId: decodeURIComponent(match[1]),
-          dataCollectionStoreId: body.dataCollectionStoreId || "",
           idempotencyKey: body.idempotencyKey || "",
           pricingConfigVersionId: body.pricingConfigVersionId || "",
           requestedBy: account.id,
@@ -279,9 +286,7 @@ export function createCollectorHttpHandler({
       GET: async ({ account, url }) => ({
         snapshots: await service.listCollectorMarketSnapshots({
           accountId: account.id,
-          operatingStoreId: url.searchParams.get("operatingStoreId") || "",
-          dataCollectionStoreId: url.searchParams.get("dataCollectionStoreId") || "",
-          sellerCompanyId: url.searchParams.get("sellerCompanyId") || "",
+          source: url.searchParams.get("source") || "ozon_seller_analytics",
           sourceSku: url.searchParams.get("sourceSku") || "",
           categoryId: url.searchParams.get("categoryId") || "",
           period: url.searchParams.get("period") || "",
@@ -291,7 +296,7 @@ export function createCollectorHttpHandler({
       }),
       POST: async ({ account, body }) => ({
         snapshot: await service.upsertCollectorMarketSnapshot({
-          ...withoutKeys(body, ["accountId"]),
+          ...withoutKeys(body, RETIRED_SCOPE_FIELDS),
           accountId: account.id,
         }),
       }),
@@ -300,9 +305,6 @@ export function createCollectorHttpHandler({
       GET: async ({ account, url }) => ({
         mappings: await service.listCollectorCategoryMappings({
           accountId: account.id,
-          operatingStoreId: url.searchParams.get("operatingStoreId") || "",
-          dataCollectionStoreId: url.searchParams.get("dataCollectionStoreId") || "",
-          sellerCompanyId: url.searchParams.get("sellerCompanyId") || "",
           source: url.searchParams.get("source") || "ozon_seller_analytics",
           rootCategoryId: url.searchParams.get("rootCategoryId") || "",
           status: url.searchParams.get("status") || "ACTIVE",
@@ -311,7 +313,7 @@ export function createCollectorHttpHandler({
       }),
       POST: async ({ account, body }) => ({
         mapping: await service.upsertCollectorCategoryMapping({
-          ...withoutKeys(body, ["accountId"]),
+          ...withoutKeys(body, RETIRED_SCOPE_FIELDS),
           accountId: account.id,
         }),
       }),
@@ -324,8 +326,8 @@ export function createCollectorHttpHandler({
         accountId: account.id,
         taskId: decodeURIComponent(match[1]),
         patch: body.patch && typeof body.patch === "object"
-          ? withoutKeys(body.patch, ["accountId", "createdBy"])
-          : withoutKeys(body, ["accountId", "createdBy", "expectedVersion"]),
+          ? withoutKeys(body.patch, [...RETIRED_SCOPE_FIELDS, "createdBy"])
+          : withoutKeys(body, [...RETIRED_SCOPE_FIELDS, "createdBy", "expectedVersion"]),
         expectedVersion: body.expectedVersion ?? null,
       }),
     };

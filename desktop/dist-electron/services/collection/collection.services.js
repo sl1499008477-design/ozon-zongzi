@@ -22,6 +22,7 @@ import {
     saveCollectorMarketSnapshot,
 } from '../collector-backend.services.js';
 import { fetchSellerLeaderboard, verifyCurrentSellerStore } from '../seller-ozon.services.js';
+import { assertSellerRunContext } from '../seller-analytics.core.js';
 export class Collection {
     uuid = undefined;
     task; // 任务信息
@@ -87,32 +88,19 @@ export class Collection {
         this.preparedClean = false;
         this.uuid = String(run.idempotencyKey || randomUUID());
         this.task.currentRunId = runId;
-        this.task.dataCollectionStoreId = run.dataCollectionStoreId || this.task.dataCollectionStoreId;
         this.task.taskStatus = String(run.status || '').toUpperCase() === 'QUEUED' ? 'pending' : 'running';
         return runId;
     }
 
     applyVerifiedSellerScope(verification, run = this.preparedRun || {}) {
-        const dataCollectionStoreId = String(
-            verification.dataCollectionStoreId
-            || verification.store?.id
-            || this.task.dataCollectionStoreId
-            || '',
-        );
-        const sellerCompanyId = String(verification.sellerCompanyId || '');
-        const frozenDataStoreId = String(run.dataCollectionStoreId || dataCollectionStoreId);
-        const frozenSellerCompanyId = String(run.configurationSnapshot?.sellerCompanyId || sellerCompanyId);
-        if ((frozenDataStoreId && dataCollectionStoreId !== frozenDataStoreId)
-            || (frozenSellerCompanyId && sellerCompanyId !== frozenSellerCompanyId)) {
-            const error = new Error('当前 Seller 店铺与任务冻结的数据店铺不一致，请切回原店铺后重试');
-            error.code = 'SELLER_STORE_CHANGED';
-            throw error;
-        }
-        this.task.dataCollectionStoreId = frozenDataStoreId;
-        this.sellerContext = {
-            sellerCompanyId: frozenSellerCompanyId,
-            dataCollectionStoreId: frozenDataStoreId,
+        const current = {
+            accountId: String(verification.accountId || ''),
+            source: String(verification.source || 'ozon_seller_analytics'),
+            sourceIdentity: String(verification.sourceIdentity || ''),
         };
+        const expected = this.sellerContext || run.configurationSnapshot?.sourceContext || {};
+        assertSellerRunContext(current, expected);
+        this.sellerContext = current;
     }
 
     async prepareRun() {
@@ -125,7 +113,6 @@ export class Collection {
         const run = await createCollectorRun(this.task._id, {
             idempotencyKey: this.uuid,
             pricingConfigVersionId: this.task.pricingConfigVersionId,
-            dataCollectionStoreId: this.task.dataCollectionStoreId,
         });
         this.restoreRun(run);
         this.preparedClean = true;
@@ -179,7 +166,6 @@ export class Collection {
                     ...this.sellerContext,
                     taskId: this.task._id,
                     runId: this.runId,
-                    operatingStoreId: this.task.operatingStoreId || this.task.storeId || '',
                 });
                 this.startHeartbeat();
                 this.updateStatus('running');
@@ -373,11 +359,6 @@ export class Collection {
                 }
         });
         await Promise.allSettled(list.map((item) => saveCollectorMarketSnapshot({
-            operatingStoreId: this.task.operatingStoreId || this.task.storeId || '',
-            dataCollectionStoreId: data.verification?.dataCollectionStoreId
-                || data.verification?.store?.id
-                || this.task.dataCollectionStoreId,
-            sellerCompanyId: data.verification?.sellerCompanyId || '',
             taskId: this.task._id,
             runId: this.runId,
             sourceSku: String(item.sku || item.id || ''),
@@ -397,11 +378,6 @@ export class Collection {
             if (!rootCategoryId || !leafCategoryId)
                 return null;
             return saveCollectorCategoryMapping({
-                operatingStoreId: this.task.operatingStoreId || this.task.storeId || '',
-                dataCollectionStoreId: data.verification?.dataCollectionStoreId
-                    || data.verification?.store?.id
-                    || this.task.dataCollectionStoreId,
-                sellerCompanyId: data.verification?.sellerCompanyId || '',
                 rootCategoryId,
                 rootCategoryName: item.category1 || item.category2 || item.category3 || item.category4 || rootCategoryId,
                 leafCategoryId,

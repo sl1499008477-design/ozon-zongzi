@@ -96,10 +96,6 @@ function boundedInteger(value, { label, min = 0, max = Number.MAX_SAFE_INTEGER, 
   return result;
 }
 
-function normalizeCompanyId(value) {
-  return clean(value, 80).replace(/[^\d]/g, "");
-}
-
 function sha256(value) {
   return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
 }
@@ -134,12 +130,44 @@ function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value || {}, key);
 }
 
+const RUNTIME_SCOPE_KEYS = new Set([
+  "accountId",
+  "createdBy",
+  "client_id",
+  "storeId",
+  "store_id",
+  "operatingStoreId",
+  "operating_store_id",
+  "dataCollectionStoreId",
+  "data_collection_store_id",
+  "sellerCompanyId",
+  "seller_company_id",
+  "legacyScope",
+]);
+
+function withoutRuntimeScope(value = {}) {
+  if (Array.isArray(value)) return value.map((item) => withoutRuntimeScope(item));
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (!RUNTIME_SCOPE_KEYS.has(key)) result[key] = withoutRuntimeScope(nested);
+  }
+  return result;
+}
+
 function normalizeStatus(value, allowed, label) {
   const result = clean(value, 80).toUpperCase();
   if (!allowed.includes(result)) {
     throw serviceError(`${label}无效`, 422, "COLLECTOR_INVALID_STATUS");
   }
   return result;
+}
+
+function readOnlyLegacyScope(row = {}) {
+  const legacyScope = {};
+  if (row.operating_store_id) legacyScope.operatingStoreId = row.operating_store_id;
+  if (row.data_collection_store_id) legacyScope.dataCollectionStoreId = row.data_collection_store_id;
+  return Object.keys(legacyScope).length ? legacyScope : null;
 }
 
 export function canTransitionCollectorTask(fromStatus, toStatus) {
@@ -167,11 +195,12 @@ function assertRunTransition(fromStatus, toStatus) {
 }
 
 function mapTask(row = {}) {
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: row.id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     name: row.name || "",
     taskType: row.task_type || "",
     source: row.source || "ozon",
@@ -179,7 +208,7 @@ function mapTask(row = {}) {
     statusVersion: Number(row.status_version || 1),
     concurrency: Number(row.concurrency || 4),
     currentRunId: row.current_run_id || "",
-    configuration: row.configuration || {},
+    configuration: withoutRuntimeScope(row.configuration || {}),
     lastErrorCode: row.last_error_code || "",
     lastErrorMessage: row.last_error_message || "",
     createdBy: row.created_by || "",
@@ -197,18 +226,19 @@ function mapRun(row = {}) {
     filteredCount: Number(row.filtered_count || 0),
     failedCount: Number(row.failed_count || 0),
   };
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: row.id || "",
     taskId: row.task_id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     pricingConfigVersionId: row.pricing_config_version_id || "",
     runNo: Number(row.run_no || 0),
     status: row.status || "QUEUED",
     statusVersion: Number(row.status_version || 1),
     idempotencyKey: row.idempotency_key || "",
-    configurationSnapshot: row.configuration_snapshot || {},
+    configurationSnapshot: withoutRuntimeScope(row.configuration_snapshot || {}),
     claimedByDeviceId: row.claimed_by_device_id || "",
     lockExpiresAt: row.lock_expires_at || null,
     heartbeatAt: row.heartbeat_at || null,
@@ -247,13 +277,14 @@ function mapDevice(row = {}) {
 }
 
 function mapItem(row = {}) {
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: row.id || "",
     taskId: row.task_id || "",
     runId: row.run_id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     collectItemId: row.collect_item_id || "",
     source: row.source || "ozon",
     sourceKey: row.source_key || "",
@@ -278,13 +309,14 @@ function mapItem(row = {}) {
 }
 
 function mapEvent(row = {}) {
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: Number(row.id || 0),
     taskId: row.task_id || "",
     runId: row.run_id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     fromStatus: row.from_status || "",
     toStatus: row.to_status || "",
     eventType: row.event_type || "",
@@ -298,13 +330,14 @@ function mapEvent(row = {}) {
 }
 
 function mapExport(row = {}) {
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: row.id || "",
     taskId: row.task_id || "",
     runId: row.run_id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     fileId: row.file_id || "",
     version: Number(row.version || 0),
     status: row.status || "PENDING",
@@ -325,14 +358,14 @@ function mapExport(row = {}) {
 }
 
 function mapMarketSnapshot(row = {}) {
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: row.id || "",
     taskId: row.task_id || "",
     runId: row.run_id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
-    sellerCompanyId: row.seller_company_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     source: row.source || "ozon_seller_analytics",
     snapshotKey: row.snapshot_key || "",
     sourceSku: row.source_sku || "",
@@ -352,11 +385,12 @@ function mapMarketSnapshot(row = {}) {
 }
 
 function mapCategoryMapping(row = {}) {
+  const legacyScope = readOnlyLegacyScope(row);
   return {
     id: row.id || "",
     accountId: row.account_id || "",
-    operatingStoreId: row.operating_store_id || "",
-    dataCollectionStoreId: row.data_collection_store_id || "",
+    operatingStoreId: null,
+    ...(legacyScope ? { legacyScope } : {}),
     source: row.source || "ozon_seller_analytics",
     rootCategoryId: row.root_category_id || "",
     rootCategoryName: row.root_category_name || "",
@@ -401,15 +435,7 @@ async function transaction(callback) {
   }
 }
 
-async function validateScopeWithClient(client, {
-  accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
-  sellerCompanyId = "",
-  allowMissingDataCollectionStore = false,
-  requireRecentVerification = false,
-  verificationTtlSeconds = null,
-}) {
+async function validateAccountWithClient(client, accountId) {
   const account = await client.query(
     `SELECT id, status, expires_at FROM accounts
      WHERE id=$1 AND status='active' AND (expires_at IS NULL OR expires_at > NOW())`,
@@ -418,89 +444,21 @@ async function validateScopeWithClient(client, {
   if (!account.rowCount) {
     throw serviceError("账号不存在、已停用或已过期", 403, "COLLECTOR_ACCOUNT_UNAVAILABLE");
   }
-  const operatingStore = await client.query(
-    `SELECT id, label, status FROM stores WHERE id=$1 AND owner_account_id=$2`,
-    [required(operatingStoreId, "经营店铺 ID"), accountId],
-  );
-  if (!operatingStore.rowCount || ["disabled", "deleted", "inactive"].includes(clean(operatingStore.rows[0].status, 80).toLowerCase())) {
-    throw serviceError("经营店铺不存在或已停用", 409, "COLLECTOR_OPERATING_STORE_UNAVAILABLE");
-  }
-  const normalizedDataCollectionStoreId = clean(dataCollectionStoreId, 240);
-  if (!normalizedDataCollectionStoreId && allowMissingDataCollectionStore) {
-    return {
-      accountId,
-      operatingStoreId,
-      operatingStoreLabel: operatingStore.rows[0].label || "",
-      dataCollectionStoreId: "",
-      sellerCompanyId: "",
-      lastVerifiedAt: null,
-    };
-  }
-  if (!normalizedDataCollectionStoreId) {
-    throw serviceError("数据店铺 ID 必填", 422, "COLLECTOR_FIELD_REQUIRED");
-  }
-  const collectionStore = await client.query(
-    `SELECT m.account_id, m.data_collection_store_id, m.status AS membership_status,
-            m.last_verified_at, s.seller_company_id
-     FROM account_data_collection_stores m
-     JOIN data_collection_stores s ON s.id=m.data_collection_store_id
-     WHERE m.account_id=$1 AND m.data_collection_store_id=$2 AND m.status='active'`,
-    [accountId, normalizedDataCollectionStoreId],
-  );
-  if (!collectionStore.rowCount) {
-    throw serviceError("数据店铺不属于当前账号或已停用", 409, "COLLECTOR_DATA_STORE_SCOPE_MISMATCH");
-  }
-  const actualSellerCompanyId = normalizeCompanyId(collectionStore.rows[0].seller_company_id);
-  const requestedSellerCompanyId = normalizeCompanyId(sellerCompanyId);
-  if (requestedSellerCompanyId && requestedSellerCompanyId !== actualSellerCompanyId) {
-    throw serviceError("Seller 登录店铺与任务冻结的数据店铺不一致", 409, "COLLECTOR_SELLER_COMPANY_MISMATCH");
-  }
-  const verifiedAt = collectionStore.rows[0].last_verified_at
-    ? new Date(collectionStore.rows[0].last_verified_at)
-    : null;
-  if (requireRecentVerification) {
-    const ttlSeconds = verificationTtlSeconds === null
-      ? boundedInteger(process.env.COLLECTOR_DATA_STORE_VERIFICATION_TTL_SECONDS || 600, {
-        label: "数据店铺校验有效期",
-        min: 30,
-        max: 86_400,
-        fallback: 600,
-      })
-      : boundedInteger(verificationTtlSeconds, {
-        label: "数据店铺校验有效期",
-        min: 30,
-        max: 86_400,
-      });
-    if (!verifiedAt || !Number.isFinite(verifiedAt.getTime())
-      || verifiedAt.getTime() <= Date.now() - ttlSeconds * 1000) {
-      throw serviceError(
-        "数据店铺登录状态尚未校验或已过期，请重新校验 Seller 登录店铺",
-        409,
-        "COLLECTOR_DATA_STORE_VERIFICATION_REQUIRED",
-      );
-    }
-  }
   return {
     accountId,
-    operatingStoreId,
-    operatingStoreLabel: operatingStore.rows[0].label || "",
-    dataCollectionStoreId: normalizedDataCollectionStoreId,
-    sellerCompanyId: actualSellerCompanyId,
-    lastVerifiedAt: verifiedAt || null,
+    operatingStoreId: null,
   };
 }
 
 export async function validateCollectorScope(input) {
   const pool = await poolReady();
-  return validateScopeWithClient(pool, input || {});
+  return validateAccountWithClient(pool, input?.accountId);
 }
 
 async function insertEvent(client, {
   taskId,
   runId = null,
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
   fromStatus = "",
   toStatus = "",
   eventType,
@@ -517,7 +475,7 @@ async function insertEvent(client, {
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
      RETURNING *`,
     [
-      taskId, runId, accountId, operatingStoreId, dataCollectionStoreId || null,
+      taskId, runId, accountId, null, null,
       clean(fromStatus, 80), clean(toStatus, 80), required(eventType, "事件类型", 120),
       normalizeStatus(level || "INFO", ["DEBUG", "INFO", "WARN", "ERROR"], "事件级别"),
       clean(message, 2000), clean(actorType || "system", 80), clean(actorId, 240),
@@ -629,8 +587,6 @@ export async function revokeCollectorDevice(accountId, deviceIdOrKey) {
 
 export async function createCollectorTask({
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
   name = "",
   taskType,
   source = "ozon",
@@ -640,15 +596,9 @@ export async function createCollectorTask({
 } = {}) {
   const normalizedType = required(taskType, "任务类型", 120).toUpperCase();
   const normalizedConcurrency = boundedInteger(concurrency, { label: "并发数", min: 2, max: 20, fallback: 4 });
-  const normalizedConfiguration = jsonObject(configuration, "任务配置");
+  const normalizedConfiguration = withoutRuntimeScope(jsonObject(configuration, "任务配置"));
   return transaction(async (client) => {
-    const normalizedDataCollectionStoreId = clean(dataCollectionStoreId, 240);
-    await validateScopeWithClient(client, {
-      accountId,
-      operatingStoreId,
-      dataCollectionStoreId: normalizedDataCollectionStoreId,
-      allowMissingDataCollectionStore: true,
-    });
+    await validateAccountWithClient(client, accountId);
     const id = randomId("coltask");
     const result = await client.query(
       `INSERT INTO collector_tasks (
@@ -656,7 +606,7 @@ export async function createCollectorTask({
          source,concurrency,configuration,created_by
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING *`,
       [
-        id, accountId, operatingStoreId, normalizedDataCollectionStoreId || null,
+        id, accountId, null, null,
         clean(name || `采集任务 ${new Date().toLocaleString("zh-CN")}`, 240), normalizedType,
         clean(source || "ozon", 80).toLowerCase(), normalizedConcurrency,
         JSON.stringify(normalizedConfiguration), createdBy || accountId,
@@ -665,8 +615,6 @@ export async function createCollectorTask({
     await insertEvent(client, {
       taskId: id,
       accountId,
-      operatingStoreId,
-      dataCollectionStoreId: normalizedDataCollectionStoreId,
       toStatus: "NOT_STARTED",
       eventType: "TASK_CREATED",
       actorType: "account",
@@ -692,8 +640,6 @@ export async function listCollectorTasksForAccount({
   status = "",
   query = "",
   name = "",
-  operatingStoreId = "",
-  dataCollectionStoreId = "",
   includeDeleted = false,
   limit = 200,
   offset = 0,
@@ -705,14 +651,11 @@ export async function listCollectorTasksForAccount({
     `SELECT * FROM collector_tasks
      WHERE account_id=$1
        AND ($2='' OR status=$2)
-       AND ($3='' OR operating_store_id=$3)
-       AND ($4='' OR data_collection_store_id=$4)
-       AND ($5='' OR name ILIKE '%' || $5 || '%' OR task_type ILIKE '%' || $5 || '%')
-       AND ($6::boolean OR deleted_at IS NULL)
-     ORDER BY updated_at DESC,id DESC LIMIT $7 OFFSET $8`,
+       AND ($3='' OR name ILIKE '%' || $3 || '%' OR task_type ILIKE '%' || $3 || '%')
+       AND ($4::boolean OR deleted_at IS NULL)
+     ORDER BY updated_at DESC,id DESC LIMIT $5 OFFSET $6`,
     [
-      required(accountId, "账号 ID"), normalizedStatus, clean(operatingStoreId, 240),
-      clean(dataCollectionStoreId, 240), normalizedQuery, Boolean(includeDeleted),
+      required(accountId, "账号 ID"), normalizedStatus, normalizedQuery, Boolean(includeDeleted),
       boundedInteger(limit, { label: "分页数量", min: 1, max: 500, fallback: 200 }),
       boundedInteger(offset, { label: "分页偏移", min: 0, max: 10_000_000, fallback: 0 }),
     ],
@@ -726,8 +669,6 @@ export async function listCollectorTasksPageForAccount({
   query = "",
   name = "",
   taskName = "",
-  operatingStoreId = "",
-  dataCollectionStoreId = "",
   includeDeleted = false,
   page = 1,
   pageSize = 50,
@@ -740,8 +681,6 @@ export async function listCollectorTasksPageForAccount({
     accountId: required(accountId, "账号 ID"),
     status: normalizedStatus,
     query: normalizedQuery,
-    operatingStoreId: clean(operatingStoreId, 240),
-    dataCollectionStoreId: clean(dataCollectionStoreId, 240),
     includeDeleted: Boolean(includeDeleted),
   };
   const pool = await poolReady();
@@ -749,15 +688,11 @@ export async function listCollectorTasksPageForAccount({
     `SELECT COUNT(*)::int AS total FROM collector_tasks
      WHERE account_id=$1
        AND ($2='' OR status=$2)
-       AND ($3='' OR operating_store_id=$3)
-       AND ($4='' OR data_collection_store_id=$4)
-       AND ($5='' OR name ILIKE '%' || $5 || '%' OR task_type ILIKE '%' || $5 || '%')
-       AND ($6::boolean OR deleted_at IS NULL)`,
+       AND ($3='' OR name ILIKE '%' || $3 || '%' OR task_type ILIKE '%' || $3 || '%')
+       AND ($4::boolean OR deleted_at IS NULL)`,
     [
       filters.accountId,
       filters.status,
-      filters.operatingStoreId,
-      filters.dataCollectionStoreId,
       filters.query,
       filters.includeDeleted,
     ],
@@ -790,32 +725,19 @@ export async function updateCollectorTask({ accountId, taskId, patch = {}, expec
     if (ACTIVE_RUN_STATUSES.has(row.status)) {
       throw serviceError("排队或执行中的任务不能修改", 409, "COLLECTOR_TASK_ACTIVE");
     }
-    const operatingStoreId = hasOwn(patch, "operatingStoreId")
-      ? required(patch.operatingStoreId, "经营店铺 ID")
-      : row.operating_store_id;
-    const dataCollectionStoreId = hasOwn(patch, "dataCollectionStoreId")
-      ? clean(patch.dataCollectionStoreId, 240)
-      : (row.data_collection_store_id || "");
-    await validateScopeWithClient(client, {
-      accountId,
-      operatingStoreId,
-      dataCollectionStoreId,
-      allowMissingDataCollectionStore: true,
-    });
     const configuration = hasOwn(patch, "configuration")
-      ? jsonObject(patch.configuration, "任务配置")
+      ? withoutRuntimeScope(jsonObject(patch.configuration, "任务配置"))
       : row.configuration;
     const concurrency = hasOwn(patch, "concurrency")
       ? boundedInteger(patch.concurrency, { label: "并发数", min: 2, max: 20 })
       : row.concurrency;
     const updated = await client.query(
       `UPDATE collector_tasks SET
-         operating_store_id=$3,data_collection_store_id=$4,name=$5,task_type=$6,
-         source=$7,concurrency=$8,configuration=$9::jsonb,
+         name=$3,task_type=$4,source=$5,concurrency=$6,configuration=$7::jsonb,
          status_version=status_version+1,updated_at=NOW()
        WHERE id=$1 AND account_id=$2 RETURNING *`,
       [
-        taskId, accountId, operatingStoreId, dataCollectionStoreId || null,
+        taskId, accountId,
         hasOwn(patch, "name") ? clean(patch.name, 240) : row.name,
         hasOwn(patch, "taskType") ? required(patch.taskType, "任务类型", 120).toUpperCase() : row.task_type,
         hasOwn(patch, "source") ? required(patch.source, "来源", 80).toLowerCase() : row.source,
@@ -825,8 +747,6 @@ export async function updateCollectorTask({ accountId, taskId, patch = {}, expec
     await insertEvent(client, {
       taskId,
       accountId,
-      operatingStoreId,
-      dataCollectionStoreId,
       fromStatus: row.status,
       toStatus: row.status,
       eventType: "TASK_UPDATED",
@@ -857,8 +777,6 @@ export async function softDeleteCollectorTask(accountId, taskId) {
     await insertEvent(client, {
       taskId,
       accountId,
-      operatingStoreId: current.rows[0].operating_store_id,
-      dataCollectionStoreId: current.rows[0].data_collection_store_id,
       fromStatus: current.rows[0].status,
       toStatus: current.rows[0].status,
       eventType: "TASK_DELETED",
@@ -871,7 +789,6 @@ export async function softDeleteCollectorTask(accountId, taskId) {
 
 async function resolvePricingVersionWithClient(client, {
   accountId,
-  operatingStoreId,
   requestedVersionId = "",
   fallbackVersionId = "",
 }) {
@@ -882,9 +799,8 @@ async function resolvePricingVersionWithClient(client, {
          AND (
            scope_type='global'
            OR (scope_type='account' AND scope_id=$2)
-           OR (scope_type='store' AND scope_id=$3)
          )`,
-      [requestedVersionId, accountId, operatingStoreId],
+      [requestedVersionId, accountId],
     );
     if (!requested.rowCount) {
       throw serviceError("指定的算价配置不存在或未发布", 409, "COLLECTOR_PRICING_CONFIG_UNAVAILABLE");
@@ -903,14 +819,13 @@ async function resolvePricingVersionWithClient(client, {
        AND (effective_from IS NULL OR effective_from <= NOW())
        AND (effective_to IS NULL OR effective_to > NOW())
        AND (
-         (scope_type='store' AND scope_id=$1)
-         OR (scope_type='account' AND scope_id=$2)
+         (scope_type='account' AND scope_id=$1)
          OR scope_type='global'
        )
      ORDER BY CASE scope_type WHEN 'store' THEN 1 WHEN 'account' THEN 2 ELSE 3 END,
               effective_from DESC NULLS LAST,version_no DESC
      LIMIT 1`,
-    [operatingStoreId, accountId],
+    [accountId],
   );
   if (active.rowCount) return active.rows[0].id;
   const fallback = clean(fallbackVersionId, 240);
@@ -923,9 +838,8 @@ async function resolvePricingVersionWithClient(client, {
          AND (
            scope_type='global'
            OR (scope_type='account' AND scope_id=$2)
-           OR (scope_type='store' AND scope_id=$3)
          )`,
-      [fallback, accountId, operatingStoreId],
+      [fallback, accountId],
     );
     if (found.rowCount) return fallback;
   }
@@ -935,7 +849,6 @@ async function resolvePricingVersionWithClient(client, {
 export async function queueCollectorTaskRun({
   accountId,
   taskId,
-  dataCollectionStoreId = "",
   idempotencyKey = "",
   pricingConfigVersionId = "",
   requestedBy = "",
@@ -944,7 +857,6 @@ export async function queueCollectorTaskRun({
   if (!task) throw serviceError("采集任务不存在", 404, "COLLECTOR_TASK_NOT_FOUND");
   const activePricingConfig = await getActivePricingConfig({
     accountId,
-    storeId: task.operatingStoreId,
   });
   return transaction(async (client) => {
     const locked = await client.query(
@@ -954,14 +866,7 @@ export async function queueCollectorTaskRun({
     );
     if (!locked.rowCount) throw serviceError("采集任务不存在", 404, "COLLECTOR_TASK_NOT_FOUND");
     const row = locked.rows[0];
-    const frozenDataCollectionStoreId = clean(dataCollectionStoreId, 240)
-      || clean(row.data_collection_store_id, 240);
-    const verifiedScope = await validateScopeWithClient(client, {
-      accountId,
-      operatingStoreId: row.operating_store_id,
-      dataCollectionStoreId: frozenDataCollectionStoreId,
-      requireRecentVerification: true,
-    });
+    await validateAccountWithClient(client, accountId);
     const normalizedIdempotencyKey = clean(idempotencyKey, 240);
     if (normalizedIdempotencyKey) {
       const duplicate = await client.query(
@@ -977,20 +882,20 @@ export async function queueCollectorTaskRun({
     }
     const activeRun = await client.query(
       `SELECT id FROM collector_task_runs
-       WHERE task_id=$1 AND status IN ('QUEUED','RUNNING') LIMIT 1`,
-      [taskId],
+       WHERE task_id=$1 AND account_id=$2 AND status IN ('QUEUED','RUNNING') LIMIT 1`,
+      [taskId, accountId],
     );
     if (activeRun.rowCount) {
       throw serviceError("任务已有排队或执行中的运行", 409, "COLLECTOR_TASK_ALREADY_ACTIVE");
     }
     assertTaskTransition(row.status, "QUEUED");
     const runNoResult = await client.query(
-      `SELECT COALESCE(MAX(run_no),0)+1 AS run_no FROM collector_task_runs WHERE task_id=$1`,
-      [taskId],
+      `SELECT COALESCE(MAX(run_no),0)+1 AS run_no
+       FROM collector_task_runs WHERE task_id=$1 AND account_id=$2`,
+      [taskId, accountId],
     );
     const resolvedPricingVersionId = await resolvePricingVersionWithClient(client, {
       accountId,
-      operatingStoreId: row.operating_store_id,
       requestedVersionId: clean(pricingConfigVersionId, 240),
       fallbackVersionId: activePricingConfig?.id || "",
     });
@@ -1001,10 +906,7 @@ export async function queueCollectorTaskRun({
       source: row.source,
       concurrency: Number(row.concurrency),
       configuration: row.configuration || {},
-      operatingStoreId: row.operating_store_id,
-      dataCollectionStoreId: frozenDataCollectionStoreId,
-      sellerCompanyId: verifiedScope.sellerCompanyId,
-      dataStoreVerifiedAt: verifiedScope.lastVerifiedAt,
+      operatingStoreId: null,
       pricingConfigVersionId: resolvedPricingVersionId,
       frozenAt: new Date().toISOString(),
     };
@@ -1014,7 +916,7 @@ export async function queueCollectorTaskRun({
          pricing_config_version_id,run_no,idempotency_key,configuration_snapshot
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING *`,
       [
-        runId, taskId, accountId, row.operating_store_id, frozenDataCollectionStoreId,
+        runId, taskId, accountId, null, null,
         resolvedPricingVersionId, Number(runNoResult.rows[0].run_no), normalizedIdempotencyKey,
         JSON.stringify(configurationSnapshot),
       ],
@@ -1030,8 +932,6 @@ export async function queueCollectorTaskRun({
       taskId,
       runId,
       accountId,
-      operatingStoreId: row.operating_store_id,
-      dataCollectionStoreId: frozenDataCollectionStoreId,
       fromStatus: row.status,
       toStatus: "QUEUED",
       eventType: "RUN_QUEUED",
@@ -1086,13 +986,7 @@ export async function claimCollectorRun({
       ...device,
       deviceId: deviceId || device.deviceId || device.deviceKey,
     });
-    await validateScopeWithClient(client, {
-      accountId,
-      operatingStoreId: run.operating_store_id,
-      dataCollectionStoreId: run.data_collection_store_id,
-      sellerCompanyId: run.configuration_snapshot?.sellerCompanyId || "",
-      requireRecentVerification: true,
-    });
+    await validateAccountWithClient(client, accountId);
     if (TERMINAL_RUN_STATUSES.has(run.status)) {
       throw serviceError("任务运行已经结束", 409, "COLLECTOR_RUN_TERMINAL");
     }
@@ -1134,8 +1028,6 @@ export async function claimCollectorRun({
       taskId: run.task_id,
       runId,
       accountId,
-      operatingStoreId: run.operating_store_id,
-      dataCollectionStoreId: run.data_collection_store_id,
       fromStatus: run.status,
       toStatus: "RUNNING",
       eventType: reclaimed ? "RUN_RECLAIMED" : "RUN_CLAIMED",
@@ -1203,8 +1095,9 @@ export async function heartbeatCollectorRun({
       ],
     );
     await client.query(
-      `UPDATE collector_devices SET last_seen_at=NOW(),updated_at=NOW() WHERE id=$1`,
-      [device.id],
+      `UPDATE collector_devices SET last_seen_at=NOW(),updated_at=NOW()
+       WHERE id=$1 AND account_id=$2`,
+      [device.id, accountId],
     );
     await client.query(
       `UPDATE collector_tasks SET updated_at=NOW() WHERE id=$1 AND account_id=$2`,
@@ -1250,8 +1143,6 @@ export async function requestCollectorRunCancellation({ accountId, runId, actorI
         taskId: run.task_id,
         runId,
         accountId,
-        operatingStoreId: run.operating_store_id,
-        dataCollectionStoreId: run.data_collection_store_id,
         fromStatus,
         toStatus: "CANCELLED",
         eventType: staleRunning ? "RUN_STALE_CANCELLED" : "RUN_CANCELLED",
@@ -1270,8 +1161,6 @@ export async function requestCollectorRunCancellation({ accountId, runId, actorI
       taskId: run.task_id,
       runId,
       accountId,
-      operatingStoreId: run.operating_store_id,
-      dataCollectionStoreId: run.data_collection_store_id,
       fromStatus: "RUNNING",
       toStatus: "RUNNING",
       eventType: "RUN_CANCEL_REQUESTED",
@@ -1330,8 +1219,6 @@ async function finishCollectorRun({
       taskId: run.task_id,
       runId,
       accountId,
-      operatingStoreId: run.operating_store_id,
-      dataCollectionStoreId: run.data_collection_store_id,
       fromStatus: run.status,
       toStatus: targetStatus,
       eventType: `RUN_${targetStatus}`,
@@ -1383,8 +1270,8 @@ export async function upsertCollectorRunItem({
     }
     const existingResult = await client.query(
       `SELECT * FROM collector_task_items
-       WHERE run_id=$1 AND source=$2 AND source_key=$3 FOR UPDATE`,
-      [runId, source, sourceKey],
+       WHERE run_id=$1 AND account_id=$2 AND source=$3 AND source_key=$4 FOR UPDATE`,
+      [runId, accountId, source, sourceKey],
     );
     const existing = existingResult.rows[0] || null;
     if (existing && !ITEM_TRANSITIONS[existing.status]?.has(status)) {
@@ -1426,9 +1313,10 @@ export async function upsertCollectorRunItem({
          filter_result=EXCLUDED.filter_result,export_data=EXCLUDED.export_data,
          error_code=EXCLUDED.error_code,error_message=EXCLUDED.error_message,
          completed_at=EXCLUDED.completed_at,updated_at=NOW()
+       WHERE collector_task_items.account_id=EXCLUDED.account_id
        RETURNING *`,
       [
-        id, run.task_id, runId, accountId, run.operating_store_id, run.data_collection_store_id,
+        id, run.task_id, runId, accountId, null, null,
         collectItemId || existing?.collect_item_id || null, source, sourceKey,
         hasOwn(item, "sourceSku") ? clean(item.sourceSku, 240) : (existing?.source_sku || ""),
         hasOwn(item, "sourceUrl") ? clean(item.sourceUrl, 2000) : (existing?.source_url || ""),
@@ -1511,8 +1399,6 @@ export async function appendCollectorRunEvent({
       taskId: run.task_id,
       runId,
       accountId,
-      operatingStoreId: run.operating_store_id,
-      dataCollectionStoreId: run.data_collection_store_id,
       fromStatus: run.status,
       toStatus: run.status,
       eventType,
@@ -1551,8 +1437,9 @@ export async function createCollectorExport({
   return transaction(async (client) => {
     const run = await ensureRunScope(client, accountId, runId, { lock: true });
     const nextVersion = await client.query(
-      `SELECT COALESCE(MAX(version),0)+1 AS version FROM collector_exports WHERE run_id=$1`,
-      [runId],
+      `SELECT COALESCE(MAX(version),0)+1 AS version
+       FROM collector_exports WHERE run_id=$1 AND account_id=$2`,
+      [runId, accountId],
     );
     const version = Number(nextVersion.rows[0].version);
     const result = await client.query(
@@ -1561,8 +1448,8 @@ export async function createCollectorExport({
          version,format,file_name,metadata
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING *`,
       [
-        randomId("colexport"), run.task_id, runId, accountId, run.operating_store_id,
-        run.data_collection_store_id, version, clean(format || "xlsx", 40).toLowerCase(),
+        randomId("colexport"), run.task_id, runId, accountId, null,
+        null, version, clean(format || "xlsx", 40).toLowerCase(),
         clean(fileName || `collector-${run.task_id}-${version}.xlsx`, 500),
         JSON.stringify(jsonObject(metadata, "导出信息")),
       ],
@@ -1571,8 +1458,6 @@ export async function createCollectorExport({
       taskId: run.task_id,
       runId,
       accountId,
-      operatingStoreId: run.operating_store_id,
-      dataCollectionStoreId: run.data_collection_store_id,
       fromStatus: run.status,
       toStatus: run.status,
       eventType: "EXPORT_CREATED",
@@ -1630,8 +1515,6 @@ export async function updateCollectorExport({ accountId, exportId, patch = {} } 
       taskId: row.task_id,
       runId: row.run_id,
       accountId,
-      operatingStoreId: row.operating_store_id,
-      dataCollectionStoreId: row.data_collection_store_id,
       fromStatus: row.status,
       toStatus: status,
       eventType: `EXPORT_${status}`,
@@ -1665,8 +1548,6 @@ export async function getCollectorExportForAccount(accountId, exportId) {
 
 async function validateOptionalTaskRunScope(client, {
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
   taskId = "",
   runId = "",
 }) {
@@ -1674,26 +1555,21 @@ async function validateOptionalTaskRunScope(client, {
   let resolvedRunId = clean(runId, 240);
   if (resolvedRunId) {
     const run = await client.query(
-      `SELECT id,task_id,operating_store_id,data_collection_store_id
+      `SELECT id,task_id
        FROM collector_task_runs WHERE id=$1 AND account_id=$2`,
       [resolvedRunId, accountId],
     );
-    if (!run.rowCount
-      || run.rows[0].operating_store_id !== operatingStoreId
-      || run.rows[0].data_collection_store_id !== dataCollectionStoreId
-      || (resolvedTaskId && run.rows[0].task_id !== resolvedTaskId)) {
+    if (!run.rowCount || (resolvedTaskId && run.rows[0].task_id !== resolvedTaskId)) {
       throw serviceError("市场数据的任务运行范围不匹配", 409, "COLLECTOR_RUN_SCOPE_MISMATCH");
     }
     resolvedTaskId = run.rows[0].task_id;
   }
   if (resolvedTaskId) {
     const task = await client.query(
-      `SELECT id,operating_store_id,data_collection_store_id
-       FROM collector_tasks WHERE id=$1 AND account_id=$2`,
+      `SELECT id FROM collector_tasks WHERE id=$1 AND account_id=$2`,
       [resolvedTaskId, accountId],
     );
-    if (!task.rowCount
-      || task.rows[0].operating_store_id !== operatingStoreId) {
+    if (!task.rowCount) {
       throw serviceError("市场数据的任务范围不匹配", 409, "COLLECTOR_TASK_SCOPE_MISMATCH");
     }
   }
@@ -1709,9 +1585,6 @@ function normalizePeriod(value) {
 
 export async function upsertCollectorMarketSnapshot({
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
-  sellerCompanyId,
   taskId = "",
   runId = "",
   source = "ozon_seller_analytics",
@@ -1727,10 +1600,6 @@ export async function upsertCollectorMarketSnapshot({
   payload = {},
   collectedAt = null,
 } = {}) {
-  const normalizedSellerCompanyId = normalizeCompanyId(sellerCompanyId);
-  if (!normalizedSellerCompanyId) {
-    throw serviceError("Seller Company ID 必填", 422, "COLLECTOR_SELLER_COMPANY_REQUIRED");
-  }
   const normalizedPayload = jsonObject(payload, "市场快照");
   const normalizedMetrics = jsonObject(metrics, "市场指标");
   const normalizedPeriod = normalizePeriod(period);
@@ -1745,21 +1614,14 @@ export async function upsertCollectorMarketSnapshot({
     periodEnd: periodEnd || null,
   }));
   return transaction(async (client) => {
-    const scope = await validateScopeWithClient(client, {
-      accountId,
-      operatingStoreId,
-      dataCollectionStoreId,
-      sellerCompanyId: normalizedSellerCompanyId,
-    });
+    await validateAccountWithClient(client, accountId);
     const link = await validateOptionalTaskRunScope(client, {
       accountId,
-      operatingStoreId,
-      dataCollectionStoreId,
       taskId,
       runId,
     });
     const contentHash = sha256(canonicalJson({ metrics: normalizedMetrics, payload: normalizedPayload }));
-    const id = stableId("colmkt", accountId, operatingStoreId, dataCollectionStoreId, resolvedSnapshotKey);
+    const id = stableId("colmkt", accountId, normalizedSource, resolvedSnapshotKey);
     const result = await client.query(
       `INSERT INTO collector_market_snapshots (
          id,task_id,run_id,account_id,operating_store_id,data_collection_store_id,
@@ -1769,20 +1631,20 @@ export async function upsertCollectorMarketSnapshot({
          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
          $18::jsonb,$19::jsonb,COALESCE($20::timestamptz,NOW())
        )
-       ON CONFLICT (account_id,operating_store_id,data_collection_store_id,snapshot_key) DO UPDATE SET
+       ON CONFLICT (id) DO UPDATE SET
          task_id=EXCLUDED.task_id,run_id=EXCLUDED.run_id,
-         operating_store_id=EXCLUDED.operating_store_id,
-         seller_company_id=EXCLUDED.seller_company_id,source=EXCLUDED.source,
+         source=EXCLUDED.source,
          source_sku=EXCLUDED.source_sku,product_id=EXCLUDED.product_id,
          category_id=EXCLUDED.category_id,period=EXCLUDED.period,
          period_start=EXCLUDED.period_start,period_end=EXCLUDED.period_end,
          request_id=EXCLUDED.request_id,content_hash=EXCLUDED.content_hash,
          metrics=EXCLUDED.metrics,payload=EXCLUDED.payload,
          collected_at=EXCLUDED.collected_at,updated_at=NOW()
+       WHERE collector_market_snapshots.account_id=EXCLUDED.account_id
        RETURNING *`,
       [
-        id, link.taskId, link.runId, accountId, operatingStoreId, dataCollectionStoreId,
-        scope.sellerCompanyId, normalizedSource, resolvedSnapshotKey,
+        id, link.taskId, link.runId, accountId, null, null,
+        "", normalizedSource, resolvedSnapshotKey,
         clean(sourceSku, 240), clean(productId, 240), clean(categoryId, 240),
         normalizedPeriod, periodStart || null, periodEnd || null, clean(requestId, 240),
         contentHash, JSON.stringify(normalizedMetrics), JSON.stringify(normalizedPayload),
@@ -1795,9 +1657,7 @@ export async function upsertCollectorMarketSnapshot({
 
 export async function listCollectorMarketSnapshots({
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
-  sellerCompanyId = "",
+  source = "ozon_seller_analytics",
   sourceSku = "",
   categoryId = "",
   period = "",
@@ -1805,23 +1665,18 @@ export async function listCollectorMarketSnapshots({
   offset = 0,
 } = {}) {
   const pool = await poolReady();
-  await validateScopeWithClient(pool, {
-    accountId,
-    operatingStoreId,
-    dataCollectionStoreId,
-    sellerCompanyId,
-  });
+  await validateAccountWithClient(pool, accountId);
   const normalizedPeriod = period ? normalizePeriod(period) : "";
   const result = await pool.query(
     `SELECT * FROM collector_market_snapshots
-     WHERE account_id=$1 AND operating_store_id=$2 AND data_collection_store_id=$3
-       AND ($4='' OR source_sku=$4)
-       AND ($5='' OR category_id=$5)
-       AND ($6='' OR period=$6)
-     ORDER BY collected_at DESC,id DESC LIMIT $7 OFFSET $8`,
+     WHERE account_id=$1 AND source=$2
+       AND ($3='' OR source_sku=$3)
+       AND ($4='' OR category_id=$4)
+       AND ($5='' OR period=$5)
+     ORDER BY collected_at DESC,id DESC LIMIT $6 OFFSET $7`,
     [
-      accountId, operatingStoreId, dataCollectionStoreId, clean(sourceSku, 240),
-      clean(categoryId, 240), normalizedPeriod,
+      required(accountId, "账号 ID"), clean(source || "ozon_seller_analytics", 120).toLowerCase(),
+      clean(sourceSku, 240), clean(categoryId, 240), normalizedPeriod,
       boundedInteger(limit, { label: "分页数量", min: 1, max: 5000, fallback: 500 }),
       boundedInteger(offset, { label: "分页偏移", min: 0, max: 10_000_000, fallback: 0 }),
     ],
@@ -1831,9 +1686,6 @@ export async function listCollectorMarketSnapshots({
 
 export async function upsertCollectorCategoryMapping({
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
-  sellerCompanyId = "",
   source = "ozon_seller_analytics",
   rootCategoryId,
   rootCategoryName = "",
@@ -1847,17 +1699,10 @@ export async function upsertCollectorCategoryMapping({
   const leafId = required(leafCategoryId, "叶子类目 ID", 240);
   const normalizedStatus = normalizeStatus(status || "ACTIVE", ["ACTIVE", "DISABLED"], "类目映射状态");
   return transaction(async (client) => {
-    await validateScopeWithClient(client, {
-      accountId,
-      operatingStoreId,
-      dataCollectionStoreId,
-      sellerCompanyId,
-    });
+    await validateAccountWithClient(client, accountId);
     const id = stableId(
       "colcat",
       accountId,
-      operatingStoreId,
-      dataCollectionStoreId,
       normalizedSource,
       rootId,
       leafId,
@@ -1868,17 +1713,15 @@ export async function upsertCollectorCategoryMapping({
          root_category_id,root_category_name,leaf_category_id,leaf_category_name,
          status,payload
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-       ON CONFLICT (
-         account_id,operating_store_id,data_collection_store_id,source,
-         root_category_id,leaf_category_id
-       ) DO UPDATE SET
+       ON CONFLICT (id) DO UPDATE SET
          root_category_name=EXCLUDED.root_category_name,
          leaf_category_name=EXCLUDED.leaf_category_name,
          status=EXCLUDED.status,payload=EXCLUDED.payload,
          last_seen_at=NOW(),updated_at=NOW()
+       WHERE collector_category_mappings.account_id=EXCLUDED.account_id
        RETURNING *`,
       [
-        id, accountId, operatingStoreId, dataCollectionStoreId, normalizedSource,
+        id, accountId, null, null, normalizedSource,
         rootId, clean(rootCategoryName, 500), leafId, clean(leafCategoryName, 500),
         normalizedStatus, JSON.stringify(jsonObject(payload, "类目映射")),
       ],
@@ -1889,32 +1732,23 @@ export async function upsertCollectorCategoryMapping({
 
 export async function listCollectorCategoryMappings({
   accountId,
-  operatingStoreId,
-  dataCollectionStoreId,
-  sellerCompanyId = "",
   source = "ozon_seller_analytics",
   rootCategoryId = "",
   status = "ACTIVE",
   limit = 5000,
 } = {}) {
   const pool = await poolReady();
-  await validateScopeWithClient(pool, {
-    accountId,
-    operatingStoreId,
-    dataCollectionStoreId,
-    sellerCompanyId,
-  });
+  await validateAccountWithClient(pool, accountId);
   const normalizedStatus = status
     ? normalizeStatus(status, ["ACTIVE", "DISABLED"], "类目映射状态")
     : "";
   const result = await pool.query(
     `SELECT * FROM collector_category_mappings
-     WHERE account_id=$1 AND operating_store_id=$2 AND data_collection_store_id=$3
-       AND source=$4 AND ($5='' OR root_category_id=$5) AND ($6='' OR status=$6)
-     ORDER BY root_category_name,leaf_category_name,leaf_category_id LIMIT $7`,
+     WHERE account_id=$1 AND source=$2
+       AND ($3='' OR root_category_id=$3) AND ($4='' OR status=$4)
+     ORDER BY root_category_name,leaf_category_name,leaf_category_id LIMIT $5`,
     [
-      accountId, operatingStoreId, dataCollectionStoreId,
-      clean(source || "ozon_seller_analytics", 120).toLowerCase(),
+      required(accountId, "账号 ID"), clean(source || "ozon_seller_analytics", 120).toLowerCase(),
       clean(rootCategoryId, 240), normalizedStatus,
       boundedInteger(limit, { label: "分页数量", min: 1, max: 10_000, fallback: 5000 }),
     ],
@@ -1922,15 +1756,17 @@ export async function listCollectorCategoryMappings({
   return result.rows.map(mapCategoryMapping);
 }
 
-export async function collectorDesktopHealth() {
+export async function collectorDesktopHealth(accountId) {
   if (!postgresEnabled()) return { ok: false, enabled: false, reason: "postgres_disabled" };
   try {
     const pool = await poolReady();
+    const normalizedAccountId = required(accountId, "账号 ID");
     const result = await pool.query(
       `SELECT
-         (SELECT COUNT(*)::int FROM collector_tasks WHERE deleted_at IS NULL) AS task_count,
-         (SELECT COUNT(*)::int FROM collector_task_runs WHERE status IN ('QUEUED','RUNNING')) AS active_run_count,
-         (SELECT COUNT(*)::int FROM collector_devices WHERE status='ACTIVE') AS active_device_count`,
+         (SELECT COUNT(*)::int FROM collector_tasks WHERE account_id=$1 AND deleted_at IS NULL) AS task_count,
+         (SELECT COUNT(*)::int FROM collector_task_runs WHERE account_id=$1 AND status IN ('QUEUED','RUNNING')) AS active_run_count,
+         (SELECT COUNT(*)::int FROM collector_devices WHERE account_id=$1 AND status='ACTIVE') AS active_device_count`,
+      [normalizedAccountId],
     );
     return {
       ok: true,

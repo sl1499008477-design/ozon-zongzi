@@ -134,16 +134,20 @@ export function isRetryableSellerFailure(status, code = '') {
 }
 
 export function assertSellerRunContext(actual = {}, expected = {}) {
-    const actualCompanyId = normalizeSellerCompanyId(actual.sellerCompanyId);
-    const expectedCompanyId = normalizeSellerCompanyId(expected.sellerCompanyId);
-    const actualStoreId = String(actual.dataCollectionStoreId || '');
-    const expectedStoreId = String(expected.dataCollectionStoreId || '');
-    if ((expectedCompanyId && actualCompanyId !== expectedCompanyId)
-        || (expectedStoreId && actualStoreId !== expectedStoreId)) {
-        const error = new Error('运行中的 Ozon 数据店铺已发生变化，任务已停止以防数据混入');
-        error.code = 'SELLER_STORE_CHANGED';
-        error.expected = { sellerCompanyId: expectedCompanyId, dataCollectionStoreId: expectedStoreId };
-        error.actual = { sellerCompanyId: actualCompanyId, dataCollectionStoreId: actualStoreId };
+    const actualContext = {
+        accountId: String(actual.accountId || ''),
+        sourceIdentity: String(actual.sourceIdentity || ''),
+    };
+    const expectedContext = {
+        accountId: String(expected.accountId || ''),
+        sourceIdentity: String(expected.sourceIdentity || ''),
+    };
+    if ((expectedContext.accountId && actualContext.accountId !== expectedContext.accountId)
+        || (expectedContext.sourceIdentity && actualContext.sourceIdentity !== expectedContext.sourceIdentity)) {
+        const error = new Error('运行中的账号或 Seller 来源页面已发生变化，任务已停止以防数据混入');
+        error.code = 'SELLER_SOURCE_CONTEXT_CHANGED';
+        error.expected = expectedContext;
+        error.actual = actualContext;
         throw error;
     }
     return actual;

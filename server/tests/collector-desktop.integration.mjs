@@ -13,6 +13,7 @@ import {
   completeCollectorRun,
   createCollectorExport,
   createCollectorTask,
+  getCollectorExportForAccount,
   getCollectorTaskForAccount,
   heartbeatCollectorRun,
   listCollectorCategoryMappings,
@@ -53,6 +54,7 @@ const collectItemId = `collector_box_${suffix}`;
 const noStoreCollectItemId = `collector_no_store_${suffix}`;
 const foreignPricingVersionId = `collector_foreign_pricing_${suffix}`;
 const deviceKey = `collector-device-${suffix}`;
+const legacyTaskId = `collector_legacy_task_${suffix}`;
 const pool = await getPostgresPool();
 
 async function cleanup() {
@@ -182,28 +184,50 @@ try {
     [accountA, collectionStoreA, collectionStoreB],
   );
 
-  await assert.rejects(
-    createCollectorTask({
-      accountId: accountB,
-      operatingStoreId,
-      name: "越权任务",
-      taskType: "SELLER_ANALYTICS",
-    }),
-    (error) => error?.code === "COLLECTOR_OPERATING_STORE_UNAVAILABLE",
-  );
+  const storelessTask = await createCollectorTask({
+    accountId: accountB,
+    name: "无店铺账号任务",
+    taskType: "SELLER_ANALYTICS",
+  });
+  assert.equal(storelessTask.accountId, accountB);
+  assert.equal(storelessTask.operatingStoreId, null);
+  assert.equal(Object.hasOwn(storelessTask, "dataCollectionStoreId"), false);
 
   const task = await createCollectorTask({
     accountId: accountA,
-    operatingStoreId,
-    dataCollectionStoreId: collectionStoreA,
     name: `Seller Analytics ${suffix}`,
     taskType: "SELLER_ANALYTICS",
     concurrency: 4,
-    configuration: { period: "MONTHLY", categoryId: "root-1" },
+    configuration: {
+      period: "MONTHLY",
+      categoryId: "root-1",
+      nested: {
+        operatingStoreId,
+        dataCollectionStoreId: collectionStoreA,
+        sellerCompanyId: sellerCompanyA,
+        keep: true,
+      },
+    },
   });
   assert.equal(task.status, "NOT_STARTED");
-  assert.equal(task.dataCollectionStoreId, collectionStoreA);
+  assert.equal(task.operatingStoreId, null);
+  assert.equal(Object.hasOwn(task, "dataCollectionStoreId"), false);
+  assert.deepEqual(task.configuration.nested, { keep: true });
   assert.equal(await getCollectorTaskForAccount(accountB, task.id), null);
+
+  await pool.query(
+    `INSERT INTO collector_tasks (
+       id,account_id,operating_store_id,data_collection_store_id,name,task_type,source,created_by
+     ) VALUES ($1,$2,$3,$4,'Legacy scoped task','SELLER_ANALYTICS','ozon',$2)`,
+    [legacyTaskId, accountA, operatingStoreId, collectionStoreA],
+  );
+  const legacyTask = await getCollectorTaskForAccount(accountA, legacyTaskId);
+  assert.equal(legacyTask.operatingStoreId, null);
+  assert.equal(Object.hasOwn(legacyTask, "dataCollectionStoreId"), false);
+  assert.deepEqual(legacyTask.legacyScope, {
+    operatingStoreId,
+    dataCollectionStoreId: collectionStoreA,
+  });
 
   const page = await listCollectorTasksPageForAccount({
     accountId: accountA,
@@ -213,11 +237,6 @@ try {
   });
   assert.equal(page.total, 1);
   assert.equal(page.tasks[0].id, task.id);
-
-  await assert.rejects(
-    queueCollectorTaskRun({ accountId: accountA, taskId: task.id }),
-    (error) => error?.code === "COLLECTOR_DATA_STORE_VERIFICATION_REQUIRED",
-  );
 
   await pool.query(
     `INSERT INTO pricing_config_versions (
@@ -229,7 +248,6 @@ try {
     queueCollectorTaskRun({
       accountId: accountA,
       taskId: task.id,
-      dataCollectionStoreId: collectionStoreB,
       pricingConfigVersionId: foreignPricingVersionId,
     }),
     (error) => error?.code === "COLLECTOR_PRICING_CONFIG_UNAVAILABLE",
@@ -238,20 +256,19 @@ try {
   const queued = await queueCollectorTaskRun({
     accountId: accountA,
     taskId: task.id,
-    dataCollectionStoreId: collectionStoreB,
     idempotencyKey: `collector-run-${suffix}`,
   });
   assert.equal(queued.duplicate, false);
   assert.equal(queued.run.status, "QUEUED");
-  assert.equal(queued.run.dataCollectionStoreId, collectionStoreB);
-  assert.notEqual(queued.run.dataCollectionStoreId, task.dataCollectionStoreId);
-  assert.equal(queued.run.configurationSnapshot.sellerCompanyId, sellerCompanyB);
+  assert.equal(queued.run.operatingStoreId, null);
+  assert.equal(Object.hasOwn(queued.run, "dataCollectionStoreId"), false);
+  assert.equal(Object.hasOwn(queued.run.configurationSnapshot, "sellerCompanyId"), false);
+  assert.equal(Object.hasOwn(queued.run.configurationSnapshot, "dataCollectionStoreId"), false);
   assert.ok(queued.run.pricingConfigVersionId);
 
   const duplicate = await queueCollectorTaskRun({
     accountId: accountA,
     taskId: task.id,
-    dataCollectionStoreId: collectionStoreB,
     idempotencyKey: `collector-run-${suffix}`,
   });
   assert.equal(duplicate.duplicate, true);
@@ -312,6 +329,8 @@ try {
     },
   });
   assert.equal(firstItem.created, true);
+  assert.equal(firstItem.item.operatingStoreId, null);
+  assert.equal(Object.hasOwn(firstItem.item, "dataCollectionStoreId"), false);
   const completedItem = await upsertCollectorRunItem({
     accountId: accountA,
     runId: queued.run.id,
@@ -331,25 +350,11 @@ try {
   assert.equal((await listCollectorRunItems({ accountId: accountA, runId: queued.run.id })).length, 1);
   assert.equal((await listCollectorRunItems({ accountId: accountB, runId: queued.run.id })).length, 0);
 
-  await assert.rejects(
-    upsertCollectorMarketSnapshot({
-      accountId: accountA,
-      operatingStoreId,
-      dataCollectionStoreId: collectionStoreB,
-      sellerCompanyId: sellerCompanyA,
-      runId: queued.run.id,
-      sourceSku: `sku-${suffix}`,
-      period: "MONTHLY",
-      payload: { sku: `sku-${suffix}` },
-    }),
-    (error) => error?.code === "COLLECTOR_SELLER_COMPANY_MISMATCH",
-  );
   const snapshot = await upsertCollectorMarketSnapshot({
     accountId: accountA,
-    operatingStoreId,
-    dataCollectionStoreId: collectionStoreB,
-    sellerCompanyId: sellerCompanyB,
     runId: queued.run.id,
+    source: "ozon_seller_analytics",
+    snapshotKey: `seller-page:${suffix}:sku-${suffix}:monthly`,
     sourceSku: `sku-${suffix}`,
     categoryId: "leaf-1",
     period: "MONTHLY",
@@ -359,19 +364,21 @@ try {
     metrics: { gmv: 1000, sold: 12 },
     payload: { sku: `sku-${suffix}`, title: "Analytics row" },
   });
-  assert.equal(snapshot.dataCollectionStoreId, collectionStoreB);
+  assert.equal(snapshot.operatingStoreId, null);
+  assert.equal(Object.hasOwn(snapshot, "dataCollectionStoreId"), false);
+  assert.equal(snapshot.source, "ozon_seller_analytics");
   assert.equal((await listCollectorMarketSnapshots({
     accountId: accountA,
-    operatingStoreId,
-    dataCollectionStoreId: collectionStoreB,
-    sellerCompanyId: sellerCompanyB,
+    source: "ozon_seller_analytics",
   })).length, 1);
+  assert.equal((await listCollectorMarketSnapshots({
+    accountId: accountB,
+    source: "ozon_seller_analytics",
+  })).length, 0);
 
   const mapping = await upsertCollectorCategoryMapping({
     accountId: accountA,
-    operatingStoreId,
-    dataCollectionStoreId: collectionStoreB,
-    sellerCompanyId: sellerCompanyB,
+    source: "ozon_seller_analytics",
     rootCategoryId: "root-1",
     rootCategoryName: "Root",
     leafCategoryId: "leaf-1",
@@ -380,10 +387,14 @@ try {
   assert.equal(mapping.leafCategoryId, "leaf-1");
   assert.equal((await listCollectorCategoryMappings({
     accountId: accountA,
-    operatingStoreId,
-    dataCollectionStoreId: collectionStoreB,
+    source: "ozon_seller_analytics",
     rootCategoryId: "root-1",
   })).length, 1);
+  assert.equal((await listCollectorCategoryMappings({
+    accountId: accountB,
+    source: "ozon_seller_analytics",
+    rootCategoryId: "root-1",
+  })).length, 0);
 
   await appendCollectorRunEvent({
     accountId: accountA,
@@ -410,6 +421,9 @@ try {
     runId: queued.run.id,
     fileName: "collector.xlsx",
   });
+  assert.equal(exportRecord.operatingStoreId, null);
+  assert.equal(Object.hasOwn(exportRecord, "dataCollectionStoreId"), false);
+  assert.equal(await getCollectorExportForAccount(accountB, exportRecord.id), null);
   const generatingExport = await updateCollectorExport({
     accountId: accountA,
     exportId: exportRecord.id,
@@ -432,7 +446,6 @@ try {
   const rerun = await queueCollectorTaskRun({
     accountId: accountA,
     taskId: task.id,
-    dataCollectionStoreId: collectionStoreB,
     idempotencyKey: `collector-rerun-${suffix}`,
   });
   const rerunClaim = await claimCollectorRun({
@@ -464,7 +477,6 @@ try {
   const staleRun = await queueCollectorTaskRun({
     accountId: accountA,
     taskId: task.id,
-    dataCollectionStoreId: collectionStoreB,
     idempotencyKey: `collector-stale-${suffix}`,
   });
   await claimCollectorRun({

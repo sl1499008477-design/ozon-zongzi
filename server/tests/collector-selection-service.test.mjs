@@ -22,7 +22,14 @@ const dependencies = {
         source: "ozon",
         sourceKey: "sku-a",
         sourceSku: "sku-a",
-        rawPayload: { sku: "sku-a", title: "raw title", price: 100 },
+        rawPayload: {
+          sku: "sku-a",
+          title: "raw title",
+          price: 100,
+          operatingStoreId: "legacy-operating",
+          dataCollectionStoreId: "legacy-data",
+          sellerCompanyId: "legacy-company",
+        },
         exportData: { nameLabel: "export title", price: 120 },
         analytics: { sold: 10 },
       },
@@ -50,8 +57,15 @@ assert.equal(ingested[0].input.sourceSku, "sku-a");
 assert.equal(ingested[0].input.requestId, "collector-select:run-a:item-a");
 assert.equal(ingested[0].input.payload.name, "export title");
 assert.equal(ingested[0].input.payload.price, 120);
-for (const field of ["accountId", "storeId", "dataCollectionStoreId"]) {
+for (const field of [
+  "accountId",
+  "storeId",
+  "operatingStoreId",
+  "dataCollectionStoreId",
+  "sellerCompanyId",
+]) {
   assert.equal(field in ingested[0].input, false);
+  assert.equal(field in ingested[0].input.payload, false);
 }
 assert.deepEqual(linked[0], ["acct-a", "run-a", "item-a", "collect-a"]);
 

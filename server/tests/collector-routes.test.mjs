@@ -95,6 +95,7 @@ assert.equal(authenticateCount, authBeforeWrongMethod, "错误方法不能进入
 const health = await invoke("GET", "/collector/health");
 assert.equal(health.res.statusCode, 200);
 assert.deepEqual(health.res.body, { ok: true, health: { ok: true, taskCount: 1 } });
+assert.deepEqual(lastCall("collectorDesktopHealth").args, ["account-auth"]);
 assert.equal(requiredPermissions.at(-1), "collector.config.read");
 
 const registered = await invoke("POST", "/collector/devices", {
@@ -120,12 +121,17 @@ const createdTask = await invoke("POST", "/collector/tasks", {
   name: "task",
   taskType: "SELLER_ANALYTICS",
   operatingStoreId: "store-1",
+  dataCollectionStoreId: "data-1",
+  sellerCompanyId: "seller-1",
 });
 assert.equal(createdTask.res.statusCode, 201);
 assert.equal(requiredPermissions.at(-1), "collector.upload");
 const createTaskInput = lastCall("createCollectorTask").args[0];
 assert.equal(createTaskInput.accountId, "account-auth");
 assert.equal(createTaskInput.createdBy, "account-auth");
+assert.equal(Object.hasOwn(createTaskInput, "operatingStoreId"), false);
+assert.equal(Object.hasOwn(createTaskInput, "dataCollectionStoreId"), false);
+assert.equal(Object.hasOwn(createTaskInput, "sellerCompanyId"), false);
 
 await invoke("GET", "/collector/tasks?page=2&pageSize=25&taskName=phone&status=RUNNING&includeDeleted=true");
 assert.equal(requiredPermissions.at(-1), "collector.job.read");
@@ -134,8 +140,6 @@ assert.deepEqual(lastCall("listCollectorTasksPageForAccount").args[0], {
   status: "RUNNING",
   query: "",
   taskName: "phone",
-  operatingStoreId: "",
-  dataCollectionStoreId: "",
   includeDeleted: true,
   page: 2,
   pageSize: 25,
@@ -172,7 +176,6 @@ assert.equal(queued.res.statusCode, 201);
 assert.deepEqual(lastCall("queueCollectorTaskRun").args[0], {
   accountId: "account-auth",
   taskId: "task-1",
-  dataCollectionStoreId: "verified-data-store",
   idempotencyKey: "idem-1",
   pricingConfigVersionId: "pricing-1",
   requestedBy: "account-auth",
@@ -269,8 +272,16 @@ const forbiddenExportPatch = await invoke("PATCH", "/collector/exports/export-1"
 assert.equal(forbiddenExportPatch.res.statusCode, 405);
 assert.equal(calls.some((call) => call.name === "updateCollectorExport"), false);
 
-await invoke("GET", "/collector/market-snapshots?operatingStoreId=store-1&dataCollectionStoreId=data-1&period=MONTHLY");
-assert.equal(lastCall("listCollectorMarketSnapshots").args[0].accountId, "account-auth");
+await invoke("GET", "/collector/market-snapshots?operatingStoreId=ignored&dataCollectionStoreId=ignored&sellerCompanyId=ignored&period=MONTHLY");
+assert.deepEqual(lastCall("listCollectorMarketSnapshots").args[0], {
+  accountId: "account-auth",
+  source: "ozon_seller_analytics",
+  sourceSku: "",
+  categoryId: "",
+  period: "MONTHLY",
+  limit: 500,
+  offset: 0,
+});
 assert.equal(requiredPermissions.at(-1), "collector.config.read");
 await invoke("POST", "/collector/market-snapshots", {
   accountId: "account-evil",
@@ -281,9 +292,18 @@ await invoke("POST", "/collector/market-snapshots", {
 });
 const snapshotInput = lastCall("upsertCollectorMarketSnapshot").args[0];
 assert.equal(snapshotInput.accountId, "account-auth");
+assert.equal(Object.hasOwn(snapshotInput, "operatingStoreId"), false);
+assert.equal(Object.hasOwn(snapshotInput, "dataCollectionStoreId"), false);
+assert.equal(Object.hasOwn(snapshotInput, "sellerCompanyId"), false);
 
-await invoke("GET", "/collector/category-mappings?operatingStoreId=store-1&dataCollectionStoreId=data-1&rootCategoryId=root");
-assert.equal(lastCall("listCollectorCategoryMappings").args[0].accountId, "account-auth");
+await invoke("GET", "/collector/category-mappings?operatingStoreId=ignored&dataCollectionStoreId=ignored&sellerCompanyId=ignored&rootCategoryId=root");
+assert.deepEqual(lastCall("listCollectorCategoryMappings").args[0], {
+  accountId: "account-auth",
+  source: "ozon_seller_analytics",
+  rootCategoryId: "root",
+  status: "ACTIVE",
+  limit: 5000,
+});
 assert.equal(requiredPermissions.at(-1), "collector.config.read");
 await invoke("POST", "/collector/category-mappings", {
   accountId: "account-evil",
@@ -293,6 +313,9 @@ await invoke("POST", "/collector/category-mappings", {
   leafCategoryId: "leaf",
 });
 assert.equal(lastCall("upsertCollectorCategoryMapping").args[0].accountId, "account-auth");
+assert.equal(Object.hasOwn(lastCall("upsertCollectorCategoryMapping").args[0], "operatingStoreId"), false);
+assert.equal(Object.hasOwn(lastCall("upsertCollectorCategoryMapping").args[0], "dataCollectionStoreId"), false);
+assert.equal(Object.hasOwn(lastCall("upsertCollectorCategoryMapping").args[0], "sellerCompanyId"), false);
 
 const missingService = new Proxy(service, {
   get(target, property) {

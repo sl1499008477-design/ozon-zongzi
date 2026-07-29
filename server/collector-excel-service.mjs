@@ -361,6 +361,18 @@ export function resolveCollectorExcelRow(item = {}) {
     ...exportSnake,
     ...exportCamel,
   };
+  for (const key of [
+    "storeId",
+    "store_id",
+    "operatingStoreId",
+    "operating_store_id",
+    "dataCollectionStoreId",
+    "data_collection_store_id",
+    "sellerCompanyId",
+    "seller_company_id",
+  ]) {
+    delete row[key];
+  }
   if ((row.id === undefined || row.id === null || row.id === "") && row.sourceSku) row.id = row.sourceSku;
   if ((row.link === undefined || row.link === null || row.link === "") && row.sourceUrl) row.link = row.sourceUrl;
   return row;

@@ -52,9 +52,9 @@ test('run item writes use the batch route and carry the active lease envelope', 
     assert.match(backendSource, /data:\s*\{\s*deviceId,\s*leaseToken,\s*items:\s*\[item\],/);
 });
 
-test('verified data store is frozen into run creation', () => {
-    assert.match(collectionSource, /createCollectorRun[\s\S]{0,280}dataCollectionStoreId:\s*this\.task\.dataCollectionStoreId/);
-    assert.match(backendSource, /dataCollectionStoreId:\s*options\.dataCollectionStoreId/);
+test('run creation source has no retired store-scope selector', () => {
+    assert.doesNotMatch(collectionSource, /createCollectorRun[\s\S]{0,280}dataCollectionStoreId:/);
+    assert.doesNotMatch(backendSource, /createCollectorRun[\s\S]{0,320}dataCollectionStoreId:/);
 });
 
 test('persisted item statuses match collector service contract', () => {
@@ -102,10 +102,9 @@ test('task preparation remains protected from duplicate starts', () => {
     assert.doesNotMatch(taskManagerSource, /taskStatus !== 'running'[\s\S]{0,120}activeTasks\.delete/);
 });
 
-test('category mappings are hydrated with the active store scope', () => {
-    assert.match(backendSource, /getCollectorCategoryMappings[\s\S]{0,180}hydrateTaskScope/);
-    assert.match(backendSource, /currentStoreId/);
-    assert.match(backendSource, /currentDataCollectionStoreId/);
+test('category mapping source has no runtime store-scope hydration', () => {
+    assert.doesNotMatch(backendSource, /hydrateTaskScope/);
+    assert.doesNotMatch(backendSource, /currentDataCollectionStoreId/);
 });
 
 test('run requests keep checking the frozen Seller store context', () => {

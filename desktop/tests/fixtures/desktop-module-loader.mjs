@@ -105,19 +105,24 @@ const stubs = {
         },
       },
     };
+    const capture = (config = {}) => {
+      globalThis.__DESKTOP_AXIOS_REQUESTS__ ||= [];
+      globalThis.__DESKTOP_AXIOS_REQUESTS__.push(structuredClone(config));
+      return responseFor(config);
+    };
     const responseFor = (config = {}) =>
       String(config.url || '').includes('/local/state') ? stateResponse : taskResponse;
     function create() {
       return {
         interceptors: { request: { use() {} }, response: { use() {} } },
-        request: async (config) => responseFor(config),
-        get: async (url) => responseFor({ url }),
-        post: async (url) => responseFor({ url }),
-        patch: async (url) => responseFor({ url }),
-        delete: async (url) => responseFor({ url }),
+        request: async (config) => capture(config),
+        get: async (url, config = {}) => capture({ ...config, method: 'get', url }),
+        post: async (url, data, config = {}) => capture({ ...config, method: 'post', url, data }),
+        patch: async (url, data, config = {}) => capture({ ...config, method: 'patch', url, data }),
+        delete: async (url, config = {}) => capture({ ...config, method: 'delete', url }),
       };
     }
-    export default { create, request: async (config) => responseFor(config) };
+    export default { create, request: async (config) => capture(config) };
   `,
 };
 

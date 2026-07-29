@@ -23,6 +23,12 @@ function exportError(message, code, status = 400, details = {}) {
   return Object.assign(new Error(message), { code, status, ...details });
 }
 
+function requiredIdentity(value, code, message) {
+  const normalized = String(value || "").trim();
+  if (!normalized) throw exportError(message, code, 422);
+  return normalized;
+}
+
 function safeFileName(value, fallback = "sonli-collector.xlsx") {
   const normalized = String(value || fallback)
     .trim()
@@ -130,6 +136,8 @@ export async function generateCollectorRunExcelExport({
   statuses = ["QUALIFIED"],
   metadata = {},
 } = {}, dependencies = {}) {
+  accountId = requiredIdentity(accountId, "COLLECTOR_ACCOUNT_REQUIRED", "账号 ID 必填");
+  runId = requiredIdentity(runId, "COLLECTOR_RUN_REQUIRED", "运行 ID 必填");
   const service = {
     createCollectorExport,
     listCollectorRunItems,
