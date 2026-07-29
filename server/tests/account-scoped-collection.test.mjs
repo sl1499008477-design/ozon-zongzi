@@ -1,6 +1,7 @@
 import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
 import test, { after, before } from "node:test";
 import {
   closePostgresPool,
@@ -16,6 +17,9 @@ import {
   updateCollectItemDraftV4,
 } from "../listing-pipeline.mjs";
 
+process.env.QH_LOCAL_NO_LISTEN = "1";
+process.env.SONLI_ADMIN_PASSWORD = "task4-test-admin-password";
+
 if (!postgresEnabled()) {
   test("account-scoped collection PostgreSQL behavior", { skip: "PostgreSQL is not configured" }, () => {});
 } else {
@@ -27,6 +31,31 @@ if (!postgresEnabled()) {
   const sourceSku = `shared-sku-${suffix}`;
   const pool = await getPostgresPool();
   const collectItemIds = new Set();
+  const collectorToken = `task4_collector_${suffix}`;
+  const parentSessionToken = `task4_parent_${suffix}`;
+
+  async function invokeCollector(method, url, body) {
+    const payload = body === undefined ? "" : JSON.stringify(body);
+    const req = Readable.from(payload ? [Buffer.from(payload)] : []);
+    req.method = method;
+    req.url = url;
+    req.headers = {
+      authorization: `Collector ${collectorToken}`,
+      ...(payload ? { "content-type": "application/json" } : {}),
+    };
+    const res = {
+      status: 0,
+      body: "",
+      writeHead(status) { this.status = status; },
+      end(text = "") { this.body = String(text || ""); },
+    };
+    const { handle } = await import("../index.mjs");
+    await handle(req, res);
+    return {
+      status: res.status,
+      body: res.body ? JSON.parse(res.body) : null,
+    };
+  }
 
   async function cleanup() {
     const jobs = await pool.query(
@@ -66,6 +95,27 @@ if (!postgresEnabled()) {
       `INSERT INTO accounts (id,username,display_name,role,status)
        VALUES ($1,$2,$2,'admin','active'),($3,$4,$4,'user','active')`,
       [accountA, `task4-a-${suffix}`, accountB, `task4-b-${suffix}`],
+    );
+    await pool.query(
+      "INSERT INTO sessions (token,account_id) VALUES ($1,$2)",
+      [parentSessionToken, accountA],
+    );
+    await pool.query(
+      `INSERT INTO collector_sessions (
+         id,token_hash,account_id,parent_session_token,device_fingerprint,
+         extension_version,permissions,expires_at
+       ) VALUES ($1,$2,$3,$4,'task4-device','task4-test',$5::jsonb,NOW() + INTERVAL '1 hour')`,
+      [
+        `task4_collector_session_${suffix}`,
+        crypto.createHash("sha256").update(collectorToken).digest("hex"),
+        accountA,
+        parentSessionToken,
+        JSON.stringify([
+          "collector.upload",
+          "collector.job.read",
+          "collector.config.read",
+        ]),
+      ],
     );
   });
 
@@ -233,5 +283,46 @@ if (!postgresEnabled()) {
         field,
       );
     }
+  });
+
+  test("PostgreSQL batch route rejects forbidden envelope and payload scope fields", async () => {
+    for (const field of [
+      "accountId",
+      "createdBy",
+      "storeId",
+      "operatingStoreId",
+      "dataCollectionStoreId",
+      "sellerCompanyId",
+    ]) {
+      const response = await invokeCollector("POST", "/sources/ozon/collect/batch", {
+        [field]: `attacker-${field}-${suffix}`,
+        items: [{
+          source: "ozon",
+          sourceSku: `route-envelope-${field}-${suffix}`,
+          requestId: `route-envelope-${field}-${suffix}`,
+          payload: { sku: `route-envelope-${field}-${suffix}` },
+        }],
+      });
+      assert.equal(response.status, 400, `${field}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.code, "COLLECTOR_SCOPE_FIELD_FORBIDDEN", field);
+    }
+
+    const payloadControl = await invokeCollector("POST", "/sources/ozon/collect", {
+      source: "ozon",
+      sourceSku: `route-payload-control-${suffix}`,
+      requestId: `route-payload-control-${suffix}`,
+      payload: {
+        sku: `route-payload-control-${suffix}`,
+        storeId: `attacker-payload-store-${suffix}`,
+      },
+    });
+    assert.equal(payloadControl.status, 400);
+    assert.equal(payloadControl.body.code, "COLLECTOR_SCOPE_FIELD_FORBIDDEN");
+
+    const inserted = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM collect_requests WHERE account_id=$1 AND source_sku LIKE $2",
+      [accountA, `route-%-${suffix}`],
+    );
+    assert.equal(inserted.rows[0].count, 0);
   });
 }

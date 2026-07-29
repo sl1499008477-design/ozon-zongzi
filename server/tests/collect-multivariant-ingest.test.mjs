@@ -151,6 +151,41 @@ try {
   assert.equal(forbiddenScope.status, 400);
   assert.equal(forbiddenScope.body.code, "COLLECTOR_SCOPE_FIELD_FORBIDDEN");
 
+  for (const field of [
+    "accountId",
+    "createdBy",
+    "storeId",
+    "operatingStoreId",
+    "dataCollectionStoreId",
+    "sellerCompanyId",
+  ]) {
+    const forbiddenEnvelope = await invoke("POST", "/sources/ozon/collect/batch", {
+      authorization: collectorAuthorization,
+      body: {
+        [field]: `attacker-${field}`,
+        items: [{
+          ...collectionInput,
+          sourceSku: `envelope-${field}`,
+          requestId: `envelope-${field}`,
+        }],
+      },
+    });
+    assert.equal(forbiddenEnvelope.status, 400, field);
+    assert.equal(forbiddenEnvelope.body.code, "COLLECTOR_SCOPE_FIELD_FORBIDDEN", field);
+  }
+
+  const forbiddenPayload = await invoke("POST", "/sources/ozon/collect", {
+    authorization: collectorAuthorization,
+    body: {
+      ...collectionInput,
+      sourceSku: "payload-scope-control",
+      requestId: "payload-scope-control",
+      payload: { ...raw, storeId: "attacker-payload-store" },
+    },
+  });
+  assert.equal(forbiddenPayload.status, 400);
+  assert.equal(forbiddenPayload.body.code, "COLLECTOR_SCOPE_FIELD_FORBIDDEN");
+
   await assert.rejects(
     invoke("POST", "/ozon/products/import", {
       authorization: collectorAuthorization,
@@ -167,6 +202,11 @@ try {
   assert.equal(saved.variantData.variants.length, 2);
   assert.deepEqual(saved.variantData.variants[0].sourceVariant, firstSource);
   assert.deepEqual(saved.variantData.variants[1].sourceVariant, secondSource);
+  assert.equal(
+    state.caches.collectBox.length,
+    1,
+    "forbidden batch envelopes and direct payloads must not persist collection items",
+  );
   console.log("collect multivariant ingest persistence passed");
 } finally {
   await rm(dataDir, { recursive: true, force: true });

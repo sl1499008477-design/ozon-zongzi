@@ -1,4 +1,7 @@
-import { prepareCollectRequestV4 } from "./collection-pipeline.mjs";
+import {
+  assertCollectorScopeFieldsAbsentV4,
+  prepareCollectRequestV4,
+} from "./collection-pipeline.mjs";
 
 function routeError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
@@ -49,6 +52,7 @@ export function createJsonAccountScopedCollectionHandler({
       const pathSource = decodeURIComponent(sourceMatch[1]);
       const body = await readJson(req);
       const isBatch = url.pathname.endsWith("/batch");
+      if (isBatch) assertCollectorScopeFieldsAbsentV4(body);
       const inputs = isBatch ? (Array.isArray(body.items) ? body.items : []) : [body];
       if (!inputs.length) throw routeError("采集请求没有商品数据", 422, "COLLECT_ITEMS_EMPTY");
 

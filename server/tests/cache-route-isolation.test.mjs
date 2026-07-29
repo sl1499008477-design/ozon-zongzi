@@ -76,7 +76,26 @@ const fixture = {
     ],
     postings: scopedPair("posting"),
     warehouses: scopedPair("warehouse"),
-    collectBox: scopedPair("collect"),
+    collectBox: [
+      {
+        id: "collect_a",
+        accountId: "acct_a",
+        storeId: "store_a",
+        localStoreId: "store_a",
+        dataCollectionStoreId: "data_store_a",
+        sku: "legacy-sku-a",
+        name: "collect A",
+      },
+      {
+        id: "collect_b",
+        accountId: "acct_b",
+        storeId: "store_b",
+        localStoreId: "store_b",
+        dataCollectionStoreId: "data_store_b",
+        sku: "legacy-sku-b",
+        name: "collect B",
+      },
+    ],
     favorites: scopedPair("favorite"),
     promotions: scopedPair("promotion"),
     returns: scopedPair("return"),
@@ -130,6 +149,14 @@ try {
     "ordinary admin state must not expose another account's collection items",
   );
   assert.deepEqual(
+    stateA.body.caches.collectBox[0].legacyScope,
+    { storeId: "store_a", dataCollectionStoreId: "data_store_a" },
+    "local state must expose historical collection stores only through legacyScope",
+  );
+  assert.equal("storeId" in stateA.body.caches.collectBox[0], false);
+  assert.equal("localStoreId" in stateA.body.caches.collectBox[0], false);
+  assert.equal("dataCollectionStoreId" in stateA.body.caches.collectBox[0], false);
+  assert.deepEqual(
     Object.keys(stateA.body.jobs),
     ["import_a"],
     "ordinary admin state must not expose another account's jobs",
@@ -154,7 +181,36 @@ try {
     const response = await requestJson(handle, "GET", pathname, undefined, "token_a", "store_a");
     assert.equal(response.status, 200, `${pathname} must be readable`);
     assert.deepEqual(firstId(response.body), expectedIds, `${pathname} must not expose another account`);
+    if (pathname === "/ozon/collect-box") {
+      assert.deepEqual(
+        response.body.data[0].legacyScope,
+        { storeId: "store_a", dataCollectionStoreId: "data_store_a" },
+        "collect-box reads must match the PostgreSQL legacyScope shape",
+      );
+      assert.equal("storeId" in response.body.data[0], false);
+      assert.equal("localStoreId" in response.body.data[0], false);
+      assert.equal("dataCollectionStoreId" in response.body.data[0], false);
+    }
   }
+
+  const ownCollectPatch = await requestJson(
+    handle,
+    "PATCH",
+    "/ozon/collect-box/collect_a",
+    { name: "updated legacy item" },
+    "token_a",
+    "store_a",
+  );
+  assert.equal(ownCollectPatch.status, 200);
+  assert.equal(ownCollectPatch.body.name, "updated legacy item");
+  assert.deepEqual(
+    ownCollectPatch.body.legacyScope,
+    { storeId: "store_a", dataCollectionStoreId: "data_store_a" },
+    "collect-box updates must return the same public legacyScope shape as reads",
+  );
+  assert.equal("storeId" in ownCollectPatch.body, false);
+  assert.equal("localStoreId" in ownCollectPatch.body, false);
+  assert.equal("dataCollectionStoreId" in ownCollectPatch.body, false);
 
   const crossTemplate = await requestJson(
     handle,

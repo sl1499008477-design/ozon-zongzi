@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { publicCollectionItem } from "./collection-public-shape.mjs";
 import { decryptSecret } from "./crypto-secrets.mjs";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
@@ -385,17 +386,13 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
   return result.rows.map((row) => {
     const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
     const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
-    return {
+    return publicCollectionItem({
       ...withoutCollectionScope(normalized),
       id: row.id,
       sku: row.source_sku || normalized.sku || "",
       productUrl: row.source_url || normalized.productUrl || "",
-      ...(row.store_id || row.data_collection_store_id ? {
-        legacyScope: {
-          storeId: row.store_id || "",
-          dataCollectionStoreId: row.data_collection_store_id || "",
-        },
-      } : {}),
+      storeId: row.store_id || "",
+      dataCollectionStoreId: row.data_collection_store_id || "",
       status: legacyCollectStatus(row.status),
       listingDraft: row.draft_data || normalized.listingDraft || {},
       draftVersion: Number(row.draft_version || 1),
@@ -403,7 +400,7 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
       updatedAt: row.updated_at,
       accountId: row.account_id || "",
       pipelineVersion: "v3",
-    };
+    });
   });
 }
 
@@ -432,22 +429,18 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     const listingDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
       ? safePatch.listingDraft
       : { ...currentDraft, ...safePatch };
-    const item = {
+    const item = publicCollectionItem({
       ...withoutCollectionScope(normalized),
       ...safePatch,
       id: row.id,
       accountId: row.account_id,
-      ...(row.store_id || row.data_collection_store_id ? {
-        legacyScope: {
-          storeId: row.store_id || "",
-          dataCollectionStoreId: row.data_collection_store_id || "",
-        },
-      } : {}),
+      storeId: row.store_id || "",
+      dataCollectionStoreId: row.data_collection_store_id || "",
       sku: safePatch.sku || row.source_sku || normalized.sku || "",
       productUrl: safePatch.productUrl || row.source_url || normalized.productUrl || "",
       status: row.status,
       listingDraft,
-    };
+    });
     const mirrored = await mirrorCollectItemV3(item, {
       client,
       collectId: row.id,

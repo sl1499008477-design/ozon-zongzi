@@ -94,6 +94,7 @@ import {
   getCollectRequestForAccount,
   hydrateCollectionStoresIntoState,
   ingestCollectRequestV4,
+  assertCollectorScopeFieldsAbsentV4,
   listCollectionStoresForAccount,
   setCurrentCollectionStoreForAccount,
   upsertCollectionStoreForAccount,
@@ -135,6 +136,7 @@ import {
 import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
 import { createJsonAccountScopedCollectionHandler } from "./account-scoped-collection-routes.mjs";
+import { publicCollectionItem } from "./collection-public-shape.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
@@ -742,9 +744,9 @@ function localStatePayload(state, options = {}) {
   const visibleJobs = Object.fromEntries(Object.entries(state.jobs || {}).filter(([, job]) =>
     String(job?.accountId || "") === String(account.id),
   ));
-  const visibleCollectBox = (state.caches.collectBox || []).filter((item) =>
-    String(item?.accountId || "") === String(account.id),
-  );
+  const visibleCollectBox = (state.caches.collectBox || [])
+    .filter((item) => String(item?.accountId || "") === String(account.id))
+    .map(publicCollectionItem);
   const visibleFiles = ensureFilesCache(state).filter((file) => canAccessLocalFile(file, account));
   const visibleCaches = {
     products: accountScopedCache(state.caches.products, account, accountStoreIds),
@@ -2340,6 +2342,7 @@ async function handleFastCollectionRoute(req, res, url) {
       const sourceId = decodeURIComponent(sourceCollectMatch[1]);
       const body = await readBody(req);
       const isBatch = url.pathname.endsWith("/batch");
+      if (isBatch) assertCollectorScopeFieldsAbsentV4(body);
       const inputs = isBatch
         ? (Array.isArray(body.items) ? body.items : [])
         : [body];
@@ -4163,7 +4166,7 @@ async function handle(req, res) {
           raw: { sku, scrapedAt: new Date().toISOString() },
         });
         const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
-        sendJson(res, 200, { ok: true, data: saved.item, scraped: true });
+        sendJson(res, 200, { ok: true, data: publicCollectionItem(saved.item), scraped: true });
       } else {
         // 抓取失败，仍然创建条目但标记为待处理
         const item = normalizeCollectItem({
@@ -4176,7 +4179,7 @@ async function handle(req, res) {
         const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
         sendJson(res, 200, {
           ok: true,
-          data: saved.item,
+          data: publicCollectionItem(saved.item),
           scraped: false,
           error: "未能从 ozon.ru 抓取到商品数据",
         });
@@ -4208,7 +4211,11 @@ async function handle(req, res) {
 
   if (req.method === "GET" && url.pathname === "/ozon/collect-box") {
     const account = requireAuth(req, state);
-    sendJson(res, 200, emptyPage(url, cacheItemsForAccount(state, "collectBox", account)));
+    sendJson(
+      res,
+      200,
+      emptyPage(url, cacheItemsForAccount(state, "collectBox", account).map(publicCollectionItem)),
+    );
     return;
   }
 
@@ -4251,7 +4258,7 @@ async function handle(req, res) {
             raw: { sku, scrapedAt: new Date().toISOString() },
           });
           const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
-          sendJson(res, 200, saved.item);
+          sendJson(res, 200, publicCollectionItem(saved.item));
           return;
         }
       } catch (e) {
@@ -4260,7 +4267,7 @@ async function handle(req, res) {
     }
     const item = normalizeCollectItem(body);
     const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
-    sendJson(res, 200, saved.item);
+    sendJson(res, 200, publicCollectionItem(saved.item));
     return;
   }
 
@@ -4329,7 +4336,7 @@ async function handle(req, res) {
       sendError(res, 404, "采集箱条目不存在");
       return;
     }
-    sendJson(res, 200, item);
+    sendJson(res, 200, publicCollectionItem(item));
     return;
   }
 
@@ -4365,7 +4372,7 @@ async function handle(req, res) {
     sendJson(res, 200, {
       ok: true,
       imported: saved.items.length,
-      data: saved.items,
+      data: saved.items.map(publicCollectionItem),
       total: cacheItemsForAccount(saved.state, "collectBox", account).length,
     });
     return;
@@ -4933,7 +4940,12 @@ async function handle(req, res) {
     };
     item.updatedAt = new Date().toISOString();
     await saveState(state);
-    sendJson(res, 200, { ok: true, draft: item.aiListingDraft, item, local: true });
+    sendJson(res, 200, {
+      ok: true,
+      draft: item.aiListingDraft,
+      item: publicCollectionItem(item),
+      local: true,
+    });
     return;
   }
 

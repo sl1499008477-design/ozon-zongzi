@@ -75,14 +75,18 @@ function rejectCollectorScopeFields(input = {}) {
   }
 }
 
+export function assertCollectorScopeFieldsAbsentV4(input = {}) {
+  rejectCollectorScopeFields(input);
+  rejectCollectorScopeFields(input?.payload);
+}
+
 export function prepareCollectRequestV4({
   authenticatedAccount,
   input = {},
   enforceScopeFields = true,
 } = {}) {
   if (enforceScopeFields) {
-    rejectCollectorScopeFields(input);
-    rejectCollectorScopeFields(input?.payload);
+    assertCollectorScopeFieldsAbsentV4(input);
   }
   const accountId = clean(authenticatedAccount?.id, 240);
   if (!accountId) {
