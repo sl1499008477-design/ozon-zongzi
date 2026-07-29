@@ -89,7 +89,7 @@ async function processSubmit(jobId) {
     });
     const items = Array.isArray(work.items) ? work.items : [];
     if (!items.length) throw Object.assign(new Error("不可变上架快照没有商品变体"), { status: 400, code: "SNAPSHOT_EMPTY" });
-    const credential = await readStoreCredentialV3(work.store_id);
+    const credential = await readStoreCredentialV3(work.store_id, work.account_id);
     if (!credential?.apiKey) throw Object.assign(new Error("经营店铺的 Ozon API 凭证不可用"), { status: 400, code: "STORE_CREDENTIAL_MISSING" });
     await transitionSubmissionJobV3(jobId, "SUBMITTING", {}, {
       type: "submission.ozon_request_started",
@@ -145,7 +145,7 @@ async function finishSuccessfulImport(work, statusInfo) {
   const stocks = Array.isArray(work.stocks) ? work.stocks : [];
   if (finalStatus === "SUCCEEDED" && stocks.length) {
     try {
-      const credential = await readStoreCredentialV3(work.store_id);
+      const credential = await readStoreCredentialV3(work.store_id, work.account_id);
       await callOzonSellerApi(credential, "/v2/products/stocks", { stocks }, 60000);
       statusMessage = `商品已上架，${stocks.length} 条库存已同步`;
     } catch (error) {
@@ -193,7 +193,7 @@ async function processCheck(jobId) {
       });
     }
     const checkCount = await incrementSubmissionStatusCheckV3(jobId);
-    const credential = await readStoreCredentialV3(work.store_id);
+    const credential = await readStoreCredentialV3(work.store_id, work.account_id);
     const response = await callOzonSellerApi(credential, "/v1/product/import/info", {
       task_id: Number(work.ozon_task_id) || work.ozon_task_id,
     }, 60000);

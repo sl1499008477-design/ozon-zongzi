@@ -3,6 +3,11 @@ import { publicCollectionItem } from "./collection-public-shape.mjs";
 import { decryptSecret } from "./crypto-secrets.mjs";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
+import {
+  assertListingPreparationInput,
+  resolveListingPreparationReplay,
+  validateTargetStoreRecord,
+} from "./listing-submission-policy.mjs";
 
 export const LISTING_QUEUE = "ozon-product-import-v3";
 export const TERMINAL_SUBMISSION_STATUSES = new Set(["SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED"]);
@@ -355,6 +360,47 @@ export async function mirrorCollectItemV3(item = {}, context = {}) {
   return transaction((client) => mirrorCollectItemWithClient(client, item, context));
 }
 
+export async function assertUsableOperatingStore({
+  accountId,
+  storeId,
+  requireCredentials = true,
+  client = null,
+} = {}) {
+  const scope = assertListingPreparationInput({
+    accountId,
+    collectItemId: "target-store-validation",
+    targetStoreId: storeId,
+    idempotencyKey: "target-store-validation",
+  });
+  const database = client || await poolReady();
+  const result = await database.query(
+    `SELECT
+       s.id,
+       s.owner_account_id,
+       s.label,
+       s.client_id,
+       s.currency_code,
+       s.status,
+       (
+         sc.store_id IS NOT NULL
+         AND sc.encrypted_api_key <> ''
+         AND sc.iv <> ''
+         AND sc.auth_tag <> ''
+       ) AS credentials_saved
+     FROM stores s
+     LEFT JOIN store_credentials sc ON sc.store_id=s.id
+     WHERE s.id=$1 AND s.owner_account_id=$2
+     LIMIT 1`,
+    [scope.targetStoreId, scope.accountId],
+  );
+  return validateTargetStoreRecord({
+    accountId: scope.accountId,
+    targetStoreId: scope.targetStoreId,
+    store: result.rows[0] || null,
+    requireCredentials,
+  });
+}
+
 export async function listCollectItemsV3({ accountId = "", includeDeleted = false, limit = 5000 } = {}) {
   if (!listingPipelineEnabled()) return [];
   const scopedAccountId = clean(accountId, 240);
@@ -527,7 +573,9 @@ function publicJob(row = {}) {
 export async function createSubmissionV3({
   collectItem,
   storeId,
+  targetStoreId = "",
   accountId,
+  idempotencyKey = "",
   normalizedItems,
   stocks = [],
   type = "COLLECT_BOX_DRAFT",
@@ -542,8 +590,26 @@ export async function createSubmissionV3({
       code: "COLLECT_ACCOUNT_REQUIRED",
     });
   }
+  const preparation = targetStoreId || idempotencyKey
+    ? assertListingPreparationInput({
+        accountId,
+        collectItemId: collectItem?.id,
+        targetStoreId,
+        idempotencyKey,
+      })
+    : null;
+  if (preparation) storeId = preparation.targetStoreId;
   const mirrored = await mirrorCollectItemV3(collectItem, { accountId, storeId, ...versions });
   return transaction(async (client) => {
+    const targetStore = preparation
+      ? await assertUsableOperatingStore({
+          accountId: preparation.accountId,
+          storeId: preparation.targetStoreId,
+          requireCredentials: true,
+          client,
+        })
+      : null;
+    const frozenStoreId = targetStore?.id || storeId;
     const items = Array.isArray(normalizedItems) ? normalizedItems : [];
     const safeStocks = Array.isArray(stocks) ? stocks : [];
     const pricingRow = mirrored?.draftId
@@ -553,27 +619,54 @@ export async function createSubmissionV3({
     const snapshotData = { items, stocks: safeStocks, pricingSnapshot };
     const snapshotHash = hash(snapshotData);
     const offers = items.map((item) => item.offer_id || item.sku || "").sort().join("|");
-    const baseIdempotencyKey = hash([storeId, offers, snapshotHash].join("|"));
+    const baseIdempotencyKey = preparation
+      ? hash(["listing-prepare", preparation.accountId, preparation.idempotencyKey].join("|"))
+      : hash([frozenStoreId, offers, snapshotHash].join("|"));
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
-    const existing = await client.query(
-      `SELECT j.*, c.source_sku,
-              s.idempotency_key,
-              COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
-       FROM submission_snapshots s
-       JOIN submission_jobs j ON j.snapshot_id=s.id
-       LEFT JOIN collect_items c ON c.id=j.collect_item_id
-       WHERE s.store_id=$1 AND s.collect_item_id=$2 AND s.snapshot_hash=$3
-         AND s.account_id=$4 AND c.account_id=$4
-       ORDER BY s.created_at DESC
-       LIMIT 1`,
-      [storeId, collectItem.id, snapshotHash, accountId],
-    );
+    const existing = preparation
+      ? await client.query(
+          `SELECT j.*, c.source_sku, s.idempotency_key,
+                  s.store_id AS frozen_store_id,
+                  s.collect_item_id AS frozen_collect_item_id,
+                  COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
+           FROM submission_snapshots s
+           JOIN submission_jobs j ON j.snapshot_id=s.id
+           LEFT JOIN collect_items c ON c.id=j.collect_item_id
+           WHERE s.idempotency_key=$1
+           LIMIT 1`,
+          [baseIdempotencyKey],
+        )
+      : await client.query(
+          `SELECT j.*, c.source_sku,
+                  s.idempotency_key,
+                  COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
+           FROM submission_snapshots s
+           JOIN submission_jobs j ON j.snapshot_id=s.id
+           LEFT JOIN collect_items c ON c.id=j.collect_item_id
+           WHERE s.store_id=$1 AND s.collect_item_id=$2 AND s.snapshot_hash=$3
+             AND s.account_id=$4 AND c.account_id=$4
+           ORDER BY s.created_at DESC
+           LIMIT 1`,
+          [frozenStoreId, collectItem.id, snapshotHash, accountId],
+        );
     const latest = existing.rows[0];
+    if (preparation && latest) {
+      resolveListingPreparationReplay({
+        existing: {
+          ...latest,
+          store_id: latest.frozen_store_id,
+          collect_item_id: latest.frozen_collect_item_id,
+        },
+        collectItemId: preparation.collectItemId,
+        targetStoreId: preparation.targetStoreId,
+      });
+      return { duplicate: true, job: publicJob(latest) };
+    }
     const retryableStatuses = new Set(["FAILED", "CANCELLED"]);
     if (latest && (!retryFailed || !retryableStatuses.has(String(latest.status || "").toUpperCase()))) {
       return { duplicate: true, job: publicJob(latest) };
     }
-    const idempotencyKey = latest
+    const snapshotIdempotencyKey = latest
       ? hash([baseIdempotencyKey, "retry", latest.id].join("|"))
       : baseIdempotencyKey;
 
@@ -588,14 +681,14 @@ export async function createSubmissionV3({
          normalizer_version, category_rule_version, dictionary_version, rich_content_rule_version,
          pricing_snapshot
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16::jsonb)`,
-      [snapshotId, collectItem.id, mirrored?.draftId || null, mirrored?.version || 1, accountId || null, storeId, idempotencyKey, snapshotHash, items.length, json(items), json(safeStocks), "v3", clean(versions.categoryRuleVersion, 120), clean(versions.dictionaryVersion, 120), clean(versions.richContentRuleVersion, 120), json(pricingSnapshot)],
+      [snapshotId, collectItem.id, mirrored?.draftId || null, mirrored?.version || 1, accountId || null, frozenStoreId, snapshotIdempotencyKey, snapshotHash, items.length, json(items), json(safeStocks), "v3", clean(versions.categoryRuleVersion, 120), clean(versions.dictionaryVersion, 120), clean(versions.richContentRuleVersion, 120), json(pricingSnapshot)],
     );
     await client.query(
       `INSERT INTO submission_jobs (
          id, snapshot_id, collect_item_id, account_id, store_id, type, status,
          item_count, correlation_id
        ) VALUES ($1,$2,$3,$4,$5,$6,'QUEUE_PENDING',$7,$8)`,
-      [jobId, snapshotId, collectItem.id, accountId || null, storeId, type, items.length, correlationId],
+      [jobId, snapshotId, collectItem.id, accountId || null, frozenStoreId, type, items.length, correlationId],
     );
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index] || {};
@@ -610,7 +703,13 @@ export async function createSubmissionV3({
     await client.query(
       `INSERT INTO submission_events (job_id, to_status, event_type, message, actor_type, actor_id, payload)
        VALUES ($1,'QUEUE_PENDING','submission.created','已创建不可变上架快照','account',$2,$3::jsonb)`,
-      [jobId, accountId || "", json({ snapshotId, itemCount: items.length, snapshotHash, retryOfJobId: latest?.id || "" })],
+      [jobId, accountId || "", json({
+        snapshotId,
+        itemCount: items.length,
+        snapshotHash,
+        retryOfJobId: latest?.id || "",
+        ...(targetStore ? { targetStore } : {}),
+      })],
     );
     await client.query(
       `INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, dedupe_key)
@@ -620,7 +719,12 @@ export async function createSubmissionV3({
     await client.query(
       `INSERT INTO audit_events (account_id, store_id, action, entity_type, entity_id, correlation_id, metadata)
        VALUES ($1,$2,'LISTING_SUBMIT','submission_job',$3,$4,$5::jsonb)`,
-      [accountId || null, storeId, jobId, correlationId, json({ snapshotId, itemCount: items.length, retryOfJobId: latest?.id || "" })],
+      [accountId || null, frozenStoreId, jobId, correlationId, json({
+        snapshotId,
+        itemCount: items.length,
+        retryOfJobId: latest?.id || "",
+        ...(targetStore ? { targetStore } : {}),
+      })],
     );
     await client.query(
       "UPDATE collect_items SET status='QUEUE_PENDING', updated_at=NOW() WHERE id=$1 AND account_id=$2",
@@ -632,6 +736,41 @@ export async function createSubmissionV3({
       [jobId],
     );
     return { duplicate: false, job: publicJob(created.rows[0]) };
+  });
+}
+
+export async function prepareCollectItemForListing({
+  accountId,
+  collectItemId,
+  targetStoreId,
+  idempotencyKey,
+  collectItem,
+  normalizedItems,
+  stocks = [],
+  type = "COLLECT_BOX_DRAFT",
+  versions = {},
+} = {}) {
+  const preparation = assertListingPreparationInput({
+    accountId,
+    collectItemId,
+    targetStoreId,
+    idempotencyKey,
+  });
+  await assertUsableOperatingStore({
+    accountId: preparation.accountId,
+    storeId: preparation.targetStoreId,
+    requireCredentials: true,
+  });
+  return createSubmissionV3({
+    collectItem,
+    accountId: preparation.accountId,
+    storeId: preparation.targetStoreId,
+    targetStoreId: preparation.targetStoreId,
+    idempotencyKey: preparation.idempotencyKey,
+    normalizedItems,
+    stocks,
+    type,
+    versions,
   });
 }
 
@@ -774,12 +913,16 @@ export async function loadSubmissionWorkV3(jobId) {
   return result.rows[0] || null;
 }
 
-export async function readStoreCredentialV3(storeId) {
+export async function readStoreCredentialV3(storeId, accountId = "") {
   const pool = await poolReady();
   const result = await pool.query(
     `SELECT s.id, s.client_id, sc.encrypted_api_key, sc.iv, sc.auth_tag, sc.algorithm, sc.key_version
-     FROM stores s JOIN store_credentials sc ON sc.store_id=s.id WHERE s.id=$1`,
-    [storeId],
+     FROM stores s
+     JOIN store_credentials sc ON sc.store_id=s.id
+     WHERE s.id=$1
+       AND ($2='' OR s.owner_account_id=$2)
+       AND s.status <> 'disabled'`,
+    [storeId, clean(accountId, 240)],
   );
   const row = result.rows[0];
   if (!row) return null;

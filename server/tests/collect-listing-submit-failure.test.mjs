@@ -46,6 +46,12 @@ await writeFile(dataFile, `${JSON.stringify({
     displayName: "Submit Test",
     role: "admin",
     status: "active",
+  }, {
+    id: "acct_foreign",
+    username: "foreign-test",
+    displayName: "Foreign Test",
+    role: "user",
+    status: "active",
   }],
   currentStoreId: storeId,
   stores: [{
@@ -54,6 +60,14 @@ await writeFile(dataFile, `${JSON.stringify({
     label: "submit-store",
     clientId: "submit-client",
     apiKey: "submit-key",
+    status: "active",
+  }, {
+    id: "foreign-submit-store",
+    ownerAccountId: "acct_foreign",
+    label: "Foreign Secret Store",
+    clientId: "foreign-secret-client",
+    apiKey: "foreign-secret-key",
+    status: "active",
   }],
   caches: {
     collectBox: [{
@@ -123,10 +137,39 @@ delete process.env.POSTGRES_HOST;
 
 try {
   const { handle } = await import("../index.mjs");
+
+  const missingTarget = await requestJson(
+    handle,
+    `/ozon/collect-box/${collectId}/listing/submit`,
+    { idempotencyKey: "submit-missing-target" },
+    token,
+    storeId,
+  );
+  assert.equal(missingTarget.status, 422);
+  assert.equal(missingTarget.body.code, "TARGET_STORE_REQUIRED");
+
+  const foreignTarget = await requestJson(
+    handle,
+    `/ozon/collect-box/${collectId}/listing/submit`,
+    {
+      targetStoreId: "foreign-submit-store",
+      idempotencyKey: "submit-foreign-target",
+    },
+    token,
+    storeId,
+  );
+  assert.equal(foreignTarget.status, 404);
+  assert.equal(foreignTarget.body.code, "TARGET_STORE_NOT_FOUND");
+  assert.doesNotMatch(JSON.stringify(foreignTarget.body), /Foreign Secret Store|foreign-secret-client|foreign-secret-key/);
+
   const response = await requestJson(
     handle,
     `/ozon/collect-box/${collectId}/listing/submit`,
-    { storeId, strictTypeMatch: true },
+    {
+      targetStoreId: storeId,
+      idempotencyKey: "submit-pipeline-required",
+      strictTypeMatch: true,
+    },
     token,
     storeId,
   );

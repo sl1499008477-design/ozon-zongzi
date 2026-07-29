@@ -84,9 +84,13 @@ import {
   listingPipelineHealth,
   mirrorCollectItemV3,
   listSubmissionJobsV3,
+  prepareCollectItemForListing,
   softDeleteCollectItemsForAccountV4,
   updateCollectItemDraftV4,
 } from "./listing-pipeline.mjs";
+import {
+  resolveLocalListingTarget,
+} from "./listing-submission-policy.mjs";
 import {
   authenticateCollectionRequest,
   backfillCollectionStoresFromLegacy,
@@ -490,6 +494,7 @@ function canAccessLocalFile(file, account) {
 function publicStore(store, state = null) {
   if (!store) return null;
   const currency = storeContractCurrencyCode(state, store);
+  const credentialsSaved = Boolean(store.apiKey);
   return {
     id: store.id,
     storeId: store.id,
@@ -501,7 +506,8 @@ function publicStore(store, state = null) {
     isPremium: store.isPremium === true,
     status: store.status || "",
     clientId: store.clientId,
-    apiKeyMasked: store.apiKey || store.apiKeyEncrypted || store.apiKeyProtected ? "已保存" : "",
+    apiKeyMasked: credentialsSaved ? "已保存" : "",
+    credentialsSaved,
     apiKeyCreatedAt: store.apiKeyCreatedAt || "",
     apiKeyExpiresAt: store.apiKeyExpiresAt || "",
     ownerAccountId: store.ownerAccountId || "",
@@ -1822,9 +1828,20 @@ async function previewOzonProductImport(state, req, body) {
 
 async function queueCollectSubmissionV3(state, req, body, collectItem, type = "COLLECT_BOX_DRAFT", dependencies = {}) {
   const account = requireAuth(req, state);
-  const store = getRequestStore(state, req, body.storeId);
+  const preparation = collectItem
+    ? resolveLocalListingTarget({
+        accountId: account.id,
+        collectItemId: collectItem.id,
+        targetStoreId: body.targetStoreId,
+        idempotencyKey: body.idempotencyKey,
+        findStore: (storeId) => activeStore(state, storeId, account.id),
+      })
+    : null;
+  const store = preparation?.store || getRequestStore(state, req, body.storeId);
+  const targetStore = preparation?.target || null;
   const categoryService = dependencies.categoryService || ozonCategoryService;
   const createSubmission = dependencies.createSubmissionV3 || createSubmissionV3;
+  const prepareListing = dependencies.prepareCollectItemForListing || prepareCollectItemForListing;
   const rawItems = withStoreContractCurrency(state, store, Array.isArray(body.items) ? body.items.filter(Boolean) : []);
   if (!rawItems.length) {
     const error = new Error("缺少可提交到 Ozon 的商品变体");
@@ -1883,10 +1900,14 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
     listingDraft: { variants: rawItems },
     createdAt: new Date().toISOString(),
   };
-  const created = await createSubmission({
+  const created = await (preparation ? prepareListing : createSubmission)({
     collectItem: submissionCollectItem,
-    storeId: store.id,
+    collectItemId: submissionCollectItem.id,
+    storeId: targetStore?.id || store.id,
+    targetStoreId: targetStore?.id || "",
+    targetStore,
     accountId: account.id,
+    idempotencyKey: preparation?.idempotencyKey || "",
     normalizedItems: normalized.items,
     stocks: Array.isArray(body.stocks) ? body.stocks : [],
     type,
@@ -2218,6 +2239,15 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     const err = new Error("采集箱条目不存在");
     err.status = 404;
     throw err;
+  }
+  if (!dryRun) {
+    resolveLocalListingTarget({
+      accountId: account?.id,
+      collectItemId: item.id,
+      targetStoreId: body.targetStoreId,
+      idempotencyKey: body.idempotencyKey,
+      findStore: (storeId) => activeStore(state, storeId, account.id),
+    });
   }
   const items = buildCollectBoxListingItems(item);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);

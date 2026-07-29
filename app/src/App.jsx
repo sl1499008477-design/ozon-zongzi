@@ -106,6 +106,7 @@ import {
   dashboardMoneyGroups,
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
+import { buildPrepareListingBody, targetStoreSelection } from "./collect-box-target-store.js";
 
 const { Header, Sider, Content } = Layout;
 
@@ -3635,9 +3636,7 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
       return;
     }
     if (!hasStore) {
-      message.warning("请先绑定门店");
-      onBind?.();
-      return;
+      if (dryRun) { message.warning("请先绑定门店"); onBind?.(); return; }
     }
     const token = localStorage.getItem("token");
     if (!token) {
@@ -5088,6 +5087,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const [packageHeight, setPackageHeight] = useState("");
   const [listingWarehouseId, setListingWarehouseId] = useState("");
   const [listingStock, setListingStock] = useState("5");
+  const [targetStoreId, setTargetStoreId] = useState(() => String(localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || ""));
   const [sourceLink, setSourceLink] = useState("");
   const [note, setNote] = useState("");
   const [variantRows, setVariantRows] = useState([]);
@@ -5103,6 +5103,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const params = new URLSearchParams(window.location.search);
   const itemId = params.get("id") || "";
   const currentStoreId = localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || "";
+  const { stores: targetStores, options: targetStoreOptions, selectedStoreId } = targetStoreSelection(localData, currentStoreId, targetStoreId);
+  React.useEffect(function() {
+    if (selectedStoreId !== targetStoreId) setTargetStoreId(selectedStoreId);
+  }, [targetStoreId, selectedStoreId]);
   const localStateStoreId = localData?.currentStoreId || "";
   const readCategoryTree = React.useCallback((language) => apiRequest(`/ozon/categories/tree?language=${encodeURIComponent(language)}`, {
     headers: { "x-ozon-store-id": currentStoreId },
@@ -5302,16 +5306,14 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       return;
     }
     const storeId = localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || "";
-    if (!storeId) {
-      message.warning("未找到当前店铺，请重新绑定门店");
-      onBind?.();
-      return;
-    }
+    if (dryRun && !storeId) { message.warning("未找到当前店铺，请重新绑定门店"); onBind?.(); return; }
+    if (!dryRun && !targetStores.length) { message.warning("请先启用已保存凭据的经营店铺"); onBind?.(); return; }
+    if (!dryRun && !targetStoreId) { message.warning("请选择目标经营店铺"); onBind?.(); return; }
     setLoading(true);
     setListingResult({
       status: "pending",
       title: dryRun ? "正在预检上架数据" : "正在提交上架任务",
-      detail: dryRun ? "正在保存当前草稿，并用数据库草稿做 Ozon 上架预检。" : "正在保存当前草稿，并按数据库草稿提交到当前绑定店铺。",
+      detail: dryRun ? "正在保存当前草稿，并用数据库草稿做 Ozon 上架预检。" : `正在保存当前草稿，并冻结目标店铺「${targetStoreOptions.find((option) => option.value === targetStoreId)?.label || targetStoreId}」。`,
     });
     message.loading({
       content: dryRun ? "正在保存草稿并预检上架数据…" : "正在保存草稿并提交上架…",
@@ -5320,10 +5322,11 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     });
     try {
       const draftSave = await saveListingDraft({ silent: true, onlyIfChanged: true });
+      const targetBody = dryRun ? { storeId } : buildPrepareListingBody({ collectItemId: item.id, targetStoreId });
       const result = await apiRequest(`/ozon/collect-box/${encodeURIComponent(item.id)}/listing/${dryRun ? "preview" : "submit"}`, {
         method: "POST",
         body: {
-          storeId,
+          ...targetBody,
           strictTypeMatch: false,
           entry: dryRun ? "COLLECT_BOX_DRAFT_PREVIEW" : "COLLECT_BOX_DRAFT_SUBMIT",
           retryFailed: !dryRun,
@@ -5883,11 +5886,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
 
   const hasPackageDimensions = [packageWeight, packageLength, packageWidth, packageHeight]
     .every((value) => numberFromMoney(value) > 0);
-  const storeName = visibleStoreName(
-    binding?.name || binding?.storeName || binding?.shopName || localData?.currentStore?.name,
-    binding?.clientId || binding?.client_id || localData?.currentStore?.clientId,
-    hasStore ? "当前店铺" : "未绑定门店",
-  );
   const activeCurrencyCode = storeCurrencyCode || currencyCode;
   const listingStockNumber = numberFromMoney(listingStock);
   const listingStockReady = collectEditText(listingStock) !== "" && listingStockNumber !== null && listingStockNumber >= 0;
@@ -5902,7 +5900,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       && numberFromMoney(rowPrice) > 0;
   });
   const listingRequiredMissingFields = [
-    (!hasStore || !currentStoreId) ? "上架店铺" : "",
+    !targetStoreId ? "上架店铺" : "",
     !collectEditRequiredValueFilled(sku) ? "SKU（商品编码）" : "",
     !collectEditRequiredValueFilled(title) ? "俄语标题" : "",
     !collectEditRequiredValueFilled(description) ? "商品简介/描述" : "",
@@ -5926,7 +5924,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const listingSubmitDisabledReason = listingMissingRequiredText || categoryReadinessState.message;
   const listingSubmitDisabled = loading || Boolean(listingRequiredMissingFields.length) || !categoryReadinessState.ready;
   const readyChecks = [
-    hasStore && Boolean(currentStoreId),
+    Boolean(targetStoreId),
     collectEditRequiredValueFilled(sku),
     collectEditRequiredValueFilled(title),
     numberFromMoney(price) > 0,
@@ -6124,7 +6122,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             </div>
             <Form layout="vertical" className="collect-edit-grid">
               <Form.Item label="上架店铺">
-                <Input value={storeName} disabled />
+                <Select showSearch value={targetStoreId || undefined} options={targetStoreOptions} placeholder="明确选择目标经营店铺" notFoundContent="没有启用且已保存凭据的经营店铺" optionFilterProp="label" onChange={(value) => setTargetStoreId(String(value || ""))} />
               </Form.Item>
               <Form.Item label="品牌">
                 <Input value={brand} onChange={(event) => setBrand(event.target.value)} placeholder="Нет бренда" />

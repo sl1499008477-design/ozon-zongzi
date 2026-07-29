@@ -1,12 +1,15 @@
 import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { encryptSecret } from "../crypto-secrets.mjs";
 import { getPostgresPool, closePostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import {
+  assertUsableOperatingStore,
   createSubmissionV3,
   listCollectItemsV3,
   mirrorCollectItemV3,
+  prepareCollectItemForListing,
   softDeleteCollectItemsV3,
 } from "../listing-pipeline.mjs";
 
@@ -17,8 +20,14 @@ if (!postgresEnabled()) {
 
 const suffix = crypto.randomUUID();
 const accountId = `test_account_${suffix}`;
+const foreignAccountId = `test_foreign_account_${suffix}`;
 const storeId = `test_store_${suffix}`;
+const secondStoreId = `test_store_second_${suffix}`;
+const foreignStoreId = `test_store_foreign_${suffix}`;
+const disabledStoreId = `test_store_disabled_${suffix}`;
+const noCredentialStoreId = `test_store_no_credential_${suffix}`;
 const collectId = `test_collect_${suffix}`;
+const storeIds = [storeId, secondStoreId, foreignStoreId, disabledStoreId, noCredentialStoreId];
 const pool = await getPostgresPool();
 
 async function cleanup() {
@@ -33,8 +42,26 @@ async function cleanup() {
   if (snapshotIds.length) await pool.query("DELETE FROM submission_snapshots WHERE id=ANY($1::text[])", [snapshotIds]);
   await pool.query("DELETE FROM collect_items WHERE id=$1", [collectId]);
   await pool.query("DELETE FROM collect_raw_payloads WHERE collect_item_id=$1", [collectId]);
-  await pool.query("DELETE FROM stores WHERE id=$1", [storeId]);
-  await pool.query("DELETE FROM accounts WHERE id=$1", [accountId]);
+  await pool.query("DELETE FROM stores WHERE id=ANY($1::text[])", [storeIds]);
+  await pool.query("DELETE FROM accounts WHERE id=ANY($1::text[])", [[accountId, foreignAccountId]]);
+}
+
+async function saveCredential(targetStoreId, clientId) {
+  const encrypted = encryptSecret(`secret-${targetStoreId}`);
+  await pool.query(
+    `INSERT INTO store_credentials (
+       store_id,client_id,encrypted_api_key,iv,auth_tag,algorithm,key_version
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      targetStoreId,
+      clientId,
+      encrypted.ciphertext,
+      encrypted.iv,
+      encrypted.authTag,
+      encrypted.algorithm,
+      encrypted.keyVersion,
+    ],
+  );
 }
 
 try {
@@ -45,9 +72,37 @@ try {
     [accountId, `pipeline-${suffix}`, "Pipeline Test"],
   );
   await pool.query(
-    "INSERT INTO stores (id,owner_account_id,label,client_id,status) VALUES ($1,$2,$3,$4,'active')",
+    "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$3,'user','active')",
+    [foreignAccountId, `pipeline-foreign-${suffix}`, "Pipeline Foreign Test"],
+  );
+  await pool.query(
+    "INSERT INTO stores (id,owner_account_id,label,client_id,status,is_current,currency_code) VALUES ($1,$2,$3,$4,'active',TRUE,'RUB')",
     [storeId, accountId, "Pipeline Test Store", `client-${suffix}`],
   );
+  await pool.query(
+    `INSERT INTO stores (id,owner_account_id,label,client_id,status,is_current,currency_code)
+     VALUES
+       ($1,$5,'Pipeline Second Store',$6,'active',FALSE,'RUB'),
+       ($2,$7,'Foreign Secret Store',$8,'active',FALSE,'RUB'),
+       ($3,$5,'Pipeline Disabled Store',$9,'disabled',FALSE,'RUB'),
+       ($4,$5,'Pipeline No Credential Store',$10,'active',FALSE,'RUB')`,
+    [
+      secondStoreId,
+      foreignStoreId,
+      disabledStoreId,
+      noCredentialStoreId,
+      accountId,
+      `client-second-${suffix}`,
+      foreignAccountId,
+      `client-foreign-${suffix}`,
+      `client-disabled-${suffix}`,
+      `client-no-credential-${suffix}`,
+    ],
+  );
+  await saveCredential(storeId, `client-${suffix}`);
+  await saveCredential(secondStoreId, `client-second-${suffix}`);
+  await saveCredential(foreignStoreId, `client-foreign-${suffix}`);
+  await saveCredential(disabledStoreId, `client-disabled-${suffix}`);
 
   const baseItem = {
     id: collectId,
@@ -100,27 +155,95 @@ try {
     type_id: 2,
     attributes: [],
   }];
-  const created = await createSubmissionV3({
+  const created = await prepareCollectItemForListing({
     collectItem: { ...baseItem, listingDraft: { ...baseItem.listingDraft, title: "用户修改标题" } },
     accountId,
-    storeId,
+    collectItemId: collectId,
+    targetStoreId: storeId,
+    idempotencyKey: `prepare-${suffix}`,
     normalizedItems,
     stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
   });
   assert.equal(created.duplicate, false);
   normalizedItems[0].name = "外部对象被修改";
-  const snapshot = await pool.query("SELECT items FROM submission_snapshots WHERE id=$1", [created.job.snapshotId]);
+  const snapshot = await pool.query(
+    "SELECT items,store_id,idempotency_key FROM submission_snapshots WHERE id=$1",
+    [created.job.snapshotId],
+  );
   assert.equal(snapshot.rows[0].items[0].name, "用户修改标题");
+  assert.equal(snapshot.rows[0].store_id, storeId);
 
-  const duplicate = await createSubmissionV3({
+  await pool.query("UPDATE stores SET is_current=FALSE WHERE owner_account_id=$1", [accountId]);
+  await pool.query("UPDATE stores SET is_current=TRUE WHERE id=$1", [secondStoreId]);
+
+  const duplicate = await prepareCollectItemForListing({
     collectItem: { ...baseItem, listingDraft: { ...baseItem.listingDraft, title: "用户修改标题" } },
     accountId,
-    storeId,
+    collectItemId: collectId,
+    targetStoreId: storeId,
+    idempotencyKey: `prepare-${suffix}`,
     normalizedItems: [{ ...normalizedItems[0], name: "用户修改标题" }],
     stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
   });
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.job.id, created.job.id);
+  assert.equal(duplicate.job.storeId, storeId);
+  const frozenRows = await pool.query(
+    `SELECT s.store_id AS snapshot_store_id,j.store_id AS job_store_id
+     FROM submission_snapshots s JOIN submission_jobs j ON j.snapshot_id=s.id
+     WHERE s.id=$1`,
+    [created.job.snapshotId],
+  );
+  assert.deepEqual(frozenRows.rows[0], {
+    snapshot_store_id: storeId,
+    job_store_id: storeId,
+  });
+  await assert.rejects(
+    prepareCollectItemForListing({
+      collectItem: baseItem,
+      accountId,
+      collectItemId: collectId,
+      targetStoreId: secondStoreId,
+      idempotencyKey: `prepare-${suffix}`,
+      normalizedItems: [{ ...normalizedItems[0], name: "用户修改标题" }],
+      stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
+    }),
+    (error) => error?.status === 409 && error?.code === "LISTING_TARGET_STORE_CONFLICT",
+  );
+
+  await assert.rejects(
+    assertUsableOperatingStore({ accountId, storeId: foreignStoreId }),
+    (error) => {
+      assert.equal(error?.status, 404);
+      assert.equal(error?.code, "TARGET_STORE_NOT_FOUND");
+      assert.doesNotMatch(error?.message || "", /Foreign Secret Store|client-foreign/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    assertUsableOperatingStore({ accountId, storeId: disabledStoreId }),
+    (error) => error?.status === 409 && error?.code === "TARGET_STORE_DISABLED",
+  );
+  await assert.rejects(
+    assertUsableOperatingStore({ accountId, storeId: noCredentialStoreId }),
+    (error) => error?.status === 409 && error?.code === "TARGET_STORE_CREDENTIALS_REQUIRED",
+  );
+
+  const audit = await pool.query(
+    "SELECT metadata FROM audit_events WHERE entity_id=$1 AND action='LISTING_SUBMIT'",
+    [created.job.id],
+  );
+  assert.deepEqual(audit.rows[0].metadata.targetStore, {
+    id: storeId,
+    label: "Pipeline Test Store",
+    clientId: `client-${suffix}`,
+    currencyCode: "RUB",
+    validatedAt: audit.rows[0].metadata.targetStore.validatedAt,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(audit.rows[0].metadata),
+    /secret-|encrypted_api_key|apiKey|authTag|credential/i,
+  );
 
   await pool.query("UPDATE submission_jobs SET status='FAILED', completed_at=NOW(), updated_at=NOW() WHERE id=$1", [created.job.id]);
   const retry = await createSubmissionV3({
