@@ -49,6 +49,8 @@ export function createCollectorAuthRuntime({
   loadState,
   saveState,
   persistenceMode,
+  stateTransaction,
+  initializePostgresRepository,
   readJson,
   sendJson,
 } = {}) {
@@ -56,32 +58,38 @@ export function createCollectorAuthRuntime({
     typeof loadState !== "function"
     || typeof saveState !== "function"
     || typeof persistenceMode !== "function"
+    || typeof stateTransaction?.run !== "function"
     || typeof readJson !== "function"
     || typeof sendJson !== "function"
   ) {
     throw new TypeError("collector auth runtime dependencies are required");
   }
 
-  let jsonStateQueue = Promise.resolve();
   let postgresRepositoryPromise = null;
 
-  function serializeState(operation) {
-    const flight = jsonStateQueue.catch(() => {}).then(async () => {
+  function runStateTransaction(operation) {
+    return stateTransaction.run(async () => {
       const state = await loadState();
       return operation(state);
     });
-    jsonStateQueue = flight.catch(() => {});
-    return flight;
   }
 
-  async function postgresRepository() {
+  const initializeRepository = initializePostgresRepository || (async () => {
+    await loadState();
+    return createPostgresCollectorAuthRepository({
+      pool: await getPostgresPool(),
+    });
+  });
+
+  function postgresRepository() {
     if (!postgresRepositoryPromise) {
-      postgresRepositoryPromise = (async () => {
-        await loadState();
-        return createPostgresCollectorAuthRepository({
-          pool: await getPostgresPool(),
-        });
-      })();
+      const initialization = Promise.resolve().then(initializeRepository);
+      postgresRepositoryPromise = initialization;
+      initialization.catch(() => {
+        if (postgresRepositoryPromise === initialization) {
+          postgresRepositoryPromise = null;
+        }
+      });
     }
     return postgresRepositoryPromise;
   }
@@ -90,7 +98,7 @@ export function createCollectorAuthRuntime({
     if (persistenceMode() === "postgres") {
       return (await postgresRepository())[method](input);
     }
-    return serializeState(async (state) => {
+    return runStateTransaction(async (state) => {
       const repository = createJsonCollectorAuthRepository({
         state,
         persist: saveState,
@@ -111,7 +119,7 @@ export function createCollectorAuthRuntime({
   async function audit(event = {}) {
     const action = auditAction(event);
     if (!action) return;
-    await serializeState(async (state) => {
+    await runStateTransaction(async (state) => {
       appendAuditEvent(state, {
         action,
         status: action === "COLLECTOR_SESSION_REJECTED" ? "FAILED" : "SUCCESS",

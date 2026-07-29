@@ -136,6 +136,7 @@ import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
+import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
@@ -382,8 +383,8 @@ async function saveState(state) {
   await savePersistedState({ dataDir, dataFile, state });
 }
 
-const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, readJson: readBody, sendJson });
-
+const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
+const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
 const ozonSyncService = createOzonSyncService({
   loadState,
   saveState,
@@ -2419,6 +2420,7 @@ async function handle(req, res) {
   })) return;
   if (await handleCollectorHttpRoute(req, res)) return;
   if (await handleFastCollectionRoute(req, res, url)) return;
+  return jsonStateTransaction.run(async () => {
   const state = await loadState();
   if (await handleCollectorPricingRoute(req, res, url, {
     requireAuth,
@@ -5159,6 +5161,7 @@ async function handle(req, res) {
   }
 
   sendError(res, 404, `未实现的本地接口: ${req.method} ${url.pathname}`, "LOCAL_NOT_FOUND");
+  });
 }
 
 export const testExports = {
