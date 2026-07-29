@@ -72,6 +72,9 @@ assert(html.includes('id="collector-auth-recheck-btn"'), "popup should expose co
 assert(!html.match(/type="password"|sms-phone|sms-code|短信登录|账号登录/), "popup must not contain a separate SMS/password login");
 assert(!js.match(/loginSms|loginPassword|sendSmsCode|tryWebSync|syncAuthFromWeb/), "popup must not retain legacy auth actions");
 assert(!html.includes("数据店铺"), "popup must not expose data-store binding");
+assert(!html.includes('id="store-select"'), "popup must not select a Web operating store");
+assert(!html.includes('id="sync-cookie-btn"'), "popup must not offer Seller cookie synchronization");
+assert(!html.includes("Ozon Seller 授权"), "popup must not present Seller cookies as authorization");
 assert(!html.includes("Codex") && !html.includes("应用内浏览器"), "popup must not imply that an in-app browser shares the extension profile");
 
 const bridgeScript = manifest.content_scripts.find((script) =>

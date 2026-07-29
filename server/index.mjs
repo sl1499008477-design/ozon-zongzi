@@ -13,6 +13,7 @@ import { createOzonSyncService } from "./ozon-sync-service.mjs";
 import { summarizeOrderMoney } from "./order-money-summary.mjs";
 import { appendAuditEvent } from "./audit-event.mjs";
 import { removeAccountScope } from "./account-deletion.mjs";
+import { migrateLegacyDataCollectionStoreStateForAudit } from "./legacy-data-collection-store.mjs";
 import {
   activeAccount,
   activeStore,
@@ -216,9 +217,7 @@ function normalizeListingJobStates(state) {
 function ensureAccountState(state) {
   state.accounts = Array.isArray(state.accounts) ? state.accounts : [];
   state.stores = Array.isArray(state.stores) ? state.stores : [];
-  delete state.currentDataCollectionStoreId;
-  delete state.currentDataCollectionStoreIdsByAccount;
-  delete state.dataCollectionStores;
+  migrateLegacyDataCollectionStoreStateForAudit(state);
   state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
   normalizeCollectBoxListingStates(state);
   normalizeListingJobStates(state);
@@ -283,7 +282,6 @@ function ensureAccountState(state) {
     session.token = session.token || token;
     session.issuedAt = session.issuedAt || new Date().toISOString();
     session.lastSeenAt = session.lastSeenAt || "";
-    delete session.currentDataCollectionStoreId;
   }
   if (!state.accounts.some((account) => account.id === state.currentAccountId)) {
     state.currentAccountId = "";
@@ -2691,7 +2689,12 @@ async function handle(req, res) {
       return;
     }
     const accountSessionTokens = collectorParentSessionTokens(state, accountId);
-    const deletion = removeAccountScope(state, accountId);
+    const deletionAt = new Date().toISOString();
+    const deletion = removeAccountScope(state, accountId, {
+      actor: { type: "account", id: admin.id },
+      reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+      occurredAt: deletionAt,
+    });
     appendRequestAudit(state, req, admin, {
       action: "ACCOUNT_DELETED",
       entityType: "account",

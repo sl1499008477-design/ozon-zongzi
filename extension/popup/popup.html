@@ -74,50 +74,6 @@
             </div>
           </div>
 
-          <!-- Current store + authorization -->
-          <section class="store-card" id="store-card" aria-labelledby="current-store-label">
-            <div class="store-card-head">
-              <span class="section-eyebrow" id="current-store-label">当前店铺</span>
-              <span class="current-store-chip">当前</span>
-            </div>
-
-            <div class="store-selector-row">
-              <div class="store-l">
-                <div class="store-home" id="store-home">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-                </div>
-                <div class="store-info">
-                  <span class="store-name" id="store-name">加载中...</span>
-                  <div class="store-meta" aria-live="polite">
-                    <span class="store-meta-item" id="store-currency">货币·待同步</span>
-                    <span class="store-meta-item is-pending" id="store-premium">Premium·待同步</span>
-                  </div>
-                </div>
-              </div>
-              <div class="store-r" id="store-r">
-                <button class="switch-btn" type="button" tabindex="-1">切换<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-                <select id="store-select" aria-label="切换店铺"></select>
-              </div>
-            </div>
-
-            <div class="authorization-row">
-              <div class="authorization-copy">
-                <span class="authorization-label">Ozon Seller 授权</span>
-                <span class="store-auth" id="store-auth"><span class="auth-dot"></span><span class="auth-text">检测中...</span></span>
-              </div>
-              <div class="authorization-actions">
-                <button class="seller-portal-btn" id="seller-portal-btn" type="button" title="打开 seller.ozon.ru 卖家后台">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                  <span id="seller-portal-label">查看</span>
-                </button>
-                <button class="sync-btn" id="sync-cookie-btn" style="display:none">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                  <span>同步 Cookie</span>
-                </button>
-              </div>
-            </div>
-          </section>
-
           <!-- Today's actionable signals -->
           <section class="activity-section" aria-labelledby="activity-label">
             <div class="today">

@@ -32,6 +32,11 @@ const fixture = {
     username: "account-a",
     role: "admin",
     status: "active",
+  }, {
+    id: "account-b",
+    username: "account-b",
+    role: "user",
+    status: "active",
   }],
   currentStoreId: "store-a",
   currentStoreIdsByAccount: { "account-a": "store-a" },
@@ -42,7 +47,18 @@ const fixture = {
     apiKey: "secret-a",
   }],
   currentDataCollectionStoreId: "data-store-a",
-  currentDataCollectionStoreIdsByAccount: { "account-a": "data-store-a" },
+  currentDataCollectionStoreIdsByAccount: {
+    "account-a": "data-store-a",
+    "account-b": "data-store-b",
+  },
+  dataCollectionStore: {
+    id: "data-store-b",
+    ownerAccountId: "account-b",
+    sellerCompanyId: "seller-company-b",
+    label: "retired singular data store",
+    status: "disabled",
+    updatedAt: "2026-07-28T11:00:00.000Z",
+  },
   dataCollectionStores: [{
     id: "data-store-a",
     ownerAccountId: "account-a",
@@ -62,6 +78,7 @@ const fixture = {
   jobs: {},
   reports: [],
   auditEvents: [],
+  updatedAt: "2026-07-29T12:34:56.000Z",
 };
 
 await writeFile(dataFile, JSON.stringify(fixture), "utf8");
@@ -71,7 +88,7 @@ globalThis.fetch = async (...args) => {
   externalCalls.push(args);
   throw new Error("removed data-store route must not call an external service");
 };
-const { handle } = await import("../index.mjs");
+const { handle, testExports } = await import("../index.mjs");
 
 async function requestJson(method, pathname, {
   authorization = "",
@@ -155,8 +172,10 @@ test("authenticated and anonymous local-state payloads expose no retired data-st
   assert.equal(authenticated.status, 200);
   for (const field of [
     "currentDataCollectionStoreId",
+    "currentDataCollectionStoreIdsByAccount",
     "dataCollectionStore",
     "dataCollectionStores",
+    "legacyDataCollectionStoreAuditArchive",
   ]) {
     assert.equal(Object.hasOwn(authenticated.body, field), false, field);
   }
@@ -165,11 +184,92 @@ test("authenticated and anonymous local-state payloads expose no retired data-st
   assert.equal(anonymous.status, 200);
   for (const field of [
     "currentDataCollectionStoreId",
+    "currentDataCollectionStoreIdsByAccount",
     "dataCollectionStore",
     "dataCollectionStores",
+    "legacyDataCollectionStoreAuditArchive",
   ]) {
     assert.equal(Object.hasOwn(anonymous.body, field), false, field);
   }
+});
+
+test("legacy JSON data-store evidence migrates once with A/B ownership, counts, and source time", () => {
+  const state = structuredClone(fixture);
+  const first = testExports.ensureAccountState(state);
+  const firstArchive = structuredClone(first.legacyDataCollectionStoreAuditArchive);
+
+  assert.equal(firstArchive.schemaVersion, 1);
+  assert.equal(firstArchive.readOnly, true);
+  assert.deepEqual(firstArchive.accountRecordCounts, {
+    "account-a": 1,
+    "account-b": 1,
+  });
+  assert.deepEqual(
+    firstArchive.records.map((record) => ({
+      accountId: record.accountId,
+      dataCollectionStoreId: record.dataCollectionStoreId,
+      sourceTimestamp: record.sourceTimestamp,
+      wasCurrent: record.wasCurrent,
+    })),
+    [{
+      accountId: "account-a",
+      dataCollectionStoreId: "data-store-a",
+      sourceTimestamp: "2026-07-29T12:34:56.000Z",
+      wasCurrent: true,
+    }, {
+      accountId: "account-b",
+      dataCollectionStoreId: "data-store-b",
+      sourceTimestamp: "2026-07-28T11:00:00.000Z",
+      wasCurrent: true,
+    }],
+  );
+  assert.deepEqual(firstArchive.records[0].legacySnapshot, fixture.dataCollectionStores[0]);
+  assert.deepEqual(firstArchive.records[1].legacySnapshot, fixture.dataCollectionStore);
+
+  for (const field of [
+    "currentDataCollectionStoreId",
+    "currentDataCollectionStoreIdsByAccount",
+    "dataCollectionStore",
+    "dataCollectionStores",
+  ]) {
+    assert.equal(Object.hasOwn(first, field), false, field);
+  }
+  assert.equal(Object.hasOwn(first.sessions[token], "currentDataCollectionStoreId"), false);
+
+  testExports.ensureAccountState(first);
+  assert.deepEqual(
+    first.legacyDataCollectionStoreAuditArchive,
+    firstArchive,
+    "repeated migration must not add records or rewrite archive metadata",
+  );
+});
+
+test("normal logout save and subsequent load preserve the internal legacy audit archive", async () => {
+  const response = await requestJson("POST", "/local/accounts/logout", {
+    authorization: `Bearer ${token}`,
+    rawBody: "{}",
+  });
+  assert.equal(response.status, 200);
+  assert.equal(
+    Object.hasOwn(response.body?.state || response.body, "legacyDataCollectionStoreAuditArchive"),
+    false,
+  );
+
+  const saved = JSON.parse(await readFile(dataFile, "utf8"));
+  assert.equal(saved.legacyDataCollectionStoreAuditArchive.readOnly, true);
+  assert.equal(saved.legacyDataCollectionStoreAuditArchive.records.length, 2);
+  assert.deepEqual(saved.legacyDataCollectionStoreAuditArchive.accountRecordCounts, {
+    "account-a": 1,
+    "account-b": 1,
+  });
+  assert.equal(Object.hasOwn(saved, "dataCollectionStore"), false);
+  assert.equal(Object.hasOwn(saved, "dataCollectionStores"), false);
+
+  const archiveBeforeReload = structuredClone(saved.legacyDataCollectionStoreAuditArchive);
+  const anonymous = await requestJson("GET", "/local/state", { rawBody: "" });
+  assert.equal(anonymous.status, 200);
+  const reloaded = testExports.ensureAccountState(JSON.parse(await readFile(dataFile, "utf8")));
+  assert.deepEqual(reloaded.legacyDataCollectionStoreAuditArchive, archiveBeforeReload);
 });
 
 test.after(async () => {

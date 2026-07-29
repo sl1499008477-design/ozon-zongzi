@@ -5,6 +5,7 @@ import {
 } from "./collector-auth-service.mjs";
 import { encryptSecret } from "./crypto-secrets.mjs";
 import { runMigrations } from "./db/migrate.mjs";
+import { purgeLegacyDataCollectionStoresForAccount } from "./legacy-data-collection-store.mjs";
 
 let formalSchemaReady = false;
 
@@ -590,15 +591,6 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       ...(Array.isArray(scope?.storeIds) ? scope.storeIds : []),
       ...(formalStores.rows || []).map((row) => row.id),
     ].map((storeId) => text(storeId, 240)).filter(Boolean))];
-    const collectionStores = await client.query(
-      "SELECT data_collection_store_id FROM account_data_collection_stores WHERE account_id=$1",
-      [accountId],
-    );
-    const dataCollectionStoreIds = [...new Set(
-      (collectionStores.rows || [])
-        .map((row) => text(row.data_collection_store_id, 240))
-        .filter(Boolean),
-    )];
     const scopeParams = [accountId, storeIds];
     const accountOrStore = "(account_id=$1 OR store_id=ANY($2::text[]))";
 
@@ -638,10 +630,12 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       scopeParams,
     );
     await client.query("DELETE FROM pricing_fx_observations WHERE account_id=$1", [accountId]);
-    await client.query(
-      "DELETE FROM collection_store_verifications WHERE account_id=$1 OR data_collection_store_id=ANY($2::text[])",
-      [accountId, dataCollectionStoreIds],
-    );
+    await purgeLegacyDataCollectionStoresForAccount(client, {
+      accountId,
+      reason: scope?.legacyDataStorePurgePolicy?.reason,
+      actor: scope?.legacyDataStorePurgePolicy?.actor,
+      occurredAt: scope?.legacyDataStorePurgePolicy?.occurredAt,
+    });
     await client.query("DELETE FROM sync_jobs WHERE store_id=ANY($1::text[])", [storeIds]);
     await client.query("DELETE FROM files WHERE created_by=$1", [accountId]);
     await client.query(
@@ -649,15 +643,6 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       scopeParams,
     );
     await client.query("DELETE FROM accounts WHERE id=$1", [accountId]);
-    await client.query(
-      `DELETE FROM data_collection_stores
-       WHERE id=ANY($1::text[])
-         AND NOT EXISTS (
-           SELECT 1 FROM account_data_collection_stores membership
-           WHERE membership.data_collection_store_id=data_collection_stores.id
-         )`,
-      [dataCollectionStoreIds],
-    );
   }
 }
 

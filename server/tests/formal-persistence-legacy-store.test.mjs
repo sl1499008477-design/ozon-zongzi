@@ -6,7 +6,10 @@ delete process.env.DATABASE_URL;
 delete process.env.POSTGRES_HOST;
 
 const { mirrorStateToRelationalTables } = await import("../formal-persistence.mjs");
-const { readLegacyDataCollectionStoresForAudit } = await import(
+const {
+  purgeLegacyDataCollectionStoresForAccount,
+  readLegacyDataCollectionStoresForAudit,
+} = await import(
   "../legacy-data-collection-store.mjs"
 );
 
@@ -63,6 +66,175 @@ test("historical data-store reads require an explicit account boundary", async (
       accountId: " ",
     }),
     (error) => error?.code === "ACCOUNT_SCOPE_REQUIRED",
+  );
+});
+
+test("legacy data-store privacy purge requires explicit account, reason, actor, and time", async () => {
+  const noQueryClient = {
+    async query() {
+      assert.fail("invalid purge policy must fail before SQL");
+    },
+  };
+  const valid = {
+    accountId: "account-a",
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    actor: { type: "account", id: "admin-a" },
+    occurredAt: "2026-07-30T09:30:00.000Z",
+  };
+
+  for (const missing of ["accountId", "reason", "actor", "occurredAt"]) {
+    await assert.rejects(
+      purgeLegacyDataCollectionStoresForAccount(noQueryClient, {
+        ...valid,
+        [missing]: missing === "actor" ? { type: "account", id: "" } : "",
+      }),
+      (error) => error?.code === "LEGACY_PURGE_POLICY_REQUIRED",
+      missing,
+    );
+  }
+});
+
+test("legacy data-store privacy purge is account-scoped, transactional, counted, and audited", async () => {
+  const calls = [];
+  const client = {
+    async query(query, params = []) {
+      const sql = String(query).replace(/\s+/g, " ").trim();
+      calls.push({ sql, params });
+      if (sql.startsWith("SELECT m.account_id")) {
+        return {
+          rows: [{
+            account_id: "account-a",
+            data_collection_store_id: "legacy-a-1",
+          }, {
+            account_id: "account-a",
+            data_collection_store_id: "legacy-a-2",
+          }],
+          rowCount: 2,
+        };
+      }
+      if (sql.startsWith("DELETE FROM collection_store_verifications")) {
+        return { rows: [], rowCount: 3 };
+      }
+      if (sql.startsWith("DELETE FROM account_data_collection_stores")) {
+        return { rows: [{ data_collection_store_id: "legacy-a-1" }], rowCount: 2 };
+      }
+      if (sql.startsWith("DELETE FROM data_collection_stores")) {
+        return { rows: [{ id: "legacy-a-1" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+  };
+
+  const result = await purgeLegacyDataCollectionStoresForAccount(client, {
+    accountId: " account-a ",
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    actor: { type: "account", id: "admin-a" },
+    occurredAt: "2026-07-30T09:30:00.000Z",
+  });
+
+  assert.deepEqual(result, {
+    accountId: "account-a",
+    legacyRecordCount: 2,
+    verificationDeletedCount: 3,
+    membershipDeletedCount: 2,
+    orphanStoreDeletedCount: 1,
+    auditEventId: "legacy-data-store-purge:account-a:2026-07-30T09:30:00.000Z",
+  });
+  assert.equal(calls[0].sql, "SAVEPOINT legacy_data_store_account_purge");
+  assert.match(calls[1].sql, /WHERE m\.account_id=\$1/);
+  assert.deepEqual(calls[1].params, ["account-a"]);
+  const verificationDelete = calls.find((call) =>
+    call.sql.startsWith("DELETE FROM collection_store_verifications"));
+  assert.deepEqual(verificationDelete.params, ["account-a"]);
+  assert.doesNotMatch(
+    verificationDelete.sql,
+    /data_collection_store_id|account_id\s*=\s*\$1\s+OR/i,
+  );
+  assert.equal(
+    calls.at(-1).sql,
+    "RELEASE SAVEPOINT legacy_data_store_account_purge",
+  );
+
+  const audit = calls.find((call) => call.sql.startsWith("INSERT INTO audit_events"));
+  assert.ok(audit, "purge must append an audit event in the same transaction");
+  assert.equal(audit.params[0], result.auditEventId);
+  assert.equal(audit.params[1], "account-a");
+  assert.equal(audit.params[4], "account");
+  assert.equal(audit.params[5], "admin-a");
+  assert.equal(audit.params[9], "2026-07-30T09:30:00.000Z");
+  assert.deepEqual(JSON.parse(audit.params[8]), {
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    legacyRecordCount: 2,
+    verificationDeletedCount: 3,
+    membershipDeletedCount: 2,
+    orphanStoreDeletedCount: 1,
+  });
+});
+
+test("legacy data-store privacy purge rolls back its savepoint on failure", async () => {
+  const calls = [];
+  const client = {
+    async query(query) {
+      const sql = String(query).replace(/\s+/g, " ").trim();
+      calls.push(sql);
+      if (sql.startsWith("SELECT m.account_id")) {
+        return {
+          rows: [{
+            account_id: "account-a",
+            data_collection_store_id: "legacy-a-1",
+          }],
+        };
+      }
+      if (sql.startsWith("DELETE FROM collection_store_verifications")) {
+        throw new Error("forced purge failure");
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+
+  await assert.rejects(
+    purgeLegacyDataCollectionStoresForAccount(client, {
+      accountId: "account-a",
+      reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+      actor: { type: "system", id: "account-deletion-test" },
+      occurredAt: "2026-07-30T09:31:00.000Z",
+    }),
+    /forced purge failure/,
+  );
+  assert.deepEqual(calls.slice(-2), [
+    "ROLLBACK TO SAVEPOINT legacy_data_store_account_purge",
+    "RELEASE SAVEPOINT legacy_data_store_account_purge",
+  ]);
+});
+
+test("ordinary formal mirroring cannot invoke legacy evidence purge", async () => {
+  const sql = [];
+  const client = {
+    async query(query) {
+      const normalized = String(query).replace(/\s+/g, " ").trim();
+      sql.push(normalized);
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  await mirrorStateToRelationalTables({ connect: async () => client }, {
+    accounts: [],
+    stores: [],
+    sessions: {},
+    caches: {
+      files: [],
+      warehouses: [],
+      products: [],
+      postings: [],
+    },
+    jobs: {},
+    auditEvents: [],
+  });
+
+  assert.equal(sql.some((statement) => statement.startsWith("SAVEPOINT legacy_data_store")), false);
+  assert.equal(
+    sql.some((statement) => statement.includes("LEGACY_DATA_COLLECTION_STORE_PURGED")),
+    false,
   );
 });
 

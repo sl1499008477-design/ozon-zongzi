@@ -7,12 +7,14 @@ const [
   accountContext,
   collectionPipeline,
   legacyDataCollectionStore,
+  formalPersistence,
 ] = await Promise.all([
   readFile(new URL("../index.mjs", import.meta.url), "utf8"),
   readFile(new URL("../../app/src/App.jsx", import.meta.url), "utf8"),
   readFile(new URL("../account-context.mjs", import.meta.url), "utf8"),
   readFile(new URL("../collection-pipeline.mjs", import.meta.url), "utf8"),
   readFile(new URL("../legacy-data-collection-store.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../formal-persistence.mjs", import.meta.url), "utf8"),
 ]);
 
 assert.ok(
@@ -117,11 +119,22 @@ assert.match(
   /readLegacyDataCollectionStoresForAudit/,
   "historical data-store evidence must live in the read-only legacy module",
 );
-assert.doesNotMatch(
+assert.match(
   legacyDataCollectionStore,
-  /\b(?:INSERT|UPDATE|DELETE)\b/i,
-  "the legacy data-store module must remain read-only",
+  /purgeLegacyDataCollectionStoresForAccount/,
+  "privacy erasure must use the explicit audited legacy purge policy",
 );
+for (const legacyTable of [
+  "account_data_collection_stores",
+  "data_collection_stores",
+  "collection_store_verifications",
+]) {
+  assert.equal(
+    formalPersistence.includes(legacyTable),
+    false,
+    `formal-persistence must not directly access ${legacyTable}`,
+  );
+}
 
 for (const pageName of [
   "AccountSettingsPage",

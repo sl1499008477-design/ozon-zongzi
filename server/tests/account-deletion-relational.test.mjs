@@ -19,7 +19,15 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
   };
   const state = {};
   Object.defineProperty(state, "__deletedAccountScopes", {
-    value: [{ accountId: "account-target", storeIds: ["store-local"] }],
+    value: [{
+      accountId: "account-target",
+      storeIds: ["store-local"],
+      legacyDataStorePurgePolicy: {
+        actor: { type: "account", id: "admin-test" },
+        reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+        occurredAt: "2026-07-30T10:00:00.000Z",
+      },
+    }],
     enumerable: false,
   });
 

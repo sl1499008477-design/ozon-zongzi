@@ -37,19 +37,36 @@ function filterMap(value, accountId, storeIds) {
   );
 }
 
-function rememberRelationalDeletion(state, accountId, storeIds) {
+function rememberRelationalDeletion(
+  state,
+  accountId,
+  storeIds,
+  legacyDataStorePurgePolicy,
+) {
   const previous = Array.isArray(state.__deletedAccountScopes)
     ? state.__deletedAccountScopes
     : [];
   Object.defineProperty(state, "__deletedAccountScopes", {
-    value: [...previous, { accountId, storeIds: [...storeIds] }],
+    value: [...previous, {
+      accountId,
+      storeIds: [...storeIds],
+      legacyDataStorePurgePolicy,
+    }],
     enumerable: false,
     configurable: true,
     writable: true,
   });
 }
 
-export function removeAccountScope(state, rawAccountId) {
+export function removeAccountScope(
+  state,
+  rawAccountId,
+  {
+    actor = { type: "system", id: "account-deletion" },
+    reason = "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    occurredAt = new Date().toISOString(),
+  } = {},
+) {
   const accountId = normalized(rawAccountId);
   const accounts = Array.isArray(state?.accounts) ? state.accounts : [];
   if (!accountId || !accounts.some((account) => normalized(account?.id) === accountId)) {
@@ -99,7 +116,14 @@ export function removeAccountScope(state, rawAccountId) {
     state.currentStoreId = "";
   }
 
-  rememberRelationalDeletion(state, accountId, storeIds);
+  rememberRelationalDeletion(state, accountId, storeIds, {
+    actor: {
+      type: normalized(actor?.type),
+      id: normalized(actor?.id),
+    },
+    reason: normalized(reason),
+    occurredAt: normalized(occurredAt),
+  });
   return {
     accountId,
     storeIds: [...storeIds],

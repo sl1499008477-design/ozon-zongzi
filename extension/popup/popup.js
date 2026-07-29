@@ -40,19 +40,6 @@
   const logoutBtn = document.getElementById("logout-btn");
   const serverStatus = document.getElementById("server-status");
 
-  // store card
-  const storeCard = document.getElementById("store-card");
-  const storeName = document.getElementById("store-name");
-  const storeAuth = document.getElementById("store-auth");
-  const storeAuthDot = storeAuth.querySelector(".auth-dot");
-  const storeAuthText = storeAuth.querySelector(".auth-text");
-  const storeR = document.getElementById("store-r");
-  const storeSelect = document.getElementById("store-select");
-  const storeCurrency = document.getElementById("store-currency");
-  const storePremium = document.getElementById("store-premium");
-  const syncCookieBtn = document.getElementById("sync-cookie-btn");
-  const sellerPortalBtn = document.getElementById("seller-portal-btn");
-  const sellerPortalLabel = document.getElementById("seller-portal-label");
   const connectionStatus = document.getElementById("connection-status");
   const connectionStatusText = document.getElementById(
     "connection-status-text",
@@ -73,8 +60,6 @@
   const dismissUpdateBtn = document.getElementById("dismiss-update-btn");
   const downloadUpdateBtn = document.getElementById("download-update-btn");
   const headerVersion = document.getElementById("header-version");
-
-  let availableStores = [];
 
   // ─── Generic helpers ───
   const sendMessage = (payload) =>
@@ -165,172 +150,6 @@
   const fetchAuth = async () => {
     const response = await sendMessage({ action: "getAuth" });
     return response?.data || response || {};
-  };
-
-  // ─── Main view: data fetchers ───
-  const currencyLabel = (store) => {
-    const code = String(
-      store?.currency || store?.currencyCode || store?.companyCurrency || "",
-    )
-      .trim()
-      .toUpperCase();
-    const names = { CNY: "人民币", RUB: "卢布", USD: "美元" };
-    return code ? `${names[code] || "货币"}·${code}` : "货币·待同步";
-  };
-
-  const premiumState = (store) => {
-    const raw = store?.isPremium ?? store?.premium ?? store?.premiumEnabled;
-    if (raw === true || raw === 1 || raw === "true" || raw === "active") {
-      return true;
-    }
-    if (raw === false || raw === 0 || raw === "false" || raw === "inactive") {
-      return false;
-    }
-    return null;
-  };
-
-  const renderStoreMeta = (store) => {
-    if (storeCurrency) storeCurrency.textContent = currencyLabel(store);
-    if (!storePremium) return;
-    const premium = premiumState(store);
-    storePremium.classList.toggle("is-off", premium === false);
-    storePremium.classList.toggle("is-pending", premium === null);
-    storePremium.textContent =
-      premium === true
-        ? "Premium Pro·已开启"
-        : premium === false
-          ? "Premium·未开启"
-          : "Premium·待同步";
-  };
-
-  const loadStores = async () => {
-    setConnectionState("loading", "连接中");
-    availableStores = [];
-    storeSelect.innerHTML = '<option value="">加载中...</option>';
-    storeName.textContent = "加载中...";
-    renderStoreMeta(null);
-
-    let response;
-    try {
-      response = await sendMessage({ action: "getStores" });
-    } catch (e) {
-      console.error("[popup] loadStores exception:", e);
-      storeSelect.innerHTML = '<option value="">加载失败</option>';
-      storeName.textContent = "加载失败";
-      setConnectionState("error", "连接异常");
-      return [];
-    }
-    if (!response?.ok) {
-      const err = response?.error || "";
-      console.error("[popup] loadStores failed:", err || response);
-      if (
-        err.includes("[401]") ||
-        err.includes("[403]") ||
-        err.includes("Unauthorized") ||
-        err.includes("未授权") ||
-        err.includes("未登录") ||
-        err.includes("过期") ||
-        err.includes("停用") ||
-        err.includes("jwt expired") ||
-        err.includes("invalid token")
-      ) {
-        setLoginState(false);
-        showTip("采集会话已失效，请先登录 Web 管理后台");
-        return [];
-      }
-      storeSelect.innerHTML = `<option value="">加载失败${err ? ": " + err.slice(0, 30) : ""}</option>`;
-      storeName.textContent = "加载失败";
-      setConnectionState("error", "连接异常");
-      return [];
-    }
-
-    const stores = response.data?.data || response.data || [];
-    availableStores = Array.isArray(stores) ? stores : [];
-    setConnectionState("ok", "Web 已连接");
-    storeSelect.innerHTML = "";
-    if (!availableStores.length) {
-      storeSelect.innerHTML = '<option value="">暂无店铺</option>';
-      storeName.textContent = "暂无店铺";
-      renderStoreMeta(null);
-      return [];
-    }
-
-    availableStores.forEach((store) => {
-      const option = document.createElement("option");
-      option.value = store.id || store.storeId || "";
-      option.textContent =
-        store.label ||
-        store.companyName ||
-        store.legalName ||
-        `店铺 ${option.value}`;
-      storeSelect.appendChild(option);
-    });
-
-    const activeId = String(
-      availableStores[0].id || availableStores[0].storeId || "",
-    );
-    if (activeId) storeSelect.value = activeId;
-
-    const active =
-      availableStores.find((s) => String(s.id || s.storeId) === activeId) ||
-      availableStores[0];
-    storeName.textContent =
-      active?.label ||
-      active?.companyName ||
-      active?.legalName ||
-      `店铺 ${activeId}`;
-    renderStoreMeta(active);
-    return availableStores;
-  };
-
-  // ─── Cookie status ───
-  const checkCookieStatus = async () => {
-    try {
-      const resp = await sendMessage({ action: "checkSellerCookies" });
-      if (resp?.ok && resp.data?.sc_company_id) {
-        return { status: "ok", companyId: resp.data.sc_company_id };
-      }
-      if (resp?.ok && resp.data?.has_cookies) {
-        return { status: "warn", message: "Ozon Cookie 存在，但未找到店铺 ID" };
-      }
-      return { status: "err", message: "Seller 登录已失效" };
-    } catch {
-      return { status: "unknown" };
-    }
-  };
-
-  const renderStoreAuth = (cookie) => {
-    storeAuth.classList.remove("ok", "err", "warn");
-    storeCard.classList.remove("is-error");
-    syncCookieBtn.style.display = "none";
-    storeR.style.display = "";
-
-    if (cookie.status === "ok") {
-      storeAuth.classList.add("ok");
-      storeAuthText.textContent = `Seller 已登录 · ${cookie.companyId}`;
-    } else if (cookie.status === "warn") {
-      storeAuth.classList.add("warn");
-      storeAuthText.textContent = cookie.message;
-      storeCard.classList.add("is-error");
-      syncCookieBtn.style.display = "";
-    } else if (cookie.status === "err") {
-      storeAuth.classList.add("err");
-      storeAuthText.textContent = cookie.message;
-      storeCard.classList.add("is-error");
-      syncCookieBtn.style.display = "";
-    } else {
-      storeAuthText.textContent = "检测失败";
-    }
-
-    // seller 跳转/登录按钮:已登录→「查看」(幽灵态),否则→「登录」(醒目态引导登录)。
-    if (sellerPortalBtn && sellerPortalLabel) {
-      const loggedIn = cookie.status === "ok";
-      sellerPortalBtn.classList.toggle("is-login", !loggedIn);
-      sellerPortalLabel.textContent = loggedIn ? "查看" : "登录";
-      sellerPortalBtn.title = loggedIn
-        ? "打开 seller.ozon.ru 卖家后台"
-        : "登录 seller.ozon.ru 卖家后台";
-    }
   };
 
   // ─── Counts (feed nav badges only) ───
@@ -524,30 +343,16 @@
 
   // ─── Build signals (priority-ordered) ───
   const buildSignals = async () => {
-    const [cookie, ctxTab, followSig] = await Promise.all([
-      checkCookieStatus(),
+    const [ctxTab, followSig] = await Promise.all([
       detectOzonProductTab(),
       loadFollowSellSignal(),
     ]);
     const counts = await loadCounts();
     renderNavBadges(counts);
-    renderStoreAuth(cookie);
 
     const signals = [];
 
-    // 1. bad: cookie 失效
-    if (cookie.status === "err" || cookie.status === "warn") {
-      signals.push({
-        variant: "bad",
-        icon: "alert",
-        title: "登录已掉线，先同步 Cookie",
-        sub: "同步前其它操作可能失败",
-        btnLabel: "立即同步",
-        onAction: () => doSyncCookie(),
-      });
-    }
-
-    // 2. context: 当前 ozon 商品页（30 分钟内已采集过的不再重复显示）
+    // 1. context: 当前 ozon 商品页（30 分钟内已采集过的不再重复显示）
     if (ctxTab && !(await isUrlCollected(ctxTab.url))) {
       const previewUrl =
         ctxTab.url.replace(/^https?:\/\//, "").slice(0, 38) +
@@ -562,7 +367,7 @@
       });
     }
 
-    // 3. neutral: 采集箱待上架
+    // 2. neutral: 采集箱待上架
     if (counts.collect > 0) {
       signals.push({
         variant: "neutral",
@@ -579,7 +384,7 @@
       });
     }
 
-    // 4. bad: 跟卖任务失败
+    // 3. bad: 跟卖任务失败
     if (followSig?.kind === "follow-failed") {
       const errPreview = (followSig.sample?.errorMessage || "后台处理失败")
         .toString()
@@ -598,7 +403,7 @@
       });
     }
 
-    // 5. warn: 跟卖任务进行中
+    // 4. warn: 跟卖任务进行中
     if (followSig?.kind === "follow-inflight") {
       signals.push({
         variant: "warn",
@@ -623,27 +428,7 @@
     renderSignals(signals);
   };
 
-  // ─── Actions: cookie sync, context-tab collect ───
-  const doSyncCookie = async () => {
-    syncCookieBtn.disabled = true;
-    const originalLabel = syncCookieBtn.querySelector("span").textContent;
-    syncCookieBtn.querySelector("span").textContent = "同步中...";
-    try {
-      const resp = await sendMessage({ action: "syncSellerCookies" });
-      if (resp?.ok) {
-        await buildSignals(); // 重新拉所有信号
-      } else {
-        storeAuth.classList.add("err");
-        storeAuthText.textContent = resp?.error || "同步失败";
-      }
-    } catch (e) {
-      storeAuthText.textContent = e.message || "同步失败";
-    } finally {
-      syncCookieBtn.disabled = false;
-      syncCookieBtn.querySelector("span").textContent = originalLabel;
-    }
-  };
-
+  // ─── Action: context-tab collect ───
   const triggerCollectFromTab = async (tabId, url, btn) => {
     // 锁按钮 + 给即时反馈，否则用户看不到任何动静
     const restoreBtn = () => {
@@ -693,25 +478,6 @@
     }
   };
 
-  syncCookieBtn.addEventListener("click", doSyncCookie);
-
-  // seller.ozon.ru 跳转/登录:复用 service-worker 的 openSellerPortal(复用现有
-  // seller tab 或新开 /app/products;未登录时 Ozon 自动转登录页)。点完弹窗通常因
-  // 焦点切到新标签而关闭,disabled 只是防连点兜底。
-  sellerPortalBtn?.addEventListener("click", async () => {
-    if (sellerPortalBtn.disabled) return;
-    sellerPortalBtn.disabled = true;
-    try {
-      await sendMessage({ action: "openSellerPortal" });
-    } catch (e) {
-      console.warn("[popup] openSellerPortal error:", e?.message);
-    } finally {
-      setTimeout(() => {
-        sellerPortalBtn.disabled = false;
-      }, 800);
-    }
-  });
-
   // ─── Update banner ───
   const checkUpdateBanner = async () => {
     try {
@@ -747,13 +513,12 @@
   });
 
   // ─── Init / lifecycle ───
-  const initMainView = async () => {
-    const auth = await fetchAuth();
+  const initMainView = async (auth) => {
     FRONTEND_BASE_URL =
       auth.backendUrl && isLocalBackendUrl(auth.backendUrl)
         ? LOCAL_FRONTEND_BASE_URL
         : "https://" + BRAND_WEB_HOST;
-    await loadStores();
+    setConnectionState("ok", "采集会话已连接");
     await Promise.all([buildSignals(), checkUpdateBanner()]);
   };
 
@@ -761,24 +526,6 @@
     await sendMessage({ action: "logout" });
     setLoginState(false);
     showTip("采集会话已清除，请在 Web 管理后台保持登录");
-  });
-
-  let _storeSaving = false;
-  storeSelect.addEventListener("change", async () => {
-    if (_storeSaving) return;
-    _storeSaving = true;
-    try {
-      // 切店后店铺名同步、所有店铺范围信号刷新（context 卡不依赖店铺，会被同时重渲）
-      const opt = storeSelect.options[storeSelect.selectedIndex];
-      if (opt) storeName.textContent = opt.textContent;
-      const active = availableStores.find(
-        (store) => String(store.id || store.storeId || "") === storeSelect.value,
-      );
-      renderStoreMeta(active || null);
-      await buildSignals();
-    } finally {
-      _storeSaving = false;
-    }
   });
 
   // ─── Nav / CTA routing ───
@@ -954,7 +701,7 @@
     const auth = await fetchAuth();
     if (auth.authenticated) {
       setLoginState(true);
-      await initMainView();
+      await initMainView(auth);
     } else {
       setLoginState(false);
     }
@@ -972,7 +719,7 @@
     }
     showTip("采集会话已连接", false);
     setLoginState(true);
-    await initMainView();
+    await initMainView(auth);
   });
 
   init();

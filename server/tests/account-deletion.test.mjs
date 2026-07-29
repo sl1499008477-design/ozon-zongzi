@@ -63,7 +63,11 @@ function scopedFixture() {
 test("removeAccountScope removes only the deleted account business scope and keeps audits", () => {
   const state = scopedFixture();
 
-  const result = removeAccountScope(state, "account-target");
+  const result = removeAccountScope(state, "account-target", {
+    actor: { type: "account", id: "admin-test" },
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    occurredAt: "2026-07-30T10:00:00.000Z",
+  });
 
   assert.deepEqual(result.storeIds, ["store-target"]);
   assert.deepEqual(result.fileObjectKeys, ["target/file.png"]);
@@ -86,6 +90,11 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.deepEqual(state.__deletedAccountScopes, [{
     accountId: "account-target",
     storeIds: ["store-target"],
+    legacyDataStorePurgePolicy: {
+      actor: { type: "account", id: "admin-test" },
+      reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+      occurredAt: "2026-07-30T10:00:00.000Z",
+    },
   }]);
   assert.equal(
     Object.prototype.propertyIsEnumerable.call(state, "__deletedAccountScopes"),
