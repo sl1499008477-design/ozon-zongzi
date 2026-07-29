@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -120,9 +120,16 @@ assert.equal(cacheItemsForStore(duplicateProductIdCache, firstStore)[0]?.title, 
 assert.equal(cacheItemsForStore(duplicateProductIdCache, secondStore)[0]?.title, "second product");
 assert.equal(cacheItemMatchesStore(duplicateProductIdCache[0], secondStore), false);
 
-async function requestJson(method, pathname, body, authorization = "") {
+async function requestJson(method, pathname, body, authorization = "", {
+  beforeBodyRead,
+} = {}) {
   const payload = body === undefined ? "" : JSON.stringify(body);
-  const req = Readable.from(payload ? [Buffer.from(payload)] : []);
+  const req = Readable.from(beforeBodyRead
+    ? (async function* requestBody() {
+      await beforeBodyRead();
+      if (payload) yield Buffer.from(payload);
+    }())
+    : (payload ? [Buffer.from(payload)] : []));
   req.method = method;
   req.url = pathname;
   req.headers = {
@@ -153,6 +160,7 @@ async function requestJson(method, pathname, body, authorization = "") {
 }
 
 const routeToken = "store-sync-route-token";
+const routeTokenB = "store-sync-route-token-b";
 await writeFile(path.join(dataDir, "local-state.json"), JSON.stringify({
   token: routeToken,
   currentAccountId: accountA.id,
@@ -161,6 +169,11 @@ await writeFile(path.join(dataDir, "local-state.json"), JSON.stringify({
     [routeToken]: {
       token: routeToken,
       accountId: accountA.id,
+      issuedAt: "2026-07-29T00:00:00.000Z",
+    },
+    [routeTokenB]: {
+      token: routeTokenB,
+      accountId: accountB.id,
       issuedAt: "2026-07-29T00:00:00.000Z",
     },
   },
@@ -224,6 +237,15 @@ try {
         }),
       };
     }
+    if (apiPath === "/v1/actions") {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          result: [{ id: "promotion-route", title: "Route promotion" }],
+        }),
+      };
+    }
     throw new Error(`unexpected route request: ${apiPath}`);
   };
 
@@ -245,13 +267,15 @@ try {
     storeId: "store_b",
     type: "WAREHOUSES",
     timestamp: forbiddenStoreSync.body.timestamp,
-    taskId: "task_forbidden_store",
+    taskId: forbiddenStoreSync.body.taskId,
     requestId: "request_forbidden_store",
     code: "STORE_NOT_FOUND",
     message: "未找到已绑定门店",
     details: {},
   });
   assert.equal(Number.isNaN(Date.parse(forbiddenStoreSync.body.timestamp)), false);
+  assert.match(forbiddenStoreSync.body.taskId, /^store_sync_[0-9a-f]{40}$/);
+  assert.notEqual(forbiddenStoreSync.body.taskId, "task_forbidden_store");
   assert.equal(routeFetchCalls, 0);
 
   const failedSync = await requestJson(
@@ -272,7 +296,7 @@ try {
     storeId: "store_a",
     type: "WAREHOUSES",
     timestamp: failedSync.body.timestamp,
-    taskId: "task_route_failure",
+    taskId: failedSync.body.taskId,
     requestId: "request_route_failure",
     code: "OZON_HTTP_403",
     message: "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
@@ -283,9 +307,124 @@ try {
     },
   });
   assert.equal(Number.isNaN(Date.parse(failedSync.body.timestamp)), false);
+  assert.match(failedSync.body.taskId, /^store_sync_[0-9a-f]{40}$/);
   assert.equal(JSON.stringify(failedSync.body).includes("client-a-secret"), false);
   assert.equal(JSON.stringify(failedSync.body).includes("api-key-a-secret"), false);
   assert.equal(JSON.stringify(failedSync.body).includes("nested-secret"), false);
+
+  const sharedRouteBody = {
+    storeId: "store_a",
+    jobId: "shared-route-client-key",
+    requestId: "shared-route-request",
+  };
+  const accountAFirst = await requestJson(
+    "POST",
+    "/local/sync/PROMOTIONS",
+    sharedRouteBody,
+    `Bearer ${routeToken}`,
+  );
+  assert.equal(accountAFirst.status, 200);
+  const callsAfterAccountAFirst = routeFetchCalls;
+  const accountAReplay = await requestJson(
+    "POST",
+    "/local/sync/PROMOTIONS",
+    sharedRouteBody,
+    `Bearer ${routeToken}`,
+  );
+  assert.equal(accountAReplay.status, 200);
+  assert.deepEqual(accountAReplay.body.job, accountAFirst.body.job);
+  assert.equal(routeFetchCalls, callsAfterAccountAFirst);
+
+  const changedRequest = await requestJson(
+    "POST",
+    "/local/sync/PROMOTIONS",
+    { ...sharedRouteBody, requestId: "changed-route-request" },
+    `Bearer ${routeToken}`,
+  );
+  assert.equal(changedRequest.status, 409);
+  assert.equal(changedRequest.body.code, "SYNC_IDEMPOTENCY_CONFLICT");
+  const changedScope = await requestJson(
+    "POST",
+    "/local/sync/WAREHOUSES",
+    sharedRouteBody,
+    `Bearer ${routeToken}`,
+  );
+  assert.equal(changedScope.status, 409);
+  assert.equal(changedScope.body.code, "SYNC_IDEMPOTENCY_CONFLICT");
+
+  const accountBFirst = await requestJson(
+    "POST",
+    "/local/sync/PROMOTIONS",
+    {
+      ...sharedRouteBody,
+      storeId: "store_b",
+    },
+    `Bearer ${routeTokenB}`,
+  );
+  assert.equal(accountBFirst.status, 200);
+  assert.notEqual(accountAFirst.body.job.taskId, accountBFirst.body.job.taskId);
+
+  const persistedRoute = JSON.parse(
+    await readFile(path.join(dataDir, "local-state.json"), "utf8"),
+  );
+  assert.equal(persistedRoute.jobs[accountAFirst.body.job.taskId].accountId, "acct_a");
+  assert.equal(persistedRoute.jobs[accountBFirst.body.job.taskId].accountId, "acct_b");
+  assert.deepEqual(
+    persistedRoute.reports
+      .filter((report) => report.clientJobId === "shared-route-client-key")
+      .map((report) => report.accountId)
+      .sort(),
+    ["acct_a", "acct_b"],
+  );
+  assert.equal(new Set(
+    persistedRoute.auditEvents
+      .filter((event) => event.action === "SYNC_PROMOTIONS")
+      .map((event) => event.eventId),
+  ).size, 2);
+
+  const callsBeforePersistenceFailure = routeFetchCalls;
+  let persistenceFailure;
+  try {
+    persistenceFailure = await requestJson(
+      "POST",
+      "/local/sync/WAREHOUSES",
+      {
+        storeId: "store_a",
+        jobId: "persist-failure-client-key",
+        requestId: "persist-failure-request",
+      },
+      `Bearer ${routeToken}`,
+      {
+        beforeBodyRead: () => chmod(dataDir, 0o500),
+      },
+    );
+  } finally {
+    await chmod(dataDir, 0o700);
+  }
+  assert.equal(persistenceFailure.thrown, undefined);
+  assert.equal(persistenceFailure.status, 503);
+  assert.deepEqual(persistenceFailure.body, {
+    ok: false,
+    accountId: "acct_a",
+    storeId: "store_a",
+    type: "WAREHOUSES",
+    timestamp: persistenceFailure.body.timestamp,
+    taskId: persistenceFailure.body.taskId,
+    requestId: "persist-failure-request",
+    code: "SYNC_STATE_UNAVAILABLE",
+    message: "同步状态暂时不可用",
+    details: {},
+  });
+  assert.equal(Number.isNaN(Date.parse(persistenceFailure.body.timestamp)), false);
+  assert.match(persistenceFailure.body.taskId, /^store_sync_[0-9a-f]{40}$/);
+  assert.equal(routeFetchCalls, callsBeforePersistenceFailure);
+  for (const secret of [
+    "client-a-secret",
+    "api-key-a-secret",
+    "persist-failure-client-key",
+  ]) {
+    assert.equal(JSON.stringify(persistenceFailure.body).includes(secret), false);
+  }
 } finally {
   globalThis.fetch = originalFetch;
   await rm(dataDir, { recursive: true, force: true });

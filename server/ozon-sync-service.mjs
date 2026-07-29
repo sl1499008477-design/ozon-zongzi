@@ -15,6 +15,7 @@ const cleanText = (value, maxLength = 160) =>
 const FBS_MAX_RANGE_SPLIT_DEPTH = 8;
 const FBS_MIN_RANGE_DURATION_MS = 60 * 60 * 1000;
 const LOCAL_STATE_SAVE_MAX_ATTEMPTS = 4;
+const STORE_SYNC_JOB_KIND = "STORE_SYNC";
 const SYNC_COVERAGE_BY_TYPE = Object.freeze({
   PRODUCTS: Object.freeze([
     "PROFILE",
@@ -102,6 +103,44 @@ function publicSyncErrorResponse(error) {
     status: Number(error?.status || 502),
     body: { ok: false, ...body },
   };
+}
+
+function failedSyncReplayError(report) {
+  const error = new Error(report.error || "店铺同步失败");
+  error.status = Number(report.errorStatus || report.details?.error?.status || 502);
+  error.code = String(report.errorCode || "STORE_SYNC_FAILED");
+  error.body = {
+    accountId: report.accountId,
+    storeId: report.storeId,
+    type: report.type,
+    timestamp: report.timestamp,
+    taskId: report.taskId,
+    requestId: report.requestId,
+    code: error.code,
+    message: error.message,
+    details: structuredClone(report.details?.error || {}),
+  };
+  return error;
+}
+
+function normalizedPostingsSinceDays(type, value) {
+  if (type !== "POSTINGS") return null;
+  return Math.max(1, Math.min(Number(value) || 30, 365));
+}
+
+function storeSyncTaskId({ accountId, storeId, type, clientJobId }) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(JSON.stringify([accountId, storeId, type, clientJobId]))
+    .digest("hex");
+  return `store_sync_${digest.slice(0, 40)}`;
+}
+
+function storeSyncRequestHash({ requestId, postingsSinceDays }) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ requestId, postingsSinceDays }))
+    .digest("hex");
 }
 
 function truthyOzonFlag(value) {
@@ -254,14 +293,35 @@ export function createOzonSyncService({
     state.jobs = state.jobs && typeof state.jobs === "object" ? state.jobs : {};
     state.reports = Array.isArray(state.reports) ? state.reports : [];
     const savedReport = { ...report };
+    const existingJob = state.jobs[report.id];
+    if (
+      existingJob
+      && String(existingJob.accountId || "") !== String(report.accountId || "")
+    ) {
+      const error = new Error("同步任务身份冲突");
+      error.status = 409;
+      error.code = "SYNC_IDENTITY_CONFLICT";
+      throw error;
+    }
     state.jobs[report.id] = savedReport;
     state.reports = [
       savedReport,
       ...state.reports.filter((item) => String(item?.id || "") !== String(report.id)),
     ].slice(0, 200);
     if (["SUCCESS", "FAILED"].includes(String(report.status || "").toUpperCase())) {
+      const auditEventId = `audit_sync_${report.id}_${String(report.status).toLowerCase()}`;
+      const existingAudit = state.auditEvents?.find((event) => event?.eventId === auditEventId);
+      if (
+        existingAudit
+        && String(existingAudit.accountId || "") !== String(report.accountId || "")
+      ) {
+        const error = new Error("同步审计身份冲突");
+        error.status = 409;
+        error.code = "SYNC_IDENTITY_CONFLICT";
+        throw error;
+      }
       appendAuditEvent(state, {
-        eventId: `audit_sync_${report.id}_${String(report.status).toLowerCase()}`,
+        eventId: auditEventId,
         correlationId: report.id,
         action: `SYNC_${String(report.type || "UNKNOWN").toUpperCase()}`,
         status: report.status,
@@ -305,6 +365,51 @@ export function createOzonSyncService({
       appendSyncReport(state, report);
     });
     return latest;
+  }
+
+  async function findSyncReplay(report) {
+    const latest = await loadState();
+    const records = [
+      ...(Array.isArray(latest.reports) ? latest.reports : []),
+      ...Object.values(latest.jobs && typeof latest.jobs === "object" ? latest.jobs : {}),
+    ].filter((item) =>
+      item?.jobKind === STORE_SYNC_JOB_KIND
+      && String(item.accountId || "") === report.accountId
+      && String(item.clientJobId || "") === report.clientJobId);
+    if (!records.length) return null;
+    const existing = records.find((item) =>
+      String(item.id || "") === report.id
+      && String(item.storeId || "") === report.storeId
+      && String(item.type || "") === report.type
+      && String(item.requestHash || "") === report.requestHash);
+    if (
+      existing
+      && ["SUCCESS", "FAILED"].includes(String(existing.status || "").toUpperCase())
+    ) {
+      return structuredClone(existing);
+    }
+    if (
+      existing
+      && records.every((item) =>
+        String(item.id || "") === report.id
+        && String(item.storeId || "") === report.storeId
+        && String(item.type || "") === report.type
+        && String(item.requestHash || "") === report.requestHash)
+    ) {
+      return null;
+    }
+    const error = new Error("同步幂等键已用于不同请求");
+    error.status = 409;
+    error.code = "SYNC_IDEMPOTENCY_CONFLICT";
+    throw attachSyncErrorContext(error, {
+      accountId: report.accountId,
+      storeId: report.storeId,
+      type: report.type,
+      timestamp: report.timestamp,
+      taskId: report.taskId,
+      requestId: report.requestId,
+      details: {},
+    });
   }
 
   async function syncStoreProfile(state, store) {
@@ -782,8 +887,15 @@ export function createOzonSyncService({
     const upper = String(type || "").toUpperCase();
     const requestAccountId = String(accountId || "").trim();
     const requestedStoreId = String(storeId || "").trim();
-    const normalizedTaskId = String(jobId || createJobId());
-    const normalizedRequestId = String(requestId || normalizedTaskId);
+    const normalizedClientJobId = cleanText(jobId || createJobId(), 240);
+    const normalizedRequestId = cleanText(requestId || normalizedClientJobId, 240);
+    const normalizedSinceDays = normalizedPostingsSinceDays(upper, postingsSinceDays);
+    const normalizedTaskId = storeSyncTaskId({
+      accountId: requestAccountId,
+      storeId: requestedStoreId,
+      type: upper,
+      clientJobId: normalizedClientJobId,
+    });
     const createdAt = nowIso();
     if (!requestAccountId) {
       const error = new Error("同步请求缺少账号标识");
@@ -817,8 +929,13 @@ export function createOzonSyncService({
     const report = {
       id: normalizedTaskId,
       taskId: normalizedTaskId,
-      clientJobId: normalizedTaskId,
+      clientJobId: normalizedClientJobId,
       requestId: normalizedRequestId,
+      requestHash: storeSyncRequestHash({
+        requestId: normalizedRequestId,
+        postingsSinceDays: normalizedSinceDays,
+      }),
+      jobKind: STORE_SYNC_JOB_KIND,
       accountId: requestAccountId,
       storeId: store.id,
       deviceId,
@@ -835,7 +952,29 @@ export function createOzonSyncService({
         profile: { status: "PENDING" },
       },
     };
-    await persistSyncReport(report);
+    try {
+      const replay = await findSyncReplay(report);
+      if (replay?.status === "FAILED") throw failedSyncReplayError(replay);
+      if (replay) return replay;
+      await persistSyncReport(report);
+    } catch (error) {
+      if (error?.body && typeof error.body === "object") throw error;
+      const unavailable = new Error("同步状态暂时不可用");
+      unavailable.status = Number(error?.status) >= 500
+        ? Number(error.status)
+        : 503;
+      unavailable.code = "SYNC_STATE_UNAVAILABLE";
+      throw attachSyncErrorContext(unavailable, {
+        accountId: report.accountId,
+        storeId: report.storeId,
+        type: report.type,
+        timestamp: report.timestamp,
+        taskId: report.taskId,
+        requestId: report.requestId,
+        store,
+        details: {},
+      });
+    }
     try {
       if (!supportedTypes.has(upper)) {
         const error = new Error("Ozon 本地同步尚未迁移到服务");
@@ -856,7 +995,7 @@ export function createOzonSyncService({
       };
       const syncByType = {
         PRODUCTS: () => syncProducts(workingState, store),
-        POSTINGS: () => syncPostings(workingState, store, syncContext, postingsSinceDays),
+        POSTINGS: () => syncPostings(workingState, store, syncContext, normalizedSinceDays),
         WAREHOUSES: () => syncWarehouses(workingState, store),
         PROMOTIONS: () => syncPromotions(workingState, store),
       };
@@ -883,6 +1022,8 @@ export function createOzonSyncService({
     } catch (error) {
       report.status = "FAILED";
       report.error = sanitizedSyncText(error?.message || error, store, 500);
+      report.errorCode = String(error?.code || "STORE_SYNC_FAILED").slice(0, 120);
+      report.errorStatus = Number(error?.status || 502);
       report.updatedAt = nowIso();
       report.timestamp = report.updatedAt;
       report.details = {

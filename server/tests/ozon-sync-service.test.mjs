@@ -29,14 +29,16 @@ function assertSyncReportContract(report, {
   accountId,
   storeId,
   type,
-  taskId,
+  clientJobId,
   requestId,
   status,
 }) {
   assert.equal(report.accountId, accountId);
   assert.equal(report.storeId, storeId);
   assert.equal(report.type, type);
-  assert.equal(report.taskId, taskId);
+  assert.match(report.taskId, /^store_sync_[0-9a-f]{40}$/);
+  assert.equal(report.clientJobId, clientJobId);
+  assert.notEqual(report.taskId, clientJobId);
   assert.equal(report.requestId, requestId);
   assert.equal(report.status, status);
   assert.equal(report.timestamp, report.updatedAt);
@@ -44,6 +46,9 @@ function assertSyncReportContract(report, {
   assert.equal(typeof report.details, "object");
   assert.equal(Array.isArray(report.details.coverage), true);
 }
+
+const syncJob = (state, clientJobId) => Object.values(state.jobs || {})
+  .find((job) => job?.clientJobId === clientJobId);
 
 const service = createOzonSyncService({
   loadState: async () => clone(persisted),
@@ -222,7 +227,7 @@ try {
     accountId: "acct_a",
     storeId: "store_a",
     type: "PRODUCTS",
-    taskId: "job_products_success",
+    clientJobId: "job_products_success",
     requestId: "request_products_success",
     status: "SUCCESS",
   });
@@ -284,7 +289,7 @@ try {
   assert.deepEqual(
     savedSnapshots
       .slice(successSaveStart)
-      .map((snapshot) => snapshot.jobs?.job_products_success?.status)
+      .map((snapshot) => syncJob(snapshot, "job_products_success")?.status)
       .filter(Boolean),
     ["RUNNING", "SUCCESS"],
   );
@@ -292,7 +297,7 @@ try {
     persisted.auditEvents.some((event) =>
       event.action === "SYNC_PRODUCTS" &&
       event.status === "SUCCESS" &&
-      event.entityId === "job_products_success"
+      event.entityId === successReport.taskId
     ),
     true,
   );
@@ -371,19 +376,20 @@ try {
   assert.equal(persisted.caches.products.some((row) => row.id === "old_product"), true);
   assert.equal(persisted.caches.products.some((row) => row.id === "partial_product"), false);
   assert.equal(persisted.caches.products.some((row) => row.id === "foreign"), true);
-  assert.equal(persisted.jobs.job_products_failed.status, "FAILED");
+  const failedProductJob = syncJob(persisted, "job_products_failed");
+  assert.equal(failedProductJob.status, "FAILED");
   assert.equal(
     persisted.auditEvents.some((event) =>
       event.action === "SYNC_PRODUCTS" &&
       event.status === "FAILED" &&
-      event.entityId === "job_products_failed"
+      event.entityId === failedProductJob.taskId
     ),
     true,
   );
   assert.deepEqual(
     savedSnapshots
       .slice(failureSaveStart)
-      .map((snapshot) => snapshot.jobs?.job_products_failed?.status)
+      .map((snapshot) => syncJob(snapshot, "job_products_failed")?.status)
       .filter(Boolean),
     ["RUNNING", "FAILED"],
   );
@@ -620,7 +626,7 @@ try {
       .map((row) => row.id),
     ["old_posting"],
   );
-  assert.equal(persisted.jobs.job_postings_failed.status, "FAILED");
+  assert.equal(syncJob(persisted, "job_postings_failed").status, "FAILED");
 
   persisted = clone(basePersisted);
   persisted.caches.postings = [
@@ -684,7 +690,7 @@ try {
     persisted.caches.postings.some((row) => row.id === "fbo_stalled_page"),
     false,
   );
-  assert.equal(persisted.jobs.job_postings_stalled.status, "FAILED");
+  assert.equal(syncJob(persisted, "job_postings_stalled").status, "FAILED");
 
   persisted = clone(basePersisted);
   persisted.caches.warehouses = [
@@ -776,7 +782,7 @@ try {
     const retryService = createOzonSyncService({
       loadState: async () => clone(retryPersisted),
       saveState: async (state) => {
-        if (state.jobs?.job_retry_success?.status === "SUCCESS") {
+        if (syncJob(state, "job_retry_success")?.status === "SUCCESS") {
           successCommitAttempts += 1;
           if (successCommitAttempts < 3) {
             throw Object.assign(new Error(`conflict ${successCommitAttempts}`), {
@@ -810,7 +816,7 @@ try {
 
     assert.equal(retryReport.status, "SUCCESS");
     assert.equal(successCommitAttempts, 3);
-    assert.equal(retryPersisted.jobs.job_retry_success.status, "SUCCESS");
+    assert.equal(syncJob(retryPersisted, "job_retry_success").status, "SUCCESS");
     assert.equal(
       retryPersisted.caches.warehouses.some((row) => row.id === "warehouse_retry"),
       true,
@@ -824,7 +830,7 @@ try {
     const retryService = createOzonSyncService({
       loadState: async () => clone(retryPersisted),
       saveState: async (state) => {
-        if (state.jobs?.job_retry_exhausted?.status === "SUCCESS") {
+        if (syncJob(state, "job_retry_exhausted")?.status === "SUCCESS") {
           successCommitAttempts += 1;
           finalConflict = Object.assign(new Error(`conflict ${successCommitAttempts}`), {
             code: "LOCAL_STATE_VERSION_CONFLICT",
@@ -858,7 +864,7 @@ try {
       (error) => error === finalConflict && error.code === "LOCAL_STATE_VERSION_CONFLICT",
     );
     assert.equal(successCommitAttempts, 4);
-    assert.equal(retryPersisted.jobs.job_retry_exhausted.status, "FAILED");
+    assert.equal(syncJob(retryPersisted, "job_retry_exhausted").status, "FAILED");
     assert.equal(
       retryPersisted.caches.warehouses.some((row) => row.id === "warehouse_never_committed"),
       false,
@@ -909,7 +915,7 @@ try {
       ownershipPersisted.caches.warehouses.map((row) => row.id),
       ["old_owned_warehouse"],
     );
-    assert.equal(ownershipPersisted.jobs[`job_store_${ownershipChange}`].status, "FAILED");
+    assert.equal(syncJob(ownershipPersisted, `job_store_${ownershipChange}`).status, "FAILED");
   }
 
   {
@@ -1025,10 +1031,11 @@ try {
       (error) => error.status === 501 && error.code === "OZON_SYNC_UNSUPPORTED",
     );
     assert.equal(unsupportedEndpointCalls, 0);
-    assert.equal(unsupportedPersisted.jobs.job_unknown.status, "FAILED");
+    const unsupportedJob = syncJob(unsupportedPersisted, "job_unknown");
+    assert.equal(unsupportedJob.status, "FAILED");
     assert.equal(
       unsupportedPersisted.auditEvents.some((event) =>
-        event.entityId === "job_unknown" && event.status === "FAILED"
+        event.entityId === unsupportedJob.taskId && event.status === "FAILED"
       ),
       true,
     );
@@ -1059,7 +1066,7 @@ try {
       (error) => error.status === 400 && error.code === "ACCOUNT_ID_REQUIRED",
     );
     assert.equal(explicitAccountEndpointCalls, 0);
-    assert.equal(explicitAccountPersisted.jobs.job_missing_account, undefined);
+    assert.equal(syncJob(explicitAccountPersisted, "job_missing_account"), undefined);
   }
 
   {
@@ -1068,7 +1075,7 @@ try {
     const warningService = createOzonSyncService({
       loadState: async () => clone(warningPersisted),
       saveState: async (state) => {
-        if (state.jobs?.job_failed_report_warning?.status === "FAILED") {
+        if (syncJob(state, "job_failed_report_warning")?.status === "FAILED") {
           throw new Error("postgres password=super-secret");
         }
         warningPersisted = clone(state);
@@ -1156,7 +1163,7 @@ try {
           storeId: "store_a",
           type: "WAREHOUSES",
           timestamp: "2026-07-28T08:00:00.000Z",
-          taskId: "job_sensitive_http_error",
+          taskId: error.body.taskId,
           requestId: "request_sensitive_http_error",
           code: "OZON_HTTP_403",
           message: "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
@@ -1166,27 +1173,29 @@ try {
             responseFormat: "json",
           },
         });
+        assert.match(error.body.taskId, /^store_sync_[0-9a-f]{40}$/);
         return true;
       },
     );
+    const sensitiveJob = syncJob(sensitivePersisted, "job_sensitive_http_error");
     assert.equal(
-      sensitivePersisted.jobs.job_sensitive_http_error.error,
+      sensitiveJob.error,
       "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
     );
-    assertSyncReportContract(sensitivePersisted.jobs.job_sensitive_http_error, {
+    assertSyncReportContract(sensitiveJob, {
       accountId: "acct_a",
       storeId: "store_a",
       type: "WAREHOUSES",
-      taskId: "job_sensitive_http_error",
+      clientJobId: "job_sensitive_http_error",
       requestId: "request_sensitive_http_error",
       status: "FAILED",
     });
     const sensitiveTerminalAudit = sensitivePersisted.auditEvents.find((event) =>
-      event.entityId === "job_sensitive_http_error" && event.status === "FAILED"
+      event.entityId === sensitiveJob.taskId && event.status === "FAILED"
     );
     assert.ok(sensitiveTerminalAudit);
     const persistedSensitiveText = JSON.stringify({
-      job: sensitivePersisted.jobs.job_sensitive_http_error,
+      job: sensitiveJob,
       audit: sensitiveTerminalAudit,
     });
     for (const value of sensitiveValues) {

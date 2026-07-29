@@ -107,10 +107,8 @@ import {
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
 import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
-import {
-  STORE_SYNC_TYPES,
-  runBackendStoreSync,
-} from "./store-sync-coordinator.js";
+import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
+import { storeSyncDetailText } from "./store-sync-presentation.js";
 
 const { Header, Sider, Content } = Layout;
 
@@ -1528,6 +1526,7 @@ function DashboardPage({
                 }[state.status]}>
                   {state.status}
                 </Tag>
+                <span>{storeSyncDetailText(state)}</span>
                 {state.status === "FAILED" ? (
                   <Button
                     disabled={syncing}
