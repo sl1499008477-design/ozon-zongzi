@@ -49,7 +49,10 @@ const preloadSource = await readFile(
 
 test('run item writes use the batch route and carry the active lease envelope', () => {
     assert.match(backendSource, /method:\s*'post'[\s\S]{0,160}\/items/);
-    assert.match(backendSource, /data:\s*\{\s*deviceId,\s*leaseToken,\s*items:\s*\[item\],/);
+    assert.match(
+        backendSource,
+        /data:\s*\{\s*deviceId,\s*leaseToken,\s*items:\s*\[withoutCollectorScope\(item\)\],/,
+    );
 });
 
 test('run creation source has no retired store-scope selector', () => {

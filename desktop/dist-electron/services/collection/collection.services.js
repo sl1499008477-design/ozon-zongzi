@@ -361,6 +361,7 @@ export class Collection {
         await Promise.allSettled(list.map((item) => saveCollectorMarketSnapshot({
             taskId: this.task._id,
             runId: this.runId,
+            sourceIdentity: this.sellerContext?.sourceIdentity,
             sourceSku: String(item.sku || item.id || ''),
             period: this.task.period === 'weekly' ? 'weekly' : 'monthly',
             categoryId: String(item.category4Id || item.category3Id || item.category2Id || item.category1Id || ''),
@@ -378,6 +379,7 @@ export class Collection {
             if (!rootCategoryId || !leafCategoryId)
                 return null;
             return saveCollectorCategoryMapping({
+                sourceIdentity: this.sellerContext?.sourceIdentity,
                 rootCategoryId,
                 rootCategoryName: item.category1 || item.category2 || item.category3 || item.category4 || rootCategoryId,
                 leafCategoryId,

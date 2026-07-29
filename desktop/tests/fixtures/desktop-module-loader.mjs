@@ -81,7 +81,7 @@ const stubs = {
   `,
   dayjs: `
     export default function dayjs() {
-      return { format: () => '2026-07-28 00:00:00', subtract() { return this; }, isBefore: () => false };
+      return { format: () => '2026-07-28 00:00:00', subtract() { return this; }, isBefore: () => false, diff: () => 0 };
     }
   `,
   axios: `
@@ -127,6 +127,24 @@ const stubs = {
 };
 
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier.endsWith('/seller-ozon.services.js') || specifier === '../seller-ozon.services.js') {
+    const source = `
+      export async function fetchSellerSkuAnalyticsBatch() {
+        return structuredClone(globalThis.__SELLER_ANALYTICS_ITEMS__ || []);
+      }
+      export async function fetchSellerLeaderboard() {
+        return { items: structuredClone(globalThis.__SELLER_ANALYTICS_ITEMS__ || []), total: 1 };
+      }
+      export async function verifyCurrentSellerStore() { return {}; }
+      export async function getSellerContext() { return {}; }
+      export async function openSellerAnalyticsWindow() { return {}; }
+      export async function destroySellerAnalyticsWindow() {}
+    `;
+    return {
+      url: `data:text/javascript,${encodeURIComponent(source)}`,
+      shortCircuit: true,
+    };
+  }
   if (Object.hasOwn(stubs, specifier)) {
     return {
       url: `data:text/javascript,${encodeURIComponent(stubs[specifier])}`,

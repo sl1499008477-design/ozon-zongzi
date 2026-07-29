@@ -199,10 +199,29 @@ const legacyScopeRow = resolveCollectorExcelRow({
 assert.equal(Object.hasOwn(legacyScopeRow, "operatingStoreId"), false);
 assert.equal(Object.hasOwn(legacyScopeRow, "dataCollectionStoreId"), false);
 assert.equal(Object.hasOwn(legacyScopeRow, "sellerCompanyId"), false);
-assert.deepEqual(legacyScopeRow.legacyScope, {
-  operatingStoreId: "legacy-operating",
-  dataCollectionStoreId: "legacy-data",
+assert.equal(Object.hasOwn(legacyScopeRow, "legacyScope"), false);
+
+const nestedScopeRow = resolveCollectorExcelRow({
+  id: "nested-scope",
+  analytics: {
+    series: [{
+      ClientId: "retired-client",
+      DATA_COLLECTION_STORE: { id: "retired-data" },
+      keep: "analytics-value",
+    }],
+  },
+  exportData: {
+    nested: {
+      seller_company_id: "retired-seller",
+      legacy_scope: { arbitrary: "forged" },
+      keep: "export-value",
+    },
+  },
 });
+assert.deepEqual(nestedScopeRow.analytics, {
+  series: [{ keep: "analytics-value" }],
+});
+assert.deepEqual(nestedScopeRow.nested, { keep: "export-value" });
 
 const rowValues = collectorExcelRowValues({
   rawPayload: { id: "raw", nameLabel: "raw title", price: 800 },

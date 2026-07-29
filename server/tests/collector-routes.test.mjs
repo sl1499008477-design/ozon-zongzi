@@ -272,10 +272,11 @@ const forbiddenExportPatch = await invoke("PATCH", "/collector/exports/export-1"
 assert.equal(forbiddenExportPatch.res.statusCode, 405);
 assert.equal(calls.some((call) => call.name === "updateCollectorExport"), false);
 
-await invoke("GET", "/collector/market-snapshots?operatingStoreId=ignored&dataCollectionStoreId=ignored&sellerCompanyId=ignored&period=MONTHLY");
+await invoke("GET", "/collector/market-snapshots?operatingStoreId=ignored&dataCollectionStoreId=ignored&sellerCompanyId=ignored&sourceIdentity=seller-page%3Acompany-1&period=MONTHLY");
 assert.deepEqual(lastCall("listCollectorMarketSnapshots").args[0], {
   accountId: "account-auth",
   source: "ozon_seller_analytics",
+  sourceIdentity: "seller-page:company-1",
   sourceSku: "",
   categoryId: "",
   period: "MONTHLY",
@@ -288,18 +289,21 @@ await invoke("POST", "/collector/market-snapshots", {
   operatingStoreId: "store-1",
   dataCollectionStoreId: "data-1",
   sellerCompanyId: "123",
+  sourceIdentity: "seller-page:company-1",
   payload: { sku: "1" },
 });
 const snapshotInput = lastCall("upsertCollectorMarketSnapshot").args[0];
 assert.equal(snapshotInput.accountId, "account-auth");
+assert.equal(snapshotInput.sourceIdentity, "seller-page:company-1");
 assert.equal(Object.hasOwn(snapshotInput, "operatingStoreId"), false);
 assert.equal(Object.hasOwn(snapshotInput, "dataCollectionStoreId"), false);
 assert.equal(Object.hasOwn(snapshotInput, "sellerCompanyId"), false);
 
-await invoke("GET", "/collector/category-mappings?operatingStoreId=ignored&dataCollectionStoreId=ignored&sellerCompanyId=ignored&rootCategoryId=root");
+await invoke("GET", "/collector/category-mappings?operatingStoreId=ignored&dataCollectionStoreId=ignored&sellerCompanyId=ignored&sourceIdentity=seller-page%3Acompany-1&rootCategoryId=root");
 assert.deepEqual(lastCall("listCollectorCategoryMappings").args[0], {
   accountId: "account-auth",
   source: "ozon_seller_analytics",
+  sourceIdentity: "seller-page:company-1",
   rootCategoryId: "root",
   status: "ACTIVE",
   limit: 5000,
@@ -309,10 +313,12 @@ await invoke("POST", "/collector/category-mappings", {
   accountId: "account-evil",
   operatingStoreId: "store-1",
   dataCollectionStoreId: "data-1",
+  sourceIdentity: "seller-page:company-1",
   rootCategoryId: "root",
   leafCategoryId: "leaf",
 });
 assert.equal(lastCall("upsertCollectorCategoryMapping").args[0].accountId, "account-auth");
+assert.equal(lastCall("upsertCollectorCategoryMapping").args[0].sourceIdentity, "seller-page:company-1");
 assert.equal(Object.hasOwn(lastCall("upsertCollectorCategoryMapping").args[0], "operatingStoreId"), false);
 assert.equal(Object.hasOwn(lastCall("upsertCollectorCategoryMapping").args[0], "dataCollectionStoreId"), false);
 assert.equal(Object.hasOwn(lastCall("upsertCollectorCategoryMapping").args[0], "sellerCompanyId"), false);

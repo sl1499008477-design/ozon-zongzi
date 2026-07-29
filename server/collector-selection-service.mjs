@@ -4,6 +4,7 @@ import {
   listCollectorRunItems,
 } from "./collector-desktop-service.mjs";
 import { ingestCollectRequestV4 } from "./collection-pipeline.mjs";
+import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 
 function selectionError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
@@ -14,24 +15,14 @@ function clean(value, max = 2000) {
 }
 
 function sourceRow(item = {}) {
-  return {
+  return withoutCollectorScope({
     ...(item.rawPayload && typeof item.rawPayload === "object" ? item.rawPayload : {}),
     ...(item.exportData && typeof item.exportData === "object" ? item.exportData : {}),
-  };
+  });
 }
 
 function collectPayload(item, run) {
   const raw = sourceRow(item);
-  for (const field of [
-    "accountId",
-    "createdBy",
-    "storeId",
-    "operatingStoreId",
-    "dataCollectionStoreId",
-    "sellerCompanyId",
-  ]) {
-    delete raw[field];
-  }
   const sku = clean(raw.sku || raw.productId || raw.product_id || item.sourceSku || item.sourceKey, 240);
   if (!sku) throw selectionError("采集结果缺少 SKU", 422, "COLLECTOR_SELECTION_SKU_MISSING");
   const productUrl = clean(raw.productUrl || raw.url || raw.link || item.sourceUrl, 2000);
@@ -43,10 +34,10 @@ function collectPayload(item, run) {
     name: raw.name || raw.nameLabel || raw.title || raw.productName || sku,
     source: clean(item.source || "ozon", 80).toLowerCase(),
     status: "待处理",
-    analytics: item.analytics || {},
-    sourcing: item.sourcing || {},
-    pricing: item.pricing || {},
-    filterResult: item.filterResult || {},
+    analytics: withoutCollectorScope(item.analytics || {}),
+    sourcing: withoutCollectorScope(item.sourcing || {}),
+    pricing: withoutCollectorScope(item.pricing || {}),
+    filterResult: withoutCollectorScope(item.filterResult || {}),
     collectorTaskId: item.taskId,
     collectorRunId: run.id,
     collectorItemId: item.id,

@@ -85,6 +85,12 @@ const fixture = {
         dataCollectionStoreId: "data_store_a",
         createdBy: "old-creator-a",
         sellerCompanyId: "old-seller-a",
+        legacyScope: {
+          operatingStoreId: "forged-operating-a",
+          dataCollectionStoreId: "forged-data-a",
+          sellerCompanyId: "forged-seller-a",
+          arbitrary: "forged-a",
+        },
         sku: "legacy-sku-a",
         name: "collect A",
       },
@@ -154,7 +160,7 @@ try {
   );
   assert.deepEqual(
     stateA.body.caches.collectBox[0].legacyScope,
-    { storeId: "store_a", dataCollectionStoreId: "data_store_a" },
+    { operatingStoreId: "store_a", dataCollectionStoreId: "data_store_a" },
     "local state must expose historical collection stores only through legacyScope",
   );
   assert.equal("storeId" in stateA.body.caches.collectBox[0], false);
@@ -190,7 +196,7 @@ try {
     if (pathname === "/ozon/collect-box") {
       assert.deepEqual(
         response.body.data[0].legacyScope,
-        { storeId: "store_a", dataCollectionStoreId: "data_store_a" },
+        { operatingStoreId: "store_a", dataCollectionStoreId: "data_store_a" },
         "collect-box reads must match the PostgreSQL legacyScope shape",
       );
       assert.equal("storeId" in response.body.data[0], false);
@@ -232,7 +238,7 @@ try {
   assert.equal(ownCollectPatch.body.name, "updated legacy item");
   assert.deepEqual(
     ownCollectPatch.body.legacyScope,
-    { storeId: "store_a", dataCollectionStoreId: "data_store_a" },
+    { operatingStoreId: "store_a", dataCollectionStoreId: "data_store_a" },
     "collect-box updates must return the same public legacyScope shape as reads",
   );
   assert.equal("storeId" in ownCollectPatch.body, false);

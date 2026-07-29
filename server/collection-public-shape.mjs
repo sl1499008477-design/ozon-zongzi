@@ -1,27 +1,21 @@
+import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
+
 function cleanScopeValue(value) {
   return String(value ?? "").trim();
 }
 
-export function publicCollectionItem(item = {}) {
+export function publicCollectionItem(item = {}, { trustedLegacyScope = {} } = {}) {
   const result = item && typeof item === "object" && !Array.isArray(item)
-    ? { ...item }
+    ? withoutCollectorScope(item)
     : {};
-  const existingLegacyScope = result.legacyScope
-    && typeof result.legacyScope === "object"
-    && !Array.isArray(result.legacyScope)
-    ? result.legacyScope
-    : {};
-  const storeId = cleanScopeValue(
-    result.storeId
-    || result.localStoreId
-    || result.operatingStoreId
-    || existingLegacyScope.storeId,
+  const operatingStoreId = cleanScopeValue(
+    trustedLegacyScope.operatingStoreId,
   );
   const dataCollectionStoreId = cleanScopeValue(
-    result.dataCollectionStoreId
-    || existingLegacyScope.dataCollectionStoreId,
+    trustedLegacyScope.dataCollectionStoreId,
   );
 
+  delete result.legacyScope;
   delete result.storeId;
   delete result.localStoreId;
   delete result.operatingStoreId;
@@ -29,12 +23,20 @@ export function publicCollectionItem(item = {}) {
   delete result.createdBy;
   delete result.sellerCompanyId;
 
-  if (storeId || dataCollectionStoreId) {
+  if (operatingStoreId || dataCollectionStoreId) {
     result.legacyScope = {
-      ...existingLegacyScope,
-      storeId,
-      dataCollectionStoreId,
+      ...(operatingStoreId ? { operatingStoreId } : {}),
+      ...(dataCollectionStoreId ? { dataCollectionStoreId } : {}),
     };
   }
   return result;
+}
+
+export function publicPersistedCollectionItem(item = {}) {
+  return publicCollectionItem(item, {
+    trustedLegacyScope: {
+      operatingStoreId: item?.storeId || item?.localStoreId || item?.operatingStoreId,
+      dataCollectionStoreId: item?.dataCollectionStoreId,
+    },
+  });
 }

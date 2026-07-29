@@ -19,11 +19,18 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
     import { join } from 'node:path';
     import { TaskManager } from ${JSON.stringify(taskManagerUrl)};
     import {
+      appendCollectorRunEvent,
+      appendCollectorRunItem,
+      calculateCollectorPricing,
+      cancelCollectorRun,
+      completeCollectorRun,
       createCollectorTask,
       createCollectorRun,
+      heartbeatCollectorRun,
       saveCollectorCategoryMapping,
       saveCollectorMarketSnapshot,
     } from ${JSON.stringify(collectorBackendUrl)};
+    import { DataProcessService } from ${JSON.stringify(new URL('../dist-electron/services/collection/data-filter.services.js', import.meta.url).href)};
     import { SysTemUtils } from ${JSON.stringify(new URL('../dist-electron/utils/system.js', import.meta.url).href)};
     import { buildTaskExcelPath } from ${JSON.stringify(new URL('../dist-electron/services/collection/excel-path.core.js', import.meta.url).href)};
 
@@ -71,26 +78,77 @@ test('TaskManager wires the lease-aware Collection contract and cleans lifecycle
       dataCollectionStoreId: 'legacy-data',
       sellerCompanyId: 'legacy-company',
       source: 'ozon_seller_analytics',
+      sourceIdentity: 'seller-page:company-1',
       sourceSku: 'sku-1',
-      payload: { sku: 'sku-1' },
+      payload: { sku: 'sku-1', nested: [{ Client_Id: 'retired', keep: 'snapshot' }] },
     });
     await saveCollectorCategoryMapping({
       operatingStoreId: 'legacy-operating',
       dataCollectionStoreId: 'legacy-data',
       sellerCompanyId: 'legacy-company',
       source: 'ozon_seller_analytics',
+      sourceIdentity: 'seller-page:company-1',
       rootCategoryId: 'root',
       leafCategoryId: 'leaf',
+      payload: { nested: { DATA_COLLECTION_STORE: 'retired', keep: 'mapping' } },
     });
+    const poisoned = {
+      keep: 'safe',
+      clientId: 'retired',
+      nested: [{ seller_company: 'retired', keep: 'nested' }, { Legacy_Scope: { arbitrary: true } }],
+    };
+    await heartbeatCollectorRun('run-1', 'lease-1', poisoned);
+    await appendCollectorRunItem('run-1', 'lease-1', { sourceKey: 'sku-1', rawPayload: poisoned });
+    await appendCollectorRunEvent('run-1', { eventType: 'TEST', payload: poisoned });
+    await completeCollectorRun('run-1', 'lease-1', poisoned);
+    await cancelCollectorRun('run-1', 'lease-1', poisoned);
+    await calculateCollectorPricing({ payload: poisoned });
+
+    globalThis.__SELLER_ANALYTICS_ITEMS__ = [{
+      id: 'sku-production',
+      sku: 'sku-production',
+      category1Id: 'root-production',
+      category4Id: 'leaf-production',
+    }];
+    const processService = new DataProcessService({ period: 'monthly' });
+    processService.setSellerContext({
+      taskId: 'task-production',
+      runId: 'run-production',
+      sourceIdentity: 'seller-page:company-production',
+    });
+    await processService.getBaseData([{ id: 'sku-production' }]);
+
     const requests = globalThis.__DESKTOP_AXIOS_REQUESTS__;
     assert.equal(requests.some(({ url }) => url === '/local/state'), false);
-    const scopeFields = ['operatingStoreId', 'dataCollectionStoreId', 'sellerCompanyId'];
-    for (const request of requests) {
-      for (const field of scopeFields) {
-        assert.equal(Object.hasOwn(request.data || {}, field), false, request.url + ' must omit ' + field);
-        assert.equal(Object.hasOwn(request.params || {}, field), false, request.url + ' must omit query ' + field);
+    const retiredKeys = new Set([
+      'accountid', 'createdby', 'clientid', 'storeid', 'localstoreid',
+      'operatingstoreid', 'datacollectionstoreid', 'datacollectionstore',
+      'datacollectionstores', 'sellercompanyid', 'sellercompany', 'legacyscope',
+    ]);
+    const assertScopeFree = (value, path = 'request') => {
+      if (Array.isArray(value)) {
+        value.forEach((entry, index) => assertScopeFree(entry, path + '[' + index + ']'));
+        return;
       }
+      if (!value || typeof value !== 'object') return;
+      for (const [key, nested] of Object.entries(value)) {
+        const canonical = key.replace(/[_-]/g, '').toLowerCase();
+        assert.equal(retiredKeys.has(canonical), false, path + ' must omit ' + key);
+        assertScopeFree(nested, path + '.' + key);
+      }
+    };
+    for (const request of requests) {
+      assertScopeFree(request.data || {}, request.url + ' body');
+      assertScopeFree(request.params || {}, request.url + ' query');
     }
+    const productionSnapshots = requests.filter(({ url, data }) =>
+      url === '/collector/market-snapshots' && data?.sourceSku === 'sku-production');
+    const productionMappings = requests.filter(({ url, data }) =>
+      url === '/collector/category-mappings' && data?.leafCategoryId === 'leaf-production');
+    assert.equal(productionSnapshots.length, 1);
+    assert.equal(productionMappings.length, 1);
+    assert.equal(productionSnapshots[0].data.sourceIdentity, 'seller-page:company-production');
+    assert.equal(productionMappings[0].data.sourceIdentity, 'seller-page:company-production');
 
     const excelRoot = join(process.env.DESKTOP_TEST_USER_DATA, 'excel');
     mkdirSync(excelRoot, { recursive: true });

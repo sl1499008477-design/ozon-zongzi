@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { publicCollectionItem } from "./collection-public-shape.mjs";
+import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { decryptSecret } from "./crypto-secrets.mjs";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
@@ -465,7 +465,7 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
   return result.rows.map((row) => {
     const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
     const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
-    return publicCollectionItem({
+    return publicPersistedCollectionItem({
       ...withoutCollectionScope(normalized),
       id: row.id,
       sku: row.source_sku || normalized.sku || "",
@@ -508,7 +508,7 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     const listingDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
       ? safePatch.listingDraft
       : { ...currentDraft, ...safePatch };
-    const item = publicCollectionItem({
+    const item = publicPersistedCollectionItem({
       ...withoutCollectionScope(normalized),
       ...safePatch,
       id: row.id,

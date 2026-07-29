@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import { getActivePricingConfig } from "./pricing-config-service.mjs";
+import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 
 export const COLLECTOR_TASK_STATUSES = Object.freeze([
   "NOT_STARTED",
@@ -130,31 +131,6 @@ function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value || {}, key);
 }
 
-const RUNTIME_SCOPE_KEYS = new Set([
-  "accountId",
-  "createdBy",
-  "client_id",
-  "storeId",
-  "store_id",
-  "operatingStoreId",
-  "operating_store_id",
-  "dataCollectionStoreId",
-  "data_collection_store_id",
-  "sellerCompanyId",
-  "seller_company_id",
-  "legacyScope",
-]);
-
-function withoutRuntimeScope(value = {}) {
-  if (Array.isArray(value)) return value.map((item) => withoutRuntimeScope(item));
-  if (!value || typeof value !== "object") return value;
-  const result = {};
-  for (const [key, nested] of Object.entries(value)) {
-    if (!RUNTIME_SCOPE_KEYS.has(key)) result[key] = withoutRuntimeScope(nested);
-  }
-  return result;
-}
-
 function normalizeStatus(value, allowed, label) {
   const result = clean(value, 80).toUpperCase();
   if (!allowed.includes(result)) {
@@ -208,7 +184,7 @@ function mapTask(row = {}) {
     statusVersion: Number(row.status_version || 1),
     concurrency: Number(row.concurrency || 4),
     currentRunId: row.current_run_id || "",
-    configuration: withoutRuntimeScope(row.configuration || {}),
+    configuration: withoutCollectorScope(row.configuration || {}),
     lastErrorCode: row.last_error_code || "",
     lastErrorMessage: row.last_error_message || "",
     createdBy: row.created_by || "",
@@ -238,7 +214,7 @@ function mapRun(row = {}) {
     status: row.status || "QUEUED",
     statusVersion: Number(row.status_version || 1),
     idempotencyKey: row.idempotency_key || "",
-    configurationSnapshot: withoutRuntimeScope(row.configuration_snapshot || {}),
+    configurationSnapshot: withoutCollectorScope(row.configuration_snapshot || {}),
     claimedByDeviceId: row.claimed_by_device_id || "",
     lockExpiresAt: row.lock_expires_at || null,
     heartbeatAt: row.heartbeat_at || null,
@@ -249,7 +225,7 @@ function mapRun(row = {}) {
     progress,
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
-    resultSummary: row.result_summary || {},
+    resultSummary: withoutCollectorScope(row.result_summary || {}),
     queuedAt: row.queued_at || null,
     startedAt: row.started_at || null,
     completedAt: row.completed_at || null,
@@ -270,7 +246,7 @@ function mapDevice(row = {}) {
     status: row.status || "ACTIVE",
     lastSeenAt: row.last_seen_at || null,
     revokedAt: row.revoked_at || null,
-    metadata: row.metadata || {},
+    metadata: withoutCollectorScope(row.metadata || {}),
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
   };
@@ -293,12 +269,12 @@ function mapItem(row = {}) {
     sortOrder: Number(row.sort_order || 0),
     status: row.status || "DISCOVERED",
     attemptCount: Number(row.attempt_count || 1),
-    rawPayload: row.raw_payload || {},
-    analytics: row.analytics || {},
-    sourcing: row.sourcing || {},
-    pricing: row.pricing || {},
-    filterResult: row.filter_result || {},
-    exportData: row.export_data || {},
+    rawPayload: withoutCollectorScope(row.raw_payload || {}),
+    analytics: withoutCollectorScope(row.analytics || {}),
+    sourcing: withoutCollectorScope(row.sourcing || {}),
+    pricing: withoutCollectorScope(row.pricing || {}),
+    filterResult: withoutCollectorScope(row.filter_result || {}),
+    exportData: withoutCollectorScope(row.export_data || {}),
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
     firstSeenAt: row.first_seen_at || null,
@@ -324,7 +300,7 @@ function mapEvent(row = {}) {
     message: row.message || "",
     actorType: row.actor_type || "system",
     actorId: row.actor_id || "",
-    payload: row.payload || {},
+    payload: withoutCollectorScope(row.payload || {}),
     createdAt: row.created_at || null,
   };
 }
@@ -350,7 +326,7 @@ function mapExport(row = {}) {
     itemCount: Number(row.item_count || 0),
     errorCode: row.error_code || "",
     errorMessage: row.error_message || "",
-    metadata: row.metadata || {},
+    metadata: withoutCollectorScope(row.metadata || {}),
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
     completedAt: row.completed_at || null,
@@ -359,6 +335,7 @@ function mapExport(row = {}) {
 
 function mapMarketSnapshot(row = {}) {
   const legacyScope = readOnlyLegacyScope(row);
+  const payload = withoutCollectorScope(row.payload || {});
   return {
     id: row.id || "",
     taskId: row.task_id || "",
@@ -367,6 +344,7 @@ function mapMarketSnapshot(row = {}) {
     operatingStoreId: null,
     ...(legacyScope ? { legacyScope } : {}),
     source: row.source || "ozon_seller_analytics",
+    sourceIdentity: clean(payload.sourceIdentity || row.source, 500),
     snapshotKey: row.snapshot_key || "",
     sourceSku: row.source_sku || "",
     productId: row.product_id || "",
@@ -376,8 +354,8 @@ function mapMarketSnapshot(row = {}) {
     periodEnd: row.period_end || null,
     requestId: row.request_id || "",
     contentHash: row.content_hash || "",
-    metrics: row.metrics || {},
-    payload: row.payload || {},
+    metrics: withoutCollectorScope(row.metrics || {}),
+    payload,
     collectedAt: row.collected_at || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
@@ -386,18 +364,20 @@ function mapMarketSnapshot(row = {}) {
 
 function mapCategoryMapping(row = {}) {
   const legacyScope = readOnlyLegacyScope(row);
+  const payload = withoutCollectorScope(row.payload || {});
   return {
     id: row.id || "",
     accountId: row.account_id || "",
     operatingStoreId: null,
     ...(legacyScope ? { legacyScope } : {}),
     source: row.source || "ozon_seller_analytics",
+    sourceIdentity: clean(payload.sourceIdentity || row.source, 500),
     rootCategoryId: row.root_category_id || "",
     rootCategoryName: row.root_category_name || "",
     leafCategoryId: row.leaf_category_id || "",
     leafCategoryName: row.leaf_category_name || "",
     status: row.status || "ACTIVE",
-    payload: row.payload || {},
+    payload,
     lastSeenAt: row.last_seen_at || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
@@ -479,7 +459,7 @@ async function insertEvent(client, {
       clean(fromStatus, 80), clean(toStatus, 80), required(eventType, "事件类型", 120),
       normalizeStatus(level || "INFO", ["DEBUG", "INFO", "WARN", "ERROR"], "事件级别"),
       clean(message, 2000), clean(actorType || "system", 80), clean(actorId, 240),
-      JSON.stringify(jsonObject(payload, "事件数据")),
+      JSON.stringify(withoutCollectorScope(jsonObject(payload, "事件数据"))),
     ],
   );
   return mapEvent(result.rows[0]);
@@ -524,7 +504,7 @@ async function ensureDeviceWithClient(client, accountId, input = {}) {
       [
         existing.id, accountId, clean(input.name, 160), clean(input.platform, 80),
         clean(input.arch, 80), clean(input.appVersion, 80),
-        JSON.stringify(jsonObject(input.metadata, "设备信息")),
+        JSON.stringify(withoutCollectorScope(jsonObject(input.metadata, "设备信息"))),
       ],
     );
     return updated.rows[0];
@@ -536,7 +516,7 @@ async function ensureDeviceWithClient(client, accountId, input = {}) {
     [
       stableId("coldev", accountId, deviceKey), accountId, deviceKey,
       clean(input.name, 160), clean(input.platform, 80), clean(input.arch, 80),
-      clean(input.appVersion, 80), JSON.stringify(jsonObject(input.metadata, "设备信息")),
+      clean(input.appVersion, 80), JSON.stringify(withoutCollectorScope(jsonObject(input.metadata, "设备信息"))),
     ],
   );
   return inserted.rows[0];
@@ -596,7 +576,7 @@ export async function createCollectorTask({
 } = {}) {
   const normalizedType = required(taskType, "任务类型", 120).toUpperCase();
   const normalizedConcurrency = boundedInteger(concurrency, { label: "并发数", min: 2, max: 20, fallback: 4 });
-  const normalizedConfiguration = withoutRuntimeScope(jsonObject(configuration, "任务配置"));
+  const normalizedConfiguration = withoutCollectorScope(jsonObject(configuration, "任务配置"));
   return transaction(async (client) => {
     await validateAccountWithClient(client, accountId);
     const id = randomId("coltask");
@@ -726,7 +706,7 @@ export async function updateCollectorTask({ accountId, taskId, patch = {}, expec
       throw serviceError("排队或执行中的任务不能修改", 409, "COLLECTOR_TASK_ACTIVE");
     }
     const configuration = hasOwn(patch, "configuration")
-      ? withoutRuntimeScope(jsonObject(patch.configuration, "任务配置"))
+      ? withoutCollectorScope(jsonObject(patch.configuration, "任务配置"))
       : row.configuration;
     const concurrency = hasOwn(patch, "concurrency")
       ? boundedInteger(patch.concurrency, { label: "并发数", min: 2, max: 20 })
@@ -918,7 +898,7 @@ export async function queueCollectorTaskRun({
       [
         runId, taskId, accountId, null, null,
         resolvedPricingVersionId, Number(runNoResult.rows[0].run_no), normalizedIdempotencyKey,
-        JSON.stringify(configurationSnapshot),
+        JSON.stringify(withoutCollectorScope(configurationSnapshot)),
       ],
     );
     await client.query(
@@ -1204,7 +1184,7 @@ async function finishCollectorRun({
          completed_at=NOW(),heartbeat_at=NOW(),updated_at=NOW()
        WHERE id=$1 AND account_id=$2 RETURNING *`,
       [
-        runId, accountId, targetStatus, JSON.stringify(jsonObject(resultSummary, "运行结果")),
+        runId, accountId, targetStatus, JSON.stringify(withoutCollectorScope(jsonObject(resultSummary, "运行结果"))),
         normalizedErrorCode, normalizedErrorMessage,
       ],
     );
@@ -1226,7 +1206,7 @@ async function finishCollectorRun({
       message: normalizedErrorMessage,
       actorType: "device",
       actorId: device.id,
-      payload: jsonObject(resultSummary, "运行结果"),
+      payload: withoutCollectorScope(jsonObject(resultSummary, "运行结果")),
     });
     return mapRun(updated.rows[0]);
   });
@@ -1286,9 +1266,9 @@ export async function upsertCollectorRunItem({
         );
       }
     }
-    const data = (camel, snake) => hasOwn(item, camel)
+    const data = (camel, snake) => withoutCollectorScope(hasOwn(item, camel)
       ? jsonObject(item[camel], camel)
-      : (existing?.[snake] || {});
+      : (existing?.[snake] || {}));
     const attemptCount = existing
       ? Number(existing.attempt_count || 1) + (item.retry === true ? 1 : 0)
       : boundedInteger(item.attemptCount, { label: "尝试次数", min: 1, max: 10_000, fallback: 1 });
@@ -1451,7 +1431,7 @@ export async function createCollectorExport({
         randomId("colexport"), run.task_id, runId, accountId, null,
         null, version, clean(format || "xlsx", 40).toLowerCase(),
         clean(fileName || `collector-${run.task_id}-${version}.xlsx`, 500),
-        JSON.stringify(jsonObject(metadata, "导出信息")),
+        JSON.stringify(withoutCollectorScope(jsonObject(metadata, "导出信息"))),
       ],
     );
     await insertEvent(client, {
@@ -1508,7 +1488,7 @@ export async function updateCollectorExport({ accountId, exportId, patch = {} } 
         hasOwn(patch, "itemCount") ? boundedInteger(patch.itemCount, { label: "商品数量", min: 0, max: 100_000_000 }) : Number(row.item_count),
         hasOwn(patch, "errorCode") ? clean(patch.errorCode, 120) : row.error_code,
         hasOwn(patch, "errorMessage") ? clean(patch.errorMessage, 2000) : row.error_message,
-        JSON.stringify(hasOwn(patch, "metadata") ? jsonObject(patch.metadata, "导出信息") : row.metadata),
+        JSON.stringify(withoutCollectorScope(hasOwn(patch, "metadata") ? jsonObject(patch.metadata, "导出信息") : row.metadata)),
       ],
     );
     await insertEvent(client, {
@@ -1588,6 +1568,7 @@ export async function upsertCollectorMarketSnapshot({
   taskId = "",
   runId = "",
   source = "ozon_seller_analytics",
+  sourceIdentity = "",
   snapshotKey = "",
   sourceSku = "",
   productId = "",
@@ -1600,10 +1581,14 @@ export async function upsertCollectorMarketSnapshot({
   payload = {},
   collectedAt = null,
 } = {}) {
-  const normalizedPayload = jsonObject(payload, "市场快照");
-  const normalizedMetrics = jsonObject(metrics, "市场指标");
-  const normalizedPeriod = normalizePeriod(period);
   const normalizedSource = clean(source || "ozon_seller_analytics", 120).toLowerCase();
+  const normalizedSourceIdentity = clean(sourceIdentity || normalizedSource, 500);
+  const normalizedPayload = {
+    ...withoutCollectorScope(jsonObject(payload, "市场快照")),
+    sourceIdentity: normalizedSourceIdentity,
+  };
+  const normalizedMetrics = withoutCollectorScope(jsonObject(metrics, "市场指标"));
+  const normalizedPeriod = normalizePeriod(period);
   const resolvedSnapshotKey = clean(snapshotKey, 500) || sha256(canonicalJson({
     source: normalizedSource,
     sourceSku: clean(sourceSku, 240),
@@ -1621,7 +1606,7 @@ export async function upsertCollectorMarketSnapshot({
       runId,
     });
     const contentHash = sha256(canonicalJson({ metrics: normalizedMetrics, payload: normalizedPayload }));
-    const id = stableId("colmkt", accountId, normalizedSource, resolvedSnapshotKey);
+    const id = stableId("colmkt", accountId, normalizedSource, normalizedSourceIdentity, resolvedSnapshotKey);
     const result = await client.query(
       `INSERT INTO collector_market_snapshots (
          id,task_id,run_id,account_id,operating_store_id,data_collection_store_id,
@@ -1658,6 +1643,7 @@ export async function upsertCollectorMarketSnapshot({
 export async function listCollectorMarketSnapshots({
   accountId,
   source = "ozon_seller_analytics",
+  sourceIdentity = "",
   sourceSku = "",
   categoryId = "",
   period = "",
@@ -1670,13 +1656,14 @@ export async function listCollectorMarketSnapshots({
   const result = await pool.query(
     `SELECT * FROM collector_market_snapshots
      WHERE account_id=$1 AND source=$2
-       AND ($3='' OR source_sku=$3)
-       AND ($4='' OR category_id=$4)
-       AND ($5='' OR period=$5)
-     ORDER BY collected_at DESC,id DESC LIMIT $6 OFFSET $7`,
+       AND ($3='' OR COALESCE(NULLIF(payload->>'sourceIdentity',''),source)=$3)
+       AND ($4='' OR source_sku=$4)
+       AND ($5='' OR category_id=$5)
+       AND ($6='' OR period=$6)
+     ORDER BY collected_at DESC,id DESC LIMIT $7 OFFSET $8`,
     [
       required(accountId, "账号 ID"), clean(source || "ozon_seller_analytics", 120).toLowerCase(),
-      clean(sourceSku, 240), clean(categoryId, 240), normalizedPeriod,
+      clean(sourceIdentity, 500), clean(sourceSku, 240), clean(categoryId, 240), normalizedPeriod,
       boundedInteger(limit, { label: "分页数量", min: 1, max: 5000, fallback: 500 }),
       boundedInteger(offset, { label: "分页偏移", min: 0, max: 10_000_000, fallback: 0 }),
     ],
@@ -1687,6 +1674,7 @@ export async function listCollectorMarketSnapshots({
 export async function upsertCollectorCategoryMapping({
   accountId,
   source = "ozon_seller_analytics",
+  sourceIdentity = "",
   rootCategoryId,
   rootCategoryName = "",
   leafCategoryId,
@@ -1695,6 +1683,7 @@ export async function upsertCollectorCategoryMapping({
   payload = {},
 } = {}) {
   const normalizedSource = clean(source || "ozon_seller_analytics", 120).toLowerCase();
+  const normalizedSourceIdentity = clean(sourceIdentity || normalizedSource, 500);
   const rootId = required(rootCategoryId, "一级类目 ID", 240);
   const leafId = required(leafCategoryId, "叶子类目 ID", 240);
   const normalizedStatus = normalizeStatus(status || "ACTIVE", ["ACTIVE", "DISABLED"], "类目映射状态");
@@ -1704,6 +1693,7 @@ export async function upsertCollectorCategoryMapping({
       "colcat",
       accountId,
       normalizedSource,
+      normalizedSourceIdentity,
       rootId,
       leafId,
     );
@@ -1723,7 +1713,10 @@ export async function upsertCollectorCategoryMapping({
       [
         id, accountId, null, null, normalizedSource,
         rootId, clean(rootCategoryName, 500), leafId, clean(leafCategoryName, 500),
-        normalizedStatus, JSON.stringify(jsonObject(payload, "类目映射")),
+        normalizedStatus, JSON.stringify({
+          ...withoutCollectorScope(jsonObject(payload, "类目映射")),
+          sourceIdentity: normalizedSourceIdentity,
+        }),
       ],
     );
     return mapCategoryMapping(result.rows[0]);
@@ -1733,6 +1726,7 @@ export async function upsertCollectorCategoryMapping({
 export async function listCollectorCategoryMappings({
   accountId,
   source = "ozon_seller_analytics",
+  sourceIdentity = "",
   rootCategoryId = "",
   status = "ACTIVE",
   limit = 5000,
@@ -1745,11 +1739,12 @@ export async function listCollectorCategoryMappings({
   const result = await pool.query(
     `SELECT * FROM collector_category_mappings
      WHERE account_id=$1 AND source=$2
-       AND ($3='' OR root_category_id=$3) AND ($4='' OR status=$4)
-     ORDER BY root_category_name,leaf_category_name,leaf_category_id LIMIT $5`,
+       AND ($3='' OR COALESCE(NULLIF(payload->>'sourceIdentity',''),source)=$3)
+       AND ($4='' OR root_category_id=$4) AND ($5='' OR status=$5)
+     ORDER BY root_category_name,leaf_category_name,leaf_category_id LIMIT $6`,
     [
       required(accountId, "账号 ID"), clean(source || "ozon_seller_analytics", 120).toLowerCase(),
-      clean(rootCategoryId, 240), normalizedStatus,
+      clean(sourceIdentity, 500), clean(rootCategoryId, 240), normalizedStatus,
       boundedInteger(limit, { label: "分页数量", min: 1, max: 10_000, fallback: 5000 }),
     ],
   );

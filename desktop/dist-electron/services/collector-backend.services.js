@@ -7,6 +7,7 @@ import {
     toCollectorTaskQuery,
     toCollectorTaskPayload,
 } from './collector-contract.core.js';
+import { withoutCollectorScope } from './collector-scope.core.js';
 export { normalizeCollectorTask, toCollectorTaskPayload, toCollectorTaskQuery } from './collector-contract.core.js';
 
 function unwrapTask(payload) {
@@ -15,16 +16,6 @@ function unwrapTask(payload) {
 
 function unwrapRun(payload) {
     return payload?.run || payload?.data?.run || payload?.data || payload;
-}
-
-function withoutRetiredScope(input = {}) {
-    const data = { ...(input || {}) };
-    delete data.accountId;
-    delete data.storeId;
-    delete data.operatingStoreId;
-    delete data.dataCollectionStoreId;
-    delete data.sellerCompanyId;
-    return data;
 }
 
 export function getDesktopDeviceId() {
@@ -37,7 +28,7 @@ export function getDesktopDeviceId() {
 }
 
 export async function createCollectorTask(input) {
-    const data = withoutRetiredScope(toCollectorTaskPayload(input));
+    const data = withoutCollectorScope(toCollectorTaskPayload(input));
     const payload = await sonliRequest({
         method: 'post',
         url: '/collector/tasks',
@@ -52,7 +43,7 @@ export async function getCollectorTask(id) {
 }
 
 export async function updateCollectorTask(id, input, expectedVersion) {
-    const data = withoutRetiredScope(toCollectorTaskPayload(input));
+    const data = withoutCollectorScope(toCollectorTaskPayload(input));
     if (expectedVersion != null)
         data.expectedVersion = expectedVersion;
     const payload = await sonliRequest({
@@ -133,7 +124,7 @@ export function heartbeatCollectorRun(runId, leaseToken, progress = {}) {
             deviceId: getDesktopDeviceId(),
             leaseToken,
             leaseSeconds: 120,
-            progress,
+            progress: withoutCollectorScope(progress),
         },
     });
 }
@@ -153,7 +144,7 @@ export function appendCollectorRunItem(runId, leaseToken, item, deviceId = getDe
         data: {
             deviceId,
             leaseToken,
-            items: [item],
+            items: [withoutCollectorScope(item)],
         },
     });
 }
@@ -162,7 +153,7 @@ export function appendCollectorRunEvent(runId, event) {
     return sonliRequest({
         method: 'post',
         url: `/collector/runs/${encodeURIComponent(runId)}/events`,
-        data: event,
+        data: withoutCollectorScope(event),
     });
 }
 
@@ -170,7 +161,7 @@ export function completeCollectorRun(runId, leaseToken, resultSummary = {}) {
     return sonliRequest({
         method: 'post',
         url: `/collector/runs/${encodeURIComponent(runId)}/complete`,
-        data: { deviceId: getDesktopDeviceId(), leaseToken, resultSummary },
+        data: { deviceId: getDesktopDeviceId(), leaseToken, resultSummary: withoutCollectorScope(resultSummary) },
     });
 }
 
@@ -194,7 +185,7 @@ export function cancelCollectorRun(runId, leaseToken, resultSummary = {}) {
         data: {
             deviceId: getDesktopDeviceId(),
             leaseToken,
-            resultSummary,
+            resultSummary: withoutCollectorScope(resultSummary),
         },
     });
 }
@@ -203,7 +194,7 @@ export function saveCollectorMarketSnapshot(snapshot) {
     return sonliRequest({
         method: 'post',
         url: '/collector/market-snapshots',
-        data: withoutRetiredScope(snapshot),
+        data: withoutCollectorScope(snapshot),
     });
 }
 
@@ -211,7 +202,7 @@ export function getCollectorCategoryMappings(params = {}) {
     return sonliRequest({
         method: 'get',
         url: '/collector/category-mappings',
-        params: withoutRetiredScope(params),
+        params: withoutCollectorScope(params),
     });
 }
 
@@ -219,12 +210,12 @@ export function saveCollectorCategoryMapping(mapping = {}) {
     return sonliRequest({
         method: 'post',
         url: '/collector/category-mappings',
-        data: withoutRetiredScope(mapping),
+        data: withoutCollectorScope(mapping),
     });
 }
 
 export function calculateCollectorPricing(input) {
-    return sonliRequest({ method: 'post', url: '/pricing/collector/calculate', data: input });
+    return sonliRequest({ method: 'post', url: '/pricing/collector/calculate', data: withoutCollectorScope(input) });
 }
 
 export function getSonliState() {

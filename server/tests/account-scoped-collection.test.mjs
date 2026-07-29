@@ -219,8 +219,30 @@ if (!postgresEnabled()) {
     collectItemIds.add(accountBResult.collectItemId);
     assert.notEqual(accountBResult.collectItemId, first.collectItemId);
 
+    await pool.query(
+      `UPDATE collect_raw_payloads
+       SET payload=jsonb_set(
+         payload,
+         '{normalized,legacyScope}',
+         $3::jsonb,
+         true
+       )
+       WHERE collect_item_id=$1 AND account_id=$2`,
+      [
+        first.collectItemId,
+        accountA,
+        JSON.stringify({
+          operatingStoreId: `forged-operating-${suffix}`,
+          dataCollectionStoreId: `forged-data-${suffix}`,
+          sellerCompanyId: `forged-seller-${suffix}`,
+          arbitrary: "forged",
+        }),
+      ],
+    );
     const accountAItems = await listCollectItemsV3({ accountId: accountA });
     assert.equal(accountAItems.some((item) => item.id === accountBResult.collectItemId), false);
+    const accountAItem = accountAItems.find((item) => item.id === first.collectItemId);
+    assert.equal(Object.hasOwn(accountAItem, "legacyScope"), false, "forged raw JSON legacyScope is never trusted");
     assert.equal(
       await updateCollectItemDraftV4({
         collectItemId: accountBResult.collectItemId,

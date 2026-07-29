@@ -37,6 +37,7 @@ export class DataProcessService {
                 await Promise.allSettled(analytics.map((item) => saveCollectorMarketSnapshot({
                     taskId: this.sellerContext.taskId,
                     runId: this.sellerContext.runId,
+                    sourceIdentity: this.sellerContext.sourceIdentity,
                     sourceSku: String(item.sku || item.id || ''),
                     categoryId: String(item.category4Id || item.category3Id || item.category2Id || item.category1Id || ''),
                     period: this.task.period === 'weekly' ? 'weekly' : 'monthly',
@@ -54,6 +55,7 @@ export class DataProcessService {
                     if (!rootCategoryId || !leafCategoryId)
                         return null;
                     return saveCollectorCategoryMapping({
+                        sourceIdentity: this.sellerContext.sourceIdentity,
                         rootCategoryId,
                         rootCategoryName: item.category1 || item.category2 || item.category3 || item.category4 || rootCategoryId,
                         leafCategoryId,

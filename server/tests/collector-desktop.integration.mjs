@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import "../env.mjs";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
+import { getActivePricingConfig } from "../pricing-config-service.mjs";
 import {
   appendCollectorRunEvent,
   canTransitionCollectorRun,
@@ -56,6 +57,27 @@ const foreignPricingVersionId = `collector_foreign_pricing_${suffix}`;
 const deviceKey = `collector-device-${suffix}`;
 const legacyTaskId = `collector_legacy_task_${suffix}`;
 const pool = await getPostgresPool();
+const retiredScopeKeys = new Set([
+  "accountid", "createdby", "clientid", "storeid", "localstoreid",
+  "operatingstoreid", "datacollectionstoreid", "datacollectionstore",
+  "datacollectionstores", "sellercompanyid", "sellercompany", "legacyscope",
+]);
+
+function assertScopeFree(value, path = "value") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertScopeFree(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, nested] of Object.entries(value)) {
+    assert.equal(
+      retiredScopeKeys.has(key.replace(/[_-]/g, "").toLowerCase()),
+      false,
+      `${path} must omit ${key}`,
+    );
+    assertScopeFree(nested, `${path}.${key}`);
+  }
+}
 
 async function cleanup() {
   await pool.query("DELETE FROM collector_market_snapshots WHERE account_id=ANY($1::text[])", [[accountA, accountB]]);
@@ -205,6 +227,8 @@ try {
         operatingStoreId,
         dataCollectionStoreId: collectionStoreA,
         sellerCompanyId: sellerCompanyA,
+        clientId: "retired-client",
+        rows: [{ DATA_COLLECTION_STORE: "retired-store", keep: "task-row" }],
         keep: true,
       },
     },
@@ -212,9 +236,10 @@ try {
   assert.equal(task.status, "NOT_STARTED");
   assert.equal(task.operatingStoreId, null);
   assert.equal(Object.hasOwn(task, "dataCollectionStoreId"), false);
-  assert.deepEqual(task.configuration.nested, { keep: true });
+  assert.deepEqual(task.configuration.nested, { rows: [{ keep: "task-row" }], keep: true });
   assert.equal(await getCollectorTaskForAccount(accountB, task.id), null);
 
+  await getActivePricingConfig({ accountId: accountA });
   await pool.query(
     `INSERT INTO collector_tasks (
        id,account_id,operating_store_id,data_collection_store_id,name,task_type,source,created_by
@@ -278,7 +303,13 @@ try {
     accountId: accountA,
     runId: queued.run.id,
     deviceId: deviceKey,
-    device: { name: "Integration Mac", platform: "darwin", arch: "arm64", appVersion: "test" },
+    device: {
+      name: "Integration Mac",
+      platform: "darwin",
+      arch: "arm64",
+      appVersion: "test",
+      metadata: { nested: [{ Client_Id: "retired-client", keep: "device" }] },
+    },
     leaseSeconds: 90,
   });
   assert.equal(claimed.run.status, "RUNNING");
@@ -325,7 +356,10 @@ try {
       sourceKey: `sku-${suffix}`,
       sourceSku: `sku-${suffix}`,
       status: "DISCOVERED",
-      rawPayload: { title: "Ozon source" },
+      rawPayload: {
+        title: "Ozon source",
+        nested: [{ seller_company: "retired-seller", keep: "raw" }],
+      },
     },
   });
   assert.equal(firstItem.created, true);
@@ -340,12 +374,18 @@ try {
       source: "ozon",
       sourceKey: `sku-${suffix}`,
       status: "QUALIFIED",
-      analytics: { gmv: 1000, sold: 12 },
-      pricing: { profit: 22.5 },
+      analytics: { gmv: 1000, sold: 12, nested: { DATA_COLLECTION_STORE_ID: "retired", keep: "analytics" } },
+      pricing: { profit: 22.5, rows: [{ legacy_scope: { arbitrary: true }, keep: "pricing" }] },
     },
   });
   assert.equal(completedItem.created, false);
-  assert.deepEqual(completedItem.item.rawPayload, { title: "Ozon source" });
+  assert.deepEqual(completedItem.item.rawPayload, {
+    title: "Ozon source",
+    nested: [{ keep: "raw" }],
+  });
+  for (const field of ["rawPayload", "analytics", "sourcing", "pricing", "filterResult", "exportData"]) {
+    assertScopeFree(completedItem.item[field], `collector item.${field}`);
+  }
   assert.equal(completedItem.item.collectItemId, collectItemId);
   assert.equal((await listCollectorRunItems({ accountId: accountA, runId: queued.run.id })).length, 1);
   assert.equal((await listCollectorRunItems({ accountId: accountB, runId: queued.run.id })).length, 0);
@@ -354,23 +394,57 @@ try {
     accountId: accountA,
     runId: queued.run.id,
     source: "ozon_seller_analytics",
-    snapshotKey: `seller-page:${suffix}:sku-${suffix}:monthly`,
+    sourceIdentity: "seller-page:company-a",
+    snapshotKey: `sku-${suffix}:monthly`,
     sourceSku: `sku-${suffix}`,
     categoryId: "leaf-1",
     period: "MONTHLY",
     periodStart: "2026-06-01",
     periodEnd: "2026-06-30",
     requestId: `snapshot-${suffix}`,
-    metrics: { gmv: 1000, sold: 12 },
-    payload: { sku: `sku-${suffix}`, title: "Analytics row" },
+    metrics: { gmv: 1000, sold: 12, nested: { sellerCompany: "retired", keep: "metrics" } },
+    payload: {
+      sku: `sku-${suffix}`,
+      title: "Analytics row",
+      nested: [{ Data_Collection_Store: "retired", keep: "snapshot" }],
+    },
   });
   assert.equal(snapshot.operatingStoreId, null);
   assert.equal(Object.hasOwn(snapshot, "dataCollectionStoreId"), false);
   assert.equal(snapshot.source, "ozon_seller_analytics");
+  assert.equal(snapshot.sourceIdentity, "seller-page:company-a");
+  assertScopeFree(snapshot.metrics, "market snapshot.metrics");
+  assertScopeFree(snapshot.payload, "market snapshot.payload");
+  const secondSnapshot = await upsertCollectorMarketSnapshot({
+    accountId: accountA,
+    runId: queued.run.id,
+    source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-b",
+    snapshotKey: `sku-${suffix}:monthly`,
+    sourceSku: `sku-${suffix}`,
+    categoryId: "leaf-1",
+    period: "MONTHLY",
+    periodStart: "2026-06-01",
+    periodEnd: "2026-06-30",
+    requestId: `snapshot-b-${suffix}`,
+    metrics: { gmv: 2000 },
+    payload: { sku: `sku-${suffix}`, title: "Analytics row B" },
+  });
+  assert.notEqual(secondSnapshot.id, snapshot.id);
   assert.equal((await listCollectorMarketSnapshots({
     accountId: accountA,
     source: "ozon_seller_analytics",
-  })).length, 1);
+  })).length, 2);
+  assert.deepEqual((await listCollectorMarketSnapshots({
+    accountId: accountA,
+    source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-a",
+  })).map(({ id }) => id), [snapshot.id]);
+  assert.deepEqual((await listCollectorMarketSnapshots({
+    accountId: accountA,
+    source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-b",
+  })).map(({ id }) => id), [secondSnapshot.id]);
   assert.equal((await listCollectorMarketSnapshots({
     accountId: accountB,
     source: "ozon_seller_analytics",
@@ -379,17 +453,43 @@ try {
   const mapping = await upsertCollectorCategoryMapping({
     accountId: accountA,
     source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-a",
     rootCategoryId: "root-1",
     rootCategoryName: "Root",
     leafCategoryId: "leaf-1",
     leafCategoryName: "Leaf",
+    payload: { nested: [{ client_id: "retired", keep: "mapping" }] },
   });
   assert.equal(mapping.leafCategoryId, "leaf-1");
+  assert.equal(mapping.sourceIdentity, "seller-page:company-a");
+  assertScopeFree(mapping.payload, "category mapping.payload");
+  const secondMapping = await upsertCollectorCategoryMapping({
+    accountId: accountA,
+    source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-b",
+    rootCategoryId: "root-1",
+    rootCategoryName: "Root",
+    leafCategoryId: "leaf-1",
+    leafCategoryName: "Leaf B",
+  });
+  assert.notEqual(secondMapping.id, mapping.id);
   assert.equal((await listCollectorCategoryMappings({
     accountId: accountA,
     source: "ozon_seller_analytics",
     rootCategoryId: "root-1",
-  })).length, 1);
+  })).length, 2);
+  assert.deepEqual((await listCollectorCategoryMappings({
+    accountId: accountA,
+    source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-a",
+    rootCategoryId: "root-1",
+  })).map(({ id }) => id), [mapping.id]);
+  assert.deepEqual((await listCollectorCategoryMappings({
+    accountId: accountA,
+    source: "ozon_seller_analytics",
+    sourceIdentity: "seller-page:company-b",
+    rootCategoryId: "root-1",
+  })).map(({ id }) => id), [secondMapping.id]);
   assert.equal((await listCollectorCategoryMappings({
     accountId: accountB,
     source: "ozon_seller_analytics",
@@ -403,6 +503,7 @@ try {
     message: "integration event",
     actorType: "device",
     actorId: claimed.device.id,
+    payload: { nested: [{ operating_store_id: "retired", keep: "event" }] },
   });
   assert.ok((await listCollectorRunEvents({ accountId: accountA, runId: queued.run.id }))
     .some((event) => event.eventType === "DESKTOP_LOG"));
@@ -412,7 +513,10 @@ try {
     runId: queued.run.id,
     deviceId: deviceKey,
     leaseToken: claimed.leaseToken,
-    resultSummary: { qualifiedCount: 1 },
+    resultSummary: {
+      qualifiedCount: 1,
+      nested: [{ seller_company_id: "retired", keep: "summary" }],
+    },
   });
   assert.equal(completed.status, "COMPLETED");
 
@@ -420,6 +524,7 @@ try {
     accountId: accountA,
     runId: queued.run.id,
     fileName: "collector.xlsx",
+    metadata: { nested: [{ dataCollectionStoreId: "retired", keep: "export" }] },
   });
   assert.equal(exportRecord.operatingStoreId, null);
   assert.equal(Object.hasOwn(exportRecord, "dataCollectionStoreId"), false);
@@ -442,6 +547,23 @@ try {
     },
   });
   assert.equal(readyExport.status, "READY");
+
+  const persistedJson = await pool.query(
+    `SELECT
+       (SELECT metadata FROM collector_devices WHERE account_id=$1 AND device_key=$2) AS device_metadata,
+       (SELECT configuration FROM collector_tasks WHERE id=$3) AS task_configuration,
+       (SELECT result_summary FROM collector_task_runs WHERE id=$4) AS result_summary,
+       (SELECT raw_payload FROM collector_task_items WHERE run_id=$4 LIMIT 1) AS raw_payload,
+       (SELECT analytics FROM collector_task_items WHERE run_id=$4 LIMIT 1) AS analytics,
+       (SELECT pricing FROM collector_task_items WHERE run_id=$4 LIMIT 1) AS item_pricing,
+       (SELECT payload FROM collector_task_events WHERE run_id=$4 AND event_type='DESKTOP_LOG' LIMIT 1) AS event_payload,
+       (SELECT metadata FROM collector_exports WHERE id=$5) AS export_metadata,
+       (SELECT metrics FROM collector_market_snapshots WHERE id=$6) AS snapshot_metrics,
+       (SELECT payload FROM collector_market_snapshots WHERE id=$6) AS snapshot_payload,
+       (SELECT payload FROM collector_category_mappings WHERE id=$7) AS mapping_payload`,
+    [accountA, deviceKey, task.id, queued.run.id, exportRecord.id, snapshot.id, mapping.id],
+  );
+  assertScopeFree(persistedJson.rows[0], "persisted JSONB");
 
   const rerun = await queueCollectorTaskRun({
     accountId: accountA,

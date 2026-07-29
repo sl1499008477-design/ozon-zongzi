@@ -287,6 +287,7 @@ export function createCollectorHttpHandler({
         snapshots: await service.listCollectorMarketSnapshots({
           accountId: account.id,
           source: url.searchParams.get("source") || "ozon_seller_analytics",
+          sourceIdentity: url.searchParams.get("sourceIdentity") || "",
           sourceSku: url.searchParams.get("sourceSku") || "",
           categoryId: url.searchParams.get("categoryId") || "",
           period: url.searchParams.get("period") || "",
@@ -306,6 +307,7 @@ export function createCollectorHttpHandler({
         mappings: await service.listCollectorCategoryMappings({
           accountId: account.id,
           source: url.searchParams.get("source") || "ozon_seller_analytics",
+          sourceIdentity: url.searchParams.get("sourceIdentity") || "",
           rootCategoryId: url.searchParams.get("rootCategoryId") || "",
           status: url.searchParams.get("status") || "ACTIVE",
           limit: toNumber(url.searchParams.get("limit")) ?? 5000,

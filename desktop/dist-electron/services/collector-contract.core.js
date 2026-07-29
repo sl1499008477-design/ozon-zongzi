@@ -1,3 +1,5 @@
+import { withoutCollectorScope } from './collector-scope.core.js';
+
 const FRONTEND_STATUS = Object.freeze({
     NOT_STARTED: 'noExecuted',
     QUEUED: 'pending',
@@ -12,21 +14,6 @@ const BACKEND_STATUS = Object.freeze(Object.fromEntries(
 
 export function objectValue(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-}
-
-const RETIRED_SCOPE_KEY = /^(?:accountId|createdBy|client_id|storeId|store_id|operatingStoreId|operating_store_id|dataCollectionStoreId|data_collection_store_id|sellerCompanyId|seller_company_id|legacyScope)$/i;
-
-function withoutRetiredScope(value) {
-    if (Array.isArray(value))
-        return value.map(withoutRetiredScope);
-    if (!value || typeof value !== 'object')
-        return value;
-    const result = {};
-    for (const [key, nested] of Object.entries(value)) {
-        if (!RETIRED_SCOPE_KEY.test(key))
-            result[key] = withoutRetiredScope(nested);
-    }
-    return result;
 }
 
 export function normalizeCollectorTask(raw = {}) {
@@ -51,8 +38,8 @@ export function normalizeCollectorTask(raw = {}) {
             ? { dataCollectionStoreId: String(legacyDataCollectionStoreId) }
             : {}),
     };
-    const publicConfiguration = objectValue(withoutRetiredScope(configuration));
-    const publicSource = objectValue(withoutRetiredScope(source));
+    const publicConfiguration = objectValue(withoutCollectorScope(configuration));
+    const publicSource = objectValue(withoutCollectorScope(source));
     const normalized = {
         ...publicConfiguration,
         ...publicSource,
@@ -100,7 +87,7 @@ export function toCollectorTaskPayload(input = {}) {
         name: String(source.taskName || source.name || '未命名任务').trim(),
         taskType: String(source.taskType || (+source.isUseCategorySelect === 0 ? 'CATEGORY' : 'URL')).toUpperCase(),
         operatingStoreId: null,
-        configuration: withoutRetiredScope(configuration),
+        configuration: withoutCollectorScope(configuration),
         concurrency,
     };
 }

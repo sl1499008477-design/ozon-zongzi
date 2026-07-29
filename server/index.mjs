@@ -139,7 +139,7 @@ import {
 import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
 import { createJsonAccountScopedCollectionHandler } from "./account-scoped-collection-routes.mjs";
-import { publicCollectionItem } from "./collection-public-shape.mjs";
+import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
@@ -751,7 +751,7 @@ function localStatePayload(state, options = {}) {
   ));
   const visibleCollectBox = (state.caches.collectBox || [])
     .filter((item) => String(item?.accountId || "") === String(account.id))
-    .map(publicCollectionItem);
+    .map(publicPersistedCollectionItem);
   const visibleFiles = ensureFilesCache(state).filter((file) => canAccessLocalFile(file, account));
   const visibleCaches = {
     products: accountScopedCache(state.caches.products, account, accountStoreIds),
@@ -4201,7 +4201,7 @@ async function handle(req, res) {
           raw: { sku, scrapedAt: new Date().toISOString() },
         });
         const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
-        sendJson(res, 200, { ok: true, data: publicCollectionItem(saved.item), scraped: true });
+        sendJson(res, 200, { ok: true, data: publicPersistedCollectionItem(saved.item), scraped: true });
       } else {
         // 抓取失败，仍然创建条目但标记为待处理
         const item = normalizeCollectItem({
@@ -4214,7 +4214,7 @@ async function handle(req, res) {
         const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
         sendJson(res, 200, {
           ok: true,
-          data: publicCollectionItem(saved.item),
+          data: publicPersistedCollectionItem(saved.item),
           scraped: false,
           error: "未能从 ozon.ru 抓取到商品数据",
         });
@@ -4249,7 +4249,7 @@ async function handle(req, res) {
     sendJson(
       res,
       200,
-      emptyPage(url, cacheItemsForAccount(state, "collectBox", account).map(publicCollectionItem)),
+      emptyPage(url, cacheItemsForAccount(state, "collectBox", account).map(publicPersistedCollectionItem)),
     );
     return;
   }
@@ -4293,7 +4293,7 @@ async function handle(req, res) {
             raw: { sku, scrapedAt: new Date().toISOString() },
           });
           const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
-          sendJson(res, 200, publicCollectionItem(saved.item));
+          sendJson(res, 200, publicPersistedCollectionItem(saved.item));
           return;
         }
       } catch (e) {
@@ -4302,7 +4302,7 @@ async function handle(req, res) {
     }
     const item = normalizeCollectItem(body);
     const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
-    sendJson(res, 200, publicCollectionItem(saved.item));
+    sendJson(res, 200, publicPersistedCollectionItem(saved.item));
     return;
   }
 
@@ -4371,7 +4371,7 @@ async function handle(req, res) {
       sendError(res, 404, "采集箱条目不存在");
       return;
     }
-    sendJson(res, 200, publicCollectionItem(item));
+    sendJson(res, 200, publicPersistedCollectionItem(item));
     return;
   }
 
@@ -4407,7 +4407,7 @@ async function handle(req, res) {
     sendJson(res, 200, {
       ok: true,
       imported: saved.items.length,
-      data: saved.items.map(publicCollectionItem),
+      data: saved.items.map(publicPersistedCollectionItem),
       total: cacheItemsForAccount(saved.state, "collectBox", account).length,
     });
     return;
@@ -4978,7 +4978,7 @@ async function handle(req, res) {
     sendJson(res, 200, {
       ok: true,
       draft: item.aiListingDraft,
-      item: publicCollectionItem(item),
+      item: publicPersistedCollectionItem(item),
       local: true,
     });
     return;

@@ -3,6 +3,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
+import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 
 const freezeEntries = (entries) => Object.freeze(entries.map((entry) => Object.freeze({ ...entry })));
 
@@ -341,7 +342,7 @@ function jsonObject(value) {
  * only fill fields not present in the export snapshot.
  */
 export function resolveCollectorExcelRow(item = {}) {
-  const direct = jsonObject(item);
+  const direct = jsonObject(withoutCollectorScope(item));
   if (!Object.keys(direct).length) return {};
 
   const rawSnake = jsonObject(direct.raw_payload);
@@ -361,18 +362,6 @@ export function resolveCollectorExcelRow(item = {}) {
     ...exportSnake,
     ...exportCamel,
   };
-  for (const key of [
-    "storeId",
-    "store_id",
-    "operatingStoreId",
-    "operating_store_id",
-    "dataCollectionStoreId",
-    "data_collection_store_id",
-    "sellerCompanyId",
-    "seller_company_id",
-  ]) {
-    delete row[key];
-  }
   if ((row.id === undefined || row.id === null || row.id === "") && row.sourceSku) row.id = row.sourceSku;
   if ((row.link === undefined || row.link === null || row.link === "") && row.sourceUrl) row.link = row.sourceUrl;
   return row;

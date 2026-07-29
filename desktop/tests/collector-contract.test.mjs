@@ -12,6 +12,7 @@ test('maps Sonli task status and preserves recovered configuration', () => {
         name: '类目采集',
         status: 'QUEUED',
         storeId: 'legacy-store-alias',
+        clientId: 'legacy-camel-client-id',
         client_id: 'legacy-client-id',
         operatingStoreId: 'store-1',
         dataCollectionStoreId: 'legacy-data-store',
@@ -26,10 +27,15 @@ test('maps Sonli task status and preserves recovered configuration', () => {
             sourceType: '0',
             nested: {
                 operatingStoreId: 'nested-operating',
-                dataCollectionStoreId: 'nested-data',
-                sellerCompanyId: 'nested-seller',
+                DATA_COLLECTION_STORE_ID: 'nested-data',
+                seller_company: 'nested-seller',
                 keep: true,
             },
+            array: [{
+                dataCollectionStore: { id: 'forged-data-store' },
+                legacy_scope: { arbitrary: 'forged' },
+                keep: 'array-value',
+            }],
         },
     });
     assert.equal(task._id, 'task-1');
@@ -38,10 +44,12 @@ test('maps Sonli task status and preserves recovered configuration', () => {
     assert.equal(task.targetCount, 20);
     assert.equal(task.operatingStoreId, null);
     assert.equal(Object.hasOwn(task, 'storeId'), false);
+    assert.equal(Object.hasOwn(task, 'clientId'), false);
     assert.equal(Object.hasOwn(task, 'client_id'), false);
     assert.equal(Object.hasOwn(task, 'dataCollectionStoreId'), false);
     assert.equal(Object.hasOwn(task, 'sellerCompanyId'), false);
     assert.deepEqual(task.configuration.nested, { keep: true });
+    assert.deepEqual(task.configuration.array, [{ keep: 'array-value' }]);
     assert.deepEqual(task.legacyScope, {
         operatingStoreId: 'store-1',
         dataCollectionStoreId: 'legacy-data-store',
@@ -76,25 +84,33 @@ test('builds a store-neutral task payload and omits retired authorization scope'
         taskName: '安全任务',
         [legacyKey]: true,
         token: 'must-not-persist',
+        clientId: 'operating-store-camel',
         client_id: 'operating-store',
         dataCollectionStoreId: 'data-store',
         sellerCompanyId: 'seller-company',
         filters: {
             operatingStoreId: 'nested-operating',
-            dataCollectionStoreId: 'nested-data',
-            sellerCompanyId: 'nested-seller',
+            Data_Collection_Store_Id: 'nested-data',
+            SellerCompany: 'nested-seller',
             keep: true,
         },
+        nestedArray: [{
+            data_collection_store: { id: 'nested-store' },
+            LegacyScope: { arbitrary: 'forged' },
+            keep: 1,
+        }],
     });
     assert.equal(payload.operatingStoreId, null);
     assert.equal(Object.hasOwn(payload, 'dataCollectionStoreId'), false);
     assert.equal(Object.hasOwn(payload, 'sellerCompanyId'), false);
     assert.equal(Object.hasOwn(payload.configuration, legacyKey), false);
     assert.equal(Object.hasOwn(payload.configuration, 'token'), false);
+    assert.equal(Object.hasOwn(payload.configuration, 'clientId'), false);
     assert.equal(Object.hasOwn(payload.configuration, 'client_id'), false);
     assert.equal(Object.hasOwn(payload.configuration, 'dataCollectionStoreId'), false);
     assert.equal(Object.hasOwn(payload.configuration, 'sellerCompanyId'), false);
     assert.deepEqual(payload.configuration.filters, { keep: true });
+    assert.deepEqual(payload.configuration.nestedArray, [{ keep: 1 }]);
 });
 
 test('does not recursively persist the previous server configuration', () => {

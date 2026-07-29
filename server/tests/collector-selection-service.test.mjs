@@ -29,9 +29,26 @@ const dependencies = {
           operatingStoreId: "legacy-operating",
           dataCollectionStoreId: "legacy-data",
           sellerCompanyId: "legacy-company",
+          nested: {
+            Client_Id: "nested-client",
+            dataCollectionStore: { id: "nested-data-store" },
+            keep: true,
+          },
+          nestedArray: [{
+            SELLER_COMPANY: "nested-seller",
+            legacy_scope: { arbitrary: "forged" },
+            keep: "array-value",
+          }],
         },
-        exportData: { nameLabel: "export title", price: 120 },
-        analytics: { sold: 10 },
+        exportData: {
+          nameLabel: "export title",
+          price: 120,
+          nested: { operating_store_id: "export-operating", keep: "export-value" },
+        },
+        analytics: {
+          sold: 10,
+          nested: { data_collection_store_id: "analytics-data", keep: "analytics-value" },
+        },
       },
       { id: "item-b", sourceKey: "sku-b", sourceSku: "sku-b", source: "ozon" },
     ];
@@ -57,6 +74,9 @@ assert.equal(ingested[0].input.sourceSku, "sku-a");
 assert.equal(ingested[0].input.requestId, "collector-select:run-a:item-a");
 assert.equal(ingested[0].input.payload.name, "export title");
 assert.equal(ingested[0].input.payload.price, 120);
+assert.deepEqual(ingested[0].input.payload.nested, { keep: "export-value" });
+assert.deepEqual(ingested[0].input.payload.nestedArray, [{ keep: "array-value" }]);
+assert.deepEqual(ingested[0].input.payload.analytics.nested, { keep: "analytics-value" });
 for (const field of [
   "accountId",
   "storeId",
