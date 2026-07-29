@@ -3,12 +3,24 @@ import crypto from "node:crypto";
 const TICKET_TTL_MS = 60 * 1000;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const COLLECTOR_SECRET_PATTERN = /(?:ctt|cst)_[A-Za-z0-9_-]{16,}/g;
+const DEFAULT_REVOKE_REASON = "PARENT_SESSION_REVOKED";
 
 export const COLLECTOR_PERMISSIONS = Object.freeze([
   "collector.upload",
   "collector.job.read",
   "collector.config.read",
 ]);
+
+export const COLLECTOR_REVOKE_REASONS = Object.freeze([
+  DEFAULT_REVOKE_REASON,
+  "WEB_LOGOUT",
+  "ACCOUNT_DISABLED",
+  "ACCOUNT_DELETED",
+  "ACCOUNT_EXPIRED",
+  "SECURITY_RESET",
+]);
+
+const collectorRevokeReasonSet = new Set(COLLECTOR_REVOKE_REASONS);
 
 export function hashCollectorSecret(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
@@ -18,8 +30,25 @@ function opaqueSecret(prefix, randomBytes) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
-function safeText(value, max) {
-  return String(value || "").replace(COLLECTOR_SECRET_PATTERN, "[REDACTED]").trim().slice(0, max);
+export function sanitizeCollectorText(value, {
+  max = 1000,
+  secrets = [],
+} = {}) {
+  let sanitized = String(value || "");
+  const explicitSecrets = [...new Set(
+    (Array.isArray(secrets) ? secrets : [secrets])
+      .map((secret) => String(secret || ""))
+      .filter(Boolean),
+  )].sort((left, right) => right.length - left.length);
+  for (const secret of explicitSecrets) {
+    sanitized = sanitized.split(secret).join("[REDACTED]");
+  }
+  return sanitized.replace(COLLECTOR_SECRET_PATTERN, "[REDACTED]").trim().slice(0, max);
+}
+
+export function normalizeCollectorRevokeReason(value, { secrets = [] } = {}) {
+  const normalized = sanitizeCollectorText(value, { max: 80, secrets });
+  return collectorRevokeReasonSet.has(normalized) ? normalized : DEFAULT_REVOKE_REASON;
 }
 
 export class CollectorAuthError extends Error {
@@ -47,6 +76,13 @@ function expiresAtMillis(value) {
   if (!value) return Number.POSITIVE_INFINITY;
   const milliseconds = new Date(value).getTime();
   return Number.isFinite(milliseconds) ? milliseconds : Number.NEGATIVE_INFINITY;
+}
+
+function mandatoryExpiresAtMillis(value, message, code) {
+  if (!value) throw serviceError(message, 401, code);
+  const milliseconds = new Date(value).getTime();
+  if (!Number.isFinite(milliseconds)) throw serviceError(message, 401, code);
+  return milliseconds;
 }
 
 function assertActiveAccount(account, at) {
@@ -189,8 +225,14 @@ export function createCollectorAuthService({
       tokenHash,
       accountId: ticketRecord.accountId,
       parentSessionToken: ticketRecord.parentSessionToken,
-      deviceFingerprint: safeText(deviceFingerprint, 240),
-      extensionVersion: safeText(extensionVersion, 80),
+      deviceFingerprint: sanitizeCollectorText(deviceFingerprint, {
+        max: 240,
+        secrets: [ticket, ticketRecord.parentSessionToken],
+      }),
+      extensionVersion: sanitizeCollectorText(extensionVersion, {
+        max: 80,
+        secrets: [ticket, ticketRecord.parentSessionToken],
+      }),
       permissions: [...COLLECTOR_PERMISSIONS],
       expiresAt: expiresAt.toISOString(),
       revokedAt: null,
@@ -243,7 +285,13 @@ export function createCollectorAuthService({
       if (record.revokedAt) {
         throw serviceError("采集会话已撤销", 401, "COLLECTOR_SESSION_REVOKED");
       }
-      if (expiresAtMillis(record.expiresAt) <= at.getTime()) {
+      if (
+        mandatoryExpiresAtMillis(
+          record.expiresAt,
+          "采集会话已过期",
+          "COLLECTOR_SESSION_EXPIRED",
+        ) <= at.getTime()
+      ) {
         throw serviceError("采集会话已过期", 401, "COLLECTOR_SESSION_EXPIRED");
       }
       if (
@@ -277,14 +325,17 @@ export function createCollectorAuthService({
   async function revoke({
     parentSessionToken,
     accountId,
-    reason = "parent session revoked",
+    reason = DEFAULT_REVOKE_REASON,
   } = {}) {
     const at = instant(now());
     const normalizedAccountId = String(accountId || "");
+    const normalizedParentSessionToken = String(parentSessionToken || "");
     const revoked = Number(await repository.revokeSessions({
-      parentSessionToken: String(parentSessionToken || ""),
+      parentSessionToken: normalizedParentSessionToken,
       accountId: normalizedAccountId,
-      reason: safeText(reason || "parent session revoked", 240),
+      reason: normalizeCollectorRevokeReason(reason, {
+        secrets: [normalizedParentSessionToken],
+      }),
       now: at,
     })) || 0;
     await writeAudit({

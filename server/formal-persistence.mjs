@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import {
+  normalizeCollectorRevokeReason,
+  sanitizeCollectorText,
+} from "./collector-auth-service.mjs";
 import { encryptSecret } from "./crypto-secrets.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 
@@ -10,13 +14,6 @@ function json(value) {
 
 function text(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
-}
-
-function collectorSafeText(value, max = 1000) {
-  return String(value ?? "")
-    .replace(/(?:ctt|cst)_[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
-    .trim()
-    .slice(0, max);
 }
 
 function dateOrNull(value) {
@@ -802,12 +799,22 @@ async function mirrorCollectorAuthStateUnsafe(client, state = {}) {
         tokenHash,
         accountId,
         parentSessionToken,
-        collectorSafeText(session.deviceFingerprint, 240),
-        collectorSafeText(session.extensionVersion, 80),
+        sanitizeCollectorText(session.deviceFingerprint, {
+          max: 240,
+          secrets: [parentSessionToken],
+        }),
+        sanitizeCollectorText(session.extensionVersion, {
+          max: 80,
+          secrets: [parentSessionToken],
+        }),
         json(Array.isArray(session.permissions) ? session.permissions.map((item) => text(item, 120)) : []),
         expiresAt,
         dateOrNull(session.revokedAt),
-        collectorSafeText(session.revokedReason, 240),
+        session.revokedReason
+          ? normalizeCollectorRevokeReason(session.revokedReason, {
+              secrets: [parentSessionToken],
+            })
+          : "",
         dateOrNull(session.lastSeenAt),
         dateOrNull(session.createdAt),
       ],

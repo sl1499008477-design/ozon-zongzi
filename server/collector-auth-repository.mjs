@@ -1,8 +1,27 @@
+import {
+  normalizeCollectorRevokeReason,
+  sanitizeCollectorText,
+} from "./collector-auth-service.mjs";
+
 let jsonOperationQueue = Promise.resolve();
-const COLLECTOR_SECRET_PATTERN = /(?:ctt|cst)_[A-Za-z0-9_-]{16,}/g;
 
 function repositoryError(message, code = "COLLECTOR_AUTH_PERSISTENCE_FAILED") {
   return Object.assign(new Error(message), { status: 500, code });
+}
+
+function expiredStateError(kind) {
+  const ticket = kind === "ticket";
+  return Object.assign(new Error(ticket ? "采集通行证已过期" : "采集会话已过期"), {
+    status: 401,
+    code: ticket ? "COLLECTOR_TICKET_EXPIRED" : "COLLECTOR_SESSION_EXPIRED",
+  });
+}
+
+function mandatoryExpiryMillis(value, kind) {
+  if (!value) throw expiredStateError(kind);
+  const milliseconds = new Date(value).getTime();
+  if (!Number.isFinite(milliseconds)) throw expiredStateError(kind);
+  return milliseconds;
 }
 
 function requireSecretHash(value) {
@@ -11,10 +30,6 @@ function requireSecretHash(value) {
     throw repositoryError("采集认证密钥摘要无效", "COLLECTOR_SECRET_HASH_REQUIRED");
   }
   return hash;
-}
-
-function safeText(value, max = 1000) {
-  return String(value || "").replace(COLLECTOR_SECRET_PATTERN, "[REDACTED]").trim().slice(0, max);
 }
 
 function serializeJsonOperation(operation) {
@@ -47,17 +62,27 @@ function ticketRecord(value = {}) {
 }
 
 function sessionRecord(value = {}) {
+  const parentSessionToken = String(value.parentSessionToken ?? value.parent_session_token ?? "");
+  const rawRevokedReason = value.revokedReason ?? value.revoked_reason ?? "";
   return {
     id: String(value.id || ""),
     tokenHash: String(value.tokenHash ?? value.token_hash ?? ""),
     accountId: String(value.accountId ?? value.account_id ?? ""),
-    parentSessionToken: String(value.parentSessionToken ?? value.parent_session_token ?? ""),
-    deviceFingerprint: safeText(value.deviceFingerprint ?? value.device_fingerprint, 240),
-    extensionVersion: safeText(value.extensionVersion ?? value.extension_version, 80),
+    parentSessionToken,
+    deviceFingerprint: sanitizeCollectorText(value.deviceFingerprint ?? value.device_fingerprint, {
+      max: 240,
+      secrets: [parentSessionToken],
+    }),
+    extensionVersion: sanitizeCollectorText(value.extensionVersion ?? value.extension_version, {
+      max: 80,
+      secrets: [parentSessionToken],
+    }),
     permissions: permissions(value.permissions),
     expiresAt: iso(value.expiresAt ?? value.expires_at),
     revokedAt: iso(value.revokedAt ?? value.revoked_at),
-    revokedReason: safeText(value.revokedReason ?? value.revoked_reason, 240),
+    revokedReason: rawRevokedReason
+      ? normalizeCollectorRevokeReason(rawRevokedReason, { secrets: [parentSessionToken] })
+      : "",
     lastSeenAt: iso(value.lastSeenAt ?? value.last_seen_at),
     createdAt: iso(value.createdAt ?? value.created_at),
   };
@@ -160,6 +185,9 @@ export function createJsonCollectorAuthRepository({
       const record = ticketRecord(input);
       record.ticketHash = requireSecretHash(record.ticketHash);
       const at = input?.now instanceof Date ? input.now : new Date(record.createdAt);
+      if (mandatoryExpiryMillis(record.expiresAt, "ticket") <= at.getTime()) {
+        throw expiredStateError("ticket");
+      }
       if (!isActiveParentForRecord(state, record, at)) return null;
       return commitMutation(["collectorAuthTickets"], () => {
         state.collectorAuthTickets = Array.isArray(state.collectorAuthTickets)
@@ -180,7 +208,13 @@ export function createJsonCollectorAuthRepository({
       const record = state.collectorAuthTickets.find((item) => item?.ticketHash === normalizedHash);
       if (!record) return { outcome: "not_found" };
       if (record.consumedAt) return { outcome: "used", ticket: jsonContext(state, record) };
-      if (new Date(record.expiresAt).getTime() <= now.getTime()) {
+      let expiresAt;
+      try {
+        expiresAt = mandatoryExpiryMillis(record.expiresAt, "ticket");
+      } catch {
+        return { outcome: "expired", ticket: jsonContext(state, record) };
+      }
+      if (expiresAt <= now.getTime()) {
         return { outcome: "expired", ticket: jsonContext(state, record) };
       }
       return commitMutation(["collectorAuthTickets"], () => {
@@ -196,6 +230,9 @@ export function createJsonCollectorAuthRepository({
       const record = sessionRecord(input);
       record.tokenHash = requireSecretHash(record.tokenHash);
       const at = new Date(record.createdAt);
+      if (mandatoryExpiryMillis(record.expiresAt, "session") <= at.getTime()) {
+        throw expiredStateError("session");
+      }
       if (!isActiveParentForRecord(state, record, at)) return null;
       return commitMutation(["collectorSessions"], () => {
         state.collectorSessions = Array.isArray(state.collectorSessions)
@@ -213,7 +250,12 @@ export function createJsonCollectorAuthRepository({
       ? state.collectorSessions
       : [];
     const record = collectorSessions.find((item) => item?.tokenHash === normalizedHash);
-    return record ? jsonContext(state, record) : null;
+    if (!record) return null;
+    if (mandatoryExpiryMillis(record.expiresAt, "session") <= now.getTime()) {
+      throw expiredStateError("session");
+    }
+    const normalizedRecord = sessionRecord(record);
+    return jsonContext(state, normalizedRecord);
   }
 
   async function touchSession({ sessionId, now }) {
@@ -251,7 +293,9 @@ export function createJsonCollectorAuthRepository({
             && !record.revokedAt
           ) {
             record.revokedAt = now.toISOString();
-            record.revokedReason = safeText(reason, 240);
+            record.revokedReason = normalizeCollectorRevokeReason(reason, {
+              secrets: [parentSessionToken],
+            });
             revoked += 1;
           }
         }
@@ -452,7 +496,12 @@ export function createPostgresCollectorAuthRepository({ pool } = {}) {
           AND account_id=$2
           AND revoked_at IS NULL
       `,
-      [parentSessionToken, accountId, safeText(reason, 240), now],
+      [
+        parentSessionToken,
+        accountId,
+        normalizeCollectorRevokeReason(reason, { secrets: [parentSessionToken] }),
+        now,
+      ],
     );
     return Number(result.rowCount || 0);
   }

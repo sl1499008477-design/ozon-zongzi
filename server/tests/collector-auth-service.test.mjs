@@ -199,6 +199,14 @@ test("collector session expires after eight hours when the parent session lasts 
   assert.equal(exchanged.expiresAt, "2026-07-29T08:00:00.000Z");
 });
 
+test("a parent web session without an expiry still caps the collector session at eight hours", async () => {
+  const harness = createHarness({ parentExpiresAt: null });
+
+  const { exchanged } = await issueAndExchange(harness);
+
+  assert.equal(exchanged.expiresAt, "2026-07-29T08:00:00.000Z");
+});
+
 test("exchange strips collector secrets embedded in persisted device metadata", async () => {
   const harness = createHarness();
   const issued = await harness.service.issueTicket({
@@ -208,12 +216,15 @@ test("exchange strips collector secrets embedded in persisted device metadata", 
 
   await harness.service.exchangeTicket({
     ticket: issued.ticket,
-    deviceFingerprint: `device ${issued.ticket}`,
-    extensionVersion: `version ${issued.ticket}`,
+    deviceFingerprint: `device ${issued.ticket} ${PARENT_TOKEN}`,
+    extensionVersion: `version ${issued.ticket} ${PARENT_TOKEN}`,
   });
 
   const [persisted] = harness.repository.sessions.values();
-  assert.equal(JSON.stringify(persisted).includes(issued.ticket), false);
+  assert.equal(persisted.deviceFingerprint.includes(issued.ticket), false);
+  assert.equal(persisted.deviceFingerprint.includes(PARENT_TOKEN), false);
+  assert.equal(persisted.extensionVersion.includes(issued.ticket), false);
+  assert.equal(persisted.extensionVersion.includes(PARENT_TOKEN), false);
 });
 
 test("issued collector sessions receive exactly the three collector permissions", async () => {
@@ -344,6 +355,30 @@ test("authentication rejects an expired collector session", async () => {
   );
 });
 
+test("authentication rejects missing, invalid, and boundary collector-session expiry values", async (t) => {
+  for (const [label, expiresAt] of [
+    ["missing", null],
+    ["invalid", "not-a-timestamp"],
+    ["boundary", START.toISOString()],
+  ]) {
+    await t.test(label, async () => {
+      const harness = createHarness();
+      const { exchanged } = await issueAndExchange(harness);
+      const [session] = harness.repository.sessions.values();
+      session.expiresAt = expiresAt;
+
+      await assert.rejects(
+        harness.service.authenticate({
+          collectorToken: exchanged.collectorToken,
+          requiredPermission: "collector.upload",
+        }),
+        (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_EXPIRED",
+      );
+      assert.equal(harness.repository.touches.length, 0);
+    });
+  }
+});
+
 test("successful authentication touches last use and returns no token or hash", async () => {
   const harness = createHarness();
   const { exchanged } = await issueAndExchange(harness, {
@@ -376,12 +411,12 @@ test("revocation is account and parent-session scoped", async () => {
   const result = await harness.service.revoke({
     parentSessionToken: PARENT_TOKEN,
     accountId: ACTIVE_ACCOUNT.id,
-    reason: "web logout",
+    reason: "WEB_LOGOUT",
   });
 
   assert.deepEqual(result, { revoked: 1 });
   const [session] = harness.repository.sessions.values();
-  assert.equal(session.revokedReason, "web logout");
+  assert.equal(session.revokedReason, "WEB_LOGOUT");
 });
 
 test("audits record identifiers and outcomes without ticket or collector-token plaintext", async () => {
@@ -401,10 +436,10 @@ test("audits record identifiers and outcomes without ticket or collector-token p
   await harness.service.revoke({
     parentSessionToken: PARENT_TOKEN,
     accountId: ACTIVE_ACCOUNT.id,
-    reason: `logout after ${exchanged.collectorToken}`,
+    reason: `logout after ${exchanged.collectorToken} ${PARENT_TOKEN}`,
   });
   const [persistedSession] = harness.repository.sessions.values();
-  assert.equal(persistedSession.revokedReason.includes(exchanged.collectorToken), false);
+  assert.equal(persistedSession.revokedReason, "PARENT_SESSION_REVOKED");
 
   assert.ok(harness.audits.some((event) => event.ticketId && event.outcome === "issued"));
   assert.ok(harness.audits.some((event) => event.collectorSessionId && event.outcome === "authenticated"));
@@ -460,8 +495,8 @@ test("JSON repository serializes same-process ticket consumption and stores hash
     tokenHash,
     accountId: ACTIVE_ACCOUNT.id,
     parentSessionToken: PARENT_TOKEN,
-    deviceFingerprint: `device ${ticket}`,
-    extensionVersion: `version ${collectorToken}`,
+    deviceFingerprint: `device ${ticket} ${PARENT_TOKEN}`,
+    extensionVersion: `version ${collectorToken} ${PARENT_TOKEN}`,
     permissions: [...COLLECTOR_PERMISSIONS],
     expiresAt: "2026-07-29T08:00:00.000Z",
     lastSeenAt: START.toISOString(),
@@ -470,7 +505,7 @@ test("JSON repository serializes same-process ticket consumption and stores hash
   await repository.revokeSessions({
     parentSessionToken: PARENT_TOKEN,
     accountId: ACTIVE_ACCOUNT.id,
-    reason: `logout ${collectorToken}`,
+    reason: `logout ${collectorToken} ${PARENT_TOKEN}`,
     now: START,
   });
 
@@ -485,6 +520,9 @@ test("JSON repository serializes same-process ticket consumption and stores hash
   assert.equal(serialized.includes(collectorToken), false);
   assert.equal(serialized.includes(ticketHash), true);
   assert.equal(serialized.includes(tokenHash), true);
+  assert.equal(state.collectorSessions[0].deviceFingerprint.includes(PARENT_TOKEN), false);
+  assert.equal(state.collectorSessions[0].extensionVersion.includes(PARENT_TOKEN), false);
+  assert.equal(state.collectorSessions[0].revokedReason, "PARENT_SESSION_REVOKED");
   assert.ok(persistenceCalls >= 3);
 });
 
@@ -526,6 +564,114 @@ test("JSON repository rolls back an in-memory ticket consumption when persistenc
   failPersistence = false;
   const retry = await repository.consumeTicketAtomically({ ticketHash, now: START });
   assert.equal(retry.outcome, "consumed");
+});
+
+test("JSON repository classifies missing, invalid, and boundary ticket expiry as expired", async () => {
+  const state = {
+    accounts: [structuredClone(ACTIVE_ACCOUNT)],
+    sessions: {
+      [PARENT_TOKEN]: {
+        accountId: ACTIVE_ACCOUNT.id,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+      },
+    },
+    collectorAuthTickets: [
+      {
+        id: "ticket_missing_expiry",
+        ticketHash: hashCollectorSecret("ctt_missing-expiry"),
+        accountId: ACTIVE_ACCOUNT.id,
+        parentSessionToken: PARENT_TOKEN,
+        permissions: [...COLLECTOR_PERMISSIONS],
+        expiresAt: null,
+        consumedAt: null,
+        createdAt: START.toISOString(),
+      },
+      {
+        id: "ticket_invalid_expiry",
+        ticketHash: hashCollectorSecret("ctt_invalid-expiry"),
+        accountId: ACTIVE_ACCOUNT.id,
+        parentSessionToken: PARENT_TOKEN,
+        permissions: [...COLLECTOR_PERMISSIONS],
+        expiresAt: "not-a-timestamp",
+        consumedAt: null,
+        createdAt: START.toISOString(),
+      },
+      {
+        id: "ticket_boundary_expiry",
+        ticketHash: hashCollectorSecret("ctt_boundary-expiry"),
+        accountId: ACTIVE_ACCOUNT.id,
+        parentSessionToken: PARENT_TOKEN,
+        permissions: [...COLLECTOR_PERMISSIONS],
+        expiresAt: START.toISOString(),
+        consumedAt: null,
+        createdAt: START.toISOString(),
+      },
+    ],
+  };
+  const repository = createJsonCollectorAuthRepository({ state });
+
+  for (const ticket of state.collectorAuthTickets) {
+    const result = await repository.consumeTicketAtomically({
+      ticketHash: ticket.ticketHash,
+      now: START,
+    });
+    assert.equal(result.outcome, "expired");
+    assert.equal(ticket.consumedAt, null);
+  }
+});
+
+test("JSON repository rejects missing or invalid mandatory expiry during create and read", async () => {
+  const tokenHash = hashCollectorSecret("cst_invalid-json-expiry");
+  const state = {
+    accounts: [structuredClone(ACTIVE_ACCOUNT)],
+    sessions: {
+      [PARENT_TOKEN]: {
+        accountId: ACTIVE_ACCOUNT.id,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+      },
+    },
+    collectorSessions: [{
+      id: "session_invalid_read_expiry",
+      tokenHash,
+      accountId: ACTIVE_ACCOUNT.id,
+      parentSessionToken: PARENT_TOKEN,
+      permissions: [...COLLECTOR_PERMISSIONS],
+      expiresAt: "not-a-timestamp",
+      lastSeenAt: START.toISOString(),
+      createdAt: START.toISOString(),
+    }],
+  };
+  const repository = createJsonCollectorAuthRepository({ state });
+
+  await assert.rejects(
+    repository.createTicket({
+      id: "ticket_missing_create_expiry",
+      ticketHash: hashCollectorSecret("ctt_missing-create-expiry"),
+      accountId: ACTIVE_ACCOUNT.id,
+      parentSessionToken: PARENT_TOKEN,
+      permissions: [...COLLECTOR_PERMISSIONS],
+      expiresAt: null,
+      createdAt: START.toISOString(),
+    }),
+    (error) => error?.status === 401 && error?.code === "COLLECTOR_TICKET_EXPIRED",
+  );
+  await assert.rejects(
+    repository.createSession({
+      id: "session_invalid_create_expiry",
+      tokenHash: hashCollectorSecret("cst_invalid-create-expiry"),
+      accountId: ACTIVE_ACCOUNT.id,
+      parentSessionToken: PARENT_TOKEN,
+      permissions: [...COLLECTOR_PERMISSIONS],
+      expiresAt: "not-a-timestamp",
+      lastSeenAt: START.toISOString(),
+      createdAt: START.toISOString(),
+    }),
+    (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_EXPIRED",
+  );
+  await assert.rejects(
+    repository.findActiveSession({ tokenHash, now: START }),
+    (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_EXPIRED",
+  );
 });
 
 test("PostgreSQL repository lets the conditional UPDATE decide ticket consumption before classifying failures", async () => {
@@ -605,8 +751,10 @@ test("formal state mirroring ignores plaintext collector secret fields", async (
       parentSessionToken: PARENT_TOKEN,
       permissions: [...COLLECTOR_PERMISSIONS],
       expiresAt: "2026-07-29T08:00:00.000Z",
+      deviceFingerprint: `device ${PARENT_TOKEN}`,
+      extensionVersion: `version ${PARENT_TOKEN}`,
       revokedAt: START.toISOString(),
-      revokedReason: `logout ${collectorToken}`,
+      revokedReason: `logout ${collectorToken} ${PARENT_TOKEN}`,
       createdAt: START.toISOString(),
       lastSeenAt: START.toISOString(),
     }],
@@ -618,6 +766,10 @@ test("formal state mirroring ignores plaintext collector secret fields", async (
   assert.equal(serializedParameters.includes(collectorToken), false);
   assert.equal(serializedParameters.includes(ticketHash), true);
   assert.equal(serializedParameters.includes(tokenHash), true);
+  const sessionParameters = calls[1].values;
+  assert.equal(sessionParameters[4].includes(PARENT_TOKEN), false);
+  assert.equal(sessionParameters[5].includes(PARENT_TOKEN), false);
+  assert.equal(sessionParameters[9], "PARENT_SESSION_REVOKED");
 });
 
 test("repositories reject non-SHA secret values without persisting them", async () => {
@@ -692,19 +844,19 @@ test("PostgreSQL repository redacts collector secrets from session metadata and 
     tokenHash,
     accountId: ACTIVE_ACCOUNT.id,
     parentSessionToken: PARENT_TOKEN,
-    deviceFingerprint: `device ${ticket}`,
-    extensionVersion: `version ${collectorToken}`,
+    deviceFingerprint: `device ${ticket} ${PARENT_TOKEN}`,
+    extensionVersion: `version ${collectorToken} ${PARENT_TOKEN}`,
     permissions: [...COLLECTOR_PERMISSIONS],
     expiresAt: "2026-07-29T08:00:00.000Z",
     revokedAt: null,
-    revokedReason: `created after ${ticket}`,
+    revokedReason: `created after ${ticket} ${PARENT_TOKEN}`,
     lastSeenAt: START.toISOString(),
     createdAt: START.toISOString(),
   });
   await repository.revokeSessions({
     parentSessionToken: PARENT_TOKEN,
     accountId: ACTIVE_ACCOUNT.id,
-    reason: `logout ${collectorToken}`,
+    reason: `logout ${collectorToken} ${PARENT_TOKEN}`,
     now: START,
   });
 
@@ -712,6 +864,10 @@ test("PostgreSQL repository redacts collector secrets from session metadata and 
   assert.equal(serializedParameters.includes(ticket), false);
   assert.equal(serializedParameters.includes(collectorToken), false);
   assert.equal(serializedParameters.includes("[REDACTED]"), true);
+  assert.equal(calls[0].values[4].includes(PARENT_TOKEN), false);
+  assert.equal(calls[0].values[5].includes(PARENT_TOKEN), false);
+  assert.equal(calls[0].values[9], "PARENT_SESSION_REVOKED");
+  assert.equal(calls[1].values[2], "PARENT_SESSION_REVOKED");
 });
 
 test("formal mirroring replaces database errors that contain collector-related secrets", async () => {
