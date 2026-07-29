@@ -6,16 +6,34 @@ const {
 } = require('../lib/portal-bridge-policy.js');
 const fs = require('node:fs');
 const senderUrl = 'https://qh.jizhangerp.com/app';
-const generic = normalizePortalBridgeMessage({ protocol: 'SONLI_WEB_CONTROL', senderUrl, message: { action: 'syncAuthFromWeb', token: 't', storeId: 's', type: 'jzManualSync', webBridge: false } });
-assert.deepEqual(generic, { protocol: 'SONLI_WEB_CONTROL', action: 'syncAuthFromWeb', token: 't', storeId: 's' });
+const collector = normalizePortalBridgeMessage({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  senderUrl,
+  message: {
+    action: 'collector.auth.exchange',
+    requestId: 'request-1',
+    ticket: 'ctt_ticket_secret_123456789',
+    expiresAt: '2030-01-01T00:01:00.000Z',
+    token: 'web-bearer',
+    storeId: 'store-1',
+  },
+});
+assert.deepEqual(collector, {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.exchange',
+  requestId: 'request-1',
+  ticket: 'ctt_ticket_secret_123456789',
+  expiresAt: '2030-01-01T00:01:00.000Z',
+});
 assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { type: 'jzManualSync', storeId: 's', syncType: 'PRODUCTS', token: 'x' } }), { protocol: 'JZ_ERP', type: 'jzManualSync', storeId: 's', syncType: 'PRODUCTS' });
 assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true, type: 'x' } }), { protocol: 'JZ_ERP', action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true });
 for (const bad of [
-  { protocol: 'SONLI_WEB_CONTROL', message: { action: 'getAuth' } },
+  { protocol: 'SONLI_WEB_CONTROL', message: { action: 'syncAuthFromWeb', token: 't' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: '', ticket: 't' } },
   { protocol: 'JZ_ERP', message: { type: 'unknown' } },
   { protocol: 'JZ_ERP', message: { action: 'syncAuthFromWeb' } },
 ]) assert.throws(() => normalizePortalBridgeMessage({ ...bad, senderUrl }));
-assert.throws(() => normalizePortalBridgeMessage({ protocol: 'SONLI_WEB_CONTROL', senderUrl: 'https://evil.test', message: { action: 'logout' } }));
+assert.throws(() => normalizePortalBridgeMessage({ protocol: 'SONLI_COLLECTOR_AUTH', senderUrl: 'https://evil.test', message: collector }));
 assert.deepEqual(sanitizePortalBridgeResponse({ data: { token: 'secret', ok: true } }), { data: { ok: true } });
 
 assert.equal(typeof routePortalRuntimeMessage, 'function', 'portal policy must expose executable runtime routing');
@@ -23,21 +41,23 @@ assert.deepEqual(
   routePortalRuntimeMessage({
     senderUrl,
     message: {
-      portalProtocol: 'SONLI_WEB_CONTROL',
-      action: 'syncAuthFromWeb',
-      token: 't',
-      storeId: 's',
-      type: 'jzManualSync',
+      portalProtocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.exchange',
+      requestId: 'request-1',
+      ticket: 'ctt_ticket_secret_123456789',
+      expiresAt: '2030-01-01T00:01:00.000Z',
+      token: 'web-bearer',
     },
   }),
   {
     source: 'PORTAL',
-    route: 'SONLI_WEB_CONTROL',
+    route: 'SONLI_COLLECTOR_AUTH',
     message: {
-      protocol: 'SONLI_WEB_CONTROL',
-      action: 'syncAuthFromWeb',
-      token: 't',
-      storeId: 's',
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.exchange',
+      requestId: 'request-1',
+      ticket: 'ctt_ticket_secret_123456789',
+      expiresAt: '2030-01-01T00:01:00.000Z',
     },
   },
   'a generic page message cannot smuggle a dedicated JZ discriminator',
@@ -95,6 +115,8 @@ assert.throws(
 const worker = fs.readFileSync('extension/background/service-worker.js', 'utf8');
 assert.match(worker, /routePortalRuntimeMessage/);
 assert.match(worker, /portalRoute === 'JZ_MANUAL_SYNC'/);
+assert.match(worker, /portalRoute !== 'SONLI_COLLECTOR_AUTH'/);
+assert.doesNotMatch(worker, /SONLI_WEB_CONTROL/);
 const jzBridge = fs.readFileSync('extension/content/jizhangerp-bridge.js', 'utf8');
 assert.match(jzBridge, /portalProtocol: "JZ_ERP"/);
 console.log('portal bridge policy tests passed');

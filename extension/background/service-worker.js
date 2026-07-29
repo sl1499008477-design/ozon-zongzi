@@ -39,6 +39,7 @@ try {
     // cdn-buster 必须在 backend-client 之前 — 后者运行时读 globalThis.JzCdnBuster。
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
+    '../lib/collector-session.js',
     '../lib/seller-identity-policy.js',
     '../lib/portal-bridge-policy.js',
     '../lib/chrome-storage-promises.js',
@@ -83,7 +84,7 @@ try {
   const isLocalBackendUrl = (value) => /^http:\/\/127\.0\.0\.1:3000\/api\b/.test(String(value || ''));
 
   // dev 直接加载源码时 build.js 没跑,qh.jizhangerp.com 保持字面量 → 运行时兜底平台默认。
-  // 影响:tryWebSync 抓 store.jizhangerp.com 标签页登录态、openFrontend 跳转域名。
+  // 影响:受信 Web 标签页查找和 openFrontend 跳转域名。
   // 用 /__BRAND/ 探测(不写全占位符),避免 build textual replace 把探测逻辑也换掉
   // 而导致分销商 build 被误兜底成平台默认。
   const BRAND_WEB_HOST = /__BRAND/.test('qh.jizhangerp.com')
@@ -101,8 +102,6 @@ try {
   const FOLLOW_SELL_RECENT_WINDOW_MS = 60 * 60 * 1000; // 只通知最近 1 小时内创建的失败任务
 
   const STORAGE_KEYS = {
-    token: 'ozonAuthToken',
-    storeId: 'ozonStoreId',
     latestVersion: 'extensionLatestVersion',
     latestDownloadUrl: 'extensionLatestDownloadUrl',
     latestSha256: 'extensionLatestSha256',
@@ -245,6 +244,9 @@ try {
   const getStorage = (keys) => storagePromises.get(keys);
   const setStorage = (values) => storagePromises.set(values);
   const removeStorage = (keys) => storagePromises.remove(keys);
+  // One-way migration: old builds persisted the Web bearer and selected store
+  // in local storage. Collector auth must never reuse or preserve them.
+  removeStorage(['ozonAuthToken', 'ozonStoreId']).catch(() => {});
 
   // Debounced ozon tab reload — prevents rapid reload storms on auth state changes
   let _reloadTimer = null;
@@ -331,6 +333,13 @@ try {
     if (resolvedBackendUrl) return resolvedBackendUrl;
     return detectBackendUrl();
   };
+
+  const collectorSessionManager = globalThis.JzCollectorSession.createCollectorSessionManager({
+    chromeApi: chrome,
+    backendUrl: getBackendUrl,
+    fetchImpl: (...args) => fetch(...args),
+    logger: console,
+  });
 
   /**
    * Execute fetch in a seller.ozon.ru tab's page context (MAIN world).
@@ -1890,15 +1899,10 @@ try {
         } catch {
           errorMsg = rawBody || errorMsg;
         }
-        // 任何 401（设备被顶 / token 过期 / 签名失败 / 缺 tenant 上下文）
-        // 都视为登录失效：清 token + storeId，让前端显示重登提示。
-        // 之前只识别 TOKEN_REVOKED，导致 jwt expired 等场景静默失败、
-        // 用户继续看到挂死状态。
         if (
           response.status === 401 ||
           (response.status === 403 && /AUTH|LOGIN|ACCOUNT|未登录|登录|过期|停用/i.test(`${errorCode || ''} ${errorMsg || ''}`))
         ) {
-          await removeStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
           if (errorCode == null) errorCode = 'AUTH_EXPIRED';
         }
         const err = new Error(`[${response.status}] ${errorMsg}`);
@@ -1907,12 +1911,6 @@ try {
         throw err;
       }
 
-      // 滑动续期:后端在 token 用过半时重签并塞 X-Refreshed-Token,收到就替换本地 token
-      // (同 jti、无感),让活跃用户永不掉登录、少弹「请重新登录」。
-      const refreshed = response.headers.get('X-Refreshed-Token');
-      if (refreshed) {
-        try { await setStorage({ [STORAGE_KEYS.token]: refreshed }); } catch {}
-      }
       const data = await response.json();
       logAiWizardDebug({
         ...debugBase,
@@ -2667,9 +2665,9 @@ try {
   // ── 跟卖任务失败检查 ──
   const checkFollowSellTasks = async () => {
     try {
-      const data = await getStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId, STORAGE_KEYS.followSellNotifiedIds]);
-      const token = data[STORAGE_KEYS.token];
-      const storeId = data[STORAGE_KEYS.storeId];
+      const data = await getStorage([STORAGE_KEYS.followSellNotifiedIds]);
+      const token = null;
+      const storeId = null;
       if (!token || !storeId) return; // 未登录或未选店铺，跳过
 
       const backendUrl = await getBackendUrl();
@@ -2766,8 +2764,7 @@ try {
   const performExchangeRateRefresh = async () => {
     try {
       lastFxRefreshError = '';
-      const stored = await getStorage([STORAGE_KEYS.token]);
-      const token = stored[STORAGE_KEYS.token];
+      const token = null;
       if (!token) throw new Error('请先登录 sonli');
       const backendUrl = await getBackendUrl();
       const deviceId = await getExtensionFingerprint();
@@ -2842,10 +2839,7 @@ try {
       getBackendUrl: async () => {
         return await getBackendUrl();
       },
-      getAuthToken: async () => {
-        const s = await getStorage([STORAGE_KEYS.token]);
-        return s[STORAGE_KEYS.token] || null;
-      },
+      getAuthToken: async () => null,
     });
   };
 
@@ -2944,8 +2938,7 @@ try {
     const type = alarmName.slice(CLIENT_SYNC_ALARM_PREFIX.length);
     if (!CLIENT_SYNC_TYPES.includes(type)) return;
     // 没登录就跳过(JzBackendClient.getAuthToken 会抛"No backend auth token")
-    const s = await getStorage([STORAGE_KEYS.token]);
-    if (!s[STORAGE_KEYS.token]) return;
+    return;
     if (runningTypes.has(type)) {
       console.log(`[client-sync] skip ${type}: previous round still running`);
       return;
@@ -2961,23 +2954,13 @@ try {
   };
 
   const handleBrowserAgentAlarm = async () => {
-    if (!globalThis.JzBrowserAgentRuntime) return;
-    const s = await getStorage([STORAGE_KEYS.token]);
-    if (!s[STORAGE_KEYS.token]) return;
-    await globalThis.JzBrowserAgentRuntime.tick();
+    // Browser-agent Web Bearer authentication is removed; Task 9 removes the
+    // remaining client-sync/browser-agent modules and alarms.
+    return;
   };
 
   const sendHeartbeat = async () => {
-    try {
-      const stored = await getStorage([STORAGE_KEYS.token]);
-      const token = stored[STORAGE_KEYS.token];
-      if (!token) return;
-      const backendUrl = await getBackendUrl();
-      const fp = await getExtensionFingerprint();
-      await apiRequest('PUT', `${backendUrl}/auth/device/heartbeat`, { deviceFingerprint: fp, platform: 'extension' }, token, null);
-    } catch (e) {
-      // 心跳失败不上报
-    }
+    return;
   };
 
   chrome.alarms.onAlarm.addListener((alarm) => {
@@ -3152,11 +3135,16 @@ try {
         return false;
       }
     }
-    if (message?.webBridge || portalRoute === 'SONLI_WEB_CONTROL') {
-      if (portalRoute !== 'SONLI_WEB_CONTROL' || !webBridgePolicy?.isAllowedWebBridgeAction(message.action)) {
-        sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
-        return false;
-      }
+    if (message?.webBridge) {
+      sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
+      return false;
+    }
+    if (
+      message?.portalProtocol === 'SONLI_COLLECTOR_AUTH'
+      && portalRoute !== 'SONLI_COLLECTOR_AUTH'
+    ) {
+      sendResponse({ ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' });
+      return false;
     }
     // 极掌算价：手动重拉汇率（content/jzc-calc.js 走 message.type 路由，
     // 与现有 message.action dispatch 完全独立）
@@ -3328,15 +3316,13 @@ try {
         try {
           const stored = await getStorage([
             STORAGE_KEYS.l1ReportEnabled,
-            STORAGE_KEYS.token,
-            STORAGE_KEYS.storeId,
           ]);
           if (!stored[STORAGE_KEYS.l1ReportEnabled]) {
             l1SwStats.droppedDisabled += samples.length;
             return;
           }
-          const token = stored[STORAGE_KEYS.token];
-          const storeId = stored[STORAGE_KEYS.storeId];
+          const token = null;
+          const storeId = null;
           if (!token) {
             l1SwStats.droppedNoAuth += samples.length;
             return;
@@ -3390,11 +3376,8 @@ try {
             sendResponse({ ok: false, error: 'sync_modules_not_loaded' });
             return;
           }
-          const stored = await getStorage([STORAGE_KEYS.token]);
-          if (!stored[STORAGE_KEYS.token]) {
-            sendResponse({ ok: false, error: 'extension_not_authed' });
-            return;
-          }
+          sendResponse({ ok: false, error: 'extension_sync_removed' });
+          return;
           const deviceId = await globalThis.JzSyncState.getOrCreateDeviceId();
           const jobId = crypto.randomUUID();
           const postingsOptions = syncType === 'POSTINGS'
@@ -3466,13 +3449,11 @@ try {
 
     if (message?.type === 'JZC_L1_REPORT_STATUS') {
       (async () => {
-        const stored = await getStorage([
-          STORAGE_KEYS.l1ReportEnabled,
-          STORAGE_KEYS.token,
-        ]);
+        const stored = await getStorage([STORAGE_KEYS.l1ReportEnabled]);
+        const session = await collectorSessionManager.getCollectorSession();
         sendResponse({
           enabled: !!stored[STORAGE_KEYS.l1ReportEnabled],
-          authed: !!stored[STORAGE_KEYS.token],
+          authed: !!session,
           stats: { ...l1SwStats },
           hint: stored[STORAGE_KEYS.l1ReportEnabled]
             ? 'L1 上报已启用'
@@ -3493,17 +3474,28 @@ try {
   };
 
     const handle = async () => {
-      const data = await getStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
-      const token = data[STORAGE_KEYS.token];
-      const storeId = data[STORAGE_KEYS.storeId];
+      const collectorSession = await collectorSessionManager.getCollectorSession();
+      // Legacy privileged actions are removed in Task 9. Until then they fail
+      // closed because a Collector credential must never be used as Web Bearer.
+      const token = null;
+      const storeId = null;
       const backendUrl = await getBackendUrl();
 
       switch (message?.action) {
         case 'getAuth': {
-          // version 由 manifest 注入,前端用它判断是否需要升级提示
           const manifest = chrome.runtime.getManifest() || {};
           const version = String(manifest.version || '');
-          return { ok: true, data: { token, storeId, backendUrl, version } };
+          return {
+            ok: true,
+            data: {
+              authenticated: Boolean(collectorSession),
+              account: collectorSession?.account || null,
+              permissions: collectorSession?.permissions || [],
+              expiresAt: collectorSession?.expiresAt || '',
+              backendUrl,
+              version,
+            },
+          };
         }
         case 'getWatermarkTemplates': {
           if (!token) return { ok: false, error: 'no auth' };
@@ -3561,22 +3553,58 @@ try {
             return { ok: false, error: e?.message || String(e) };
           }
         }
-        case 'saveAuth': {
-          await setStorage({
-            [STORAGE_KEYS.token]: message.token,
-            [STORAGE_KEYS.storeId]: message.storeId,
-          });
+        case 'logout': {
+          await collectorSessionManager.clearCollectorSession();
           reloadOzonTabs();
           return { ok: true };
         }
-        case 'logout': {
-          await removeStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
-          reloadOzonTabs();
-          // 扩展登出 → 同步登出已打开的 ERP 网页。await 确保 web 端 token 在本
-          // handler 返回前已清,堵住"清扩展→web 端 syncAuthFromWeb 又把旧 token
-          // 喂回来"的时间窗。
-          await clearWebAuthTabs();
-          return { ok: true };
+        case 'collector.auth.exchange': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          try {
+            const manifest = chrome.runtime.getManifest() || {};
+            const session = await collectorSessionManager.exchangeCollectorTicket({
+              ticket: message.ticket,
+              deviceFingerprint: await getExtensionFingerprint(),
+              extensionVersion: String(manifest.version || ''),
+            });
+            return {
+              ok: true,
+              data: {
+                authenticated: true,
+                account: session.account,
+                permissions: session.permissions,
+                expiresAt: session.expiresAt,
+              },
+            };
+          } catch (error) {
+            return {
+              ok: false,
+              status: error?.status || 0,
+              code: error?.code || 'COLLECTOR_AUTH_FAILED',
+              error: globalThis.JzCollectorSession.redactCollectorSecrets(
+                error?.message || 'Collector auth failed',
+                [message.ticket],
+              ),
+            };
+          }
+        }
+        case 'requestCollectorAuth': {
+          const tabs = await chrome.tabs.query({
+            url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
+          });
+          let requested = 0;
+          for (const tab of tabs) {
+            if (!tab.id) continue;
+            try {
+              const response = await chrome.tabs.sendMessage(tab.id, {
+                action: 'collector.auth.request',
+              });
+              if (response?.ok) requested += 1;
+            } catch {}
+          }
+          return { ok: true, data: { requested } };
         }
         case 'flashBadge': {
           // Flash the toolbar icon badge to draw user attention
@@ -3597,69 +3625,7 @@ try {
             return { ok: true, data: { opened: false } };
           }
         }
-        case 'syncAuthFromWeb': {
-          // Source-of-truth policy: popup is the primary login UI for the extension.
-          //   - Web empty          → DO NOT clear extension (may just be an un-logged-in Web tab).
-          //   - Extension empty    → adopt Web token (first-time login synced from Web).
-          //   - Same token on both → allow storeId to update (user switched store on Web).
-          //   - Different tokens   → IGNORE Web; extension wins. Prevents stale Web tokens
-          //                          from clobbering a fresh popup login.
-          if (!message.token) {
-            return { ok: true };
-          }
-          if (!token) {
-            await setStorage({
-              [STORAGE_KEYS.token]: message.token,
-              [STORAGE_KEYS.storeId]: message.storeId || storeId,
-            });
-            console.log('[ServiceWorker] Auth adopted from web frontend (extension was logged out)');
-            reloadOzonTabs();
-          } else if (message.token === token) {
-            if (message.storeId && message.storeId !== storeId) {
-              await setStorage({ [STORAGE_KEYS.storeId]: message.storeId });
-              console.log('[ServiceWorker] Store switched from web frontend');
-              reloadOzonTabs();
-            }
-          } else {
-            console.log('[ServiceWorker] Ignoring web token — differs from extension token');
-          }
-          return { ok: true };
-        }
-        case 'tryWebSync': {
-          // Popup requests: try to get token from any open jizhangerp.com tab
-          try {
-            const tabs = await chrome.tabs.query({
-              url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
-            });
-            for (const tab of tabs) {
-              if (tab.id) {
-                const results = await chrome.scripting.executeScript({
-                  target: { tabId: tab.id },
-                  func: () => ({
-                    token: localStorage.getItem('token'),
-                    storeId: localStorage.getItem('currentOzonStoreId'),
-                  }),
-                });
-                const result = results?.[0]?.result;
-                if (result?.token) {
-                  await setStorage({
-                    [STORAGE_KEYS.token]: result.token,
-                    [STORAGE_KEYS.storeId]: result.storeId || null,
-                  });
-                  return { ok: true, data: { synced: true, token: result.token, storeId: result.storeId } };
-                }
-              }
-            }
-          } catch (e) {
-            console.warn('[ServiceWorker] tryWebSync failed:', e.message);
-          }
-          return { ok: true, data: { synced: false } };
-        }
         case 'openFrontend': {
-          // Open a frontend page AND preload the extension's token into the
-          // tab's localStorage before React hydrates, so the user lands on
-          // the target page already authenticated — no /login flash, no
-          // reload round-trip.
           const frontendBase = isLocalBackendUrl(backendUrl)
             ? LOCAL_FRONTEND_BASE_URL
             : `https://${BRAND_WEB_HOST}`;
@@ -3668,46 +3634,7 @@ try {
             : '/';
           const url = `${frontendBase}${path}`;
 
-          const tab = await chrome.tabs.create({ url, active: true });
-          const tabId = tab?.id;
-
-          if (tabId && token) {
-            const inject = async () => {
-              try {
-                await chrome.scripting.executeScript({
-                  target: { tabId },
-                  func: (t, s) => {
-                    try {
-                      if (localStorage.getItem('token') !== t) {
-                        localStorage.setItem('token', t);
-                      }
-                      if (s && localStorage.getItem('currentOzonStoreId') !== s) {
-                        localStorage.setItem('currentOzonStoreId', s);
-                      }
-                    } catch {}
-                  },
-                  args: [token, storeId || null],
-                });
-              } catch (e) {
-                console.warn('[openFrontend] inject failed:', e.message);
-              }
-            };
-
-            let settled = false;
-            const listener = (updatedId, info) => {
-              if (updatedId !== tabId || settled) return;
-              if (info.status === 'loading' || info.status === 'complete') {
-                settled = true;
-                chrome.tabs.onUpdated.removeListener(listener);
-                inject();
-              }
-            };
-            chrome.tabs.onUpdated.addListener(listener);
-            // Safety: remove listener after 10s even if status events never fire.
-            setTimeout(() => {
-              if (!settled) chrome.tabs.onUpdated.removeListener(listener);
-            }, 10_000);
-          }
+          await chrome.tabs.create({ url, active: true });
           return { ok: true };
         }
         case 'openSellerPortal': {
@@ -3776,6 +3703,95 @@ try {
           // - forceResubmit:true 跳 dedupe(用户主动覆盖)
           const sourceId = String(message.sourceId || '').trim();
           if (!sourceId) return { ok: false, error: 'sourceId required' };
+          return await (async () => {
+            const raw = message.raw && typeof message.raw === 'object' ? message.raw : {};
+            const forbiddenScopeFields = new Set([
+              'accountId',
+              'createdBy',
+              'storeId',
+              'operatingStoreId',
+              'dataCollectionStoreId',
+              'sellerCompanyId',
+            ]);
+            const stripScope = (value) => {
+              if (Array.isArray(value)) return value.map(stripScope);
+              if (!value || typeof value !== 'object') return value;
+              return Object.fromEntries(
+                Object.entries(value)
+                  .filter(([key]) => !forbiddenScopeFields.has(key))
+                  .map(([key, nested]) => [key, stripScope(nested)]),
+              );
+            };
+            const requestId = String(message.requestId || `collect-${crypto.randomUUID()}`);
+            const sourceSku = String(raw.sku || raw.offerId || raw.id || '');
+            const pendingUpload = {
+              requestId,
+              path: `/sources/${encodeURIComponent(sourceId)}/collect`,
+              body: {
+                source: sourceId,
+                sourceSku,
+                sourceUrl: String(raw.url || raw.sourceUrl || message.url || ''),
+                requestId,
+                deviceFingerprint: await getExtensionFingerprint(),
+                capturedAt: new Date().toISOString(),
+                payload: stripScope(raw),
+              },
+            };
+            const upload = async (entry) => collectorSessionManager.collectorFetch(entry.path, {
+              permission: 'collector.upload',
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-request-id': entry.requestId,
+              },
+              body: JSON.stringify(entry.body),
+            });
+
+            if (collectorSession) {
+              await collectorSessionManager.flushPendingUploads(upload);
+            }
+            try {
+              const response = await upload(pendingUpload);
+              const text = await response.text().catch(() => '');
+              let responseBody = null;
+              try { responseBody = text ? JSON.parse(text) : null; } catch {}
+              if (!response.ok) {
+                if (response.status === 401 || response.status === 403 || response.status >= 500) {
+                  await collectorSessionManager.enqueuePendingUpload(pendingUpload);
+                }
+                return {
+                  ok: false,
+                  status: response.status,
+                  error: globalThis.JzCollectorSession.redactCollectorSecrets(
+                    responseBody?.message || `采集上传失败 (${response.status})`,
+                  ),
+                  queued: response.status === 401 || response.status === 403 || response.status >= 500,
+                };
+              }
+              return {
+                ok: true,
+                data: {
+                  dedupeHit: Boolean(responseBody?.duplicate),
+                  lastAt: null,
+                  result: responseBody?.data ?? responseBody,
+                },
+              };
+            } catch (error) {
+              let queued = false;
+              try {
+                await collectorSessionManager.enqueuePendingUpload(pendingUpload);
+                queued = true;
+              } catch {}
+              return {
+                ok: false,
+                queued,
+                code: String(error?.code || 'COLLECTOR_UPLOAD_FAILED'),
+                error: globalThis.JzCollectorSession.redactCollectorSecrets(
+                  error?.message || '采集结果已保留，登录 Web 后可重新上传',
+                ),
+              };
+            }
+          })();
           const sku = String(message?.raw?.sku || '').trim();
           const forceResubmit = Boolean(message.forceResubmit);
           // 让调用方(AI 采集向导)用 message.storeId 覆盖扩展全局当前店铺,对齐
@@ -5313,12 +5329,6 @@ try {
         case 'getStores': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/auth/ozon-stores`, null, token, storeId) };
         }
-        case 'getCaptcha': {
-          return { ok: true, data: await apiRequest('GET', `${backendUrl}/auth/captcha`, null, null, null) };
-        }
-        case 'sendSmsCode': {
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/send-code`, { phoneNumber: message.phoneNumber, captchaId: message.captchaId, captchaCode: message.captchaCode }, null, null) };
-        }
         case 'setMachineFingerprint': {
           // content script / popup / sync-auth 启动时主动推 v3 fingerprint 给 SW,
           // SW 缓存到 chrome.storage.local。后续 SW 自身的 heartbeat/login 等动作
@@ -5335,32 +5345,6 @@ try {
           } catch (e) {
             return { ok: false, error: e?.message };
           }
-        }
-        case 'loginSms': {
-          const fp = await getExtensionFingerprint(message.deviceFingerprint);
-          // /auth/login 旧短信登录已被后端禁用 (auth.controller.ts:82),
-          // 新路径 /auth/sms/verify body shape 兼容 (phoneNumber/code/deviceFingerprint/platform)。
-          // 返回 shape (auth.service.ts:2784):
-          //   单身份:{ accessToken, user }          ← P9 后是 camelCase,不再是 access_token
-          //   多身份:{ sessionToken, identities }   ← popup 没有 UI 选择,引导走网页端
-          // popup.js 三个字段兜底 (accessToken / access_token / token),保证 backend
-          // shape 漂移不会再让登录挂死。
-          // portalHost(2026-06-11 串号修复):SW 直调 api.* 时,后端 extractHost 的
-          // Origin 是 chrome-extension:// 被跳过 → host 落 api.* → 一律判平台直营,
-          // 用户身份信息已脱敏。
-          // 用户联系方式已脱敏。
-          // store.jizhangerp.com)随 body 显式声明登录门户,后端优先用它解析
-          // distributorId。dev 源码加载无 brand 注入 → undefined → 后端走原 host
-          // 链路,行为不变。
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/sms/verify`, { phoneNumber: message.phoneNumber, code: message.code, deviceFingerprint: fp, platform: 'extension', portalHost: jzBrandPortalHost() }, null, null) };
-        }
-        case 'loginPassword': {
-          const fp = await getExtensionFingerprint(message.deviceFingerprint);
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/login-password`, { phoneNumber: message.phoneNumber, password: message.password, captchaId: message.captchaId, captchaCode: message.captchaCode, deviceFingerprint: fp, platform: 'extension', portalHost: jzBrandPortalHost() }, null, null) };
-        }
-        case 'login': {
-          const fp = await getExtensionFingerprint(message.deviceFingerprint);
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/login-password`, { phoneNumber: message.phone, password: message.password, deviceFingerprint: fp, platform: 'extension', portalHost: jzBrandPortalHost() }, null, null) };
         }
         case 'getUpdateInfo': {
           const stored = await getStorage([

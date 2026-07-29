@@ -126,6 +126,27 @@ summary:focus-visible {
   box-shadow: var(--shadow-card);
 }
 
+.collector-auth-instruction {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.collector-auth-profile-hint {
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+#collector-auth-recheck-btn {
+  margin-top: 10px;
+}
+
 .login-tabs {
   display: flex;
   margin-bottom: 16px;

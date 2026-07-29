@@ -19,63 +19,14 @@
         </div>
 
         <div class="login-card">
-          <div class="login-tabs" style="display:none;">
-            <button class="tab-btn" data-tab="sms">短信登录</button>
-            <button class="tab-btn active" data-tab="password">账号登录</button>
-          </div>
-
-          <div class="tab-panel" id="tab-sms">
-            <label class="field">
-              <span>手机号</span>
-              <input type="tel" id="sms-phone" placeholder="请输入手机号" autocomplete="tel" />
-            </label>
-            <label class="field">
-              <span>图形验证码</span>
-              <div class="captcha-row">
-                <input type="text" id="sms-captcha-code" placeholder="请输入验证码" autocomplete="off" />
-                <img id="sms-captcha-img" class="captcha-img" alt="验证码" title="点击刷新" />
-              </div>
-            </label>
-            <label class="field">
-              <span>短信验证码</span>
-              <div class="captcha-row">
-                <input type="text" id="sms-code" placeholder="请输入短信验证码" autocomplete="one-time-code" />
-                <button class="btn btn-outline btn-sms" id="send-code-btn">获取验证码</button>
-              </div>
-            </label>
-            <button class="btn btn-primary btn-block" id="sms-login-btn">登 录</button>
-          </div>
-
-          <div class="tab-panel active" id="tab-password">
-            <label class="field">
-              <span>账号</span>
-              <input type="text" id="login-phone" placeholder="请输入管理员分配的账号" autocomplete="username" />
-            </label>
-            <label class="field">
-              <span>图形验证码</span>
-              <div class="captcha-row">
-                <input type="text" id="pwd-captcha-code" placeholder="请输入验证码" autocomplete="off" />
-                <img id="pwd-captcha-img" class="captcha-img" alt="验证码" title="点击刷新" />
-              </div>
-            </label>
-            <label class="field">
-              <span>密码</span>
-              <input type="password" id="login-password" placeholder="请输入密码" autocomplete="current-password" />
-            </label>
-            <button class="btn btn-primary btn-block" id="login-btn">登 录</button>
-          </div>
-
+          <p class="collector-auth-instruction">请先登录 Web 管理后台，再使用采集功能</p>
+          <p class="collector-auth-profile-hint">请在安装本扩展的同一浏览器用户配置中完成登录。</p>
           <div class="login-tip" id="login-tip"></div>
-
-          <div class="login-divider">
-            <span>或</span>
-          </div>
-
-          <button class="btn btn-outline btn-block" id="web-login-btn">
+          <button class="btn btn-primary btn-block" id="web-login-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            前往网页端登录
+            前往登录
           </button>
-          <div class="web-login-hint">在网页端登录后，插件将自动同步登录状态</div>
+          <button class="btn btn-outline btn-block" id="collector-auth-recheck-btn">重新检查</button>
         </div>
 
         <div class="login-footer">

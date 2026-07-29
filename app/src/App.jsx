@@ -101,7 +101,7 @@ import {
   safeExternalHttpUrl,
   sourceCellText,
 } from "./table-text.jsx";
-import { apiRequest, postMessageRequest } from "./client-transport.js";
+import { apiRequest } from "./client-transport.js";
 import {
   dashboardMoneyGroups,
   dashboardSummaryMoney,
@@ -109,6 +109,7 @@ import {
 import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
+import { installCollectorAuthBridge } from "./collector-auth-bridge.js";
 
 const { Header, Sider, Content } = Layout;
 
@@ -321,41 +322,6 @@ const readJson = (key, fallback) => {
     return value ? JSON.parse(value) : fallback;
   } catch {
     return fallback;
-  }
-};
-
-const syncAuthToExtension = async ({ token, storeId }) => {
-  if (!token || !storeId) return false;
-  try {
-    await postMessageRequest(
-      {
-        __jzcExt: 1,
-        action: "syncAuthFromWeb",
-        payload: { token, storeId },
-      },
-      "__jzcExtResp",
-      900,
-    );
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const logoutExtension = async () => {
-  try {
-    await postMessageRequest(
-      {
-        __jzcExt: 1,
-        action: "logout",
-        payload: {},
-      },
-      "__jzcExtResp",
-      900,
-    );
-    return true;
-  } catch {
-    return false;
   }
 };
 
@@ -705,7 +671,7 @@ function AppShell() {
       setBinding(null);
       setAccounts([]);
       setLocalData(emptyLocalData);
-      if (clearLocalAuthStorage()) await logoutExtension();
+      clearLocalAuthStorage();
       setAuthChecked(true);
       return;
     }
@@ -728,12 +694,9 @@ function AppShell() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
       const restoredStoreId = state.currentStoreId || nextBinding.id || "";
       if (restoredStoreId) localStorage.setItem("currentOzonStoreId", restoredStoreId);
-      if (state.token && restoredStoreId) {
-        syncAuthToExtension({ token: state.token, storeId: restoredStoreId });
-      }
     } else {
       setBinding(null);
-      if (clearStoreStorage()) await logoutExtension();
+      clearStoreStorage();
     }
     if (state?.summary?.lastSyncAt) {
       const nextSettings = { ...settings, lastSync: state.summary.lastSyncAt };
@@ -759,9 +722,21 @@ function AppShell() {
     clearStoreStorage,
     readToken: () => localStorage.getItem("token"),
     setCurrentStoreId: (storeId) => localStorage.setItem("currentOzonStoreId", storeId),
-    syncAuthToExtension,
-    logoutExtension,
+    // Collector authentication is account-scoped and independent of store
+    // selection. Keep this legacy cleanup adapter neutral until it is removed.
+    syncAuthToExtension: async () => true,
+    logoutExtension: async () => true,
   });
+
+  useEffect(() => {
+    if (!authChecked || !account) return undefined;
+    return installCollectorAuthBridge({
+      isLoggedIn: () => Boolean(account),
+      requestTicket: () => apiRequest("/extension/collector-auth/ticket", {
+        method: "POST",
+      }),
+    });
+  }, [authChecked, account]);
 
   useEffect(() => {
     const onPop = () => {
@@ -876,7 +851,6 @@ function AppShell() {
     try {
       await apiRequest("/local/accounts/logout", { method: "POST" }).catch(() => {});
       clearLocalAuthStorage();
-      await logoutExtension();
       setAccount(null);
       setAccounts([]);
       setBinding(null);
@@ -1016,7 +990,6 @@ function AppShell() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
       localStorage.setItem("token", response.token);
       localStorage.setItem("currentOzonStoreId", store.id);
-      await syncAuthToExtension({ token: response.token, storeId: store.id });
       closeBindModal();
       await refreshLocalState();
       message.success("门店已绑定");
@@ -1056,8 +1029,6 @@ function AppShell() {
       setBinding(nextBinding);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
       localStorage.setItem("currentOzonStoreId", nextBinding.id);
-      const token = localStorage.getItem("token");
-      await syncAuthToExtension({ token, storeId: nextBinding.id });
       await refreshLocalState();
       message.success(`已切换到 ${nextBinding.storeName}`);
     } catch (error) {
@@ -1076,7 +1047,6 @@ function AppShell() {
         setBinding(null);
         setLocalData(emptyLocalData);
         clearStoreStorage();
-        await logoutExtension();
         message.success("已解除绑定");
       },
     });

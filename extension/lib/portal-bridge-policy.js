@@ -6,10 +6,13 @@
   const copy = (source, fields) => Object.fromEntries(fields.filter((field) => source[field] !== undefined).map((field) => [field, source[field]]));
   const normalizePortalBridgeMessage = ({ protocol, message = {}, senderUrl } = {}) => {
     if (!trusted(senderUrl)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
-    if (protocol === 'SONLI_WEB_CONTROL') {
-      const fields = { syncAuthFromWeb: ['token', 'storeId'], logout: [], setMachineFingerprint: ['deviceFingerprint'], getOzonSellerLoginState: [], openSellerPortal: [], refreshFxProbes: [] };
-      if (!Object.hasOwn(fields, message.action)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
-      return { protocol, action: message.action, ...copy(message, fields[message.action]) };
+    if (protocol === 'SONLI_COLLECTOR_AUTH') {
+      if (message.action !== 'collector.auth.exchange') throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+      const requestId = String(message.requestId || '').trim();
+      const ticket = String(message.ticket || '');
+      const expiresAt = String(message.expiresAt || '');
+      if (!requestId || requestId.length > 128 || !ticket || !expiresAt) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+      return { protocol, action: message.action, requestId, ticket, expiresAt };
     }
     if (protocol === 'JZ_ERP') {
       if (message.type === 'jzManualSync') return { protocol, type: message.type, ...copy(message, ['storeId', 'syncType', 'postingsSinceDays', 'postingsSince', 'postingsTo']) };
@@ -31,8 +34,8 @@
       message,
       senderUrl,
     });
-    const route = normalized.protocol === 'SONLI_WEB_CONTROL'
-      ? 'SONLI_WEB_CONTROL'
+    const route = normalized.protocol === 'SONLI_COLLECTOR_AUTH'
+      ? 'SONLI_COLLECTOR_AUTH'
       : normalized.type === 'jzManualSync'
         ? 'JZ_MANUAL_SYNC'
         : 'JZ_FOLLOW_SELL';
