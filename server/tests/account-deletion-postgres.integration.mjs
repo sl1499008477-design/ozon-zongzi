@@ -16,6 +16,9 @@ const storeId = `delete_store_${suffix}`;
 const snapshotId = `delete_snapshot_${suffix}`;
 const jobId = `delete_job_${suffix}`;
 const auditEntityId = `delete_audit_${suffix}`;
+const collectItemId = `delete_collect_item_${suffix}`;
+const rawPayloadId = `delete_raw_payload_${suffix}`;
+const collectRequestId = `delete_collect_request_${suffix}`;
 const pool = await getPostgresPool();
 
 try {
@@ -27,6 +30,23 @@ try {
   await pool.query(
     "INSERT INTO stores (id,owner_account_id,label,client_id,status) VALUES ($1,$2,'Delete Store',$3,'active')",
     [storeId, accountId, `delete-client-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO collect_items (id, account_id, store_id, source, identity_key, source_sku, summary)
+     VALUES ($1, $2, $3, 'ozon', $4, 'delete-sku', '{}'::jsonb)`,
+    [collectItemId, accountId, storeId, `delete-identity-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO collect_raw_payloads (
+       id, collect_item_id, account_id, store_id, payload_hash, payload
+     ) VALUES ($1, $2, $3, $4, $5, '{}'::jsonb)`,
+    [rawPayloadId, collectItemId, accountId, storeId, `delete-payload-${suffix}`],
+  );
+  await pool.query(
+    `INSERT INTO collect_requests (
+       id, idempotency_key, account_id, store_id, source, source_sku, request_hash, content_hash, collect_item_id
+     ) VALUES ($1, $2, $3, $4, 'ozon', 'delete-sku', $5, $6, $7)`,
+    [collectRequestId, `delete-request-${suffix}`, accountId, storeId, `delete-request-hash-${suffix}`, `delete-content-hash-${suffix}`, collectItemId],
   );
   await pool.query(
     `INSERT INTO submission_snapshots (
@@ -70,16 +90,22 @@ try {
        (SELECT COUNT(*)::int FROM stores WHERE id=$2) store_count,
        (SELECT COUNT(*)::int FROM submission_jobs WHERE id=$3) job_count,
        (SELECT COUNT(*)::int FROM submission_snapshots WHERE id=$4) snapshot_count,
-       (SELECT COUNT(*)::int FROM audit_events WHERE entity_id=$5) audit_count,
-       (SELECT account_id FROM audit_events WHERE entity_id=$5 LIMIT 1) audit_account_id,
-       (SELECT store_id FROM audit_events WHERE entity_id=$5 LIMIT 1) audit_store_id`,
-    [accountId, storeId, jobId, snapshotId, auditEntityId],
+       (SELECT COUNT(*)::int FROM collect_items WHERE id=$5) collect_item_count,
+       (SELECT COUNT(*)::int FROM collect_raw_payloads WHERE id=$6) raw_payload_count,
+       (SELECT COUNT(*)::int FROM collect_requests WHERE id=$7) collect_request_count,
+       (SELECT COUNT(*)::int FROM audit_events WHERE entity_id=$8) audit_count,
+       (SELECT account_id FROM audit_events WHERE entity_id=$8 LIMIT 1) audit_account_id,
+       (SELECT store_id FROM audit_events WHERE entity_id=$8 LIMIT 1) audit_store_id`,
+    [accountId, storeId, jobId, snapshotId, collectItemId, rawPayloadId, collectRequestId, auditEntityId],
   );
   assert.deepEqual(counts.rows[0], {
     account_count: 0,
     store_count: 0,
     job_count: 0,
     snapshot_count: 0,
+    collect_item_count: 0,
+    raw_payload_count: 0,
+    collect_request_count: 0,
     audit_count: 1,
     audit_account_id: null,
     audit_store_id: null,

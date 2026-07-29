@@ -88,14 +88,20 @@ async function assertMigrationRejectsUnownedLegacyRow() {
   try {
     await client.query("BEGIN");
     await client.query("ALTER TABLE collect_items ALTER COLUMN account_id DROP NOT NULL");
+    await client.query("ALTER TABLE collect_raw_payloads ALTER COLUMN account_id DROP NOT NULL");
     await client.query(
       `INSERT INTO collect_items (id, account_id, source, identity_key, source_sku, summary)
        VALUES ($1, NULL, 'ozon', '', 'unowned-sku', '{}'::jsonb)`,
       [`unowned_collect_item_${suffix}`],
     );
+    await client.query(
+      `INSERT INTO collect_raw_payloads (id, collect_item_id, account_id, payload_hash, payload)
+       VALUES ($1, $2, NULL, $3, '{}'::jsonb)`,
+      [`unowned_raw_payload_${suffix}`, `unowned_collect_item_${suffix}`, `unowned-payload-hash-${suffix}`],
+    );
     await assert.rejects(
       client.query(migration),
-      (error) => error?.message.includes("collect_items") && error?.message.includes(`unowned_collect_item_${suffix}`),
+      (error) => error?.message.includes("collect_raw_payloads") && error?.message.includes(`unowned_raw_payload_${suffix}`),
     );
   } finally {
     await client.query("ROLLBACK").catch(() => {});
