@@ -3515,7 +3515,7 @@ try {
           }
         }
         case 'logout': {
-          await collectorSessionManager.clearCollectorSession();
+          await collectorSessionManager.clearCollectorSession(collectorOperation);
           reloadOzonTabs();
           return { ok: true };
         }

@@ -627,3 +627,129 @@ test('clear race aborts the old snapshot and a new same-account snapshot can rep
   assert.equal(requests[0].options.headers.authorization, `Collector ${refreshed.collectorToken}`);
   assert.deepEqual(await harness.manager.listPendingUploads(), []);
 });
+
+test('old A 401 cannot clear B installed between its conditional read and remove', async () => {
+  const harness = createHarness({
+    fetchImpl: async () => jsonResponse(401, { code: 'COLLECTOR_SESSION_REVOKED' }),
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const operationA = await harness.manager.beginCollectorOperation();
+  const successorB = validSession({
+    collectorToken: 'csess_account_b_401_race_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  });
+  const originalGet = harness.chromeApi.storage.session.get.bind(
+    harness.chromeApi.storage.session,
+  );
+  let sessionGets = 0;
+  let successorInstall;
+  harness.chromeApi.storage.session.get = async (key) => {
+    const captured = await originalGet(key);
+    sessionGets += 1;
+    if (sessionGets === 3) {
+      successorInstall = harness.manager.setCollectorSession(successorB);
+    }
+    return captured;
+  };
+
+  const response = await harness.manager.collectorFetch('/sources/ozon/collect', {
+    collectorOperation: operationA,
+    permission: 'collector.upload',
+    method: 'POST',
+  });
+  await successorInstall;
+
+  assert.equal(response.status, 401);
+  assert.equal(sessionGets, 3);
+  const current = await harness.manager.getCollectorSession();
+  assert.equal(current.account.id, 'account-b');
+  assert.equal(current.collectorToken, successorB.collectorToken);
+});
+
+test('old A 401 cannot clear a refreshed A installed after its conditional read', async () => {
+  const harness = createHarness({
+    fetchImpl: async () => jsonResponse(403, { code: 'COLLECTOR_SESSION_REVOKED' }),
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const operationA = await harness.manager.beginCollectorOperation();
+  const refreshedA = validSession({
+    collectorToken: 'csess_account_a_refreshed_401_race_123456789',
+    expiresAt: '2030-01-01T02:00:00.000Z',
+  });
+  const originalGet = harness.chromeApi.storage.session.get.bind(
+    harness.chromeApi.storage.session,
+  );
+  let sessionGets = 0;
+  let refreshInstall;
+  harness.chromeApi.storage.session.get = async (key) => {
+    const captured = await originalGet(key);
+    sessionGets += 1;
+    if (sessionGets === 3) {
+      refreshInstall = harness.manager.setCollectorSession(refreshedA);
+    }
+    return captured;
+  };
+
+  const response = await harness.manager.collectorFetch('/sources/ozon/collect', {
+    collectorOperation: operationA,
+    permission: 'collector.upload',
+    method: 'POST',
+  });
+  await refreshInstall;
+
+  assert.equal(response.status, 403);
+  assert.equal(sessionGets, 3);
+  const current = await harness.manager.getCollectorSession();
+  assert.equal(current.account.id, 'account-a');
+  assert.equal(current.collectorToken, refreshedA.collectorToken);
+  assert.equal(current.expiresAt, refreshedA.expiresAt);
+});
+
+test('expired A cleanup cannot delete B installed after the expired read', async () => {
+  const harness = createHarness();
+  harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY] = validSession({
+    expiresAt: '2029-12-31T23:59:59.000Z',
+  });
+  const successorB = validSession({
+    collectorToken: 'csess_account_b_expiry_race_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  });
+  const originalGet = harness.chromeApi.storage.session.get.bind(
+    harness.chromeApi.storage.session,
+  );
+  let sessionGets = 0;
+  let successorInstall;
+  harness.chromeApi.storage.session.get = async (key) => {
+    const captured = await originalGet(key);
+    sessionGets += 1;
+    if (sessionGets === 1) {
+      successorInstall = harness.manager.setCollectorSession(successorB);
+    }
+    return captured;
+  };
+
+  assert.equal(await harness.manager.getCollectorSession(), null);
+  await successorInstall;
+
+  assert.equal(sessionGets, 1);
+  const current = await harness.manager.getCollectorSession();
+  assert.equal(current.account.id, 'account-b');
+  assert.equal(current.collectorToken, successorB.collectorToken);
+});
+
+test('stale A logout cannot clear a completed successor B session', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  const operationA = await harness.manager.beginCollectorOperation();
+  const successorB = validSession({
+    collectorToken: 'csess_account_b_logout_race_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  });
+  await harness.manager.setCollectorSession(successorB);
+
+  await harness.manager.clearCollectorSession(operationA);
+
+  const current = await harness.manager.getCollectorSession();
+  assert.equal(current.account.id, 'account-b');
+  assert.equal(current.collectorToken, successorB.collectorToken);
+});

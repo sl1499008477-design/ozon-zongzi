@@ -54,6 +54,7 @@ assert.doesNotMatch(workerSource, /STORAGE_KEYS\.(?:token|storeId)/);
 assert.match(workerSource, /collectorSessionManager\.collectorFetch\(entry\.path/);
 assert.match(workerSource, /collectorSessionManager\.beginCollectorOperation\(\)/);
 assert.match(workerSource, /collectorOperation/);
+assert.match(workerSource, /clearCollectorSession\(\s*collectorOperation\s*\)/);
 assert.match(workerSource, /permission: 'collector\.upload'/);
 assert.match(workerSource, /collectorSessionManager\.enqueueRetryablePendingUpload\(/);
 assert.match(workerSource, /JzCollectorSession\.withoutCollectorScope\(raw\)/);

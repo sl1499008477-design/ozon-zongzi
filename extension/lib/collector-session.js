@@ -157,27 +157,36 @@
       return String(value || '').replace(/\/+$/, '');
     };
     let queueMutationTail = Promise.resolve();
+    let sessionMutationTail = Promise.resolve();
     const operationSnapshots = new WeakMap();
     const serializeQueueMutation = (operation) => {
       const run = queueMutationTail.then(operation, operation);
       queueMutationTail = run.catch(() => {});
       return run;
     };
+    const serializeSessionMutation = (operation) => {
+      const run = sessionMutationTail.then(operation, operation);
+      sessionMutationTail = run.catch(() => {});
+      return run;
+    };
 
     async function getCollectorSession() {
-      const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
-      const session = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
-      const expiresAt = Date.parse(session?.expiresAt || '');
-      if (
-        !session?.collectorToken
-        || !accountIdOf(session)
-        || !Number.isFinite(expiresAt)
-        || expiresAt <= now()
-      ) {
-        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
-        return null;
-      }
-      return safeSession(session);
+      return serializeSessionMutation(async () => {
+        const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
+        const session = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
+        if (!session) return null;
+        const expiresAt = Date.parse(session.expiresAt || '');
+        if (
+          !session.collectorToken
+          || !accountIdOf(session)
+          || !Number.isFinite(expiresAt)
+          || expiresAt <= now()
+        ) {
+          await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+          return null;
+        }
+        return safeSession(session);
+      });
     }
 
     const createCollectorOperation = (session) => {
@@ -246,17 +255,20 @@
       return true;
     };
 
-    const clearCollectorSessionIfSnapshotCurrent = async (snapshot) => {
-      const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
-      const current = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
-      if (
-        current?.collectorToken === snapshot.collectorToken
-        && accountIdOf(current) === accountIdOf(snapshot)
-        && sessionIdentityOf(current) === snapshot.sessionIdentity
-      ) {
+    const sessionMatchesSnapshot = (session, snapshot) =>
+      String(session?.collectorToken || '') === snapshot.collectorToken
+      && String(session?.expiresAt || '') === snapshot.expiresAt
+      && accountIdOf(session) === accountIdOf(snapshot)
+      && sessionIdentityOf(session) === snapshot.sessionIdentity;
+
+    const clearCollectorSessionIfSnapshotCurrent = (snapshot) =>
+      serializeSessionMutation(async () => {
+        const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
+        const current = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
+        if (!sessionMatchesSnapshot(current, snapshot)) return false;
         await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
-      }
-    };
+        return true;
+      });
 
     async function setCollectorSession(session) {
       const safe = safeSession(session);
@@ -266,18 +278,29 @@
           session?.collectorToken,
         ]);
       }
-      await chromeApi.storage.session.set({ [COLLECTOR_SESSION_STORAGE_KEY]: safe });
-      await chromeApi.storage.local.set({
-        [COLLECTOR_LAST_OWNER_KEY]: {
-          accountId: accountIdOf(safe),
-          sessionIdentity: sessionIdentityOf(safe),
-        },
+      return serializeSessionMutation(async () => {
+        await chromeApi.storage.session.set({ [COLLECTOR_SESSION_STORAGE_KEY]: safe });
+        await chromeApi.storage.local.set({
+          [COLLECTOR_LAST_OWNER_KEY]: {
+            accountId: accountIdOf(safe),
+            sessionIdentity: sessionIdentityOf(safe),
+          },
+        });
+        return safe;
       });
-      return safe;
     }
 
-    async function clearCollectorSession() {
-      await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+    async function clearCollectorSession(collectorOperation) {
+      if (arguments.length > 0) {
+        if (!collectorOperation) return false;
+        return clearCollectorSessionIfSnapshotCurrent(
+          requireOperationSnapshot(collectorOperation),
+        );
+      }
+      return serializeSessionMutation(async () => {
+        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+        return true;
+      });
     }
 
     async function responseBody(response) {
