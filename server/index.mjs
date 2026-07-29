@@ -391,11 +391,9 @@ const ozonSyncService = createOzonSyncService({
 });
 
 const ozonCategoryService = createOzonCategoryService();
-
 const objectCleanupWorker = createObjectCleanupWorker({
-  loadState,
-  saveState,
-  removeObject,
+  loadState, saveState, removeObject,
+  stateTransaction: jsonStateTransaction,
 });
 
 function sendJson(res, status, data, extraHeaders = {}) {
@@ -1678,25 +1676,27 @@ async function runPendingImportStatusPolls() {
   if (importStatusPollRunning) return;
   importStatusPollRunning = true;
   try {
-    const latest = await loadState();
-    const jobs = Object.values(latest.jobs || {}).filter(importJobNeedsStatusPoll).slice(0, 20);
-    if (!jobs.length) return;
-    let changed = false;
-    for (const job of jobs) {
-      const store = activeStore(latest, job.storeId, job.accountId || latest.currentAccountId);
-      if (!store) continue;
-      try {
-        const data = await callOzonSellerApi(store, "/v1/product/import/info", {
-          task_id: Number(job.ozonTaskId) || job.ozonTaskId,
-        }, 60000);
-        applyImportStatusResult(latest, job, job.ozonTaskId, data);
-      } catch (error) {
-        applyImportStatusCheckFailure(latest, job, error);
+    return await jsonStateTransaction.run(async () => {
+      const latest = await loadState();
+      const jobs = Object.values(latest.jobs || {}).filter(importJobNeedsStatusPoll).slice(0, 20);
+      if (!jobs.length) return;
+      let changed = false;
+      for (const job of jobs) {
+        const store = activeStore(latest, job.storeId, job.accountId || latest.currentAccountId);
+        if (!store) continue;
+        try {
+          const data = await callOzonSellerApi(store, "/v1/product/import/info", {
+            task_id: Number(job.ozonTaskId) || job.ozonTaskId,
+          }, 60000);
+          applyImportStatusResult(latest, job, job.ozonTaskId, data);
+        } catch (error) {
+          applyImportStatusCheckFailure(latest, job, error);
+        }
+        changed = true;
       }
-      changed = true;
-    }
-    if (changed) await saveState(latest);
-    if (Object.values(latest.jobs || {}).some(importJobNeedsStatusPoll)) scheduleImportStatusPolling(30000);
+      if (changed) await saveState(latest);
+      if (Object.values(latest.jobs || {}).some(importJobNeedsStatusPoll)) scheduleImportStatusPolling(30000);
+    });
   } finally {
     importStatusPollRunning = false;
   }

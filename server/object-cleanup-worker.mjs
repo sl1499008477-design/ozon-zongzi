@@ -3,10 +3,14 @@ import { processPendingObjectDeletions } from "./object-cleanup-queue.mjs";
 export function createObjectCleanupWorker({
   loadState,
   saveState,
+  stateTransaction,
   removeObject,
   logger = console,
 }) {
   let running = false;
+  const runStateTransaction = typeof stateTransaction?.run === "function"
+    ? (operation) => stateTransaction.run(operation)
+    : (operation) => operation();
 
   async function drain(state = null) {
     if (running) {
@@ -21,10 +25,12 @@ export function createObjectCleanupWorker({
     }
     running = true;
     try {
-      const latest = state || await loadState();
-      const cleanup = await processPendingObjectDeletions(latest, removeObject);
-      if (cleanup.attempted > 0) await saveState(latest);
-      return cleanup;
+      return await runStateTransaction(async () => {
+        const latest = state || await loadState();
+        const cleanup = await processPendingObjectDeletions(latest, removeObject);
+        if (cleanup.attempted > 0) await saveState(latest);
+        return cleanup;
+      });
     } finally {
       running = false;
     }

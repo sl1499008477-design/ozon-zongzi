@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { createCollectorAuthRuntime } from "../collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
+import { createObjectCleanupWorker } from "../object-cleanup-worker.mjs";
 
 const WEB_TOKEN = "runtime-web-token";
 const ACCOUNT = {
@@ -126,6 +127,70 @@ test("shared JSON transaction preserves collector writes and a concurrent normal
   const [issued] = await Promise.all([collectorRequest, normalMutation]);
   assert.equal(issued.status, 200);
   assert.deepEqual(persisted.businessChanges, [{ id: "business-change-kept" }]);
+  assert.equal(persisted.collectorAuthTickets.length, 1);
+  assert.equal(
+    persisted.auditEvents.some((event) => event.action === "COLLECTOR_TICKET_ISSUED"),
+    true,
+  );
+});
+
+test("shared JSON transaction preserves collector writes and background object cleanup", async () => {
+  let persisted = {
+    ...initialState(),
+    pendingObjectDeletions: [{
+      objectKey: "background-orphan.png",
+      attemptCount: 0,
+      nextAttemptAt: "2026-07-29T00:00:00.000Z",
+    }],
+  };
+  const cleanupRemoveStarted = deferred();
+  const releaseCleanupRemove = deferred();
+
+  async function loadState() {
+    return structuredClone(persisted);
+  }
+
+  async function saveState(nextState) {
+    persisted = structuredClone(nextState);
+  }
+
+  const stateTransaction = createJsonStateTransactionBoundary({
+    enabled: () => true,
+  });
+  const runtime = createCollectorAuthRuntime({
+    loadState,
+    saveState,
+    persistenceMode: () => "json",
+    stateTransaction,
+    readJson,
+    sendJson,
+  });
+  const cleanupWorker = createObjectCleanupWorker({
+    loadState,
+    saveState,
+    stateTransaction,
+    async removeObject() {
+      cleanupRemoveStarted.resolve();
+      await releaseCleanupRemove.promise;
+    },
+    logger: { error() {} },
+  });
+
+  const cleanupRequest = cleanupWorker.drain();
+  await cleanupRemoveStarted.promise;
+  const collectorRequest = request(
+    runtime,
+    "POST",
+    "/extension/collector-auth/ticket",
+    { authorization: `Bearer ${WEB_TOKEN}` },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseCleanupRemove.resolve();
+
+  const [cleanup, issued] = await Promise.all([cleanupRequest, collectorRequest]);
+  assert.equal(cleanup.deleted, 1);
+  assert.equal(issued.status, 200);
+  assert.deepEqual(persisted.pendingObjectDeletions, []);
   assert.equal(persisted.collectorAuthTickets.length, 1);
   assert.equal(
     persisted.auditEvents.some((event) => event.action === "COLLECTOR_TICKET_ISSUED"),
