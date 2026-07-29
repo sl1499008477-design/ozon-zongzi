@@ -79,6 +79,7 @@ import {
   createSubmissionV3,
   getSubmissionJobDetailV3,
   getSubmissionJobV3,
+  findListingPreparationReplayV3,
   hydrateLegacyStateWithV3,
   listingPipelineEnabled,
   listingPipelineHealth,
@@ -88,9 +89,7 @@ import {
   softDeleteCollectItemsForAccountV4,
   updateCollectItemDraftV4,
 } from "./listing-pipeline.mjs";
-import {
-  resolveLocalListingTarget,
-} from "./listing-submission-policy.mjs";
+import { assertListingPreparationInput, publicQueuedListingSubmission, resolveLocalListingTarget, validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import {
   authenticateCollectionRequest,
   backfillCollectionStoresFromLegacy,
@@ -1828,12 +1827,20 @@ async function previewOzonProductImport(state, req, body) {
 
 async function queueCollectSubmissionV3(state, req, body, collectItem, type = "COLLECT_BOX_DRAFT", dependencies = {}) {
   const account = requireAuth(req, state);
-  const preparation = collectItem
-    ? resolveLocalListingTarget({
+  const input = collectItem
+    ? assertListingPreparationInput({
         accountId: account.id,
         collectItemId: collectItem.id,
         targetStoreId: body.targetStoreId,
         idempotencyKey: body.idempotencyKey,
+      })
+    : null;
+  const findReplay = dependencies.findListingPreparationReplayV3 || findListingPreparationReplayV3;
+  const replay = input ? await findReplay(input) : null;
+  if (replay) return publicQueuedListingSubmission(replay);
+  const preparation = input
+    ? resolveLocalListingTarget({
+        ...input,
         findStore: (storeId) => activeStore(state, storeId, account.id),
       })
     : null;
@@ -1918,17 +1925,7 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
     },
     retryFailed: body.retryFailed === true,
   });
-  const job = created?.job;
-  return {
-    ok: true,
-    queued: true,
-    local: true,
-    duplicate: Boolean(created?.duplicate),
-    task_id: job?.id,
-    result: { task_id: job?.id, localTaskId: job?.id },
-    job,
-    warnings: normalized.warnings || [],
-  };
+  return publicQueuedListingSubmission(created, normalized.warnings);
 }
 
 function listingFirstText(...values) {
@@ -2241,13 +2238,19 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     throw err;
   }
   if (!dryRun) {
-    resolveLocalListingTarget({
+    const preparation = assertListingPreparationInput({
       accountId: account?.id,
       collectItemId: item.id,
       targetStoreId: body.targetStoreId,
       idempotencyKey: body.idempotencyKey,
-      findStore: (storeId) => activeStore(state, storeId, account.id),
     });
+    if (!activeStore(state, preparation.targetStoreId, preparation.accountId)) {
+      validateTargetStoreRecord({
+        accountId: preparation.accountId,
+        targetStoreId: preparation.targetStoreId,
+        store: null,
+      });
+    }
   }
   const items = buildCollectBoxListingItems(item);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);

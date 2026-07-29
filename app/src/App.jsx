@@ -106,7 +106,7 @@ import {
   dashboardMoneyGroups,
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
-import { buildPrepareListingBody, targetStoreSelection } from "./collect-box-target-store.js";
+import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
 
 const { Header, Sider, Content } = Layout;
 
@@ -5100,6 +5100,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const [categoryAttributeValues, setCategoryAttributeValues] = useState({});
   const categoryAutoPreviewKeyRef = useRef("");
   const collectEditInitScopeRef = useRef("");
+  const listingSubmissionIntentRef = useRef(null);
   const params = new URLSearchParams(window.location.search);
   const itemId = params.get("id") || "";
   const currentStoreId = localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || "";
@@ -5107,22 +5108,17 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   React.useEffect(function() {
     if (selectedStoreId !== targetStoreId) setTargetStoreId(selectedStoreId);
   }, [targetStoreId, selectedStoreId]);
-  const localStateStoreId = localData?.currentStoreId || "";
-  const readCategoryTree = React.useCallback((language) => apiRequest(`/ozon/categories/tree?language=${encodeURIComponent(language)}`, {
-    headers: { "x-ozon-store-id": currentStoreId },
-  }), [currentStoreId]);
-  const categoryTree = useCategoryTreeReadiness({ hasStore, currentStoreId, itemId, readTree: readCategoryTree });
-  const { scopedTrees, categoryTreeLoading, categoryDataError, categoryTreeReady, loadCategoryTrees,
-    categoryAutoLoading, beginCategoryAutoRequest, categoryAutoRequestIsCurrent, finishCategoryAutoRequest } = categoryTree;
   const collectItems = localData?.caches?.collectBox || [];
   const productItems = localData?.caches?.products || [];
-  const candidateItem = collectItems.find(function(i) {
+  const collectCandidate = collectItems.find(function(i) {
     return String(i.id) === String(itemId) || String(i.sku) === String(itemId);
-  }) || productItems.find(function(i) {
+  });
+  const productCandidate = productItems.find(function(i) {
     return [i.id, i.product_id, i.offer_id, i.sku].some(function(value) {
       return String(value || "") === String(itemId);
     });
   });
+  const candidateItem = collectCandidate || productCandidate;
   const candidateStoreId = collectEditFirst(
     candidateItem?.storeId,
     candidateItem?.store_id,
@@ -5131,21 +5127,25 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     candidateItem?.bindingId,
     candidateItem?.binding_id,
   );
-  const itemScopeCurrent = categoryItemScopeIsCurrent({ currentStoreId, localStateStoreId, itemStoreId: candidateStoreId });
+  const itemScopeCurrent = Boolean(collectCandidate) || categoryItemScopeIsCurrent({
+    currentStoreId,
+    localStateStoreId: localData?.currentStoreId,
+    itemStoreId: candidateStoreId,
+  });
   const item = itemScopeCurrent ? candidateItem : null;
   const scopedPreviewItem = itemScopeCurrent ? previewItem : null;
-  const activeStore = (localData?.stores || []).find(function(store) {
-    return String(store.id || store.storeId || "") === String(binding?.id || localData?.currentStoreId || "");
-  }) || binding || {};
-  const storeCurrencyCode = collectEditFirst(
-    activeStore.companyCurrency,
-    activeStore.currencyCode,
-    activeStore.currency,
-    binding?.companyCurrency,
-    binding?.currencyCode,
-    binding?.currency,
-  );
-  const listingWarehouseOptions = scopedWarehousesForCurrentStore(localData?.caches?.warehouses || [], binding || activeStore, localData)
+  const preparationModel = listingPreparationModel({ localData, targetStoreId: selectedStoreId, collectItem: item });
+  const categoryStoreId = preparationModel.categoryStoreId;
+  React.useEffect(function() { if (listingSubmissionIntentRef.current && listingSubmissionIntentRef.current.collectItemId !== itemId) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: listingSubmissionIntentRef.current.targetStoreId }); }, [itemId]);
+  const selectListingTarget = (value) => { const next = String(value || ""); if (listingSubmissionIntentRef.current) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: next }); setTargetStoreId(next); };
+  const storeCurrencyCode = preparationModel.currencyCode;
+  const readCategoryTree = React.useCallback((language) => apiRequest(`/ozon/categories/tree?language=${encodeURIComponent(language)}`, {
+    headers: { "x-ozon-store-id": categoryStoreId },
+  }), [categoryStoreId]);
+  const categoryTree = useCategoryTreeReadiness({ hasStore: Boolean(categoryStoreId), currentStoreId: categoryStoreId, itemId, readTree: readCategoryTree });
+  const { scopedTrees, categoryTreeLoading, categoryDataError, categoryTreeReady, loadCategoryTrees,
+    categoryAutoLoading, beginCategoryAutoRequest, categoryAutoRequestIsCurrent, finishCategoryAutoRequest } = categoryTree;
+  const listingWarehouseOptions = preparationModel.warehouses
     .filter(warehouseIsActive)
     .filter(warehouseIsWritableFbs)
     .map((warehouse) => {
@@ -5164,7 +5164,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     if (item) {
       const draft = item.listingDraft || {};
       const itemScope = [
-        currentStoreId,
+        categoryStoreId,
         itemId,
         collectEditFirst(item.id, item.sku, item.product_id, item.offer_id),
       ].join("|");
@@ -5247,7 +5247,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       ));
       const seededWarehouseId = collectEditFirst(draft.listingWarehouseId, draft.warehouseId, draft.warehouse_id, item.listingWarehouseId, item.warehouse_id, item.warehouseId);
       const hasSeededWarehouse = seededWarehouseId && listingWarehouseOptions.some((option) => option.value === String(seededWarehouseId));
-      setListingWarehouseId(hasSeededWarehouse ? String(seededWarehouseId) : (seededWarehouseId ? String(seededWarehouseId) : listingWarehouseOptions[0]?.value || ""));
+      setListingWarehouseId(hasSeededWarehouse ? String(seededWarehouseId) : listingWarehouseOptions[0]?.value || "");
       setListingStock(collectEditFirst(draft.listingStock, draft.stock, item.listingStock, item.listing_stock, "5"));
       setSourceLink(collectEditFirst(draft.sourceLink) || collectEditSourceUrl(item, nextSku));
       setNote(collectEditFirst(draft.note, item.note, item.remark));
@@ -5261,7 +5261,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setCategoryAttributeValues({});
       categoryAutoPreviewKeyRef.current = "";
     }
-  }, [itemId, item, itemScopeCurrent, storeCurrencyCode, currentStoreId]);
+  }, [itemId, item, itemScopeCurrent, storeCurrencyCode, categoryStoreId, listingWarehouseOptionKey]);
 
   React.useEffect(function() {
     if (!listingWarehouseId && listingWarehouseOptions.length) {
@@ -5296,24 +5296,24 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       return;
     }
     if (!hasStore) {
-      message.warning("请先绑定门店");
-      onBind?.();
-      return;
+      if (!categoryStoreId) { message.warning("请先选择上架店铺"); onBind?.(); return; }
     }
     const numericPrice = numberFromMoney(price);
     if (!numericPrice || numericPrice <= 0) {
       message.warning("请输入有效售价");
       return;
     }
-    const storeId = localStorage.getItem("currentOzonStoreId") || binding?.id || localData?.currentStoreId || "";
-    if (dryRun && !storeId) { message.warning("未找到当前店铺，请重新绑定门店"); onBind?.(); return; }
+    const storeId = categoryStoreId;
+    if (dryRun && !storeId) { message.warning("未找到目标店铺，请重新选择"); onBind?.(); return; }
     if (!dryRun && !targetStores.length) { message.warning("请先启用已保存凭据的经营店铺"); onBind?.(); return; }
-    if (!dryRun && !targetStoreId) { message.warning("请选择目标经营店铺"); onBind?.(); return; }
+    if (!dryRun && !categoryStoreId) { message.warning("请选择目标经营店铺"); onBind?.(); return; }
+    const submissionIntent = dryRun ? null : listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: item.id, targetStoreId: categoryStoreId });
+    if (submissionIntent) listingSubmissionIntentRef.current = submissionIntent;
     setLoading(true);
     setListingResult({
       status: "pending",
       title: dryRun ? "正在预检上架数据" : "正在提交上架任务",
-      detail: dryRun ? "正在保存当前草稿，并用数据库草稿做 Ozon 上架预检。" : `正在保存当前草稿，并冻结目标店铺「${targetStoreOptions.find((option) => option.value === targetStoreId)?.label || targetStoreId}」。`,
+      detail: dryRun ? "正在保存当前草稿，并用数据库草稿做 Ozon 上架预检。" : `正在保存当前草稿，并冻结目标店铺「${targetStoreOptions.find((option) => option.value === categoryStoreId)?.label || categoryStoreId}」。`,
     });
     message.loading({
       content: dryRun ? "正在保存草稿并预检上架数据…" : "正在保存草稿并提交上架…",
@@ -5322,7 +5322,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     });
     try {
       const draftSave = await saveListingDraft({ silent: true, onlyIfChanged: true });
-      const targetBody = dryRun ? { storeId } : buildPrepareListingBody({ collectItemId: item.id, targetStoreId });
+      const targetBody = dryRun ? { storeId } : buildPrepareListingBody({ collectItemId: item.id, targetStoreId: categoryStoreId, requestId: submissionIntent.requestId });
       const result = await apiRequest(`/ozon/collect-box/${encodeURIComponent(item.id)}/listing/${dryRun ? "preview" : "submit"}`, {
         method: "POST",
         body: {
@@ -5332,6 +5332,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
           retryFailed: !dryRun,
         },
       });
+      if (!dryRun && listingSubmissionIntentRef.current?.requestId === submissionIntent.requestId) listingSubmissionIntentRef.current = settleListingSubmissionIntent(submissionIntent, { definitive: true });
       if (dryRun && result?.ok) {
         const preview = result || {};
         const first = Array.isArray(preview.items) ? preview.items[0] : null;
@@ -5368,6 +5369,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         message.error({ content: "上架提交失败: " + (result?.message || result?.error || "未知错误"), key: "edit-submit" });
       }
     } catch (error) {
+      if (!dryRun && listingSubmissionIntentRef.current?.requestId === submissionIntent.requestId) listingSubmissionIntentRef.current = settleListingSubmissionIntent(submissionIntent, { definitive: listingSubmissionErrorIsDefinitive(error) });
       setListingResult({
         status: "error",
         title: dryRun ? "上架预检失败" : "上架失败",
@@ -5389,7 +5391,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       if (!silent) message.error(detail);
       return null;
     }
-    if (!hasStore || !currentStoreId) {
+    if (!categoryStoreId) {
       if (!silent) message.warning("请先选择上架店铺");
       return null;
     }
@@ -5430,7 +5432,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       const result = await apiRequest("/ozon/products/import/preview", {
         method: "POST",
         body: {
-          storeId: currentStoreId,
+          storeId: categoryStoreId,
           sku,
           strictTypeMatch: false,
           entry: "COLLECT_EDIT_AUTO_CATEGORY",
@@ -5653,7 +5655,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     categoryDictionaryReady,
     retryCategoryDictionaryValues,
   } = useCategoryDictionaryReadiness({
-    storeId: currentStoreId,
+    storeId: categoryStoreId,
     itemId,
     descriptionCategoryId: categoryDescriptionId,
     typeId: categoryTypeId,
@@ -5775,7 +5777,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
 
   React.useEffect(function() {
     let active = true;
-    if (!categoryDescriptionId || !categoryTypeId || !currentStoreId) {
+    if (!categoryDescriptionId || !categoryTypeId || !categoryStoreId) {
       setCategorySchema([]);
       setCategorySchemaError("");
       setCategorySchemaLoading(false);
@@ -5786,7 +5788,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     apiRequest(
       `/ozon/description-category/${encodeURIComponent(categoryTypeId)}/attributes?descriptionCategoryId=${encodeURIComponent(categoryDescriptionId)}`,
       {
-        headers: { "x-ozon-store-id": currentStoreId },
+        headers: { "x-ozon-store-id": categoryStoreId },
       },
     )
       .then((response) => {
@@ -5809,7 +5811,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     return () => {
       active = false;
     };
-  }, [categoryDescriptionId, categoryTypeId, currentStoreId]);
+  }, [categoryDescriptionId, categoryTypeId, categoryStoreId]);
 
   React.useEffect(function() {
     if (!categorySchema.length) {
@@ -5835,7 +5837,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         next[key] = sourceAttributeValueMap.get(key) || "";
       }
     }
-    const scope = `${itemId}:${categoryDescriptionId}:${categoryTypeId}`;
+    const scope = `${categoryStoreId}:${itemId}:${categoryDescriptionId}:${categoryTypeId}`;
     setCategoryAttributeValues((prev) => {
       if (prev?.__scope === scope) {
         let changed = false;
@@ -5850,14 +5852,14 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       }
       return { __scope: scope, ...next };
     });
-  }, [itemId, categoryDescriptionId, categoryTypeId, categorySchema, categoryAttributeOptions, previewItem, item, brand]);
+  }, [categoryStoreId, itemId, categoryDescriptionId, categoryTypeId, categorySchema, categoryAttributeOptions, previewItem, item, brand]);
 
   React.useEffect(function() {
-    if (!item || !hasStore || !categoryTreeReady || !categoryDictionaryReady || categoryMatched || categoryAutoLoading) return;
+    if (!item || !categoryStoreId || !categoryTreeReady || !categoryDictionaryReady || categoryMatched || categoryAutoLoading) return;
     if (!sku || !numberFromMoney(price) || !productImageList.length) return;
     const key = [
       itemId,
-      currentStoreId,
+      categoryStoreId,
       sku,
       price,
       productImageList.length,
@@ -5870,7 +5872,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   }, [
     item,
     itemId,
-    hasStore,
+    categoryStoreId,
     categoryTreeReady,
     categoryDictionaryReady,
     categoryMatched,
@@ -5879,7 +5881,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     price,
     productImageList.length,
     variantRows.length,
-    currentStoreId,
     storeCurrencyCode,
     currencyCode,
   ]);
@@ -5889,6 +5890,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const activeCurrencyCode = storeCurrencyCode || currencyCode;
   const listingStockNumber = numberFromMoney(listingStock);
   const listingStockReady = collectEditText(listingStock) !== "" && listingStockNumber !== null && listingStockNumber >= 0;
+  const listingWarehouseReady = listingWarehouseOptions.some((option) => option.value === String(listingWarehouseId));
   const requiredCategoryAttributeRows = categoryAttributeInputRows.filter((row) => row.required);
   const missingRequiredCategoryAttributes = requiredCategoryAttributeRows
     .filter((row) => !collectEditRequiredValueFilled(categoryAttributeValues[row.key] ?? row.value, row))
@@ -5908,7 +5910,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     !productImageList.length ? "商品图片" : "",
     !collectEditRequiredValueFilled(brand) ? "品牌" : "",
     !collectEditRequiredValueFilled(activeCurrencyCode) ? "上架货币" : "",
-    !collectEditRequiredValueFilled(listingWarehouseId) ? "上架仓库" : "",
+    !listingWarehouseReady ? "上架仓库" : "",
     !listingStockReady ? "上架库存" : "",
     !hasPackageDimensions ? "包装重量和尺寸" : "",
     !categoryMatched ? "产品类目" : "",
@@ -5932,7 +5934,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     collectEditRequiredValueFilled(brand),
     hasPackageDimensions,
     categoryReadinessState.ready && !categorySchemaLoading && !categorySchemaError && !missingRequiredCategoryAttributes.length,
-    collectEditRequiredValueFilled(listingWarehouseId),
+    listingWarehouseReady,
     listingStockReady,
     variantRequiredReady,
   ];
@@ -6122,7 +6124,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             </div>
             <Form layout="vertical" className="collect-edit-grid">
               <Form.Item label="上架店铺">
-                <Select showSearch value={targetStoreId || undefined} options={targetStoreOptions} placeholder="明确选择目标经营店铺" notFoundContent="没有启用且已保存凭据的经营店铺" optionFilterProp="label" onChange={(value) => setTargetStoreId(String(value || ""))} />
+                <Select showSearch value={targetStoreId || undefined} options={targetStoreOptions} placeholder="明确选择目标经营店铺" notFoundContent="没有启用且已保存凭据的经营店铺" optionFilterProp="label" onChange={selectListingTarget} />
               </Form.Item>
               <Form.Item label="品牌">
                 <Input value={brand} onChange={(event) => setBrand(event.target.value)} placeholder="Нет бренда" />

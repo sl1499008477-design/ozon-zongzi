@@ -21,13 +21,13 @@ requirePattern(
 );
 
 requirePattern(
-  /const collectItems = localData\?\.caches\?\.collectBox \|\| \[\];[\s\S]*const productItems = localData\?\.caches\?\.products \|\| \[\];[\s\S]*const candidateItem = collectItems\.find[\s\S]*\|\| productItems\.find[\s\S]*const item = itemScopeCurrent \? candidateItem : null;/,
-  "collect edit page must resolve items from both collect box and product list caches, then enforce the current store scope",
+  /const collectItems = localData\?\.caches\?\.collectBox \|\| \[\];[\s\S]*const collectCandidate = collectItems\.find[\s\S]*const productCandidate = productItems\.find[\s\S]*const candidateItem = collectCandidate \|\| productCandidate;[\s\S]*const itemScopeCurrent = Boolean\(collectCandidate\) \|\| categoryItemScopeIsCurrent[\s\S]*const item = itemScopeCurrent \? candidateItem : null;/,
+  "collect edit page must accept account-scoped collection items while retaining legacy product store scope",
 );
 
 requirePattern(
-  /const runListingRequest = async function\(\{ dryRun = false \} = \{\}\) \{[\s\S]*if \(!dryRun && listingRequiredMissingFields\.length\) \{[\s\S]*message\.warning\(listingMissingRequiredText\)[\s\S]*if \(!sku\)[\s\S]*if \(!hasStore\)[\s\S]*const numericPrice = numberFromMoney\(price\);[\s\S]*if \(!numericPrice \|\| numericPrice <= 0\)[\s\S]*const storeId = localStorage\.getItem\("currentOzonStoreId"\)/,
-  "real listing request must block incomplete required fields while keeping preview available, then validate sku, store binding, price and current store",
+  /const runListingRequest = async function\(\{ dryRun = false \} = \{\}\) \{[\s\S]*if \(!dryRun && listingRequiredMissingFields\.length\) \{[\s\S]*message\.warning\(listingMissingRequiredText\)[\s\S]*if \(!sku\)[\s\S]*if \(!hasStore\)[\s\S]*const numericPrice = numberFromMoney\(price\);[\s\S]*if \(!numericPrice \|\| numericPrice <= 0\)[\s\S]*const storeId = categoryStoreId;/,
+  "real listing request must block incomplete fields and scope preparation to the explicit target store",
 );
 
 requirePattern(

@@ -3,6 +3,10 @@ import test from "node:test";
 import {
   buildPrepareListingBody,
   eligibleTargetStores,
+  listingPreparationModel,
+  listingSubmissionErrorIsDefinitive,
+  listingSubmissionIntent,
+  settleListingSubmissionIntent,
   targetStoreSelection,
 } from "../src/collect-box-target-store.js";
 
@@ -67,4 +71,114 @@ test("target store selection keeps an eligible choice and otherwise preselects c
     selectedStoreId: "store-b",
   });
   assert.equal(targetStoreSelection(localData, "store-a", "store-b").selectedStoreId, "store-b");
+});
+
+test("listing preparation accepts a store-neutral collection item and scopes dependencies to a non-current target", () => {
+  const model = listingPreparationModel({
+    currentStoreId: "store-a",
+    targetStoreId: "store-b",
+    collectItem: {
+      id: "collect-neutral",
+      sku: "sku-neutral",
+    },
+    localData: {
+      currentStoreId: "store-a",
+      stores: [
+        {
+          id: "store-a",
+          label: "Current A",
+          clientId: "client-a",
+          currencyCode: "CNY",
+          status: "active",
+          credentialsSaved: true,
+        },
+        {
+          id: "store-b",
+          label: "Target B",
+          clientId: "client-b",
+          currencyCode: "RUB",
+          status: "active",
+          credentialsSaved: true,
+        },
+      ],
+      caches: {
+        warehouses: [
+          { id: "warehouse-a", storeId: "store-a", clientId: "client-a" },
+          { id: "warehouse-b", storeId: "store-b", clientId: "client-b" },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(model, {
+    itemReady: true,
+    targetStoreId: "store-b",
+    categoryStoreId: "store-b",
+    currencyCode: "RUB",
+    warehouses: [
+      { id: "warehouse-b", storeId: "store-b", clientId: "client-b" },
+    ],
+  });
+});
+
+test("an uncertain retry sends the same listing idempotency key", () => {
+  const firstIntent = listingSubmissionIntent(null, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-a",
+    requestId: "request-a",
+  });
+  const retainedIntent = settleListingSubmissionIntent(firstIntent, { definitive: false });
+  const retryIntent = listingSubmissionIntent(retainedIntent, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-a",
+    requestId: "must-not-replace-request-a",
+  });
+
+  assert.equal(
+    buildPrepareListingBody({
+      collectItemId: "collect-a",
+      targetStoreId: "store-a",
+      requestId: firstIntent.requestId,
+    }).idempotencyKey,
+    "request-a",
+  );
+  assert.equal(
+    buildPrepareListingBody({
+      collectItemId: "collect-a",
+      targetStoreId: "store-a",
+      requestId: retryIntent.requestId,
+    }).idempotencyKey,
+    "request-a",
+  );
+});
+
+test("changing the listing target, including changing back, creates a new submission intent key", () => {
+  const firstIntent = listingSubmissionIntent(null, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-a",
+    requestId: "request-a",
+  });
+  const changedTargetIntent = listingSubmissionIntent(firstIntent, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-b",
+    requestId: "request-b",
+  });
+  const changedBackIntent = listingSubmissionIntent(changedTargetIntent, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-a",
+    requestId: "request-c",
+  });
+
+  assert.deepEqual(changedTargetIntent, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-b",
+    requestId: "request-b",
+  });
+  assert.equal(changedBackIntent.requestId, "request-c");
+});
+
+test("only an HTTP response makes a listing submission failure definitive", () => {
+  assert.equal(listingSubmissionErrorIsDefinitive(new TypeError("fetch failed")), false);
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 409, code: "TARGET_STORE_DISABLED" }), true);
+  assert.equal(settleListingSubmissionIntent({ requestId: "request-a" }, { definitive: true }), null);
 });

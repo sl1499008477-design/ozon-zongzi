@@ -1,6 +1,10 @@
 import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
 import { encryptSecret } from "../crypto-secrets.mjs";
 import { getPostgresPool, closePostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
@@ -19,6 +23,7 @@ if (!postgresEnabled()) {
 }
 
 const suffix = crypto.randomUUID();
+const routeStateTable = `listing_route_${suffix.replaceAll("-", "_")}`;
 const accountId = `test_account_${suffix}`;
 const foreignAccountId = `test_foreign_account_${suffix}`;
 const storeId = `test_store_${suffix}`;
@@ -27,8 +32,30 @@ const foreignStoreId = `test_store_foreign_${suffix}`;
 const disabledStoreId = `test_store_disabled_${suffix}`;
 const noCredentialStoreId = `test_store_no_credential_${suffix}`;
 const collectId = `test_collect_${suffix}`;
+const warehouseAId = `wh_${crypto.createHash("sha256").update(`${storeId}|1`).digest("hex").slice(0, 24)}`;
+const warehouseBId = `wh_${crypto.createHash("sha256").update(`${secondStoreId}|2`).digest("hex").slice(0, 24)}`;
 const storeIds = [storeId, secondStoreId, foreignStoreId, disabledStoreId, noCredentialStoreId];
 const pool = await getPostgresPool();
+let routeDataDir = "";
+
+async function requestJson(handle, pathname, body, token) {
+  const payload = JSON.stringify(body || {});
+  const req = Readable.from([Buffer.from(payload)]);
+  req.method = "POST";
+  req.url = pathname;
+  req.headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${token}`,
+  };
+  const res = {
+    status: 0,
+    body: "",
+    writeHead(status) { this.status = status; },
+    end(text = "") { this.body = String(text || ""); },
+  };
+  await handle(req, res);
+  return { status: res.status, body: JSON.parse(res.body || "{}") };
+}
 
 async function cleanup() {
   const jobs = await pool.query("SELECT id, snapshot_id FROM submission_jobs WHERE collect_item_id=$1", [collectId]);
@@ -103,6 +130,13 @@ try {
   await saveCredential(secondStoreId, `client-second-${suffix}`);
   await saveCredential(foreignStoreId, `client-foreign-${suffix}`);
   await saveCredential(disabledStoreId, `client-disabled-${suffix}`);
+  await pool.query(
+    `INSERT INTO warehouses (id,store_id,warehouse_id,name,warehouse_type,status,is_active,is_archived)
+     VALUES
+       ($1,$3,'1','Store A FBS','FBS','active',TRUE,FALSE),
+       ($2,$4,'2','Store B FBS','FBS','active',TRUE,FALSE)`,
+    [warehouseAId, warehouseBId, storeId, secondStoreId],
+  );
 
   const baseItem = {
     id: collectId,
@@ -245,6 +279,160 @@ try {
     /secret-|encrypted_api_key|apiKey|authTag|credential/i,
   );
 
+  await assert.rejects(
+    prepareCollectItemForListing({
+      collectItem: baseItem,
+      accountId,
+      collectItemId: collectId,
+      targetStoreId: storeId,
+      idempotencyKey: `wrong-warehouse-${suffix}`,
+      normalizedItems: [{ ...normalizedItems[0], name: "Wrong warehouse target" }],
+      stocks: [{ offer_id: "offer-1", warehouse_id: 2, stock: 5 }],
+    }),
+    (error) => error?.status === 409 && error?.code === "LISTING_WAREHOUSE_TARGET_MISMATCH",
+  );
+
+  await pool.query("UPDATE stores SET status='disabled' WHERE id=$1", [storeId]);
+  const disabledTargetReplay = await prepareCollectItemForListing({
+    collectItem: baseItem,
+    accountId,
+    collectItemId: collectId,
+    targetStoreId: storeId,
+    idempotencyKey: `prepare-${suffix}`,
+    normalizedItems: [{ ...normalizedItems[0], name: "Ignored replay payload" }],
+    stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
+  });
+  assert.equal(disabledTargetReplay.duplicate, true);
+  assert.equal(disabledTargetReplay.job.id, created.job.id);
+
+  await pool.query("UPDATE stores SET status='active' WHERE id=$1", [storeId]);
+  await pool.query("DELETE FROM store_credentials WHERE store_id=$1", [storeId]);
+  const credentialRemovedReplay = await prepareCollectItemForListing({
+    collectItem: baseItem,
+    accountId,
+    collectItemId: collectId,
+    targetStoreId: storeId,
+    idempotencyKey: `prepare-${suffix}`,
+    normalizedItems: [{ ...normalizedItems[0], name: "Ignored replay payload" }],
+    stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
+  });
+  assert.equal(credentialRemovedReplay.duplicate, true);
+  assert.equal(credentialRemovedReplay.job.id, created.job.id);
+  await saveCredential(storeId, `client-${suffix}`);
+
+  const concurrentCallerKey = `concurrent-prepare-${suffix}`;
+  const concurrentResults = await Promise.allSettled(
+    Array.from({ length: 12 }, () => prepareCollectItemForListing({
+      collectItem: baseItem,
+      accountId,
+      collectItemId: collectId,
+      targetStoreId: storeId,
+      idempotencyKey: concurrentCallerKey,
+      normalizedItems: [{ ...normalizedItems[0], name: "Concurrent preparation" }],
+      stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
+    })),
+  );
+  assert.deepEqual(
+    concurrentResults.map((result) => result.status),
+    Array(12).fill("fulfilled"),
+  );
+  assert.equal(
+    new Set(concurrentResults.map((result) => result.value.job.id)).size,
+    1,
+  );
+  const concurrentDatabaseKey = crypto.createHash("sha256")
+    .update(["listing-prepare", accountId, concurrentCallerKey].join("|"))
+    .digest("hex");
+  const concurrentRows = await pool.query(
+    `SELECT
+       COUNT(DISTINCT s.id)::int AS snapshot_count,
+       COUNT(DISTINCT j.id)::int AS job_count
+     FROM submission_snapshots s
+     LEFT JOIN submission_jobs j ON j.snapshot_id=s.id
+     WHERE s.idempotency_key=$1 AND s.account_id=$2`,
+    [concurrentDatabaseKey, accountId],
+  );
+  assert.deepEqual(concurrentRows.rows[0], {
+    snapshot_count: 1,
+    job_count: 1,
+  });
+
+  const routeToken = `listing-route-token-${suffix}`;
+  routeDataDir = await mkdtemp(path.join(os.tmpdir(), "listing-route-replay-"));
+  await writeFile(path.join(routeDataDir, "local-state.json"), JSON.stringify({
+    token: routeToken,
+    currentAccountId: accountId,
+    sessionIssuedAt: "2026-07-29T00:00:00.000Z",
+    accounts: [
+      { id: accountId, username: `pipeline-${suffix}`, displayName: "Pipeline Test", role: "admin", status: "active" },
+      { id: foreignAccountId, username: `pipeline-foreign-${suffix}`, displayName: "Pipeline Foreign Test", role: "user", status: "active" },
+    ],
+    currentStoreId: storeId,
+    stores: [
+      { id: storeId, ownerAccountId: accountId, label: "Pipeline Test Store", clientId: `client-${suffix}`, apiKey: "route-test-key", status: "disabled", currencyCode: "RUB" },
+      { id: secondStoreId, ownerAccountId: accountId, label: "Pipeline Second Store", clientId: `client-second-${suffix}`, apiKey: "route-second-key", status: "active", currencyCode: "RUB" },
+      { id: foreignStoreId, ownerAccountId: foreignAccountId, label: "Foreign Secret Store", clientId: `client-foreign-${suffix}`, apiKey: "route-foreign-key", status: "active", currencyCode: "RUB" },
+      { id: disabledStoreId, ownerAccountId: accountId, label: "Pipeline Disabled Store", clientId: `client-disabled-${suffix}`, apiKey: "route-disabled-key", status: "disabled", currencyCode: "RUB" },
+      { id: noCredentialStoreId, ownerAccountId: accountId, label: "Pipeline No Credential Store", clientId: `client-no-credential-${suffix}`, status: "active", currencyCode: "RUB" },
+    ],
+    caches: {
+      collectBox: [{
+        ...baseItem,
+        accountId,
+        listingDraft: {
+          ...baseItem.listingDraft,
+          title: "用户修改标题",
+          description: "Route replay description",
+          descriptionCategoryId: 1,
+          typeId: 2,
+          packageWeight: "100",
+          packageLength: "100",
+          packageWidth: "100",
+          packageHeight: "100",
+          listingWarehouseId: "1",
+          listingStock: "5",
+          images: ["https://example.invalid/1.jpg"],
+        },
+      }],
+      warehouses: [
+        { id: warehouseAId, warehouse_id: "1", storeId, name: "Store A FBS", warehouse_type: "FBS", status: "active" },
+        { id: warehouseBId, warehouse_id: "2", storeId: secondStoreId, name: "Store B FBS", warehouse_type: "FBS", status: "active" },
+      ],
+    },
+    jobs: {},
+    reports: [],
+  }), "utf8");
+  process.env.QH_LOCAL_DATA_DIR = routeDataDir;
+  process.env.QH_LOCAL_NO_LISTEN = "1";
+  process.env.QH_LOCAL_NO_DOTENV = "1";
+  process.env.POSTGRES_STATE_TABLE = routeStateTable;
+  process.env.SONLI_ADMIN_PASSWORD = "task5-route-test-admin-password";
+  await pool.query("UPDATE stores SET status='disabled' WHERE id=$1", [storeId]);
+  const originalFetch = globalThis.fetch;
+  let routeExternalCalls = 0;
+  globalThis.fetch = async () => {
+    routeExternalCalls += 1;
+    throw new Error("replay must not call Ozon");
+  };
+  try {
+    const { handle } = await import("../index.mjs");
+    const routeReplay = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+      {
+        targetStoreId: storeId,
+        idempotencyKey: `prepare-${suffix}`,
+      },
+      routeToken,
+    );
+    assert.equal(routeReplay.status, 200, JSON.stringify(routeReplay.body));
+    assert.equal(routeReplay.body.job.id, created.job.id);
+    assert.equal(routeExternalCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  await pool.query("UPDATE stores SET status='active' WHERE id=$1", [storeId]);
+
   await pool.query("UPDATE submission_jobs SET status='FAILED', completed_at=NOW(), updated_at=NOW() WHERE id=$1", [created.job.id]);
   const retry = await createSubmissionV3({
     collectItem: { ...baseItem, listingDraft: { ...baseItem.listingDraft, title: "用户修改标题" } },
@@ -272,6 +460,8 @@ try {
   assert.ok(deleted.rows[0].deleted_at);
   console.log("listing pipeline v3 integration passed");
 } finally {
+  if (routeDataDir) await rm(routeDataDir, { recursive: true, force: true });
+  await pool.query(`DROP TABLE IF EXISTS ${routeStateTable}`);
   await cleanup();
   await closePostgresPool();
 }

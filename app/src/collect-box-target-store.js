@@ -19,6 +19,63 @@ export function targetStoreSelection(localData = {}, currentStoreId = "", select
   return { stores, options, selectedStoreId: selectedStore };
 }
 
+export function listingPreparationModel({
+  localData = {},
+  targetStoreId = "",
+  collectItem = null,
+} = {}) {
+  const targetId = String(targetStoreId || "").trim();
+  const targetStore = eligibleTargetStores(localData)
+    .find((store) => String(store?.id || store?.storeId || "").trim() === targetId);
+  const targetClientId = String(targetStore?.clientId || "").trim();
+  const warehouses = (Array.isArray(localData?.caches?.warehouses) ? localData.caches.warehouses : [])
+    .filter((warehouse) => {
+      const storeId = String(warehouse?.storeId || warehouse?.store_id || "").trim();
+      if (storeId) return storeId === targetId;
+      const clientId = String(warehouse?.clientId || warehouse?.client_id || "").trim();
+      return Boolean(targetClientId && clientId === targetClientId);
+    });
+  return {
+    itemReady: Boolean(collectItem?.id && targetStore),
+    targetStoreId: targetStore ? targetId : "",
+    categoryStoreId: targetStore ? targetId : "",
+    currencyCode: String(
+      targetStore?.companyCurrency
+      || targetStore?.currencyCode
+      || targetStore?.currency
+      || "",
+    ).trim(),
+    warehouses,
+  };
+}
+
+export function listingSubmissionIntent(current, {
+  collectItemId,
+  targetStoreId,
+  requestId,
+} = {}) {
+  const itemId = String(collectItemId || "").trim();
+  const storeId = String(targetStoreId || "").trim();
+  if (
+    current?.requestId
+    && current.collectItemId === itemId
+    && current.targetStoreId === storeId
+  ) return current;
+  return {
+    collectItemId: itemId,
+    targetStoreId: storeId,
+    requestId: String(requestId || crypto.randomUUID()),
+  };
+}
+
+export function settleListingSubmissionIntent(current, { definitive = false } = {}) {
+  return definitive ? null : current;
+}
+
+export function listingSubmissionErrorIsDefinitive(error) {
+  return Number.isFinite(Number(error?.status)) && Number(error.status) > 0;
+}
+
 export function buildPrepareListingBody({ collectItemId, targetStoreId, requestId } = {}) {
   const itemId = String(collectItemId || "").trim();
   const storeId = String(targetStoreId || "").trim();

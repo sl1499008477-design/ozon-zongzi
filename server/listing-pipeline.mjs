@@ -401,6 +401,39 @@ export async function assertUsableOperatingStore({
   });
 }
 
+export async function assertListingStocksBelongToTarget({
+  accountId,
+  storeId,
+  stocks = [],
+  client = null,
+} = {}) {
+  const warehouseIds = [...new Set(
+    (Array.isArray(stocks) ? stocks : [])
+      .map((stock) => clean(stock?.warehouse_id || stock?.warehouseId, 240))
+      .filter(Boolean),
+  )];
+  if (!warehouseIds.length) return true;
+  const database = client || await poolReady();
+  const result = await database.query(
+    `SELECT DISTINCT requested.id
+     FROM unnest($3::text[]) AS requested(id)
+     JOIN warehouses w ON w.warehouse_id=requested.id OR w.id=requested.id
+     JOIN stores s ON s.id=w.store_id
+     WHERE s.owner_account_id=$1
+       AND w.store_id=$2
+       AND w.is_active=TRUE
+       AND w.is_archived=FALSE`,
+    [clean(accountId, 240), clean(storeId, 240), warehouseIds],
+  );
+  if (result.rowCount !== warehouseIds.length) {
+    throw Object.assign(new Error("上架仓库不属于目标经营店铺或当前不可用"), {
+      status: 409,
+      code: "LISTING_WAREHOUSE_TARGET_MISMATCH",
+    });
+  }
+  return true;
+}
+
 export async function listCollectItemsV3({ accountId = "", includeDeleted = false, limit = 5000 } = {}) {
   if (!listingPipelineEnabled()) return [];
   const scopedAccountId = clean(accountId, 240);
@@ -570,6 +603,47 @@ function publicJob(row = {}) {
   };
 }
 
+function listingPreparationIdempotencyKey(preparation) {
+  return hash(["listing-prepare", preparation.accountId, preparation.idempotencyKey].join("|"));
+}
+
+async function readListingPreparationReplay(client, preparation, baseIdempotencyKey) {
+  const existing = await client.query(
+    `SELECT j.*, c.source_sku, s.idempotency_key,
+            s.store_id AS frozen_store_id,
+            s.collect_item_id AS frozen_collect_item_id,
+            COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
+     FROM submission_snapshots s
+     JOIN submission_jobs j ON j.snapshot_id=s.id
+     LEFT JOIN collect_items c ON c.id=j.collect_item_id
+     WHERE s.idempotency_key=$1 AND s.account_id=$2
+     LIMIT 1`,
+    [baseIdempotencyKey, preparation.accountId],
+  );
+  const latest = existing.rows[0];
+  if (!latest) return null;
+  resolveListingPreparationReplay({
+    existing: {
+      ...latest,
+      store_id: latest.frozen_store_id,
+      collect_item_id: latest.frozen_collect_item_id,
+    },
+    collectItemId: preparation.collectItemId,
+    targetStoreId: preparation.targetStoreId,
+  });
+  return { duplicate: true, job: publicJob(latest) };
+}
+
+export async function findListingPreparationReplayV3(input = {}) {
+  if (!listingPipelineEnabled()) return null;
+  const preparation = assertListingPreparationInput(input);
+  const baseIdempotencyKey = listingPreparationIdempotencyKey(preparation);
+  return transaction(async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
+    return readListingPreparationReplay(client, preparation, baseIdempotencyKey);
+  });
+}
+
 export async function createSubmissionV3({
   collectItem,
   storeId,
@@ -599,16 +673,33 @@ export async function createSubmissionV3({
       })
     : null;
   if (preparation) storeId = preparation.targetStoreId;
-  const mirrored = await mirrorCollectItemV3(collectItem, { accountId, storeId, ...versions });
+  const legacyMirrored = preparation
+    ? null
+    : await mirrorCollectItemV3(collectItem, { accountId, storeId, ...versions });
   return transaction(async (client) => {
-    const targetStore = preparation
-      ? await assertUsableOperatingStore({
-          accountId: preparation.accountId,
-          storeId: preparation.targetStoreId,
-          requireCredentials: true,
-          client,
-        })
-      : null;
+    let targetStore = null;
+    let mirrored = legacyMirrored;
+    let baseIdempotencyKey = preparation
+      ? listingPreparationIdempotencyKey(preparation)
+      : "";
+    let latest = null;
+    if (preparation) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
+      const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
+      if (replay) return replay;
+      targetStore = await assertUsableOperatingStore({
+        accountId: preparation.accountId,
+        storeId: preparation.targetStoreId,
+        requireCredentials: true,
+        client,
+      });
+      mirrored = await mirrorCollectItemV3(collectItem, {
+        accountId,
+        storeId: preparation.targetStoreId,
+        client,
+        ...versions,
+      });
+    }
     const frozenStoreId = targetStore?.id || storeId;
     const items = Array.isArray(normalizedItems) ? normalizedItems : [];
     const safeStocks = Array.isArray(stocks) ? stocks : [];
@@ -619,48 +710,31 @@ export async function createSubmissionV3({
     const snapshotData = { items, stocks: safeStocks, pricingSnapshot };
     const snapshotHash = hash(snapshotData);
     const offers = items.map((item) => item.offer_id || item.sku || "").sort().join("|");
-    const baseIdempotencyKey = preparation
-      ? hash(["listing-prepare", preparation.accountId, preparation.idempotencyKey].join("|"))
-      : hash([frozenStoreId, offers, snapshotHash].join("|"));
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
-    const existing = preparation
-      ? await client.query(
-          `SELECT j.*, c.source_sku, s.idempotency_key,
-                  s.store_id AS frozen_store_id,
-                  s.collect_item_id AS frozen_collect_item_id,
-                  COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
-           FROM submission_snapshots s
-           JOIN submission_jobs j ON j.snapshot_id=s.id
-           LEFT JOIN collect_items c ON c.id=j.collect_item_id
-           WHERE s.idempotency_key=$1
-           LIMIT 1`,
-          [baseIdempotencyKey],
-        )
-      : await client.query(
-          `SELECT j.*, c.source_sku,
-                  s.idempotency_key,
-                  COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
-           FROM submission_snapshots s
-           JOIN submission_jobs j ON j.snapshot_id=s.id
-           LEFT JOIN collect_items c ON c.id=j.collect_item_id
-           WHERE s.store_id=$1 AND s.collect_item_id=$2 AND s.snapshot_hash=$3
-             AND s.account_id=$4 AND c.account_id=$4
-           ORDER BY s.created_at DESC
-           LIMIT 1`,
-          [frozenStoreId, collectItem.id, snapshotHash, accountId],
-        );
-    const latest = existing.rows[0];
-    if (preparation && latest) {
-      resolveListingPreparationReplay({
-        existing: {
-          ...latest,
-          store_id: latest.frozen_store_id,
-          collect_item_id: latest.frozen_collect_item_id,
-        },
-        collectItemId: preparation.collectItemId,
-        targetStoreId: preparation.targetStoreId,
+    if (!preparation) {
+      baseIdempotencyKey = hash([frozenStoreId, offers, snapshotHash].join("|"));
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
+      const existing = await client.query(
+        `SELECT j.*, c.source_sku,
+                s.idempotency_key,
+                COALESCE((SELECT jsonb_agg(to_jsonb(si) ORDER BY si.sort_order) FROM submission_items si WHERE si.job_id=j.id),'[]'::jsonb) AS items
+         FROM submission_snapshots s
+         JOIN submission_jobs j ON j.snapshot_id=s.id
+         LEFT JOIN collect_items c ON c.id=j.collect_item_id
+         WHERE s.store_id=$1 AND s.collect_item_id=$2 AND s.snapshot_hash=$3
+           AND s.account_id=$4 AND c.account_id=$4
+         ORDER BY s.created_at DESC
+         LIMIT 1`,
+        [frozenStoreId, collectItem.id, snapshotHash, accountId],
+      );
+      latest = existing.rows[0] || null;
+    }
+    if (preparation) {
+      await assertListingStocksBelongToTarget({
+        accountId: preparation.accountId,
+        storeId: frozenStoreId,
+        stocks: safeStocks,
+        client,
       });
-      return { duplicate: true, job: publicJob(latest) };
     }
     const retryableStatuses = new Set(["FAILED", "CANCELLED"]);
     if (latest && (!retryFailed || !retryableStatuses.has(String(latest.status || "").toUpperCase()))) {
@@ -755,11 +829,6 @@ export async function prepareCollectItemForListing({
     collectItemId,
     targetStoreId,
     idempotencyKey,
-  });
-  await assertUsableOperatingStore({
-    accountId: preparation.accountId,
-    storeId: preparation.targetStoreId,
-    requireCredentials: true,
   });
   return createSubmissionV3({
     collectItem,

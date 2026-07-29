@@ -109,6 +109,20 @@ export function resolveListingPreparationReplay({
   return existing;
 }
 
+export function publicQueuedListingSubmission(created, warnings = []) {
+  const job = created?.job;
+  return {
+    ok: true,
+    queued: true,
+    local: true,
+    duplicate: Boolean(created?.duplicate),
+    task_id: job?.id,
+    result: { task_id: job?.id, localTaskId: job?.id },
+    job,
+    warnings: Array.isArray(warnings) ? warnings : [],
+  };
+}
+
 export function resolveSubmissionFailureDisposition(error = {}) {
   if (error?.body?.network || Number(error?.status || 0) >= 500) return "RECONCILING";
   if (error?.code === "SUBMISSION_NOT_SENT") return "RETRY_PENDING";

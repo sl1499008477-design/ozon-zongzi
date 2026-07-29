@@ -1,4 +1,15 @@
-const localApiBase = String(import.meta.env.VITE_LOCAL_API_BASE || "/api").replace(/\/$/, "");
+const localApiBase = String(import.meta.env?.VITE_LOCAL_API_BASE || "/api").replace(/\/$/, "");
+
+export function apiResponseError(response = {}, data = null) {
+  return Object.assign(
+    new Error(data?.message || data?.error || `HTTP ${response.status}`),
+    {
+      status: Number(response.status) || 0,
+      code: data?.code || "",
+      body: data,
+    },
+  );
+}
 
 export const apiRequest = async (path, options = {}) => {
   const token = localStorage.getItem("token");
@@ -14,7 +25,7 @@ export const apiRequest = async (path, options = {}) => {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(data?.message || data?.error || `HTTP ${response.status}`);
+    throw apiResponseError(response, data);
   }
   return data;
 };
