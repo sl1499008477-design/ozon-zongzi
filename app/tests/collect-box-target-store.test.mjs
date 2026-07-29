@@ -177,8 +177,32 @@ test("changing the listing target, including changing back, creates a new submis
   assert.equal(changedBackIntent.requestId, "request-c");
 });
 
-test("only an HTTP response makes a listing submission failure definitive", () => {
+test("network, timeout, throttling, and server failures retain the listing submission key", () => {
+  const firstIntent = listingSubmissionIntent(null, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-a",
+    requestId: "key-a",
+  });
+  const retainedAfter500 = settleListingSubmissionIntent(firstIntent, {
+    definitive: listingSubmissionErrorIsDefinitive({ status: 500, code: "INTERNAL_ERROR" }),
+  });
+  const retryIntent = listingSubmissionIntent(retainedAfter500, {
+    collectItemId: "collect-a",
+    targetStoreId: "store-a",
+    requestId: "key-b",
+  });
+
   assert.equal(listingSubmissionErrorIsDefinitive(new TypeError("fetch failed")), false);
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 408 }), false);
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 429 }), false);
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 500 }), false);
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 503 }), false);
+  assert.equal(retryIntent.requestId, "key-a");
+});
+
+test("known client and contract failures clear the listing submission key", () => {
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 400, code: "COLLECT_ITEM_REQUIRED" }), true);
   assert.equal(listingSubmissionErrorIsDefinitive({ status: 409, code: "TARGET_STORE_DISABLED" }), true);
+  assert.equal(listingSubmissionErrorIsDefinitive({ status: 422, code: "TARGET_STORE_REQUIRED" }), true);
   assert.equal(settleListingSubmissionIntent({ requestId: "request-a" }, { definitive: true }), null);
 });

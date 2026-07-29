@@ -2230,6 +2230,8 @@ function validateCollectBoxListingDraft(item = {}, items = [], stocks = []) {
 }
 
 async function collectBoxListingRequest(state, req, id, body = {}, { account, dryRun = false } = {}) {
+  const frozenReplay = !dryRun && listingPipelineEnabled() ? await findListingPreparationReplayV3({ accountId: account?.id, collectItemId: id, targetStoreId: body.targetStoreId, idempotencyKey: body.idempotencyKey }) : null;
+  if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
   const item = cacheItemsForAccount(state, "collectBox", account)
     .find((row) => String(row.id) === String(id));
   if (!item) {

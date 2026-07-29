@@ -73,7 +73,12 @@ export function settleListingSubmissionIntent(current, { definitive = false } = 
 }
 
 export function listingSubmissionErrorIsDefinitive(error) {
-  return Number.isFinite(Number(error?.status)) && Number(error.status) > 0;
+  const status = Number(error?.status);
+  return Number.isInteger(status)
+    && status >= 400
+    && status < 500
+    && status !== 408
+    && status !== 429;
 }
 
 export function buildPrepareListingBody({ collectItemId, targetStoreId, requestId } = {}) {

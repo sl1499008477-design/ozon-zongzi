@@ -367,13 +367,9 @@ try {
       { id: accountId, username: `pipeline-${suffix}`, displayName: "Pipeline Test", role: "admin", status: "active" },
       { id: foreignAccountId, username: `pipeline-foreign-${suffix}`, displayName: "Pipeline Foreign Test", role: "user", status: "active" },
     ],
-    currentStoreId: storeId,
+    currentStoreId: "",
     stores: [
-      { id: storeId, ownerAccountId: accountId, label: "Pipeline Test Store", clientId: `client-${suffix}`, apiKey: "route-test-key", status: "disabled", currencyCode: "RUB" },
-      { id: secondStoreId, ownerAccountId: accountId, label: "Pipeline Second Store", clientId: `client-second-${suffix}`, apiKey: "route-second-key", status: "active", currencyCode: "RUB" },
       { id: foreignStoreId, ownerAccountId: foreignAccountId, label: "Foreign Secret Store", clientId: `client-foreign-${suffix}`, apiKey: "route-foreign-key", status: "active", currencyCode: "RUB" },
-      { id: disabledStoreId, ownerAccountId: accountId, label: "Pipeline Disabled Store", clientId: `client-disabled-${suffix}`, apiKey: "route-disabled-key", status: "disabled", currencyCode: "RUB" },
-      { id: noCredentialStoreId, ownerAccountId: accountId, label: "Pipeline No Credential Store", clientId: `client-no-credential-${suffix}`, status: "active", currencyCode: "RUB" },
     ],
     caches: {
       collectBox: [{
@@ -427,6 +423,24 @@ try {
     );
     assert.equal(routeReplay.status, 200, JSON.stringify(routeReplay.body));
     assert.equal(routeReplay.body.job.id, created.job.id);
+    assert.equal(routeExternalCalls, 0);
+    const missingTarget = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+      { targetStoreId: storeId, idempotencyKey: `unlinked-new-${suffix}` },
+      routeToken,
+    );
+    const foreignTarget = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+      { targetStoreId: foreignStoreId, idempotencyKey: `foreign-new-${suffix}` },
+      routeToken,
+    );
+    assert.deepEqual(
+      [missingTarget.status, missingTarget.body.code, foreignTarget.status, foreignTarget.body.code],
+      [404, "TARGET_STORE_NOT_FOUND", 404, "TARGET_STORE_NOT_FOUND"],
+    );
+    assert.doesNotMatch(JSON.stringify(foreignTarget.body), /Foreign Secret Store|client-foreign/i);
     assert.equal(routeExternalCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
