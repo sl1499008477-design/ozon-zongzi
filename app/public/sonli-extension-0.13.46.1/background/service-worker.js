@@ -31,40 +31,28 @@ if (typeof chrome !== 'undefined') {
   }
 }
 
-// Client-side sync 模块 — 同步加载到 SW global,挂 globalThis.Jz* 命名空间。
-// importScripts 必须在 IIFE 之前(SW 文件顶层)同步调用,否则 SW spec 不允许。
-// 这套模块完全隔离在 background/sync/ 子目录,不动现有 IIFE 内部结构。
+// Service-worker dependencies must be loaded synchronously at top level.
 try {
   importScripts(
-    // cdn-buster 必须在 backend-client 之前 — 后者运行时读 globalThis.JzCdnBuster。
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
+    '../lib/collector-session.js',
     '../lib/seller-identity-policy.js',
     '../lib/portal-bridge-policy.js',
     '../lib/chrome-storage-promises.js',
     '../lib/fx-observation-replay.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
-    'sync/opi-client.js',
-    'sync/backend-client.js',
-    'sync/lease-client.js',
-    'sync/diff-index.js',
-    'sync/sync-state.js',
-    'sync/sync-engine.js',
-    'agent/actions.js',
-    'agent/collect-actions.js',
-    'agent/listing-actions.js',
-    'agent/agent-runtime.js',
+    'collector-client.js',
   );
 } catch (e) {
-  // 不要阻断 SW 启动 — 老功能仍需可用。client-sync 失败时 alarm 不会触发。
-  console.warn('[SW] client-sync importScripts failed:', e?.message || e);
+  console.warn('[SW] dependency import failed:', e?.message || e);
 }
 
 (() => {
   // 启动版本标识：用户跟卖前看 chrome://extensions 极掌 → service worker → console
   // 必须能看到下面这行才说明新代码已加载（否则说明 sw 没 reload）
-  console.log('[SW] booted: searchVariants = /api/v1/search + /api/site/seller-prototype/create-bundle-by-variant-id (sv endpoint 2026-05 下线) + ensureSellerTab + client-sync');
+  console.log('[SW] booted: visible-page capture + collector session');
 
   // Backend 路由策略:
   //   - dev (直接加载 extension/ 源码,不跑 build.js) → globalThis.__JZ_PROD_BUILD__
@@ -83,7 +71,7 @@ try {
   const isLocalBackendUrl = (value) => /^http:\/\/127\.0\.0\.1:3000\/api\b/.test(String(value || ''));
 
   // dev 直接加载源码时 build.js 没跑,qh.jizhangerp.com 保持字面量 → 运行时兜底平台默认。
-  // 影响:tryWebSync 抓 store.jizhangerp.com 标签页登录态、openFrontend 跳转域名。
+  // 影响:受信 Web 标签页查找和 openFrontend 跳转域名。
   // 用 /__BRAND/ 探测(不写全占位符),避免 build textual replace 把探测逻辑也换掉
   // 而导致分销商 build 被误兜底成平台默认。
   const BRAND_WEB_HOST = /__BRAND/.test('qh.jizhangerp.com')
@@ -101,8 +89,6 @@ try {
   const FOLLOW_SELL_RECENT_WINDOW_MS = 60 * 60 * 1000; // 只通知最近 1 小时内创建的失败任务
 
   const STORAGE_KEYS = {
-    token: 'ozonAuthToken',
-    storeId: 'ozonStoreId',
     latestVersion: 'extensionLatestVersion',
     latestDownloadUrl: 'extensionLatestDownloadUrl',
     latestSha256: 'extensionLatestSha256',
@@ -134,39 +120,16 @@ try {
     lastSentAt: 0,
   };
 
-  const HEARTBEAT_ALARM = 'device-heartbeat';
-  const HEARTBEAT_INTERVAL_MINUTES = 5;
-
   // pushSourceCollect in-flight 合并(plan v3 子项 ② P1 修复):
   // chrome.storage 的 dedupe 只在请求完成写 cache 后才命中。如果用户快速连点 5 次,
   // 5 次都可能在第一次 fetch 返回前 miss cache,各自发请求 → backend 收到 5 次重复 upsert。
   // 加 SW 内存级 Map:key 命中时 await 同一个 in-flight Promise,合并并发。
-  const pendingCollects = new Map(); // cacheKey → Promise<{ok, dedupeHit, data, ...}>
 
   // ── sonli 算价：用配置 SKU 的 Ozon 前台 RUB/CNY 实价计算动态汇率 ──
   // 每两小时刷新一次写入 chrome.storage.local。content/jzc-calc.js 监听 storage 变化自动重算。
   const FX_STORAGE_KEY = 'jz_calc_fx_rate_v1';
   const FX_ALARM = 'jzc-fx-refresh';
   const FX_REFRESH_INTERVAL_MINUTES = 2 * 60;
-
-  // ── client-side sync(扩展端跑同步,取代后端 BullMQ cron)──
-  // 三个独立 alarm,各类型独立频率。SW 重启自动 re-create alarm,
-  // chrome.alarms 在用户登录浏览器期间持续触发,不依赖 ozon 页面打开。
-  const CLIENT_SYNC_ALARM_PREFIX = 'jz:client-sync:';
-  const CLIENT_SYNC_TYPES = ['POSTINGS', 'PRODUCTS', 'WAREHOUSES'];
-  // 默认间隔(分钟) — 跟 backend SyncSettingsService.getXxxClientIntervalMin 对齐。
-  // backend 端点 /ozon/sync/client-intervals 可拉服务端配置,MVP 先硬编码,
-  // 之后灰度时再加"启动 + 每 24h 拉一次刷新"逻辑。
-  // 2026-06-02:POSTINGS 3→5 对齐后端 OZON_POSTINGS_CLIENT_INTERVAL_MIN 默认值(5)。
-  // 之前硬编码 3min 无视后端配置,是高峰 api 最大流量源(lease 三件套 + client-report
-  // 逐页上报,~40 req/s)。5min 把这块砍 ~40%,订单新鲜度 3→5min 可接受。
-  const CLIENT_SYNC_INTERVALS = {
-    POSTINGS: 5,
-    PRODUCTS: 30,
-    WAREHOUSES: 360,
-  };
-  const BROWSER_AGENT_ALARM = 'jz:browser-agent';
-  const BROWSER_AGENT_INTERVAL_MINUTES = 1;
 
   /**
    * 登录门户域声明(2026-06-11 串号修复):build.js 给发版包注入
@@ -245,57 +208,28 @@ try {
   const getStorage = (keys) => storagePromises.get(keys);
   const setStorage = (values) => storagePromises.set(values);
   const removeStorage = (keys) => storagePromises.remove(keys);
+  // One-way migration: old builds persisted the Web bearer and selected store
+  // in local storage. Collector auth must never reuse or preserve them.
+  removeStorage(['ozonAuthToken', 'ozonStoreId']).catch(() => {});
 
   // Debounced ozon tab reload — prevents rapid reload storms on auth state changes
   let _reloadTimer = null;
   function reloadOzonTabs() {
     clearTimeout(_reloadTimer);
     _reloadTimer = setTimeout(async () => {
-      const tabs = await chrome.tabs.query({ url: ['*://*.ozon.ru/*', '*://*.ozon.kz/*'] });
+      const tabs = await chrome.tabs.query({
+        url: [
+          'https://ozon.ru/*',
+          'https://www.ozon.ru/*',
+          'https://seller.ozon.ru/*',
+          'https://ozon.kz/*',
+          'https://www.ozon.kz/*',
+        ],
+      });
       for (const tab of tabs) {
         chrome.tabs.reload(tab.id);
       }
     }, 300);
-  }
-
-  // 插件登出 → 同步清掉所有已打开的 ERP 网页标签登录态(扩展登出时网页也登出,
-  // 防止两边停在不同账号)。executeScript 注入清 localStorage + 跳 /login。
-  // 幂等:若标签页本就没 token 直接 return,断开任何来回触发的循环。
-  async function clearWebAuthTabs() {
-    try {
-      // 只命中真正的卖家 web(品牌域 + 平台 apex + 本地),不带 *.jizhangerp.com
-      // 通配,避免误清 admin.jizhangerp.com 等共用同名 localStorage key 的子域。
-      const tabs = await chrome.tabs.query({
-        url: [
-          `*://${BRAND_WEB_HOST}/*`,
-          '*://jizhangerp.com/*',
-          ...LOCAL_FRONTEND_TAB_URLS,
-        ],
-      });
-      for (const tab of tabs) {
-        if (!tab.id) continue;
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => {
-              try {
-                // 幂等清 key(已空也无妨);仅在非 /login 时跳转 → 防来回重定向循环,
-                // 且每个 tab 各自按自身 pathname 判定,多 tab 不会被共享 localStorage
-                // 的"已清空"状态误判而漏跳转。
-                localStorage.removeItem('token');
-                localStorage.removeItem('user');
-                localStorage.removeItem('currentOzonStoreId');
-                if (!location.pathname.startsWith('/login')) {
-                  location.href = '/login';
-                }
-              } catch {}
-            },
-          });
-        } catch {}
-      }
-    } catch (e) {
-      console.warn('[ServiceWorker] clearWebAuthTabs failed:', e?.message);
-    }
   }
 
   let resolvedBackendUrl = null;
@@ -331,6 +265,17 @@ try {
     if (resolvedBackendUrl) return resolvedBackendUrl;
     return detectBackendUrl();
   };
+
+  const collectorSessionManager = globalThis.JzCollectorSession.createCollectorSessionManager({
+    chromeApi: chrome,
+    backendUrl: getBackendUrl,
+    fetchImpl: (...args) => fetch(...args),
+    logger: console,
+  });
+  globalThis.JzCollectorClient.setContext({
+    sessionManager: collectorSessionManager,
+    getDeviceFingerprint: () => getExtensionFingerprint(),
+  });
 
   /**
    * Execute fetch in a seller.ozon.ru tab's page context (MAIN world).
@@ -641,86 +586,6 @@ try {
       _bundlePortalOpts(preferTabId),
     );
 
-  const normalizeSellerCompanyId = (value) => String(value || '').trim().replace(/[^\d]/g, '');
-
-  const pushSellerCompanyIdCandidate = (list, value) => {
-    const id = normalizeSellerCompanyId(value);
-    if (id && !list.includes(id)) list.push(id);
-  };
-
-  const pushSellerCompanyIdCandidates = (list, values) => {
-    for (const value of Array.isArray(values) ? values : [values]) {
-      pushSellerCompanyIdCandidate(list, value);
-    }
-  };
-
-  const readSellerCompanyIdsFromTab = async (tabId) => {
-    if (!tabId) return [];
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          const ids = [];
-          const push = (value) => {
-            const id = String(value || '').trim().replace(/[^\d]/g, '');
-            if (id && id.length >= 4 && id.length <= 15 && !ids.includes(id)) ids.push(id);
-          };
-          const scan = (value) => {
-            const text = String(value || '');
-            if (!text) return;
-            const patterns = [
-              /(?:sc_company_id|sellerCompanyId|seller_company_id|companyId|company_id|company-id|clientId|client_id)["'=:\\s%]*([0-9]{4,15})/gi,
-              /(?:company|seller|client)[^0-9]{0,28}([0-9]{4,15})/gi,
-            ];
-            for (const pattern of patterns) {
-              let match;
-              while ((match = pattern.exec(text))) push(match[1]);
-            }
-          };
-
-          for (const part of document.cookie.split(';')) {
-            const [name, ...rest] = part.trim().split('=');
-            if (/^(sc_company_id|company_id|companyId|seller_company_id|sellerCompanyId)$/i.test(name || '')) {
-              push(rest.join('='));
-            }
-          }
-
-          try {
-            const url = new URL(location.href);
-            for (const key of ['sc_company_id', 'company_id', 'companyId', 'seller_company_id', 'sellerCompanyId', 'client_id', 'clientId']) {
-              push(url.searchParams.get(key));
-            }
-            scan(url.href);
-          } catch {}
-
-          for (const storage of [localStorage, sessionStorage]) {
-            try {
-              for (let i = 0; i < storage.length; i += 1) {
-                const key = storage.key(i);
-                if (!/(company|seller|client|sc_company)/i.test(key || '')) continue;
-                scan(key);
-                scan(storage.getItem(key));
-              }
-            } catch {}
-          }
-
-          try {
-            const scripts = Array.from(document.scripts || [])
-              .filter((script) => !script.src && script.textContent && /(company|seller|client|sc_company)/i.test(script.textContent))
-              .slice(0, 20);
-            for (const script of scripts) scan(script.textContent.slice(0, 200000));
-          } catch {}
-
-          return ids;
-        },
-        world: 'MAIN',
-      });
-      return Array.isArray(results?.[0]?.result) ? results[0].result : [];
-    } catch {
-      return [];
-    }
-  };
-
   const getSellerCompanyIdCandidates = async (options = {}) => {
     if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
     try {
@@ -734,18 +599,6 @@ try {
     const companyId = (await getSellerCompanyIdCandidates(options))[0] || '';
     if (!companyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
     return companyId;
-  };
-
-  const getOzonSellerLoginState = async (options = {}) => {
-    const sellerCompanyIds = await getSellerCompanyIdCandidates(options);
-    const sellerCompanyId = sellerCompanyIds[0] || '';
-    if (!sellerCompanyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
-    return {
-      loggedIn: true,
-      sellerCompanyId: String(sellerCompanyId),
-      sellerCompanyIds,
-      source: 'seller.ozon.ru:sc_company_id',
-    };
   };
 
   /**
@@ -1404,7 +1257,7 @@ try {
     const urlPrefix = opts.urlPrefix !== undefined ? opts.urlPrefix : '/api/v1';
 
     // 解析目标标签:优先消息来源标签(用户正所在的 www 商品页),否则任意已加载完成的
-    // *.ozon.ru 标签(www 或 seller 都行 —— cookie 域级共享、且都有真实浏览器指纹)。
+    // www 或 seller 标签都可使用同域 Cookie 与真实浏览器指纹。
     const isOzonUrl = (u) => /^https?:\/\/([^/]+\.)?ozon\.ru\//i.test(u || '');
     let target = null;
     if (preferTabId) {
@@ -1414,7 +1267,9 @@ try {
       } catch {}
     }
     if (!target) {
-      const tabs = await chrome.tabs.query({ url: ['*://*.ozon.ru/*'] });
+      const tabs = await chrome.tabs.query({
+        url: ['https://www.ozon.ru/*', 'https://seller.ozon.ru/*'],
+      });
       target = tabs.find((t) => t.status === 'complete' && t.active)
         || tabs.find((t) => t.status === 'complete')
         || null;
@@ -1890,15 +1745,10 @@ try {
         } catch {
           errorMsg = rawBody || errorMsg;
         }
-        // 任何 401（设备被顶 / token 过期 / 签名失败 / 缺 tenant 上下文）
-        // 都视为登录失效：清 token + storeId，让前端显示重登提示。
-        // 之前只识别 TOKEN_REVOKED，导致 jwt expired 等场景静默失败、
-        // 用户继续看到挂死状态。
         if (
           response.status === 401 ||
           (response.status === 403 && /AUTH|LOGIN|ACCOUNT|未登录|登录|过期|停用/i.test(`${errorCode || ''} ${errorMsg || ''}`))
         ) {
-          await removeStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
           if (errorCode == null) errorCode = 'AUTH_EXPIRED';
         }
         const err = new Error(`[${response.status}] ${errorMsg}`);
@@ -1907,12 +1757,6 @@ try {
         throw err;
       }
 
-      // 滑动续期:后端在 token 用过半时重签并塞 X-Refreshed-Token,收到就替换本地 token
-      // (同 jti、无感),让活跃用户永不掉登录、少弹「请重新登录」。
-      const refreshed = response.headers.get('X-Refreshed-Token');
-      if (refreshed) {
-        try { await setStorage({ [STORAGE_KEYS.token]: refreshed }); } catch {}
-      }
       const data = await response.json();
       logAiWizardDebug({
         ...debugBase,
@@ -2667,9 +2511,9 @@ try {
   // ── 跟卖任务失败检查 ──
   const checkFollowSellTasks = async () => {
     try {
-      const data = await getStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId, STORAGE_KEYS.followSellNotifiedIds]);
-      const token = data[STORAGE_KEYS.token];
-      const storeId = data[STORAGE_KEYS.storeId];
+      const data = await getStorage([STORAGE_KEYS.followSellNotifiedIds]);
+      const token = null;
+      const storeId = null;
       if (!token || !storeId) return; // 未登录或未选店铺，跳过
 
       const backendUrl = await getBackendUrl();
@@ -2734,13 +2578,6 @@ try {
     });
   };
 
-  const setupHeartbeatAlarm = () => {
-    chrome.alarms.create(HEARTBEAT_ALARM, {
-      delayInMinutes: 1,
-      periodInMinutes: HEARTBEAT_INTERVAL_MINUTES,
-    });
-  };
-
   // ── sonli 算价：按 SKU 采集 Ozon 前台 RUB/CNY 实价 ──
   const collectFxProbe = async (sku) => {
     if (!globalThis.JzFxProbe?.extractFrontendPricePair) throw new Error('汇率采价组件未加载');
@@ -2766,8 +2603,7 @@ try {
   const performExchangeRateRefresh = async () => {
     try {
       lastFxRefreshError = '';
-      const stored = await getStorage([STORAGE_KEYS.token]);
-      const token = stored[STORAGE_KEYS.token];
+      const token = null;
       if (!token) throw new Error('请先登录 sonli');
       const backendUrl = await getBackendUrl();
       const deviceId = await getExtensionFingerprint();
@@ -2832,167 +2668,13 @@ try {
     });
   };
 
-  // ── client-side sync 接入 ──
-  // 在 IIFE 内拼装 closures 注入到 globalThis.JzBackendClient(它在 importScripts 期间
-  // 创建了 setContext stub,等我们调用才有效),保证 backend-client 能复用
-  // SW 现有的 getBackendUrl + token storage 路径。
-  const initClientSyncContext = () => {
-    if (!globalThis.JzBackendClient) return; // importScripts 失败时不可用
-    globalThis.JzBackendClient.setContext({
-      getBackendUrl: async () => {
-        return await getBackendUrl();
-      },
-      getAuthToken: async () => {
-        const s = await getStorage([STORAGE_KEYS.token]);
-        return s[STORAGE_KEYS.token] || null;
-      },
-    });
-  };
-
-  const initBrowserAgentContext = () => {
-    if (!globalThis.JzBrowserAgentRuntime) return;
-    globalThis.JzBrowserAgentRuntime.setContext({
-      getDeviceKey: async () => getExtensionFingerprint(),
-      getDeviceName: async () => {
-        const manifest = chrome.runtime.getManifest() || {};
-        return `${manifest.name || 'sonli'} / Chrome`;
-      },
-    });
-  };
-
-  const setupBrowserAgentAlarm = () => {
-    chrome.alarms.create(BROWSER_AGENT_ALARM, {
-      delayInMinutes: 1,
-      periodInMinutes: BROWSER_AGENT_INTERVAL_MINUTES,
-    });
-  };
-
-  // Phase 3 补:启动时尝试从 backend 拉 /ozon/sync/client-intervals,失败用 default。
-  // 24h 缓存(JzSyncState),允许后端集中调整 tenant 同步频率而不需要扩展更新。
-  const setupClientSyncAlarms = async () => {
-    if (!globalThis.JzSyncEngine) return;
-    let intervals = { ...CLIENT_SYNC_INTERVALS };
-    try {
-      const cached = await globalThis.JzSyncState?.getIntervals?.();
-      if (cached) {
-        intervals = {
-          POSTINGS: cached.postingsMin || intervals.POSTINGS,
-          PRODUCTS: cached.productsMin || intervals.PRODUCTS,
-          WAREHOUSES: cached.warehousesMin || intervals.WAREHOUSES,
-        };
-      } else {
-        // cache miss / TTL 过期 — fetch + 存
-        const fresh = await globalThis.JzBackendClient?.getClientIntervals();
-        if (fresh) {
-          intervals = {
-            POSTINGS: fresh.postingsMin || intervals.POSTINGS,
-            PRODUCTS: fresh.productsMin || intervals.PRODUCTS,
-            WAREHOUSES: fresh.warehousesMin || intervals.WAREHOUSES,
-          };
-          await globalThis.JzSyncState?.setIntervals?.(fresh);
-        }
-      }
-    } catch (e) {
-      // 未登录 / 后端不通 — 静默用 default(灰度期间 OPI 一旦不可用,扩展端也跑不动)
-      console.log(
-        '[client-sync] interval fetch failed, using defaults:',
-        e?.message || e,
-      );
-    }
-    for (const type of CLIENT_SYNC_TYPES) {
-      chrome.alarms.create(`${CLIENT_SYNC_ALARM_PREFIX}${type}`, {
-        delayInMinutes: 1,
-        periodInMinutes: intervals[type],
-      });
-    }
-  };
-
-  // 手动 sync 并发限流(Codex P1 #2):"全部同步" UI 在 ~100ms 内可连发
-  // N×3 条 jzManualSync 消息,直接 fire-and-forget 会瞬间起 15+ 并发 Ozon
-  // request,极易撞 antibot / 429。这里限制同时最多 3 个 runOneType,多余排队。
-  // 队列长度无上限 — UI 那侧只发 active stores × 3 条,有界。
-  const MANUAL_SYNC_MAX_CONCURRENT = 3;
-  let manualSyncRunning = 0;
-  const manualSyncQueue = [];
-  const runManualSyncBounded = async (task) => {
-    if (manualSyncRunning >= MANUAL_SYNC_MAX_CONCURRENT) {
-      await new Promise((resolve) => manualSyncQueue.push(resolve));
-    }
-    manualSyncRunning++;
-    try {
-      await task();
-    } finally {
-      manualSyncRunning--;
-      const next = manualSyncQueue.shift();
-      if (next) next();
-    }
-  };
-
-  // 在飞守卫:同类型一次只能有一个 runRound 在跑。Codex P1 #1。
-  //
-  // 背景:周期性 alarm 触发 runRound,长跨度同步(POSTINGS 多店 + Ozon 慢)经常
-  // 单轮超过 alarm interval (POSTINGS 默认 3min),下一轮 alarm 又 fire,且
-  // backend sync-lease 允许同 holderDeviceId 重新 acquire(它把同 holder 重 acquire
-  // 当成 heartbeat 续约),结果同店同类型并发跑 → Ozon API 重复 call + 双写 cache。
-  //
-  // 这里用 SW 进程级 Set 作为最便宜的守卫(每 SW 实例独立,无跨进程同步)。
-  // 多店 sync 在 runRound 内部循环,守卫粒度是"type",对齐 alarm/lease 粒度。
-  const runningTypes = new Set();
-
-  const handleClientSyncAlarm = async (alarmName) => {
-    if (!globalThis.JzSyncEngine) return;
-    const type = alarmName.slice(CLIENT_SYNC_ALARM_PREFIX.length);
-    if (!CLIENT_SYNC_TYPES.includes(type)) return;
-    // 没登录就跳过(JzBackendClient.getAuthToken 会抛"No backend auth token")
-    const s = await getStorage([STORAGE_KEYS.token]);
-    if (!s[STORAGE_KEYS.token]) return;
-    if (runningTypes.has(type)) {
-      console.log(`[client-sync] skip ${type}: previous round still running`);
-      return;
-    }
-    runningTypes.add(type);
-    try {
-      await globalThis.JzSyncEngine.runRound(type);
-    } catch (e) {
-      console.warn(`[client-sync] runRound(${type}) crashed:`, e?.message || e);
-    } finally {
-      runningTypes.delete(type);
-    }
-  };
-
-  const handleBrowserAgentAlarm = async () => {
-    if (!globalThis.JzBrowserAgentRuntime) return;
-    const s = await getStorage([STORAGE_KEYS.token]);
-    if (!s[STORAGE_KEYS.token]) return;
-    await globalThis.JzBrowserAgentRuntime.tick();
-  };
-
-  const sendHeartbeat = async () => {
-    try {
-      const stored = await getStorage([STORAGE_KEYS.token]);
-      const token = stored[STORAGE_KEYS.token];
-      if (!token) return;
-      const backendUrl = await getBackendUrl();
-      const fp = await getExtensionFingerprint();
-      await apiRequest('PUT', `${backendUrl}/auth/device/heartbeat`, { deviceFingerprint: fp, platform: 'extension' }, token, null);
-    } catch (e) {
-      // 心跳失败不上报
-    }
-  };
-
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === UPDATE_CHECK_ALARM) {
       checkForUpdate();
     } else if (alarm.name === FOLLOW_SELL_CHECK_ALARM) {
       checkFollowSellTasks();
-    } else if (alarm.name === HEARTBEAT_ALARM) {
-      sendHeartbeat();
     } else if (alarm.name === FX_ALARM) {
       refreshExchangeRate();
-    } else if (alarm.name.startsWith(CLIENT_SYNC_ALARM_PREFIX)) {
-      handleClientSyncAlarm(alarm.name);
-    } else if (alarm.name === BROWSER_AGENT_ALARM) {
-      handleBrowserAgentAlarm();
     }
   });
 
@@ -3020,35 +2702,18 @@ try {
     createContextMenus();
     setupUpdateAlarm();
     setupFollowSellCheckAlarm();
-    setupHeartbeatAlarm();
     setupFxAlarm();
-    initClientSyncContext();
-    initBrowserAgentContext();
-    setupClientSyncAlarms();
-    setupBrowserAgentAlarm();
     checkForUpdate();
     refreshExchangeRate();
-    handleBrowserAgentAlarm();
     reloadSellerTabs();
   });
 
   chrome.runtime.onStartup.addListener(() => {
     setupFollowSellCheckAlarm();
-    setupHeartbeatAlarm();
     setupFxAlarm();
-    initClientSyncContext();
-    initBrowserAgentContext();
-    setupClientSyncAlarms();
-    setupBrowserAgentAlarm();
     refreshExchangeRate();
-    handleBrowserAgentAlarm();
     reloadSellerTabs();
   });
-
-  // SW 冷启动(install/startup 之外的 import 时)也要 init,
-  // 因为 chrome 在 SW 唤醒时不会再触发 onStartup。
-  initClientSyncContext();
-  initBrowserAgentContext();
 
   chrome.contextMenus.onClicked.addListener((info) => {
     if (info.menuItemId !== 'ozon-image-search-1688' || !info.srcUrl) return;
@@ -3152,11 +2817,16 @@ try {
         return false;
       }
     }
-    if (message?.webBridge || portalRoute === 'SONLI_WEB_CONTROL') {
-      if (portalRoute !== 'SONLI_WEB_CONTROL' || !webBridgePolicy?.isAllowedWebBridgeAction(message.action)) {
-        sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
-        return false;
-      }
+    if (message?.webBridge) {
+      sendResponse({ ok: false, error: 'WEB_BRIDGE_FORBIDDEN' });
+      return false;
+    }
+    if (
+      message?.portalProtocol === 'SONLI_COLLECTOR_AUTH'
+      && portalRoute !== 'SONLI_COLLECTOR_AUTH'
+    ) {
+      sendResponse({ ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' });
+      return false;
     }
     // 极掌算价：手动重拉汇率（content/jzc-calc.js 走 message.type 路由，
     // 与现有 message.action dispatch 完全独立）
@@ -3328,15 +2998,13 @@ try {
         try {
           const stored = await getStorage([
             STORAGE_KEYS.l1ReportEnabled,
-            STORAGE_KEYS.token,
-            STORAGE_KEYS.storeId,
           ]);
           if (!stored[STORAGE_KEYS.l1ReportEnabled]) {
             l1SwStats.droppedDisabled += samples.length;
             return;
           }
-          const token = stored[STORAGE_KEYS.token];
-          const storeId = stored[STORAGE_KEYS.storeId];
+          const token = null;
+          const storeId = null;
           if (!token) {
             l1SwStats.droppedNoAuth += samples.length;
             return;
@@ -3361,118 +3029,13 @@ try {
       return false; // sync response 已发,async 工作 fire-and-forget
     }
 
-    // 前端"立即同步"按钮(my.jizhangerp.com 等)走 postMessage → bridge →
-    // chrome.runtime.sendMessage 触发本店本类型一次同步。bridge 是 jizhangerp.com
-    // 域内 content_script,这里直接调 JzSyncEngine.runOneType,跳过 backend BullMQ。
-    //
-    // 协议:request  { type:'jzManualSync', storeId, syncType:'PRODUCTS'|'POSTINGS'|'WAREHOUSES' }
-    //       response { ok, jobId?, error? }
-    //
-    // 设计:
-    //  1) 先 GET 一遍 token / sync 模块就绪检查,缺啥就 ok:false 让前端 fallback;
-    //  2) SW 端 pre-write PENDING 行(同步 await),保证 frontend poll
-    //     /ozon/sync/jobs/:jobId 立刻能命中,不会 404 看起来像扩展挂了;
-    //  3) sendResponse({ ok:true, jobId }) 后 fire-and-forget runOneType 入并发限流队列
-    //     (Codex P1 #2):"全部同步" UI 在 100ms 内可连发 N×3 条消息,如果直接
-    //     fire-and-forget 会瞬间起 15+ 并发 Ozon 请求 → 撞 antibot / 429。
-    //     manualSyncSem 限制同时 ≤ 3 个 runOneType,多余排队。lease-busy / crash
-    //     的状态上报维持原逻辑(在 runOneType 落地后)。
-    if (portalRoute === 'JZ_MANUAL_SYNC') {
-      (async () => {
-        try {
-          const storeId = String(message?.storeId || '').trim();
-          const syncType = String(message?.syncType || '').toUpperCase();
-          if (!storeId || !['PRODUCTS', 'POSTINGS', 'WAREHOUSES'].includes(syncType)) {
-            sendResponse({ ok: false, error: 'invalid storeId/syncType' });
-            return;
-          }
-          if (!globalThis.JzSyncEngine || !globalThis.JzSyncState || !globalThis.JzBackendClient) {
-            sendResponse({ ok: false, error: 'sync_modules_not_loaded' });
-            return;
-          }
-          const stored = await getStorage([STORAGE_KEYS.token]);
-          if (!stored[STORAGE_KEYS.token]) {
-            sendResponse({ ok: false, error: 'extension_not_authed' });
-            return;
-          }
-          const deviceId = await globalThis.JzSyncState.getOrCreateDeviceId();
-          const jobId = crypto.randomUUID();
-          const postingsOptions = syncType === 'POSTINGS'
-            ? {
-                postingsSinceDays: Number.isFinite(Number(message?.postingsSinceDays))
-                  ? Number(message.postingsSinceDays)
-                  : undefined,
-                postingsSince: typeof message?.postingsSince === 'string'
-                  ? message.postingsSince
-                  : undefined,
-                postingsTo: typeof message?.postingsTo === 'string'
-                  ? message.postingsTo
-                  : undefined,
-              }
-            : undefined;
-          try {
-            await globalThis.JzBackendClient.clientReport({
-              storeId,
-              type: syncType,
-              clientJobId: jobId,
-              deviceId,
-              status: 'PENDING',
-            });
-          } catch (e) {
-            sendResponse({
-              ok: false,
-              error: `client-report PENDING failed: ${e?.message || e}`,
-            });
-            return;
-          }
-          sendResponse({ ok: true, jobId });
-          // fire-and-forget,通过 runManualSyncBounded 限流(P1 #2)。runOneType 落地
-          // 后照旧根据 lease-busy / crash 上报 FAILED 终态。
-          runManualSyncBounded(() =>
-            globalThis.JzSyncEngine
-              .runOneType({ id: storeId }, syncType, deviceId, jobId, postingsOptions)
-              .then(async (res) => {
-                if (res?.skipped === 'lease-busy') {
-                  await globalThis.JzBackendClient.clientReport({
-                    storeId,
-                    type: syncType,
-                    clientJobId: jobId,
-                    deviceId,
-                    status: 'FAILED',
-                    error: 'lease-busy: 另一台设备正在同步该店铺同类型数据',
-                  }).catch(() => {});
-                }
-              })
-              .catch(async (e) => {
-                console.warn('[jzManualSync] runOneType crash:', e?.message || e);
-                await globalThis.JzBackendClient.clientReport({
-                  storeId,
-                  type: syncType,
-                  clientJobId: jobId,
-                  deviceId,
-                  status: 'FAILED',
-                  error: String(e?.message || e).slice(0, 500),
-                }).catch(() => {});
-              }),
-          );
-        } catch (e) {
-          try {
-            sendResponse({ ok: false, error: e?.message || String(e) });
-          } catch {}
-        }
-      })();
-      return true;
-    }
-
     if (message?.type === 'JZC_L1_REPORT_STATUS') {
       (async () => {
-        const stored = await getStorage([
-          STORAGE_KEYS.l1ReportEnabled,
-          STORAGE_KEYS.token,
-        ]);
+        const stored = await getStorage([STORAGE_KEYS.l1ReportEnabled]);
+        const session = await collectorSessionManager.getCollectorSession();
         sendResponse({
           enabled: !!stored[STORAGE_KEYS.l1ReportEnabled],
-          authed: !!stored[STORAGE_KEYS.token],
+          authed: !!session,
           stats: { ...l1SwStats },
           hint: stored[STORAGE_KEYS.l1ReportEnabled]
             ? 'L1 上报已启用'
@@ -3493,17 +3056,29 @@ try {
   };
 
     const handle = async () => {
-      const data = await getStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
-      const token = data[STORAGE_KEYS.token];
-      const storeId = data[STORAGE_KEYS.storeId];
+      const collectorOperation = await collectorSessionManager.beginCollectorOperation();
+      const collectorSession = collectorOperation;
+      // Legacy privileged actions are removed in Task 9. Until then they fail
+      // closed because a Collector credential must never be used as Web Bearer.
+      const token = null;
+      const storeId = null;
       const backendUrl = await getBackendUrl();
 
       switch (message?.action) {
         case 'getAuth': {
-          // version 由 manifest 注入,前端用它判断是否需要升级提示
           const manifest = chrome.runtime.getManifest() || {};
           const version = String(manifest.version || '');
-          return { ok: true, data: { token, storeId, backendUrl, version } };
+          return {
+            ok: true,
+            data: {
+              authenticated: Boolean(collectorSession),
+              account: collectorSession?.account || null,
+              permissions: collectorSession?.permissions || [],
+              expiresAt: collectorSession?.expiresAt || '',
+              backendUrl,
+              version,
+            },
+          };
         }
         case 'getWatermarkTemplates': {
           if (!token) return { ok: false, error: 'no auth' };
@@ -3561,22 +3136,58 @@ try {
             return { ok: false, error: e?.message || String(e) };
           }
         }
-        case 'saveAuth': {
-          await setStorage({
-            [STORAGE_KEYS.token]: message.token,
-            [STORAGE_KEYS.storeId]: message.storeId,
-          });
+        case 'logout': {
+          await collectorSessionManager.clearCollectorSession(collectorOperation);
           reloadOzonTabs();
           return { ok: true };
         }
-        case 'logout': {
-          await removeStorage([STORAGE_KEYS.token, STORAGE_KEYS.storeId]);
-          reloadOzonTabs();
-          // 扩展登出 → 同步登出已打开的 ERP 网页。await 确保 web 端 token 在本
-          // handler 返回前已清,堵住"清扩展→web 端 syncAuthFromWeb 又把旧 token
-          // 喂回来"的时间窗。
-          await clearWebAuthTabs();
-          return { ok: true };
+        case 'collector.auth.exchange': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          try {
+            const manifest = chrome.runtime.getManifest() || {};
+            const session = await collectorSessionManager.exchangeCollectorTicket({
+              ticket: message.ticket,
+              deviceFingerprint: await getExtensionFingerprint(),
+              extensionVersion: String(manifest.version || ''),
+            });
+            return {
+              ok: true,
+              data: {
+                authenticated: true,
+                account: session.account,
+                permissions: session.permissions,
+                expiresAt: session.expiresAt,
+              },
+            };
+          } catch (error) {
+            return {
+              ok: false,
+              status: error?.status || 0,
+              code: error?.code || 'COLLECTOR_AUTH_FAILED',
+              error: globalThis.JzCollectorSession.redactCollectorSecrets(
+                error?.message || 'Collector auth failed',
+                [message.ticket],
+              ),
+            };
+          }
+        }
+        case 'requestCollectorAuth': {
+          const tabs = await chrome.tabs.query({
+            url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
+          });
+          let requested = 0;
+          for (const tab of tabs) {
+            if (!tab.id) continue;
+            try {
+              const response = await chrome.tabs.sendMessage(tab.id, {
+                action: 'collector.auth.request',
+              });
+              if (response?.ok) requested += 1;
+            } catch {}
+          }
+          return { ok: true, data: { requested } };
         }
         case 'flashBadge': {
           // Flash the toolbar icon badge to draw user attention
@@ -3597,69 +3208,7 @@ try {
             return { ok: true, data: { opened: false } };
           }
         }
-        case 'syncAuthFromWeb': {
-          // Source-of-truth policy: popup is the primary login UI for the extension.
-          //   - Web empty          → DO NOT clear extension (may just be an un-logged-in Web tab).
-          //   - Extension empty    → adopt Web token (first-time login synced from Web).
-          //   - Same token on both → allow storeId to update (user switched store on Web).
-          //   - Different tokens   → IGNORE Web; extension wins. Prevents stale Web tokens
-          //                          from clobbering a fresh popup login.
-          if (!message.token) {
-            return { ok: true };
-          }
-          if (!token) {
-            await setStorage({
-              [STORAGE_KEYS.token]: message.token,
-              [STORAGE_KEYS.storeId]: message.storeId || storeId,
-            });
-            console.log('[ServiceWorker] Auth adopted from web frontend (extension was logged out)');
-            reloadOzonTabs();
-          } else if (message.token === token) {
-            if (message.storeId && message.storeId !== storeId) {
-              await setStorage({ [STORAGE_KEYS.storeId]: message.storeId });
-              console.log('[ServiceWorker] Store switched from web frontend');
-              reloadOzonTabs();
-            }
-          } else {
-            console.log('[ServiceWorker] Ignoring web token — differs from extension token');
-          }
-          return { ok: true };
-        }
-        case 'tryWebSync': {
-          // Popup requests: try to get token from any open jizhangerp.com tab
-          try {
-            const tabs = await chrome.tabs.query({
-              url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
-            });
-            for (const tab of tabs) {
-              if (tab.id) {
-                const results = await chrome.scripting.executeScript({
-                  target: { tabId: tab.id },
-                  func: () => ({
-                    token: localStorage.getItem('token'),
-                    storeId: localStorage.getItem('currentOzonStoreId'),
-                  }),
-                });
-                const result = results?.[0]?.result;
-                if (result?.token) {
-                  await setStorage({
-                    [STORAGE_KEYS.token]: result.token,
-                    [STORAGE_KEYS.storeId]: result.storeId || null,
-                  });
-                  return { ok: true, data: { synced: true, token: result.token, storeId: result.storeId } };
-                }
-              }
-            }
-          } catch (e) {
-            console.warn('[ServiceWorker] tryWebSync failed:', e.message);
-          }
-          return { ok: true, data: { synced: false } };
-        }
         case 'openFrontend': {
-          // Open a frontend page AND preload the extension's token into the
-          // tab's localStorage before React hydrates, so the user lands on
-          // the target page already authenticated — no /login flash, no
-          // reload round-trip.
           const frontendBase = isLocalBackendUrl(backendUrl)
             ? LOCAL_FRONTEND_BASE_URL
             : `https://${BRAND_WEB_HOST}`;
@@ -3668,46 +3217,7 @@ try {
             : '/';
           const url = `${frontendBase}${path}`;
 
-          const tab = await chrome.tabs.create({ url, active: true });
-          const tabId = tab?.id;
-
-          if (tabId && token) {
-            const inject = async () => {
-              try {
-                await chrome.scripting.executeScript({
-                  target: { tabId },
-                  func: (t, s) => {
-                    try {
-                      if (localStorage.getItem('token') !== t) {
-                        localStorage.setItem('token', t);
-                      }
-                      if (s && localStorage.getItem('currentOzonStoreId') !== s) {
-                        localStorage.setItem('currentOzonStoreId', s);
-                      }
-                    } catch {}
-                  },
-                  args: [token, storeId || null],
-                });
-              } catch (e) {
-                console.warn('[openFrontend] inject failed:', e.message);
-              }
-            };
-
-            let settled = false;
-            const listener = (updatedId, info) => {
-              if (updatedId !== tabId || settled) return;
-              if (info.status === 'loading' || info.status === 'complete') {
-                settled = true;
-                chrome.tabs.onUpdated.removeListener(listener);
-                inject();
-              }
-            };
-            chrome.tabs.onUpdated.addListener(listener);
-            // Safety: remove listener after 10s even if status events never fire.
-            setTimeout(() => {
-              if (!settled) chrome.tabs.onUpdated.removeListener(listener);
-            }, 10_000);
-          }
+          await chrome.tabs.create({ url, active: true });
           return { ok: true };
         }
         case 'openSellerPortal': {
@@ -3726,13 +3236,6 @@ try {
             return { ok: true, data: { reused: false } };
           } catch (e) {
             return { ok: false, error: e?.message || 'open seller portal failed' };
-          }
-        }
-        case 'getOzonSellerLoginState': {
-          try {
-            return { ok: true, data: await getOzonSellerLoginState({ tabId: sender?.tab?.id }) };
-          } catch (e) {
-            return { ok: false, error: e?.message || 'ozon seller login not detected' };
           }
         }
         case 'refreshBackend': {
@@ -3761,190 +3264,13 @@ try {
           };
         }
         case 'pushSourceCollect': {
-          // Multi-source unified ingest. message.sourceId in
-          // 'ozon'|'1688'|'pdd'|'taobao'; message.raw is the platform-specific
-          // raw scraped payload. Backend's source provider does normalization.
-          //
-          // 客户端去重 + 失败重试(plan v3 子项 ②):
-          // - dedupe key 含 backendHost + 登录账号 token 摘要 + 经营店铺
-          //   + 已验证的数据采集店铺 + sourceId + sku,24h TTL
-          // - 内存级 pendingCollects 合并 in-flight 并发(快速连点 5 次合并为 1 次 POST)
-          // - 网络层失败(5xx / 408 / 429 / network)指数退避,attempt 1 失败等 1s
-          //   再试,attempt 2 失败等 2s 再试,attempt 3 失败直接放弃。总共最多 2 次等待。
-          // - 4xx 业务错误立即返回(401/403/422 重试无意义)
-          // - 成功才写 cache,失败 3 次不写(留给下次重试)
-          // - forceResubmit:true 跳 dedupe(用户主动覆盖)
-          const sourceId = String(message.sourceId || '').trim();
-          if (!sourceId) return { ok: false, error: 'sourceId required' };
-          const sku = String(message?.raw?.sku || '').trim();
-          const forceResubmit = Boolean(message.forceResubmit);
-          // 让调用方(AI 采集向导)用 message.storeId 覆盖扩展全局当前店铺,对齐
-          // followSell 等其他 action 的 `message.storeId || storeId` 写法。否则
-          // 1688 采集会落到全局店铺或 null,前端采集箱按所选店铺过滤就看不到。
-          const effStoreId = message.storeId || storeId;
-          const collectRequestKey = String(message.requestId || `collect-${crypto.randomUUID()}`);
-          let verifiedDataCollectionStoreId = '';
-          if (sourceId.toLowerCase() === 'ozon') {
-            let sellerLogin = null;
-            try {
-              sellerLogin = await getOzonSellerLoginState({ tabId: sender?.tab?.id });
-            } catch (e) {
-              return {
-                ok: false,
-                error: e?.message || '请先登录 seller.ozon.ru 并切换到数据采集店铺',
-              };
-            }
-            try {
-              const verifyResp = await apiRequest(
-                'POST',
-                `${backendUrl}/local/data-collection-stores/verify`,
-                {
-                  sellerCompanyId: sellerLogin.sellerCompanyId,
-                  sellerCompanyIds: sellerLogin.sellerCompanyIds || [],
-                  requestId: collectRequestKey,
-                },
-                token,
-                effStoreId,
-                20_000,
-              );
-              verifiedDataCollectionStoreId = verifyResp?.dataCollectionStoreId || verifyResp?.store?.id || '';
-            } catch (e) {
-              return { ok: false, error: e?.message || '数据采集店铺校验失败' };
-            }
-          }
-          const DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
-
-          let cacheKey = null;
-          if (sku && backendUrl) {
-            try {
-              const host = new URL(backendUrl).host;
-              // sku / sourceId 走 encodeURIComponent,防止 1688/PDD 等 sku 含 `:` `/` 时
-              // 切坏 tuple 边界(当前 ozon sku 都是数字串,留作扩展防御)。
-              const accountScope = hashString(String(token || 'anonymous'));
-              cacheKey = `jz-collect-recent-v2:${host}:${accountScope}:${encodeURIComponent(effStoreId || 'no-store')}:${encodeURIComponent(verifiedDataCollectionStoreId || 'no-collection-store')}:${encodeURIComponent(sourceId)}:${encodeURIComponent(sku)}`;
-              if (!forceResubmit) {
-                const cached = await new Promise((resolve) => {
-                  chrome.storage.local.get([cacheKey], (d) => resolve(d?.[cacheKey]));
-                });
-                if (cached && Date.now() - (cached.at || 0) < DEDUPE_TTL_MS) {
-                  // 必须把 dedupeHit / lastAt 放进 data — shared-utils.js sendMessage
-                  // wrapper 在 resp.ok=true 时只 resolve(response.data),envelope 字段
-                  // 全丢。下面 success 和 in-flight 合并路径同。
-                  return { ok: true, data: { dedupeHit: true, lastAt: cached.at, result: null } };
-                }
-              }
-            } catch {
-              // 拿不到 host 就跳过 dedupe,保留原始 fetch 路径
-              cacheKey = null;
-            }
-          }
-
-          // in-flight 合并:并发同 cacheKey 的请求 await 同一个 Promise
-          if (cacheKey && !forceResubmit && pendingCollects.has(cacheKey)) {
-            try {
-              const resp = await pendingCollects.get(cacheKey);
-              // 给后到的并发请求标 dedupeHit,UI 区分"刚刚已采集"。
-              // resp.data 形如 { dedupeHit, lastAt, result } — 仅覆盖 dedupeHit
-              return resp?.ok
-                ? { ok: true, data: { ...resp.data, dedupeHit: true } }
-                : resp;
-            } catch (e) {
-              return { ok: false, error: e?.message || 'pending request failed' };
-            }
-          }
-
-          const collectPromise = (async () => {
-            const MAX_RETRIES = 3;
-            let lastErr = null;
-            const recoverRequestResult = async () => {
-              for (let poll = 0; poll < 3; poll += 1) {
-                try {
-                  const recovered = await apiRequest(
-                    'GET',
-                    `${backendUrl}/local/collect-requests/${encodeURIComponent(collectRequestKey)}`,
-                    null,
-                    token,
-                    effStoreId,
-                    5_000,
-                  );
-                  const request = recovered?.request || recovered?.data?.request || recovered;
-                  if (request?.status === 'SUCCEEDED') return request.response?.item || request.response || null;
-                  if (request?.status === 'FAILED') {
-                    const failure = new Error(request.error_message || '采集请求处理失败');
-                    failure.status = 422;
-                    throw failure;
-                  }
-                } catch (recoveryError) {
-                  if (recoveryError?.status === 422) throw recoveryError;
-                }
-                if (poll < 2) await new Promise((resolve) => setTimeout(resolve, 500));
-              }
-              return null;
-            };
-            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-              try {
-                const body = { raw: message.raw || {}, idempotencyKey: collectRequestKey };
-                if (effStoreId) body.storeId = effStoreId;   // 后端 body.storeId 优先于 header
-                if (verifiedDataCollectionStoreId) body.dataCollectionStoreId = verifiedDataCollectionStoreId;
-                if (message.resetDraft === true) body.resetDraft = true;
-                const data = await apiRequest(
-                  'POST',
-                  `${backendUrl}/sources/${encodeURIComponent(sourceId)}/collect`,
-                  body,
-                  token,
-                  effStoreId,
-                  60_000,
-                  aiWizardDebugMeta(message, 'pushSourceCollect', {
-                    sourceId,
-                    rawOfferId: message?.raw?.offerId,
-                    rawTitleLen: typeof message?.raw?.title === 'string' ? message.raw.title.length : undefined,
-                    rawImageCount: Array.isArray(message?.raw?.mainImages) ? message.raw.mainImages.length : undefined,
-                  }),
-                );
-                if (cacheKey) {
-                  try {
-                    await new Promise((r) => chrome.storage.local.set({ [cacheKey]: { at: Date.now() } }, r));
-                  } catch {}
-                }
-                // 把 dedupeHit / lastAt / 后端 result 全塞进 data,let sendMessage 的
-                // resolve(response.data) 一次性递给 content script。
-                return { ok: true, data: { dedupeHit: false, lastAt: null, result: data } };
-              } catch (error) {
-                lastErr = error;
-                const status = error?.status;
-                // 4xx 业务错误(非 408/429)立即失败,不重试
-                if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-                  return { ok: false, error: error.message, status };
-                }
-                try {
-                  const recovered = await recoverRequestResult();
-                  if (recovered) {
-                    if (cacheKey) {
-                      await new Promise((resolve) => chrome.storage.local.set({ [cacheKey]: { at: Date.now() } }, resolve));
-                    }
-                    return { ok: true, data: { dedupeHit: false, recoveredAfterTimeout: true, lastAt: null, result: recovered } };
-                  }
-                } catch (recoveryError) {
-                  return { ok: false, error: recoveryError.message, status: recoveryError.status || 422 };
-                }
-                if (attempt < MAX_RETRIES) {
-                  await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
-                }
-              }
-            }
-            return { ok: false, error: lastErr?.message || 'NETWORK_ERROR' };
-          })();
-
-          // forceResubmit 不写 pendingCollects:避免强制请求覆盖同 cacheKey 的普通请求,
-          // 让后到的普通请求 await 错语义(强制语义跟普通采集不能合并)
-          if (cacheKey && !forceResubmit) {
-            pendingCollects.set(cacheKey, collectPromise);
-          }
-          try {
-            return await collectPromise;
-          } finally {
-            if (cacheKey && !forceResubmit) pendingCollects.delete(cacheKey);
-          }
+          return globalThis.JzCollectorClient.upload({
+            sourceId: message.sourceId,
+            raw: message.raw,
+            requestId: message.requestId,
+            sourceUrl: message.url,
+            collectorOperation,
+          });
         }
         case 'collectBatch': {
           // Legacy action, kept for backward compatibility with older content scripts.
@@ -3968,21 +3294,6 @@ try {
           } catch (error) {
             return { ok: false, error: error.message };
           }
-        }
-        case 'browserAgentGetState': {
-          if (!globalThis.JzBrowserAgentRuntime) {
-            return { ok: false, error: 'browser agent runtime unavailable' };
-          }
-          return {
-            ok: true,
-            data: await globalThis.JzBrowserAgentRuntime.getState(),
-          };
-        }
-        case 'browserAgentCancelCurrent': {
-          if (!globalThis.JzBrowserAgentRuntime) {
-            return { ok: false, error: 'browser agent runtime unavailable' };
-          }
-          return await globalThis.JzBrowserAgentRuntime.requestCancel(message.jobId || null);
         }
         case 'addFavorite': {
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/favorites`, message.product, token, storeId) };
@@ -5153,9 +4464,9 @@ try {
             const ozonTabs = await chrome.tabs.query({
               url: [
                 'https://www.ozon.ru/*',
-                'https://*.ozon.ru/*',
+                'https://ozon.ru/*',
                 'https://ozon.kz/*',
-                'https://*.ozon.kz/*',
+                'https://www.ozon.kz/*',
               ],
             });
             // 排除 seller.* (反爬信任域不是这个;且 seller portal 走另一条路径)
@@ -5199,7 +4510,7 @@ try {
         }
         case 'proxyImageFetch': {
           // 由 1688 content script 调用：在 background 代为 fetch ozon CDN 图片，
-          // 避开页面 CORS（host_permissions 已含 *.ozon.ru / *.ozonusercontent.com）。
+          // 避开页面 CORS（host_permissions 仅保留可见 Ozon 页面与媒体域）。
           // 返回 base64 dataURL，content script 转 blob/File 注入 1688 file input。
           try {
             const url = String(message.url || '');
@@ -5313,12 +4624,6 @@ try {
         case 'getStores': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/auth/ozon-stores`, null, token, storeId) };
         }
-        case 'getCaptcha': {
-          return { ok: true, data: await apiRequest('GET', `${backendUrl}/auth/captcha`, null, null, null) };
-        }
-        case 'sendSmsCode': {
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/send-code`, { phoneNumber: message.phoneNumber, captchaId: message.captchaId, captchaCode: message.captchaCode }, null, null) };
-        }
         case 'setMachineFingerprint': {
           // content script / popup / sync-auth 启动时主动推 v3 fingerprint 给 SW,
           // SW 缓存到 chrome.storage.local。后续 SW 自身的 heartbeat/login 等动作
@@ -5335,32 +4640,6 @@ try {
           } catch (e) {
             return { ok: false, error: e?.message };
           }
-        }
-        case 'loginSms': {
-          const fp = await getExtensionFingerprint(message.deviceFingerprint);
-          // /auth/login 旧短信登录已被后端禁用 (auth.controller.ts:82),
-          // 新路径 /auth/sms/verify body shape 兼容 (phoneNumber/code/deviceFingerprint/platform)。
-          // 返回 shape (auth.service.ts:2784):
-          //   单身份:{ accessToken, user }          ← P9 后是 camelCase,不再是 access_token
-          //   多身份:{ sessionToken, identities }   ← popup 没有 UI 选择,引导走网页端
-          // popup.js 三个字段兜底 (accessToken / access_token / token),保证 backend
-          // shape 漂移不会再让登录挂死。
-          // portalHost(2026-06-11 串号修复):SW 直调 api.* 时,后端 extractHost 的
-          // Origin 是 chrome-extension:// 被跳过 → host 落 api.* → 一律判平台直营,
-          // 用户身份信息已脱敏。
-          // 用户联系方式已脱敏。
-          // store.jizhangerp.com)随 body 显式声明登录门户,后端优先用它解析
-          // distributorId。dev 源码加载无 brand 注入 → undefined → 后端走原 host
-          // 链路,行为不变。
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/sms/verify`, { phoneNumber: message.phoneNumber, code: message.code, deviceFingerprint: fp, platform: 'extension', portalHost: jzBrandPortalHost() }, null, null) };
-        }
-        case 'loginPassword': {
-          const fp = await getExtensionFingerprint(message.deviceFingerprint);
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/login-password`, { phoneNumber: message.phoneNumber, password: message.password, captchaId: message.captchaId, captchaCode: message.captchaCode, deviceFingerprint: fp, platform: 'extension', portalHost: jzBrandPortalHost() }, null, null) };
-        }
-        case 'login': {
-          const fp = await getExtensionFingerprint(message.deviceFingerprint);
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/auth/login-password`, { phoneNumber: message.phone, password: message.password, deviceFingerprint: fp, platform: 'extension', portalHost: jzBrandPortalHost() }, null, null) };
         }
         case 'getUpdateInfo': {
           const stored = await getStorage([

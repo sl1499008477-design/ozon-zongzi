@@ -14,13 +14,10 @@
  * - 协议版本 "v1"
  *
  * 协议:
- *   request:  { __jz:"v1", kind:"ping.request"|"prefetch.request"|"sync.request"|"follow-sell.request",
- *               reqId, skus?, storeId?, syncType?, sku?, price? }
- *   response: { __jz:"v1", kind:"ping.response"|"prefetch.response"|"sync.response"|"follow-sell.response",
+ *   request:  { __jz:"v1", kind:"ping.request"|"prefetch.request"|"follow-sell.request",
+ *               reqId, skus?, storeId?, sku?, price? }
+ *   response: { __jz:"v1", kind:"ping.response"|"prefetch.response"|"follow-sell.response",
  *               reqId, ok, ...payload }
- *
- * sync.request: 把 my.jizhangerp.com 上"立即同步"按钮的触发转发给 SW 跑 client-sync
- *   (取代后端 /ozon/sync/products|postings|warehouses BullMQ 路径)。
  *
  * 调用方见 frontend/lib/extension-bridge.ts
  */
@@ -85,47 +82,6 @@
         reject(e);
       }
     });
-  }
-
-  async function handleSync(reqId, storeId, syncType, postingsOptions) {
-    if (!storeId || !syncType) {
-      reply(reqId, "sync.response", {
-        ok: false,
-        error: "storeId / syncType 必填",
-      });
-      return;
-    }
-    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
-      // bridge 不在 extension 上下文(理论上不可能,content_script 必有 chrome.runtime)
-      reply(reqId, "sync.response", {
-        ok: false,
-        error: "chrome_runtime_unavailable",
-      });
-      return;
-    }
-    try {
-      const resp = await sendToSw({
-        type: "jzManualSync",
-        portalProtocol: "JZ_ERP",
-        storeId: String(storeId),
-        syncType: String(syncType).toUpperCase(),
-        ...(postingsOptions || {}),
-      });
-      if (!resp) {
-        reply(reqId, "sync.response", { ok: false, error: "no_response_from_sw" });
-        return;
-      }
-      reply(reqId, "sync.response", {
-        ok: !!resp.ok,
-        jobId: resp.jobId,
-        error: resp.error,
-      });
-    } catch (e) {
-      reply(reqId, "sync.response", {
-        ok: false,
-        error: e?.message || String(e),
-      });
-    }
   }
 
   async function handleFollowSell(reqId, payload) {
@@ -247,12 +203,6 @@
       });
     } else if (msg.kind === "prefetch.request") {
       handlePrefetch(msg.reqId, msg.skus);
-    } else if (msg.kind === "sync.request") {
-      handleSync(msg.reqId, msg.storeId, msg.syncType, {
-        postingsSinceDays: msg.postingsSinceDays,
-        postingsSince: msg.postingsSince,
-        postingsTo: msg.postingsTo,
-      });
     } else if (msg.kind === "follow-sell.request") {
       handleFollowSell(msg.reqId, msg);
     }

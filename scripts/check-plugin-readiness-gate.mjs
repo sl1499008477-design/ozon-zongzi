@@ -1,8 +1,37 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import path from "node:path";
+import process from "node:process";
+import {
+  assertCaptureOnlyFileSet,
+  assertCaptureOnlyPermissionPolicy,
+  assertCaptureOnlyServiceWorker,
+  assertPopupWebLoginGuidance,
+} from "./extension-capture-only-policy.mjs";
+
+const walk = (root, current = "") => {
+  const files = [];
+  for (const entry of readdirSync(path.join(root, current), { withFileTypes: true })) {
+    const rel = path.join(current, entry.name).split(path.sep).join("/");
+    if (entry.isDirectory()) files.push(...walk(root, rel));
+    else if (entry.isFile()) files.push(rel);
+  }
+  return files;
+};
 
 const appSource = readFileSync("app/src/App.jsx", "utf8");
 const bridgeSource = readFileSync("extension/content/jizhangerp-bridge.js", "utf8");
+const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8"));
+assertCaptureOnlyPermissionPolicy(manifest, manifest);
+assertCaptureOnlyFileSet(walk("extension"));
+assertCaptureOnlyServiceWorker(
+  readFileSync("extension/background/service-worker.js", "utf8"),
+);
+assertPopupWebLoginGuidance(
+  readFileSync("extension/popup/popup.html", "utf8"),
+  readFileSync("extension/popup/popup.js", "utf8"),
+);
 
 const requirePattern = (source, pattern, message) => {
   assert.match(source, pattern, message);
@@ -21,5 +50,16 @@ requirePattern(appSource, /disabled=\{listingSubmitDisabled\}[\s\S]*提交上架
 requirePattern(appSource, /源插件兼容采集模式/, "plugin page must explain source-plugin compatibility mode");
 requirePattern(appSource, /const \[listingResult, setListingResult\] = useState\(null\)/, "collect edit page must keep listing result in visible state");
 requirePattern(appSource, /className="collect-listing-result"[\s\S]*listingResult\.title[\s\S]*listingResult\.detail/, "collect edit page must render persistent listing result details");
+
+const captureOnlyBehavior = spawnSync(
+  process.execPath,
+  ["--test", "extension/tests/sync-capability-removed.test.js"],
+  { stdio: "inherit", shell: false },
+);
+assert.equal(
+  captureOnlyBehavior.status,
+  0,
+  "plugin readiness requires passing capture-only extension behavior",
+);
 
 console.log("plugin readiness gate ok");

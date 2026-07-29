@@ -56,9 +56,11 @@ function readZipEntry(zipPath, entry) {
 
 const expected = await listFiles(extensionDir);
 for (const required of [
+  "background/collector-client.js",
   "background/service-worker.js",
   "lib/collector-session.js",
   "tests/collector-session.test.js",
+  "tests/sync-capability-removed.test.js",
 ]) {
   if (!expected.includes(required)) {
     throw new Error(`required collector package source missing: ${required}`);

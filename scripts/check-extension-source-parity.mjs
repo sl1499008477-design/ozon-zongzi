@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
+import {
+  assertCaptureOnlyFileSet,
+  assertCaptureOnlyPermissionPolicy,
+  assertCaptureOnlyServiceWorker,
+  assertPopupWebLoginGuidance,
+} from "./extension-capture-only-policy.mjs";
 import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
 
 const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-source-parity.mjs");
@@ -9,10 +15,7 @@ if (!sourceDir) process.exit(2);
 const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
 
 const allowedDiffs = new Set([
-  "background/__tests__/dedupe.smoke.test.js",
   "background/service-worker.js",
-  "background/sync/backend-client.js",
-  "background/sync/sync-engine.js",
   "batch-upload/index.html",
   "batch-upload/index.js",
   "content/alibaba-1688.js",
@@ -39,6 +42,7 @@ const allowedDiffs = new Set([
 const allowedLocalOnly = new Set([
   "background/__tests__/fx-probe.smoke.test.js",
   "background/__tests__/follow-sell-dry-run-route.test.js",
+  "background/collector-client.js",
   "icons/sonli-logo.png",
   "lib/category-readiness.js",
   "lib/chrome-storage-promises.js",
@@ -51,6 +55,7 @@ const allowedLocalOnly = new Set([
   "lib/web-bridge-policy.js",
   "package.json",
   "popup/__tests__/popup-routing.smoke.test.js",
+  "popup/__tests__/popup-collector-session.runtime.test.js",
   "tests/category-readiness.test.js",
   "tests/chrome-storage-promises.test.js",
   "tests/collector-session.test.js",
@@ -58,21 +63,33 @@ const allowedLocalOnly = new Set([
   "tests/fx-observation-replay.test.js",
   "tests/jizhangerp-bridge-follow-sell.test.js",
   "tests/manifest-security-contract.test.js",
+  "tests/helpers/chrome-match-pattern.js",
   "tests/portal-bridge-policy.test.js",
   "tests/pricing-config-cache-policy.test.js",
   "tests/seller-identity-policy.test.js",
+  "tests/sync-capability-removed.test.js",
   "tests/web-bridge-policy.test.js",
 ]);
 
-const removedCollectorFiles = new Set([
+const intentionallyRetiredFiles = new Set([
+  "background/__tests__/dedupe.smoke.test.js",
+  "background/sync/backend-client.js",
+  "background/sync/diff-index.js",
+  "background/sync/lease-client.js",
+  "background/sync/opi-client.js",
+  "background/sync/sync-engine.js",
+  "background/sync/sync-state.js",
   "content/collector/anti-ban.js",
   "content/collector/auto-scroller.js",
   "content/collector/db.js",
   "content/collector/keyword-pilot.js",
   "content/collector/panel.css",
   "content/collector/panel.js",
+  "popup/__tests__/browser-agent-popup.smoke.test.js",
   "tests/collector-manual-start.test.js",
   "tests/keyword-pilot-ownership.test.js",
+  "tests/postings-manual-sync-window.test.js",
+  "tests/sync-state-watermark.test.js",
 ]);
 
 const walk = (root, current = "") => {
@@ -93,6 +110,7 @@ const walk = (root, current = "") => {
 const hashFile = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
 const localFiles = new Set(walk(localDir));
+assertCaptureOnlyFileSet(localFiles);
 const localManifest = JSON.parse(readFileSync(path.join(localDir, "manifest.json"), "utf8"));
 assert.equal(localManifest.name, "sonli");
 assert.equal(localManifest.description, "sonli");
@@ -123,6 +141,13 @@ assert.match(bridgeSource, /follow-sell\.request/);
 assert.match(bridgeSource, /dryRun:\s*!!payload\?\.dryRun/);
 assert.match(bridgeSource, /localListingBridge:\s*true/);
 assert.match(bridgeSource, /dryRunPreview:\s*true/);
+assertCaptureOnlyServiceWorker(
+  readFileSync(path.join(localDir, "background/service-worker.js"), "utf8"),
+);
+assertPopupWebLoginGuidance(
+  readFileSync(path.join(localDir, "popup/popup.html"), "utf8"),
+  readFileSync(path.join(localDir, "popup/popup.js"), "utf8"),
+);
 
 const upstreamAvailable = existsSync(sourceDir) && statSync(sourceDir).isDirectory();
 if (!upstreamAvailable) {
@@ -132,7 +157,7 @@ if (!upstreamAvailable) {
   const problems = [];
 
   for (const rel of sourceFiles) {
-    if (removedCollectorFiles.has(rel)) continue;
+    if (intentionallyRetiredFiles.has(rel)) continue;
     if (!localFiles.has(rel)) {
       problems.push(`missing local file: ${rel}`);
       continue;
@@ -154,8 +179,7 @@ if (!upstreamAvailable) {
 
   const sourceManifest = JSON.parse(readFileSync(path.join(sourceDir, "manifest.json"), "utf8"));
   assert.equal(localManifest.version, sourceManifest.version);
-  assert.deepEqual(localManifest.permissions, sourceManifest.permissions);
-  assert.equal(localManifest.content_scripts.length, sourceManifest.content_scripts.length);
+  assertCaptureOnlyPermissionPolicy(localManifest, sourceManifest);
   console.log(`extension upstream parity ok against ${sourceDir}`);
 }
 

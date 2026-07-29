@@ -1,9 +1,15 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
+import {
+  assertCaptureOnlyFileSet,
+  assertCaptureOnlyPermissionPolicy,
+  assertCaptureOnlyServiceWorker,
+  assertPopupWebLoginGuidance,
+} from "./extension-capture-only-policy.mjs";
 
 const rootDir = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +21,17 @@ const zipPaths = [
 ];
 
 let failed = false;
+
+async function listFiles(dir, prefix = "") {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) files.push(...await listFiles(path.join(dir, entry.name), rel));
+    else if (entry.isFile()) files.push(rel);
+  }
+  return files.sort();
+}
 
 for (const zipPath of zipPaths) {
   const label = path.relative(rootDir, zipPath);
@@ -30,9 +47,24 @@ for (const zipPath of zipPaths) {
       continue;
     }
 
+    const packagedFiles = await listFiles(tmpDir);
+    const packagedManifest = JSON.parse(
+      await readFile(path.join(tmpDir, "manifest.json"), "utf8"),
+    );
+    assertCaptureOnlyFileSet(packagedFiles);
+    assertCaptureOnlyPermissionPolicy(packagedManifest, packagedManifest);
+    assertCaptureOnlyServiceWorker(
+      await readFile(path.join(tmpDir, "background", "service-worker.js"), "utf8"),
+    );
+    assertPopupWebLoginGuidance(
+      await readFile(path.join(tmpDir, "popup", "popup.html"), "utf8"),
+      await readFile(path.join(tmpDir, "popup", "popup.js"), "utf8"),
+    );
+
     const tests = [
       ["collector service-worker startup", path.join(scriptsDir, "check-packaged-collector-runtime.mjs"), tmpDir],
       ["collector session runtime", path.join(tmpDir, "tests", "collector-session.test.js")],
+      ["capture-only behavior", path.join(tmpDir, "tests", "sync-capability-removed.test.js")],
       ["bridge smoke", path.join(tmpDir, "tests", "jizhangerp-bridge-follow-sell.test.js")],
       ["dryRun route guard", path.join(tmpDir, "background", "__tests__", "follow-sell-dry-run-route.test.js")],
     ];

@@ -40,19 +40,6 @@
   const logoutBtn = document.getElementById("logout-btn");
   const serverStatus = document.getElementById("server-status");
 
-  // store card
-  const storeCard = document.getElementById("store-card");
-  const storeName = document.getElementById("store-name");
-  const storeAuth = document.getElementById("store-auth");
-  const storeAuthDot = storeAuth.querySelector(".auth-dot");
-  const storeAuthText = storeAuth.querySelector(".auth-text");
-  const storeR = document.getElementById("store-r");
-  const storeSelect = document.getElementById("store-select");
-  const storeCurrency = document.getElementById("store-currency");
-  const storePremium = document.getElementById("store-premium");
-  const syncCookieBtn = document.getElementById("sync-cookie-btn");
-  const sellerPortalBtn = document.getElementById("seller-portal-btn");
-  const sellerPortalLabel = document.getElementById("seller-portal-label");
   const connectionStatus = document.getElementById("connection-status");
   const connectionStatusText = document.getElementById(
     "connection-status-text",
@@ -66,17 +53,6 @@
   const navBadgeProducts = document.getElementById("nav-badge-products");
   const navBadgeCollect = document.getElementById("nav-badge-collect");
 
-  // Local Browser Agent task monitor
-  const browserAgentSection = document.getElementById("browser-agent-section");
-  const browserAgentTitle = document.getElementById("browser-agent-title");
-  const browserAgentMeta = document.getElementById("browser-agent-meta");
-  const browserAgentProgressBar = document.getElementById(
-    "browser-agent-progress-bar",
-  );
-  const browserAgentStopBtn = document.getElementById("browser-agent-stop-btn");
-  let _browserAgentTimer = null;
-  let _browserAgentJobId = null;
-
   // update banner (kept)
   const updateBanner = document.getElementById("update-banner");
   const updateVersion = document.getElementById("update-version");
@@ -84,25 +60,6 @@
   const dismissUpdateBtn = document.getElementById("dismiss-update-btn");
   const downloadUpdateBtn = document.getElementById("download-update-btn");
   const headerVersion = document.getElementById("header-version");
-
-  // login form (unchanged)
-  const smsPhone = document.getElementById("sms-phone");
-  const smsCaptchaCode = document.getElementById("sms-captcha-code");
-  const smsCaptchaImg = document.getElementById("sms-captcha-img");
-  const smsCode = document.getElementById("sms-code");
-  const sendCodeBtn = document.getElementById("send-code-btn");
-  const smsLoginBtn = document.getElementById("sms-login-btn");
-  const loginPhone = document.getElementById("login-phone");
-  const pwdCaptchaCode = document.getElementById("pwd-captcha-code");
-  const pwdCaptchaImg = document.getElementById("pwd-captcha-img");
-  const loginPassword = document.getElementById("login-password");
-  const loginBtn = document.getElementById("login-btn");
-
-  let smsCaptchaId = "";
-  let pwdCaptchaId = "";
-  let smsCountdown = 0;
-  let smsTimer = null;
-  let availableStores = [];
 
   // ─── Generic helpers ───
   const sendMessage = (payload) =>
@@ -193,375 +150,6 @@
   const fetchAuth = async () => {
     const response = await sendMessage({ action: "getAuth" });
     return response?.data || response || {};
-  };
-
-  const saveAuth = async (token, storeId) => {
-    await sendMessage({ action: "saveAuth", token, storeId });
-  };
-
-  // ─── Login (unchanged behaviour) ───
-  const loadCaptcha = async (target) => {
-    try {
-      const resp = await sendMessage({ action: "getCaptcha" });
-      if (!resp?.ok) throw new Error(resp?.error || "Failed");
-      const data = resp.data?.data || resp.data;
-      if (target === "sms") {
-        smsCaptchaId = data.captchaId;
-        smsCaptchaImg.src = data.imageBase64;
-        smsCaptchaCode.value = "";
-      } else {
-        pwdCaptchaId = data.captchaId;
-        pwdCaptchaImg.src = data.imageBase64;
-        pwdCaptchaCode.value = "";
-      }
-      updateServerStatus(true);
-    } catch {
-      showTip("获取验证码失败");
-      updateServerStatus(false);
-    }
-  };
-
-  smsCaptchaImg.addEventListener("click", () => loadCaptcha("sms"));
-  pwdCaptchaImg.addEventListener("click", () => loadCaptcha("pwd"));
-
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document
-        .querySelectorAll(".tab-btn")
-        .forEach((b) => b.classList.remove("active"));
-      document
-        .querySelectorAll(".tab-panel")
-        .forEach((p) => p.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-      showTip("");
-    });
-  });
-
-  const updateCountdownUI = () => {
-    if (smsCountdown > 0) {
-      sendCodeBtn.textContent = `${smsCountdown}s`;
-      sendCodeBtn.disabled = true;
-    } else {
-      sendCodeBtn.textContent = "获取验证码";
-      sendCodeBtn.disabled = false;
-      if (smsTimer) {
-        clearInterval(smsTimer);
-        smsTimer = null;
-      }
-    }
-  };
-
-  sendCodeBtn.addEventListener("click", async () => {
-    if (smsTimer || sendCodeBtn.disabled) return;
-    const phone = smsPhone.value.trim();
-    const captchaCode = smsCaptchaCode.value.trim();
-    if (!phone) {
-      showTip("请输入手机号");
-      return;
-    }
-    if (!captchaCode || !smsCaptchaId) {
-      showTip("请输入图形验证码");
-      return;
-    }
-
-    sendCodeBtn.disabled = true;
-    showTip("发送中...", false);
-    const resp = await sendMessage({
-      action: "sendSmsCode",
-      phoneNumber: phone,
-      captchaId: smsCaptchaId,
-      captchaCode,
-    });
-
-    if (!resp?.ok) {
-      showTip(resp?.error || "发送验证码失败");
-      sendCodeBtn.disabled = false;
-      await loadCaptcha("sms");
-      return;
-    }
-
-    showTip("验证码已发送", false);
-    smsCountdown = 60;
-    updateCountdownUI();
-    smsTimer = setInterval(() => {
-      smsCountdown--;
-      updateCountdownUI();
-    }, 1000);
-  });
-
-  smsLoginBtn.addEventListener("click", async () => {
-    const phone = smsPhone.value.trim();
-    const code = smsCode.value.trim();
-    if (!phone) {
-      showTip("请输入手机号");
-      return;
-    }
-    if (!code) {
-      showTip("请输入短信验证码");
-      return;
-    }
-
-    showTip("登录中...", false);
-    const resp = await sendMessage({
-      action: "loginSms",
-      phoneNumber: phone,
-      code,
-      deviceFingerprint: getMachineFingerprint(),
-    });
-    if (!resp?.ok) {
-      showTip(resp?.error || "登录失败");
-      return;
-    }
-
-    const data = resp.data?.data || resp.data;
-    // P9 多身份场景:backend 返 { sessionToken, identities } — popup 没有身份选择 UI,
-    // 引导用户走网页端登录。
-    if (data?.sessionToken && Array.isArray(data?.identities)) {
-      showTip("此账号绑定多个身份,请用网页端登录后回扩展自动同步");
-      return;
-    }
-    // P9 把字段从 access_token 改成了 accessToken (camelCase),老路径仍返 access_token。
-    // 三个都兜底,避免 backend shape 漂移又把扩展登录挂了。
-    const token = data?.accessToken || data?.access_token || data?.token;
-    if (!token) {
-      showTip("登录失败：未获取到Token");
-      return;
-    }
-
-    await saveAuth(token, null);
-    showTip("登录成功", false);
-    await initMainView();
-    setLoginState(true);
-  });
-
-  loginBtn.addEventListener("click", async () => {
-    const phone = loginPhone.value.trim();
-    const password = loginPassword.value.trim();
-    const captchaCode = pwdCaptchaCode.value.trim();
-    if (!phone) {
-      showTip("请输入账号");
-      return;
-    }
-    if (!password) {
-      showTip("请输入密码");
-      return;
-    }
-    if (!captchaCode || !pwdCaptchaId) {
-      showTip("请输入图形验证码");
-      return;
-    }
-
-    showTip("登录中...", false);
-    const resp = await sendMessage({
-      action: "loginPassword",
-      phoneNumber: phone,
-      password,
-      captchaId: pwdCaptchaId,
-      captchaCode,
-      deviceFingerprint: getMachineFingerprint(),
-    });
-
-    if (!resp?.ok) {
-      showTip(resp?.error || "登录失败");
-      await loadCaptcha("pwd");
-      return;
-    }
-
-    const data = resp.data?.data || resp.data;
-    if (data?.sessionToken && Array.isArray(data?.identities)) {
-      showTip("此账号绑定多个身份,请用网页端登录后回扩展自动同步");
-      return;
-    }
-    const token = data?.accessToken || data?.access_token || data?.token;
-    if (!token) {
-      showTip("登录失败：未获取到Token");
-      return;
-    }
-
-    await saveAuth(token, null);
-    showTip("登录成功", false);
-    await initMainView();
-    setLoginState(true);
-  });
-
-  // ─── Main view: data fetchers ───
-  const currencyLabel = (store) => {
-    const code = String(
-      store?.currency || store?.currencyCode || store?.companyCurrency || "",
-    )
-      .trim()
-      .toUpperCase();
-    const names = { CNY: "人民币", RUB: "卢布", USD: "美元" };
-    return code ? `${names[code] || "货币"}·${code}` : "货币·待同步";
-  };
-
-  const premiumState = (store) => {
-    const raw = store?.isPremium ?? store?.premium ?? store?.premiumEnabled;
-    if (raw === true || raw === 1 || raw === "true" || raw === "active") {
-      return true;
-    }
-    if (raw === false || raw === 0 || raw === "false" || raw === "inactive") {
-      return false;
-    }
-    return null;
-  };
-
-  const renderStoreMeta = (store) => {
-    if (storeCurrency) storeCurrency.textContent = currencyLabel(store);
-    if (!storePremium) return;
-    const premium = premiumState(store);
-    storePremium.classList.toggle("is-off", premium === false);
-    storePremium.classList.toggle("is-pending", premium === null);
-    storePremium.textContent =
-      premium === true
-        ? "Premium Pro·已开启"
-        : premium === false
-          ? "Premium·未开启"
-          : "Premium·待同步";
-  };
-
-  const loadStores = async () => {
-    setConnectionState("loading", "连接中");
-    availableStores = [];
-    storeSelect.innerHTML = '<option value="">加载中...</option>';
-    storeName.textContent = "加载中...";
-    renderStoreMeta(null);
-
-    let response;
-    try {
-      response = await sendMessage({ action: "getStores" });
-    } catch (e) {
-      console.error("[popup] loadStores exception:", e);
-      storeSelect.innerHTML = '<option value="">加载失败</option>';
-      storeName.textContent = "加载失败";
-      setConnectionState("error", "连接异常");
-      return [];
-    }
-    if (!response?.ok) {
-      const err = response?.error || "";
-      console.error("[popup] loadStores failed:", err || response);
-      if (
-        err.includes("[401]") ||
-        err.includes("[403]") ||
-        err.includes("Unauthorized") ||
-        err.includes("未授权") ||
-        err.includes("未登录") ||
-        err.includes("过期") ||
-        err.includes("停用") ||
-        err.includes("jwt expired") ||
-        err.includes("invalid token")
-      ) {
-        console.warn("[popup] Token likely expired, forcing logout");
-        await sendMessage({ action: "logout" });
-        setLoginState(false);
-        await Promise.all([loadCaptcha("sms"), loadCaptcha("pwd")]);
-        showTip("登录已过期，请重新登录");
-        return [];
-      }
-      storeSelect.innerHTML = `<option value="">加载失败${err ? ": " + err.slice(0, 30) : ""}</option>`;
-      storeName.textContent = "加载失败";
-      setConnectionState("error", "连接异常");
-      return [];
-    }
-
-    const stores = response.data?.data || response.data || [];
-    availableStores = Array.isArray(stores) ? stores : [];
-    setConnectionState("ok", "Web 已连接");
-    storeSelect.innerHTML = "";
-    if (!availableStores.length) {
-      storeSelect.innerHTML = '<option value="">暂无店铺</option>';
-      storeName.textContent = "暂无店铺";
-      renderStoreMeta(null);
-      return [];
-    }
-
-    availableStores.forEach((store) => {
-      const option = document.createElement("option");
-      option.value = store.id || store.storeId || "";
-      option.textContent =
-        store.label ||
-        store.companyName ||
-        store.legalName ||
-        `店铺 ${option.value}`;
-      storeSelect.appendChild(option);
-    });
-
-    const auth = await fetchAuth();
-    let activeId;
-    if (auth.storeId) {
-      activeId = String(auth.storeId);
-      storeSelect.value = activeId;
-    } else {
-      activeId = String(
-        availableStores[0].id || availableStores[0].storeId || "",
-      );
-      if (activeId) {
-        storeSelect.value = activeId;
-        await saveAuth(auth.token, activeId);
-      }
-    }
-
-    const active =
-      availableStores.find((s) => String(s.id || s.storeId) === activeId) ||
-      availableStores[0];
-    storeName.textContent =
-      active?.label ||
-      active?.companyName ||
-      active?.legalName ||
-      `店铺 ${activeId}`;
-    renderStoreMeta(active);
-    return availableStores;
-  };
-
-  // ─── Cookie status ───
-  const checkCookieStatus = async () => {
-    try {
-      const resp = await sendMessage({ action: "checkSellerCookies" });
-      if (resp?.ok && resp.data?.sc_company_id) {
-        return { status: "ok", companyId: resp.data.sc_company_id };
-      }
-      if (resp?.ok && resp.data?.has_cookies) {
-        return { status: "warn", message: "Ozon Cookie 存在，但未找到店铺 ID" };
-      }
-      return { status: "err", message: "Seller 登录已失效" };
-    } catch {
-      return { status: "unknown" };
-    }
-  };
-
-  const renderStoreAuth = (cookie) => {
-    storeAuth.classList.remove("ok", "err", "warn");
-    storeCard.classList.remove("is-error");
-    syncCookieBtn.style.display = "none";
-    storeR.style.display = "";
-
-    if (cookie.status === "ok") {
-      storeAuth.classList.add("ok");
-      storeAuthText.textContent = `Seller 已登录 · ${cookie.companyId}`;
-    } else if (cookie.status === "warn") {
-      storeAuth.classList.add("warn");
-      storeAuthText.textContent = cookie.message;
-      storeCard.classList.add("is-error");
-      syncCookieBtn.style.display = "";
-    } else if (cookie.status === "err") {
-      storeAuth.classList.add("err");
-      storeAuthText.textContent = cookie.message;
-      storeCard.classList.add("is-error");
-      syncCookieBtn.style.display = "";
-    } else {
-      storeAuthText.textContent = "检测失败";
-    }
-
-    // seller 跳转/登录按钮:已登录→「查看」(幽灵态),否则→「登录」(醒目态引导登录)。
-    if (sellerPortalBtn && sellerPortalLabel) {
-      const loggedIn = cookie.status === "ok";
-      sellerPortalBtn.classList.toggle("is-login", !loggedIn);
-      sellerPortalLabel.textContent = loggedIn ? "查看" : "登录";
-      sellerPortalBtn.title = loggedIn
-        ? "打开 seller.ozon.ru 卖家后台"
-        : "登录 seller.ozon.ru 卖家后台";
-    }
   };
 
   // ─── Counts (feed nav badges only) ───
@@ -755,30 +343,16 @@
 
   // ─── Build signals (priority-ordered) ───
   const buildSignals = async () => {
-    const [cookie, ctxTab, followSig] = await Promise.all([
-      checkCookieStatus(),
+    const [ctxTab, followSig] = await Promise.all([
       detectOzonProductTab(),
       loadFollowSellSignal(),
     ]);
     const counts = await loadCounts();
     renderNavBadges(counts);
-    renderStoreAuth(cookie);
 
     const signals = [];
 
-    // 1. bad: cookie 失效
-    if (cookie.status === "err" || cookie.status === "warn") {
-      signals.push({
-        variant: "bad",
-        icon: "alert",
-        title: "登录已掉线，先同步 Cookie",
-        sub: "同步前其它操作可能失败",
-        btnLabel: "立即同步",
-        onAction: () => doSyncCookie(),
-      });
-    }
-
-    // 2. context: 当前 ozon 商品页（30 分钟内已采集过的不再重复显示）
+    // 1. context: 当前 ozon 商品页（30 分钟内已采集过的不再重复显示）
     if (ctxTab && !(await isUrlCollected(ctxTab.url))) {
       const previewUrl =
         ctxTab.url.replace(/^https?:\/\//, "").slice(0, 38) +
@@ -793,7 +367,7 @@
       });
     }
 
-    // 3. neutral: 采集箱待上架
+    // 2. neutral: 采集箱待上架
     if (counts.collect > 0) {
       signals.push({
         variant: "neutral",
@@ -810,7 +384,7 @@
       });
     }
 
-    // 4. bad: 跟卖任务失败
+    // 3. bad: 跟卖任务失败
     if (followSig?.kind === "follow-failed") {
       const errPreview = (followSig.sample?.errorMessage || "后台处理失败")
         .toString()
@@ -829,7 +403,7 @@
       });
     }
 
-    // 5. warn: 跟卖任务进行中
+    // 4. warn: 跟卖任务进行中
     if (followSig?.kind === "follow-inflight") {
       signals.push({
         variant: "warn",
@@ -854,98 +428,7 @@
     renderSignals(signals);
   };
 
-  // ─── Local Browser Agent 任务状态 ─────────────────────────
-  const browserAgentActionLabel = (type) =>
-    ({
-      "agent.ping": "连接检测",
-      "collect.hot_products": "热卖商品采集",
-      "collect.product_detail": "商品详情采集",
-      "listing.create_draft": "生成上架草稿",
-      "listing.publish_draft": "发布商品",
-    })[type] ||
-    type ||
-    "AI Agent 任务";
-
-  const renderBrowserAgentState = (state) => {
-    if (!state?.running) {
-      browserAgentSection.style.display = "none";
-      _browserAgentJobId = null;
-      return;
-    }
-
-    _browserAgentJobId = state.jobId || null;
-    const rawPercent = Number(state.percent ?? 0);
-    const percent = Number.isFinite(rawPercent)
-      ? Math.max(0, Math.min(100, rawPercent))
-      : 0;
-    const label = browserAgentActionLabel(state.type);
-    const stage = state.stage ? ` · ${state.stage}` : "";
-    const cancelText = state.cancelRequested ? "正在停止" : "";
-    const message = state.message || cancelText || "正在执行";
-
-    browserAgentSection.style.display = "";
-    browserAgentTitle.textContent = label;
-    browserAgentMeta.textContent = `${message}${stage}`;
-    browserAgentProgressBar.style.width = `${percent}%`;
-    browserAgentStopBtn.disabled = !!state.cancelRequested;
-    browserAgentStopBtn.textContent = state.cancelRequested ? "停止中" : "停止";
-  };
-
-  const refreshBrowserAgentState = async () => {
-    try {
-      const resp = await sendMessage({ action: "browserAgentGetState" });
-      if (!resp?.ok) {
-        renderBrowserAgentState(null);
-        return;
-      }
-      renderBrowserAgentState(resp.data);
-    } catch {
-      renderBrowserAgentState(null);
-    }
-  };
-
-  const startBrowserAgentPolling = () => {
-    if (_browserAgentTimer) return;
-    refreshBrowserAgentState();
-    _browserAgentTimer = setInterval(refreshBrowserAgentState, 3000);
-  };
-
-  // 防御:browser-agent 区块是可选 UI。若 popup.html 缺这些节点(历史上 JS/CSS
-  // 已加但 HTML 漏了一版),getElementById 返回 null,这里若不判空,顶层
-  // .addEventListener 抛 TypeError 会中断整个 IIFE → init() 永不执行 →
-  // 验证码不加载、状态卡在「检测服务器…」、登录彻底失效。判空让其优雅降级。
-  browserAgentStopBtn?.addEventListener("click", async () => {
-    if (!_browserAgentJobId) return;
-    browserAgentStopBtn.disabled = true;
-    browserAgentStopBtn.textContent = "停止中";
-    await sendMessage({
-      action: "browserAgentCancelCurrent",
-      jobId: _browserAgentJobId,
-    }).catch(() => null);
-    await refreshBrowserAgentState();
-  });
-
-  // ─── Actions: cookie sync, context-tab collect ───
-  const doSyncCookie = async () => {
-    syncCookieBtn.disabled = true;
-    const originalLabel = syncCookieBtn.querySelector("span").textContent;
-    syncCookieBtn.querySelector("span").textContent = "同步中...";
-    try {
-      const resp = await sendMessage({ action: "syncSellerCookies" });
-      if (resp?.ok) {
-        await buildSignals(); // 重新拉所有信号
-      } else {
-        storeAuth.classList.add("err");
-        storeAuthText.textContent = resp?.error || "同步失败";
-      }
-    } catch (e) {
-      storeAuthText.textContent = e.message || "同步失败";
-    } finally {
-      syncCookieBtn.disabled = false;
-      syncCookieBtn.querySelector("span").textContent = originalLabel;
-    }
-  };
-
+  // ─── Action: context-tab collect ───
   const triggerCollectFromTab = async (tabId, url, btn) => {
     // 锁按钮 + 给即时反馈，否则用户看不到任何动静
     const restoreBtn = () => {
@@ -995,25 +478,6 @@
     }
   };
 
-  syncCookieBtn.addEventListener("click", doSyncCookie);
-
-  // seller.ozon.ru 跳转/登录:复用 service-worker 的 openSellerPortal(复用现有
-  // seller tab 或新开 /app/products;未登录时 Ozon 自动转登录页)。点完弹窗通常因
-  // 焦点切到新标签而关闭,disabled 只是防连点兜底。
-  sellerPortalBtn?.addEventListener("click", async () => {
-    if (sellerPortalBtn.disabled) return;
-    sellerPortalBtn.disabled = true;
-    try {
-      await sendMessage({ action: "openSellerPortal" });
-    } catch (e) {
-      console.warn("[popup] openSellerPortal error:", e?.message);
-    } finally {
-      setTimeout(() => {
-        sellerPortalBtn.disabled = false;
-      }, 800);
-    }
-  });
-
   // ─── Update banner ───
   const checkUpdateBanner = async () => {
     try {
@@ -1049,41 +513,19 @@
   });
 
   // ─── Init / lifecycle ───
-  const initMainView = async () => {
-    const auth = await fetchAuth();
+  const initMainView = async (auth) => {
     FRONTEND_BASE_URL =
       auth.backendUrl && isLocalBackendUrl(auth.backendUrl)
         ? LOCAL_FRONTEND_BASE_URL
         : "https://" + BRAND_WEB_HOST;
-    await loadStores();
+    setConnectionState("ok", "采集会话已连接");
     await Promise.all([buildSignals(), checkUpdateBanner()]);
-    startBrowserAgentPolling();
   };
 
   logoutBtn.addEventListener("click", async () => {
     await sendMessage({ action: "logout" });
     setLoginState(false);
-    await Promise.all([loadCaptcha("sms"), loadCaptcha("pwd")]);
-  });
-
-  let _storeSaving = false;
-  storeSelect.addEventListener("change", async () => {
-    if (_storeSaving) return;
-    _storeSaving = true;
-    try {
-      const auth = await fetchAuth();
-      await saveAuth(auth.token, storeSelect.value);
-      // 切店后店铺名同步、所有店铺范围信号刷新（context 卡不依赖店铺，会被同时重渲）
-      const opt = storeSelect.options[storeSelect.selectedIndex];
-      if (opt) storeName.textContent = opt.textContent;
-      const active = availableStores.find(
-        (store) => String(store.id || store.storeId || "") === storeSelect.value,
-      );
-      renderStoreMeta(active || null);
-      await buildSignals();
-    } finally {
-      _storeSaving = false;
-    }
+    showTip("采集会话已清除，请在 Web 管理后台保持登录");
   });
 
   // ─── Nav / CTA routing ───
@@ -1217,7 +659,7 @@
       }
       // 优先级 2：已打开的 ozon.ru 任意页（让用户接下来去找商品）
       const ozonTabs = await chrome.tabs.query({
-        url: ["https://www.ozon.ru/*", "https://*.ozon.ru/*"],
+        url: ["https://www.ozon.ru/*", "https://ozon.ru/*"],
       });
       const target = ozonTabs.find(
         (t) => t.url && /^https:\/\/www\.ozon\.ru\//.test(t.url),
@@ -1251,27 +693,34 @@
   } catch {}
 
   document.getElementById("web-login-btn").addEventListener("click", () => {
-    chrome.tabs.create({ url: `${FRONTEND_BASE_URL}/ozon/dashboard/` });
+    chrome.tabs.create({ url: "http://127.0.0.1:3000/login" });
   });
 
   // ─── Boot ───
   const init = async () => {
     const auth = await fetchAuth();
-    if (auth.token) {
+    if (auth.authenticated) {
       setLoginState(true);
-      await initMainView();
+      await initMainView(auth);
     } else {
-      const syncResp = await sendMessage({ action: "tryWebSync" });
-      if (syncResp?.ok && syncResp.data?.synced) {
-        showTip("已从网页端同步登录", false);
-        setLoginState(true);
-        await initMainView();
-      } else {
-        setLoginState(false);
-        await Promise.all([loadCaptcha("sms"), loadCaptcha("pwd")]);
-      }
+      setLoginState(false);
     }
   };
+
+  document.getElementById("collector-auth-recheck-btn").addEventListener("click", async () => {
+    showTip("正在检查 Web 登录状态…", false);
+    await sendMessage({ action: "requestCollectorAuth" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const auth = await fetchAuth();
+    if (!auth.authenticated) {
+      setLoginState(false);
+      showTip("尚未取得采集会话，请确认已在同一浏览器用户配置中登录");
+      return;
+    }
+    showTip("采集会话已连接", false);
+    setLoginState(true);
+    await initMainView(auth);
+  });
 
   init();
 })();

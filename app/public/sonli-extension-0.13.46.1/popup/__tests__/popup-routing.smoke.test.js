@@ -64,9 +64,18 @@ assert(!html.includes("sonli 采集器"), "popup must not expose the removed col
 assert(!js.includes("toggleCollector"), "popup must not retain the removed collector toggle");
 assert(js.includes("await openJzcCalc();"), "pricing should open the Ozon calculator on product pages");
 assert(
-  js.includes("chrome.tabs.create({ url: `${FRONTEND_BASE_URL}/ozon/dashboard/` });"),
-  "web-login button should open the local dashboard after auth sync",
+  js.includes('chrome.tabs.create({ url: "http://127.0.0.1:3000/login" });'),
+  "web-login button should open the exact local Web login in the same browser profile",
 );
+assert(html.includes("请先登录 Web 管理后台，再使用采集功能"), "popup should explain the Web login prerequisite");
+assert(html.includes('id="collector-auth-recheck-btn"'), "popup should expose collector-session recheck");
+assert(!html.match(/type="password"|sms-phone|sms-code|短信登录|账号登录/), "popup must not contain a separate SMS/password login");
+assert(!js.match(/loginSms|loginPassword|sendSmsCode|tryWebSync|syncAuthFromWeb/), "popup must not retain legacy auth actions");
+assert(!html.includes("数据店铺"), "popup must not expose data-store binding");
+assert(!html.includes('id="store-select"'), "popup must not select a Web operating store");
+assert(!html.includes('id="sync-cookie-btn"'), "popup must not offer Seller cookie synchronization");
+assert(!html.includes("Ozon Seller 授权"), "popup must not present Seller cookies as authorization");
+assert(!html.includes("Codex") && !html.includes("应用内浏览器"), "popup must not imply that an in-app browser shares the extension profile");
 
 const bridgeScript = manifest.content_scripts.find((script) =>
   script.matches?.includes("http://127.0.0.1:3000/*") &&

@@ -19,63 +19,14 @@
         </div>
 
         <div class="login-card">
-          <div class="login-tabs" style="display:none;">
-            <button class="tab-btn" data-tab="sms">短信登录</button>
-            <button class="tab-btn active" data-tab="password">账号登录</button>
-          </div>
-
-          <div class="tab-panel" id="tab-sms">
-            <label class="field">
-              <span>手机号</span>
-              <input type="tel" id="sms-phone" placeholder="请输入手机号" autocomplete="tel" />
-            </label>
-            <label class="field">
-              <span>图形验证码</span>
-              <div class="captcha-row">
-                <input type="text" id="sms-captcha-code" placeholder="请输入验证码" autocomplete="off" />
-                <img id="sms-captcha-img" class="captcha-img" alt="验证码" title="点击刷新" />
-              </div>
-            </label>
-            <label class="field">
-              <span>短信验证码</span>
-              <div class="captcha-row">
-                <input type="text" id="sms-code" placeholder="请输入短信验证码" autocomplete="one-time-code" />
-                <button class="btn btn-outline btn-sms" id="send-code-btn">获取验证码</button>
-              </div>
-            </label>
-            <button class="btn btn-primary btn-block" id="sms-login-btn">登 录</button>
-          </div>
-
-          <div class="tab-panel active" id="tab-password">
-            <label class="field">
-              <span>账号</span>
-              <input type="text" id="login-phone" placeholder="请输入管理员分配的账号" autocomplete="username" />
-            </label>
-            <label class="field">
-              <span>图形验证码</span>
-              <div class="captcha-row">
-                <input type="text" id="pwd-captcha-code" placeholder="请输入验证码" autocomplete="off" />
-                <img id="pwd-captcha-img" class="captcha-img" alt="验证码" title="点击刷新" />
-              </div>
-            </label>
-            <label class="field">
-              <span>密码</span>
-              <input type="password" id="login-password" placeholder="请输入密码" autocomplete="current-password" />
-            </label>
-            <button class="btn btn-primary btn-block" id="login-btn">登 录</button>
-          </div>
-
+          <p class="collector-auth-instruction">请先登录 Web 管理后台，再使用采集功能</p>
+          <p class="collector-auth-profile-hint">请在安装本扩展的同一浏览器用户配置中完成登录。</p>
           <div class="login-tip" id="login-tip"></div>
-
-          <div class="login-divider">
-            <span>或</span>
-          </div>
-
-          <button class="btn btn-outline btn-block" id="web-login-btn">
+          <button class="btn btn-primary btn-block" id="web-login-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            前往网页端登录
+            前往登录
           </button>
-          <div class="web-login-hint">在网页端登录后，插件将自动同步登录状态</div>
+          <button class="btn btn-outline btn-block" id="collector-auth-recheck-btn">重新检查</button>
         </div>
 
         <div class="login-footer">
@@ -120,66 +71,6 @@
             <div class="update-banner-actions">
               <button class="btn btn-ghost btn-sm" id="dismiss-update-btn">忽略</button>
               <button class="btn btn-primary btn-sm" id="download-update-btn">立即更新</button>
-            </div>
-          </div>
-
-          <!-- Current store + authorization -->
-          <section class="store-card" id="store-card" aria-labelledby="current-store-label">
-            <div class="store-card-head">
-              <span class="section-eyebrow" id="current-store-label">当前店铺</span>
-              <span class="current-store-chip">当前</span>
-            </div>
-
-            <div class="store-selector-row">
-              <div class="store-l">
-                <div class="store-home" id="store-home">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-                </div>
-                <div class="store-info">
-                  <span class="store-name" id="store-name">加载中...</span>
-                  <div class="store-meta" aria-live="polite">
-                    <span class="store-meta-item" id="store-currency">货币·待同步</span>
-                    <span class="store-meta-item is-pending" id="store-premium">Premium·待同步</span>
-                  </div>
-                </div>
-              </div>
-              <div class="store-r" id="store-r">
-                <button class="switch-btn" type="button" tabindex="-1">切换<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-                <select id="store-select" aria-label="切换店铺"></select>
-              </div>
-            </div>
-
-            <div class="authorization-row">
-              <div class="authorization-copy">
-                <span class="authorization-label">Ozon Seller 授权</span>
-                <span class="store-auth" id="store-auth"><span class="auth-dot"></span><span class="auth-text">检测中...</span></span>
-              </div>
-              <div class="authorization-actions">
-                <button class="seller-portal-btn" id="seller-portal-btn" type="button" title="打开 seller.ozon.ru 卖家后台">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                  <span id="seller-portal-label">查看</span>
-                </button>
-                <button class="sync-btn" id="sync-cookie-btn" style="display:none">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                  <span>同步 Cookie</span>
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <!-- Local Browser Agent 任务状态（仅当有运行中任务时显示） -->
-          <div class="nav-section browser-agent" id="browser-agent-section" style="display:none">
-            <div class="nav-title">AI Agent 任务</div>
-            <div class="browser-agent-card">
-              <span class="browser-agent-dot"></span>
-              <div class="browser-agent-body">
-                <div class="browser-agent-title" id="browser-agent-title">AI Agent 任务</div>
-                <div class="browser-agent-meta" id="browser-agent-meta">正在执行</div>
-                <div class="browser-agent-progress">
-                  <span class="browser-agent-progress-bar" id="browser-agent-progress-bar"></span>
-                </div>
-              </div>
-              <button class="browser-agent-stop-btn" id="browser-agent-stop-btn">停止</button>
             </div>
           </div>
 

@@ -842,53 +842,26 @@ if (!globalThis.__JZ_BRAND__) {
     document.addEventListener('scroll', hideZoom, true);
   })();
 
-  // Check if user is logged in.
-  //
-  // 优先走 SW getAuth(SW 会查 storage + 做 token 健康检查);如果 SW 没 ready
-  // (MV3 SW idle/wake race,sendMessage callback 命中 chrome.runtime.lastError),
-  // **直接读 chrome.storage.local 兜底** — content_script 有 storage 权限。
-  //
-  // 之前用户报"采集失败"根因:tab 刚加载时 SW 还没 wake,checkAuth 拿到 lastError,
-  // 错误地认为"未登录",init() early-return,不创建 action bar,显示登录 prompt。
-  // 但用户其他 tab 已登录,token 在 storage 里。本兜底直接 storage.get 读 token 拿到。
+  // Check only the service worker's scoped collector-session status. The
+  // credential itself stays owned by collector-session.js in storage.session
+  // and is never returned to content scripts.
   window.checkAuth = function() {
     return new Promise((resolve) => {
-      // Key names mirror SW STORAGE_KEYS (service-worker.js:49-51)
-      const STORAGE_KEYS = { token: 'ozonAuthToken', storeId: 'ozonStoreId' };
-      const fallbackToStorage = () => {
-        try {
-          chrome.storage.local.get([STORAGE_KEYS.token, STORAGE_KEYS.storeId], (data) => {
-            if (chrome.runtime.lastError) {
-              resolve({ loggedIn: false, token: null, storeId: null });
-              return;
-            }
-            const token = data?.[STORAGE_KEYS.token] || null;
-            const storeId = data?.[STORAGE_KEYS.storeId] || null;
-            resolve({ loggedIn: !!token, token, storeId });
-          });
-        } catch {
-          resolve({ loggedIn: false, token: null, storeId: null });
-        }
-      };
       chrome.runtime.sendMessage({ action: 'getAuth' }, (response) => {
         if (chrome.runtime.lastError) {
-          // SW 没 ready / 已 invalidated — 直接走 storage 兜底
-          console.error('[ozon-helper] checkAuth: SW unreachable, falling back to chrome.storage.local:', chrome.runtime.lastError?.message);
-          fallbackToStorage();
+          resolve({ loggedIn: false, account: null, permissions: [] });
           return;
         }
         if (!response?.ok) {
-          // SW 响应但 ok=false(getAuth handler 内部抛错 / token 缺失)— 也走 storage 兜底
-          fallbackToStorage();
+          resolve({ loggedIn: false, account: null, permissions: [] });
           return;
         }
-        const { token, storeId } = response.data || {};
-        if (!token) {
-          // SW 响应 ok=true 但没 token — 同样 fallback,handle race during SW boot
-          fallbackToStorage();
-          return;
-        }
-        resolve({ loggedIn: true, token, storeId: storeId || null });
+        const { authenticated, account, permissions } = response.data || {};
+        resolve({
+          loggedIn: Boolean(authenticated),
+          account: account || null,
+          permissions: Array.isArray(permissions) ? permissions : [],
+        });
       });
     });
   };
@@ -921,8 +894,8 @@ if (!globalThis.__JZ_BRAND__) {
     prompt.addEventListener('click', () => {
       // 首选:直接弹工具栏 popup(SW 调 chrome.action.openPopup(),Chrome 127+)。
       // 弹不出来(老 Chrome / 非活动窗口 / SW 异常)→ 跳 ERP 网页登录:
-      // 网页登录成功后 sync-auth.js 会把 token 自动回同步给扩展(syncAuthFromWeb),
-      // 等效完成扩展登录。网页也打不开时才落回 badge 闪烁 + 气泡指引。
+      // Web 登录页与扩展必须位于同一浏览器用户配置。登录后由一次性票据
+      // 建立采集会话；网页也打不开时才落回 badge 闪烁 + 气泡指引。
       const fallbackHint = () => {
         chrome.runtime.sendMessage({ action: 'flashBadge' });
         tooltip.classList.add('is-visible');

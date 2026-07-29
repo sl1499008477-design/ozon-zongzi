@@ -126,6 +126,27 @@ summary:focus-visible {
   box-shadow: var(--shadow-card);
 }
 
+.collector-auth-instruction {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.collector-auth-profile-hint {
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+#collector-auth-recheck-btn {
+  margin-top: 10px;
+}
+
 .login-tabs {
   display: flex;
   margin-bottom: 16px;
@@ -1228,97 +1249,6 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   gap: 5px;
-}
-
-/* Browser agent state */
-.nav-section {
-  margin-top: 0;
-}
-
-.browser-agent .nav-title {
-  margin-bottom: 7px;
-}
-
-.browser-agent-card {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px;
-  background: var(--bg-card);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius);
-}
-
-.browser-agent-dot {
-  width: 8px;
-  height: 8px;
-  flex-shrink: 0;
-  background: var(--accent);
-  border-radius: 50%;
-  box-shadow: 0 0 0 4px rgba(15, 111, 255, 0.09);
-  animation: sonli-pulse 1.6s ease-in-out infinite;
-}
-
-.browser-agent-body {
-  min-width: 0;
-  flex: 1;
-}
-
-.browser-agent-title,
-.browser-agent-meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-agent-title {
-  color: var(--text-primary);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.browser-agent-meta {
-  margin-top: 1px;
-  color: var(--text-muted);
-  font-size: 9px;
-}
-
-.browser-agent-progress {
-  height: 4px;
-  margin-top: 5px;
-  overflow: hidden;
-  background: #e8eef7;
-  border-radius: 99px;
-}
-
-.browser-agent-progress-bar {
-  display: block;
-  width: 0;
-  height: 100%;
-  background: var(--accent);
-  border-radius: inherit;
-  transition: width var(--transition);
-}
-
-.browser-agent-stop-btn {
-  padding: 5px 8px;
-  cursor: pointer;
-  color: #b91c1c;
-  font-size: 10px;
-  font-weight: 700;
-  background: var(--red-soft);
-  border: 1px solid var(--red-border);
-  border-radius: 6px;
-}
-
-@keyframes sonli-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -13,9 +13,11 @@ const targets = [
 ];
 const unpackedTarget = path.join(rootDir, "app", "public", `sonli-extension-${manifest.version}`);
 const collectorRuntimeFiles = [
+  "background/collector-client.js",
   "background/service-worker.js",
   "lib/collector-session.js",
   "tests/collector-session.test.js",
+  "tests/sync-capability-removed.test.js",
 ];
 
 for (const relativePath of collectorRuntimeFiles) {
