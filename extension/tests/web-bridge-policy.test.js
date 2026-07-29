@@ -53,7 +53,13 @@ assert.match(workerSource, /'\.\.\/lib\/collector-session\.js'/);
 assert.doesNotMatch(workerSource, /STORAGE_KEYS\.(?:token|storeId)/);
 assert.match(workerSource, /collectorSessionManager\.collectorFetch\(entry\.path/);
 assert.match(workerSource, /permission: 'collector\.upload'/);
-assert.match(workerSource, /collectorSessionManager\.enqueuePendingUpload\(pendingUpload\)/);
+assert.match(workerSource, /collectorSessionManager\.enqueueRetryablePendingUpload\(/);
+assert.match(workerSource, /JzCollectorSession\.withoutCollectorScope\(raw\)/);
+assert.match(workerSource, /enqueueRetryablePendingUpload\(\s*pendingUpload,\s*response\.status,?\s*\)/);
+assert.doesNotMatch(
+  workerSource,
+  /function clearWebAuthTabs|localStorage\.(?:getItem|setItem|removeItem)\(\s*['"](?:token|user|currentOzonStoreId|ozonStoreId)['"]\)/,
+);
 const sharedUtilsSource = fs.readFileSync('extension/content/shared-utils.js', 'utf8');
 assert.doesNotMatch(sharedUtilsSource, /ozonAuthToken|ozonStoreId/);
 assert.match(sharedUtilsSource, /loggedIn: Boolean\(authenticated\)/);

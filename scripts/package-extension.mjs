@@ -12,9 +12,21 @@ const targets = [
   path.join(rootDir, "app", "dist", fileName),
 ];
 const unpackedTarget = path.join(rootDir, "app", "public", `sonli-extension-${manifest.version}`);
+const collectorRuntimeFiles = [
+  "background/service-worker.js",
+  "lib/collector-session.js",
+  "tests/collector-session.test.js",
+];
+
+for (const relativePath of collectorRuntimeFiles) {
+  await readFile(path.join(extensionDir, relativePath));
+}
 
 await rm(unpackedTarget, { recursive: true, force: true });
 await cp(extensionDir, unpackedTarget, { recursive: true, force: true });
+for (const relativePath of collectorRuntimeFiles) {
+  await readFile(path.join(unpackedTarget, relativePath));
+}
 console.log(`packaged ${path.relative(rootDir, unpackedTarget)}`);
 
 for (const target of targets) {

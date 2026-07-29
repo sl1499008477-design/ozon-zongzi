@@ -9,7 +9,26 @@
     'collector.job.read',
     'collector.config.read',
   ]);
-  const SECRET_PATTERN = /(?:ctt|cst)_[A-Za-z0-9_-]{8,}/g;
+  const RETIRED_COLLECTOR_SCOPE_KEYS = new Set([
+    'accountid',
+    'createdby',
+    'clientid',
+    'storeid',
+    'localstoreid',
+    'operatingstoreid',
+    'datacollectionstoreid',
+    'datacollectionstore',
+    'datacollectionstores',
+    'datacollectionstoreids',
+    'currentdatacollectionstoreid',
+    'currentdatacollectionstoreidsbyaccount',
+    'sellercompanyid',
+    'sellercompany',
+    'legacyscope',
+  ]);
+  const SECRET_PATTERN = /(?:ctt|cst|csess)_[A-Za-z0-9_-]*|bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+  const SENSITIVE_DIAGNOSTIC_KEY_PATTERN = /authorization|bearer|secret|ticket|token/i;
+  const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,119}$/;
 
   const redactCollectorSecrets = (value, secrets = []) => {
     let text = String(value == null ? '' : value);
@@ -20,11 +39,75 @@
     return text.replace(SECRET_PATTERN, '[REDACTED]').slice(0, 500);
   };
 
+  const sanitizeCollectorErrorCode = (
+    value,
+    fallback = 'COLLECTOR_REQUEST_FAILED',
+    secrets = [],
+  ) => {
+    const sanitized = redactCollectorSecrets(value, secrets).trim();
+    return STABLE_ERROR_CODE_PATTERN.test(sanitized)
+      ? sanitized
+      : String(fallback || 'COLLECTOR_REQUEST_FAILED');
+  };
+
+  const sanitizeCollectorDiagnostic = (value, secrets = [], seen = new WeakSet()) => {
+    if (typeof value === 'string') return redactCollectorSecrets(value, secrets);
+    if (typeof value === 'number' || typeof value === 'boolean' || value == null) return value;
+    if (typeof value !== 'object') return redactCollectorSecrets(value, secrets);
+    if (seen.has(value)) return '[CIRCULAR]';
+    seen.add(value);
+    if (Array.isArray(value)) {
+      return value.map((item) => sanitizeCollectorDiagnostic(item, secrets, seen));
+    }
+    const result = {};
+    for (const [key, nested] of Object.entries(value)) {
+      const safeKey = redactCollectorSecrets(key, secrets);
+      result[safeKey] = SENSITIVE_DIAGNOSTIC_KEY_PATTERN.test(key)
+        ? '[REDACTED]'
+        : sanitizeCollectorDiagnostic(nested, secrets, seen);
+    }
+    return result;
+  };
+
   const collectorError = (message, status = 0, code = 'COLLECTOR_REQUEST_FAILED', secrets = []) => {
     const error = new Error(redactCollectorSecrets(message, secrets) || 'Collector request failed');
     error.status = Number(status) || 0;
-    error.code = String(code || 'COLLECTOR_REQUEST_FAILED').slice(0, 120);
+    error.code = sanitizeCollectorErrorCode(code, 'COLLECTOR_REQUEST_FAILED', secrets);
     return error;
+  };
+
+  const canonicalCollectorKey = (key) => String(key || '').replace(/[_-]/g, '').toLowerCase();
+  const isRetiredCollectorScopeKey = (key) =>
+    RETIRED_COLLECTOR_SCOPE_KEYS.has(canonicalCollectorKey(key));
+  const withoutCollectorScope = (value) => {
+    if (Array.isArray(value)) return value.map(withoutCollectorScope);
+    if (!value || typeof value !== 'object') return value;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return value;
+    const result = {};
+    for (const [key, nested] of Object.entries(value)) {
+      if (!isRetiredCollectorScopeKey(key)) result[key] = withoutCollectorScope(nested);
+    }
+    return result;
+  };
+
+  const isRetryableCollectorUploadStatus = (status) => {
+    const value = Number(status) || 0;
+    return value === 0
+      || value === 401
+      || value === 403
+      || value === 408
+      || value === 429
+      || value >= 500;
+  };
+
+  const stableJson = (value) => {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+    if (value && typeof value === 'object') {
+      return `{${Object.keys(value).sort().map((key) =>
+        `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
   };
 
   const accountIdOf = (session) => String(session?.account?.id || '');
@@ -72,6 +155,12 @@
     const resolveBackendUrl = async () => {
       const value = typeof backendUrl === 'function' ? await backendUrl() : backendUrl;
       return String(value || '').replace(/\/+$/, '');
+    };
+    let queueMutationTail = Promise.resolve();
+    const serializeQueueMutation = (operation) => {
+      const run = queueMutationTail.then(operation, operation);
+      queueMutationTail = run.catch(() => {});
+      return run;
     };
 
     async function getCollectorSession() {
@@ -148,8 +237,10 @@
           [secret],
         );
         logger.warn?.('[collector-auth] exchange network failure', {
-          code: error.code,
-          message: error.message,
+          ...sanitizeCollectorDiagnostic({
+            code: error.code,
+            message: error.message,
+          }, [secret]),
         });
         throw error;
       }
@@ -161,11 +252,11 @@
           body?.code,
           [secret],
         );
-        logger.warn?.('[collector-auth] exchange rejected', {
+        logger.warn?.('[collector-auth] exchange rejected', sanitizeCollectorDiagnostic({
           status: error.status,
           code: error.code,
           message: error.message,
-        });
+        }, [secret]));
         throw error;
       }
       return setCollectorSession(body?.data || body);
@@ -218,7 +309,7 @@
     async function listPendingUploads() {
       const stored = await chromeApi.storage.local.get(PENDING_UPLOADS_STORAGE_KEY);
       const items = stored?.[PENDING_UPLOADS_STORAGE_KEY];
-      return Array.isArray(items) ? items : [];
+      return Array.isArray(items) ? items.slice() : [];
     }
 
     async function writePendingUploads(items) {
@@ -228,70 +319,121 @@
     }
 
     async function enqueuePendingUpload(upload) {
-      const session = await getCollectorSession();
-      const storedOwner = session
-        ? null
-        : (await chromeApi.storage.local.get(COLLECTOR_LAST_OWNER_KEY))?.[COLLECTOR_LAST_OWNER_KEY];
-      const ownerAccountId = accountIdOf(session) || String(storedOwner?.accountId || '');
-      const ownerSessionIdentity = sessionIdentityOf(session) || String(storedOwner?.sessionIdentity || '');
-      if (!ownerAccountId || !ownerSessionIdentity) {
-        throw collectorError('COLLECTOR_AUTH_REQUIRED', 401, 'COLLECTOR_AUTH_REQUIRED');
-      }
-      const requestId = String(upload?.requestId || '');
-      if (!requestId) throw collectorError('COLLECT_REQUEST_ID_REQUIRED', 400, 'COLLECT_REQUEST_ID_REQUIRED');
-      const queue = await listPendingUploads();
-      if (queue.some((item) => item.requestId === requestId)) return queue;
-      const entry = {
-        requestId,
-        path: String(upload?.path || ''),
-        body: upload?.body && typeof upload.body === 'object' ? upload.body : {},
-        ownerAccountId,
-        ownerSessionIdentity,
-        queuedAt: new Date(now()).toISOString(),
-      };
-      queue.push(entry);
-      await writePendingUploads(queue);
-      return queue;
+      return serializeQueueMutation(async () => {
+        const session = await getCollectorSession();
+        const storedOwner = session
+          ? null
+          : (await chromeApi.storage.local.get(COLLECTOR_LAST_OWNER_KEY))?.[COLLECTOR_LAST_OWNER_KEY];
+        const ownerAccountId = accountIdOf(session) || String(storedOwner?.accountId || '');
+        const ownerSessionIdentity = sessionIdentityOf(session) || String(storedOwner?.sessionIdentity || '');
+        if (!ownerAccountId || !ownerSessionIdentity) {
+          throw collectorError('COLLECTOR_AUTH_REQUIRED', 401, 'COLLECTOR_AUTH_REQUIRED');
+        }
+        const requestId = String(upload?.requestId || '');
+        if (!requestId) {
+          throw collectorError('COLLECT_REQUEST_ID_REQUIRED', 400, 'COLLECT_REQUEST_ID_REQUIRED');
+        }
+        const path = String(upload?.path || '');
+        const body = upload?.body && typeof upload.body === 'object' ? upload.body : {};
+        const queue = await listPendingUploads();
+        const existing = queue.find((item) =>
+          item.requestId === requestId
+          && item.ownerAccountId === ownerAccountId
+          && item.ownerSessionIdentity === ownerSessionIdentity);
+        if (existing) {
+          if (existing.path !== path || stableJson(existing.body) !== stableJson(body)) {
+            throw collectorError(
+              '相同采集请求标识已用于不同内容',
+              409,
+              'COLLECT_REQUEST_CONFLICT',
+            );
+          }
+          return queue;
+        }
+        const entry = {
+          requestId,
+          path,
+          body,
+          ownerAccountId,
+          ownerSessionIdentity,
+          queuedAt: new Date(now()).toISOString(),
+        };
+        queue.push(entry);
+        await writePendingUploads(queue);
+        return queue;
+      });
+    }
+
+    async function enqueueRetryablePendingUpload(upload, status) {
+      if (!isRetryableCollectorUploadStatus(status)) return false;
+      await enqueuePendingUpload(upload);
+      return true;
     }
 
     async function flushPendingUploads(upload) {
       if (typeof upload !== 'function') throw new TypeError('pending upload flush requires uploader');
-      const session = await getCollectorSession();
-      if (!session) return { uploaded: 0, retained: (await listPendingUploads()).length, blockedAccountMismatch: 0 };
-      const queue = await listPendingUploads();
-      const retained = [];
-      let uploaded = 0;
-      let blockedAccountMismatch = 0;
-      for (const item of queue) {
-        if (
-          item.ownerAccountId !== accountIdOf(session)
-          || item.ownerSessionIdentity !== sessionIdentityOf(session)
-        ) {
-          blockedAccountMismatch += 1;
-          retained.push(item);
-          continue;
+      return serializeQueueMutation(async () => {
+        const session = await getCollectorSession();
+        if (!session) {
+          return {
+            uploaded: 0,
+            retained: (await listPendingUploads()).length,
+            blockedAccountMismatch: 0,
+            discarded: 0,
+          };
         }
-        try {
-          const response = await upload(item, session);
-          if (response?.ok) uploaded += 1;
-          else retained.push(item);
-        } catch (error) {
-          logger.warn?.('[collector-upload] retained after failure', {
-            requestId: item.requestId,
-            code: String(error?.code || 'COLLECTOR_UPLOAD_FAILED'),
-            message: redactCollectorSecrets(error?.message, [session.collectorToken]),
-          });
-          retained.push(item);
+        const queue = await listPendingUploads();
+        const retained = [];
+        let uploaded = 0;
+        let blockedAccountMismatch = 0;
+        let discarded = 0;
+        for (const item of queue) {
+          if (
+            item.ownerAccountId !== accountIdOf(session)
+            || item.ownerSessionIdentity !== sessionIdentityOf(session)
+          ) {
+            blockedAccountMismatch += 1;
+            retained.push(item);
+            continue;
+          }
+          try {
+            const response = await upload(item, session);
+            if (response?.ok) uploaded += 1;
+            else if (isRetryableCollectorUploadStatus(response?.status)) retained.push(item);
+            else discarded += 1;
+          } catch (error) {
+            logger.warn?.(
+              '[collector-upload] retained after failure',
+              sanitizeCollectorDiagnostic({
+                requestId: item.requestId,
+                status: error?.status,
+                code: sanitizeCollectorErrorCode(
+                  error?.code,
+                  'COLLECTOR_UPLOAD_FAILED',
+                  [session.collectorToken],
+                ),
+                message: error?.message,
+                cause: error?.cause,
+              }, [session.collectorToken]),
+            );
+            retained.push(item);
+          }
         }
-      }
-      await writePendingUploads(retained);
-      return { uploaded, retained: retained.length, blockedAccountMismatch };
+        await writePendingUploads(retained);
+        return {
+          uploaded,
+          retained: retained.length,
+          blockedAccountMismatch,
+          discarded,
+        };
+      });
     }
 
     return Object.freeze({
       clearCollectorSession,
       collectorFetch,
       enqueuePendingUpload,
+      enqueueRetryablePendingUpload,
       exchangeCollectorTicket,
       exchangeCollectorTicketWithRetry,
       flushPendingUploads,
@@ -307,7 +449,11 @@
     COLLECTOR_SESSION_STORAGE_KEY,
     PENDING_UPLOADS_STORAGE_KEY,
     createCollectorSessionManager,
+    isRetryableCollectorUploadStatus,
     redactCollectorSecrets,
+    sanitizeCollectorDiagnostic,
+    sanitizeCollectorErrorCode,
+    withoutCollectorScope,
   });
   root.JzCollectorSession = api;
   if (typeof module !== 'undefined') module.exports = api;

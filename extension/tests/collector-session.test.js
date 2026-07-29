@@ -1,9 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  PENDING_UPLOADS_STORAGE_KEY,
   COLLECTOR_PERMISSIONS,
   COLLECTOR_SESSION_STORAGE_KEY,
   createCollectorSessionManager,
+  isRetryableCollectorUploadStatus,
+  sanitizeCollectorDiagnostic,
+  withoutCollectorScope,
 } = require('../lib/collector-session.js');
 
 const jsonResponse = (status, body) => ({
@@ -187,4 +191,261 @@ test('pending uploads stay queued for their account session and a mismatch canno
   assert.equal(uploads, 1);
   assert.equal(flushed.uploaded, 1);
   assert.deepEqual(await harness.manager.listPendingUploads(), []);
+});
+
+test('collector scope sanitizer removes every retired canonical key recursively', () => {
+  const retiredKeys = [
+    'account_id',
+    'created-by',
+    'Client_Id',
+    'storeId',
+    'LOCAL_STORE_ID',
+    'operating-store-id',
+    'data_collection_store_id',
+    'Data-Collection-Stores',
+    'dataCollectionStoreIds',
+    'current_data_collection_store_id',
+    'CURRENT-DATA-COLLECTION-STORE-IDS-BY-ACCOUNT',
+    'seller_company_id',
+    'Seller-Company',
+    'legacy_scope',
+  ];
+  const input = {
+    keep: 'root',
+    nested: retiredKeys.map((key, index) => ({
+      [key]: `retired-${index}`,
+      keep: index,
+      deeper: [{ [key]: `nested-${index}`, keep: true }],
+    })),
+  };
+
+  const sanitized = withoutCollectorScope(input);
+
+  assert.equal(sanitized.keep, 'root');
+  assert.deepEqual(
+    sanitized.nested,
+    retiredKeys.map((_, index) => ({
+      keep: index,
+      deeper: [{ keep: true }],
+    })),
+  );
+});
+
+test('same request ID is isolated by account and conflicting owner reuse is rejected', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'shared-request',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-a' },
+  });
+  await assert.rejects(
+    harness.manager.enqueuePendingUpload({
+      requestId: 'shared-request',
+      path: '/sources/ozon/collect',
+      body: { sourceSku: 'different-content' },
+    }),
+    (error) => error?.code === 'COLLECT_REQUEST_CONFLICT',
+  );
+
+  await harness.manager.setCollectorSession(validSession({
+    collectorToken: 'csess_account_b_secret_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  }));
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'shared-request',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-b' },
+  });
+
+  const queued = await harness.manager.listPendingUploads();
+  assert.equal(queued.length, 2);
+  assert.deepEqual(
+    queued.map((item) => [item.ownerAccountId, item.requestId]),
+    [['account-a', 'shared-request'], ['account-b', 'shared-request']],
+  );
+
+  const flushedB = await harness.manager.flushPendingUploads(async (item) => {
+    assert.equal(item.ownerAccountId, 'account-b');
+    return jsonResponse(200, { ok: true });
+  });
+  assert.equal(flushedB.uploaded, 1);
+  assert.deepEqual(
+    (await harness.manager.listPendingUploads()).map((item) => item.ownerAccountId),
+    ['account-a'],
+  );
+  await harness.manager.setCollectorSession(validSession({
+    collectorToken: 'csess_account_a_refreshed_123456789',
+  }));
+  const flushedA = await harness.manager.flushPendingUploads(async (item) => {
+    assert.equal(item.ownerAccountId, 'account-a');
+    return jsonResponse(200, { ok: true });
+  });
+  assert.equal(flushedA.uploaded, 1);
+  assert.deepEqual(await harness.manager.listPendingUploads(), []);
+});
+
+test('concurrent enqueues are serialized without losing either upload', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  const originalGet = harness.chromeApi.storage.local.get;
+  let queueReads = 0;
+  harness.chromeApi.storage.local.get = async (key) => {
+    const snapshot = await originalGet(key);
+    if (key === PENDING_UPLOADS_STORAGE_KEY) {
+      queueReads += 1;
+      if (queueReads === 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    return snapshot;
+  };
+
+  await Promise.all([
+    harness.manager.enqueuePendingUpload({
+      requestId: 'concurrent-1',
+      path: '/sources/ozon/collect',
+      body: { sourceSku: 'sku-1' },
+    }),
+    harness.manager.enqueuePendingUpload({
+      requestId: 'concurrent-2',
+      path: '/sources/ozon/collect',
+      body: { sourceSku: 'sku-2' },
+    }),
+  ]);
+
+  assert.deepEqual(
+    (await harness.manager.listPendingUploads()).map((item) => item.requestId).sort(),
+    ['concurrent-1', 'concurrent-2'],
+  );
+});
+
+test('enqueue during flush is retained and a failed queue write does not poison later mutations', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'flush-existing',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-existing' },
+  });
+  let releaseUpload;
+  let uploadEntered;
+  const uploadStarted = new Promise((resolve) => { uploadEntered = resolve; });
+  const uploadReleased = new Promise((resolve) => { releaseUpload = resolve; });
+  const flush = harness.manager.flushPendingUploads(async () => {
+    uploadEntered();
+    await uploadReleased;
+    return jsonResponse(200, { ok: true });
+  });
+  await uploadStarted;
+  const enqueue = harness.manager.enqueuePendingUpload({
+    requestId: 'added-during-flush',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-new' },
+  });
+  releaseUpload();
+  await Promise.all([flush, enqueue]);
+  assert.deepEqual(
+    (await harness.manager.listPendingUploads()).map((item) => item.requestId),
+    ['added-during-flush'],
+  );
+
+  const originalSet = harness.chromeApi.storage.local.set;
+  let failNextQueueWrite = true;
+  harness.chromeApi.storage.local.set = async (values) => {
+    if (failNextQueueWrite && Object.hasOwn(values, PENDING_UPLOADS_STORAGE_KEY)) {
+      failNextQueueWrite = false;
+      throw new Error('simulated storage failure');
+    }
+    return originalSet(values);
+  };
+  await assert.rejects(
+    harness.manager.enqueuePendingUpload({
+      requestId: 'write-fails',
+      path: '/sources/ozon/collect',
+      body: { sourceSku: 'sku-fail' },
+    }),
+    /simulated storage failure/,
+  );
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'after-write-failure',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-recovered' },
+  });
+  assert.deepEqual(
+    (await harness.manager.listPendingUploads()).map((item) => item.requestId),
+    ['added-during-flush', 'after-write-failure'],
+  );
+});
+
+test('collector diagnostics redact ticket, session, bearer, code and nested fields', async () => {
+  const ticket = 'ctt_ticket_secret_123456789';
+  const sessionSecret = 'csess_session_secret_123456789';
+  const bearer = 'Bearer bearer.secret.value';
+  const harness = createHarness({
+    fetchImpl: async () => jsonResponse(400, {
+      code: ticket,
+      message: `rejected ${sessionSecret}`,
+      status: { authorization: bearer },
+    }),
+  });
+
+  await assert.rejects(
+    harness.manager.exchangeCollectorTicket({ ticket }),
+    (error) => {
+      assert.equal(error.code, 'COLLECTOR_REQUEST_FAILED');
+      assert.equal(JSON.stringify(error).includes('ctt_'), false);
+      assert.equal(JSON.stringify(error).includes('csess_'), false);
+      assert.equal(JSON.stringify(error).toLowerCase().includes('bearer '), false);
+      return true;
+    },
+  );
+  const diagnostic = sanitizeCollectorDiagnostic({
+    code: sessionSecret,
+    status: { authorization: bearer },
+    nested: [{ cause: ticket }],
+  }, [ticket, sessionSecret]);
+  const output = JSON.stringify([diagnostic, harness.logs]);
+  assert.doesNotMatch(output, /ctt_|csess_|bearer\s/i);
+});
+
+test('retryability classifier retains network, auth, 408, 429 and 5xx but not business 4xx', async () => {
+  for (const status of [0, 401, 403, 408, 429, 500, 503]) {
+    assert.equal(isRetryableCollectorUploadStatus(status), true, String(status));
+  }
+  for (const status of [400, 404, 409, 422]) {
+    assert.equal(isRetryableCollectorUploadStatus(status), false, String(status));
+  }
+
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  for (const status of [0, 408, 429, 500, 503]) {
+    assert.equal(
+      await harness.manager.enqueueRetryablePendingUpload({
+        requestId: `immediate-${status}`,
+        path: '/sources/ozon/collect',
+        body: { sourceSku: `sku-${status}` },
+      }, status),
+      true,
+    );
+  }
+  assert.equal(
+    await harness.manager.enqueueRetryablePendingUpload({
+      requestId: 'immediate-422',
+      path: '/sources/ozon/collect',
+      body: { sourceSku: 'sku-422' },
+    }, 422),
+    false,
+  );
+  assert.equal((await harness.manager.listPendingUploads()).length, 5);
+  await harness.chromeApi.storage.local.set({ [PENDING_UPLOADS_STORAGE_KEY]: [] });
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'retry-408',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-408' },
+  });
+  await harness.manager.flushPendingUploads(async () => jsonResponse(408, { code: 'TIMEOUT' }));
+  assert.equal((await harness.manager.listPendingUploads()).length, 1);
+  await harness.manager.flushPendingUploads(async () => jsonResponse(422, { code: 'INVALID' }));
+  assert.equal((await harness.manager.listPendingUploads()).length, 0);
 });

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import { mirrorCollectItemV3 } from "./listing-pipeline.mjs";
+import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
 
 let ready = false;
 
@@ -50,22 +51,12 @@ function canonicalJson(value) {
   return JSON.stringify(canonicalValue(value) ?? null);
 }
 
-const COLLECTOR_SCOPE_FIELDS = Object.freeze([
-  "accountId",
-  "createdBy",
-  "storeId",
-  "operatingStoreId",
-  "dataCollectionStoreId",
-  "sellerCompanyId",
-]);
-
 function collectorError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
 
 function rejectCollectorScopeFields(input = {}) {
-  const forbidden = COLLECTOR_SCOPE_FIELDS.find((field) =>
-    Object.prototype.hasOwnProperty.call(input || {}, field));
+  const forbidden = findRetiredCollectorScopePath(input);
   if (forbidden) {
     throw collectorError(
       `采集请求不能指定账号或店铺范围：${forbidden}`,
@@ -77,7 +68,6 @@ function rejectCollectorScopeFields(input = {}) {
 
 export function assertCollectorScopeFieldsAbsentV4(input = {}) {
   rejectCollectorScopeFields(input);
-  rejectCollectorScopeFields(input?.payload);
 }
 
 export function prepareCollectRequestV4({

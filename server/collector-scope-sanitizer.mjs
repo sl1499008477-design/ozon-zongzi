@@ -24,6 +24,28 @@ export function isRetiredCollectorScopeKey(key) {
   return RETIRED_COLLECTOR_SCOPE_KEYS.has(canonicalKey(key));
 }
 
+export function findRetiredCollectorScopePath(value, path = "$", seen = new WeakSet()) {
+  if (!value || typeof value !== "object") return "";
+  if (seen.has(value)) return "";
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = findRetiredCollectorScopePath(value[index], `${path}[${index}]`, seen);
+      if (found) return found;
+    }
+    return "";
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return "";
+  for (const [key, nested] of Object.entries(value)) {
+    const childPath = `${path}.${key}`;
+    if (isRetiredCollectorScopeKey(key)) return childPath;
+    const found = findRetiredCollectorScopePath(nested, childPath, seen);
+    if (found) return found;
+  }
+  return "";
+}
+
 export function withoutCollectorScope(value) {
   if (Array.isArray(value)) return value.map(withoutCollectorScope);
   if (!value || typeof value !== "object") return value;

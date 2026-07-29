@@ -260,46 +260,6 @@ try {
     }, 300);
   }
 
-  // 插件登出 → 同步清掉所有已打开的 ERP 网页标签登录态(扩展登出时网页也登出,
-  // 防止两边停在不同账号)。executeScript 注入清 localStorage + 跳 /login。
-  // 幂等:若标签页本就没 token 直接 return,断开任何来回触发的循环。
-  async function clearWebAuthTabs() {
-    try {
-      // 只命中真正的卖家 web(品牌域 + 平台 apex + 本地),不带 *.jizhangerp.com
-      // 通配,避免误清 admin.jizhangerp.com 等共用同名 localStorage key 的子域。
-      const tabs = await chrome.tabs.query({
-        url: [
-          `*://${BRAND_WEB_HOST}/*`,
-          '*://jizhangerp.com/*',
-          ...LOCAL_FRONTEND_TAB_URLS,
-        ],
-      });
-      for (const tab of tabs) {
-        if (!tab.id) continue;
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => {
-              try {
-                // 幂等清 key(已空也无妨);仅在非 /login 时跳转 → 防来回重定向循环,
-                // 且每个 tab 各自按自身 pathname 判定,多 tab 不会被共享 localStorage
-                // 的"已清空"状态误判而漏跳转。
-                localStorage.removeItem('token');
-                localStorage.removeItem('user');
-                localStorage.removeItem('currentOzonStoreId');
-                if (!location.pathname.startsWith('/login')) {
-                  location.href = '/login';
-                }
-              } catch {}
-            },
-          });
-        } catch {}
-      }
-    } catch (e) {
-      console.warn('[ServiceWorker] clearWebAuthTabs failed:', e?.message);
-    }
-  }
-
   let resolvedBackendUrl = null;
 
   const detectBackendUrl = async () => {
@@ -3705,23 +3665,6 @@ try {
           if (!sourceId) return { ok: false, error: 'sourceId required' };
           return await (async () => {
             const raw = message.raw && typeof message.raw === 'object' ? message.raw : {};
-            const forbiddenScopeFields = new Set([
-              'accountId',
-              'createdBy',
-              'storeId',
-              'operatingStoreId',
-              'dataCollectionStoreId',
-              'sellerCompanyId',
-            ]);
-            const stripScope = (value) => {
-              if (Array.isArray(value)) return value.map(stripScope);
-              if (!value || typeof value !== 'object') return value;
-              return Object.fromEntries(
-                Object.entries(value)
-                  .filter(([key]) => !forbiddenScopeFields.has(key))
-                  .map(([key, nested]) => [key, stripScope(nested)]),
-              );
-            };
             const requestId = String(message.requestId || `collect-${crypto.randomUUID()}`);
             const sourceSku = String(raw.sku || raw.offerId || raw.id || '');
             const pendingUpload = {
@@ -3734,7 +3677,7 @@ try {
                 requestId,
                 deviceFingerprint: await getExtensionFingerprint(),
                 capturedAt: new Date().toISOString(),
-                payload: stripScope(raw),
+                payload: globalThis.JzCollectorSession.withoutCollectorScope(raw),
               },
             };
             const upload = async (entry) => collectorSessionManager.collectorFetch(entry.path, {
@@ -3756,16 +3699,17 @@ try {
               let responseBody = null;
               try { responseBody = text ? JSON.parse(text) : null; } catch {}
               if (!response.ok) {
-                if (response.status === 401 || response.status === 403 || response.status >= 500) {
-                  await collectorSessionManager.enqueuePendingUpload(pendingUpload);
-                }
+                const queued = await collectorSessionManager.enqueueRetryablePendingUpload(
+                  pendingUpload,
+                  response.status,
+                );
                 return {
                   ok: false,
                   status: response.status,
                   error: globalThis.JzCollectorSession.redactCollectorSecrets(
                     responseBody?.message || `采集上传失败 (${response.status})`,
                   ),
-                  queued: response.status === 401 || response.status === 403 || response.status >= 500,
+                  queued,
                 };
               }
               return {
@@ -3779,13 +3723,18 @@ try {
             } catch (error) {
               let queued = false;
               try {
-                await collectorSessionManager.enqueuePendingUpload(pendingUpload);
-                queued = true;
+                queued = await collectorSessionManager.enqueueRetryablePendingUpload(
+                  pendingUpload,
+                  0,
+                );
               } catch {}
               return {
                 ok: false,
                 queued,
-                code: String(error?.code || 'COLLECTOR_UPLOAD_FAILED'),
+                code: globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
+                  error?.code,
+                  'COLLECTOR_UPLOAD_FAILED',
+                ),
                 error: globalThis.JzCollectorSession.redactCollectorSecrets(
                   error?.message || '采集结果已保留，登录 Web 后可重新上传',
                 ),
