@@ -3434,7 +3434,8 @@ try {
   };
 
     const handle = async () => {
-      const collectorSession = await collectorSessionManager.getCollectorSession();
+      const collectorOperation = await collectorSessionManager.beginCollectorOperation();
+      const collectorSession = collectorOperation;
       // Legacy privileged actions are removed in Task 9. Until then they fail
       // closed because a Collector credential must never be used as Web Bearer.
       const token = null;
@@ -3663,6 +3664,13 @@ try {
           // - forceResubmit:true 跳 dedupe(用户主动覆盖)
           const sourceId = String(message.sourceId || '').trim();
           if (!sourceId) return { ok: false, error: 'sourceId required' };
+          if (!collectorOperation) {
+            return {
+              ok: false,
+              code: 'COLLECTOR_AUTH_REQUIRED',
+              error: '请先在 Web 端登录 sonli',
+            };
+          }
           return await (async () => {
             const raw = message.raw && typeof message.raw === 'object' ? message.raw : {};
             const requestId = String(message.requestId || `collect-${crypto.randomUUID()}`);
@@ -3680,7 +3688,11 @@ try {
                 payload: globalThis.JzCollectorSession.withoutCollectorScope(raw),
               },
             };
-            const upload = async (entry) => collectorSessionManager.collectorFetch(entry.path, {
+            const upload = async (
+              entry,
+              operation = collectorOperation,
+            ) => collectorSessionManager.collectorFetch(entry.path, {
+              collectorOperation: operation,
               permission: 'collector.upload',
               method: 'POST',
               headers: {
@@ -3691,7 +3703,7 @@ try {
             });
 
             if (collectorSession) {
-              await collectorSessionManager.flushPendingUploads(upload);
+              await collectorSessionManager.flushPendingUploads(upload, collectorOperation);
             }
             try {
               const response = await upload(pendingUpload);
@@ -3702,6 +3714,7 @@ try {
                 const queued = await collectorSessionManager.enqueueRetryablePendingUpload(
                   pendingUpload,
                   response.status,
+                  collectorOperation,
                 );
                 return {
                   ok: false,
@@ -3726,6 +3739,7 @@ try {
                 queued = await collectorSessionManager.enqueueRetryablePendingUpload(
                   pendingUpload,
                   0,
+                  collectorOperation,
                 );
               } catch {}
               return {

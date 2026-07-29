@@ -449,3 +449,181 @@ test('retryability classifier retains network, auth, 408, 429 and 5xx but not bu
   await harness.manager.flushPendingUploads(async () => jsonResponse(422, { code: 'INVALID' }));
   assert.equal((await harness.manager.listPendingUploads()).length, 0);
 });
+
+test('operation started by A cannot fetch with B and its failed payload remains owned by A', async () => {
+  const requests = [];
+  const harness = createHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(200, { ok: true });
+    },
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const operationA = await harness.manager.beginCollectorOperation();
+  assert.equal(Object.isFrozen(operationA), true);
+  assert.equal(operationA.accountId, 'account-a');
+  assert.equal(operationA.collectorToken, undefined);
+
+  await harness.manager.setCollectorSession(validSession({
+    collectorToken: 'csess_account_b_race_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  }));
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'race-shared-request',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-b' },
+  });
+
+  await assert.rejects(
+    harness.manager.collectorFetch('/sources/ozon/collect', {
+      collectorOperation: operationA,
+      permission: 'collector.upload',
+      method: 'POST',
+      body: JSON.stringify({ sourceSku: 'sku-a' }),
+    }),
+    (error) => error?.code === 'COLLECTOR_SESSION_CHANGED',
+  );
+  assert.equal(requests.length, 0);
+  assert.equal(
+    await harness.manager.enqueueRetryablePendingUpload({
+      requestId: 'race-shared-request',
+      path: '/sources/ozon/collect',
+      body: { sourceSku: 'sku-a' },
+    }, 0, operationA),
+    true,
+  );
+  assert.deepEqual(
+    (await harness.manager.listPendingUploads()).map((item) => [
+      item.ownerAccountId,
+      item.requestId,
+      item.body.sourceSku,
+    ]),
+    [
+      ['account-b', 'race-shared-request', 'sku-b'],
+      ['account-a', 'race-shared-request', 'sku-a'],
+    ],
+  );
+});
+
+test('operation started by A keeps A ownership when B becomes current before enqueue', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+  const operationA = await harness.manager.beginCollectorOperation();
+  await harness.manager.setCollectorSession(validSession({
+    collectorToken: 'csess_account_b_enqueue_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  }));
+
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'enqueue-after-switch',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-a' },
+  }, operationA);
+
+  const [queued] = await harness.manager.listPendingUploads();
+  assert.equal(queued.ownerAccountId, 'account-a');
+  assert.equal(queued.ownerSessionIdentity, 'account:account-a');
+  assert.equal(harness.localState.sonliCollectorLastOwner.accountId, 'account-b');
+});
+
+test('flush retains A and leaves B untouched when the session switches during A fetch', async () => {
+  let harness;
+  const requests = [];
+  harness = createHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      await harness.manager.setCollectorSession(validSession({
+        collectorToken: 'csess_account_b_during_fetch_123456789',
+        account: { id: 'account-b', displayName: 'B' },
+      }));
+      return jsonResponse(200, { ok: true });
+    },
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const operationA = await harness.manager.beginCollectorOperation();
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'flush-race-a',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-a' },
+  }, operationA);
+
+  await harness.manager.setCollectorSession(validSession({
+    collectorToken: 'csess_account_b_before_flush_123456789',
+    account: { id: 'account-b', displayName: 'B' },
+  }));
+  const operationB = await harness.manager.beginCollectorOperation();
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'flush-race-b',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-b' },
+  }, operationB);
+  await harness.manager.setCollectorSession(validSession());
+
+  const result = await harness.manager.flushPendingUploads(
+    (item, collectorOperation) => harness.manager.collectorFetch(item.path, {
+      collectorOperation,
+      permission: 'collector.upload',
+      method: 'POST',
+      body: JSON.stringify(item.body),
+    }),
+    operationA,
+  );
+
+  assert.equal(result.uploaded, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.headers.authorization, `Collector ${validSession().collectorToken}`);
+  assert.equal(requests[0].options.headers.authorization.includes('account_b'), false);
+  assert.deepEqual(
+    (await harness.manager.listPendingUploads()).map((item) => item.ownerAccountId),
+    ['account-a', 'account-b'],
+  );
+});
+
+test('clear race aborts the old snapshot and a new same-account snapshot can replay A', async () => {
+  const requests = [];
+  const harness = createHarness({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(200, { ok: true });
+    },
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const revokedOperationA = await harness.manager.beginCollectorOperation();
+  await harness.manager.enqueuePendingUpload({
+    requestId: 'revoked-race-a',
+    path: '/sources/ozon/collect',
+    body: { sourceSku: 'sku-a' },
+  }, revokedOperationA);
+  await harness.manager.clearCollectorSession();
+
+  await assert.rejects(
+    harness.manager.collectorFetch('/sources/ozon/collect', {
+      collectorOperation: revokedOperationA,
+      permission: 'collector.upload',
+      method: 'POST',
+      body: JSON.stringify({ sourceSku: 'sku-a' }),
+    }),
+    (error) => error?.code === 'COLLECTOR_SESSION_CHANGED',
+  );
+  assert.equal(requests.length, 0);
+  assert.equal((await harness.manager.listPendingUploads()).length, 1);
+
+  const refreshed = validSession({
+    collectorToken: 'csess_account_a_refreshed_race_123456789',
+  });
+  await harness.manager.setCollectorSession(refreshed);
+  const refreshedOperationA = await harness.manager.beginCollectorOperation();
+  const replay = await harness.manager.flushPendingUploads(
+    (item, collectorOperation) => harness.manager.collectorFetch(item.path, {
+      collectorOperation,
+      permission: 'collector.upload',
+      method: 'POST',
+      body: JSON.stringify(item.body),
+    }),
+    refreshedOperationA,
+  );
+  assert.equal(replay.uploaded, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.headers.authorization, `Collector ${refreshed.collectorToken}`);
+  assert.deepEqual(await harness.manager.listPendingUploads(), []);
+});

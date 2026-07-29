@@ -157,6 +157,7 @@
       return String(value || '').replace(/\/+$/, '');
     };
     let queueMutationTail = Promise.resolve();
+    const operationSnapshots = new WeakMap();
     const serializeQueueMutation = (operation) => {
       const run = queueMutationTail.then(operation, operation);
       queueMutationTail = run.catch(() => {});
@@ -178,6 +179,84 @@
       }
       return safeSession(session);
     }
+
+    const createCollectorOperation = (session) => {
+      const safe = safeSession(session);
+      const snapshot = Object.freeze({
+        ...safe,
+        account: Object.freeze({ ...safe.account }),
+        permissions: Object.freeze([...safe.permissions]),
+        sessionIdentity: sessionIdentityOf(safe),
+      });
+      const operation = Object.freeze({
+        account: snapshot.account,
+        accountId: accountIdOf(snapshot),
+        expiresAt: snapshot.expiresAt,
+        permissions: snapshot.permissions,
+        sessionIdentity: snapshot.sessionIdentity,
+      });
+      operationSnapshots.set(operation, snapshot);
+      return operation;
+    };
+
+    async function beginCollectorOperation() {
+      const session = await getCollectorSession();
+      return session ? createCollectorOperation(session) : null;
+    }
+
+    const requireOperationSnapshot = (operation) => {
+      if (!operation || typeof operation !== 'object' || !operationSnapshots.has(operation)) {
+        throw collectorError(
+          'COLLECTOR_OPERATION_INVALID',
+          401,
+          'COLLECTOR_OPERATION_INVALID',
+        );
+      }
+      return operationSnapshots.get(operation);
+    };
+
+    const resolveCollectorOperation = async (operation) => {
+      const resolved = operation || await beginCollectorOperation();
+      if (!resolved) {
+        throw collectorError('COLLECTOR_AUTH_REQUIRED', 401, 'COLLECTOR_AUTH_REQUIRED');
+      }
+      return {
+        operation: resolved,
+        snapshot: requireOperationSnapshot(resolved),
+      };
+    };
+
+    const assertOperationOwnerIsCurrent = async (snapshot) => {
+      const expiresAt = Date.parse(snapshot?.expiresAt || '');
+      const current = await getCollectorSession();
+      if (
+        !Number.isFinite(expiresAt)
+        || expiresAt <= now()
+        || !current
+        || accountIdOf(current) !== accountIdOf(snapshot)
+        || sessionIdentityOf(current) !== snapshot.sessionIdentity
+      ) {
+        throw collectorError(
+          'COLLECTOR_SESSION_CHANGED',
+          409,
+          'COLLECTOR_SESSION_CHANGED',
+          [snapshot?.collectorToken],
+        );
+      }
+      return true;
+    };
+
+    const clearCollectorSessionIfSnapshotCurrent = async (snapshot) => {
+      const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
+      const current = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
+      if (
+        current?.collectorToken === snapshot.collectorToken
+        && accountIdOf(current) === accountIdOf(snapshot)
+        && sessionIdentityOf(current) === snapshot.sessionIdentity
+      ) {
+        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+      }
+    };
 
     async function setCollectorSession(session) {
       const safe = safeSession(session);
@@ -287,21 +366,25 @@
       throw lastError;
     }
 
-    async function collectorFetch(path, { permission, ...options } = {}) {
-      const session = await getCollectorSession();
-      if (!session) {
-        throw collectorError('COLLECTOR_AUTH_REQUIRED', 401, 'COLLECTOR_AUTH_REQUIRED');
-      }
-      if (!session.permissions.includes(permission)) {
+    async function collectorFetch(path, {
+      collectorOperation,
+      permission,
+      ...options
+    } = {}) {
+      const resolved = await resolveCollectorOperation(collectorOperation);
+      const { snapshot } = resolved;
+      if (!snapshot.permissions.includes(permission)) {
         throw collectorError('COLLECTOR_PERMISSION_DENIED', 403, 'COLLECTOR_PERMISSION_DENIED');
       }
       const baseUrl = await resolveBackendUrl();
+      await assertOperationOwnerIsCurrent(snapshot);
       const response = await fetchImpl(`${baseUrl}${String(path || '')}`, {
         ...options,
-        headers: safeHeaders(options.headers, session.collectorToken),
+        headers: safeHeaders(options.headers, snapshot.collectorToken),
       });
+      await assertOperationOwnerIsCurrent(snapshot);
       if (response.status === 401 || response.status === 403) {
-        await clearCollectorSession();
+        await clearCollectorSessionIfSnapshotCurrent(snapshot);
       }
       return response;
     }
@@ -318,14 +401,35 @@
       });
     }
 
-    async function enqueuePendingUpload(upload) {
+    async function resolvePendingOwner(collectorOperation) {
+      if (collectorOperation) {
+        const snapshot = requireOperationSnapshot(collectorOperation);
+        return {
+          ownerAccountId: accountIdOf(snapshot),
+          ownerSessionIdentity: snapshot.sessionIdentity,
+        };
+      }
+      const operation = await beginCollectorOperation();
+      if (operation) {
+        const snapshot = requireOperationSnapshot(operation);
+        return {
+          ownerAccountId: accountIdOf(snapshot),
+          ownerSessionIdentity: snapshot.sessionIdentity,
+        };
+      }
+      const storedOwner =
+        (await chromeApi.storage.local.get(COLLECTOR_LAST_OWNER_KEY))?.[COLLECTOR_LAST_OWNER_KEY];
+      return {
+        ownerAccountId: String(storedOwner?.accountId || ''),
+        ownerSessionIdentity: String(storedOwner?.sessionIdentity || ''),
+      };
+    }
+
+    async function enqueuePendingUpload(upload, collectorOperation) {
+      const owner = await resolvePendingOwner(collectorOperation);
       return serializeQueueMutation(async () => {
-        const session = await getCollectorSession();
-        const storedOwner = session
-          ? null
-          : (await chromeApi.storage.local.get(COLLECTOR_LAST_OWNER_KEY))?.[COLLECTOR_LAST_OWNER_KEY];
-        const ownerAccountId = accountIdOf(session) || String(storedOwner?.accountId || '');
-        const ownerSessionIdentity = sessionIdentityOf(session) || String(storedOwner?.sessionIdentity || '');
+        const ownerAccountId = owner.ownerAccountId;
+        const ownerSessionIdentity = owner.ownerSessionIdentity;
         if (!ownerAccountId || !ownerSessionIdentity) {
           throw collectorError('COLLECTOR_AUTH_REQUIRED', 401, 'COLLECTOR_AUTH_REQUIRED');
         }
@@ -364,17 +468,17 @@
       });
     }
 
-    async function enqueueRetryablePendingUpload(upload, status) {
+    async function enqueueRetryablePendingUpload(upload, status, collectorOperation) {
       if (!isRetryableCollectorUploadStatus(status)) return false;
-      await enqueuePendingUpload(upload);
+      await enqueuePendingUpload(upload, collectorOperation);
       return true;
     }
 
-    async function flushPendingUploads(upload) {
+    async function flushPendingUploads(upload, collectorOperation) {
       if (typeof upload !== 'function') throw new TypeError('pending upload flush requires uploader');
+      const operation = collectorOperation || await beginCollectorOperation();
       return serializeQueueMutation(async () => {
-        const session = await getCollectorSession();
-        if (!session) {
+        if (!operation) {
           return {
             uploaded: 0,
             retained: (await listPendingUploads()).length,
@@ -382,6 +486,7 @@
             discarded: 0,
           };
         }
+        const snapshot = requireOperationSnapshot(operation);
         const queue = await listPendingUploads();
         const retained = [];
         let uploaded = 0;
@@ -389,15 +494,16 @@
         let discarded = 0;
         for (const item of queue) {
           if (
-            item.ownerAccountId !== accountIdOf(session)
-            || item.ownerSessionIdentity !== sessionIdentityOf(session)
+            item.ownerAccountId !== accountIdOf(snapshot)
+            || item.ownerSessionIdentity !== snapshot.sessionIdentity
           ) {
             blockedAccountMismatch += 1;
             retained.push(item);
             continue;
           }
           try {
-            const response = await upload(item, session);
+            const response = await upload(item, operation);
+            await assertOperationOwnerIsCurrent(snapshot);
             if (response?.ok) uploaded += 1;
             else if (isRetryableCollectorUploadStatus(response?.status)) retained.push(item);
             else discarded += 1;
@@ -410,11 +516,11 @@
                 code: sanitizeCollectorErrorCode(
                   error?.code,
                   'COLLECTOR_UPLOAD_FAILED',
-                  [session.collectorToken],
+                  [snapshot.collectorToken],
                 ),
                 message: error?.message,
                 cause: error?.cause,
-              }, [session.collectorToken]),
+              }, [snapshot.collectorToken]),
             );
             retained.push(item);
           }
@@ -430,6 +536,7 @@
     }
 
     return Object.freeze({
+      beginCollectorOperation,
       clearCollectorSession,
       collectorFetch,
       enqueuePendingUpload,
