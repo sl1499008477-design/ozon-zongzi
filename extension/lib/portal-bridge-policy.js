@@ -15,7 +15,6 @@
       return { protocol, action: message.action, requestId, ticket, expiresAt };
     }
     if (protocol === 'JZ_ERP') {
-      if (message.type === 'jzManualSync') return { protocol, type: message.type, ...copy(message, ['storeId', 'syncType', 'postingsSinceDays', 'postingsSince', 'postingsTo']) };
       if (message.action === 'followSell') return { protocol, action: message.action, ...copy(message, ['storeId', 'items', 'strictTypeMatch', 'dryRun', 'applyWatermark', 'applyPoster', 'applyAiRewrite', 'stocks', 'viaPortal']) };
     }
     throw new Error('PORTAL_BRIDGE_FORBIDDEN');
@@ -36,9 +35,7 @@
     });
     const route = normalized.protocol === 'SONLI_COLLECTOR_AUTH'
       ? 'SONLI_COLLECTOR_AUTH'
-      : normalized.type === 'jzManualSync'
-        ? 'JZ_MANUAL_SYNC'
-        : 'JZ_FOLLOW_SELL';
+      : 'JZ_FOLLOW_SELL';
     return { source: 'PORTAL', route, message: normalized };
   };
   const sanitizePortalBridgeResponse = (response) => {

@@ -143,7 +143,7 @@ import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
-
+import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
 const rootDir = path.resolve(__dirname, "..");
@@ -155,7 +155,6 @@ let collectionStoreBackfillComplete = false;
 const DEFAULT_ADMIN_USERNAME = process.env.SONLI_ADMIN_USERNAME || "admin";
 const DEFAULT_ADMIN_PASSWORD = String(process.env.SONLI_ADMIN_PASSWORD || "");
 let collectV3BackfillDone = false;
-
 const defaultState = () => ({
   token: "",
   currentAccountId: "",
@@ -2438,6 +2437,7 @@ async function handle(req, res) {
   }
 
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: (request) => collectorAuthRuntime.authenticateRequest(

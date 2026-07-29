@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -97,6 +97,7 @@ function scanText(buffer, label, scanCredentials) {
 export function scanTrackedPersonalData() {
   const findings = [];
   for (const file of gitTrackedFiles()) {
+    if (!existsSync(file)) continue;
     if (path.extname(file).toLowerCase() === ".zip") {
       for (const entry of zipEntries(file)) {
         findings.push(...scanText(

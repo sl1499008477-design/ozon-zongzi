@@ -66,17 +66,6 @@
   const navBadgeProducts = document.getElementById("nav-badge-products");
   const navBadgeCollect = document.getElementById("nav-badge-collect");
 
-  // Local Browser Agent task monitor
-  const browserAgentSection = document.getElementById("browser-agent-section");
-  const browserAgentTitle = document.getElementById("browser-agent-title");
-  const browserAgentMeta = document.getElementById("browser-agent-meta");
-  const browserAgentProgressBar = document.getElementById(
-    "browser-agent-progress-bar",
-  );
-  const browserAgentStopBtn = document.getElementById("browser-agent-stop-btn");
-  let _browserAgentTimer = null;
-  let _browserAgentJobId = null;
-
   // update banner (kept)
   const updateBanner = document.getElementById("update-banner");
   const updateVersion = document.getElementById("update-version");
@@ -634,77 +623,6 @@
     renderSignals(signals);
   };
 
-  // ─── Local Browser Agent 任务状态 ─────────────────────────
-  const browserAgentActionLabel = (type) =>
-    ({
-      "agent.ping": "连接检测",
-      "collect.hot_products": "热卖商品采集",
-      "collect.product_detail": "商品详情采集",
-      "listing.create_draft": "生成上架草稿",
-      "listing.publish_draft": "发布商品",
-    })[type] ||
-    type ||
-    "AI Agent 任务";
-
-  const renderBrowserAgentState = (state) => {
-    if (!state?.running) {
-      browserAgentSection.style.display = "none";
-      _browserAgentJobId = null;
-      return;
-    }
-
-    _browserAgentJobId = state.jobId || null;
-    const rawPercent = Number(state.percent ?? 0);
-    const percent = Number.isFinite(rawPercent)
-      ? Math.max(0, Math.min(100, rawPercent))
-      : 0;
-    const label = browserAgentActionLabel(state.type);
-    const stage = state.stage ? ` · ${state.stage}` : "";
-    const cancelText = state.cancelRequested ? "正在停止" : "";
-    const message = state.message || cancelText || "正在执行";
-
-    browserAgentSection.style.display = "";
-    browserAgentTitle.textContent = label;
-    browserAgentMeta.textContent = `${message}${stage}`;
-    browserAgentProgressBar.style.width = `${percent}%`;
-    browserAgentStopBtn.disabled = !!state.cancelRequested;
-    browserAgentStopBtn.textContent = state.cancelRequested ? "停止中" : "停止";
-  };
-
-  const refreshBrowserAgentState = async () => {
-    try {
-      const resp = await sendMessage({ action: "browserAgentGetState" });
-      if (!resp?.ok) {
-        renderBrowserAgentState(null);
-        return;
-      }
-      renderBrowserAgentState(resp.data);
-    } catch {
-      renderBrowserAgentState(null);
-    }
-  };
-
-  const startBrowserAgentPolling = () => {
-    if (_browserAgentTimer) return;
-    refreshBrowserAgentState();
-    _browserAgentTimer = setInterval(refreshBrowserAgentState, 3000);
-  };
-
-  // 防御:browser-agent 区块是可选 UI。若 popup.html 缺这些节点(历史上 JS/CSS
-  // 已加但 HTML 漏了一版),getElementById 返回 null,这里若不判空,顶层
-  // .addEventListener 抛 TypeError 会中断整个 IIFE → init() 永不执行 →
-  // 验证码不加载、状态卡在「检测服务器…」、登录彻底失效。判空让其优雅降级。
-  browserAgentStopBtn?.addEventListener("click", async () => {
-    if (!_browserAgentJobId) return;
-    browserAgentStopBtn.disabled = true;
-    browserAgentStopBtn.textContent = "停止中";
-    await sendMessage({
-      action: "browserAgentCancelCurrent",
-      jobId: _browserAgentJobId,
-    }).catch(() => null);
-    await refreshBrowserAgentState();
-  });
-
   // ─── Actions: cookie sync, context-tab collect ───
   const doSyncCookie = async () => {
     syncCookieBtn.disabled = true;
@@ -837,7 +755,6 @@
         : "https://" + BRAND_WEB_HOST;
     await loadStores();
     await Promise.all([buildSignals(), checkUpdateBanner()]);
-    startBrowserAgentPolling();
   };
 
   logoutBtn.addEventListener("click", async () => {

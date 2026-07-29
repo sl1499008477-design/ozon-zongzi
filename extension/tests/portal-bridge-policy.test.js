@@ -25,11 +25,11 @@ assert.deepEqual(collector, {
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
 });
-assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { type: 'jzManualSync', storeId: 's', syncType: 'PRODUCTS', token: 'x' } }), { protocol: 'JZ_ERP', type: 'jzManualSync', storeId: 's', syncType: 'PRODUCTS' });
 assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true, type: 'x' } }), { protocol: 'JZ_ERP', action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true });
 for (const bad of [
   { protocol: 'SONLI_WEB_CONTROL', message: { action: 'syncAuthFromWeb', token: 't' } },
   { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: '', ticket: 't' } },
+  { protocol: 'JZ_ERP', message: { type: 'jzManualSync', storeId: 's', syncType: 'PRODUCTS' } },
   { protocol: 'JZ_ERP', message: { type: 'unknown' } },
   { protocol: 'JZ_ERP', message: { action: 'syncAuthFromWeb' } },
 ]) assert.throws(() => normalizePortalBridgeMessage({ ...bad, senderUrl }));
@@ -62,8 +62,8 @@ assert.deepEqual(
   },
   'a generic page message cannot smuggle a dedicated JZ discriminator',
 );
-assert.equal(
-  routePortalRuntimeMessage({
+assert.throws(
+  () => routePortalRuntimeMessage({
     senderUrl,
     message: {
       portalProtocol: 'JZ_ERP',
@@ -71,9 +71,9 @@ assert.equal(
       storeId: 's',
       syncType: 'PRODUCTS',
     },
-  }).route,
-  'JZ_MANUAL_SYNC',
-  'a legal JZ manual sync must reach its dedicated route',
+  }),
+  /PORTAL_BRIDGE_FORBIDDEN/,
+  'the retired portal manual-sync contract must be rejected',
 );
 assert.equal(
   routePortalRuntimeMessage({
@@ -114,9 +114,10 @@ assert.throws(
 );
 const worker = fs.readFileSync('extension/background/service-worker.js', 'utf8');
 assert.match(worker, /routePortalRuntimeMessage/);
-assert.match(worker, /portalRoute === 'JZ_MANUAL_SYNC'/);
+assert.doesNotMatch(worker, /portalRoute === 'JZ_MANUAL_SYNC'/);
 assert.match(worker, /portalRoute !== 'SONLI_COLLECTOR_AUTH'/);
 assert.doesNotMatch(worker, /SONLI_WEB_CONTROL/);
 const jzBridge = fs.readFileSync('extension/content/jizhangerp-bridge.js', 'utf8');
 assert.match(jzBridge, /portalProtocol: "JZ_ERP"/);
+assert.doesNotMatch(jzBridge, /sync\.request|sync\.response|jzManualSync/);
 console.log('portal bridge policy tests passed');

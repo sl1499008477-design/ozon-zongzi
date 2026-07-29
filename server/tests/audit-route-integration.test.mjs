@@ -116,25 +116,6 @@ try {
   )).status, 200);
   assert.equal((await requestJson(
     handle,
-    "GET",
-    "/ozon/stores/store-audit/sync-credentials",
-  )).status, 200);
-  assert.equal((await requestJson(
-    handle,
-    "POST",
-    "/ozon/sync/client-report",
-    {
-      clientJobId: "job-audit",
-      storeId: "store-audit",
-      deviceId: "body-device-must-not-win",
-      type: "PRODUCTS",
-      status: "SUCCESS",
-      fetchedCount: 3,
-      apiKey: "body-secret",
-    },
-  )).status, 200);
-  assert.equal((await requestJson(
-    handle,
     "POST",
     "/local/accounts/logout",
     {},
@@ -143,15 +124,11 @@ try {
   const persisted = JSON.parse(await readFile(dataFile, "utf8"));
   const actions = persisted.auditEvents.map((event) => event.action);
   assert.ok(actions.includes("USAGE_TRACK"));
-  assert.ok(actions.includes("SYNC_CREDENTIALS_READ"));
-  assert.ok(actions.includes("SYNC_CLIENT_REPORT"));
   assert.ok(actions.includes("COLLECTOR_TICKET_ISSUED"));
   assert.ok(actions.includes("COLLECTOR_TICKET_EXCHANGED"));
   assert.ok(actions.includes("COLLECTOR_SESSION_REJECTED"));
   assert.ok(actions.includes("COLLECTOR_SESSION_REVOKED"));
-  for (const event of persisted.auditEvents.filter((item) => (
-    ["USAGE_TRACK", "SYNC_CREDENTIALS_READ", "SYNC_CLIENT_REPORT"].includes(item.action)
-  ))) {
+  for (const event of persisted.auditEvents.filter((item) => item.action === "USAGE_TRACK")) {
     assert.equal(event.accountId, "account-audit");
     assert.equal(event.storeId, "store-audit");
     assert.equal(event.deviceId, "device-audit");

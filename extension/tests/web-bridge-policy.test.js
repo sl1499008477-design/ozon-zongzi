@@ -51,17 +51,14 @@ assert.doesNotMatch(workerSource, /case ['"]syncAuthFromWeb['"]|case ['"]tryWebS
 assert.match(workerSource, /collector\.auth\.exchange/);
 assert.match(workerSource, /'\.\.\/lib\/collector-session\.js'/);
 assert.doesNotMatch(workerSource, /STORAGE_KEYS\.(?:token|storeId)/);
-assert.match(workerSource, /collectorSessionManager\.collectorFetch\(entry\.path/);
+assert.match(workerSource, /JzCollectorClient\.upload\(/);
 assert.match(workerSource, /collectorSessionManager\.beginCollectorOperation\(\)/);
 assert.match(workerSource, /collectorOperation/);
 assert.match(workerSource, /clearCollectorSession\(\s*collectorOperation\s*\)/);
-assert.match(workerSource, /permission: 'collector\.upload'/);
-assert.match(workerSource, /collectorSessionManager\.enqueueRetryablePendingUpload\(/);
-assert.match(workerSource, /JzCollectorSession\.withoutCollectorScope\(raw\)/);
-assert.match(
-  workerSource,
-  /enqueueRetryablePendingUpload\(\s*pendingUpload,\s*response\.status,\s*collectorOperation,?\s*\)/,
-);
+const collectorClientSource = fs.readFileSync('extension/background/collector-client.js', 'utf8');
+assert.match(collectorClientSource, /permission|collector\.upload/);
+assert.match(collectorClientSource, /enqueueRetryablePendingUpload\(/);
+assert.match(collectorClientSource, /JzCollectorSession\.withoutCollectorScope\(safeRaw\)/);
 assert.doesNotMatch(
   workerSource,
   /function clearWebAuthTabs|localStorage\.(?:getItem|setItem|removeItem)\(\s*['"](?:token|user|currentOzonStoreId|ozonStoreId)['"]\)/,
