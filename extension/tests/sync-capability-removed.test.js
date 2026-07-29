@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const { webcrypto } = require('node:crypto');
+const { chromeMatchPatternCovers } = require('./helpers/chrome-match-pattern.js');
 
 const extensionRoot = path.resolve(
   process.env.SONLI_EXTENSION_ROOT || path.join(__dirname, '..'),
@@ -192,6 +193,7 @@ function loadServiceWorker() {
     createdAlarms,
     fetchCalls,
     importedScripts,
+    local,
     runtimeOnMessage,
     runtimeOnStartup,
   };
@@ -212,14 +214,30 @@ async function sendRuntimeMessage(harness, message, sender = {}) {
 }
 
 test('installed manifest cannot request Seller API while retaining visible seller capture', () => {
-  assert.equal(
-    manifest.host_permissions.includes('https://api-seller.ozon.ru/*'),
-    false,
-  );
-  assert.equal(
-    manifest.host_permissions.includes('https://seller.ozon.ru/*'),
-    true,
-  );
+  for (const sellerApiUrl of [
+    'https://api-seller.ozon.ru/v3/product/info/list',
+    'http://api-seller.ozon.ru/v2/posting/fbo/list',
+  ]) {
+    assert.equal(
+      manifest.host_permissions.some((pattern) =>
+        chromeMatchPatternCovers(pattern, sellerApiUrl)),
+      false,
+      `effective host permissions must exclude ${sellerApiUrl}`,
+    );
+  }
+  for (const captureUrl of [
+    'https://www.ozon.ru/product/example-123456789/',
+    'https://seller.ozon.ru/app/products',
+    'https://ozon.kz/product/example-123456789/',
+    'https://www.ozon.kz/search/?text=example',
+  ]) {
+    assert.equal(
+      manifest.host_permissions.some((pattern) =>
+        chromeMatchPatternCovers(pattern, captureUrl)),
+      true,
+      `visible capture must retain ${captureUrl}`,
+    );
+  }
 });
 
 test('actual service worker starts without retired sync modules or sync alarms', async () => {
@@ -235,6 +253,95 @@ test('actual service worker starts without retired sync modules or sync alarms',
     false,
   );
   assert.equal(typeof harness.context.JzCollectorClient?.upload, 'function');
+});
+
+test('collector client exposes no arbitrary credentialed transport', async () => {
+  const harness = loadServiceWorker();
+  for (const method of ['request', 'getJob', 'getConfig']) {
+    assert.equal(
+      typeof harness.context.JzCollectorClient?.[method],
+      'undefined',
+      `${method} must not be a public Collector transport`,
+    );
+  }
+  assert.deepEqual(
+    Object.keys(harness.context.JzCollectorClient).sort(),
+    ['setContext', 'upload'],
+  );
+});
+
+test('retired, absolute and traversal queue paths fail before Collector fetch', async () => {
+  const harness = loadServiceWorker();
+  const maliciousPaths = [
+    '/ozon/sync/lease/acquire',
+    '/ozon/sync/client-report',
+    '/ozon/cache/import-with-hash',
+    '/local/sync/PRODUCTS',
+    'https://evil.example/collector',
+    '/../ozon/sync/lease/acquire',
+  ];
+  harness.local.state.sonliCollectorPendingUploads = maliciousPaths.map(
+    (entryPath, index) => ({
+      requestId: `malicious-${index}`,
+      path: entryPath,
+      body: { source: 'ozon', payload: {} },
+      ownerAccountId: 'account-behavior',
+      ownerSessionIdentity: 'account:account-behavior',
+      queuedAt: '2026-07-29T00:00:00.000Z',
+    }),
+  );
+  const response = await sendRuntimeMessage(
+    harness,
+    {
+      action: 'pushSourceCollect',
+      sourceId: 'ozon',
+      requestId: 'safe-after-malicious-queue',
+      raw: { sku: '123456789' },
+    },
+    {
+      tab: { id: 7, url: 'https://www.ozon.ru/product/example-123456789/' },
+      url: 'https://www.ozon.ru/product/example-123456789/',
+    },
+  );
+  assert.equal(response?.ok, true);
+  assert.equal(
+    harness.fetchCalls.some(({ url }) =>
+      maliciousPaths.some((entryPath) => url.endsWith(entryPath))),
+    false,
+  );
+  assert.deepEqual(
+    harness.fetchCalls.map(({ url }) => new URL(url).pathname),
+    ['/api/sources/ozon/collect'],
+  );
+});
+
+test('source route injection is rejected before Collector fetch', async () => {
+  for (const sourceId of [
+    '../ozon/sync/lease/acquire',
+    'https://evil.example/collector',
+    'ozon?next=/ozon/sync/client-report',
+  ]) {
+    const harness = loadServiceWorker();
+    const response = await sendRuntimeMessage(
+      harness,
+      {
+        action: 'pushSourceCollect',
+        sourceId,
+        requestId: 'malicious-source-route',
+        raw: { sku: '123456789' },
+      },
+      {
+        tab: { id: 7, url: 'https://www.ozon.ru/product/example-123456789/' },
+        url: 'https://www.ozon.ru/product/example-123456789/',
+      },
+    );
+    assert.notEqual(response?.ok, true);
+    assert.equal(
+      harness.fetchCalls.some(({ url }) => url.includes('/sources/')),
+      false,
+      sourceId,
+    );
+  }
 });
 
 test('retired manual and sync-request messages cannot trigger sync fetches', async () => {

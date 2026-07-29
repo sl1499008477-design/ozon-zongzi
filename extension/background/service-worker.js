@@ -218,7 +218,15 @@ try {
   function reloadOzonTabs() {
     clearTimeout(_reloadTimer);
     _reloadTimer = setTimeout(async () => {
-      const tabs = await chrome.tabs.query({ url: ['*://*.ozon.ru/*', '*://*.ozon.kz/*'] });
+      const tabs = await chrome.tabs.query({
+        url: [
+          'https://ozon.ru/*',
+          'https://www.ozon.ru/*',
+          'https://seller.ozon.ru/*',
+          'https://ozon.kz/*',
+          'https://www.ozon.kz/*',
+        ],
+      });
       for (const tab of tabs) {
         chrome.tabs.reload(tab.id);
       }
@@ -1342,7 +1350,7 @@ try {
     const urlPrefix = opts.urlPrefix !== undefined ? opts.urlPrefix : '/api/v1';
 
     // 解析目标标签:优先消息来源标签(用户正所在的 www 商品页),否则任意已加载完成的
-    // *.ozon.ru 标签(www 或 seller 都行 —— cookie 域级共享、且都有真实浏览器指纹)。
+    // www 或 seller 标签都可使用同域 Cookie 与真实浏览器指纹。
     const isOzonUrl = (u) => /^https?:\/\/([^/]+\.)?ozon\.ru\//i.test(u || '');
     let target = null;
     if (preferTabId) {
@@ -1352,7 +1360,9 @@ try {
       } catch {}
     }
     if (!target) {
-      const tabs = await chrome.tabs.query({ url: ['*://*.ozon.ru/*'] });
+      const tabs = await chrome.tabs.query({
+        url: ['https://www.ozon.ru/*', 'https://seller.ozon.ru/*'],
+      });
       target = tabs.find((t) => t.status === 'complete' && t.active)
         || tabs.find((t) => t.status === 'complete')
         || null;
@@ -4723,9 +4733,9 @@ try {
             const ozonTabs = await chrome.tabs.query({
               url: [
                 'https://www.ozon.ru/*',
-                'https://*.ozon.ru/*',
+                'https://ozon.ru/*',
                 'https://ozon.kz/*',
-                'https://*.ozon.kz/*',
+                'https://www.ozon.kz/*',
               ],
             });
             // 排除 seller.* (反爬信任域不是这个;且 seller portal 走另一条路径)
@@ -4769,7 +4779,7 @@ try {
         }
         case 'proxyImageFetch': {
           // 由 1688 content script 调用：在 background 代为 fetch ozon CDN 图片，
-          // 避开页面 CORS（host_permissions 已含 *.ozon.ru / *.ozonusercontent.com）。
+          // 避开页面 CORS（host_permissions 仅保留可见 Ozon 页面与媒体域）。
           // 返回 base64 dataURL，content script 转 blob/File 注入 1688 file input。
           try {
             const url = String(message.url || '');

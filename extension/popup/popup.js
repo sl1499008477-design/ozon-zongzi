@@ -912,7 +912,7 @@
       }
       // 优先级 2：已打开的 ozon.ru 任意页（让用户接下来去找商品）
       const ozonTabs = await chrome.tabs.query({
-        url: ["https://www.ozon.ru/*", "https://*.ozon.ru/*"],
+        url: ["https://www.ozon.ru/*", "https://ozon.ru/*"],
       });
       const target = ozonTabs.find(
         (t) => t.url && /^https:\/\/www\.ozon\.ru\//.test(t.url),

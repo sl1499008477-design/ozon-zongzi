@@ -13,14 +13,13 @@
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "*://*.ozon.ru/*",
     "https://www.ozon.ru/*",
     "https://ozon.ru/*",
     "https://seller.ozon.ru/*",
     "https://*.ozone.ru/*",
     "https://*.ozonusercontent.com/*",
     "https://*.ozonru.cn/*",
-    "*://*.ozon.kz/*",
+    "https://www.ozon.kz/*",
     "https://ozon.kz/*",
     "*://qh.jizhangerp.com/*",
     "*://*.qh.jizhangerp.com/*",
@@ -93,16 +92,16 @@
       "matches": [
         "https://www.ozon.ru/product/*",
         "https://ozon.kz/product/*",
-        "https://*.ozon.kz/product/*",
+        "https://www.ozon.kz/product/*",
         "https://www.ozon.ru/category/*",
         "https://www.ozon.ru/search/*",
         "https://www.ozon.ru/search-by-image*",
         "https://ozon.kz/category/*",
         "https://ozon.kz/search/*",
         "https://ozon.kz/search-by-image*",
-        "https://*.ozon.kz/category/*",
-        "https://*.ozon.kz/search/*",
-        "https://*.ozon.kz/search-by-image*"
+        "https://www.ozon.kz/category/*",
+        "https://www.ozon.kz/search/*",
+        "https://www.ozon.kz/search-by-image*"
       ],
       "js": [
         "content/ozon-bff-interceptor.js"
@@ -115,7 +114,7 @@
         "https://www.ozon.ru/*",
         "https://ozon.ru/*",
         "https://ozon.kz/*",
-        "https://*.ozon.kz/*"
+        "https://www.ozon.kz/*"
       ],
       "js": [
         "content/shared-utils.js",
@@ -145,9 +144,9 @@
         "https://ozon.kz/category/*",
         "https://ozon.kz/search/*",
         "https://ozon.kz/search-by-image*",
-        "https://*.ozon.kz/category/*",
-        "https://*.ozon.kz/search/*",
-        "https://*.ozon.kz/search-by-image*"
+        "https://www.ozon.kz/category/*",
+        "https://www.ozon.kz/search/*",
+        "https://www.ozon.kz/search-by-image*"
       ],
       "js": [
         "content/shared-utils.js",
@@ -168,7 +167,7 @@
       "matches": [
         "https://www.ozon.ru/*",
         "https://ozon.kz/*",
-        "https://*.ozon.kz/*"
+        "https://www.ozon.kz/*"
       ],
       "exclude_matches": [
         "https://www.ozon.ru/category/*",
@@ -177,9 +176,9 @@
         "https://ozon.kz/category/*",
         "https://ozon.kz/search/*",
         "https://ozon.kz/search-by-image*",
-        "https://*.ozon.kz/category/*",
-        "https://*.ozon.kz/search/*",
-        "https://*.ozon.kz/search-by-image*"
+        "https://www.ozon.kz/category/*",
+        "https://www.ozon.kz/search/*",
+        "https://www.ozon.kz/search-by-image*"
       ],
       "js": [
         "content/shared-utils.js",

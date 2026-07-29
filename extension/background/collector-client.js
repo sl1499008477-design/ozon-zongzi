@@ -6,6 +6,19 @@
  */
 (() => {
   let context = null;
+  const ALLOWED_SOURCE_IDS = new Set([
+    '1688',
+    'amazon',
+    'jd',
+    'mercadolibre',
+    'ozon',
+    'pdd',
+    'shein',
+    'taobao',
+    'temu',
+    'wb',
+    'yandex',
+  ]);
 
   function setContext(next) {
     if (!next?.sessionManager || typeof next.getDeviceFingerprint !== 'function') {
@@ -19,26 +32,37 @@
     return context;
   }
 
-  async function request(path, permission, options = {}) {
+  function normalizeSourceId(value) {
+    const sourceId = String(value || '').trim().toLowerCase();
+    return ALLOWED_SOURCE_IDS.has(sourceId) ? sourceId : '';
+  }
+
+  function expectedUploadPath(sourceId) {
+    return `/sources/${encodeURIComponent(sourceId)}/collect`;
+  }
+
+  function validateUploadEntry(entry) {
+    const sourceId = normalizeSourceId(entry?.body?.source);
+    if (!sourceId || String(entry?.path || '') !== expectedUploadPath(sourceId)) {
+      const error = new Error('COLLECTOR_UPLOAD_ROUTE_INVALID');
+      error.code = 'COLLECTOR_UPLOAD_ROUTE_INVALID';
+      throw error;
+    }
+    return { entry, sourceId };
+  }
+
+  function sendUpload(entry, collectorOperation) {
     const { sessionManager } = requireContext();
-    return sessionManager.collectorFetch(path, {
-      ...options,
-      collectorOperation: options.collectorOperation,
-      permission,
-    });
-  }
-
-  async function getJob(path, collectorOperation) {
-    return request(path, 'collector.job.read', {
+    const validated = validateUploadEntry(entry);
+    return sessionManager.collectorFetch(expectedUploadPath(validated.sourceId), {
       collectorOperation,
-      method: 'GET',
-    });
-  }
-
-  async function getConfig(path, collectorOperation) {
-    return request(path, 'collector.config.read', {
-      collectorOperation,
-      method: 'GET',
+      permission: 'collector.upload',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': String(validated.entry.requestId || ''),
+      },
+      body: JSON.stringify(validated.entry.body),
     });
   }
 
@@ -50,9 +74,13 @@
     collectorOperation,
   }) {
     const { sessionManager, getDeviceFingerprint } = requireContext();
-    const normalizedSourceId = String(sourceId || '').trim();
+    const normalizedSourceId = normalizeSourceId(sourceId);
     if (!normalizedSourceId) {
-      return { ok: false, error: 'sourceId required' };
+      return {
+        ok: false,
+        code: 'COLLECTOR_SOURCE_UNSUPPORTED',
+        error: '不支持的数据来源',
+      };
     }
     if (!collectorOperation) {
       return {
@@ -66,7 +94,7 @@
     const normalizedRequestId = String(requestId || `collect-${crypto.randomUUID()}`);
     const pendingUpload = {
       requestId: normalizedRequestId,
-      path: `/sources/${encodeURIComponent(normalizedSourceId)}/collect`,
+      path: expectedUploadPath(normalizedSourceId),
       body: {
         source: normalizedSourceId,
         sourceSku: String(safeRaw.sku || safeRaw.offerId || safeRaw.id || ''),
@@ -77,20 +105,12 @@
         payload: globalThis.JzCollectorSession.withoutCollectorScope(safeRaw),
       },
     };
-    const sendUpload = (entry, operation = collectorOperation) =>
-      request(entry.path, 'collector.upload', {
-        collectorOperation: operation,
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-request-id': entry.requestId,
-        },
-        body: JSON.stringify(entry.body),
-      });
+    const uploadEntry = (entry, operation = collectorOperation) =>
+      sendUpload(entry, operation);
 
-    await sessionManager.flushPendingUploads(sendUpload, collectorOperation);
+    await sessionManager.flushPendingUploads(uploadEntry, collectorOperation);
     try {
-      const response = await sendUpload(pendingUpload);
+      const response = await uploadEntry(pendingUpload);
       const text = await response.text().catch(() => '');
       let responseBody = null;
       try {
@@ -143,9 +163,6 @@
   }
 
   globalThis.JzCollectorClient = Object.freeze({
-    getConfig,
-    getJob,
-    request,
     setContext,
     upload,
   });
