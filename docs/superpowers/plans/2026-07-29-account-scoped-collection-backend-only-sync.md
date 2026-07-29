@@ -47,6 +47,7 @@ pnpm --version
 - Modify: `scripts/test-manifest.mjs`
 - Modify: `server/tests/collection-pipeline-v4.integration.mjs`
 - Modify: `server/tests/collector-desktop.integration.mjs`
+- Modify: `server/tests/account-deletion-postgres.integration.mjs`
 
 **Contract introduced:**
 
@@ -124,7 +125,10 @@ The migration must:
 3. Refuse migration when an affected row still has no unique account. Include table name and record ID in the exception.
 4. Set `collect_items.account_id`, `collect_raw_payloads.account_id`, and `collect_requests.account_id` to `NOT NULL`.
 5. Drop `NOT NULL` from collection-stage `store_id`, `operating_store_id`, and `data_collection_store_id` columns where present.
-6. Replace store/data-store identity indexes with account-scoped indexes:
+6. Add the new account/source identity indexes while keeping the current
+   `collect_requests(account_id,idempotency_key)` compatibility index. Migration 019
+   is deployed before the Task 4 runtime and must not invalidate its existing
+   `ON CONFLICT` target:
 
 ```sql
 DROP INDEX IF EXISTS collect_items_identity_key_uq;
@@ -132,23 +136,28 @@ CREATE UNIQUE INDEX collect_items_account_identity_key_uq
   ON collect_items(account_id, identity_key)
   WHERE identity_key <> '';
 
-DROP INDEX IF EXISTS collect_requests_account_idempotency_uq;
 CREATE UNIQUE INDEX collect_requests_account_request_uq
   ON collect_requests(account_id, source, source_sku, idempotency_key);
 ```
 
-7. Create ticket/session expiry and account lookup indexes.
-8. Preserve the old store/data-store values and foreign keys as nullable historical evidence.
+7. Enforce the parent Web session and collector ticket/session account as one composite
+   database relationship.
+8. Create ticket/session expiry and account lookup indexes.
+9. Preserve the old store/data-store values and foreign keys as nullable historical evidence.
 
 - [ ] **Step 4: Extend dedicated-database integration assertions**
 
 Update the two excluded integration tests so that, when manually run against a dedicated database, they verify:
 
-- collection without an operating store or data store succeeds;
+- PostgreSQL accepts account-owned collection rows with nullable operating/data-store
+  scope. The actual `ingestCollectRequestV4` use case changes in Task 4 together with
+  the new account/idempotency contract;
 - old rows keep their legacy data-store ID;
 - a deliberately unowned legacy row makes the migration fail;
 - ticket/session rows cascade when the account is deleted;
 - ticket consumption can mark exactly one row consumed.
+- the supported account-deletion service removes all three newly non-null collection
+  table rows before deleting the account.
 
 - [ ] **Step 5: Run focused verification**
 
@@ -519,6 +528,10 @@ Update insert/update/select mapping so:
 - `store_id` and `data_collection_store_id` are inserted as `NULL`;
 - existing non-null historical values are returned only in a `legacyScope` object when needed for audit, not in the new write contract;
 - item update/delete/list/export queries always include `account_id=$n`.
+- collect-request inserts/lookups use the four-column account/source/source-SKU
+  conflict target added by migration 019. Keep the old two-column compatibility index
+  during this rollout; removing it requires a later, separately reviewed migration
+  after old runtime instances are gone.
 
 - [ ] **Step 5: Authenticate collector routes by permission**
 
