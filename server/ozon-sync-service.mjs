@@ -288,6 +288,50 @@ export function createOzonSyncService({
   logger = console,
 }) {
   const nowIso = () => now().toISOString();
+  const activeSyncClaims = new Map();
+
+  function syncClaimConflict(report) {
+    const error = new Error("同步幂等键已用于不同请求");
+    error.status = 409;
+    error.code = "SYNC_IDEMPOTENCY_CONFLICT";
+    return attachSyncErrorContext(error, {
+      accountId: report.accountId,
+      storeId: report.storeId,
+      type: report.type,
+      timestamp: report.timestamp,
+      taskId: report.taskId,
+      requestId: report.requestId,
+      details: {},
+    });
+  }
+
+  async function runWithSyncClaim(report, operation) {
+    const claimKey = JSON.stringify([report.accountId, report.clientJobId]);
+    const existing = activeSyncClaims.get(claimKey);
+    if (existing) {
+      if (
+        existing.taskId !== report.taskId
+        || existing.requestHash !== report.requestHash
+      ) {
+        throw syncClaimConflict(report);
+      }
+      return existing.promise;
+    }
+
+    const promise = Promise.resolve().then(operation);
+    activeSyncClaims.set(claimKey, {
+      taskId: report.taskId,
+      requestHash: report.requestHash,
+      promise,
+    });
+    try {
+      return await promise;
+    } finally {
+      if (activeSyncClaims.get(claimKey)?.promise === promise) {
+        activeSyncClaims.delete(claimKey);
+      }
+    }
+  }
 
   function appendSyncReport(state, report) {
     state.jobs = state.jobs && typeof state.jobs === "object" ? state.jobs : {};
@@ -398,18 +442,7 @@ export function createOzonSyncService({
     ) {
       return null;
     }
-    const error = new Error("同步幂等键已用于不同请求");
-    error.status = 409;
-    error.code = "SYNC_IDEMPOTENCY_CONFLICT";
-    throw attachSyncErrorContext(error, {
-      accountId: report.accountId,
-      storeId: report.storeId,
-      type: report.type,
-      timestamp: report.timestamp,
-      taskId: report.taskId,
-      requestId: report.requestId,
-      details: {},
-    });
+    throw syncClaimConflict(report);
   }
 
   async function syncStoreProfile(state, store) {
@@ -952,102 +985,104 @@ export function createOzonSyncService({
         profile: { status: "PENDING" },
       },
     };
-    try {
-      const replay = await findSyncReplay(report);
-      if (replay?.status === "FAILED") throw failedSyncReplayError(replay);
-      if (replay) return replay;
-      await persistSyncReport(report);
-    } catch (error) {
-      if (error?.body && typeof error.body === "object") throw error;
-      const unavailable = new Error("同步状态暂时不可用");
-      unavailable.status = Number(error?.status) >= 500
-        ? Number(error.status)
-        : 503;
-      unavailable.code = "SYNC_STATE_UNAVAILABLE";
-      throw attachSyncErrorContext(unavailable, {
-        accountId: report.accountId,
-        storeId: report.storeId,
-        type: report.type,
-        timestamp: report.timestamp,
-        taskId: report.taskId,
-        requestId: report.requestId,
-        store,
-        details: {},
-      });
-    }
-    try {
-      if (!supportedTypes.has(upper)) {
-        const error = new Error("Ozon 本地同步尚未迁移到服务");
-        error.status = 501;
-        error.code = "OZON_SYNC_UNSUPPORTED";
+    return runWithSyncClaim(report, async () => {
+      try {
+        const replay = await findSyncReplay(report);
+        if (replay?.status === "FAILED") throw failedSyncReplayError(replay);
+        if (replay) return replay;
+        await persistSyncReport(report);
+      } catch (error) {
+        if (error?.body && typeof error.body === "object") throw error;
+        const unavailable = new Error("同步状态暂时不可用");
+        unavailable.status = Number(error?.status) >= 500
+          ? Number(error.status)
+          : 503;
+        unavailable.code = "SYNC_STATE_UNAVAILABLE";
+        throw attachSyncErrorContext(unavailable, {
+          accountId: report.accountId,
+          storeId: report.storeId,
+          type: report.type,
+          timestamp: report.timestamp,
+          taskId: report.taskId,
+          requestId: report.requestId,
+          store,
+          details: {},
+        });
+      }
+      try {
+        if (!supportedTypes.has(upper)) {
+          const error = new Error("Ozon 本地同步尚未迁移到服务");
+          error.status = 501;
+          error.code = "OZON_SYNC_UNSUPPORTED";
+          throw error;
+        }
+        let profileError = "";
+        try {
+          await syncStoreProfile(workingState, store);
+          delete store.profileSyncError;
+        } catch (error) {
+          profileError = sanitizedSyncText(error?.message || error, store, 240);
+          store.profileSyncError = profileError;
+        }
+        const syncContext = {
+          postingsByIdentity: new Map(),
+        };
+        const syncByType = {
+          PRODUCTS: () => syncProducts(workingState, store),
+          POSTINGS: () => syncPostings(workingState, store, syncContext, normalizedSinceDays),
+          WAREHOUSES: () => syncWarehouses(workingState, store),
+          PROMOTIONS: () => syncPromotions(workingState, store),
+        };
+        report.fetchedCount = await syncByType[upper]();
+        report.status = "SUCCESS";
+        report.updatedAt = nowIso();
+        report.timestamp = report.updatedAt;
+        report.details = {
+          fetchedCount: report.fetchedCount,
+          coverage: [...SYNC_COVERAGE_BY_TYPE[upper]],
+          profile: profileError
+            ? { status: "FAILED", error: profileError }
+            : { status: "SUCCESS" },
+        };
+        await commitLocalSyncResult(
+          workingState,
+          store,
+          requestAccountId,
+          upper,
+          report,
+          syncContext,
+        );
+        return report;
+      } catch (error) {
+        report.status = "FAILED";
+        report.error = sanitizedSyncText(error?.message || error, store, 500);
+        report.errorCode = String(error?.code || "STORE_SYNC_FAILED").slice(0, 120);
+        report.errorStatus = Number(error?.status || 502);
+        report.updatedAt = nowIso();
+        report.timestamp = report.updatedAt;
+        report.details = {
+          fetchedCount: report.fetchedCount,
+          coverage: [...(SYNC_COVERAGE_BY_TYPE[upper] || [])],
+          error: safeSyncErrorDetails(error, store),
+        };
+        try {
+          await persistSyncReport(report);
+        } catch {
+          logger.warn?.("[local-sync] failed to persist failure report");
+        }
+        attachSyncErrorContext(error, {
+          accountId: report.accountId,
+          storeId: report.storeId,
+          type: report.type,
+          timestamp: report.timestamp,
+          taskId: report.taskId,
+          requestId: report.requestId,
+          store,
+          details: safeSyncErrorDetails(error, store),
+        });
         throw error;
       }
-      let profileError = "";
-      try {
-        await syncStoreProfile(workingState, store);
-        delete store.profileSyncError;
-      } catch (error) {
-        profileError = sanitizedSyncText(error?.message || error, store, 240);
-        store.profileSyncError = profileError;
-      }
-      const syncContext = {
-        postingsByIdentity: new Map(),
-      };
-      const syncByType = {
-        PRODUCTS: () => syncProducts(workingState, store),
-        POSTINGS: () => syncPostings(workingState, store, syncContext, normalizedSinceDays),
-        WAREHOUSES: () => syncWarehouses(workingState, store),
-        PROMOTIONS: () => syncPromotions(workingState, store),
-      };
-      report.fetchedCount = await syncByType[upper]();
-      report.status = "SUCCESS";
-      report.updatedAt = nowIso();
-      report.timestamp = report.updatedAt;
-      report.details = {
-        fetchedCount: report.fetchedCount,
-        coverage: [...SYNC_COVERAGE_BY_TYPE[upper]],
-        profile: profileError
-          ? { status: "FAILED", error: profileError }
-          : { status: "SUCCESS" },
-      };
-      await commitLocalSyncResult(
-        workingState,
-        store,
-        requestAccountId,
-        upper,
-        report,
-        syncContext,
-      );
-      return report;
-    } catch (error) {
-      report.status = "FAILED";
-      report.error = sanitizedSyncText(error?.message || error, store, 500);
-      report.errorCode = String(error?.code || "STORE_SYNC_FAILED").slice(0, 120);
-      report.errorStatus = Number(error?.status || 502);
-      report.updatedAt = nowIso();
-      report.timestamp = report.updatedAt;
-      report.details = {
-        fetchedCount: report.fetchedCount,
-        coverage: [...(SYNC_COVERAGE_BY_TYPE[upper] || [])],
-        error: safeSyncErrorDetails(error, store),
-      };
-      try {
-        await persistSyncReport(report);
-      } catch {
-        logger.warn?.("[local-sync] failed to persist failure report");
-      }
-      attachSyncErrorContext(error, {
-        accountId: report.accountId,
-        storeId: report.storeId,
-        type: report.type,
-        timestamp: report.timestamp,
-        taskId: report.taskId,
-        requestId: report.requestId,
-        store,
-        details: safeSyncErrorDetails(error, store),
-      });
-      throw error;
-    }
+    });
   }
 
   return {

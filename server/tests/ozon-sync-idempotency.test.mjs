@@ -41,12 +41,31 @@ const baseState = () => ({
   auditEvents: [],
 });
 
-function fixture({ failActions = false } = {}) {
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function fixture({
+  failActions = false,
+  loadFailures = 0,
+  onActions = null,
+} = {}) {
   let persisted = structuredClone(baseState());
   let clockTick = 0;
   let fetchCalls = 0;
+  let remainingLoadFailures = loadFailures;
   const service = createOzonSyncService({
-    loadState: async () => structuredClone(persisted),
+    loadState: async () => {
+      if (remainingLoadFailures > 0) {
+        remainingLoadFailures -= 1;
+        throw new Error("state temporarily unavailable");
+      }
+      return structuredClone(persisted);
+    },
     saveState: async (state) => {
       persisted = structuredClone(state);
     },
@@ -66,6 +85,7 @@ function fixture({ failActions = false } = {}) {
       };
     }
     if (path === "/v1/actions") {
+      await onActions?.();
       if (failActions) {
         return {
           ok: false,
@@ -126,6 +146,47 @@ test("same scoped sync request replays the exact terminal report", async () => {
   }
 });
 
+test("concurrent identical sync requests share one successful execution", async () => {
+  const actionStarted = deferred();
+  const releaseAction = deferred();
+  const testFixture = fixture({
+    onActions: async () => {
+      actionStarted.resolve();
+      await releaseAction.promise;
+    },
+  });
+  try {
+    const firstPromise = testFixture.service.runLocalSync(
+      testFixture.state(),
+      syncInput(),
+    );
+    await actionStarted.promise;
+    const secondPromise = testFixture.service.runLocalSync(
+      testFixture.state(),
+      syncInput(),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseAction.resolve();
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    const persisted = testFixture.state();
+
+    assert.deepEqual(second, first);
+    assert.equal(testFixture.fetchCalls(), 2);
+    assert.equal(
+      persisted.reports.filter((report) => report.clientJobId === "shared-client-key").length,
+      1,
+    );
+    assert.equal(
+      persisted.auditEvents.filter((event) => event.correlationId === first.taskId).length,
+      1,
+    );
+  } finally {
+    releaseAction.resolve();
+    testFixture.restore();
+  }
+});
+
 test("same failed sync request replays the exact public failure", async () => {
   const testFixture = fixture({ failActions: true });
   try {
@@ -152,6 +213,78 @@ test("same failed sync request replays the exact public failure", async () => {
   }
 });
 
+test("concurrent identical failed sync requests share one public failure", async () => {
+  const actionStarted = deferred();
+  const releaseAction = deferred();
+  const testFixture = fixture({
+    failActions: true,
+    onActions: async () => {
+      actionStarted.resolve();
+      await releaseAction.promise;
+    },
+  });
+  try {
+    const firstPromise = testFixture.service.runLocalSync(
+      testFixture.state(),
+      syncInput(),
+    );
+    await actionStarted.promise;
+    const secondPromise = testFixture.service.runLocalSync(
+      testFixture.state(),
+      syncInput(),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseAction.resolve();
+
+    const [first, second] = await Promise.allSettled([firstPromise, secondPromise]);
+    const persisted = testFixture.state();
+
+    assert.equal(first.status, "rejected");
+    assert.equal(second.status, "rejected");
+    assert.deepEqual(second.reason.body, first.reason.body);
+    assert.equal(testFixture.fetchCalls(), 2);
+    assert.equal(
+      persisted.reports.filter((report) => report.clientJobId === "shared-client-key").length,
+      1,
+    );
+    assert.equal(
+      persisted.auditEvents.filter((event) =>
+        event.correlationId === first.reason.body.taskId).length,
+      1,
+    );
+  } finally {
+    releaseAction.resolve();
+    testFixture.restore();
+  }
+});
+
+test("failed sync claim is shared and released for a later retry", async () => {
+  const testFixture = fixture({ loadFailures: 1 });
+  try {
+    const attempts = await Promise.allSettled([
+      testFixture.service.runLocalSync(testFixture.state(), syncInput()),
+      testFixture.service.runLocalSync(testFixture.state(), syncInput()),
+    ]);
+
+    assert.deepEqual(attempts.map((attempt) => attempt.status), [
+      "rejected",
+      "rejected",
+    ]);
+    assert.deepEqual(attempts[1].reason.body, attempts[0].reason.body);
+    assert.equal(attempts[0].reason.code, "SYNC_STATE_UNAVAILABLE");
+    assert.equal(testFixture.fetchCalls(), 0);
+
+    const retry = await testFixture.service.runLocalSync(
+      testFixture.state(),
+      syncInput(),
+    );
+    assert.equal(retry.status, "SUCCESS");
+    assert.equal(testFixture.fetchCalls(), 2);
+  } finally {
+    testFixture.restore();
+  }
+});
+
 test("same account client key rejects a changed request or sync scope", async () => {
   const testFixture = fixture();
   try {
@@ -171,6 +304,45 @@ test("same account client key rejects a changed request or sync scope", async ()
       (error) => error?.status === 409 && error?.code === "SYNC_IDEMPOTENCY_CONFLICT",
     );
   } finally {
+    testFixture.restore();
+  }
+});
+
+test("in-flight client key rejects a changed request or sync scope", async () => {
+  const actionStarted = deferred();
+  const releaseAction = deferred();
+  const testFixture = fixture({
+    onActions: async () => {
+      actionStarted.resolve();
+      await releaseAction.promise;
+    },
+  });
+  try {
+    const firstPromise = testFixture.service.runLocalSync(
+      testFixture.state(),
+      syncInput(),
+    );
+    await actionStarted.promise;
+
+    await assert.rejects(
+      () => testFixture.service.runLocalSync(testFixture.state(), syncInput({
+        requestId: "changed-request",
+      })),
+      (error) => error?.status === 409 && error?.code === "SYNC_IDEMPOTENCY_CONFLICT",
+    );
+    await assert.rejects(
+      () => testFixture.service.runLocalSync(testFixture.state(), syncInput({
+        storeId: "store-a-2",
+        type: "WAREHOUSES",
+      })),
+      (error) => error?.status === 409 && error?.code === "SYNC_IDEMPOTENCY_CONFLICT",
+    );
+
+    releaseAction.resolve();
+    await firstPromise;
+    assert.equal(testFixture.fetchCalls(), 2);
+  } finally {
+    releaseAction.resolve();
     testFixture.restore();
   }
 });
