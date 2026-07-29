@@ -2703,6 +2703,7 @@ async function handle(req, res) {
         deletedStoreIds: deletion.storeIds,
         deletedStoreCount: deletion.storeIds.length,
         deletedFileCount: deletion.fileObjectKeys.length,
+        legacyArchivePurgedCount: deletion.legacyArchivePurgedCount,
       },
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);

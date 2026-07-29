@@ -36,11 +36,87 @@ function archiveKey(accountId, dataCollectionStoreId) {
   return `${encodeURIComponent(accountId)}:${encodeURIComponent(dataCollectionStoreId)}`;
 }
 
-function archiveCounts(records) {
+const LEGACY_ACCOUNT_OWNER_FIELDS = new Set([
+  "accountId",
+  "account_id",
+  "ownerAccountId",
+  "owner_account_id",
+  "createdBy",
+  "created_by",
+  "updatedBy",
+  "updated_by",
+]);
+
+function accountIdFromArchiveKey(value) {
+  const rawAccountId = normalizedId(value).split(":", 1)[0];
+  if (!rawAccountId) return "";
+  try {
+    return normalizedId(decodeURIComponent(rawAccountId));
+  } catch {
+    return rawAccountId;
+  }
+}
+
+function dataStoreIdFromArchiveKey(value) {
+  const rawKey = normalizedId(value);
+  const separator = rawKey.indexOf(":");
+  const rawStoreId = separator >= 0 ? rawKey.slice(separator + 1) : "";
+  if (!rawStoreId) return "";
+  try {
+    return normalizedId(decodeURIComponent(rawStoreId));
+  } catch {
+    return rawStoreId;
+  }
+}
+
+function archiveOwnershipEvidence(record) {
+  const owners = [];
+  const remember = (value) => {
+    const ownerId = normalizedId(value);
+    if (ownerId && !owners.includes(ownerId)) owners.push(ownerId);
+  };
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    for (const [field, child] of Object.entries(value)) {
+      if (LEGACY_ACCOUNT_OWNER_FIELDS.has(field)) remember(child);
+      if (field === "archiveKey") remember(accountIdFromArchiveKey(child));
+      if (child && typeof child === "object") visit(child);
+    }
+  };
+  visit(record);
+  return owners;
+}
+
+function archiveOwnerForCount(record) {
+  for (const source of [record, objectValue(record?.legacySnapshot)]) {
+    for (const field of LEGACY_ACCOUNT_OWNER_FIELDS) {
+      const ownerId = normalizedId(source?.[field]);
+      if (ownerId) return ownerId;
+    }
+  }
+  return archiveOwnershipEvidence(record)[0] || "";
+}
+
+function archiveRecordIdentity(record) {
+  const accountId = archiveOwnerForCount(record);
+  const dataCollectionStoreId = normalizedId(record?.dataCollectionStoreId)
+    || legacyStoreId(record?.legacySnapshot)
+    || dataStoreIdFromArchiveKey(record?.archiveKey);
+  return accountId && dataCollectionStoreId
+    ? archiveKey(accountId, dataCollectionStoreId)
+    : "";
+}
+
+function archiveCountsByOwnership(records) {
   const counts = {};
   for (const record of records) {
-    if (!record.accountId) continue;
-    counts[record.accountId] = (counts[record.accountId] || 0) + 1;
+    const accountId = archiveOwnerForCount(record);
+    if (!accountId) continue;
+    counts[accountId] = (counts[accountId] || 0) + 1;
   }
   return Object.fromEntries(
     Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)),
@@ -147,15 +223,11 @@ export function migrateLegacyDataCollectionStoreStateForAudit(
       }
     }
 
-    const recordsByKey = new Map(
-      (existing?.records || []).map((record) => [
-        archiveKey(
-          normalizedId(record?.accountId),
-          normalizedId(record?.dataCollectionStoreId),
-        ),
-        jsonClone(record),
-      ]),
+    const existingRecords = (existing?.records || []).map(jsonClone);
+    const existingKeys = new Set(
+      existingRecords.map(archiveRecordIdentity).filter(Boolean),
     );
+    const migratedRecordsByKey = new Map();
     const onlyAccountId = Array.isArray(state.accounts) && state.accounts.length === 1
       ? normalizedId(state.accounts[0]?.id)
       : "";
@@ -176,11 +248,12 @@ export function migrateLegacyDataCollectionStoreStateForAudit(
 
       for (const accountId of owners) {
         const key = archiveKey(accountId, storeId);
-        const previous = recordsByKey.get(key);
+        if (existingKeys.has(key)) continue;
+        const previous = migratedRecordsByKey.get(key);
         const mappingFields = (currentMappings.get(storeId) || [])
           .filter((item) => item.accountId === accountId)
           .map((item) => item.sourceField);
-        recordsByKey.set(key, {
+        migratedRecordsByKey.set(key, {
           archiveKey: key,
           accountId,
           dataCollectionStoreId: storeId,
@@ -202,14 +275,16 @@ export function migrateLegacyDataCollectionStoreStateForAudit(
       }
     }
 
-    const records = [...recordsByKey.values()].sort((left, right) =>
-      left.accountId.localeCompare(right.accountId)
-      || left.dataCollectionStoreId.localeCompare(right.dataCollectionStoreId));
+    const migratedRecords = [...migratedRecordsByKey.values()].sort((left, right) =>
+      normalizedId(left.accountId).localeCompare(normalizedId(right.accountId))
+      || normalizedId(left.dataCollectionStoreId)
+        .localeCompare(normalizedId(right.dataCollectionStoreId)));
+    const records = [...existingRecords, ...migratedRecords];
     state.legacyDataCollectionStoreAuditArchive = {
       schemaVersion: 1,
       readOnly: true,
       records,
-      accountRecordCounts: archiveCounts(records),
+      accountRecordCounts: archiveCountsByOwnership(records),
     };
   }
 
@@ -221,6 +296,36 @@ export function migrateLegacyDataCollectionStoreStateForAudit(
     if (objectValue(session)) delete session.currentDataCollectionStoreId;
   }
   return state;
+}
+
+/**
+ * Privacy-erasure boundary for the persisted JSON audit archive. Migration
+ * runs first so retired runtime fields cannot recreate deleted-account records
+ * during a later protect/save cycle.
+ */
+export function purgeLegacyDataCollectionStoreArchiveForAccount(
+  state,
+  { accountId, archivedAt = new Date().toISOString() } = {},
+) {
+  const ownerId = normalizedId(accountId);
+  if (!ownerId) throw purgePolicyRequired("accountId");
+  migrateLegacyDataCollectionStoreStateForAudit(state, { archivedAt });
+
+  const archive = objectValue(state?.legacyDataCollectionStoreAuditArchive);
+  if (!archive) return { purgedCount: 0, remainingCount: 0 };
+  const records = archive.records.filter(
+    (record) => !archiveOwnershipEvidence(record).includes(ownerId),
+  );
+  const purgedCount = archive.records.length - records.length;
+  state.legacyDataCollectionStoreAuditArchive = {
+    ...archive,
+    records,
+    accountRecordCounts: archiveCountsByOwnership(records),
+  };
+  return {
+    purgedCount,
+    remainingCount: records.length,
+  };
 }
 
 function publicLegacyRecord(row = {}) {

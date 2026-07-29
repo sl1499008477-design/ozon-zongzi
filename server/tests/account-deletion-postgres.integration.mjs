@@ -1,10 +1,13 @@
 import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { removeAccountScope } from "../account-deletion.mjs";
+import { protectStateForStorage } from "../crypto-secrets.mjs";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import { deleteRemovedAccountScopes } from "../formal-persistence.mjs";
 import { readLegacyDataCollectionStoresForAudit } from "../legacy-data-collection-store.mjs";
+import { persistPostgresStateAtomically } from "../postgres-state-transaction.mjs";
 
 if (!postgresEnabled()) {
   console.log("account deletion PostgreSQL integration skipped: PostgreSQL is not configured");
@@ -129,27 +132,90 @@ try {
     [accountId, storeId, auditEntityId],
   );
 
-  const state = {};
-  Object.defineProperty(state, "__deletedAccountScopes", {
-    value: [{
-      accountId,
-      storeIds: [storeId],
-      legacyDataStorePurgePolicy: {
-        actor: { type: "account", id: accountId },
-        reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
-        occurredAt: "2026-07-30T10:00:00.000Z",
-      },
+  const keepBArchiveRecord = {
+    archiveKey: `${accountBId}:${legacyDataStoreBId}`,
+    accountId: accountBId,
+    dataCollectionStoreId: legacyDataStoreBId,
+    archivedAt: "2026-07-29T10:00:00.000Z",
+    sourceTimestamp: "2026-07-28T10:00:00.000Z",
+    wasCurrent: true,
+    sourceFields: ["dataCollectionStores"],
+    legacySnapshot: {
+      id: legacyDataStoreBId,
+      ownerAccountId: accountBId,
+      sellerCompanyId: `keep-b-seller-${suffix}`,
+    },
+  };
+  const state = {
+    accounts: [
+      { id: accountId, username: `delete-${suffix}`, role: "user", status: "active" },
+      { id: accountBId, username: `keep-b-${suffix}`, role: "user", status: "active" },
+    ],
+    stores: [{
+      id: storeId,
+      ownerAccountId: accountId,
+      label: "Delete Store",
+      clientId: `delete-client-${suffix}`,
+      status: "active",
     }],
+    sessions: {},
+    hashes: {},
+    leases: {},
+    browserAgents: {},
+    jobs: {},
+    reports: [],
+    caches: { files: [], warehouses: [], products: [], postings: [], collectBox: [] },
+    currentStoreIdsByAccount: { [accountId]: storeId },
+    legacyDataCollectionStoreAuditArchive: {
+      schemaVersion: 1,
+      readOnly: true,
+      records: [{
+        archiveKey: `${accountId}:${legacyDataStoreId}`,
+        accountId,
+        dataCollectionStoreId: legacyDataStoreId,
+        archivedAt: "2026-07-29T10:00:00.000Z",
+        sourceTimestamp: "2026-07-28T10:00:00.000Z",
+        wasCurrent: true,
+        sourceFields: ["dataCollectionStores"],
+        legacySnapshot: {
+          id: legacyDataStoreId,
+          ownerAccountId: accountId,
+          sellerCompanyId: `delete-seller-${suffix}`,
+        },
+      }, keepBArchiveRecord],
+      accountRecordCounts: { [accountId]: 1, [accountBId]: 1 },
+    },
+  };
+  await pool.query(
+    `INSERT INTO local_state (id,state,version)
+     VALUES ('local-state',$1::jsonb,1)
+     ON CONFLICT (id) DO UPDATE SET state=EXCLUDED.state,version=EXCLUDED.version`,
+    [JSON.stringify(state)],
+  );
+  Object.defineProperty(state, "__storageVersion", {
+    value: 1,
     enumerable: false,
+    configurable: true,
+    writable: true,
   });
+  const deletion = removeAccountScope(state, accountId, {
+    actor: { type: "account", id: accountId },
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    occurredAt: "2026-07-30T10:00:00.000Z",
+  });
+  assert.equal(deletion.legacyArchivePurgedCount, 1);
+
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await deleteRemovedAccountScopes(client, state);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
+    await persistPostgresStateAtomically({
+      client,
+      table: "local_state",
+      state,
+      protectedState: protectStateForStorage(state),
+      mirror: async (transactionClient, transactionState) => {
+        await deleteRemovedAccountScopes(transactionClient, transactionState);
+      },
+    });
   } finally {
     client.release();
   }
@@ -180,7 +246,9 @@ try {
        (SELECT COUNT(*)::int FROM collection_store_verifications
         WHERE account_id=$13 AND request_id=$14) account_b_verification_count,
        (SELECT data_collection_store_id FROM collection_store_verifications
-        WHERE account_id=$13 AND request_id=$14) account_b_verification_store_id`,
+        WHERE account_id=$13 AND request_id=$14) account_b_verification_store_id,
+       (SELECT state->'legacyDataCollectionStoreAuditArchive'
+        FROM local_state WHERE id='local-state') local_state_legacy_archive`,
     [
       accountId,
       storeId,
@@ -225,7 +293,17 @@ try {
     account_b_legacy_membership_count: 1,
     account_b_verification_count: 1,
     account_b_verification_store_id: null,
+    local_state_legacy_archive: {
+      schemaVersion: 1,
+      readOnly: true,
+      records: [keepBArchiveRecord],
+      accountRecordCounts: { [accountBId]: 1 },
+    },
   });
+  assert.doesNotMatch(
+    JSON.stringify(counts.rows[0].local_state_legacy_archive),
+    new RegExp(`${accountId}|delete-seller-${suffix}`),
+  );
   console.log("account deletion PostgreSQL integration passed");
 } finally {
   await pool.query("DELETE FROM audit_events WHERE entity_id=$1", [auditEntityId]).catch(() => {});

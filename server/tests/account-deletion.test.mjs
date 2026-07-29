@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { removeAccountScope } from "../account-deletion.mjs";
+import {
+  migrateLegacyDataCollectionStoreStateForAudit,
+} from "../legacy-data-collection-store.mjs";
 
 function scopedFixture() {
   return {
@@ -111,4 +114,172 @@ test("removeAccountScope rejects a missing account without mutating state", () =
     (error) => error?.code === "ACCOUNT_NOT_FOUND",
   );
   assert.deepEqual(state, original);
+});
+
+test("account privacy deletion removes canonical and legacy archive ownership without changing B", () => {
+  const state = scopedFixture();
+  const keepB = [{
+    archiveKey: "account-other:data-store-b",
+    accountId: "account-other",
+    dataCollectionStoreId: "data-store-b",
+    sourceTimestamp: "2026-07-20T08:00:00.000Z",
+    archivedAt: "2026-07-21T08:00:00.000Z",
+    wasCurrent: true,
+    sourceFields: ["dataCollectionStores"],
+    legacySnapshot: {
+      id: "data-store-b",
+      ownerAccountId: "account-other",
+      sellerCompanyId: "seller-b-preserved",
+      note: "preserve exactly",
+    },
+  }, {
+    archiveKey: "legacy-b-shape",
+    dataCollectionStoreId: "data-store-b-legacy",
+    sourceTimestamp: "2026-07-22T08:00:00.000Z",
+    archivedAt: "2026-07-23T08:00:00.000Z",
+    wasCurrent: false,
+    sourceFields: ["dataCollectionStore"],
+    legacySnapshot: {
+      id: "data-store-b-legacy",
+      owner_account_id: "account-other",
+      sellerCompanyId: "seller-b-legacy-preserved",
+    },
+  }];
+  state.legacyDataCollectionStoreAuditArchive = {
+    schemaVersion: 1,
+    readOnly: true,
+    records: [{
+      accountId: "account-target",
+      dataCollectionStoreId: "target-canonical",
+      legacySnapshot: { sellerCompanyId: "seller-target-1" },
+    }, {
+      account_id: "account-target",
+      dataCollectionStoreId: "target-snake",
+      legacySnapshot: { sellerCompanyId: "seller-target-2" },
+    }, {
+      ownerAccountId: "account-target",
+      dataCollectionStoreId: "target-owner",
+      legacySnapshot: { sellerCompanyId: "seller-target-3" },
+    }, {
+      archiveKey: "legacy-nested-target",
+      dataCollectionStoreId: "target-nested",
+      legacySnapshot: {
+        owner_account_id: "account-target",
+        sellerCompanyId: "seller-target-4",
+      },
+    }, {
+      archiveKey: "account-target:target-key-only",
+      dataCollectionStoreId: "target-key-only",
+      legacySnapshot: { sellerCompanyId: "seller-target-5" },
+    }, {
+      accountId: "account-other",
+      dataCollectionStoreId: "target-conflicted",
+      legacySnapshot: {
+        created_by: "account-target",
+        sellerCompanyId: "seller-target-6",
+      },
+    }, ...structuredClone(keepB)],
+    accountRecordCounts: {
+      "account-target": 6,
+      "account-other": 2,
+      stale: 99,
+    },
+  };
+
+  const result = removeAccountScope(state, "account-target", {
+    actor: { type: "account", id: "admin-test" },
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    occurredAt: "2026-07-30T11:00:00.000Z",
+  });
+
+  assert.equal(result.legacyArchivePurgedCount, 6);
+  assert.deepEqual(
+    state.legacyDataCollectionStoreAuditArchive.records,
+    keepB,
+    "other-account records and timestamps must remain byte-for-byte equivalent",
+  );
+  assert.deepEqual(
+    state.legacyDataCollectionStoreAuditArchive.accountRecordCounts,
+    { "account-other": 2 },
+  );
+  const serializedArchive = JSON.stringify(state.legacyDataCollectionStoreAuditArchive);
+  assert.doesNotMatch(serializedArchive, /account-target|seller-target/);
+});
+
+test("account privacy deletion consumes retired runtime fields before they can recreate A", () => {
+  const state = scopedFixture();
+  const keepB = [{
+    archiveKey: "legacy-b-nested",
+    dataCollectionStoreId: "data-store-b",
+    sourceTimestamp: "2026-07-24T08:00:00.000Z",
+    archivedAt: "2026-07-25T08:00:00.000Z",
+    wasCurrent: true,
+    sourceFields: ["dataCollectionStores"],
+    legacySnapshot: {
+      id: "data-store-b",
+      owner_account_id: "account-other",
+      sellerCompanyId: "seller-b-stable",
+    },
+  }, {
+    archiveKey: "legacy-b-snake",
+    account_id: "account-other",
+    dataCollectionStoreId: "data-store-b-second",
+    sourceTimestamp: "2026-07-24T09:00:00.000Z",
+    archivedAt: "2026-07-25T09:00:00.000Z",
+    wasCurrent: false,
+    sourceFields: ["dataCollectionStore"],
+    legacySnapshot: {
+      id: "data-store-b-second",
+      sellerCompanyId: "seller-b-second-stable",
+    },
+  }];
+  state.legacyDataCollectionStoreAuditArchive = {
+    schemaVersion: 1,
+    readOnly: true,
+    records: structuredClone(keepB),
+    accountRecordCounts: { "account-other": 2 },
+  };
+  state.currentDataCollectionStoreId = "data-store-a";
+  state.currentDataCollectionStoreIdsByAccount = {
+    "account-target": "data-store-a",
+  };
+  state.dataCollectionStore = {
+    id: "data-store-a",
+    ownerAccountId: "account-target",
+    sellerCompanyId: "seller-a-retired-singular",
+  };
+  state.dataCollectionStores = [{
+    id: "data-store-a",
+    ownerAccountId: "account-target",
+    sellerCompanyId: "seller-a-retired-plural",
+  }];
+  state.sessions["target-token"].currentDataCollectionStoreId = "data-store-a";
+
+  const result = removeAccountScope(state, "account-target", {
+    actor: { type: "account", id: "admin-test" },
+    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+    occurredAt: "2026-07-30T11:05:00.000Z",
+  });
+  migrateLegacyDataCollectionStoreStateForAudit(state, {
+    archivedAt: "2026-07-30T11:06:00.000Z",
+  });
+
+  assert.equal(result.legacyArchivePurgedCount, 1);
+  assert.deepEqual(state.legacyDataCollectionStoreAuditArchive.records, keepB);
+  assert.deepEqual(
+    state.legacyDataCollectionStoreAuditArchive.accountRecordCounts,
+    { "account-other": 2 },
+  );
+  for (const retiredField of [
+    "currentDataCollectionStoreId",
+    "currentDataCollectionStoreIdsByAccount",
+    "dataCollectionStore",
+    "dataCollectionStores",
+  ]) {
+    assert.equal(Object.hasOwn(state, retiredField), false, retiredField);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(state.legacyDataCollectionStoreAuditArchive),
+    /account-target|seller-a-retired/,
+  );
 });

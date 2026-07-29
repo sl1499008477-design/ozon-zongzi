@@ -1,3 +1,5 @@
+import { purgeLegacyDataCollectionStoreArchiveForAccount } from "./legacy-data-collection-store.mjs";
+
 const ACCOUNT_FIELDS = [
   "accountId",
   "account_id",
@@ -74,6 +76,10 @@ export function removeAccountScope(
     error.code = "ACCOUNT_NOT_FOUND";
     throw error;
   }
+  const legacyArchiveDeletion = purgeLegacyDataCollectionStoreArchiveForAccount(state, {
+    accountId,
+    archivedAt: occurredAt,
+  });
 
   const stores = Array.isArray(state.stores) ? state.stores : [];
   const storeIds = new Set(
@@ -128,5 +134,6 @@ export function removeAccountScope(
     accountId,
     storeIds: [...storeIds],
     fileObjectKeys: [...new Set(fileObjectKeys)],
+    legacyArchivePurgedCount: legacyArchiveDeletion.purgedCount,
   };
 }
