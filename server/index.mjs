@@ -404,7 +404,6 @@ const ozonSyncService = createOzonSyncService({
   loadState,
   saveState,
 });
-
 const ozonCategoryService = createOzonCategoryService();
 const objectCleanupWorker = createObjectCleanupWorker({
   loadState, saveState, removeObject,
@@ -3129,24 +3128,25 @@ async function handle(req, res) {
     sendJson(res, 200, { ok: true, state: localStatePayload(state) });
     return;
   }
-
   const localSyncMatch = url.pathname.match(/^\/local\/sync\/([^/]+)$/);
   if (req.method === "POST" && localSyncMatch) {
     const account = requireAuth(req, state);
     const body = await readBody(req);
-    const report = await ozonSyncService.runLocalSync(state, {
-      accountId: account.id,
-      storeId: body.storeId || currentStoreIdForAccount(state, account.id),
-      type: localSyncMatch[1],
-      jobId: body.jobId,
-      deviceId: String(req.headers["x-device-fingerprint"] || body.deviceId || "").trim(),
-      source: req.headers["x-device-fingerprint"] ? "extension" : "web",
-      postingsSinceDays: body.postingsSinceDays,
-    });
-    sendJson(res, 200, { ok: true, job: report, state: localStatePayload(await loadState(), { account, token: bearerToken(req) }) });
+    try {
+      const report = await ozonSyncService.runLocalSync(state, {
+        accountId: account.id,
+        storeId: body.storeId || currentStoreIdForAccount(state, account.id),
+        type: localSyncMatch[1], jobId: body.jobId, requestId: body.requestId,
+        deviceId: String(req.headers["x-device-fingerprint"] || body.deviceId || "").trim(),
+        source: req.headers["x-device-fingerprint"] ? "extension" : "web", postingsSinceDays: body.postingsSinceDays,
+      });
+      sendJson(res, 200, { ok: true, job: report, state: localStatePayload(await loadState(), { account, token: bearerToken(req) }) });
+    } catch (error) {
+      const failure = ozonSyncService.publicSyncErrorResponse(error);
+      sendJson(res, failure.status, failure.body);
+    }
     return;
   }
-
   if (req.method === "GET" && url.pathname === "/auth/ozon-stores") {
     const account = requireAuth(req, state);
     sendJson(res, 200, storesForAccount(state, account.id).map((store) => publicStore(store, state)));

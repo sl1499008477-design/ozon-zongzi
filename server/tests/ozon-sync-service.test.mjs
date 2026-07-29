@@ -25,6 +25,26 @@ const jsonResponse = (payload) => ({
   text: async () => JSON.stringify(payload),
 });
 
+function assertSyncReportContract(report, {
+  accountId,
+  storeId,
+  type,
+  taskId,
+  requestId,
+  status,
+}) {
+  assert.equal(report.accountId, accountId);
+  assert.equal(report.storeId, storeId);
+  assert.equal(report.type, type);
+  assert.equal(report.taskId, taskId);
+  assert.equal(report.requestId, requestId);
+  assert.equal(report.status, status);
+  assert.equal(report.timestamp, report.updatedAt);
+  assert.equal(Number.isNaN(Date.parse(report.timestamp)), false);
+  assert.equal(typeof report.details, "object");
+  assert.equal(Array.isArray(report.details.coverage), true);
+}
+
 const service = createOzonSyncService({
   loadState: async () => clone(persisted),
   saveState: async (state) => {
@@ -85,6 +105,13 @@ try {
 
   persisted = clone(basePersisted);
   persisted.caches.products = [
+    {
+      id: "stale_product",
+      product_id: "stale_product",
+      storeId: "store_a",
+      clientId: "client_a",
+      accountId: "acct_a",
+    },
     {
       id: "foreign",
       product_id: "foreign",
@@ -152,6 +179,11 @@ try {
         items: [{
           product_id: productId,
           price: productId === "product_1" ? "99.00" : "199.00",
+          marketing_price: productId === "product_1" ? "89.00" : "189.00",
+          marketing_actions: {
+            current_period_from: "2026-07-29T00:00:00.000Z",
+            current_period_to: "2026-07-30T00:00:00.000Z",
+          },
         }],
       });
     }
@@ -181,20 +213,63 @@ try {
     storeId: "store_a",
     type: "PRODUCTS",
     jobId: "job_products_success",
+    requestId: "request_products_success",
     deviceId: "device_a",
     source: "extension",
   });
 
+  assertSyncReportContract(successReport, {
+    accountId: "acct_a",
+    storeId: "store_a",
+    type: "PRODUCTS",
+    taskId: "job_products_success",
+    requestId: "request_products_success",
+    status: "SUCCESS",
+  });
   assert.equal(successReport.status, "SUCCESS");
   assert.equal(successReport.fetchedCount, 2);
+  assert.equal(successReport.details.fetchedCount, 2);
+  assert.deepEqual(successReport.details.coverage, [
+    "PROFILE",
+    "PRODUCTS",
+    "ARCHIVED_PRODUCTS",
+    "ARCHIVE_CLEANUP",
+    "PRICES",
+    "MARKETING_PRICES",
+    "FBS_STOCK",
+    "FBO_STOCK",
+  ]);
+  assert.deepEqual(successReport.details.profile, {
+    status: "SUCCESS",
+  });
   assert.equal(persisted.caches.products.filter((row) => row.storeId === "store_a").length, 2);
   assert.equal(
     persisted.caches.products.find((row) => row.storeId === "store_a" && row.id === "product_1").price_info.price,
     "99.00",
   );
   assert.equal(
+    persisted.caches.products.find((row) => row.storeId === "store_a" && row.id === "product_1").price_info.marketing_price,
+    "89.00",
+  );
+  assert.equal(
+    persisted.caches.products.find((row) => row.storeId === "store_a" && row.id === "product_1").marketing_actions.current_period_from,
+    "2026-07-29T00:00:00.000Z",
+  );
+  assert.equal(
     persisted.caches.products.find((row) => row.storeId === "store_a" && row.id === "product_1").warehouse_stocks.length,
     2,
+  );
+  assert.deepEqual(
+    persisted.caches.products
+      .find((row) => row.storeId === "store_a" && row.id === "product_1")
+      .warehouse_stocks
+      .map((row) => row.source)
+      .sort(),
+    ["fbo", "fbs"],
+  );
+  assert.equal(
+    persisted.caches.products.some((row) => row.storeId === "store_a" && row.id === "stale_product"),
+    false,
   );
   assert.equal(
     persisted.caches.products.some((row) => row.storeId === "store_b" && row.id === "foreign"),
@@ -1070,17 +1145,42 @@ try {
         storeId: "store_a",
         type: "WAREHOUSES",
         jobId: "job_sensitive_http_error",
+        requestId: "request_sensitive_http_error",
       }),
-      (error) =>
-        error.status === 403 &&
-        error.code === "OZON_HTTP_403" &&
-        error.message ===
-          "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
+      (error) => {
+        assert.equal(error.status, 403);
+        assert.equal(error.code, "OZON_HTTP_403");
+        assert.equal(error.message, "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)");
+        assert.deepEqual(error.body, {
+          accountId: "acct_a",
+          storeId: "store_a",
+          type: "WAREHOUSES",
+          timestamp: "2026-07-28T08:00:00.000Z",
+          taskId: "job_sensitive_http_error",
+          requestId: "request_sensitive_http_error",
+          code: "OZON_HTTP_403",
+          message: "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
+          details: {
+            status: 403,
+            apiPath: "/v2/warehouse/list",
+            responseFormat: "json",
+          },
+        });
+        return true;
+      },
     );
     assert.equal(
       sensitivePersisted.jobs.job_sensitive_http_error.error,
       "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
     );
+    assertSyncReportContract(sensitivePersisted.jobs.job_sensitive_http_error, {
+      accountId: "acct_a",
+      storeId: "store_a",
+      type: "WAREHOUSES",
+      taskId: "job_sensitive_http_error",
+      requestId: "request_sensitive_http_error",
+      status: "FAILED",
+    });
     const sensitiveTerminalAudit = sensitivePersisted.auditEvents.find((event) =>
       event.entityId === "job_sensitive_http_error" && event.status === "FAILED"
     );

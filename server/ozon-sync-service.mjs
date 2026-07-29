@@ -15,6 +15,94 @@ const cleanText = (value, maxLength = 160) =>
 const FBS_MAX_RANGE_SPLIT_DEPTH = 8;
 const FBS_MIN_RANGE_DURATION_MS = 60 * 60 * 1000;
 const LOCAL_STATE_SAVE_MAX_ATTEMPTS = 4;
+const SYNC_COVERAGE_BY_TYPE = Object.freeze({
+  PRODUCTS: Object.freeze([
+    "PROFILE",
+    "PRODUCTS",
+    "ARCHIVED_PRODUCTS",
+    "ARCHIVE_CLEANUP",
+    "PRICES",
+    "MARKETING_PRICES",
+    "FBS_STOCK",
+    "FBO_STOCK",
+  ]),
+  POSTINGS: Object.freeze([
+    "PROFILE",
+    "FBS_POSTINGS",
+    "FBO_POSTINGS",
+  ]),
+  WAREHOUSES: Object.freeze([
+    "PROFILE",
+    "WAREHOUSES",
+  ]),
+  PROMOTIONS: Object.freeze([
+    "PROFILE",
+    "PROMOTIONS",
+  ]),
+});
+
+function sanitizedSyncText(value, store, maxLength = 500) {
+  let text = String(value ?? "");
+  for (const credential of [store?.clientId, store?.apiKey]) {
+    const secret = String(credential || "");
+    if (secret) text = text.replaceAll(secret, "[REDACTED]");
+  }
+  return text
+    .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function safeSyncErrorDetails(error, store) {
+  const source = error?.body && typeof error.body === "object" ? error.body : {};
+  const details = {};
+  const status = Number(error?.status || source.status);
+  if (Number.isInteger(status) && status >= 400 && status <= 599) details.status = status;
+  for (const [key, maxLength] of [
+    ["apiPath", 240],
+    ["phase", 80],
+    ["responseFormat", 40],
+  ]) {
+    const value = sanitizedSyncText(source[key], store, maxLength);
+    if (value) details[key] = value;
+  }
+  if (source.network === true) details.network = true;
+  return details;
+}
+
+function attachSyncErrorContext(error, {
+  accountId,
+  storeId,
+  type,
+  timestamp,
+  taskId,
+  requestId,
+  store = null,
+  details = {},
+}) {
+  error.body = {
+    accountId: String(accountId || ""),
+    storeId: String(storeId || ""),
+    type: String(type || ""),
+    timestamp: String(timestamp || ""),
+    taskId: String(taskId || ""),
+    requestId: String(requestId || ""),
+    code: String(error?.code || "STORE_SYNC_FAILED").slice(0, 120),
+    message: sanitizedSyncText(error?.message || error || "店铺同步失败", store, 500),
+    details,
+  };
+  return error;
+}
+
+function publicSyncErrorResponse(error) {
+  const body = error?.body && typeof error.body === "object"
+    ? error.body
+    : { code: "STORE_SYNC_FAILED", message: "店铺同步失败" };
+  return {
+    status: Number(error?.status || 502),
+    body: { ok: false, ...body },
+  };
+}
 
 function truthyOzonFlag(value) {
   if (typeof value === "boolean") return value;
@@ -187,6 +275,8 @@ export function createOzonSyncService({
         entityId: report.id,
         metadata: {
           fetchedCount: report.fetchedCount,
+          requestId: report.requestId,
+          taskId: report.taskId,
           error: report.error || "",
         },
         createdAt: report.updatedAt || report.createdAt,
@@ -684,31 +774,51 @@ export function createOzonSyncService({
     storeId,
     type,
     jobId = createJobId(),
+    requestId = "",
     deviceId = "",
     source = "",
     postingsSinceDays,
   } = {}) {
     const upper = String(type || "").toUpperCase();
     const requestAccountId = String(accountId || "").trim();
+    const requestedStoreId = String(storeId || "").trim();
+    const normalizedTaskId = String(jobId || createJobId());
+    const normalizedRequestId = String(requestId || normalizedTaskId);
+    const createdAt = nowIso();
     if (!requestAccountId) {
       const error = new Error("同步请求缺少账号标识");
       error.status = 400;
       error.code = "ACCOUNT_ID_REQUIRED";
-      throw error;
+      throw attachSyncErrorContext(error, {
+        accountId: requestAccountId,
+        storeId: requestedStoreId,
+        type: upper,
+        timestamp: createdAt,
+        taskId: normalizedTaskId,
+        requestId: normalizedRequestId,
+      });
     }
     const supportedTypes = new Set(["PRODUCTS", "POSTINGS", "WAREHOUSES", "PROMOTIONS"]);
     const workingState = structuredClone(state);
-    const store = activeStore(workingState, storeId, requestAccountId);
+    const store = activeStore(workingState, requestedStoreId, requestAccountId);
     if (!store) {
       const error = new Error("未找到已绑定门店");
       error.status = 400;
       error.code = "STORE_NOT_FOUND";
-      throw error;
+      throw attachSyncErrorContext(error, {
+        accountId: requestAccountId,
+        storeId: requestedStoreId,
+        type: upper,
+        timestamp: createdAt,
+        taskId: normalizedTaskId,
+        requestId: normalizedRequestId,
+      });
     }
-    const createdAt = nowIso();
     const report = {
-      id: jobId,
-      clientJobId: jobId,
+      id: normalizedTaskId,
+      taskId: normalizedTaskId,
+      clientJobId: normalizedTaskId,
+      requestId: normalizedRequestId,
       accountId: requestAccountId,
       storeId: store.id,
       deviceId,
@@ -718,6 +828,12 @@ export function createOzonSyncService({
       fetchedCount: 0,
       createdAt,
       updatedAt: createdAt,
+      timestamp: createdAt,
+      details: {
+        fetchedCount: 0,
+        coverage: [...(SYNC_COVERAGE_BY_TYPE[upper] || [])],
+        profile: { status: "PENDING" },
+      },
     };
     await persistSyncReport(report);
     try {
@@ -727,11 +843,13 @@ export function createOzonSyncService({
         error.code = "OZON_SYNC_UNSUPPORTED";
         throw error;
       }
+      let profileError = "";
       try {
         await syncStoreProfile(workingState, store);
         delete store.profileSyncError;
       } catch (error) {
-        store.profileSyncError = String(error?.message || error).slice(0, 240);
+        profileError = sanitizedSyncText(error?.message || error, store, 240);
+        store.profileSyncError = profileError;
       }
       const syncContext = {
         postingsByIdentity: new Map(),
@@ -745,6 +863,14 @@ export function createOzonSyncService({
       report.fetchedCount = await syncByType[upper]();
       report.status = "SUCCESS";
       report.updatedAt = nowIso();
+      report.timestamp = report.updatedAt;
+      report.details = {
+        fetchedCount: report.fetchedCount,
+        coverage: [...SYNC_COVERAGE_BY_TYPE[upper]],
+        profile: profileError
+          ? { status: "FAILED", error: profileError }
+          : { status: "SUCCESS" },
+      };
       await commitLocalSyncResult(
         workingState,
         store,
@@ -756,13 +882,29 @@ export function createOzonSyncService({
       return report;
     } catch (error) {
       report.status = "FAILED";
-      report.error = String(error?.message || error).slice(0, 500);
+      report.error = sanitizedSyncText(error?.message || error, store, 500);
       report.updatedAt = nowIso();
+      report.timestamp = report.updatedAt;
+      report.details = {
+        fetchedCount: report.fetchedCount,
+        coverage: [...(SYNC_COVERAGE_BY_TYPE[upper] || [])],
+        error: safeSyncErrorDetails(error, store),
+      };
       try {
         await persistSyncReport(report);
       } catch {
         logger.warn?.("[local-sync] failed to persist failure report");
       }
+      attachSyncErrorContext(error, {
+        accountId: report.accountId,
+        storeId: report.storeId,
+        type: report.type,
+        timestamp: report.timestamp,
+        taskId: report.taskId,
+        requestId: report.requestId,
+        store,
+        details: safeSyncErrorDetails(error, store),
+      });
       throw error;
     }
   }
@@ -771,5 +913,6 @@ export function createOzonSyncService({
     syncStoreProfile,
     refreshStoreProfiles,
     runLocalSync,
+    publicSyncErrorResponse,
   };
 }

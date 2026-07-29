@@ -107,6 +107,10 @@ import {
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
 import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
+import {
+  STORE_SYNC_TYPES,
+  runBackendStoreSync,
+} from "./store-sync-coordinator.js";
 
 const { Header, Sider, Content } = Layout;
 
@@ -377,47 +381,6 @@ const clearStoreStorage = () => {
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem("currentOzonStoreId");
   return true;
-};
-
-const requestExtensionSync = async ({ storeId, syncType }) => {
-  const reqId = `sync-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const response = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      window.removeEventListener("message", onMessage);
-      reject(new Error("插件同步桥未响应"));
-    }, 10000);
-    const onMessage = (event) => {
-      if (event.source !== window || event.origin !== window.location.origin) return;
-      const data = event.data;
-      if (!data || data.__jz !== "v1" || data.kind !== "sync.response" || data.reqId !== reqId) return;
-      clearTimeout(timer);
-      window.removeEventListener("message", onMessage);
-      if (!data.ok) reject(new Error(data.error || "插件同步启动失败"));
-      else resolve(data);
-    };
-    window.addEventListener("message", onMessage);
-    window.postMessage(
-      { __jz: "v1", kind: "sync.request", reqId, storeId, syncType },
-      window.location.origin,
-    );
-  });
-  return response;
-};
-
-const EXTENSION_SYNC_TERMINAL_STATUSES = new Set(["SUCCESS", "FAILED", "ERROR", "CANCELLED"]);
-
-const waitForExtensionSyncJob = async (jobId, { timeoutMs = 180000, pollMs = 1500 } = {}) => {
-  const normalizedJobId = String(jobId || "").trim();
-  if (!normalizedJobId) return { status: "FAILED", error: "插件未返回同步任务 ID" };
-  const deadline = Date.now() + timeoutMs;
-  let latest = null;
-  while (Date.now() < deadline) {
-    latest = await apiRequest(`/ozon/sync/jobs/${encodeURIComponent(normalizedJobId)}`);
-    const status = String(latest?.status || "").toUpperCase();
-    if (EXTENSION_SYNC_TERMINAL_STATUSES.has(status)) return latest;
-    await new Promise((resolve) => window.setTimeout(resolve, pollMs));
-  }
-  return { ...(latest || {}), id: normalizedJobId, status: "TIMEOUT" };
 };
 
 const requestExtensionPing = async (timeoutMs = 1200) => {
@@ -710,6 +673,7 @@ function AppShell() {
   );
   const [localData, setLocalData] = useState(emptyLocalData);
   const [syncing, setSyncing] = useState(false);
+  const [storeSyncStates, setStoreSyncStates] = useState([]);
   const [bindOpen, setBindOpen] = useState(false);
   const [editingBindingStore, setEditingBindingStore] = useState(null);
   const [pluginOpen, setPluginOpen] = useState(false);
@@ -926,70 +890,62 @@ function AppShell() {
     }
   };
 
-  const handleSync = async () => {
+  const runStoreSync = async (types) => {
     if (!hasStore) {
       message.warning("请先绑定门店");
       openBindModal();
       return;
     }
     if (syncing) return;
+    const requestedTypes = Array.isArray(types) && types.length ? types : STORE_SYNC_TYPES;
+    const fullSync = requestedTypes.length === STORE_SYNC_TYPES.length;
     setSyncing(true);
     const nextSettings = { ...settings, lastSync: new Date().toISOString() };
     setSettings(nextSettings);
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(nextSettings));
     const storeId = localData?.currentStoreId || binding?.id || localStorage.getItem("currentOzonStoreId");
-    const token = localStorage.getItem("token");
-    await syncAuthToExtension({ token, storeId });
     try {
-      const labels = { WAREHOUSES: "仓库", PRODUCTS: "商品", POSTINGS: "订单" };
-      const fallbackTypes = [];
-      const pendingTypes = [];
-      const completedTypes = [];
-
-      for (const syncType of ["WAREHOUSES", "PRODUCTS", "POSTINGS"]) {
-        message.loading({
-          content: `正在通过插件同步当前店铺${labels[syncType]}`,
-          key: "store-sync",
-          duration: 0,
-        });
-        try {
-          const started = await requestExtensionSync({ storeId, syncType });
-          const report = await waitForExtensionSyncJob(started?.jobId);
-          const status = String(report?.status || "").toUpperCase();
-          if (status === "SUCCESS") completedTypes.push(syncType);
-          else if (status === "TIMEOUT") {
-            pendingTypes.push(syncType);
-            break;
-          } else {
-            fallbackTypes.push(syncType);
+      const labels = {
+        WAREHOUSES: "仓库",
+        PRODUCTS: "商品",
+        POSTINGS: "订单",
+        PROMOTIONS: "促销",
+      };
+      const states = await runBackendStoreSync({
+        storeId,
+        types: requestedTypes,
+        request: apiRequest,
+        onState: (nextStates) => {
+          setStoreSyncStates((current) => {
+            if (fullSync) return nextStates;
+            const nextByType = new Map(current.map((item) => [item.type, item]));
+            for (const item of nextStates) nextByType.set(item.type, item);
+            return STORE_SYNC_TYPES
+              .map((type) => nextByType.get(type))
+              .filter(Boolean);
+          });
+          const running = nextStates.find((item) => item.status === "RUNNING");
+          if (running) {
+            message.loading({
+              content: `正在从后端同步当前店铺${labels[running.type]}`,
+              key: "store-sync",
+              duration: 0,
+            });
           }
-        } catch {
-          fallbackTypes.push(syncType);
-        }
-
-        if (fallbackTypes.includes(syncType)) {
-          message.loading({
-            content: `插件${labels[syncType]}同步失败，正在按当前店铺从 Seller API 只读同步`,
-            key: "store-sync",
-            duration: 0,
-          });
-          await apiRequest(`/local/sync/${syncType}`, {
-            method: "POST",
-            body: { storeId, ...(syncType === "POSTINGS" ? { postingsSinceDays: 30 } : {}) },
-          });
-          completedTypes.push(syncType);
-        }
-      }
-
-      if (!pendingTypes.length) {
-        await apiRequest("/local/sync/PROMOTIONS", { method: "POST", body: { storeId } });
-      }
+        },
+      });
       await refreshLocalState();
-      if (pendingTypes.length) {
-        message.info({
-          content: `${labels[pendingTypes[0]]}同步仍在后台运行，完成后页面会自动刷新`,
+      const completedTypes = states
+        .filter((item) => item.status === "SUCCESS")
+        .map((item) => item.type);
+      const failedTypes = states
+        .filter((item) => item.status === "FAILED")
+        .map((item) => item.type);
+      if (failedTypes.length) {
+        message.warning({
+          content: `${failedTypes.map((type) => labels[type]).join(" / ")}同步失败，可单独重试；其他成功结果已保留`,
           key: "store-sync",
-          duration: 5,
+          duration: 6,
         });
       } else {
         message.success({
@@ -1003,6 +959,8 @@ function AppShell() {
       setSyncing(false);
     }
   };
+  const handleSync = () => runStoreSync(STORE_SYNC_TYPES);
+  const retryStoreSyncType = (type) => runStoreSync([type]);
 
   useEffect(() => {
     if (!bindOpen) return;
@@ -1336,6 +1294,9 @@ function AppShell() {
                 onBind={openBindModal}
                 onPlugin={() => setPluginOpen(true)}
                 onSync={handleSync}
+                onRetrySyncType={retryStoreSyncType}
+                storeSyncStates={storeSyncStates}
+                syncing={syncing}
               />
             ) : (
               <GenericPage
@@ -1520,6 +1481,9 @@ function DashboardPage({
   onBind,
   onPlugin,
   onSync,
+  onRetrySyncType,
+  storeSyncStates,
+  syncing,
 }) {
   const currentSummary = summary || emptyLocalData.summary;
   const metrics = dashboardMetricList(currentSummary);
@@ -1541,6 +1505,43 @@ function DashboardPage({
           <MetricCard metric={metric} key={metric.label} compact />
         ))}
       </div>
+      {storeSyncStates.length ? (
+        <Card className="panel-card">
+          <div className="card-title-row">
+            <span>店铺同步进度</span>
+            <Tag>仅由后端 Seller API 执行</Tag>
+          </div>
+          <Space wrap>
+            {storeSyncStates.map((state) => (
+              <Space key={state.type} size={6}>
+                <span>{({
+                  WAREHOUSES: "仓库",
+                  PRODUCTS: "商品",
+                  POSTINGS: "订单",
+                  PROMOTIONS: "促销",
+                })[state.type] || state.type}</span>
+                <Tag color={{
+                  PENDING: "default",
+                  RUNNING: "processing",
+                  SUCCESS: "success",
+                  FAILED: "error",
+                }[state.status]}>
+                  {state.status}
+                </Tag>
+                {state.status === "FAILED" ? (
+                  <Button
+                    disabled={syncing}
+                    onClick={() => onRetrySyncType(state.type)}
+                    size="small"
+                  >
+                    单独重试
+                  </Button>
+                ) : null}
+              </Space>
+            ))}
+          </Space>
+        </Card>
+      ) : null}
       <div className="dashboard-main-grid">
         <Card className="panel-card todo-card">
           <div className="card-title-row">

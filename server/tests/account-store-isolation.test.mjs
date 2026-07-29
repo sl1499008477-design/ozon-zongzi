@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
 
 process.env.QH_LOCAL_NO_LISTEN = "1";
+process.env.QH_LOCAL_NO_DOTENV = "1";
+delete process.env.DATABASE_URL;
+delete process.env.POSTGRES_HOST;
 
-const { testExports } = await import("../index.mjs");
+const dataDir = await mkdtemp(path.join(os.tmpdir(), "sonli-store-sync-route-"));
+process.env.QH_LOCAL_DATA_DIR = dataDir;
+
+const { handle, testExports } = await import("../index.mjs");
 const {
   activeStore,
   cacheItemMatchesStore,
@@ -109,5 +119,176 @@ assert.equal(duplicateProductIdCache.length, 2, "the same Ozon product id must r
 assert.equal(cacheItemsForStore(duplicateProductIdCache, firstStore)[0]?.title, "first product");
 assert.equal(cacheItemsForStore(duplicateProductIdCache, secondStore)[0]?.title, "second product");
 assert.equal(cacheItemMatchesStore(duplicateProductIdCache[0], secondStore), false);
+
+async function requestJson(method, pathname, body, authorization = "") {
+  const payload = body === undefined ? "" : JSON.stringify(body);
+  const req = Readable.from(payload ? [Buffer.from(payload)] : []);
+  req.method = method;
+  req.url = pathname;
+  req.headers = {
+    "content-type": "application/json",
+    ...(authorization ? { authorization } : {}),
+  };
+  const res = {
+    status: 0,
+    headers: {},
+    body: "",
+    writeHead(status, headers = {}) {
+      this.status = status;
+      this.headers = headers;
+    },
+    end(text = "") {
+      this.body = String(text || "");
+    },
+  };
+  try {
+    await handle(req, res);
+  } catch (error) {
+    return { thrown: error, status: res.status, body: {} };
+  }
+  return {
+    status: res.status,
+    body: JSON.parse(res.body || "{}"),
+  };
+}
+
+const routeToken = "store-sync-route-token";
+await writeFile(path.join(dataDir, "local-state.json"), JSON.stringify({
+  token: routeToken,
+  currentAccountId: accountA.id,
+  sessionIssuedAt: "2026-07-29T00:00:00.000Z",
+  sessions: {
+    [routeToken]: {
+      token: routeToken,
+      accountId: accountA.id,
+      issuedAt: "2026-07-29T00:00:00.000Z",
+    },
+  },
+  accounts: [accountA, accountB],
+  stores: [
+    {
+      id: "store_a",
+      ownerAccountId: accountA.id,
+      clientId: "client-a-secret",
+      apiKey: "api-key-a-secret",
+      status: "active",
+    },
+    {
+      id: "store_b",
+      ownerAccountId: accountB.id,
+      clientId: "client-b-secret",
+      apiKey: "api-key-b-secret",
+      status: "active",
+    },
+  ],
+  currentStoreId: "store_a",
+  currentStoreIdsByAccount: {
+    [accountA.id]: "store_a",
+    [accountB.id]: "store_b",
+  },
+  caches: {
+    products: [],
+    postings: [],
+    warehouses: [],
+    promotions: [],
+  },
+  jobs: {},
+  reports: [],
+  auditEvents: [],
+  hashes: {},
+  leases: {},
+  browserAgents: {},
+}), "utf8");
+
+const originalFetch = globalThis.fetch;
+try {
+  let routeFetchCalls = 0;
+  globalThis.fetch = async (url) => {
+    routeFetchCalls += 1;
+    const apiPath = new URL(url).pathname;
+    if (apiPath === "/v1/seller/info") {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ result: { company: { name: "Route Seller" } } }),
+      };
+    }
+    if (apiPath === "/v2/warehouse/list") {
+      return {
+        ok: false,
+        status: 403,
+        text: async () => JSON.stringify({
+          code: "WAREHOUSE.DENIED",
+          message: "client-a-secret api-key-a-secret must not escape",
+          details: { token: "nested-secret" },
+        }),
+      };
+    }
+    throw new Error(`unexpected route request: ${apiPath}`);
+  };
+
+  const forbiddenStoreSync = await requestJson(
+    "POST",
+    "/local/sync/WAREHOUSES",
+    {
+      storeId: "store_b",
+      jobId: "task_forbidden_store",
+      requestId: "request_forbidden_store",
+    },
+    `Bearer ${routeToken}`,
+  );
+  assert.equal(forbiddenStoreSync.thrown, undefined);
+  assert.equal(forbiddenStoreSync.status, 400);
+  assert.deepEqual(forbiddenStoreSync.body, {
+    ok: false,
+    accountId: "acct_a",
+    storeId: "store_b",
+    type: "WAREHOUSES",
+    timestamp: forbiddenStoreSync.body.timestamp,
+    taskId: "task_forbidden_store",
+    requestId: "request_forbidden_store",
+    code: "STORE_NOT_FOUND",
+    message: "未找到已绑定门店",
+    details: {},
+  });
+  assert.equal(Number.isNaN(Date.parse(forbiddenStoreSync.body.timestamp)), false);
+  assert.equal(routeFetchCalls, 0);
+
+  const failedSync = await requestJson(
+    "POST",
+    "/local/sync/WAREHOUSES",
+    {
+      storeId: "store_a",
+      jobId: "task_route_failure",
+      requestId: "request_route_failure",
+    },
+    `Bearer ${routeToken}`,
+  );
+  assert.equal(failedSync.thrown, undefined);
+  assert.equal(failedSync.status, 403);
+  assert.deepEqual(failedSync.body, {
+    ok: false,
+    accountId: "acct_a",
+    storeId: "store_a",
+    type: "WAREHOUSES",
+    timestamp: failedSync.body.timestamp,
+    taskId: "task_route_failure",
+    requestId: "request_route_failure",
+    code: "OZON_HTTP_403",
+    message: "Ozon 403: /v2/warehouse/list (OZON_HTTP_403)",
+    details: {
+      status: 403,
+      apiPath: "/v2/warehouse/list",
+      responseFormat: "json",
+    },
+  });
+  assert.equal(Number.isNaN(Date.parse(failedSync.body.timestamp)), false);
+  assert.equal(JSON.stringify(failedSync.body).includes("client-a-secret"), false);
+  assert.equal(JSON.stringify(failedSync.body).includes("api-key-a-secret"), false);
+  assert.equal(JSON.stringify(failedSync.body).includes("nested-secret"), false);
+} finally {
+  globalThis.fetch = originalFetch;
+  await rm(dataDir, { recursive: true, force: true });
+}
 
 console.log("account store isolation smoke passed");
