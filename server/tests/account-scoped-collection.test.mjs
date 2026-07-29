@@ -289,6 +289,10 @@ if (!postgresEnabled()) {
             ...accountAItem.listingDraft.targetStore,
             clientId: updatedTargetClientId,
           },
+          sourceMetadata: {
+            clientId: `forged-draft-source-client-${suffix}`,
+            keep: "updated-draft-source",
+          },
         },
         collectorMetadata: {
           clientId: `forged-update-client-${suffix}`,
@@ -297,18 +301,34 @@ if (!postgresEnabled()) {
       },
     });
     assert.equal(updatedListing.listingDraft.targetStore.clientId, updatedTargetClientId);
+    assert.deepEqual(
+      updatedListing.listingDraft.sourceMetadata,
+      { keep: "updated-draft-source" },
+      "the immediate update response strips non-target listing clientId values",
+    );
     assert.deepEqual(updatedListing.collectorMetadata, { keep: "updated-source" });
     const persistedDraftMetadata = await pool.query(
-      `SELECT d.data #>> '{targetStore,clientId}' AS target_client_id
+      `SELECT
+         d.data #>> '{targetStore,clientId}' AS target_client_id,
+         d.data #>> '{sourceMetadata,clientId}' AS source_client_id,
+         d.data #>> '{sourceMetadata,keep}' AS source_keep
        FROM collect_items i
        JOIN product_drafts d ON d.id=i.current_draft_id
        WHERE i.id=$1 AND i.account_id=$2`,
       [first.collectItemId, accountA],
     );
-    assert.equal(persistedDraftMetadata.rows[0]?.target_client_id, updatedTargetClientId);
+    assert.deepEqual(persistedDraftMetadata.rows[0], {
+      target_client_id: updatedTargetClientId,
+      source_client_id: null,
+      source_keep: "updated-draft-source",
+    });
     const listedAfterUpdate = (await listCollectItemsV3({ accountId: accountA }))
       .find((item) => item.id === first.collectItemId);
     assert.equal(listedAfterUpdate.listingDraft.targetStore.clientId, updatedTargetClientId);
+    assert.deepEqual(
+      listedAfterUpdate.listingDraft.sourceMetadata,
+      { keep: "updated-draft-source" },
+    );
     assert.equal(Object.hasOwn(listedAfterUpdate.collectorMetadata || {}, "clientId"), false);
     assert.equal(
       await updateCollectItemDraftV4({

@@ -532,7 +532,6 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     });
     return {
       ...item,
-      listingDraft,
       draftVersion: mirrored?.version || Number(row.draft_version || 1),
       pipelineVersion: "v4",
       updatedAt: new Date().toISOString(),
