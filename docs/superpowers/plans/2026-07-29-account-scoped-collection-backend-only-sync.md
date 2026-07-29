@@ -43,7 +43,8 @@ pnpm --version
 **Files:**
 
 - Create: `server/db/migrations/019_account_scoped_collection_and_collector_sessions.sql`
-- Create: `server/tests/account-scoped-collection-sql.test.mjs`
+- Create: `server/tests/account-scoped-collection-migration.integration.mjs`
+- Modify: `scripts/test-manifest.mjs`
 - Modify: `server/tests/collection-pipeline-v4.integration.mjs`
 - Modify: `server/tests/collector-desktop.integration.mjs`
 
@@ -79,34 +80,37 @@ collector_sessions(
 
 `parent_session_token` is an internal foreign key to the existing `sessions(token)` row. It is never returned to the extension or written to logs.
 
-- [ ] **Step 1: Write the failing SQL contract test**
+- [ ] **Step 1: Write the failing migration behavior test**
 
-In `server/tests/account-scoped-collection-sql.test.mjs`, read migration 019 and assert:
+In `server/tests/account-scoped-collection-migration.integration.mjs`, require
+`SONLI_MIGRATION_TEST_DATABASE_URL`, create a unique temporary schema, run migrations
+001–018 inside that schema, insert controlled legacy fixtures, then execute migration
+019 and inspect actual PostgreSQL behavior:
 
-```js
-assert.match(sql, /CREATE TABLE IF NOT EXISTS collector_auth_tickets/);
-assert.match(sql, /ticket_hash TEXT NOT NULL UNIQUE/);
-assert.match(sql, /CREATE TABLE IF NOT EXISTS collector_sessions/);
-assert.match(sql, /token_hash TEXT NOT NULL UNIQUE/);
-assert.match(sql, /parent_session_token TEXT NOT NULL REFERENCES sessions\(token\)/);
-assert.match(sql, /ALTER TABLE collect_items[\s\S]*ALTER COLUMN account_id SET NOT NULL/);
-assert.match(sql, /ALTER TABLE collect_raw_payloads[\s\S]*ALTER COLUMN account_id SET NOT NULL/);
-assert.match(sql, /ALTER TABLE collect_requests[\s\S]*ALTER COLUMN account_id SET NOT NULL/);
-assert.match(sql, /DROP INDEX IF EXISTS collect_items_identity_key_uq/);
-assert.match(sql, /collect_items_account_identity_key_uq/);
-assert.doesNotMatch(sql, /DROP TABLE\s+(?:data_collection_stores|account_data_collection_stores)/);
-assert.doesNotMatch(sql, /DROP COLUMN\s+data_collection_store_id/);
-```
+- ticket/session tables accept valid hashed records and enforce unique hashes;
+- ticket consumption changes one row once;
+- account IDs become non-nullable;
+- collection-stage store/data-store columns accept `NULL`;
+- account-scoped identity/idempotency indexes allow the same request identity in two
+  accounts but reject a duplicate inside one account;
+- historical data-store tables, columns, values, and foreign-key references remain;
+- a second fixture with an ambiguous/unowned record makes migration 019 raise an
+  exception containing the table and record ID.
+
+Drop the temporary schema in `finally`. Add this test to
+`historicalTestExclusions` because it may run only against a dedicated database.
 
 - [ ] **Step 2: Run the test and confirm it fails because migration 019 does not exist**
 
 Run:
 
 ```bash
-node --test server/tests/account-scoped-collection-sql.test.mjs
+SONLI_MIGRATION_TEST_DATABASE_URL="$DEDICATED_TEST_DATABASE_URL" node server/tests/account-scoped-collection-migration.integration.mjs
 ```
 
-Expected: failure with `ENOENT` for the new migration.
+Expected: failure with `ENOENT` for migration 019 after the controlled pre-019 schema
+and fixtures are ready. A missing dedicated database is a blocked environment, not a
+passing test.
 
 - [ ] **Step 3: Implement the migration**
 
@@ -151,7 +155,7 @@ Update the two excluded integration tests so that, when manually run against a d
 Run:
 
 ```bash
-node --test server/tests/account-scoped-collection-sql.test.mjs
+SONLI_MIGRATION_TEST_DATABASE_URL="$DEDICATED_TEST_DATABASE_URL" node server/tests/account-scoped-collection-migration.integration.mjs
 node --check server/db/migrate.mjs
 git diff --check
 ```
@@ -168,7 +172,7 @@ Otherwise record both as unverified environment-dependent checks.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/db/migrations/019_account_scoped_collection_and_collector_sessions.sql server/tests/account-scoped-collection-sql.test.mjs server/tests/collection-pipeline-v4.integration.mjs server/tests/collector-desktop.integration.mjs
+git add server/db/migrations/019_account_scoped_collection_and_collector_sessions.sql server/tests/account-scoped-collection-migration.integration.mjs scripts/test-manifest.mjs server/tests/collection-pipeline-v4.integration.mjs server/tests/collector-desktop.integration.mjs
 git commit -m "db: add account-scoped collector sessions"
 ```
 
@@ -1075,19 +1079,20 @@ Content-Type: application/json
 }
 ```
 
-- [ ] **Step 1: Write failing source guard tests**
+- [ ] **Step 1: Write failing capability behavior tests**
 
-Scan extension source and manifest to assert:
+Build a controlled Chrome/fetch harness around the actual background service worker and
+packaged manifest. Verify:
 
-```js
-assert.equal(manifest.host_permissions.includes("https://api-seller.ozon.ru/*"), false);
-assert.equal(source.includes("jzManualSync"), false);
-assert.equal(source.includes("sync.request"), false);
-assert.equal(source.includes("sync.response"), false);
-assert.equal(source.includes("tryWebSync"), false);
-```
+- the installed manifest grants no request access to `api-seller.ozon.ru`;
+- startup registers no product/order/warehouse synchronization alarm;
+- sending retired manual-sync and sync-request messages produces no synchronization
+  action and no Seller API/backend sync fetch;
+- capture upload still reaches the collector client;
+- the packaged extension can start without any retired sync module.
 
-Also assert the deleted modules do not exist and no service-worker import references them.
+The test must observe registered alarms, message responses, and fetch calls. It must
+not pass merely because a source string or filename is absent.
 
 - [ ] **Step 2: Write failing server compatibility tests**
 
@@ -1128,7 +1133,8 @@ rg -n "api-seller\\.ozon\\.ru|jzManualSync|sync\\.request|sync\\.response|tryWeb
 git diff --check
 ```
 
-Expected `rg`: no sync capability match; any remaining documentation/test fixture match must be explicitly justified.
+The `rg` result is a supplemental safety inventory only. Pass/fail is determined by
+the capability behavior test, server 410 test, and packaged-extension smoke test.
 
 - [ ] **Step 8: Commit**
 
@@ -1151,7 +1157,7 @@ git commit -m "refactor: remove extension store sync"
 - Modify: `server/tests/module-boundaries.test.mjs`
 - Modify: `app/src/App.jsx`
 - Modify: `app/src/StoresSettingsPage.jsx`
-- Create: `app/tests/data-collection-store-ui-removed.test.mjs`
+- Create: `app/tests/data-collection-store-runtime.test.mjs`
 - Modify: `extension/background/service-worker.js`
 - Modify: `extension/popup/popup.js`
 - Modify: `extension/tests/collector-removed.test.js`
@@ -1173,8 +1179,8 @@ Verify:
 
 - `/local/data-collection-stores`, `/local/current-data-collection-store`, and `/local/data-collection-stores/verify` return 410 `DATA_COLLECTION_STORE_REMOVED`;
 - no local-state payload exposes data-store/current-data-store fields;
-- Stores Settings contains only operating store management;
-- no collection task/filter/form requires a data store;
+- the Stores Settings runtime model contains only operating store management;
+- collection task/filter/form payload builders work without a data store;
 - no extension code calls the verify endpoint;
 - `data_collection_stores` and membership rows remain readable by migration/audit code only.
 
@@ -1184,7 +1190,7 @@ Verify:
 node --test \
   server/tests/data-collection-store-removed.test.mjs \
   server/tests/formal-persistence-legacy-store.test.mjs \
-  app/tests/data-collection-store-ui-removed.test.mjs \
+  app/tests/data-collection-store-runtime.test.mjs \
   extension/tests/collector-removed.test.js
 ```
 
@@ -1213,7 +1219,7 @@ node --test \
   server/tests/data-collection-store-removed.test.mjs \
   server/tests/formal-persistence-legacy-store.test.mjs \
   server/tests/module-boundaries.test.mjs \
-  app/tests/data-collection-store-ui-removed.test.mjs \
+  app/tests/data-collection-store-runtime.test.mjs \
   extension/tests/collector-removed.test.js \
   server/tests/account-store-isolation.test.mjs
 pnpm --dir app build
@@ -1223,7 +1229,7 @@ git diff --check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/account-context.mjs server/collection-pipeline.mjs server/index.mjs server/tests/data-collection-store-removed.test.mjs server/tests/formal-persistence-legacy-store.test.mjs server/tests/module-boundaries.test.mjs app/src/App.jsx app/src/StoresSettingsPage.jsx app/tests/data-collection-store-ui-removed.test.mjs extension/background/service-worker.js extension/popup/popup.js extension/tests/collector-removed.test.js
+git add server/account-context.mjs server/collection-pipeline.mjs server/index.mjs server/tests/data-collection-store-removed.test.mjs server/tests/formal-persistence-legacy-store.test.mjs server/tests/module-boundaries.test.mjs app/src/App.jsx app/src/StoresSettingsPage.jsx app/tests/data-collection-store-runtime.test.mjs extension/background/service-worker.js extension/popup/popup.js extension/tests/collector-removed.test.js
 git commit -m "refactor: remove runtime data collection stores"
 ```
 
