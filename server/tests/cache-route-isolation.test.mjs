@@ -83,6 +83,8 @@ const fixture = {
         storeId: "store_a",
         localStoreId: "store_a",
         dataCollectionStoreId: "data_store_a",
+        createdBy: "old-creator-a",
+        sellerCompanyId: "old-seller-a",
         sku: "legacy-sku-a",
         name: "collect A",
       },
@@ -92,6 +94,8 @@ const fixture = {
         storeId: "store_b",
         localStoreId: "store_b",
         dataCollectionStoreId: "data_store_b",
+        createdBy: "old-creator-b",
+        sellerCompanyId: "old-seller-b",
         sku: "legacy-sku-b",
         name: "collect B",
       },
@@ -156,6 +160,8 @@ try {
   assert.equal("storeId" in stateA.body.caches.collectBox[0], false);
   assert.equal("localStoreId" in stateA.body.caches.collectBox[0], false);
   assert.equal("dataCollectionStoreId" in stateA.body.caches.collectBox[0], false);
+  assert.equal("createdBy" in stateA.body.caches.collectBox[0], false);
+  assert.equal("sellerCompanyId" in stateA.body.caches.collectBox[0], false);
   assert.deepEqual(
     Object.keys(stateA.body.jobs),
     ["import_a"],
@@ -190,8 +196,29 @@ try {
       assert.equal("storeId" in response.body.data[0], false);
       assert.equal("localStoreId" in response.body.data[0], false);
       assert.equal("dataCollectionStoreId" in response.body.data[0], false);
+      assert.equal("createdBy" in response.body.data[0], false);
+      assert.equal("sellerCompanyId" in response.body.data[0], false);
     }
   }
+
+  const createCollectEcho = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box",
+    {
+      id: "collect_create_echo",
+      sku: "create-echo-sku",
+      productUrl: "https://www.ozon.ru/product/create-echo/",
+      createdBy: "caller-creator",
+      sellerCompanyId: "caller-seller",
+    },
+    "token_a",
+    "store_a",
+  );
+  assert.equal(createCollectEcho.status, 200);
+  assert.equal(createCollectEcho.body.id, "collect_create_echo");
+  assert.equal("createdBy" in createCollectEcho.body, false);
+  assert.equal("sellerCompanyId" in createCollectEcho.body, false);
 
   const ownCollectPatch = await requestJson(
     handle,
@@ -211,6 +238,20 @@ try {
   assert.equal("storeId" in ownCollectPatch.body, false);
   assert.equal("localStoreId" in ownCollectPatch.body, false);
   assert.equal("dataCollectionStoreId" in ownCollectPatch.body, false);
+  assert.equal("createdBy" in ownCollectPatch.body, false);
+  assert.equal("sellerCompanyId" in ownCollectPatch.body, false);
+
+  const ownCollectDraft = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box/collect_a/ai-listing-draft",
+    { title: "draft without public scope" },
+    "token_a",
+    "store_a",
+  );
+  assert.equal(ownCollectDraft.status, 200);
+  assert.equal("createdBy" in ownCollectDraft.body.item, false);
+  assert.equal("sellerCompanyId" in ownCollectDraft.body.item, false);
 
   const crossTemplate = await requestJson(
     handle,
@@ -319,6 +360,10 @@ try {
   assert.equal(announcementsB.body.data[0].read, true);
 
   const persisted = JSON.parse(await readFile(path.join(dataDir, "local-state.json"), "utf8"));
+  const persistedHistoricalCollect = persisted.caches.collectBox
+    .find((item) => item.id === "collect_a");
+  assert.equal(persistedHistoricalCollect.createdBy, "old-creator-a");
+  assert.equal(persistedHistoricalCollect.sellerCompanyId, "old-seller-a");
   assert.ok(
     persisted.caches.messageTemplates.some(
       (item) => item.templateName === "Owned" && item.accountId === "acct_a" && item.storeId === "store_a",

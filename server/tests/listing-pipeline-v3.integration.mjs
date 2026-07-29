@@ -5,6 +5,7 @@ import { getPostgresPool, closePostgresPool, postgresEnabled } from "../db/conne
 import { runMigrations } from "../db/migrate.mjs";
 import {
   createSubmissionV3,
+  listCollectItemsV3,
   mirrorCollectItemV3,
   softDeleteCollectItemsV3,
 } from "../listing-pipeline.mjs";
@@ -54,6 +55,8 @@ try {
     storeId,
     sku: "source-sku-1",
     name: "原始采集标题",
+    createdBy: "legacy-creator",
+    sellerCompanyId: "legacy-seller",
     images: ["https://example.invalid/1.jpg"],
     listingDraft: {
       sku: "source-sku-1",
@@ -66,6 +69,9 @@ try {
 
   const first = await mirrorCollectItemV3(baseItem, { accountId, storeId, captureRaw: true });
   assert.equal(first.version, 1);
+  const [publicItem] = await listCollectItemsV3({ accountId });
+  assert.equal("createdBy" in publicItem, false);
+  assert.equal("sellerCompanyId" in publicItem, false);
   const edited = await mirrorCollectItemV3({
     ...baseItem,
     listingDraft: { ...baseItem.listingDraft, title: "用户修改标题" },

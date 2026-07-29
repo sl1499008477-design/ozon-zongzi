@@ -26,6 +26,8 @@ export function publicCollectionItem(item = {}) {
   delete result.localStoreId;
   delete result.operatingStoreId;
   delete result.dataCollectionStoreId;
+  delete result.createdBy;
+  delete result.sellerCompanyId;
 
   if (storeId || dataCollectionStoreId) {
     result.legacyScope = {
