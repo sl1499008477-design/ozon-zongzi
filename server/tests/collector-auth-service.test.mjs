@@ -404,6 +404,51 @@ test("successful authentication touches last use and returns no token or hash", 
   assert.equal(JSON.stringify(authenticated).includes(exchanged.collectorToken), false);
 });
 
+test("service authentication through JSON repository accepts valid expiry and fail-closes corrupted expiry", async (t) => {
+  for (const [label, expiresAt] of [
+    ["valid", "2026-07-29T08:00:00.000Z"],
+    ["missing", null],
+    ["invalid", "not-a-timestamp"],
+  ]) {
+    await t.test(label, async () => {
+      const state = {
+        accounts: [structuredClone(ACTIVE_ACCOUNT)],
+        sessions: {
+          [PARENT_TOKEN]: {
+            accountId: ACTIVE_ACCOUNT.id,
+            expiresAt: "2026-07-30T00:00:00.000Z",
+            revokedAt: null,
+          },
+        },
+      };
+      const repository = createJsonCollectorAuthRepository({ state });
+      const harness = createHarness({ repository });
+      const { exchanged } = await issueAndExchange(harness);
+      state.collectorSessions[0].expiresAt = expiresAt;
+      harness.setNow("2026-07-29T00:02:00.000Z");
+
+      if (label === "valid") {
+        const authenticated = await harness.service.authenticate({
+          collectorToken: exchanged.collectorToken,
+          requiredPermission: "collector.upload",
+        });
+        assert.equal(authenticated.accountId, ACTIVE_ACCOUNT.id);
+        assert.equal(state.collectorSessions[0].lastSeenAt, "2026-07-29T00:02:00.000Z");
+        return;
+      }
+
+      await assert.rejects(
+        harness.service.authenticate({
+          collectorToken: exchanged.collectorToken,
+          requiredPermission: "collector.upload",
+        }),
+        (error) => error?.status === 401 && error?.code === "COLLECTOR_SESSION_EXPIRED",
+      );
+      assert.equal(state.collectorSessions[0].lastSeenAt, START.toISOString());
+    });
+  }
+});
+
 test("revocation is account and parent-session scoped", async () => {
   const harness = createHarness();
   await issueAndExchange(harness);

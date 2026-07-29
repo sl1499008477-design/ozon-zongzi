@@ -244,7 +244,7 @@ export function createJsonCollectorAuthRepository({
     });
   }
 
-  async function findActiveSession({ tokenHash }) {
+  async function findActiveSession({ tokenHash, now }) {
     const normalizedHash = requireSecretHash(tokenHash);
     const collectorSessions = Array.isArray(state.collectorSessions)
       ? state.collectorSessions
