@@ -1,18 +1,16 @@
 import React, { useState } from "react";
 import {
   App as AntApp,
-  Alert,
   Button,
   Card,
-  Form,
-  Input,
   Modal,
   Space,
   Tag,
   Tooltip,
 } from "antd";
-import { apiRequest, postMessageRequest } from "./client-transport.js";
+import { apiRequest } from "./client-transport.js";
 import { createStoreDeletionController } from "./store-deletion-controller.js";
+import { operatingStoreSettingsModel } from "./stores-settings-model.js";
 import SourceTable from "./SourceTable.jsx";
 import { displayApiKeyDeadline } from "./store-date.js";
 import {
@@ -22,21 +20,14 @@ import {
 
 export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted }) {
   const { message } = AntApp.useApp();
-  const [collectionForm] = Form.useForm();
   const [refreshingStores, setRefreshingStores] = useState(false);
   const [syncingWarehouses, setSyncingWarehouses] = useState(false);
-  const [collectionModalOpen, setCollectionModalOpen] = useState(false);
-  const [savingCollectionStore, setSavingCollectionStore] = useState(false);
-  const [detectingCollectionLogin, setDetectingCollectionLogin] = useState(false);
-  const stores = localData?.stores || [];
-  const dataCollectionStores = localData?.dataCollectionStores || [];
-  const currentDataCollectionStoreId = localData?.currentDataCollectionStoreId || localData?.dataCollectionStore?.id || "";
-  const currentDataCollectionStore = dataCollectionStores.find((store) =>
-    String(store.id || "") === String(currentDataCollectionStoreId || "")
-  ) || localData?.dataCollectionStore || null;
-  const warehouses = localData?.caches?.warehouses || [];
-  const summary = localData?.summary || {};
-  const activeStoreId = binding?.id || stores[0]?.id;
+  const {
+    stores,
+    currentStoreId: activeStoreId,
+    warehouses,
+    summary,
+  } = operatingStoreSettingsModel({ localData, binding });
   const visibleStores = stores.filter((store) => !["disabled", "stopped", "inactive"].includes(String(store.status || "").toLowerCase()));
   const storeRows = visibleStores.map((store) => {
     const isActive = String(store.id || "") === String(activeStoreId || "");
@@ -58,136 +49,6 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
     };
   });
   const storeLabelColumnWidth = adaptiveTextColumnWidth(storeRows, "标签", { min: 110, max: 220 });
-  const normalizeCollectionCompanyId = (value) => String(value || "").trim().replace(/\D/g, "");
-  const dataCollectionRows = dataCollectionStores.map((store) => {
-    const isActive = String(store.id || "") === String(currentDataCollectionStoreId || "");
-    return {
-      id: store.id,
-      "店铺名称": store.label || "数据采集店铺",
-      "Ozon 登录标识": store.sellerCompanyId || "—",
-      "状态": isActive ? "当前采集店铺" : (store.status === "disabled" ? "已停用" : "已保存"),
-      isActive,
-      rawStore: store,
-    };
-  });
-  const dataCollectionNameColumnWidth = adaptiveTextColumnWidth(dataCollectionRows, "店铺名称", { min: 150, max: 260 });
-
-  const readCollectionLoginState = async () => {
-    setDetectingCollectionLogin(true);
-    try {
-      const response = await postMessageRequest(
-        { __jzcExt: 1, action: "getOzonSellerLoginState" },
-        "__jzcExtResp",
-        3000,
-      );
-      const sellerCompanyIds = [
-        response?.data?.sellerCompanyId,
-        response?.sellerCompanyId,
-        ...(Array.isArray(response?.data?.sellerCompanyIds) ? response.data.sellerCompanyIds : []),
-        ...(Array.isArray(response?.sellerCompanyIds) ? response.sellerCompanyIds : []),
-      ].map(normalizeCollectionCompanyId).filter(Boolean);
-      const currentSellerCompanyId = normalizeCollectionCompanyId(currentDataCollectionStore?.sellerCompanyId);
-      const sellerCompanyId = currentSellerCompanyId && sellerCompanyIds.includes(currentSellerCompanyId)
-        ? currentSellerCompanyId
-        : sellerCompanyIds[0];
-      if (!sellerCompanyId) throw new Error("未读取到 Ozon 登录店铺标识");
-      const matched = dataCollectionStores.find((store) =>
-        normalizeCollectionCompanyId(store.sellerCompanyId) === sellerCompanyId
-      );
-      collectionForm.setFieldsValue({
-        sellerCompanyId,
-        label: matched?.label || collectionForm.getFieldValue("label") || `采集店铺 ${sellerCompanyId}`,
-      });
-      message.success("已读取当前 Ozon 登录态");
-    } catch (error) {
-      message.error(`读取失败: ${error.message}`);
-    } finally {
-      setDetectingCollectionLogin(false);
-    }
-  };
-
-  const openCollectionStoreModal = () => {
-    collectionForm.resetFields();
-    setCollectionModalOpen(true);
-  };
-
-  const saveCollectionStore = async () => {
-    const values = await collectionForm.validateFields();
-    const sellerCompanyId = normalizeCollectionCompanyId(values.sellerCompanyId);
-    if (!sellerCompanyId) {
-      message.warning("请填写 Ozon 登录店铺标识");
-      return;
-    }
-    setSavingCollectionStore(true);
-    try {
-      const response = await apiRequest("/local/data-collection-stores", {
-        method: "POST",
-        body: {
-          label: values.label,
-          sellerCompanyId,
-          note: values.note,
-        },
-      });
-      await onRefresh?.({ silent: true }) || response?.state;
-      setCollectionModalOpen(false);
-      message.success("数据采集店铺已保存");
-    } catch (error) {
-      message.error(`保存失败: ${error.message}`);
-    } finally {
-      setSavingCollectionStore(false);
-    }
-  };
-
-  const switchCollectionStore = async (storeId) => {
-    try {
-      const response = await apiRequest("/local/current-data-collection-store", {
-        method: "POST",
-        body: { storeId },
-      });
-      await onRefresh?.({ silent: true }) || response?.state;
-      message.success("当前数据采集店铺已切换");
-    } catch (error) {
-      message.error(`切换失败: ${error.message}`);
-    }
-  };
-
-  const deleteCollectionStore = (record) => {
-    const store = record?.rawStore || record || {};
-    if (!store.id) {
-      message.warning("数据采集店铺不存在");
-      return;
-    }
-    Modal.confirm({
-      title: "删除数据采集店铺",
-      content: `确认删除「${store.label || "数据采集店铺"}」？删除后插件采集将不能使用该登录态校验。`,
-      okText: "删除",
-      okButtonProps: { danger: true },
-      cancelText: "取消",
-      onOk: async () => {
-        try {
-          const response = await apiRequest(`/local/data-collection-stores/${encodeURIComponent(store.id)}`, { method: "DELETE" });
-          await onRefresh?.({ silent: true }) || response?.state;
-          message.success("数据采集店铺已删除");
-        } catch (error) {
-          message.error(`删除失败: ${error.message}`);
-        }
-      },
-    });
-  };
-
-  const openSellerPortal = async () => {
-    try {
-      await postMessageRequest(
-        { __jzcExt: 1, action: "openSellerPortal" },
-        "__jzcExtResp",
-        1500,
-      );
-      message.success("已打开 Ozon 卖家中心");
-    } catch (error) {
-      message.error(`打开失败: ${error.message}`);
-    }
-  };
-
   const refreshStores = async () => {
     setRefreshingStores(true);
     try {
@@ -342,95 +203,6 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
           scrollX={900}
         />
       </Card>
-      <Card className="panel-card source-card data-collection-store-card">
-        <div className="card-title-row stores-title-row">
-          <span>数据采集店铺 <em>{dataCollectionRows.length}/20</em></span>
-          <Space wrap>
-            <Button onClick={openSellerPortal}>打开 Ozon 卖家中心</Button>
-            <Button type="primary" onClick={openCollectionStoreModal}>新增</Button>
-          </Space>
-        </div>
-        <Alert
-          showIcon
-          type={currentDataCollectionStore ? "success" : "warning"}
-          message={currentDataCollectionStore
-            ? `当前数据采集店铺：${currentDataCollectionStore.label || currentDataCollectionStore.sellerCompanyId}`
-            : "请先新增并选择数据采集店铺"}
-          description="插件采集前会校验 seller.ozon.ru 当前登录店铺；只要该店铺已绑定在当前 sonli 账号下，就会自动切换为当前数据采集店铺并写入采集箱，未绑定时拒绝采集。"
-        />
-        <SourceTable
-          hasStore
-          rows={dataCollectionRows}
-          rowSelection={false}
-          columns={[
-            {
-              title: "店铺名称",
-              dataIndex: "店铺名称",
-              width: dataCollectionNameColumnWidth,
-              render: renderSourceTextCell,
-            },
-            "Ozon 登录标识",
-            {
-              title: "状态",
-              dataIndex: "状态",
-              width: 120,
-              render: (value, record) => <Tag color={record.isActive ? "blue" : "default"}>{value}</Tag>,
-            },
-            {
-              title: "操作",
-              dataIndex: "操作",
-              width: 150,
-              render: (_, record) => (
-                <Space size={6}>
-                  {record.isActive ? null : <Button size="small" onClick={() => switchCollectionStore(record.id)}>设为当前</Button>}
-                  <Button danger size="small" onClick={() => deleteCollectionStore(record)}>删除</Button>
-                </Space>
-              ),
-            },
-          ]}
-          empty="暂无数据采集店铺"
-          sourceEmpty
-          scrollX={760}
-        />
-      </Card>
-      <Modal
-        rootClassName="prototype-overlay"
-        title="新增数据采集店铺"
-        open={collectionModalOpen}
-        onCancel={() => setCollectionModalOpen(false)}
-        onOk={saveCollectionStore}
-        okText="保存"
-        confirmLoading={savingCollectionStore}
-        cancelText="取消"
-        footer={(_, { OkBtn, CancelBtn }) => (
-          <Space>
-            <Button loading={detectingCollectionLogin} onClick={readCollectionLoginState}>读取当前 Ozon 登录态</Button>
-            <CancelBtn />
-            <OkBtn />
-          </Space>
-        )}
-      >
-        <Form form={collectionForm} layout="vertical">
-          <Form.Item
-            label="店铺名称"
-            name="label"
-            rules={[{ required: true, message: "请输入店铺名称" }]}
-          >
-            <Input placeholder="例如 采集店铺 01" maxLength={120} />
-          </Form.Item>
-          <Form.Item
-            label="Client ID"
-            name="sellerCompanyId"
-            extra="点击“读取当前 Ozon 登录态”可自动读取 seller.ozon.ru 当前登录店铺标识。"
-            rules={[{ required: true, message: "请输入 Client ID" }]}
-          >
-            <Input placeholder="sc_company_id" maxLength={80} />
-          </Form.Item>
-          <Form.Item label="备注" name="note">
-            <Input.TextArea placeholder="可选" maxLength={240} rows={3} />
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 }

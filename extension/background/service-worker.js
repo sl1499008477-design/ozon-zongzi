@@ -124,7 +124,6 @@ try {
   // chrome.storage 的 dedupe 只在请求完成写 cache 后才命中。如果用户快速连点 5 次,
   // 5 次都可能在第一次 fetch 返回前 miss cache,各自发请求 → backend 收到 5 次重复 upsert。
   // 加 SW 内存级 Map:key 命中时 await 同一个 in-flight Promise,合并并发。
-  const pendingCollects = new Map(); // cacheKey → Promise<{ok, dedupeHit, data, ...}>
 
   // ── sonli 算价：用配置 SKU 的 Ozon 前台 RUB/CNY 实价计算动态汇率 ──
   // 每两小时刷新一次写入 chrome.storage.local。content/jzc-calc.js 监听 storage 变化自动重算。
@@ -587,86 +586,6 @@ try {
       _bundlePortalOpts(preferTabId),
     );
 
-  const normalizeSellerCompanyId = (value) => String(value || '').trim().replace(/[^\d]/g, '');
-
-  const pushSellerCompanyIdCandidate = (list, value) => {
-    const id = normalizeSellerCompanyId(value);
-    if (id && !list.includes(id)) list.push(id);
-  };
-
-  const pushSellerCompanyIdCandidates = (list, values) => {
-    for (const value of Array.isArray(values) ? values : [values]) {
-      pushSellerCompanyIdCandidate(list, value);
-    }
-  };
-
-  const readSellerCompanyIdsFromTab = async (tabId) => {
-    if (!tabId) return [];
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          const ids = [];
-          const push = (value) => {
-            const id = String(value || '').trim().replace(/[^\d]/g, '');
-            if (id && id.length >= 4 && id.length <= 15 && !ids.includes(id)) ids.push(id);
-          };
-          const scan = (value) => {
-            const text = String(value || '');
-            if (!text) return;
-            const patterns = [
-              /(?:sc_company_id|sellerCompanyId|seller_company_id|companyId|company_id|company-id|clientId|client_id)["'=:\\s%]*([0-9]{4,15})/gi,
-              /(?:company|seller|client)[^0-9]{0,28}([0-9]{4,15})/gi,
-            ];
-            for (const pattern of patterns) {
-              let match;
-              while ((match = pattern.exec(text))) push(match[1]);
-            }
-          };
-
-          for (const part of document.cookie.split(';')) {
-            const [name, ...rest] = part.trim().split('=');
-            if (/^(sc_company_id|company_id|companyId|seller_company_id|sellerCompanyId)$/i.test(name || '')) {
-              push(rest.join('='));
-            }
-          }
-
-          try {
-            const url = new URL(location.href);
-            for (const key of ['sc_company_id', 'company_id', 'companyId', 'seller_company_id', 'sellerCompanyId', 'client_id', 'clientId']) {
-              push(url.searchParams.get(key));
-            }
-            scan(url.href);
-          } catch {}
-
-          for (const storage of [localStorage, sessionStorage]) {
-            try {
-              for (let i = 0; i < storage.length; i += 1) {
-                const key = storage.key(i);
-                if (!/(company|seller|client|sc_company)/i.test(key || '')) continue;
-                scan(key);
-                scan(storage.getItem(key));
-              }
-            } catch {}
-          }
-
-          try {
-            const scripts = Array.from(document.scripts || [])
-              .filter((script) => !script.src && script.textContent && /(company|seller|client|sc_company)/i.test(script.textContent))
-              .slice(0, 20);
-            for (const script of scripts) scan(script.textContent.slice(0, 200000));
-          } catch {}
-
-          return ids;
-        },
-        world: 'MAIN',
-      });
-      return Array.isArray(results?.[0]?.result) ? results[0].result : [];
-    } catch {
-      return [];
-    }
-  };
-
   const getSellerCompanyIdCandidates = async (options = {}) => {
     if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
     try {
@@ -680,18 +599,6 @@ try {
     const companyId = (await getSellerCompanyIdCandidates(options))[0] || '';
     if (!companyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
     return companyId;
-  };
-
-  const getOzonSellerLoginState = async (options = {}) => {
-    const sellerCompanyIds = await getSellerCompanyIdCandidates(options);
-    const sellerCompanyId = sellerCompanyIds[0] || '';
-    if (!sellerCompanyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
-    return {
-      loggedIn: true,
-      sellerCompanyId: String(sellerCompanyId),
-      sellerCompanyIds,
-      source: 'seller.ozon.ru:sc_company_id',
-    };
   };
 
   /**
@@ -3331,13 +3238,6 @@ try {
             return { ok: false, error: e?.message || 'open seller portal failed' };
           }
         }
-        case 'getOzonSellerLoginState': {
-          try {
-            return { ok: true, data: await getOzonSellerLoginState({ tabId: sender?.tab?.id }) };
-          } catch (e) {
-            return { ok: false, error: e?.message || 'ozon seller login not detected' };
-          }
-        }
         case 'refreshBackend': {
           resolvedBackendUrl = null;
           const url = await detectBackendUrl();
@@ -3371,175 +3271,6 @@ try {
             sourceUrl: message.url,
             collectorOperation,
           });
-          const sku = String(message?.raw?.sku || '').trim();
-          const forceResubmit = Boolean(message.forceResubmit);
-          // 让调用方(AI 采集向导)用 message.storeId 覆盖扩展全局当前店铺,对齐
-          // followSell 等其他 action 的 `message.storeId || storeId` 写法。否则
-          // 1688 采集会落到全局店铺或 null,前端采集箱按所选店铺过滤就看不到。
-          const effStoreId = message.storeId || storeId;
-          const collectRequestKey = String(message.requestId || `collect-${crypto.randomUUID()}`);
-          let verifiedDataCollectionStoreId = '';
-          if (sourceId.toLowerCase() === 'ozon') {
-            let sellerLogin = null;
-            try {
-              sellerLogin = await getOzonSellerLoginState({ tabId: sender?.tab?.id });
-            } catch (e) {
-              return {
-                ok: false,
-                error: e?.message || '请先登录 seller.ozon.ru 并切换到数据采集店铺',
-              };
-            }
-            try {
-              const verifyResp = await apiRequest(
-                'POST',
-                `${backendUrl}/local/data-collection-stores/verify`,
-                {
-                  sellerCompanyId: sellerLogin.sellerCompanyId,
-                  sellerCompanyIds: sellerLogin.sellerCompanyIds || [],
-                  requestId: collectRequestKey,
-                },
-                token,
-                effStoreId,
-                20_000,
-              );
-              verifiedDataCollectionStoreId = verifyResp?.dataCollectionStoreId || verifyResp?.store?.id || '';
-            } catch (e) {
-              return { ok: false, error: e?.message || '数据采集店铺校验失败' };
-            }
-          }
-          const DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
-
-          let cacheKey = null;
-          if (sku && backendUrl) {
-            try {
-              const host = new URL(backendUrl).host;
-              // sku / sourceId 走 encodeURIComponent,防止 1688/PDD 等 sku 含 `:` `/` 时
-              // 切坏 tuple 边界(当前 ozon sku 都是数字串,留作扩展防御)。
-              const accountScope = hashString(String(token || 'anonymous'));
-              cacheKey = `jz-collect-recent-v2:${host}:${accountScope}:${encodeURIComponent(effStoreId || 'no-store')}:${encodeURIComponent(verifiedDataCollectionStoreId || 'no-collection-store')}:${encodeURIComponent(sourceId)}:${encodeURIComponent(sku)}`;
-              if (!forceResubmit) {
-                const cached = await new Promise((resolve) => {
-                  chrome.storage.local.get([cacheKey], (d) => resolve(d?.[cacheKey]));
-                });
-                if (cached && Date.now() - (cached.at || 0) < DEDUPE_TTL_MS) {
-                  // 必须把 dedupeHit / lastAt 放进 data — shared-utils.js sendMessage
-                  // wrapper 在 resp.ok=true 时只 resolve(response.data),envelope 字段
-                  // 全丢。下面 success 和 in-flight 合并路径同。
-                  return { ok: true, data: { dedupeHit: true, lastAt: cached.at, result: null } };
-                }
-              }
-            } catch {
-              // 拿不到 host 就跳过 dedupe,保留原始 fetch 路径
-              cacheKey = null;
-            }
-          }
-
-          // in-flight 合并:并发同 cacheKey 的请求 await 同一个 Promise
-          if (cacheKey && !forceResubmit && pendingCollects.has(cacheKey)) {
-            try {
-              const resp = await pendingCollects.get(cacheKey);
-              // 给后到的并发请求标 dedupeHit,UI 区分"刚刚已采集"。
-              // resp.data 形如 { dedupeHit, lastAt, result } — 仅覆盖 dedupeHit
-              return resp?.ok
-                ? { ok: true, data: { ...resp.data, dedupeHit: true } }
-                : resp;
-            } catch (e) {
-              return { ok: false, error: e?.message || 'pending request failed' };
-            }
-          }
-
-          const collectPromise = (async () => {
-            const MAX_RETRIES = 3;
-            let lastErr = null;
-            const recoverRequestResult = async () => {
-              for (let poll = 0; poll < 3; poll += 1) {
-                try {
-                  const recovered = await apiRequest(
-                    'GET',
-                    `${backendUrl}/local/collect-requests/${encodeURIComponent(collectRequestKey)}`,
-                    null,
-                    token,
-                    effStoreId,
-                    5_000,
-                  );
-                  const request = recovered?.request || recovered?.data?.request || recovered;
-                  if (request?.status === 'SUCCEEDED') return request.response?.item || request.response || null;
-                  if (request?.status === 'FAILED') {
-                    const failure = new Error(request.error_message || '采集请求处理失败');
-                    failure.status = 422;
-                    throw failure;
-                  }
-                } catch (recoveryError) {
-                  if (recoveryError?.status === 422) throw recoveryError;
-                }
-                if (poll < 2) await new Promise((resolve) => setTimeout(resolve, 500));
-              }
-              return null;
-            };
-            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-              try {
-                const body = { raw: message.raw || {}, idempotencyKey: collectRequestKey };
-                if (effStoreId) body.storeId = effStoreId;   // 后端 body.storeId 优先于 header
-                if (verifiedDataCollectionStoreId) body.dataCollectionStoreId = verifiedDataCollectionStoreId;
-                if (message.resetDraft === true) body.resetDraft = true;
-                const data = await apiRequest(
-                  'POST',
-                  `${backendUrl}/sources/${encodeURIComponent(sourceId)}/collect`,
-                  body,
-                  token,
-                  effStoreId,
-                  60_000,
-                  aiWizardDebugMeta(message, 'pushSourceCollect', {
-                    sourceId,
-                    rawOfferId: message?.raw?.offerId,
-                    rawTitleLen: typeof message?.raw?.title === 'string' ? message.raw.title.length : undefined,
-                    rawImageCount: Array.isArray(message?.raw?.mainImages) ? message.raw.mainImages.length : undefined,
-                  }),
-                );
-                if (cacheKey) {
-                  try {
-                    await new Promise((r) => chrome.storage.local.set({ [cacheKey]: { at: Date.now() } }, r));
-                  } catch {}
-                }
-                // 把 dedupeHit / lastAt / 后端 result 全塞进 data,let sendMessage 的
-                // resolve(response.data) 一次性递给 content script。
-                return { ok: true, data: { dedupeHit: false, lastAt: null, result: data } };
-              } catch (error) {
-                lastErr = error;
-                const status = error?.status;
-                // 4xx 业务错误(非 408/429)立即失败,不重试
-                if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-                  return { ok: false, error: error.message, status };
-                }
-                try {
-                  const recovered = await recoverRequestResult();
-                  if (recovered) {
-                    if (cacheKey) {
-                      await new Promise((resolve) => chrome.storage.local.set({ [cacheKey]: { at: Date.now() } }, resolve));
-                    }
-                    return { ok: true, data: { dedupeHit: false, recoveredAfterTimeout: true, lastAt: null, result: recovered } };
-                  }
-                } catch (recoveryError) {
-                  return { ok: false, error: recoveryError.message, status: recoveryError.status || 422 };
-                }
-                if (attempt < MAX_RETRIES) {
-                  await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
-                }
-              }
-            }
-            return { ok: false, error: lastErr?.message || 'NETWORK_ERROR' };
-          })();
-
-          // forceResubmit 不写 pendingCollects:避免强制请求覆盖同 cacheKey 的普通请求,
-          // 让后到的普通请求 await 错语义(强制语义跟普通采集不能合并)
-          if (cacheKey && !forceResubmit) {
-            pendingCollects.set(cacheKey, collectPromise);
-          }
-          try {
-            return await collectPromise;
-          } finally {
-            if (cacheKey && !forceResubmit) pendingCollects.delete(cacheKey);
-          }
         }
         case 'collectBatch': {
           // Legacy action, kept for backward compatibility with older content scripts.

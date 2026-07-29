@@ -6,6 +6,65 @@ delete process.env.DATABASE_URL;
 delete process.env.POSTGRES_HOST;
 
 const { mirrorStateToRelationalTables } = await import("../formal-persistence.mjs");
+const { readLegacyDataCollectionStoresForAudit } = await import(
+  "../legacy-data-collection-store.mjs"
+);
+
+test("historical data-collection stores remain account-scoped and read-only", async () => {
+  const calls = [];
+  const pool = {
+    async query(query, params) {
+      calls.push({ sql: String(query), params });
+      return {
+        rows: [{
+          data_collection_store_id: "legacy-data-store-a",
+          account_id: "account-a",
+          seller_company_id: "seller-company-a",
+          label: "Historical A",
+          status: "disabled",
+          note: "audit evidence",
+          is_current: false,
+          last_verified_at: "2026-07-01T00:00:00.000Z",
+          membership_created_at: "2026-06-01T00:00:00.000Z",
+          membership_updated_at: "2026-07-01T00:00:00.000Z",
+        }],
+      };
+    },
+  };
+
+  const records = await readLegacyDataCollectionStoresForAudit(pool, {
+    accountId: " account-a ",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /\bSELECT\b/i);
+  assert.match(calls[0].sql, /\bdata_collection_stores\b/i);
+  assert.match(calls[0].sql, /\baccount_data_collection_stores\b/i);
+  assert.doesNotMatch(calls[0].sql, /\b(?:INSERT|UPDATE|DELETE)\b/i);
+  assert.deepEqual(calls[0].params, ["account-a"]);
+  assert.deepEqual(records, [{
+    id: "legacy-data-store-a",
+    accountId: "account-a",
+    sellerCompanyId: "seller-company-a",
+    label: "Historical A",
+    status: "disabled",
+    note: "audit evidence",
+    isCurrent: false,
+    lastVerifiedAt: "2026-07-01T00:00:00.000Z",
+    createdAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    readOnly: true,
+  }]);
+});
+
+test("historical data-store reads require an explicit account boundary", async () => {
+  await assert.rejects(
+    readLegacyDataCollectionStoresForAudit({ query: async () => ({ rows: [] }) }, {
+      accountId: " ",
+    }),
+    (error) => error?.code === "ACCOUNT_SCOPE_REQUIRED",
+  );
+});
 
 test("formal mirror assigns a legacy ownerless store to the current account", async () => {
   const accountId = "acct_legacy_owner";

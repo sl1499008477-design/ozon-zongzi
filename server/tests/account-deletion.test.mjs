@@ -24,15 +24,6 @@ function scopedFixture() {
       { id: "store-target", ownerAccountId: "account-target" },
       { id: "store-other", ownerAccountId: "account-other" },
     ],
-    currentDataCollectionStoreId: "collector-target",
-    currentDataCollectionStoreIdsByAccount: {
-      "account-target": "collector-target",
-      "account-other": "collector-other",
-    },
-    dataCollectionStores: [
-      { id: "collector-target", ownerAccountId: "account-target" },
-      { id: "collector-other", ownerAccountId: "account-other" },
-    ],
     caches: {
       products: [
         { id: "product-target", accountId: "account-target", storeId: "store-target" },
@@ -78,7 +69,6 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.deepEqual(result.fileObjectKeys, ["target/file.png"]);
   assert.deepEqual(state.accounts.map((item) => item.id), ["account-other"]);
   assert.deepEqual(state.stores.map((item) => item.id), ["store-other"]);
-  assert.deepEqual(state.dataCollectionStores.map((item) => item.id), ["collector-other"]);
   assert.deepEqual(Object.keys(state.sessions), ["other-token"]);
   assert.deepEqual(state.caches.products.map((item) => item.id), ["product-other"]);
   assert.deepEqual(state.caches.postings, []);
@@ -92,9 +82,7 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.equal(state.auditEvents.length, 2);
   assert.equal(state.currentAccountId, "");
   assert.equal(state.currentStoreId, "");
-  assert.equal(state.currentDataCollectionStoreId, "");
   assert.equal(state.currentStoreIdsByAccount["account-target"], undefined);
-  assert.equal(state.currentDataCollectionStoreIdsByAccount["account-target"], undefined);
   assert.deepEqual(state.__deletedAccountScopes, [{
     accountId: "account-target",
     storeIds: ["store-target"],

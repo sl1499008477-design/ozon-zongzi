@@ -401,4 +401,16 @@ test('visible-page capture upload still reaches the collector client', async () 
       && options.headers?.authorization === 'Collector csess_behavior_test_secret_123456789'),
     true,
   );
+  const captureRequest = harness.fetchCalls.find(({ url }) =>
+    url.endsWith('/sources/ozon/collect'));
+  const captureBody = JSON.parse(captureRequest.options.body);
+  for (const field of [
+    'accountId',
+    'storeId',
+    'operatingStoreId',
+    'dataCollectionStoreId',
+    'sellerCompanyId',
+  ]) {
+    assert.equal(Object.hasOwn(captureBody, field), false, field);
+  }
 });

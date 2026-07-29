@@ -6,8 +6,6 @@ import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/conne
 import { runMigrations } from "../db/migrate.mjs";
 import {
   ingestCollectRequestV4,
-  upsertCollectionStoreForAccount,
-  verifyCollectionStoreForAccount,
 } from "../collection-pipeline.mjs";
 import {
   softDeleteCollectItemsForAccountV4,
@@ -25,8 +23,6 @@ const accountB = `collect_v4_b_${suffix}`;
 const accountCascade = `collect_v4_cascade_${suffix}`;
 const storeId = `collect_v4_store_${suffix}`;
 const storeIdB = `collect_v4_store_b_${suffix}`;
-const sellerCompanyId = String(Date.now()).slice(-10) + String(Math.floor(Math.random() * 9999)).padStart(4, "0");
-const sellerCompanyIdB = `${sellerCompanyId}7`;
 const sku = `sku-${suffix}`;
 const noStoreCollectItemId = `collect_v4_no_store_${suffix}`;
 const pool = await getPostgresPool();
@@ -36,9 +32,6 @@ async function cleanup() {
   await pool.query("DELETE FROM collect_requests WHERE collect_item_id=ANY($1::text[]) OR account_id=ANY($2::text[])", [[...collectIds, noStoreCollectItemId], [accountA, accountB, accountCascade]]);
   await pool.query("DELETE FROM collect_raw_payloads WHERE collect_item_id=ANY($1::text[]) OR account_id=ANY($2::text[])", [[...collectIds, noStoreCollectItemId], [accountA, accountB, accountCascade]]);
   await pool.query("DELETE FROM collect_items WHERE id=ANY($1::text[]) OR account_id=ANY($2::text[])", [[...collectIds, noStoreCollectItemId], [accountA, accountB, accountCascade]]);
-  await pool.query("DELETE FROM account_data_collection_stores WHERE account_id=ANY($1::text[])", [[accountA, accountB]]);
-  await pool.query("DELETE FROM collection_store_verifications WHERE account_id=ANY($1::text[])", [[accountA, accountB]]);
-  await pool.query("DELETE FROM data_collection_stores WHERE seller_company_id=ANY($1::text[])", [[sellerCompanyId, sellerCompanyIdB]]);
   await pool.query("DELETE FROM stores WHERE id=ANY($1::text[])", [[storeId, storeIdB]]);
   await pool.query("DELETE FROM accounts WHERE id=ANY($1::text[])", [[accountA, accountB, accountCascade]]);
 }
@@ -89,30 +82,6 @@ try {
       storeIdB, accountB, "Collect V4 Store B", `collect-client-b-${suffix}`,
     ],
   );
-
-  const collectionA = await upsertCollectionStoreForAccount(accountA, {
-    label: "测试采集店铺",
-    sellerCompanyId,
-  });
-  await assert.rejects(
-    upsertCollectionStoreForAccount(accountB, {
-      label: "测试采集店铺 B",
-      sellerCompanyId,
-    }),
-    (error) => error?.code === "DATA_COLLECTION_STORE_ALREADY_OWNED" && error?.status === 409,
-  );
-  const unmatchedCompanyId = `${sellerCompanyId}99`;
-  await assert.rejects(
-    verifyCollectionStoreForAccount(accountA, [unmatchedCompanyId], `verify-mismatch-${suffix}`),
-    (error) => error?.status === 409,
-  );
-  const failedAudit = await pool.query(
-    "SELECT COUNT(*)::int count FROM collection_store_verifications WHERE account_id=$1 AND seller_company_id=$2 AND matched=FALSE",
-    [accountA, unmatchedCompanyId],
-  );
-  assert.equal(failedAudit.rows[0].count, 1, "失败的数据采集店铺校验必须独立留痕");
-  const verified = await verifyCollectionStoreForAccount(accountA, [sellerCompanyId], `verify-${suffix}`);
-  assert.equal(verified.store.id, collectionA.id);
 
   const item = {
     id: sku,
@@ -218,12 +187,6 @@ try {
     (error) => error?.code === "DRAFT_VERSION_CONFLICT" && error?.status === 409,
   );
 
-  const boundB = await upsertCollectionStoreForAccount(accountB, {
-    label: "测试采集店铺 B",
-    sellerCompanyId: sellerCompanyIdB,
-  });
-  const collectionB = (await verifyCollectionStoreForAccount(accountB, [sellerCompanyIdB], `verify-b-${suffix}`)).store;
-  assert.equal(collectionB.id, boundB.id);
   const originalRequest = await pool.query(
     "SELECT status FROM collect_requests WHERE account_id=$1 AND id=$2",
     [accountA, first.requestId],

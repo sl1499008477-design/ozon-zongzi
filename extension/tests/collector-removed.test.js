@@ -38,6 +38,9 @@ assert.equal(popupJs.includes("collectorGetState"), false);
 assert.equal(worker.includes("pushSourceCollectBatch"), false);
 assert.equal(worker.includes("collectorHeartbeat"), false);
 assert.equal(worker.includes("collectorGetState"), false);
+assert.equal(worker.includes("/local/data-collection-stores/verify"), false);
+assert.equal(worker.includes("verifiedDataCollectionStoreId"), false);
+assert.equal(worker.includes("getOzonSellerLoginState"), false);
 
 assert.match(product, /一键采集/);
 assert.match(product, /collectAllVariants/);

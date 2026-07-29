@@ -110,6 +110,10 @@ import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErro
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
 import { installCollectorAuthBridge } from "./collector-auth-bridge.js";
+import {
+  emptyLocalRuntimeData,
+  localRuntimeStateFromApi,
+} from "./local-runtime-state.js";
 
 const { Header, Sider, Content } = Layout;
 
@@ -187,57 +191,7 @@ function SkuCopyButton({ message, sku }) {
   );
 }
 
-const emptyLocalData = {
-  currentStoreId: "",
-  stores: [],
-  currentDataCollectionStoreId: "",
-  dataCollectionStore: null,
-  dataCollectionStores: [],
-  summary: {
-    products: 0,
-    postings: 0,
-    postingsTotal: 0,
-    currencyCode: "",
-    currencyCodes: [],
-    mixedCurrencies: false,
-    gmvByCurrency: {},
-    totalGmv: null,
-    todayPostings: 0,
-    todayGmv: null,
-    weekPostings: 0,
-    weekGmv: null,
-    awaitingPackaging: 0,
-    awaitingDeliver: 0,
-    pendingPostings: 0,
-    statusCounts: {},
-    warehouses: 0,
-    collectBox: 0,
-    favorites: 0,
-    promotions: 0,
-    returns: 0,
-    refunds: 0,
-    messageTemplates: 0,
-    messageHistory: 0,
-    productTemplates: 0,
-    watermarkTemplates: 0,
-    lastSyncAt: null,
-  },
-  caches: {
-    products: [],
-    postings: [],
-    warehouses: [],
-    collectBox: [],
-    favorites: [],
-    promotions: [],
-    returns: [],
-    refunds: [],
-    messageTemplates: [],
-    messageHistory: [],
-    productTemplates: [],
-    watermarkTemplates: [],
-  },
-  jobs: {},
-};
+const emptyLocalData = emptyLocalRuntimeData();
 
 const pageTitles = {
   "/ozon/dashboard": "仪表盘",
@@ -657,16 +611,7 @@ function AppShell() {
     const nextAccount = state?.account || null;
     setAccount(nextAccount);
     setAccounts(state?.accounts || []);
-    setLocalData({
-      currentStoreId: state?.currentStoreId || "",
-      stores: state?.stores || [],
-      currentDataCollectionStoreId: state?.currentDataCollectionStoreId || "",
-      dataCollectionStore: state?.dataCollectionStore || null,
-      dataCollectionStores: state?.dataCollectionStores || [],
-      summary: state?.summary || emptyLocalData.summary,
-      caches: state?.caches || emptyLocalData.caches,
-      jobs: state?.jobs || {},
-    });
+    setLocalData(localRuntimeStateFromApi(state));
     if (!nextAccount) {
       setBinding(null);
       setAccounts([]);

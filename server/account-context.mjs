@@ -133,65 +133,6 @@ export function storeIdForAccountRequest(state, account, requestedStoreId = "") 
   return storeId;
 }
 
-export function dataCollectionStoresForAccount(state, accountId = state.currentAccountId) {
-  const ownerId = String(accountId || "");
-  if (!ownerId) return [];
-  return (state.dataCollectionStores || []).filter((store) => String(store.ownerAccountId || "") === ownerId);
-}
-
-export function currentDataCollectionStoreIdForAccount(state, accountId = state.currentAccountId) {
-  const ownerId = String(accountId || "");
-  if (!ownerId) return "";
-  const stores = dataCollectionStoresForAccount(state, ownerId);
-  const mappedId = state.currentDataCollectionStoreIdsByAccount?.[ownerId] || "";
-  const legacyId = state.currentDataCollectionStoreId || "";
-  const candidateId = mappedId || legacyId;
-  if (stores.some((store) => String(store.id || "") === String(candidateId))) return candidateId;
-  return stores[0]?.id || "";
-}
-
-export function setCurrentDataCollectionStoreForAccount(state, accountId, storeId) {
-  const ownerId = String(accountId || "");
-  if (!ownerId) return;
-  state.currentDataCollectionStoreIdsByAccount =
-    state.currentDataCollectionStoreIdsByAccount
-    && typeof state.currentDataCollectionStoreIdsByAccount === "object"
-    && !Array.isArray(state.currentDataCollectionStoreIdsByAccount)
-      ? state.currentDataCollectionStoreIdsByAccount
-      : {};
-  if (storeId) state.currentDataCollectionStoreIdsByAccount[ownerId] = storeId;
-  else delete state.currentDataCollectionStoreIdsByAccount[ownerId];
-  if (String(state.currentAccountId || "") === ownerId) {
-    state.currentDataCollectionStoreId = storeId || "";
-  }
-}
-
-export function activeDataCollectionStore(state, accountId = state.currentAccountId) {
-  const currentId = currentDataCollectionStoreIdForAccount(state, accountId);
-  return dataCollectionStoresForAccount(state, accountId).find((store) =>
-    String(store.id || "") === String(currentId || "")
-  ) || null;
-}
-
-export function normalizeDataCollectionCompanyId(value) {
-  return String(value || "").trim().replace(/[^\d]/g, "");
-}
-
-export function normalizeDataCollectionCompanyIds(value) {
-  const values = Array.isArray(value) ? value : [value];
-  const ids = [];
-  for (const item of values) {
-    const normalized = normalizeDataCollectionCompanyId(item);
-    if (normalized && !ids.includes(normalized)) ids.push(normalized);
-  }
-  return ids;
-}
-
-export function createDataCollectionStoreId(sellerCompanyId) {
-  const source = normalizeDataCollectionCompanyId(sellerCompanyId) || crypto.randomUUID();
-  return `collect_${crypto.createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
-}
-
 export function createStoreId(clientId) {
   return `local_${crypto.createHash("sha256").update(String(clientId)).digest("hex").slice(0, 12)}`;
 }
@@ -240,7 +181,6 @@ function setSessionContext(state, token, account, session = {}) {
   state.currentAccountId = account.id;
   state.sessionIssuedAt = session.issuedAt || state.sessionIssuedAt || new Date().toISOString();
   state.currentStoreId = currentStoreIdForAccount(state, account.id);
-  state.currentDataCollectionStoreId = currentDataCollectionStoreIdForAccount(state, account.id);
 }
 
 export function revokeAccountSessions(state, accountId) {
@@ -254,7 +194,6 @@ export function revokeAccountSessions(state, accountId) {
     state.currentAccountId = "";
     state.sessionIssuedAt = "";
     state.currentStoreId = "";
-    state.currentDataCollectionStoreId = "";
   }
 }
 
@@ -273,7 +212,6 @@ export function removeSession(state, token) {
       state.currentAccountId = "";
       state.sessionIssuedAt = "";
       state.currentStoreId = "";
-      state.currentDataCollectionStoreId = "";
     }
   }
 }

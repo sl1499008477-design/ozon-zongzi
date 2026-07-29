@@ -15,24 +15,18 @@ import { appendAuditEvent } from "./audit-event.mjs";
 import { removeAccountScope } from "./account-deletion.mjs";
 import {
   activeAccount,
-  activeDataCollectionStore,
   activeStore,
   bearerToken,
   createAccountRecord,
   createAuthSession,
-  createDataCollectionStoreId,
   createPasswordHash,
   createStoreId,
-  currentDataCollectionStoreIdForAccount,
   currentStoreIdForAccount,
-  dataCollectionStoresForAccount,
   findAccountByUsername,
   findSession,
   findStore,
   isAccountExpired,
   normalizeAccountExpiresAt,
-  normalizeDataCollectionCompanyId,
-  normalizeDataCollectionCompanyIds,
   normalizeDateOnly,
   optionalAuth,
   publicAccount,
@@ -41,7 +35,6 @@ import {
   requireAuth,
   requirePermission,
   revokeAccountSessions,
-  setCurrentDataCollectionStoreForAccount,
   setCurrentStoreForAccount,
   storeIdForAccountRequest,
   storesForAccount,
@@ -92,16 +85,9 @@ import {
 import { assertListingPreparationInput, publicQueuedListingSubmission, resolveLocalListingTarget, validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import {
   authenticateCollectionRequest,
-  backfillCollectionStoresFromLegacy,
-  deleteCollectionStoreForAccount,
   getCollectRequestForAccount,
-  hydrateCollectionStoresIntoState,
   ingestCollectRequestV4,
   assertCollectorScopeFieldsAbsentV4,
-  listCollectionStoresForAccount,
-  setCurrentCollectionStoreForAccount,
-  upsertCollectionStoreForAccount,
-  verifyCollectionStoreForAccount,
 } from "./collection-pipeline.mjs";
 import {
   calculateWithActivePricing,
@@ -144,6 +130,7 @@ import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
+import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
 const rootDir = path.resolve(__dirname, "..");
@@ -151,7 +138,6 @@ const dataDir = process.env.QH_LOCAL_DATA_DIR || path.join(rootDir, "server-data
 const dataFile = path.join(dataDir, "local-state.json");
 const port = Number(process.env.QH_LOCAL_API_PORT || process.env.PORT || 3001);
 const listenHost = process.env.QH_LOCAL_API_HOST || "127.0.0.1";
-let collectionStoreBackfillComplete = false;
 const DEFAULT_ADMIN_USERNAME = process.env.SONLI_ADMIN_USERNAME || "admin";
 const DEFAULT_ADMIN_PASSWORD = String(process.env.SONLI_ADMIN_PASSWORD || "");
 let collectV3BackfillDone = false;
@@ -164,9 +150,6 @@ const defaultState = () => ({
   currentStoreId: "",
   currentStoreIdsByAccount: {},
   stores: [],
-  currentDataCollectionStoreId: "",
-  currentDataCollectionStoreIdsByAccount: {},
-  dataCollectionStores: [],
   caches: {
     products: [],
     postings: [],
@@ -233,7 +216,9 @@ function normalizeListingJobStates(state) {
 function ensureAccountState(state) {
   state.accounts = Array.isArray(state.accounts) ? state.accounts : [];
   state.stores = Array.isArray(state.stores) ? state.stores : [];
-  state.dataCollectionStores = Array.isArray(state.dataCollectionStores) ? state.dataCollectionStores : [];
+  delete state.currentDataCollectionStoreId;
+  delete state.currentDataCollectionStoreIdsByAccount;
+  delete state.dataCollectionStores;
   state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
   normalizeCollectBoxListingStates(state);
   normalizeListingJobStates(state);
@@ -257,22 +242,12 @@ function ensureAccountState(state) {
       role: "admin",
     }));
   }
-  state.currentDataCollectionStoreIdsByAccount =
-    state.currentDataCollectionStoreIdsByAccount &&
-    typeof state.currentDataCollectionStoreIdsByAccount === "object" &&
-    !Array.isArray(state.currentDataCollectionStoreIdsByAccount)
-      ? state.currentDataCollectionStoreIdsByAccount
-      : {};
   state.currentStoreIdsByAccount =
     state.currentStoreIdsByAccount &&
     typeof state.currentStoreIdsByAccount === "object" &&
     !Array.isArray(state.currentStoreIdsByAccount)
       ? state.currentStoreIdsByAccount
       : {};
-  state.dataCollectionStores = state.dataCollectionStores.map((store) => ({
-    ...store,
-    ownerAccountId: resolveLegacyStoreOwner(store, state.accounts),
-  }));
   state.stores = state.stores.map((store) => ({
     ...store,
     ownerAccountId: resolveLegacyStoreOwner(store, state.accounts),
@@ -281,16 +256,10 @@ function ensureAccountState(state) {
   if (defaultOwnerAccountId && state.currentStoreId && !state.currentStoreIdsByAccount[defaultOwnerAccountId]) {
     state.currentStoreIdsByAccount[defaultOwnerAccountId] = state.currentStoreId;
   }
-  if (defaultOwnerAccountId && state.currentDataCollectionStoreId && !state.currentDataCollectionStoreIdsByAccount[defaultOwnerAccountId]) {
-    state.currentDataCollectionStoreIdsByAccount[defaultOwnerAccountId] = state.currentDataCollectionStoreId;
-  }
   for (const account of state.accounts) {
     const operatingStoreId = currentStoreIdForAccount(state, account.id);
     if (operatingStoreId) state.currentStoreIdsByAccount[account.id] = operatingStoreId;
     else delete state.currentStoreIdsByAccount[account.id];
-    const currentId = currentDataCollectionStoreIdForAccount(state, account.id);
-    if (currentId) state.currentDataCollectionStoreIdsByAccount[account.id] = currentId;
-    else delete state.currentDataCollectionStoreIdsByAccount[account.id];
   }
   if (state.token && state.currentAccountId && !state.sessions[state.token]) {
     state.sessions[state.token] = {
@@ -314,15 +283,13 @@ function ensureAccountState(state) {
     session.token = session.token || token;
     session.issuedAt = session.issuedAt || new Date().toISOString();
     session.lastSeenAt = session.lastSeenAt || "";
+    delete session.currentDataCollectionStoreId;
   }
   if (!state.accounts.some((account) => account.id === state.currentAccountId)) {
     state.currentAccountId = "";
     state.sessionIssuedAt = "";
     state.token = "";
   }
-  state.currentDataCollectionStoreId = state.currentAccountId
-    ? currentDataCollectionStoreIdForAccount(state, state.currentAccountId)
-    : "";
   state.currentStoreId = state.currentAccountId
     ? currentStoreIdForAccount(state, state.currentAccountId)
     : "";
@@ -347,9 +314,6 @@ async function loadState() {
       auditEvents: Array.isArray(parsed.auditEvents) ? parsed.auditEvents : base.auditEvents,
       accounts: Array.isArray(parsed.accounts) ? parsed.accounts : base.accounts,
       stores: Array.isArray(parsed.stores) ? parsed.stores : base.stores,
-      currentDataCollectionStoreIdsByAccount:
-        parsed.currentDataCollectionStoreIdsByAccount || base.currentDataCollectionStoreIdsByAccount,
-      dataCollectionStores: Array.isArray(parsed.dataCollectionStores) ? parsed.dataCollectionStores : base.dataCollectionStores,
     });
     if (storageVersion > 0) {
       Object.defineProperty(state, "__storageVersion", {
@@ -359,17 +323,11 @@ async function loadState() {
         writable: true,
       });
     }
-    if (!collectionStoreBackfillComplete) {
-      await backfillCollectionStoresFromLegacy(state);
-      collectionStoreBackfillComplete = true;
-    }
-    await hydrateCollectionStoresIntoState(state);
     if (listingPipelineEnabled() && !collectV3BackfillDone) {
       for (const item of state.caches.collectBox || []) {
         await mirrorCollectItemV3(item, {
           accountId: state.currentAccountId,
           storeId: item.storeId || item.localStoreId || state.currentStoreId,
-          dataCollectionStoreId: item.dataCollectionStoreId || state.currentDataCollectionStoreId,
           captureRaw: true,
         });
       }
@@ -517,22 +475,6 @@ function publicStore(store, state = null) {
     savedAt: store.savedAt,
     updatedAt: store.updatedAt || store.savedAt,
     profileSyncedAt: store.profileSyncedAt || "",
-  };
-}
-
-function publicDataCollectionStore(store = {}, state = null, accountId = state?.currentAccountId || "") {
-  if (!store?.id) return null;
-  return {
-    id: store.id,
-    label: store.label || "数据采集店铺",
-    sellerCompanyId: store.sellerCompanyId || "",
-    ownerAccountId: store.ownerAccountId || "",
-    status: store.status || "active",
-    note: store.note || "",
-    isActive: state ? String(currentDataCollectionStoreIdForAccount(state, accountId) || "") === String(store.id || "") : false,
-    createdAt: store.createdAt || "",
-    updatedAt: store.updatedAt || store.createdAt || "",
-    lastVerifiedAt: store.lastVerifiedAt || "",
   };
 }
 
@@ -693,9 +635,6 @@ function limitedLocalStatePayload(state) {
     currentStoreId: "",
     binding: null,
     stores: [],
-    currentDataCollectionStoreId: "",
-    dataCollectionStore: null,
-    dataCollectionStores: [],
     summary: summarize(empty),
     caches: empty.caches,
     jobs: {},
@@ -741,8 +680,6 @@ function localStatePayload(state, options = {}) {
   const includeAccounts = options.includeAccounts ?? false;
   const accountStores = storesForAccount(state, account.id);
   const accountCurrentStoreId = currentStoreIdForAccount(state, account.id);
-  const accountDataCollectionStores = dataCollectionStoresForAccount(state, account.id);
-  const accountCurrentDataCollectionStoreId = currentDataCollectionStoreIdForAccount(state, account.id);
   const accountStoreIds = new Set(accountStores.map((store) => String(store.id || "")).filter(Boolean));
   const visibleJobs = Object.fromEntries(Object.entries(state.jobs || {}).filter(([, job]) =>
     String(job?.accountId || "") === String(account.id),
@@ -776,9 +713,6 @@ function localStatePayload(state, options = {}) {
     currentStoreId: accountCurrentStoreId,
     binding: publicStore(activeStore(state, accountCurrentStoreId, account.id), state),
     stores: accountStores.map((store) => publicStore(store, state)),
-    currentDataCollectionStoreId: accountCurrentDataCollectionStoreId,
-    dataCollectionStore: publicDataCollectionStore(activeDataCollectionStore(state, account.id), state, account.id),
-    dataCollectionStores: accountDataCollectionStores.map((store) => publicDataCollectionStore(store, state, account.id)),
     summary: summarize({ ...state, caches: visibleCaches, jobs: visibleJobs }),
     caches: {
       ...visibleCaches,
@@ -802,7 +736,7 @@ function collectItemKey(item) {
   return String(item?.id || item?.sourceExternalId || item?.sku || item?.productUrl || "");
 }
 
-async function saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId = "" }) {
+async function saveCollectBoxItemAtomic(item, { account, store }) {
   const latest = await loadState();
   const latestStore = activeStore(latest, store?.id, account.id);
   if (!latestStore) {
@@ -813,7 +747,6 @@ async function saveCollectBoxItemAtomic(item, { account, store, dataCollectionSt
   const scopedItem = {
     ...scopeCacheItemForAccount(item, account, latestStore),
     localStoreId: latestStore.id,
-    dataCollectionStoreId,
   };
   const key = collectItemKey(scopedItem);
   latest.caches.collectBox = (latest.caches.collectBox || []).filter((row) =>
@@ -824,7 +757,6 @@ async function saveCollectBoxItemAtomic(item, { account, store, dataCollectionSt
   await mirrorCollectItemV3(scopedItem, {
     accountId: account.id,
     storeId: latestStore.id,
-    dataCollectionStoreId,
     captureRaw: true,
   }).catch((error) => console.warn(`[listing-v3] 采集数据镜像失败: ${error?.message || error}`));
   return { item: scopedItem, state: latest };
@@ -844,14 +776,12 @@ async function updateCollectBoxItemAtomic(id, patch, { account }) {
     accountId: account.id,
     storeId: current.storeId || current.localStoreId || "",
     localStoreId: current.localStoreId || current.storeId || "",
-    dataCollectionStoreId: current.dataCollectionStoreId || "",
     updatedAt: new Date().toISOString(),
   };
   await saveState(latest);
   await mirrorCollectItemV3(latest.caches.collectBox[index], {
     accountId: account.id,
     storeId: latest.caches.collectBox[index].storeId || latest.caches.collectBox[index].localStoreId || "",
-    dataCollectionStoreId: latest.caches.collectBox[index].dataCollectionStoreId || "",
   }).catch((error) => console.warn(`[listing-v3] 草稿镜像失败: ${error?.message || error}`));
   return latest.caches.collectBox[index];
 }
@@ -874,7 +804,7 @@ async function deleteCollectBoxItemsAtomic(latest, ids = [], { account }) {
   };
 }
 
-async function saveCollectBoxBatchAtomic(items, { account, store, dataCollectionStoreId = "" }) {
+async function saveCollectBoxBatchAtomic(items, { account, store }) {
   const latest = await loadState();
   const latestStore = activeStore(latest, store?.id, account.id);
   if (!latestStore) {
@@ -886,7 +816,6 @@ async function saveCollectBoxBatchAtomic(items, { account, store, dataCollection
   const scopedItems = items.map((item) => ({
     ...scopeCacheItemForAccount(item, account, latestStore),
     localStoreId: latestStore.id,
-    dataCollectionStoreId,
   }));
   for (const item of scopedItems) {
     const key = collectItemKey(item);
@@ -900,7 +829,6 @@ async function saveCollectBoxBatchAtomic(items, { account, store, dataCollection
     await mirrorCollectItemV3(item, {
       accountId: account.id,
       storeId: latestStore.id,
-      dataCollectionStoreId,
       captureRaw: true,
     }).catch((error) => console.warn(`[listing-v3] 批量采集数据镜像失败: ${error?.message || error}`));
   }
@@ -2303,9 +2231,8 @@ async function handleFastCollectionRoute(req, res, url) {
   const collectRequestMatch = url.pathname.match(/^\/local\/collect-requests\/([^/]+)$/);
   const collectItemMatch = url.pathname.match(/^\/ozon\/collect-box\/([^/]+)$/);
   const isCollectBatchDelete = req.method === "DELETE" && url.pathname === "/ozon/collect-box/batch";
-  const isVerify = req.method === "POST" && url.pathname === "/local/data-collection-stores/verify";
   const isCollectMutation = Boolean(collectItemMatch && ["PATCH", "DELETE"].includes(req.method)) || isCollectBatchDelete;
-  if (!sourceCollectMatch && !collectRequestMatch && !isVerify && !isCollectMutation) return false;
+  if (!sourceCollectMatch && !collectRequestMatch && !isCollectMutation) return false;
 
   try {
     const account = sourceCollectMatch
@@ -2313,30 +2240,6 @@ async function handleFastCollectionRoute(req, res, url) {
       : collectRequestMatch
         ? await collectorAuthRuntime.authenticateRequest(req, "collector.job.read")
         : await authenticateCollectionRequest(req);
-    if (isVerify) {
-      const body = await readBody(req);
-      const ids = normalizeDataCollectionCompanyIds([
-        body.sellerCompanyId,
-        body.companyId,
-        body.scCompanyId,
-        ...(Array.isArray(body.sellerCompanyIds) ? body.sellerCompanyIds : []),
-        ...(Array.isArray(body.companyIds) ? body.companyIds : []),
-        ...(Array.isArray(body.scCompanyIds) ? body.scCompanyIds : []),
-      ]);
-      const verification = await verifyCollectionStoreForAccount(
-        account.id,
-        ids,
-        body.requestId || req.headers["x-request-id"] || "",
-      );
-      sendJson(res, 200, {
-        ok: true,
-        store: verification.store,
-        dataCollectionStoreId: verification.store.id,
-        matchedSellerCompanyId: verification.store.sellerCompanyId,
-        switchedDataCollectionStore: verification.switched,
-      });
-      return true;
-    }
 
     if (collectRequestMatch && req.method === "GET") {
       const request = await getCollectRequestForAccount(account.id, decodeURIComponent(collectRequestMatch[1]));
@@ -2431,12 +2334,13 @@ const handleCollectorHttpRoute = createCollectorHttpHandler({
 });
 
 async function handle(req, res) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  if (handleRemovedDataCollectionStoreRoute(req, res, url, { sendJson })) return;
   if (req.method === "OPTIONS") {
     sendJson(res, 204, {});
     return;
   }
 
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
@@ -2919,142 +2823,6 @@ async function handle(req, res) {
     }
     await saveState(state);
     sendJson(res, 200, { ok: true, store: publicStore(store, state), state: localStatePayload(state) });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/local/data-collection-stores") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    if (listingPipelineEnabled()) {
-      const item = await upsertCollectionStoreForAccount(account.id, body);
-      await hydrateCollectionStoresIntoState(state);
-      sendJson(res, 200, { ok: true, store: item, state: localStatePayload(state, { account, token: bearerToken(req) }) });
-      return;
-    }
-    const sellerCompanyId = normalizeDataCollectionCompanyId(body.sellerCompanyId || body.companyId || body.scCompanyId);
-    if (!sellerCompanyId) {
-      sendError(res, 400, "Ozon 登录店铺标识必填");
-      return;
-    }
-    const existing = dataCollectionStoresForAccount(state, account.id).find((store) =>
-      normalizeDataCollectionCompanyId(store.sellerCompanyId) === sellerCompanyId
-    );
-    const now = new Date().toISOString();
-    const item = {
-      ...(existing || {}),
-      id: existing?.id || `${createDataCollectionStoreId(sellerCompanyId)}_${crypto.createHash("sha256").update(account.id).digest("hex").slice(0, 6)}`,
-      label: cleanText(body.label || existing?.label || `采集店铺 ${sellerCompanyId}`, 120),
-      sellerCompanyId,
-      ownerAccountId: account.id,
-      status: body.status === "disabled" ? "disabled" : "active",
-      note: cleanText(body.note || existing?.note || "", 240),
-      createdAt: existing?.createdAt || now,
-      updatedAt: now,
-    };
-    state.dataCollectionStores = [item, ...(state.dataCollectionStores || []).filter((store) => store.id !== item.id)];
-    setCurrentDataCollectionStoreForAccount(state, account.id, item.id);
-    await saveState(state);
-    sendJson(res, 200, { ok: true, store: publicDataCollectionStore(item, state, account.id), state: localStatePayload(state) });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/local/current-data-collection-store") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    const storeId = String(body.storeId || body.id || "").trim();
-    if (listingPipelineEnabled()) {
-      const store = await setCurrentCollectionStoreForAccount(account.id, storeId);
-      await hydrateCollectionStoresIntoState(state);
-      sendJson(res, 200, { ok: true, store, state: localStatePayload(state, { account, token: bearerToken(req) }) });
-      return;
-    }
-    const store = dataCollectionStoresForAccount(state, account.id).find((item) => String(item.id || "") === storeId);
-    if (!store) {
-      sendError(res, 404, "数据采集店铺不存在");
-      return;
-    }
-    setCurrentDataCollectionStoreForAccount(state, account.id, store.id);
-    store.updatedAt = new Date().toISOString();
-    await saveState(state);
-    sendJson(res, 200, { ok: true, store: publicDataCollectionStore(store, state, account.id), state: localStatePayload(state) });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/local/data-collection-stores/verify") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    const current = activeDataCollectionStore(state, account.id);
-    const accountStores = dataCollectionStoresForAccount(state, account.id).filter((store) => store.status !== "disabled");
-    if (!current && !accountStores.length) {
-      sendError(res, 400, "请先在经营店铺页面设置数据采集店铺");
-      return;
-    }
-    const actualCompanyIds = normalizeDataCollectionCompanyIds([
-      body.sellerCompanyId,
-      body.companyId,
-      body.scCompanyId,
-      ...(Array.isArray(body.sellerCompanyIds) ? body.sellerCompanyIds : []),
-      ...(Array.isArray(body.companyIds) ? body.companyIds : []),
-      ...(Array.isArray(body.scCompanyIds) ? body.scCompanyIds : []),
-    ]);
-    if (!actualCompanyIds.length) {
-      sendError(res, 400, "未检测到当前 Ozon 登录店铺，请先登录 seller.ozon.ru");
-      return;
-    }
-    const expectedCompanyId = normalizeDataCollectionCompanyId(current?.sellerCompanyId);
-    const matchedStore = accountStores.find((store) =>
-      actualCompanyIds.includes(normalizeDataCollectionCompanyId(store.sellerCompanyId))
-    ) || null;
-    const verifiedStore = (current && actualCompanyIds.includes(expectedCompanyId)) ? current : matchedStore;
-    if (!verifiedStore) {
-      const expectedLabel = current?.label || current?.sellerCompanyId || accountStores[0]?.label || "数据采集店铺";
-      sendError(res, 409, `当前 Ozon 登录店铺不属于当前 sonli 账号已绑定的数据采集店铺，请切换到「${expectedLabel}」或新增对应数据采集店铺后再采集`);
-      return;
-    }
-    const switchedDataCollectionStore = current?.id && String(current.id) !== String(verifiedStore.id);
-    if (switchedDataCollectionStore || !current) {
-      setCurrentDataCollectionStoreForAccount(state, account.id, verifiedStore.id);
-    }
-    verifiedStore.lastVerifiedAt = new Date().toISOString();
-    verifiedStore.updatedAt = verifiedStore.lastVerifiedAt;
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      store: publicDataCollectionStore(verifiedStore, state, account.id),
-      dataCollectionStoreId: verifiedStore.id,
-      matchedSellerCompanyId: normalizeDataCollectionCompanyId(verifiedStore.sellerCompanyId),
-      switchedDataCollectionStore,
-    });
-    return;
-  }
-
-  const dataCollectionStoreMatch = url.pathname.match(/^\/local\/data-collection-stores\/([^/]+)$/);
-  if (req.method === "DELETE" && dataCollectionStoreMatch) {
-    const account = requireAuth(req, state);
-    const storeId = decodeURIComponent(dataCollectionStoreMatch[1]);
-    if (listingPipelineEnabled()) {
-      const deleted = await deleteCollectionStoreForAccount(account.id, storeId);
-      if (!deleted) {
-        sendError(res, 404, "数据采集店铺不存在");
-        return;
-      }
-      await hydrateCollectionStoresIntoState(state);
-      sendJson(res, 200, { ok: true, state: localStatePayload(state, { account, token: bearerToken(req) }) });
-      return;
-    }
-    const before = state.dataCollectionStores || [];
-    state.dataCollectionStores = before.filter((store) =>
-      String(store.id || "") !== String(storeId) || String(store.ownerAccountId || "") !== String(account.id)
-    );
-    if (state.dataCollectionStores.length === before.length) {
-      sendError(res, 404, "数据采集店铺不存在");
-      return;
-    }
-    if (String(currentDataCollectionStoreIdForAccount(state, account.id) || "") === String(storeId)) {
-      setCurrentDataCollectionStoreForAccount(state, account.id, dataCollectionStoresForAccount(state, account.id)[0]?.id || "");
-    }
-    await saveState(state);
-    sendJson(res, 200, { ok: true, state: localStatePayload(state) });
     return;
   }
 
@@ -4171,7 +3939,6 @@ async function handle(req, res) {
       req.headers["x-ozon-store-id"] || "",
     );
     const store = activeStore(state, storeId, account.id);
-    const dataCollectionStoreId = currentDataCollectionStoreIdForAccount(state, account.id);
     const sku = String(body.sku || body.skuId || "").trim();
     if (!sku) {
       sendError(res, 400, "SKU 不能为空");
@@ -4200,7 +3967,7 @@ async function handle(req, res) {
           status: "已采集",
           raw: { sku, scrapedAt: new Date().toISOString() },
         });
-        const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
+        const saved = await saveCollectBoxItemAtomic(item, { account, store });
         sendJson(res, 200, { ok: true, data: publicPersistedCollectionItem(saved.item), scraped: true });
       } else {
         // 抓取失败，仍然创建条目但标记为待处理
@@ -4211,7 +3978,7 @@ async function handle(req, res) {
           status: "待处理",
           raw: { sku, error: "scrape_failed" },
         });
-        const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
+        const saved = await saveCollectBoxItemAtomic(item, { account, store });
         sendJson(res, 200, {
           ok: true,
           data: publicPersistedCollectionItem(saved.item),
@@ -4263,7 +4030,6 @@ async function handle(req, res) {
       req.headers["x-ozon-store-id"] || "",
     );
     const store = activeStore(state, storeId, account.id);
-    const dataCollectionStoreId = currentDataCollectionStoreIdForAccount(state, account.id);
     const sku = String(body.sku || "").trim();
     const isUrl = /^https?:\/\//i.test(String(body.productUrl || body.url || body.name || ""));
     // 如果有 SKU 且不是 URL，尝试抓取 ozon.ru 数据
@@ -4292,7 +4058,7 @@ async function handle(req, res) {
             status: "已采集",
             raw: { sku, scrapedAt: new Date().toISOString() },
           });
-          const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
+          const saved = await saveCollectBoxItemAtomic(item, { account, store });
           sendJson(res, 200, publicPersistedCollectionItem(saved.item));
           return;
         }
@@ -4301,7 +4067,7 @@ async function handle(req, res) {
       }
     }
     const item = normalizeCollectItem(body);
-    const saved = await saveCollectBoxItemAtomic(item, { account, store, dataCollectionStoreId });
+    const saved = await saveCollectBoxItemAtomic(item, { account, store });
     sendJson(res, 200, publicPersistedCollectionItem(saved.item));
     return;
   }
@@ -4401,9 +4167,8 @@ async function handle(req, res) {
       req.headers["x-ozon-store-id"] || "",
     );
     const store = activeStore(state, storeId, account.id);
-    const dataCollectionStoreId = currentDataCollectionStoreIdForAccount(state, account.id);
     const imported = items.map((raw) => normalizeCollectItem(raw));
-    const saved = await saveCollectBoxBatchAtomic(imported, { account, store, dataCollectionStoreId });
+    const saved = await saveCollectBoxBatchAtomic(imported, { account, store });
     sendJson(res, 200, {
       ok: true,
       imported: saved.items.length,

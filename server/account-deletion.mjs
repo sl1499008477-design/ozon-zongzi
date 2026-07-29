@@ -72,9 +72,6 @@ export function removeAccountScope(state, rawAccountId) {
 
   state.accounts = accounts.filter((account) => normalized(account?.id) !== accountId);
   state.stores = stores.filter((store) => !storeIds.has(normalized(store?.id)));
-  state.dataCollectionStores = (Array.isArray(state.dataCollectionStores)
-    ? state.dataCollectionStores
-    : []).filter((store) => normalized(store?.ownerAccountId) !== accountId);
   state.sessions = filterMap(state.sessions, accountId, storeIds);
   state.hashes = filterMap(state.hashes, accountId, storeIds);
   state.leases = filterMap(state.leases, accountId, storeIds);
@@ -93,20 +90,13 @@ export function removeAccountScope(state, rawAccountId) {
     state.currentStoreIdsByAccount && typeof state.currentStoreIdsByAccount === "object"
       ? state.currentStoreIdsByAccount
       : {};
-  state.currentDataCollectionStoreIdsByAccount =
-    state.currentDataCollectionStoreIdsByAccount &&
-    typeof state.currentDataCollectionStoreIdsByAccount === "object"
-      ? state.currentDataCollectionStoreIdsByAccount
-      : {};
   delete state.currentStoreIdsByAccount[accountId];
-  delete state.currentDataCollectionStoreIdsByAccount[accountId];
 
   if (normalized(state.currentAccountId) === accountId) {
     state.currentAccountId = "";
     state.token = "";
     state.sessionIssuedAt = "";
     state.currentStoreId = "";
-    state.currentDataCollectionStoreId = "";
   }
 
   rememberRelationalDeletion(state, accountId, storeIds);

@@ -120,7 +120,6 @@ export function createJsonAccountScopedCollectionHandler({
           accountId: account.id,
           createdBy: account.id,
           storeId: null,
-          dataCollectionStoreId: null,
           source: prepared.identity.source,
           sourceSku: prepared.identity.sourceSku,
           sourceRequestId: prepared.identity.requestId,
