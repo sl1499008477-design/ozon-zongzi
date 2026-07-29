@@ -12,6 +12,13 @@ function text(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
 }
 
+function collectorSafeText(value, max = 1000) {
+  return String(value ?? "")
+    .replace(/(?:ctt|cst)_[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
+    .trim()
+    .slice(0, max);
+}
+
 function dateOrNull(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -733,6 +740,92 @@ async function mirrorAccounts(client, state = {}) {
   }
 }
 
+async function mirrorCollectorAuthStateUnsafe(client, state = {}) {
+  const tickets = Array.isArray(state.collectorAuthTickets) ? state.collectorAuthTickets : [];
+  for (const ticket of tickets) {
+    const ticketHash = String(ticket?.ticketHash || "").trim().toLowerCase();
+    const accountId = text(ticket?.accountId, 240);
+    const parentSessionToken = text(ticket?.parentSessionToken, 1000);
+    const expiresAt = dateOrNull(ticket.expiresAt);
+    if (!/^[a-f0-9]{64}$/.test(ticketHash) || !accountId || !parentSessionToken || !expiresAt) continue;
+    await client.query(
+      `
+        INSERT INTO collector_auth_tickets (
+          id, ticket_hash, account_id, parent_session_token, permissions,
+          expires_at, consumed_at, created_at
+        )
+        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,COALESCE($8::timestamptz,NOW()))
+        ON CONFLICT (ticket_hash) DO UPDATE SET
+          consumed_at=COALESCE(EXCLUDED.consumed_at,collector_auth_tickets.consumed_at)
+      `,
+      [
+        text(ticket.id, 240) || stableId("ctkt", [ticketHash]),
+        ticketHash,
+        accountId,
+        parentSessionToken,
+        json(Array.isArray(ticket.permissions) ? ticket.permissions.map((item) => text(item, 120)) : []),
+        expiresAt,
+        dateOrNull(ticket.consumedAt),
+        dateOrNull(ticket.createdAt),
+      ],
+    );
+  }
+
+  const sessions = Array.isArray(state.collectorSessions) ? state.collectorSessions : [];
+  for (const session of sessions) {
+    const tokenHash = String(session?.tokenHash || "").trim().toLowerCase();
+    const accountId = text(session?.accountId, 240);
+    const parentSessionToken = text(session?.parentSessionToken, 1000);
+    const expiresAt = dateOrNull(session.expiresAt);
+    if (!/^[a-f0-9]{64}$/.test(tokenHash) || !accountId || !parentSessionToken || !expiresAt) continue;
+    await client.query(
+      `
+        INSERT INTO collector_sessions (
+          id, token_hash, account_id, parent_session_token,
+          device_fingerprint, extension_version, permissions, expires_at,
+          revoked_at, revoked_reason, last_seen_at, created_at
+        )
+        VALUES (
+          $1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,
+          COALESCE($11::timestamptz,NOW()),COALESCE($12::timestamptz,NOW())
+        )
+        ON CONFLICT (token_hash) DO UPDATE SET
+          revoked_at=COALESCE(EXCLUDED.revoked_at,collector_sessions.revoked_at),
+          revoked_reason=CASE
+            WHEN EXCLUDED.revoked_at IS NOT NULL THEN EXCLUDED.revoked_reason
+            ELSE collector_sessions.revoked_reason
+          END,
+          last_seen_at=GREATEST(collector_sessions.last_seen_at,EXCLUDED.last_seen_at)
+      `,
+      [
+        text(session.id, 240) || stableId("csess", [tokenHash]),
+        tokenHash,
+        accountId,
+        parentSessionToken,
+        collectorSafeText(session.deviceFingerprint, 240),
+        collectorSafeText(session.extensionVersion, 80),
+        json(Array.isArray(session.permissions) ? session.permissions.map((item) => text(item, 120)) : []),
+        expiresAt,
+        dateOrNull(session.revokedAt),
+        collectorSafeText(session.revokedReason, 240),
+        dateOrNull(session.lastSeenAt),
+        dateOrNull(session.createdAt),
+      ],
+    );
+  }
+}
+
+export async function mirrorCollectorAuthState(client, state = {}) {
+  try {
+    await mirrorCollectorAuthStateUnsafe(client, state);
+  } catch {
+    throw Object.assign(new Error("采集认证关系镜像失败"), {
+      status: 500,
+      code: "COLLECTOR_AUTH_MIRROR_FAILED",
+    });
+  }
+}
+
 async function mirrorStores(client, state = {}) {
   const accounts = Array.isArray(state.accounts) ? state.accounts : [];
   const accountIds = new Set(accounts.map((account) => text(account?.id, 240)).filter(Boolean));
@@ -1384,6 +1477,7 @@ export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) 
 export async function mirrorStateToRelationalTablesInTransaction(client, state = {}) {
   await deleteRemovedAccountScopes(client, state);
   await mirrorAccounts(client, state);
+  await mirrorCollectorAuthState(client, state);
   await mirrorStores(client, state);
   await mirrorFiles(client, state);
   const warehouseIdsByStore = await mirrorWarehouses(client, state);
