@@ -22,12 +22,6 @@
     const targetStoreId = message.storeId || storeId;
     const importMessage = stripInternalMessageFields(message);
     importMessage.entry = deriveImportEntry(message, sender);
-    if (importMessage.viaPortal) {
-      log.log(`[followSell] viaPortal: items=${importMessage.items?.length}, url=${backendUrl}/ozon/products/prepare-bundle-items`);
-      const portalResult = await importViaPortal(importMessage, token, targetStoreId, backendUrl, sender?.tab?.id);
-      log.log('[followSell] portal response:', JSON.stringify(portalResult).slice(0, 200));
-      return { ok: true, data: portalResult };
-    }
     const bodySize = JSON.stringify(importMessage).length;
     if (importMessage.dryRun) {
       log.log(`[followSell] Preview import: items=${importMessage.items?.length}, bodySize=${bodySize}, url=${backendUrl}/ozon/products/import/preview`);
@@ -44,6 +38,12 @@
       );
       log.log('[followSell] Preview response:', JSON.stringify(previewResult).slice(0, 200));
       return { ok: true, data: previewResult };
+    }
+    if (importMessage.viaPortal) {
+      log.log(`[followSell] viaPortal: items=${importMessage.items?.length}, url=${backendUrl}/ozon/products/prepare-bundle-items`);
+      const portalResult = await importViaPortal(importMessage, token, targetStoreId, backendUrl, sender?.tab?.id);
+      log.log('[followSell] portal response:', JSON.stringify(portalResult).slice(0, 200));
+      return { ok: true, data: portalResult };
     }
     const importTimeout = 120_000;
     log.log(`[followSell] Enqueueing import: items=${importMessage.items?.length}, bodySize=${bodySize}, aiImage=${importMessage.applyAiImage}, url=${backendUrl}/ozon/products/import`);

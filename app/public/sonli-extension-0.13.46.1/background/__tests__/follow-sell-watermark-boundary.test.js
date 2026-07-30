@@ -3,7 +3,10 @@
 const assert = require('node:assert/strict');
 const { runFollowSellRequest } = require('../follow-sell-request.js');
 
-const makeDeps = () => {
+const makeDeps = ({
+  apiResult = { result: { task_id: 'api-task' } },
+  portalResult = { result: { task_id: 'portal-task' } },
+} = {}) => {
   const apiCalls = [];
   const portalCalls = [];
   return {
@@ -13,11 +16,11 @@ const makeDeps = () => {
       deriveImportEntry: () => 'test-entry',
       apiRequest: async (...args) => {
         apiCalls.push(args);
-        return { result: { task_id: 'api-task' } };
+        return apiResult;
       },
       importViaPortal: async (...args) => {
         portalCalls.push(args);
-        return { result: { task_id: 'portal-task' } };
+        return portalResult;
       },
       aiWizardDebugMeta: () => null,
       log: { log: () => {} },
@@ -69,6 +72,56 @@ const assertCleanPayload = (payload, expected) => {
   assert.equal(portal.portalCalls.length, 1);
   assertCleanPayload(portal.portalCalls[0][0], portalMessage);
   assert.equal(portal.portalCalls[0][4], 8);
+
+  const previewResponse = {
+    preview: {
+      accepted: 1,
+      warnings: ['preview-only'],
+    },
+  };
+  const preview = makeDeps({ apiResult: previewResponse });
+  const previewMessage = {
+    ...apiMessage,
+    storeId: 'store-preview',
+    items: [{ offer_id: 'preview-1', name: 'Preserved item' }],
+    stocks: [{ offer_id: 'preview-1', stock: 3, warehouse_id: 'wh-preview' }],
+    dryRun: true,
+    viaPortal: true,
+    strictTypeMatch: true,
+    _aiwDebug: { traceId: 'internal-only' },
+  };
+  const previewResult = await runFollowSellRequest(
+    {
+      message: previewMessage,
+      sender: { tab: { id: 13 } },
+      token: 'preview-token',
+      storeId: null,
+      backendUrl: 'https://api.test',
+    },
+    preview.deps,
+  );
+  assert.equal(preview.portalCalls.length, 0, 'dryRun must not call the portal import pipeline');
+  assert.equal(preview.apiCalls.length, 1, 'dryRun must call the preview endpoint exactly once');
+  assert.deepEqual(preview.apiCalls[0].slice(0, 6), [
+    'POST',
+    'https://api.test/ozon/products/import/preview',
+    {
+      action: 'followSell',
+      storeId: 'store-preview',
+      items: [{ offer_id: 'preview-1', name: 'Preserved item' }],
+      stocks: [{ offer_id: 'preview-1', stock: 3, warehouse_id: 'wh-preview' }],
+      applyPoster: true,
+      applyAiRewrite: true,
+      viaPortal: true,
+      dryRun: true,
+      strictTypeMatch: true,
+      entry: 'test-entry',
+    },
+    'preview-token',
+    'store-preview',
+    120_000,
+  ]);
+  assert.deepEqual(previewResult, { ok: true, data: previewResponse });
 
   console.log('followSell watermark boundary passed');
 })();
