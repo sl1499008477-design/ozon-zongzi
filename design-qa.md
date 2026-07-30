@@ -5,84 +5,108 @@
 Reference:
 
 - Prototype: `https://ozon-operations-prototype.sl1499008477.chatgpt.site/#/plugin`
-- Data panel: `docs/superpowers/verification/assets/ozon-zongzi-reference-panel.png`
-- Settings: `docs/superpowers/verification/assets/ozon-zongzi-reference-settings.png`
+- Full data panel: `docs/superpowers/verification/assets/ozon-zongzi-reference-panel.png`
+- Full settings state: `docs/superpowers/verification/assets/ozon-zongzi-reference-settings.png`
+- Panel component crop: `docs/superpowers/verification/assets/ozon-zongzi-reference-panel-component.png`
+- Settings component crop: `docs/superpowers/verification/assets/ozon-zongzi-reference-settings-component.png`
 
 Implementation:
 
-- Production renderer fixture: `extension/tests/fixtures/data-panel-visual-browser.fixture.html`, loaded in real Chrome at `http://127.0.0.1:9324/extension/tests/fixtures/data-panel-visual-browser.fixture.html`.
-- Data panel: `docs/superpowers/verification/assets/ozon-zongzi-implementation-panel.png`
-- Settings: `docs/superpowers/verification/assets/ozon-zongzi-implementation-settings.png`
+- Active production fixture: `extension/tests/fixtures/data-panel-visual-browser.fixture.html`
+- Full data panel: `docs/superpowers/verification/assets/ozon-zongzi-implementation-panel.png`
+- Full settings state: `docs/superpowers/verification/assets/ozon-zongzi-implementation-settings.png`
+- Panel component crop: `docs/superpowers/verification/assets/ozon-zongzi-implementation-panel-component.png`
+- Settings component crop: `docs/superpowers/verification/assets/ozon-zongzi-implementation-settings-component.png`
 
-The fixture is not a mock panel: it serves the packaged production `extension/content/ozon-data-panel.js`, `extension/content/ozon-product.css`, `extension/content/shared-utils.js`, and `extension/lib/sidebar-section-toggle.js`, with only the Chrome storage/message boundary isolated. It uses the active, real 32-field catalogue.
+The implementation evidence was freshly captured after production fix commit `7a2808d`. The fixture runs the production renderers from `extension/content/ozon-data-panel.js`, `extension/content/ozon-product.js`, `extension/content/ozon-product.css`, `extension/content/shared-utils.js`, and `extension/lib/sidebar-section-toggle.js`. It isolates only the Chrome storage/message boundary and uses the real 32-field catalogue; it does not recreate the panel DOM.
 
 ## Capture normalization and state
 
-| Surface | Reference pixels | Implementation capture | CSS viewport | Density normalization | State |
+| Surface | Reference pixels | Implementation pixels | CSS viewport/component size | Density | State |
 | --- | --- | --- | --- | --- | --- |
-| Data panel | 1280 × 706 | Chrome capture 2880 × 1589, normalized to 1280 × 706 | 1280 × 706 | Chrome device density was 2.25; downsampled once to match the reference's 1× pixel grid | Default production data fixture; all 32 real fields visible; no modal |
-| Settings | 1580 × 871 | Chrome capture 3555 × 1959, normalized to 1580 × 871 | 1580 × 871 | Chrome device density was 2.25; downsampled once to match the reference's 1× pixel grid | Same fixture; settings opened by the visible production gear button; all 32 real fields visible; monthly period selected |
+| Full data panel | 1280 × 706 | 1280 × 706 | viewport 1280 × 706 | 1× | Production renderer; 353px host width; modal closed |
+| Panel component | 353 × 489 | 353 × 489 | both component crops 353 × 489 | 1× | Same visible top region |
+| Full settings | 1580 × 871 | 1580 × 871 | viewport 1580 × 871 | 1× | Opened through production gear; all 32 fields; monthly selected |
+| Settings component | 956 × 713 | 962 × 609 | natural modal bounds, shown at native scale | 1× | Modal body only |
 
-The two source files are byte-for-byte mechanical copies of the supplied reference captures. No source image was edited. The implementation PNGs are browser screenshots, not generated mockups.
+The reference full screenshots remain byte-for-byte copies of the supplied files. Reference component crops were taken mechanically from those copies. Implementation captures came from real Chrome with `deviceScaleFactor: 1`; no density resampling was used.
 
 ## Evidence
 
-- Full-view comparison input: `docs/superpowers/verification/assets/ozon-zongzi-panel-comparison.html`, rendered to `docs/superpowers/verification/assets/ozon-zongzi-panel-comparison.png`.
-- Full-view comparison input: `docs/superpowers/verification/assets/ozon-zongzi-settings-comparison.html`, rendered to `docs/superpowers/verification/assets/ozon-zongzi-settings-comparison.png`.
-- Focused comparison input (title/brand/gear/metric start and modal header/summary/groups/actions): `docs/superpowers/verification/assets/ozon-zongzi-focused-comparison.html`, rendered to `docs/superpowers/verification/assets/ozon-zongzi-focused-comparison.png`.
+- Context comparisons: `docs/superpowers/verification/assets/ozon-zongzi-panel-comparison.png` and `docs/superpowers/verification/assets/ozon-zongzi-settings-comparison.png`.
+- Authoritative same-scale input: `docs/superpowers/verification/assets/ozon-zongzi-focused-comparison.html`.
+- Authoritative rendered comparison: `docs/superpowers/verification/assets/ozon-zongzi-focused-comparison.png`.
 
-Each comparison input places the actual reference and actual browser implementation next to each other. Focused comparison is required because title type, icon treatment, card gutters, checkbox rhythm, and modal controls are too small to judge reliably from the full frames alone.
+The focused comparison is the judging surface. Panel crops have identical CSS and pixel dimensions. Settings modals are shown at natural 1× scale and top-aligned; neither is scaled to the other.
 
 ## Findings
 
 **P0:** none.
 
-**P1:** none.
+**P1:** none in the production fixture after `7a2808d`.
 
-**P2:** none.
+**P2:** none in the production fixture after `7a2808d`.
 
-**P3:** none.
+**P3:** settings density remains intentionally different from the reference. The implementation modal is 962 × 609, 104px shorter than the 956 × 713 reference. This is visible, so the surfaces are not claimed to be pixel-identical. The difference is consistent with the production catalogue having 32 rather than 35 fields and with the approved compact inline period control; all controls remain readable and reachable, so no corrective production change is required.
+
+The two prior actionable findings are resolved:
+
+- Panel composition now follows the approved hierarchy: a shallow-blue real-current-SKU status card, one compact row for monthly sales/listing time/follow-sell count, a separate shallow-blue weight/size summary, then the real 32-field groups. Normal PDP, V2, and list/card entry points call the same overview helper. The reference's mock SKU records were deliberately not copied into production.
+- The period control is inline with the summary instead of consuming a standalone field-group row. The desktop modal is now 609px tall, below the 740px acceptance ceiling and 216px shorter than the previous 825px implementation capture. Field groups begin immediately below the summary.
 
 ### Required fidelity surfaces
 
-- Fonts and typography: both panel and modal retain the compact sans-serif hierarchy, strong dark-navy titles, small secondary status/note text, bold metric values, and non-overflowing Chinese labels. The fixture intentionally displays real no-data values rather than prototype merchandise copy.
-- Spacing and layout rhythm: white rounded panel, separated header/metric/group/action regions, pale-blue metric cards, group gutters, rounded field cards, and the centered 960px desktop modal preserve the target's information hierarchy. The fixture's host has no product-page chrome, so host-page geometry was excluded from component fidelity judgment.
-- Colors and visual tokens: the visible production panel uses white and pale-blue surfaces, `#1268FF` actions/icons, `#10234A` foreground, green update state, pale borders, and the navy translucent modal mask. Those token roles match the intended prototype language.
-- Image quality and assets: the production brand symbol is the generated supplied brand asset; no visual target logo, illustration, or non-standard icon was replaced with CSS art, text glyphs, or handcrafted SVG. Logo fallback keeps readable product text and hides the failed image.
-- Copy and content: `ozon 粽子 · 选品助手`, `插件展示设置`, group names, actions, and period labels are production copy. The 32/32 count reflects the real catalogue and deliberately does not copy the reference mock's 35 fields.
-- Icons and affordances: the visible gear, close, section disclosure, checked native controls, restore/cancel/finish controls, primary blue action, hover/focus contracts, and compact status affordance are present. The gear opened the actual production settings DOM in Chrome.
-- States, responsiveness, and accessibility: the active browser test covers 3/2/1 modal columns at 1280/880/600-width states, visible native checkbox/radio semantics, group/all controls, cancel, restore, atomic save/retry, disabled while save is pending, persisted visibility/period, hidden-field application, logo error fallback, collapsed sections, and legacy card control contrast. The full GUI test could not complete in this sandbox (see Functional checks), so these state assertions are not claimed as a fresh end-to-end pass here.
-
-### Accepted, non-actionable scope differences
-
-The supplied reference is a complete prototype product page and contains mock merchandise plus 35 mock fields. The implementation evidence is the production renderer isolated in its active fixture and contains only real fields/data. Its host-page background, real field count (32), no-data content, and resulting group-card height differ by design; copying the prototype's host or mock fields would violate the agreed production contract. These are not P0/P1/P2 visual findings.
+- Fonts and typography: compact sans-serif hierarchy, dark-navy titles, subdued labels, and numeric emphasis are aligned; no clipping was observed.
+- Spacing and layout: the approved first-screen hierarchy is present at 353px. Settings use 3/2/1 columns at desktop/tablet/mobile and remain within the desktop-height contract.
+- Colors and tokens: white surfaces, pale-blue overview/field fills, `#1268FF` controls, `#10234A` text, green update state, subtle borders, and navy mask treatment remain aligned.
+- Image quality and assets: the supplied brand asset is used; no visible target asset is replaced by CSS art, emoji, or a fabricated placeholder.
+- Copy/content: production uses `ozon 粽子 · 选品助手`, `插件展示设置`, the actual SKU, and a dynamic 32/32 count. The reference's mock 35-field count and mock SKU list remain intentionally excluded.
+- Icons and controls: gear, close, section, checkbox/radio, restore/cancel/finish, and primary-action affordances remain present.
+- States/accessibility: loading, ready, partial, error, and locked status contracts remain covered. Native radio/checkbox controls, dialog ARIA, focus loop, Escape close/focus restore, atomic save/retry, pending-save lock, field/period persistence, collapse state, and responsive layouts pass the active Chrome regression.
 
 ## Comparison history
 
-1. Initial full and focused comparison on the normalized browser captures: no actionable P0/P1/P2 difference was found in the in-scope panel and settings component surfaces. Therefore no visual fix/re-capture iteration was required.
+1. The original full-frame comparison was invalidated because different component proportions prevented a reliable component-level judgment.
+2. A fresh 1× component comparison found the prior P1 panel-composition and P2 modal-density issues.
+3. Tests were changed first and proved RED against the old four-card hero and standalone period section.
+4. Production commit `7a2808d` introduced the shared overview hierarchy and compact settings layout.
+5. Chrome regression turned GREEN, then exact-scale evidence was recaptured. The panel crop is 353 × 489 on both sides; the implementation settings modal is now 962 × 609 at 1×.
 
 ## Functional checks
 
-- Brand asset regeneration and extension packaging: passed.
-- Extension source parity, UI parity, diff contract, release-tree/ZIP parity, and ZIP smoke: passed against `QH_SOURCE_EXTENSION_DIR=/Users/songliang/Desktop/0.13.46.1`.
-- Chrome production fixture panel and gear-to-settings transition: passed manually; the settings modal was opened from the visible production gear control.
-- Field visibility persisted: not freshly confirmed end-to-end in the restricted Chrome session; covered by the active browser fixture contract, which requires GUI execution.
-- Monthly/weekly period persisted: not freshly confirmed end-to-end in the restricted Chrome session; covered by the active browser fixture contract, which requires GUI execution.
-- Collect action preserved: DOM control present in the production renderer; no external collection action was invoked.
-- Calculation/edit action preserved: DOM control present in the production renderer; no external action was invoked.
-- Account/session state preserved: not verified in an authenticated local Web/API environment.
-- Web browser check from this worktree's real Vite build (`127.0.0.1:5174`): `/login` rendered the `ozon 粽子` image and page title. `/ozon/dashboard`, `/datascreen`, and `/extension/` rendered `ozon 粽子` titles but stayed in the unauthenticated login-check state because this independently started frontend had no local API session. `/datascreen` title was `ozon 粽子 · 订单数据大屏`.
-- Real Ozon product/installed-extension acceptance: blocked. A live Ozon product tab was visible in Chrome but was already controlled by another browser task, so it was not safely claimed or operated. No real collect, calculation, follow-sell, or other external write was performed.
+- GUI-capable active Chrome fixture: 2 passed, 0 failed.
+- Focused brand/logistics/sidebar regression: 3 passed, 0 failed.
+- Gear-to-settings transition: passed; capture was opened through the production gear.
+- Field visibility and monthly/weekly persistence: passed.
+- Atomic save failure/retry, duplicate-save lock, cancel, restore, group/all controls: passed.
+- Responsive settings grid: 3 columns desktop, 2 columns at 880px, 1 column at 600px.
+- Collect/follow-sell/edit-list controls: production DOM contracts present; no external write was invoked.
+- Source, distribution, UI, and capture-only diff parity: passed after full CSS fingerprint review.
+- Public and dist ZIP tree checks and packaged smoke suites: passed.
+- Real logged-in Ozon page: previously opened and inspected by the owning browser task.
+- Real installed new-extension acceptance: blocked. Chrome currently has the old `sonliERP` extension loaded. Automated navigation to `chrome://extensions` is denied by browser security policy, so the new unpacked package could not be loaded into the real logged-in profile.
+- External side effects: no collection, calculation, follow-sell, listing, or other Ozon write was executed.
 
 ## Console errors
 
-- Production renderer fixture: no browser console errors.
-- Web Vite check: no application exception; Chrome recorded pre-existing Ant Design deprecation warnings for `ConfigProvider.autoInsertSpaceInButton`, `Dropdown.overlayClassName`, and `Drawer.width` (the earlier unrelated 3000 server also recorded `Alert.message`).
+- Production fixture capture: none.
+- Active Chrome regression: no browser-console assertion failure.
+- Existing web checks emitted only known Ant Design deprecation warnings; no application exception was observed.
 
-## Verification result
+## Verification evidence
 
-`QH_SOURCE_EXTENSION_DIR=/Users/songliang/Desktop/0.13.46.1 node scripts/verify.mjs` completed all package/parity/smoke/gate checks. The complete active suite reported 345 tests: 344 passed and 1 failed. The sole failure was `extension/tests/data-panel-visual-browser.test.js` because sandbox-launched headless Chrome closed immediately after launch; its cleanup regression passed. This is a GUI execution-environment blocker, not a test assertion failure.
+- `node --test extension/tests/data-panel-visual-browser.test.js`: 2 passed, 0 failed.
+- `node --test extension/tests/brand-contract.test.js extension/tests/data-panel-logistics.test.js extension/tests/sidebar-section-toggle.test.js`: 3 passed, 0 failed.
+- Source parity: passed.
+- Distribution parity: passed.
+- UI parity: passed after updating the reviewed local CSS fingerprint.
+- Capture-only diff contract: passed.
+- Public/dist ZIP tree parity: passed, 115 files.
+- Public/dist packaged smoke suites: passed.
+- Exact capture facts: panel `353 × 1002.75` natural bounds with a `353 × 489` judging crop; settings modal `962 × 609`; all at 1× density.
 
 final result: blocked
 
-Blocker: the task requires a fresh, safely controllable real logged-in Ozon page with the packaged extension and a GUI-capable run of the active Chrome fixture. This session supplied real-Chrome fixture evidence but could not safely take over the already-controlled Ozon product tab, and the sandbox prevented the CLI fixture Chrome from staying open. Re-run the active fixture and the real-Ozon interaction checks in the GUI-permitted owning browser session before changing the final result to `passed`.
+Blocker:
+
+1. Fixture-level P0/P1/P2 findings are cleared, but the new unpacked extension still has not been loaded and accepted in the real logged-in Ozon Chrome profile because browser security policy prohibits automated access to `chrome://extensions`. The currently loaded extension is the old `sonliERP` build.

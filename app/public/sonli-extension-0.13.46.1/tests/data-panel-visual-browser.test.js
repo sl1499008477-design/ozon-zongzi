@@ -159,17 +159,28 @@ async function runBrowserFixture({
     const wide = await page.evaluate(() => {
       const panel = document.querySelector(".ozon-helper-data-panel");
       const hero = panel.querySelector(".oh-hero-section");
+      const skuStatus = panel.querySelector(".oh-sku-status-card");
+      const sizeSummary = panel.querySelector(".oh-size-summary");
       return {
         background: getComputedStyle(panel).backgroundColor,
         columns: getComputedStyle(hero).gridTemplateColumns,
         backgrounds: [...panel.querySelectorAll(".oh-hero-stat")].map((stat) => getComputedStyle(stat).backgroundColor),
+        heroFields: [...hero.querySelectorAll("[data-field]")].map((field) => field.getAttribute("data-field")),
+        skuStatus: skuStatus ? {
+          field: skuStatus.querySelector("[data-field]")?.getAttribute("data-field") || "",
+          text: skuStatus.textContent.trim(),
+        } : null,
+        sizeField: sizeSummary?.querySelector("[data-field]")?.getAttribute("data-field") || "",
         fields: [...panel.querySelectorAll("[data-field]")].map((field) => field.getAttribute("data-field")),
         actions: [...panel.querySelectorAll("[data-action]")].map((action) => action.getAttribute("data-action")),
       };
     });
     assert.equal(wide.background, "rgb(255, 255, 255)");
-    assert.equal(gridColumnCount(wide.columns), 4);
-    assert.deepEqual(wide.backgrounds, Array(4).fill("rgb(242, 247, 255)"));
+    assert.equal(gridColumnCount(wide.columns), 3);
+    assert.deepEqual(wide.backgrounds, Array(3).fill("rgb(242, 247, 255)"));
+    assert.deepEqual(wide.heroFields, ["sales30d", "createDate", "heroFollow"]);
+    assert.deepEqual(wide.skuStatus, { field: "skuStatus", text: "SKU 采集状态123456789" });
+    assert.equal(wide.sizeField, "heroSize");
     for (const field of ["sales30d", "createDate", "heroFollow", "heroSize", "category", "sku", "returnRate", "rating", "dimensions", "volume", "weight"]) {
       assert.ok(wide.fields.includes(field), `missing rendered field ${field}`);
     }
@@ -231,17 +242,29 @@ async function runBrowserFixture({
     const fieldCount = await settingsModal.locator('input[data-jz-field]').count();
     assert.equal(fieldCount, 32, "settings must preserve the real 32-field catalogue");
     assert.equal(await settingsModal.locator("[data-jz-visible-count]").innerText(), String(fieldCount));
-    assert.equal(await settingsModal.locator(".jz-fieldset-summary span").innerText(), `/ ${fieldCount} 项信息`);
+    assert.equal(await settingsModal.locator(".jz-fieldset-summary > div:first-child > span").innerText(), `/ ${fieldCount} 项信息`);
+    assert.equal(
+      await settingsModal.locator(".jz-fieldset-summary-period").count(),
+      1,
+      "monthly/weekly period control should be compact and inline with the summary",
+    );
+    assert.equal(
+      await settingsModal.locator(".jz-fieldset-body .jz-fieldset-period-group").count(),
+      0,
+      "period must not consume a standalone field-grid section",
+    );
     for (const action of ["enable-all", "disable-all", "toggle-group", "restore-default", "save"]) {
       assert.ok(await settingsModal.locator(`[data-jz-act="${action}"]`).count() > 0, `missing ${action} settings action`);
     }
 
     const desktopSettings = await settingsModal.evaluate((modal) => ({
       modalWidth: getComputedStyle(modal).width,
+      modalHeight: modal.getBoundingClientRect().height,
       columns: getComputedStyle(modal.querySelector(".jz-fieldset-body")).gridTemplateColumns,
       maskBackground: getComputedStyle(modal.parentElement).backgroundColor,
     }));
     assert.equal(desktopSettings.modalWidth, "960px");
+    assert.ok(desktopSettings.modalHeight <= 740, `desktop modal must stay <=740px, got ${desktopSettings.modalHeight}`);
     assert.equal(gridColumnCount(desktopSettings.columns), 3);
     assert.equal(desktopSettings.maskBackground, "rgba(16, 35, 74, 0.38)");
 
@@ -445,6 +468,8 @@ async function runBrowserFixture({
     assert.equal(normalPdpHeader.status, "正在加载商品数据");
     assert.equal(normalPdpHeader.gearAction, "open-field-settings");
     assert.equal(normalPdpHeader.closeAction, "close-sidebar-card");
+    assert.match(normalPdpHeader.html, /class="oh-sku-status-card"/);
+    assert.match(normalPdpHeader.html, /class="oh-size-summary"/);
     assert.doesNotMatch(normalPdpHeader.html, /ozon 粽子ERP|data-lucide="zap"/);
 
     const lockedPdpHeader = await loadRealPdpHeader(false);
@@ -541,7 +566,7 @@ async function runBrowserFixture({
       window.jzRenderProductPanelV2(panel, { sku: "123456789" });
       return getComputedStyle(panel.querySelector(".oh-hero-section")).gridTemplateColumns;
     });
-    assert.equal(gridColumnCount(narrowColumns), 2);
+    assert.equal(gridColumnCount(narrowColumns), 3);
   } catch (error) {
     primaryError = error;
     throw error;

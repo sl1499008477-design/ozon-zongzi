@@ -2845,8 +2845,8 @@
       return reviewCount ? `${stars} (${window.formatNumber(reviewCount)})` : stars;
     };
 
-    // Build sections with hero section + grouped 2-col rows
-    // Hero card 4: 月销量 / 上架时间 / 跟卖 / 重量·尺寸 — 跟卖点击弹商家列表
+    // Build grouped 2-col rows. 首屏概览复用 shared-utils 的统一结构，避免 PDP
+    // 与列表卡在 SKU 状态、三项经营指标和物流摘要上产生漂移。
     // Page-extracted characteristics 可能已经带俄文/英文单位 ("100 г"/"10 см"),
     // 直接拼 "g"/"cm" 会变 "100 гg"。带字母的原样显示,纯数字才补单位。
     const formatWeightG = (raw) => {
@@ -2880,28 +2880,20 @@
       const h = pf(product.characteristics?.heightCm);
       return (l && w && h) ? +(l * w * h / 1000).toFixed(2) + ' L' : '-';
     })();
+    const overviewHtml = window.jzPanelOverviewHtml({
+      sku: product.sku,
+      salesValue: '-',
+      salesTip: `商品${window.jzSalesPeriodCnLong?.() || '近 30 天'}销售数量(Ozon 选品分析 what_to_sell)`,
+      createValue: '-',
+      followValue: heroFollowVal || '-',
+      followSub: heroFollowSub,
+      followTip: heroFollowVal === '0' ? '商品当前无跟卖者' : '\u70b9\u51fb\u67e5\u770b\u8ddf\u5356\u5546\u5bb6\u5217\u8868',
+      followAction: heroFollowVal === '0' ? null : 'show-followsell-modal',
+      sizeValue: heroSizeMain || '-',
+      sizeSub: heroSizeSub,
+    });
+
     const sections = [
-      {
-        id: 'hero', type: 'hero', rows: [
-          { field: 'sales30d', label: `${window.jzSalesPeriodCnShort?.() || '月'}销量`, value: '-', accent: 'blue', tip: `商品${window.jzSalesPeriodCnLong?.() || '近 30 天'}销售数量(Ozon 选品分析 what_to_sell)` },
-          { field: 'createDate', label: '上架时间', value: '-', accent: 'green', tip: '商品首次上架的日期' },
-          {
-            field: 'heroFollow', label: '跟卖',
-            value: heroFollowVal || '-',
-            sub: heroFollowSub,
-            accent: 'orange',
-            clickAction: 'show-followsell-modal',
-            tip: heroFollowVal === '0' ? '商品当前无跟卖者' : '\u70b9\u51fb\u67e5\u770b\u8ddf\u5356\u5546\u5bb6\u5217\u8868',
-          },
-          {
-            field: 'heroSize', label: '重量·尺寸',
-            value: heroSizeMain || '-',
-            sub: heroSizeSub,
-            accent: 'purple',
-            tip: '商品重量(g) · 长×宽×高(cm)',
-          },
-        ],
-      },
       {
         id: 'info', icon: _lucideSvg('package'), title: '商品信息', accent: 'blue', rows: [
           { field: 'category', label: '一级类目', value: '-', tip: '商品一级类目', full: true },
@@ -2953,25 +2945,6 @@
       },
     ];
 
-    // Render hero stat card
-    // r.sub 出现在 row 配置上(无论值是否非空)就预留 <small> 槽,
-    // 让 async fallback 可以在 sync 抽取失败时补 sub 文本。
-    // empty <small> 通过 CSS :empty 规则隐藏,不影响布局。
-    const renderHeroStat = (r) => {
-      const accentCls = r.accent ? ` is-accent-${r.accent}` : '';
-      const isDim = r.value == null || r.value === '-';
-      const dimCls = isDim ? ' is-dim' : '';
-      const clickCls = r.clickAction ? ' is-clickable' : '';
-      const tipAttr = r.tip ? ` data-oh-tip="${_escHtml(r.tip)}"` : '';
-      const clickAttr = r.clickAction ? ` data-click-action="${_escHtml(r.clickAction)}"` : '';
-      const hasSubSlot = Object.prototype.hasOwnProperty.call(r, 'sub');
-      const subHtml = hasSubSlot ? `<small>${r.sub ? _escHtml(r.sub) : ''}</small>` : '';
-      return `<div class="oh-hero-stat${accentCls}${clickCls}"${tipAttr}${clickAttr}>
-        <div class="oh-hero-label">${r.label}</div>
-        <div class="oh-hero-value${dimCls}" data-field="${r.field}">${r.value || '-'}${subHtml}</div>
-      </div>`;
-    };
-
     // Render normal row HTML
     const renderRow = (r) => {
       const valueText = String(r.value == null ? '' : r.value);
@@ -2990,11 +2963,8 @@
       </div>`;
     };
 
-    // Render sections: hero type vs collapsible regular sections
+    // Render collapsible regular sections.
     const renderSection = (section) => {
-      if (section.type === 'hero') {
-        return `<div class="oh-hero-section">${section.rows.map(renderHeroStat).join('')}</div>`;
-      }
       const collapsed = sessionStorage.getItem(`oh-sidebar-collapsed-${section.id}`) === '1';
       const accentCls = section.accent ? ` is-accent-${section.accent}` : '';
       return `<div class="ozon-helper-sidebar-section${collapsed ? ' is-collapsed' : ''}${accentCls}" data-section="${section.id}">
@@ -3016,6 +2986,7 @@
         showClose: true,
       })}
       <div class="ozon-helper-sidebar-card-body">
+        ${overviewHtml}
         ${sections.map(renderSection).join('')}
       </div>
       <div class="ozon-helper-sidebar-card-actions">
