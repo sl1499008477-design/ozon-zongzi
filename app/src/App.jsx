@@ -100,6 +100,7 @@ import {
   sourceCellText,
 } from "./table-text.jsx";
 import { apiRequest } from "./client-transport.js";
+import { PRODUCT_BRAND } from "./brand.js";
 import {
   dashboardMoneyGroups,
   dashboardSummaryMoney,
@@ -674,7 +675,7 @@ function AppShell() {
       document.title = "404: This page could not be found.";
       return;
     }
-    document.title = route === "/datascreen" ? "sonli · 订单数据大屏" : "sonli";
+    document.title = route === "/datascreen" ? `${PRODUCT_BRAND.displayName} · 订单数据大屏` : PRODUCT_BRAND.displayName;
   }, [route]);
 
   useEffect(() => {
@@ -1092,8 +1093,8 @@ function AppShell() {
       <Layout className="qh-shell prototype-shell">
         <Header className="qh-topbar">
           <a className="qh-brand" onClick={() => navigate("/ozon/dashboard")}>
-            <img src="/icons/icon48.png" alt="sonli" />
-            <span>sonli</span>
+            <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
+            <span>{PRODUCT_BRAND.displayName}</span>
           </a>
           <Button
             aria-label="打开导航"
@@ -1285,7 +1286,7 @@ function AppShell() {
         onClose={() => setMobileNavOpen(false)}
         placement="left"
         rootClassName="prototype-overlay"
-        title="sonli · Ozon 运营台"
+        title={`${PRODUCT_BRAND.displayName} · Ozon 运营台`}
         width={288}
       >
         <Menu
@@ -1322,9 +1323,9 @@ function LoginPage({ checking = false, loading = false, onLogin }) {
     <div className="sonli-login-page">
       <div className="sonli-login-card">
         <div className="sonli-login-brand">
-          <img src="/icons/icon48.png" alt="sonli" />
+          <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
           <div>
-            <strong>sonli</strong>
+            <strong>{PRODUCT_BRAND.displayName}</strong>
             <span>Ozon 本地管理后台</span>
           </div>
         </div>
@@ -1502,7 +1503,7 @@ function DashboardPage({
           <div className="feature-head">
             <span>功能入口</span>
             <Space size={6}>
-              <Tag color="blue">sonli功能</Tag>
+              <Tag color="blue">{PRODUCT_BRAND.displayName}功能</Tag>
               <Tag>外部资源</Tag>
             </Space>
           </div>
@@ -1535,7 +1536,7 @@ function DashboardPage({
               },
               {
                 title: "安装浏览器插件",
-                content: "sonli助手已安装",
+                content: `${PRODUCT_BRAND.displayName}助手已安装`,
                 onClick: onPlugin,
               },
               {
@@ -8648,9 +8649,9 @@ function PluginPanel() {
   return (
     <div className="plugin-panel">
       <div className="plugin-hero">
-        <img src="/icons/icon128.png" alt="sonli" />
+        <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
         <div>
-          <h2>sonli 浏览器插件</h2>
+          <h2>{PRODUCT_BRAND.displayName} 浏览器插件</h2>
           <p>版本 {EXTENSION_VERSION}</p>
           <Space size={8} wrap>
             <Tag color="green">已复制到本地项目</Tag>

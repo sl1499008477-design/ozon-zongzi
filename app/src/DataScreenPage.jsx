@@ -10,6 +10,7 @@ import {
   dashboardMoneyGroups,
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
+import { PRODUCT_BRAND } from "./brand.js";
 import { dataScreenModel } from "./order-analytics.js";
 
 const statusLabelMap = {
@@ -69,9 +70,9 @@ export default function DataScreenPage({ navigate, localData, hasStore }) {
       <div className="datascreen-shell">
         <div className="datascreen-head">
           <div className="datascreen-brandline">
-            <img src="/icons/icon48.png" alt="sonli" />
+            <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
             <div>
-              <h2>sonli · 订单数据中心</h2>
+              <h2>{PRODUCT_BRAND.displayName} · 订单数据中心</h2>
               <p>ORDER COMMAND CENTER · 全部店铺 · 数据每 60s 自动刷新</p>
             </div>
           </div>
