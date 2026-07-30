@@ -1574,18 +1574,18 @@ if (!globalThis.__JZ_BRAND__) {
 
   // 所有数据卡复用同一个品牌标题。它只负责展示层，字段、事件 action 和数据灌入
   // contract 仍由各渲染器与 caller 保持原样。
-  function _jzPanelBrandHeaderHtml() {
+  function _jzPanelBrandHeaderHtml({ status = '商品数据已更新' } = {}) {
     const brand = globalThis.__JZ_BRAND__ || {};
     const displayName = brand.displayName || BRAND_DISPLAY_NAME_FALLBACK;
-    const logo = brand.logoUrl
-      ? `<img src="${_v2Escape(brand.logoUrl)}" alt="" />`
-      : `<span class="ozon-helper-sidebar-brand-fallback">${_v2Escape(displayName.slice(0, 1))}</span>`;
+    const mark = brand.logoUrl
+      ? `<span class="ozon-helper-sidebar-brand-mark"><img src="${_v2Escape(brand.logoUrl)}" alt="" /></span>`
+      : '';
     return `<div class="ozon-helper-sidebar-card-header">
       <div class="ozon-helper-sidebar-brand">
-        <span class="ozon-helper-sidebar-brand-mark">${logo}</span>
+        ${mark}
         <span class="ozon-helper-sidebar-brand-copy">
           <strong class="ozon-helper-sidebar-brand-title">${_v2Escape(displayName)} · 选品助手</strong>
-          <small class="ozon-helper-sidebar-brand-status">商品数据已更新</small>
+          <small class="ozon-helper-sidebar-brand-status">${_v2Escape(status)}</small>
         </span>
       </div>
       ${window.jzFieldSettingsGearHtml()}
@@ -1595,15 +1595,14 @@ if (!globalThis.__JZ_BRAND__) {
   function _jzBindPanelBrandFallback(panel) {
     panel?.querySelectorAll?.('.ozon-helper-sidebar-brand-mark img').forEach((img) => {
       img.addEventListener('error', () => {
-        img.hidden = true;
-        img.parentElement?.classList.add('is-logo-fallback');
+        img.parentElement?.setAttribute('hidden', '');
       }, { once: true });
     });
   }
 
   window.jzRenderPanelSkeleton = function(panel) {
     panel.innerHTML = `
-      ${_jzPanelBrandHeaderHtml()}
+      ${_jzPanelBrandHeaderHtml({ status: '正在加载商品数据' })}
       <div class="ozon-helper-sidebar-card-body">
         <div class="oh-hero-section">
           <div class="oh-hero-stat is-skeleton"></div>

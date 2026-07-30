@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="/extension/content/ozon-product.css" />
+    <style>
+      body { margin: 0; padding: 24px; background: #f4f7fb; }
+      .tile-root { width: 100%; max-width: 640px; }
+      .tile-root > a { display: block; }
+    </style>
+  </head>
+  <body>
+    <article class="tile-root">
+      <a href="/product/fixture-product-123456789" aria-label="fixture product">fixture product</a>
+    </article>
+    <script>
+      window.chrome = {
+        runtime: {
+          id: "panel-fixture",
+          lastError: null,
+          getURL: (asset) => `/extension/${asset}`,
+          sendMessage(message, callback) {
+            const data = message?.action === "getAuth" ? { loggedIn: true } : {};
+            callback?.({ ok: true, data });
+          },
+          onMessage: { addListener() {} },
+        },
+        storage: {
+          local: {
+            get(_key, callback) { const value = {}; callback?.(value); return Promise.resolve(value); },
+            set(_value, callback) { callback?.(); return Promise.resolve(); },
+          },
+          onChanged: { addListener() {} },
+        },
+      };
+    </script>
+    <script src="/extension/lib/sidebar-section-toggle.js"></script>
+    <script src="/extension/content/shared-utils.js"></script>
+    <script>
+      window.JZTaskQueue = class {
+        add(_key, task) { return Promise.resolve().then(task); }
+      };
+      window.jzMakeStaggeredQueue = () => ({ add: (task) => Promise.resolve().then(task), setParams() {} });
+      window.checkAuth = async () => ({ loggedIn: true });
+      window.jzDataCardAllowed = async () => ({ allowed: true });
+      window.jzFetchPublicFollowSell = async () => ({ count: 0, sellers: [] });
+      window.sendMessage = async () => ({ data: {}, items: [] });
+      window.__setPanelFixtureWidth = (width) => {
+        document.querySelector(".tile-root").style.width = `${width}px`;
+      };
+    </script>
+    <script src="/extension/content/ozon-data-panel.js"></script>
+  </body>
+</html>

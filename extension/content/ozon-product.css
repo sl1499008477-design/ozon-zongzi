@@ -2812,7 +2812,8 @@
     'Helvetica Neue', Arial, sans-serif;
 }
 
-.ozon-helper-sidebar-card {
+.ozon-helper-sidebar-card,
+.ozon-helper-data-panel {
   --ozz-blue: #1268FF;
   --ozz-navy: #10234A;
   --ozz-border: #E7EEF9;
@@ -2887,11 +2888,8 @@
   padding: 6px;
   box-sizing: border-box;
 }
-.ozon-helper-sidebar-brand-mark.is-logo-fallback,
-.ozon-helper-sidebar-brand-fallback {
-  color: #fff;
-  font-size: 14px;
-  font-weight: 800;
+.ozon-helper-sidebar-brand-mark[hidden] {
+  display: none;
 }
 .ozon-helper-sidebar-brand-copy {
   display: flex;
@@ -2987,10 +2985,14 @@
 
 /* Accent 视觉差异 — 每个 hero stat 一个 brand-aware tint,通过 CSS 变量
    驱动 hover/border,避免之前"统一蓝色"导致视觉无层级 */
-.oh-hero-stat.is-accent-blue   { --oh-accent-color: var(--ozz-blue); background: var(--ozz-soft); border-color: #DDE9FA; }
-.oh-hero-stat.is-accent-green  { --oh-accent-color: #16a34a; background: #ecfdf5; border-color: #d1fae5; }
-.oh-hero-stat.is-accent-orange { --oh-accent-color: #ea580c; background: #fff7ed; border-color: #fed7aa; }
-.oh-hero-stat.is-accent-purple { --oh-accent-color: #7c3aed; background: #f5f3ff; border-color: #ddd6fe; }
+.oh-hero-stat.is-accent-blue,
+.oh-hero-stat.is-accent-green,
+.oh-hero-stat.is-accent-orange,
+.oh-hero-stat.is-accent-purple {
+  --oh-accent-color: var(--ozz-blue);
+  background: var(--ozz-soft);
+  border-color: #DDE9FA;
+}
 
 .oh-hero-label {
   font-size: 11px;
@@ -3282,7 +3284,8 @@
   transform: translateY(-1px);
 }
 
-.ozon-helper-sidebar-card .ozon-helper-copy-btn {
+.ozon-helper-sidebar-card .ozon-helper-copy-btn,
+.ozon-helper-data-panel .ozon-helper-copy-btn {
   cursor: pointer;
   font-size: 10px;
   opacity: 0.4;
