@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { attachTrustedCollectAccountScope } from "./collect-hydration-scope.mjs";
 import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { decryptSecret } from "./crypto-secrets.mjs";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
@@ -874,8 +875,11 @@ export async function hydrateLegacyStateWithV3(state = {}) {
     (state.accounts || []).map((account) => clean(account?.id, 240)).filter(Boolean),
   )];
   const relationalCollectItems = (
-    await Promise.all(accountIds.map((accountId) =>
-      listCollectItemsV3({ accountId, limit: 10000 })))
+    await Promise.all(accountIds.map(async (accountId) =>
+      attachTrustedCollectAccountScope(
+        accountId,
+        await listCollectItemsV3({ accountId, limit: 10000 }),
+      )))
   ).flat();
   const legacyById = new Map((state.caches?.collectBox || []).map((item) => [String(item.id), item]));
   state.caches = state.caches || {};
