@@ -18,9 +18,26 @@ const exceptionFiles = [
   'content/ozon-search.css',
 ];
 
+const runParityGate = (localDir) => spawnSync(process.execPath, [parityGate], {
+  cwd: rootDir,
+  env: {
+    ...process.env,
+    QH_SOURCE_EXTENSION_DIR: upstreamDir,
+    QH_LOCAL_EXTENSION_DIR: localDir,
+  },
+  encoding: 'utf8',
+  shell: false,
+});
+
 test('UI parity rejects unrelated mutations in every reviewed exception file', async () => {
   assert.ok(upstreamDir, 'QH_SOURCE_EXTENSION_DIR is required for UI parity mutation coverage');
   assert.equal((await stat(upstreamDir)).isDirectory(), true, 'extension upstream must be a directory');
+  const baseline = runParityGate(extensionDir);
+  assert.equal(
+    baseline.status,
+    0,
+    `unmodified extension tree must pass before mutation checks:\n${baseline.stdout || ''}${baseline.stderr || ''}`,
+  );
 
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'extension-ui-parity-'));
   try {
@@ -34,16 +51,7 @@ test('UI parity rejects unrelated mutations in every reviewed exception file', a
           : '\n/* unrelated mutation */\n';
       await appendFile(path.join(candidateDir, relativePath), comment);
 
-      const result = spawnSync(process.execPath, [parityGate], {
-        cwd: rootDir,
-        env: {
-          ...process.env,
-          QH_SOURCE_EXTENSION_DIR: upstreamDir,
-          QH_LOCAL_EXTENSION_DIR: candidateDir,
-        },
-        encoding: 'utf8',
-        shell: false,
-      });
+      const result = runParityGate(candidateDir);
       const output = `${result.stdout || ''}${result.stderr || ''}`;
       assert.notEqual(
         result.status,
@@ -52,7 +60,7 @@ test('UI parity rejects unrelated mutations in every reviewed exception file', a
       );
       assert.match(
         output,
-        new RegExp(`reviewed UI fingerprint mismatch: ${relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+        new RegExp(`reviewed local UI fingerprint mismatch: ${relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
         `UI parity rejected ${relativePath} for an unrelated reason:\n${output}`,
       );
     }
