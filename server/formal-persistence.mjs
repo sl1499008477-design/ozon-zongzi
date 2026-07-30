@@ -575,13 +575,53 @@ export async function ensureFormalSchema(pool) {
   formalSchemaReady = true;
 }
 
+function overwriteAccountDeletionCollectorAuthCounts(
+  state,
+  accountId,
+  {
+    deletedCollectorAuthTicketCount,
+    deletedCollectorSessionCount,
+  },
+) {
+  const auditEvent = (Array.isArray(state.auditEvents) ? state.auditEvents : []).find((event) =>
+    event?.action === "ACCOUNT_DELETED"
+    && text(event?.entityId, 240) === accountId);
+  if (!auditEvent) return false;
+  auditEvent.metadata = auditEvent.metadata && typeof auditEvent.metadata === "object"
+    ? auditEvent.metadata
+    : {};
+  auditEvent.metadata.deletedCollectorAuthTicketCount =
+    Math.max(0, Number(deletedCollectorAuthTicketCount) || 0);
+  auditEvent.metadata.deletedCollectorSessionCount =
+    Math.max(0, Number(deletedCollectorSessionCount) || 0);
+  return true;
+}
+
 export async function deleteRemovedAccountScopes(client, state = {}) {
   const scopes = Array.isArray(state.__deletedAccountScopes)
     ? state.__deletedAccountScopes
     : [];
+  let persistedStateChanged = false;
   for (const scope of scopes) {
     const accountId = text(scope?.accountId, 240);
     if (!accountId) continue;
+
+    const deletedCollectorAuthTickets = await client.query(
+      "DELETE FROM collector_auth_tickets WHERE account_id=$1",
+      [accountId],
+    );
+    const deletedCollectorSessions = await client.query(
+      "DELETE FROM collector_sessions WHERE account_id=$1",
+      [accountId],
+    );
+    persistedStateChanged = overwriteAccountDeletionCollectorAuthCounts(
+      state,
+      accountId,
+      {
+        deletedCollectorAuthTicketCount: deletedCollectorAuthTickets.rowCount,
+        deletedCollectorSessionCount: deletedCollectorSessions.rowCount,
+      },
+    ) || persistedStateChanged;
 
     const formalStores = await client.query(
       "SELECT id FROM stores WHERE owner_account_id=$1",
@@ -644,6 +684,7 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
     );
     await client.query("DELETE FROM accounts WHERE id=$1", [accountId]);
   }
+  return { persistedStateChanged };
 }
 
 async function mirrorAccounts(client, state = {}) {
@@ -1501,7 +1542,7 @@ export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) 
 }
 
 export async function mirrorStateToRelationalTablesInTransaction(client, state = {}) {
-  await deleteRemovedAccountScopes(client, state);
+  const deletionResult = await deleteRemovedAccountScopes(client, state);
   await mirrorAccounts(client, state);
   await mirrorCollectorAuthState(client, state);
   await mirrorStores(client, state);
@@ -1518,6 +1559,7 @@ export async function mirrorStateToRelationalTablesInTransaction(client, state =
   await mirrorOrders(client, state);
   await mirrorJobs(client, state);
   await mirrorAuditEvents(client, state);
+  return deletionResult;
 }
 
 export async function mirrorStateToRelationalTables(pool, state = {}) {

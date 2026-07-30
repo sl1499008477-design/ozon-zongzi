@@ -268,46 +268,8 @@ try {
         expiresAt: "2099-01-01T00:00:00.000Z",
       },
     },
-    collectorAuthTickets: [{
-      id: `delete-ticket-${suffix}`,
-      ticketHash: accountTicketHash,
-      accountId,
-      parentSessionToken: accountSessionToken,
-      permissions: ["collector.upload"],
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      createdAt: "2026-07-30T08:00:00.000Z",
-    }, {
-      id: `keep-b-ticket-${suffix}`,
-      ticketHash: accountBTicketHash,
-      accountId: accountBId,
-      parentSessionToken: accountBSessionToken,
-      permissions: ["collector.upload"],
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      createdAt: "2026-07-30T08:00:00.000Z",
-    }],
-    collectorSessions: [{
-      id: `delete-collector-session-${suffix}`,
-      tokenHash: accountCollectorTokenHash,
-      accountId,
-      parentSessionToken: accountSessionToken,
-      deviceFingerprint: `private-delete-device-${suffix}`,
-      extensionVersion: "3.0.0-test",
-      permissions: ["collector.upload"],
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      createdAt: "2026-07-30T08:00:00.000Z",
-      lastSeenAt: "2026-07-30T08:00:00.000Z",
-    }, {
-      id: `keep-b-collector-session-${suffix}`,
-      tokenHash: accountBCollectorTokenHash,
-      accountId: accountBId,
-      parentSessionToken: accountBSessionToken,
-      deviceFingerprint: `keep-b-device-${suffix}`,
-      extensionVersion: "3.0.0-test",
-      permissions: ["collector.upload"],
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      createdAt: "2026-07-30T08:00:00.000Z",
-      lastSeenAt: "2026-07-30T08:00:00.000Z",
-    }],
+    collectorAuthTickets: [],
+    collectorSessions: [],
     hashes: {},
     leases: {},
     browserAgents: {},
@@ -382,12 +344,21 @@ try {
        (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$1) collector_session_count,
        (SELECT COUNT(*)::int FROM collector_auth_tickets WHERE account_id=$12) account_b_collector_ticket_count,
        (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$12) account_b_collector_session_count,
+       (SELECT metadata FROM audit_events
+        WHERE action='ACCOUNT_DELETED' AND entity_id=$1) account_deleted_metadata,
        (SELECT state->'legacyDataCollectionStoreAuditArchive'
         FROM local_state WHERE id='local-state') local_state_legacy_archive,
        (SELECT state->'collectorAuthTickets'
         FROM local_state WHERE id='local-state') local_state_collector_tickets,
        (SELECT state->'collectorSessions'
-        FROM local_state WHERE id='local-state') local_state_collector_sessions`,
+        FROM local_state WHERE id='local-state') local_state_collector_sessions,
+       (SELECT event->'metadata'
+        FROM local_state
+        CROSS JOIN LATERAL jsonb_array_elements(state->'auditEvents') event
+        WHERE id='local-state'
+          AND event->>'action'='ACCOUNT_DELETED'
+          AND event->>'entityId'=$1
+        LIMIT 1) local_state_account_deleted_metadata`,
     [
       accountId,
       storeId,
@@ -435,33 +406,30 @@ try {
     collector_session_count: 0,
     account_b_collector_ticket_count: 1,
     account_b_collector_session_count: 1,
+    account_deleted_metadata: {
+      deletedFileCount: 0,
+      deletedStoreIds: [storeId],
+      deletedStoreCount: 1,
+      legacyArchivePurgedCount: 1,
+      deletedCollectorAuthTicketCount: 1,
+      deletedCollectorSessionCount: 1,
+    },
     local_state_legacy_archive: {
       schemaVersion: 1,
       readOnly: true,
       records: [keepBArchiveRecord],
       accountRecordCounts: { [accountBId]: 1 },
     },
-    local_state_collector_tickets: [{
-      id: `keep-b-ticket-${suffix}`,
-      ticketHash: accountBTicketHash,
-      accountId: accountBId,
-      parentSessionToken: accountBSessionToken,
-      permissions: ["collector.upload"],
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      createdAt: "2026-07-30T08:00:00.000Z",
-    }],
-    local_state_collector_sessions: [{
-      id: `keep-b-collector-session-${suffix}`,
-      tokenHash: accountBCollectorTokenHash,
-      accountId: accountBId,
-      parentSessionToken: accountBSessionToken,
-      deviceFingerprint: `keep-b-device-${suffix}`,
-      extensionVersion: "3.0.0-test",
-      permissions: ["collector.upload"],
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      createdAt: "2026-07-30T08:00:00.000Z",
-      lastSeenAt: "2026-07-30T08:00:00.000Z",
-    }],
+    local_state_collector_tickets: [],
+    local_state_collector_sessions: [],
+    local_state_account_deleted_metadata: {
+      deletedFileCount: 0,
+      deletedStoreIds: [storeId],
+      deletedStoreCount: 1,
+      legacyArchivePurgedCount: 1,
+      deletedCollectorAuthTicketCount: 1,
+      deletedCollectorSessionCount: 1,
+    },
   });
   assert.doesNotMatch(
     JSON.stringify(counts.rows[0].local_state_legacy_archive),

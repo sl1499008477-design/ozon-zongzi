@@ -11,6 +11,7 @@ export async function persistPostgresStateAtomically({
   table,
   state,
   protectedState,
+  refreshProtectedState,
   mirror,
 }) {
   assertTableName(table);
@@ -53,7 +54,30 @@ export async function persistPostgresStateAtomically({
       nextVersion = Number(result.rows[0]?.version || 1);
     }
 
-    await mirror(client, state);
+    const mirrorResult = await mirror(client, state);
+    if (mirrorResult?.persistedStateChanged) {
+      if (typeof refreshProtectedState !== "function") {
+        throw new Error("正式表镜像修改状态后缺少持久化刷新函数");
+      }
+      const refresh = await client.query(
+        `
+          UPDATE ${table}
+          SET state = $1::jsonb, updated_at = NOW()
+          WHERE id = $2 AND version = $3
+        `,
+        [
+          JSON.stringify(refreshProtectedState(state)),
+          STATE_ROW_ID,
+          nextVersion,
+        ],
+      );
+      if (refresh.rowCount !== 1) {
+        const error = new Error("正式表镜像后的本地状态刷新失败");
+        error.code = "LOCAL_STATE_REFRESH_CONFLICT";
+        error.status = 409;
+        throw error;
+      }
+    }
     await client.query("COMMIT");
     Object.defineProperty(state, "__storageVersion", {
       value: nextVersion,

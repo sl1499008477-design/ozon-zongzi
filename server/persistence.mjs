@@ -218,6 +218,7 @@ export async function savePersistedState({ dataDir, dataFile, state }) {
       table,
       state,
       protectedState,
+      refreshProtectedState: protectStateForStorage,
       mirror: mirrorStateToRelationalTablesInTransaction,
     });
   } finally {

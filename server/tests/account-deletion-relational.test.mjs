@@ -14,10 +14,25 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
       if (normalized.startsWith("SELECT data_collection_store_id")) {
         return { rows: [{ data_collection_store_id: "collector-formal" }] };
       }
+      if (normalized.startsWith("DELETE FROM collector_auth_tickets")) {
+        return { rows: [], rowCount: 2 };
+      }
+      if (normalized.startsWith("DELETE FROM collector_sessions")) {
+        return { rows: [], rowCount: 3 };
+      }
       return { rows: [], rowCount: 1 };
     },
   };
-  const state = {};
+  const state = {
+    auditEvents: [{
+      action: "ACCOUNT_DELETED",
+      entityId: "account-target",
+      metadata: {
+        deletedCollectorAuthTicketCount: 9,
+        deletedCollectorSessionCount: 8,
+      },
+    }],
+  };
   Object.defineProperty(state, "__deletedAccountScopes", {
     value: [{
       accountId: "account-target",
@@ -31,18 +46,31 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
     enumerable: false,
   });
 
-  await deleteRemovedAccountScopes(client, state);
+  const result = await deleteRemovedAccountScopes(client, state);
 
   const sql = calls.map((call) => call.sql);
   const accountDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM accounts"));
   const storeDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM stores"));
   const taskDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_tasks"));
   const submissionDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM submission_jobs"));
+  const collectorTicketDeleteIndex = sql.findIndex(
+    (statement) => statement.startsWith("DELETE FROM collector_auth_tickets"),
+  );
+  const collectorSessionDeleteIndex = sql.findIndex(
+    (statement) => statement.startsWith("DELETE FROM collector_sessions"),
+  );
 
   assert.ok(accountDeleteIndex > storeDeleteIndex);
   assert.ok(storeDeleteIndex > taskDeleteIndex);
   assert.ok(storeDeleteIndex > submissionDeleteIndex);
+  assert.ok(accountDeleteIndex > collectorTicketDeleteIndex);
+  assert.ok(accountDeleteIndex > collectorSessionDeleteIndex);
   assert.equal(sql.some((statement) => statement.includes("DELETE FROM audit_events")), false);
+  assert.deepEqual(state.auditEvents[0].metadata, {
+    deletedCollectorAuthTicketCount: 2,
+    deletedCollectorSessionCount: 3,
+  });
+  assert.equal(result.persistedStateChanged, true);
   assert.ok(
     calls.some((call) =>
       call.params.some((param) => Array.isArray(param) && param.includes("store-formal"))),

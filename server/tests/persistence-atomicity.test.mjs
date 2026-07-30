@@ -39,6 +39,56 @@ test("formal mirror succeeds before the local state transaction commits", async 
   assert.equal(state.__storageVersion, 8);
 });
 
+test("formal mirror audit mutations refresh local state in the same version before commit", async () => {
+  const queries = [];
+  const client = {
+    async query(sql, values = []) {
+      const normalized = String(sql).trim();
+      queries.push({ sql: normalized, values });
+      if (normalized.startsWith("UPDATE local_state")) {
+        return { rowCount: 1, rows: [{ version: 8 }] };
+      }
+      return { rowCount: 1, rows: [] };
+    },
+  };
+  const state = {
+    auditEvents: [{
+      action: "ACCOUNT_DELETED",
+      metadata: {
+        deletedCollectorAuthTicketCount: 0,
+        deletedCollectorSessionCount: 0,
+      },
+    }],
+  };
+  Object.defineProperty(state, "__storageVersion", { value: 7, writable: true, configurable: true });
+
+  await persistPostgresStateAtomically({
+    client,
+    table: "local_state",
+    state,
+    protectedState: structuredClone(state),
+    refreshProtectedState: (currentState) => structuredClone(currentState),
+    mirror: async () => {
+      state.auditEvents[0].metadata.deletedCollectorAuthTicketCount = 1;
+      state.auditEvents[0].metadata.deletedCollectorSessionCount = 1;
+      return { persistedStateChanged: true };
+    },
+  });
+
+  const stateUpdates = queries.filter((query) => query.sql.startsWith("UPDATE local_state"));
+  assert.equal(stateUpdates.length, 2);
+  assert.deepEqual(
+    JSON.parse(stateUpdates[1].values[0]).auditEvents[0].metadata,
+    {
+      deletedCollectorAuthTicketCount: 1,
+      deletedCollectorSessionCount: 1,
+    },
+  );
+  assert.equal(stateUpdates[1].values[2], 8);
+  assert.equal(queries.at(-1).sql, "COMMIT");
+  assert.equal(state.__storageVersion, 8);
+});
+
 test("formal mirror failure rolls back both representations and keeps the old version", async () => {
   const state = {};
   Object.defineProperty(state, "__storageVersion", { value: 7, writable: true, configurable: true });
