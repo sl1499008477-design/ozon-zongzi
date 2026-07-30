@@ -116,6 +116,7 @@ async function runBrowserFixture({
   let browser;
   let context;
   let page;
+  const extraPages = [];
   let primaryError;
   try {
     server = await startFixtureServer();
@@ -126,9 +127,15 @@ async function runBrowserFixture({
     browser = await chromium.launch({ executablePath: resolveBrowserPath(), headless: true });
     context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
 
     await page.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
-    await page.waitForSelector('.ozon-helper-data-panel [data-field="sales30d"]');
+    try {
+      await page.waitForSelector('.ozon-helper-data-panel [data-field="sales30d"]');
+    } catch (error) {
+      throw new Error(`data panel fixture did not render\n${pageErrors.join("\n")}`, { cause: error });
+    }
     await page.evaluate(() => window.__setPanelFixtureWidth(640));
 
     const settingsHelpers = await page.evaluate(() => ({
@@ -176,9 +183,53 @@ async function runBrowserFixture({
     await settingsMask.waitFor();
     assert.equal(await settingsModal.locator(".jz-fieldset-title").innerText(), "插件展示设置");
     assert.match(await settingsModal.locator(".jz-fieldset-note").innerText(), /选择商品详情页面板中需要展示的全部信息/);
+    assert.deepEqual(
+      await settingsModal.evaluate((modal) => {
+        const labelledBy = modal.getAttribute("aria-labelledby");
+        return {
+          role: modal.getAttribute("role"),
+          ariaModal: modal.getAttribute("aria-modal"),
+          titleId: labelledBy,
+          labelledText: labelledBy ? document.getElementById(labelledBy)?.textContent.trim() : "",
+          focusInside: modal.contains(document.activeElement),
+          activeClass: document.activeElement?.className || "",
+        };
+      }),
+      {
+        role: "dialog",
+        ariaModal: "true",
+        titleId: "jz-fieldset-title",
+        labelledText: "插件展示设置",
+        focusInside: true,
+        activeClass: "jz-fieldset-close",
+      },
+      "opening settings should expose a labelled modal dialog and move focus inside it",
+    );
+    await settingsModal.locator('[data-jz-act="save"]').focus();
+    await page.keyboard.press("Tab");
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.classList.contains("jz-fieldset-close")),
+      true,
+      "Tab from the last dialog control should wrap to the first control",
+    );
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.getAttribute("data-jz-act")),
+      "save",
+      "Shift+Tab from the first dialog control should wrap to the last control",
+    );
+    await page.keyboard.press("Escape");
+    await settingsMask.waitFor({ state: "hidden" });
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.getAttribute("data-action")),
+      "open-field-settings",
+      "Escape should close settings and restore focus to the triggering gear",
+    );
+    await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
+    await settingsMask.waitFor();
 
     const fieldCount = await settingsModal.locator('input[data-jz-field]').count();
-    assert.ok(fieldCount > 0, "settings must use the real field catalogue");
+    assert.equal(fieldCount, 32, "settings must preserve the real 32-field catalogue");
     assert.equal(await settingsModal.locator("[data-jz-visible-count]").innerText(), String(fieldCount));
     assert.equal(await settingsModal.locator(".jz-fieldset-summary span").innerText(), `/ ${fieldCount} 项信息`);
     for (const action of ["enable-all", "disable-all", "toggle-group", "restore-default", "save"]) {
@@ -290,15 +341,40 @@ async function runBrowserFixture({
       payloads: [{ dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" }],
       pendingSets: 1,
     }, "a repeated save click must not start a second write");
-    await settingsModal.locator('input[data-jz-field="rating"]').check();
-    await page.evaluate(() => window.__resolveNextPanelStorageSet());
-    await settingsMask.waitFor({ state: "hidden" });
+    await page.evaluate(() => {
+      document.querySelector(".jz-fieldset-close")?.click();
+      document.querySelector(".jz-fieldset-mask")?.click();
+    });
+    await page.keyboard.press("Escape");
+    assert.equal(await settingsMask.count(), 1, "mask, close, and Escape must not dismiss settings while saving");
+    await page.evaluate(() => window.__resolveNextPanelStorageSet("failure"));
+    await settingsModal.locator("[data-jz-save-error]").waitFor();
+    assert.equal(await settingsModal.locator("[data-jz-save-error]").innerText(), "fixture storage failed");
+    assert.equal(await saveButton.isDisabled(), false, "a deferred failure should re-enable retry");
+    assert.equal(
+      await settingsModal.locator(".jz-fieldset-close").isDisabled(),
+      false,
+      "a deferred failure should restore dismissal controls",
+    );
     assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
-      values: { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
+      values: { dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" },
       setCalls: 1,
       payloads: [{ dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" }],
       pendingSets: 0,
-    }, "the completed request must apply its captured intent without a stale second request overwriting it");
+    }, "a deferred storage failure must remain visible without applying partial state");
+    await saveButton.click();
+    assert.equal(await saveButton.isDisabled(), true, "retry should start one fresh deferred write");
+    await page.evaluate(() => window.__resolveNextPanelStorageSet("success"));
+    await settingsMask.waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
+      setCalls: 2,
+      payloads: [
+        { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
+        { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
+      ],
+      pendingSets: 0,
+    }, "retry after a deferred failure must persist the original settings intent");
 
     for (const [width, expectedColumns] of [[880, 2], [600, 1]]) {
       await page.setViewportSize({ width, height: 900 });
@@ -329,50 +405,127 @@ async function runBrowserFixture({
     assert.equal(logoFallback.display, "none");
     assert.equal(logoFallback.title, "ozon 粽子 · 选品助手");
 
-    const legacyHeader = await page.evaluate(() => {
-      const card = document.createElement("article");
-      card.className = "ozon-helper-sidebar-card";
-      card.innerHTML = `
-        <div class="ozon-helper-sidebar-card-header">
-          <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z" /></svg></span>ozon 粽子ERP</span>
-          <div class="ozon-helper-sidebar-card-header-actions">
-            <button class="ozon-helper-sidebar-card-close" data-action="close-sidebar-card">&times;</button>
-          </div>
-        </div>`;
-      document.body.appendChild(card);
-      const header = card.querySelector(".ozon-helper-sidebar-card-header");
-      const logo = card.querySelector(".ozon-helper-sidebar-card-logo");
-      const icon = card.querySelector(".oh-logo-icon");
-      const close = card.querySelector(".ozon-helper-sidebar-card-close");
-      return {
-        headerBackground: getComputedStyle(header).backgroundColor,
-        logoColor: getComputedStyle(logo).color,
-        iconColor: getComputedStyle(icon).color,
-        close: {
-          action: close.dataset.action,
-          background: getComputedStyle(close).backgroundColor,
-          borderColor: getComputedStyle(close).borderTopColor,
-          borderWidth: getComputedStyle(close).borderTopWidth,
-          color: getComputedStyle(close).color,
-        },
-      };
+    const loadRealPdpHeader = async (allowed) => {
+      const pdpPage = await context.newPage();
+      extraPages.push(pdpPage);
+      await pdpPage.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
+      await pdpPage.evaluate((gateAllowed) => {
+        history.replaceState(null, "", "/product/browser-fixture-123456789");
+        document.body.innerHTML = `
+          <div data-widget="webStickyColumn"></div>
+          <div data-widget="webStickyColumn"></div>
+          <div data-widget="webStickyColumn"><div><div data-widget="webSale"></div></div></div>`;
+        window.checkAuth = async () => ({ loggedIn: true });
+        window.jzDataCardAllowed = async () => ({ allowed: gateAllowed });
+        // Keep the production PDP card in its observable loading state. Data-source
+        // terminal transitions are exercised separately through jzPopulatePanelV2.
+        window.jzPopulatePanelV2 = () => new Promise(() => {});
+      }, allowed);
+      await pdpPage.addScriptTag({
+        url: `http://127.0.0.1:${address.port}/extension/content/ozon-product.js`,
+      });
+      const card = pdpPage.locator(".ozon-helper-sidebar-card");
+      await card.waitFor();
+      return card.evaluate((renderedCard) => {
+        const image = renderedCard.querySelector(".ozon-helper-sidebar-brand-mark img");
+        return {
+          html: renderedCard.innerHTML,
+          image: image?.getAttribute("src") || "",
+          title: renderedCard.querySelector(".ozon-helper-sidebar-brand-title")?.textContent.trim() || "",
+          status: renderedCard.querySelector(".ozon-helper-sidebar-brand-status")?.textContent.trim() || "",
+          gearAction: renderedCard.querySelector(".ozon-helper-sidebar-card-gear")?.dataset.action || "",
+          closeAction: renderedCard.querySelector(".ozon-helper-sidebar-card-close")?.dataset.action || "",
+        };
+      });
+    };
+
+    const normalPdpHeader = await loadRealPdpHeader(true);
+    assert.match(normalPdpHeader.image, /icons\/ozon-zongzi-symbol\.svg$/);
+    assert.equal(normalPdpHeader.title, "ozon 粽子 · 选品助手");
+    assert.equal(normalPdpHeader.status, "正在加载商品数据");
+    assert.equal(normalPdpHeader.gearAction, "open-field-settings");
+    assert.equal(normalPdpHeader.closeAction, "close-sidebar-card");
+    assert.doesNotMatch(normalPdpHeader.html, /ozon 粽子ERP|data-lucide="zap"/);
+
+    const lockedPdpHeader = await loadRealPdpHeader(false);
+    assert.match(lockedPdpHeader.image, /icons\/ozon-zongzi-symbol\.svg$/);
+    assert.equal(lockedPdpHeader.title, "ozon 粽子 · 选品助手");
+    assert.equal(lockedPdpHeader.status, "会员功能");
+    assert.equal(lockedPdpHeader.gearAction, "");
+    assert.equal(lockedPdpHeader.closeAction, "close-sidebar-card");
+    assert.doesNotMatch(lockedPdpHeader.html, /ozon 粽子ERP|data-lucide="zap"/);
+
+    const startDeferredPopulation = async () => page.evaluate(() => {
+      const panel = document.querySelector(".ozon-helper-data-panel");
+      const deferred = {};
+      const defer = (key) => new Promise((resolve, reject) => {
+        deferred[key] = { resolve, reject };
+      });
+      window.sendMessage = (action) => defer(action);
+      window.jzFetchPublicFollowSellCount = () => defer("followCount");
+      window.jzRenderProductPanelV2(panel, { sku: "123456789" });
+      window.__panelDataDeferred = deferred;
+      window.__panelDataPopulation = window.jzPopulatePanelV2(panel, "123456789");
+      const status = panel.querySelector(".ozon-helper-sidebar-brand-status");
+      return { text: status.textContent.trim(), state: status.dataset.state || "" };
     });
-    assert.equal(legacyHeader.headerBackground, "rgb(255, 255, 255)");
-    assert.equal(legacyHeader.logoColor, "rgb(16, 35, 74)");
-    assert.equal(legacyHeader.iconColor, "rgb(18, 104, 255)");
-    assert.deepEqual(legacyHeader.close, {
-      action: "close-sidebar-card",
-      background: "rgb(242, 247, 255)",
-      borderColor: "rgb(212, 226, 250)",
-      borderWidth: "1px",
-      color: "rgb(18, 104, 255)",
-    });
-    await page.locator('.ozon-helper-sidebar-card-close[data-action="close-sidebar-card"]').hover();
-    await page.waitForTimeout(200);
-    assert.equal(
-      await page.locator('.ozon-helper-sidebar-card-close[data-action="close-sidebar-card"]').evaluate((close) => getComputedStyle(close).backgroundColor),
-      "rgb(229, 240, 255)",
-      "legacy close affordance should remain visible on hover",
+    const finishDeferredPopulation = async (outcomes) => page.evaluate(async (nextOutcomes) => {
+      for (const [key, outcome] of Object.entries(nextOutcomes)) {
+        const pending = window.__panelDataDeferred[key];
+        if (!pending) throw new Error(`missing deferred data source ${key}`);
+        if (outcome.status === "rejected") pending.reject(new Error(outcome.message || `${key} failed`));
+        else pending.resolve(outcome.value);
+      }
+      await window.__panelDataPopulation;
+      const status = document.querySelector(
+        ".ozon-helper-data-panel .ozon-helper-sidebar-brand-status",
+      );
+      return { text: status.textContent.trim(), state: status.dataset.state || "" };
+    }, outcomes);
+    const fulfilledSources = {
+      getProductStats: { status: "fulfilled", value: { sales30d: 12 } },
+      getMarketStats: { status: "fulfilled", value: { soldCount: 12 } },
+      searchVariants: { status: "fulfilled", value: { items: [] } },
+      followCount: { status: "fulfilled", value: { count: 0, sellers: [] } },
+    };
+
+    assert.deepEqual(
+      await startDeferredPopulation(),
+      { text: "正在加载商品数据", state: "loading" },
+      "V2 must not announce success before any real data source settles",
+    );
+    assert.deepEqual(
+      await finishDeferredPopulation(fulfilledSources),
+      { text: "商品数据已更新", state: "ready" },
+      "V2 should announce success only after all real data sources fulfill",
+    );
+
+    assert.deepEqual(
+      await startDeferredPopulation(),
+      { text: "正在加载商品数据", state: "loading" },
+    );
+    assert.deepEqual(
+      await finishDeferredPopulation({
+        ...fulfilledSources,
+        getProductStats: { status: "rejected", message: "stats unavailable" },
+      }),
+      { text: "部分商品数据加载失败", state: "partial" },
+      "one rejected data source must produce an explicit partial terminal state",
+    );
+
+    assert.deepEqual(
+      await startDeferredPopulation(),
+      { text: "正在加载商品数据", state: "loading" },
+    );
+    assert.deepEqual(
+      await finishDeferredPopulation(Object.fromEntries(
+        Object.keys(fulfilledSources).map((key) => [
+          key,
+          { status: "rejected", message: `${key} unavailable` },
+        ]),
+      )),
+      { text: "商品数据加载失败", state: "error" },
+      "unknown all-source failure must never be presented as success",
     );
 
     const skeletonStatus = await page.evaluate(() => {
@@ -394,6 +547,9 @@ async function runBrowserFixture({
     throw error;
   } finally {
     const cleanupErrors = [];
+    for (const extraPage of extraPages) {
+      await closeQuietly("extra browser page", () => extraPage?.close(), cleanupErrors);
+    }
     await closeQuietly("page", () => page?.close(), cleanupErrors);
     await closeQuietly("browser context", () => context?.close(), cleanupErrors);
     await closeQuietly("browser", () => browser?.close(), cleanupErrors);

@@ -47,6 +47,7 @@ test("brand generator copies the supplied SVGs and creates correctly sized PNG i
   }
 
   for (const size of [16, 48, 128]) {
+    const safePadding = Math.max(2, Math.round(size / 8));
     for (const destination of [
       path.join(repositoryRoot, "app/public/icons", `icon${size}.png`),
       path.join(repositoryRoot, "extension/icons", `icon${size}.png`),
@@ -56,6 +57,41 @@ test("brand generator copies the supplied SVGs and creates correctly sized PNG i
       assert.equal(metadata.width, size, destination);
       assert.equal(metadata.height, size, destination);
       assert.equal(metadata.hasAlpha, true, destination);
+
+      const { data, info } = await sharp(destination)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      let minX = info.width;
+      let minY = info.height;
+      let maxX = -1;
+      let maxY = -1;
+      let solidBluePixels = 0;
+      for (let y = 0; y < info.height; y += 1) {
+        for (let x = 0; x < info.width; x += 1) {
+          const offset = (y * info.width + x) * info.channels;
+          const [red, green, blue, alpha] = data.subarray(offset, offset + 4);
+          if (alpha === 0) continue;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+          if (alpha >= 240) {
+            assert.ok(
+              Math.abs(red - 0x12) <= 2
+                && Math.abs(green - 0x68) <= 2
+                && Math.abs(blue - 0xff) <= 2,
+              `${destination} must render opaque symbol pixels in brand blue #1268FF`,
+            );
+            solidBluePixels += 1;
+          }
+        }
+      }
+      assert.ok(solidBluePixels > 0, `${destination} must contain an opaque brand symbol`);
+      assert.ok(minX >= safePadding, `${destination} must keep left alpha padding`);
+      assert.ok(minY >= safePadding, `${destination} must keep top alpha padding`);
+      assert.ok(maxX <= size - safePadding - 1, `${destination} must keep right alpha padding`);
+      assert.ok(maxY <= size - safePadding - 1, `${destination} must keep bottom alpha padding`);
     }
   }
 });

@@ -1,4 +1,4 @@
-import { cp, mkdir } from "node:fs/promises";
+import { cp, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
@@ -21,10 +21,29 @@ for (const file of brandFiles) {
   await cp(path.join(source, file), path.join(extensionIcons, file));
 }
 
+const suppliedSymbol = await readFile(path.join(source, "ozon-zongzi-symbol.svg"), "utf8");
+const blueSymbol = Buffer.from(suppliedSymbol.replaceAll("currentColor", "#1268FF"));
+
 for (const size of [16, 48, 128]) {
+  const safePadding = Math.max(2, Math.round(size / 8));
+  const symbolSize = size - safePadding * 2;
+  const renderedSymbol = await sharp(blueSymbol)
+    .resize(symbolSize, symbolSize, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
   const extensionIcon = path.join(extensionIcons, `icon${size}.png`);
-  await sharp(path.join(source, "ozon-zongzi-symbol.svg"))
-    .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+  await sharp({
+    create: {
+      width: size,
+      height: size,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([{ input: renderedSymbol, left: safePadding, top: safePadding }])
     .png()
     .toFile(extensionIcon);
   await cp(extensionIcon, path.join(webIcons, `icon${size}.png`));

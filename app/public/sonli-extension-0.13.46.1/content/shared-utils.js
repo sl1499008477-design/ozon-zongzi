@@ -1023,6 +1023,11 @@ if (!globalThis.__JZ_BRAND__) {
         <div style="font-size:12px;color:#8a94a6;margin-bottom:14px;">开通会员后可查看月销量、销售额、佣金、流量转化等数据</div>
         <button data-action="datacard-upgrade" style="background:#005bff;color:#fff;border:none;border-radius:8px;padding:8px 22px;font-size:13px;font-weight:600;cursor:pointer;">升级会员</button>
       </div>`;
+    window.jzSetPanelBrandStatus?.(
+      container.closest?.('.ozon-helper-sidebar-card, [data-jz-datacard], .ozon-helper-data-panel'),
+      '会员功能',
+      'locked',
+    );
     container.querySelector('[data-action="datacard-upgrade"]')?.addEventListener('click', () => {
       window.sendMessage('openFrontend', { path: '/ozon/settings/membership' }).catch(() => {});
     });
@@ -1438,9 +1443,13 @@ if (!globalThis.__JZ_BRAND__) {
 
   // 字段设置弹窗:按 group 列出 checkbox,保存时写 storage + 刷新所有数据卡。
   // anchorRootEl 仅用于触发上下文,设置对全站数据卡生效。
-  window.jzOpenFieldSettings = function () {
+  window.jzOpenFieldSettings = function (anchorRootEl) {
     // 已开则不重复
     if (document.querySelector('.jz-fieldset-mask')) return;
+    const activeAtOpen = document.activeElement;
+    const trigger = activeAtOpen?.matches?.('[data-action="open-field-settings"]')
+      ? activeAtOpen
+      : anchorRootEl?.querySelector?.('[data-action="open-field-settings"]') || null;
 
     window.jzLoadFieldVisibility().then((visMap) => {
       const map = visMap || {};
@@ -1453,6 +1462,10 @@ if (!globalThis.__JZ_BRAND__) {
       const modal = document.createElement('div');
       modal.className = 'jz-fieldset-modal';
       modal.setAttribute('translate', 'no');
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('aria-labelledby', 'jz-fieldset-title');
+      modal.setAttribute('tabindex', '-1');
 
       const fields = window.JZ_DATACARD_FIELDS || [];
       const groups = window.jzGroupDataCardFields(fields);
@@ -1495,8 +1508,8 @@ if (!globalThis.__JZ_BRAND__) {
 
       modal.innerHTML = `
         <div class="jz-fieldset-header">
-          <span class="jz-fieldset-title"><span class="jz-fieldset-title-icon">${gearIcon}</span>插件展示设置</span>
-          <button class="jz-fieldset-close" data-jz-act="cancel" title="关闭">&times;</button>
+          <span class="jz-fieldset-title" id="jz-fieldset-title"><span class="jz-fieldset-title-icon">${gearIcon}</span>插件展示设置</span>
+          <button type="button" class="jz-fieldset-close" data-jz-act="cancel" title="关闭" aria-label="关闭">&times;</button>
         </div>
         <div class="jz-fieldset-note">选择商品详情页面板中需要展示的全部信息。</div>
         <div class="jz-fieldset-summary">
@@ -1517,9 +1530,62 @@ if (!globalThis.__JZ_BRAND__) {
       mask.appendChild(modal);
       document.body.appendChild(mask);
 
-      const close = () => mask.remove();
-      const fieldBoxes = () => Array.from(modal.querySelectorAll('input[data-jz-field]'));
       let saving = false;
+      const focusableSelector = [
+        'button:not([disabled])',
+        'input:not([disabled])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        'a[href]',
+        '[tabindex]:not([tabindex="-1"])',
+      ].join(',');
+      const focusableElements = () => Array.from(modal.querySelectorAll(focusableSelector))
+        .filter((el) => !el.hidden && el.getAttribute('aria-hidden') !== 'true');
+      const restoreTriggerFocus = () => {
+        if (!trigger?.isConnected || typeof trigger.focus !== 'function') return;
+        try { trigger.focus({ preventScroll: true }); } catch { trigger.focus(); }
+      };
+      const close = () => {
+        if (saving) return false;
+        document.removeEventListener('keydown', handleDialogKeydown, true);
+        mask.remove();
+        restoreTriggerFocus();
+        return true;
+      };
+      const handleDialogKeydown = (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          close();
+          return;
+        }
+        if (e.key !== 'Tab') return;
+        const focusable = focusableElements();
+        if (!focusable.length) {
+          e.preventDefault();
+          modal.focus();
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      };
+      const setSaving = (next) => {
+        saving = !!next;
+        mask.dataset.jzSaving = saving ? '1' : '0';
+        modal.querySelectorAll('[data-jz-act="cancel"]').forEach((button) => {
+          button.disabled = saving;
+        });
+        const saveButton = modal.querySelector('[data-jz-act="save"]');
+        if (saveButton) saveButton.disabled = saving;
+      };
+      const fieldBoxes = () => Array.from(modal.querySelectorAll('input[data-jz-field]'));
       const refreshSummary = () => {
         const visible = fieldBoxes().filter((box) => box.checked).length;
         modal.querySelector('[data-jz-visible-count]').textContent = String(visible);
@@ -1564,9 +1630,7 @@ if (!globalThis.__JZ_BRAND__) {
           return;
         }
         if (act === 'save') {
-          saving = true;
-          const saveButton = modal.querySelector('[data-jz-act="save"]');
-          if (saveButton) saveButton.disabled = true;
+          setSaving(true);
           const next = {};
           modal.querySelectorAll('input[data-jz-field]').forEach((cb) => {
             // 只持久化「关闭」项(false);默认全显,map 越小越好、向后兼容
@@ -1580,13 +1644,13 @@ if (!globalThis.__JZ_BRAND__) {
           message.textContent = '';
           window.jzSaveDataCardSettings(next, selPeriod).then(() => {
             window.jzApplyFieldVisibilityToAll(next);
+            setSaving(false);
             close();
             if (periodChanged) { try { location.reload(); } catch {} }
           }).catch((error) => {
             message.hidden = false;
             message.textContent = error?.message || '设置保存失败，请重试';
-            saving = false;
-            if (saveButton) saveButton.disabled = false;
+            setSaving(false);
           });
         }
       });
@@ -1597,6 +1661,9 @@ if (!globalThis.__JZ_BRAND__) {
       mask.addEventListener('click', (e) => {
         if (e.target === mask) { e.preventDefault(); e.stopPropagation(); close(); }
       });
+      document.addEventListener('keydown', handleDialogKeydown, true);
+      const initialFocus = focusableElements()[0] || modal;
+      try { initialFocus.focus({ preventScroll: true }); } catch { initialFocus.focus(); }
     });
   };
 
@@ -1673,36 +1740,58 @@ if (!globalThis.__JZ_BRAND__) {
   }
 
   // 所有数据卡复用同一个品牌标题。它只负责展示层，字段、事件 action 和数据灌入
-  // contract 仍由各渲染器与 caller 保持原样。
-  function _jzPanelBrandHeaderHtml({ status = '商品数据已更新' } = {}) {
+  // contract 仍由各渲染器与 caller 保持原样。gear/close 只控制既有 action 是否出现，
+  // 不改变调用方的事件绑定与业务行为。
+  window.jzPanelBrandHeaderHtml = function ({
+    status = '商品数据已更新',
+    statusState = 'ready',
+    showGear = true,
+    showClose = false,
+  } = {}) {
     const brand = globalThis.__JZ_BRAND__ || {};
     const displayName = brand.displayName || BRAND_DISPLAY_NAME_FALLBACK;
     const mark = brand.logoUrl
       ? `<span class="ozon-helper-sidebar-brand-mark"><img src="${_v2Escape(brand.logoUrl)}" alt="" /></span>`
       : '';
+    const actions = [
+      showGear ? window.jzFieldSettingsGearHtml() : '',
+      showClose
+        ? '<button class="ozon-helper-sidebar-card-close" data-action="close-sidebar-card" title="关闭">&times;</button>'
+        : '',
+    ].filter(Boolean).join('');
     return `<div class="ozon-helper-sidebar-card-header">
       <div class="ozon-helper-sidebar-brand">
         ${mark}
         <span class="ozon-helper-sidebar-brand-copy">
           <strong class="ozon-helper-sidebar-brand-title">${_v2Escape(displayName)} · 选品助手</strong>
-          <small class="ozon-helper-sidebar-brand-status">${_v2Escape(status)}</small>
+          <small class="ozon-helper-sidebar-brand-status" data-state="${_v2Escape(statusState)}">${_v2Escape(status)}</small>
         </span>
       </div>
-      ${window.jzFieldSettingsGearHtml()}
+      ${actions ? `<div class="ozon-helper-sidebar-card-header-actions">${actions}</div>` : ''}
     </div>`;
-  }
+  };
 
-  function _jzBindPanelBrandFallback(panel) {
+  window.jzBindPanelBrandFallback = function (panel) {
     panel?.querySelectorAll?.('.ozon-helper-sidebar-brand-mark img').forEach((img) => {
       img.addEventListener('error', () => {
         img.parentElement?.setAttribute('hidden', '');
       }, { once: true });
     });
-  }
+  };
+
+  window.jzSetPanelBrandStatus = function (panel, status, state) {
+    const target = panel?.querySelector?.('.ozon-helper-sidebar-brand-status');
+    if (!target) return;
+    target.textContent = String(status || '');
+    target.dataset.state = String(state || '');
+  };
 
   window.jzRenderPanelSkeleton = function(panel) {
     panel.innerHTML = `
-      ${_jzPanelBrandHeaderHtml({ status: '正在加载商品数据' })}
+      ${window.jzPanelBrandHeaderHtml({
+        status: '正在加载商品数据',
+        statusState: 'loading',
+      })}
       <div class="ozon-helper-sidebar-card-body">
         <div class="oh-hero-section">
           <div class="oh-hero-stat is-skeleton"></div>
@@ -1716,7 +1805,7 @@ if (!globalThis.__JZ_BRAND__) {
           <div class="oh-skeleton-row"></div>
         </div>
       </div>`;
-    _jzBindPanelBrandFallback(panel);
+    window.jzBindPanelBrandFallback(panel);
   };
 
   // 挂载即渲染**真实 V2 面板结构**(字段 '-' 占位),不再走 shimmer 骨架 ——
@@ -1901,7 +1990,7 @@ if (!globalThis.__JZ_BRAND__) {
     </div>` : '';
 
     panel.innerHTML = `
-      ${_jzPanelBrandHeaderHtml()}
+      ${window.jzPanelBrandHeaderHtml()}
       <div class="ozon-helper-sidebar-card-body">
         ${heroHtml}
         ${sections.map(_ohRenderSection).join('')}
@@ -1914,7 +2003,7 @@ if (!globalThis.__JZ_BRAND__) {
     // 复用),open-field-settings 由那套统一捕获 → 走同一条 handlePanelAction 路径。
     panel.setAttribute('data-jz-datacard', '1');
     window.jzBindDataCardCopyButtons(panel);
-    _jzBindPanelBrandFallback(panel);
+    window.jzBindPanelBrandFallback(panel);
     window.jzLoadFieldVisibility().then((v) => window.jzApplyFieldVisibility(panel, v));
   };
 
@@ -3607,7 +3696,10 @@ if (!globalThis.__JZ_BRAND__) {
     </div>` : '';
 
     panel.innerHTML = `
-      ${_jzPanelBrandHeaderHtml()}
+      ${window.jzPanelBrandHeaderHtml({
+        status: '正在加载商品数据',
+        statusState: 'loading',
+      })}
       <div class="ozon-helper-sidebar-card-body">
         ${sections.map(_v2RenderSection).join('')}
       </div>
@@ -3616,7 +3708,7 @@ if (!globalThis.__JZ_BRAND__) {
     // 标记为数据卡 + 应用当前显隐(齿轮点击由 caller 的 [data-action] 委托统一捕获)。
     panel.setAttribute('data-jz-datacard', '1');
     window.jzBindDataCardCopyButtons(panel);
-    _jzBindPanelBrandFallback(panel);
+    window.jzBindPanelBrandFallback(panel);
     window.jzLoadFieldVisibility().then((v) => window.jzApplyFieldVisibility(panel, v));
   };
 
@@ -3688,6 +3780,7 @@ if (!globalThis.__JZ_BRAND__) {
   window.jzPopulatePanelV2 = async function (panel, sku, info = {}) {
     if (!panel || !sku) return;
     const skuStr = String(sku);
+    window.jzSetPanelBrandStatus(panel, '正在加载商品数据', 'loading');
 
     const updateField = (name, value, color, persistent, opts = {}) => {
       const el = panel.querySelector(`[data-field="${name}"]`);
@@ -3786,6 +3879,7 @@ if (!globalThis.__JZ_BRAND__) {
     // 会员门控兜底(页面级门控 fail-open 放行但后端拦了/会员刚过期):
     // 调用方决定锁定态怎么渲染(PDP 换卡 body,列表卡整面板重绘)。
     if (statsResult.status === 'fulfilled' && statsResult.value?.__featureGated) {
+      window.jzSetPanelBrandStatus(panel, '会员功能', 'locked');
       if (typeof info.onFeatureGated === 'function') {
         try { info.onFeatureGated(); } catch {}
       }
@@ -4161,8 +4255,11 @@ if (!globalThis.__JZ_BRAND__) {
 
     // 慢车道并行收尾:两段到货即填;函数整体仍等两路都落定才 resolve,调用方
     // (列表卡落桶 collectSaleIfMatched / PDP autoCollapseEmptySections)时序不变。
-    await Promise.all([
-      followPromise.then((r) => { try { fillFollowSection(r); } catch {} }),
+    const [followResult, variantResult] = await Promise.all([
+      followPromise.then((r) => {
+        try { fillFollowSection(r); } catch {}
+        return r;
+      }),
       variantPromise.then(async (r) => {
         try { fillVariantSection(r); } catch {}
         // sv 失败/无命中时的本地缓存兜底(用户曾访问该 SKU 详情页时抓的 dims 真值;
@@ -4170,7 +4267,7 @@ if (!globalThis.__JZ_BRAND__) {
         const _items = r.status === 'fulfilled' ? (r.value?.items || r.value?.data?.items || []) : [];
         if (!_items[0] && typeof info.fallbackDims === 'function') {
           const fd = await Promise.resolve().then(info.fallbackDims).catch(() => null);
-          if (!fd) return;
+          if (!fd) return r;
           const w = Math.round(Number(fd.weightG)) || 0;
           const dp = Number(fd.lengthMm) || 0;
           const wd = Number(fd.widthMm) || 0;
@@ -4186,6 +4283,7 @@ if (!globalThis.__JZ_BRAND__) {
             }
           }
         }
+        return r;
       }),
     ]);
 
@@ -4195,6 +4293,20 @@ if (!globalThis.__JZ_BRAND__) {
     try {
       window.jzMarkEmptyFieldsNoData(panel);
     } catch {}
+
+    const sourceResults = [statsResult, marketResult, variantResult];
+    const followWasRequested = info?.preFetched
+      ? Object.prototype.hasOwnProperty.call(info.preFetched, 'followCount')
+      : !(info.noFollowFetch || !window.jzFetchPublicFollowSellCount);
+    if (followWasRequested) sourceResults.push(followResult);
+    const rejectedCount = sourceResults.filter((result) => result?.status === 'rejected').length;
+    if (rejectedCount === 0) {
+      window.jzSetPanelBrandStatus(panel, '商品数据已更新', 'ready');
+    } else if (rejectedCount === sourceResults.length) {
+      window.jzSetPanelBrandStatus(panel, '商品数据加载失败', 'error');
+    } else {
+      window.jzSetPanelBrandStatus(panel, '部分商品数据加载失败', 'partial');
+    }
   };
 
   /**

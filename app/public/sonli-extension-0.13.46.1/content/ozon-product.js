@@ -2803,12 +2803,12 @@
       lockedCard.className = 'ozon-helper-sidebar-card';
       lockedCard.setAttribute('lang', 'zh-Hans');
       lockedCard.innerHTML = `
-        <div class="ozon-helper-sidebar-card-header">
-          <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon">${_lucideSvg('zap')}</span>${globalThis.__JZ_BRAND__.displayName}ERP</span>
-          <div class="ozon-helper-sidebar-card-header-actions">
-            <button class="ozon-helper-sidebar-card-close" data-action="close-sidebar-card">&times;</button>
-          </div>
-        </div>
+        ${window.jzPanelBrandHeaderHtml({
+          status: '会员功能',
+          statusState: 'locked',
+          showGear: false,
+          showClose: true,
+        })}
         <div class="ozon-helper-sidebar-card-body"></div>`;
       window.jzRenderDataCardLocked(lockedCard.querySelector('.ozon-helper-sidebar-card-body'));
       try {
@@ -2820,6 +2820,7 @@
       } catch {
         return;
       }
+      window.jzBindPanelBrandFallback?.(lockedCard);
       lockedCard.querySelector('[data-action="close-sidebar-card"]')?.addEventListener('click', () => lockedCard.remove());
       return;
     }
@@ -3008,13 +3009,12 @@
     };
 
     card.innerHTML = `
-      <div class="ozon-helper-sidebar-card-header">
-        <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon">${_lucideSvg('zap')}</span>${globalThis.__JZ_BRAND__.displayName}ERP</span>
-        <div class="ozon-helper-sidebar-card-header-actions">
-          ${window.jzFieldSettingsGearHtml ? window.jzFieldSettingsGearHtml() : ''}
-          <button class="ozon-helper-sidebar-card-close" data-action="close-sidebar-card">&times;</button>
-        </div>
-      </div>
+      ${window.jzPanelBrandHeaderHtml({
+        status: '正在加载商品数据',
+        statusState: 'loading',
+        showGear: true,
+        showClose: true,
+      })}
       <div class="ozon-helper-sidebar-card-body">
         ${sections.map(renderSection).join('')}
       </div>
@@ -3038,6 +3038,7 @@
       return;
     }
 
+    window.jzBindPanelBrandFallback?.(card);
     card.querySelector('[data-action="close-sidebar-card"]').addEventListener('click', () => card.remove());
     // 字段设置齿轮:打开显隐设置弹窗(保存后对全站数据卡生效)。
     card.querySelector('[data-action="open-field-settings"]')?.addEventListener('click', (e) => {

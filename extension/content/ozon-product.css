@@ -2921,6 +2921,18 @@
   border-radius: 50%;
   background: currentColor;
 }
+.ozon-helper-sidebar-brand-status[data-state="loading"] {
+  color: #7184A4;
+}
+.ozon-helper-sidebar-brand-status[data-state="partial"] {
+  color: #B54708;
+}
+.ozon-helper-sidebar-brand-status[data-state="error"] {
+  color: #D92D20;
+}
+.ozon-helper-sidebar-brand-status[data-state="locked"] {
+  color: var(--ozz-blue);
+}
 
 .ozon-helper-sidebar-card-close {
   background: #f2f7ff;
