@@ -54,4 +54,4 @@
 
 ## Commit
 
-`1fd2833`（将在记录 SHA 后 amend 保持本任务为单一聚焦提交）。
+`3bf35b7865dfe830f5dc112b21da3903b8fbc7a9` — `feat: match extension data panel prototype`。
