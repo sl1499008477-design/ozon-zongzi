@@ -1417,7 +1417,7 @@ if (!globalThis.__JZ_BRAND__) {
     const map = visMap || {};
     rootEl.querySelectorAll('[data-field]').forEach((el) => {
       const f = el.getAttribute('data-field');
-      // data-field 可能落在「行/卡容器」上(列表卡 _ohRenderRow、hero _ohHeroStat)
+      // data-field 可能落在「行/卡容器」或字段值节点上。
       // 或「value 子元素」上(详情/搜索卡 _v2RenderRow / _v2RenderHeroStat,label 是兄弟节点)。
       // 后者只隐 value 会留下孤儿 label(关掉 FBP佣金 值没了标题还在),故统一上溯到行/卡容器再隐。
       const target = el.closest('.ozon-helper-sidebar-card-row, .oh-hero-stat') || el;
@@ -1472,21 +1472,19 @@ if (!globalThis.__JZ_BRAND__) {
       const count = window.jzCountVisibleDataCardFields(fields, map);
 
       const gearIcon = window.lucideIcon ? window.lucideIcon('settings', 16) : '';
-      // 数据周期(月/周)单选 —— 放在字段列表最上方
+      // 数据周期(月/周)与展示计数同属全局设置，放入摘要区以减少一整行空占位。
       const _curPeriod = window.jzGetSalesPeriod ? window.jzGetSalesPeriod() : 'monthly';
-      const periodHtml = `<section class="jz-fieldset-group jz-fieldset-period-group">
-          <header><strong>数据周期</strong><span>不计入字段</span></header>
-          <div class="jz-fieldset-grid">
-            <label class="jz-fieldset-item">
-              <input type="radio" name="jz-sales-period" value="monthly" ${_curPeriod === 'monthly' ? 'checked' : ''} />
-              <span>月销量(近 30 天)</span>
-            </label>
-            <label class="jz-fieldset-item">
-              <input type="radio" name="jz-sales-period" value="weekly" ${_curPeriod === 'weekly' ? 'checked' : ''} />
-              <span>周销量(近 7 天)</span>
-            </label>
-          </div>
-        </section>`;
+      const periodHtml = `<div class="jz-fieldset-summary-period" role="group" aria-label="数据周期">
+          <span>数据周期</span>
+          <label>
+            <input type="radio" name="jz-sales-period" value="monthly" ${_curPeriod === 'monthly' ? 'checked' : ''} />
+            <span>近 30 天</span>
+          </label>
+          <label>
+            <input type="radio" name="jz-sales-period" value="weekly" ${_curPeriod === 'weekly' ? 'checked' : ''} />
+            <span>近 7 天</span>
+          </label>
+        </div>`;
       let groupsHtml = '';
       for (const group of groups) {
         const items = group.fields.map((f) => {
@@ -1514,12 +1512,13 @@ if (!globalThis.__JZ_BRAND__) {
         <div class="jz-fieldset-note">选择商品详情页面板中需要展示的全部信息。</div>
         <div class="jz-fieldset-summary">
           <div><small>当前已展示</small><strong data-jz-visible-count>${count.visible}</strong><span>/ ${count.total} 项信息</span></div>
+          ${periodHtml}
           <div class="jz-fieldset-summary-actions">
             <button type="button" data-jz-act="enable-all">全部开启</button>
             <button type="button" data-jz-act="disable-all">全部隐藏</button>
           </div>
         </div>
-        <div class="jz-fieldset-body">${periodHtml}${groupsHtml}</div>
+        <div class="jz-fieldset-body">${groupsHtml}</div>
         <div class="jz-fieldset-footer">
           <p class="jz-fieldset-save-error" data-jz-save-error hidden></p>
           <button class="jz-fieldset-btn" data-jz-act="restore-default">恢复默认</button>
@@ -1698,22 +1697,44 @@ if (!globalThis.__JZ_BRAND__) {
 
   const _OH_DASH = '—';
 
-  function _ohHeroStat({ accent, label, value, sub, tip, clickAction, field }) {
-    const isEmpty = value == null;
-    const accentCls = accent ? ` is-accent-${accent}` : '';
-    // clickAction 一旦提供就生效,即便 value 是 — (允许 fetch 失败时跳兜底 URL)
-    const clickCls = clickAction ? ' is-clickable' : '';
-    const clickAttr = clickAction ? ` data-click-action="${_ohEsc(clickAction)}"` : '';
-    const tipAttr = tip ? ` data-oh-tip="${_ohEsc(tip)}"` : '';
-    const fieldAttr = field ? ` data-field="${_ohEsc(field)}"` : '';
-    const valHtml = isEmpty
-      ? `<div class="oh-hero-value is-dim">${_OH_DASH}</div>`
-      : `<div class="oh-hero-value">${value}${sub ? `<small>${_ohEsc(sub)}</small>` : ''}</div>`;
-    return `<div class="oh-hero-stat${accentCls}${clickCls}"${tipAttr}${clickAttr}${fieldAttr}>
-      <div class="oh-hero-label">${_ohEsc(label)}</div>
-      ${valHtml}
+  // PDP 与列表卡共用同一套首屏概览，确保 SKU 状态、三项经营指标和物流摘要
+  // 在不同入口保持相同的信息层级与字段 contract。
+  window.jzPanelOverviewHtml = function ({
+    sku = '-',
+    salesValue = '-',
+    salesLabel = `${window.jzSalesPeriodCnShort?.() || '月'}销量`,
+    salesTip = `商品${window.jzSalesPeriodCnLong?.() || '近 30 天'}销售数量`,
+    createValue = '-',
+    createSub = '',
+    followValue = '-',
+    followSub = '',
+    followTip = '点击查看跟卖商家列表',
+    followAction = null,
+    sizeValue = '-',
+    sizeSub = '',
+  } = {}) {
+    const skuValue = String(sku || '-');
+    const sizeDimCls = sizeValue == null || sizeValue === '-' ? ' is-dim' : '';
+    return `<div class="oh-sku-status-card"><span class="oh-sku-status-label">SKU 采集状态</span><strong data-field="skuStatus">${_ohEsc(skuValue)}</strong></div>
+    <div class="oh-hero-section">
+      ${_v2RenderHeroStat({
+        field: 'sales30d', accent: 'blue', label: salesLabel, value: salesValue || '-',
+        tip: salesTip,
+      })}
+      ${_v2RenderHeroStat({
+        field: 'createDate', accent: 'green', label: '上架时间', value: createValue || '-',
+        sub: createSub || '', tip: '商品首次上架的日期',
+      })}
+      ${_v2RenderHeroStat({
+        field: 'heroFollow', accent: 'orange', label: '跟卖人数', value: followValue || '-',
+        sub: followSub || '', tip: followTip, clickAction: followAction,
+      })}
+    </div>
+    <div class="oh-size-summary" data-oh-tip="商品重量(g) · 长×宽×高(mm)">
+      <span class="oh-hero-label">重量·尺寸</span>
+      <strong class="oh-hero-value${sizeDimCls}" data-field="heroSize">${sizeValue || '-'}${sizeSub ? `<small>${_ohEsc(sizeSub)}</small>` : ''}</strong>
     </div>`;
-  }
+  };
 
   function _ohRenderRow(r) {
     const valDisplay = r.value == null ? _OH_DASH : r.value;
@@ -1793,12 +1814,16 @@ if (!globalThis.__JZ_BRAND__) {
         statusState: 'loading',
       })}
       <div class="ozon-helper-sidebar-card-body">
+        <div class="oh-sku-status-card is-skeleton">
+          <span class="oh-sku-status-label">SKU 采集状态</span>
+          <strong data-field="skuStatus">—</strong>
+        </div>
         <div class="oh-hero-section">
           <div class="oh-hero-stat is-skeleton"></div>
           <div class="oh-hero-stat is-skeleton"></div>
           <div class="oh-hero-stat is-skeleton"></div>
-          <div class="oh-hero-stat is-skeleton"></div>
         </div>
+        <div class="oh-size-summary is-skeleton"><span class="oh-hero-label">重量·尺寸</span></div>
         <div class="ozon-helper-sidebar-section is-skeleton-section">
           <div class="oh-skeleton-row"></div>
           <div class="oh-skeleton-row"></div>
@@ -1854,35 +1879,24 @@ if (!globalThis.__JZ_BRAND__) {
       else sizeMain = dims;
     }
 
-    const heroHtml = `<div class="oh-hero-section">
-      ${_ohHeroStat({
-        field: 'sales30d',
-        accent: 'blue', label: `${window.jzSalesPeriodCnShort?.() || '月'}销量`, value: heroSold,
-        tip: `商品${window.jzSalesPeriodCnLong?.() || '近 30 天'}销售数量`,
-      })}
-      ${_ohHeroStat({
-        field: 'createDate',
-        accent: 'green', label: '上架时间', value: dateMain, sub: dateSub,
-        tip: '商品首次上架的日期',
-      })}
-      ${_ohHeroStat({
-        field: 'heroFollow',
-        accent: 'orange', label: '跟卖', value: followVal, sub: followSub,
-        // followCount === 0 才禁用(确认无跟卖);null(fetch 失败/反爬退避中) 仍允许跳
-        // Ozon 原生卖家列表,作为兜底。
-        tip: followCount === 0
-          ? '商品当前无跟卖者'
-          : followCount > 0
-            ? '\u70b9\u51fb\u67e5\u770b\u8ddf\u5356\u5546\u5bb6\u5217\u8868'
-            : '\u8ddf\u5356\u6570\u52a0\u8f7d\u4e2d,\u70b9\u51fb\u67e5\u770b\u5356\u5bb6\u5217\u8868',
-        clickAction: followCount === 0 ? null : 'show-followsell-modal',
-      })}
-      ${_ohHeroStat({
-        field: 'heroSize',
-        accent: 'purple', label: '重量·尺寸', value: sizeMain, sub: sizeSub,
-        tip: '商品重量与长×宽×高(mm)',
-      })}
-    </div>`;
+    const heroHtml = window.jzPanelOverviewHtml({
+      sku: data.sku,
+      salesValue: heroSold,
+      createValue: dateMain,
+      createSub: dateSub,
+      followValue: followVal,
+      followSub,
+      // followCount === 0 才禁用(确认无跟卖);null(fetch 失败/反爬退避中) 仍允许跳
+      // Ozon 原生卖家列表,作为兜底。
+      followTip: followCount === 0
+        ? '商品当前无跟卖者'
+        : followCount > 0
+          ? '\u70b9\u51fb\u67e5\u770b\u8ddf\u5356\u5546\u5bb6\u5217\u8868'
+          : '\u8ddf\u5356\u6570\u52a0\u8f7d\u4e2d,\u70b9\u51fb\u67e5\u770b\u5356\u5bb6\u5217\u8868',
+      followAction: followCount === 0 ? null : 'show-followsell-modal',
+      sizeValue: sizeMain,
+      sizeSub,
+    });
 
     // Sections:删除 hero 已展示的「月销量」「跟卖数」
     const sections = [
@@ -2068,6 +2082,7 @@ if (!globalThis.__JZ_BRAND__) {
       null;
 
     return {
+      sku: String(productId || ''),
       soldCount: md.soldCount ?? stats.sold_count ?? null,
       gmvSum: md.gmvSum ?? stats.gmv_sum ?? null,
       avgPrice: md.avgPrice ?? stats.avg_price ?? null,
@@ -3577,9 +3592,6 @@ if (!globalThis.__JZ_BRAND__) {
   }
 
   function _v2RenderSection(section) {
-    if (section.type === 'hero') {
-      return `<div class="oh-hero-section">${section.rows.map(_v2RenderHeroStat).join('')}</div>`;
-    }
     const accentCls = section.accent ? ` is-accent-${section.accent}` : '';
     const iconHtml = section.icon || '';
     return `<div class="ozon-helper-sidebar-section${accentCls}" data-section="${_v2Escape(section.id)}">
@@ -3614,28 +3626,19 @@ if (!globalThis.__JZ_BRAND__) {
     const _v2Vol = window.jzVolumeLiters(initial.lengthMm, initial.widthMm, initial.heightMm);
     const _v2InitialVolume = _v2Vol != null ? `${_v2Vol} L` : '-';
 
+    const overviewHtml = window.jzPanelOverviewHtml({
+      sku,
+      salesValue: initial.sales30d || '-',
+      createValue: initial.createDate || '-',
+      followValue: initial.followSellCount != null ? String(initial.followSellCount) : '-',
+      followSub: initial.followSellCount != null ? '卖家' : '',
+      followTip: '\u70b9\u51fb\u67e5\u770b\u8ddf\u5356\u5546\u5bb6\u5217\u8868',
+      followAction: 'show-followsell-modal',
+      sizeValue: initial.heroSizeMain || '-',
+      sizeSub: initial.heroSizeSub || '',
+    });
+
     const sections = [
-      {
-        id: 'hero', type: 'hero', rows: [
-          { field: 'sales30d', label: `${window.jzSalesPeriodCnShort?.() || '月'}销量`, value: initial.sales30d || '-', accent: 'blue', tip: `商品${window.jzSalesPeriodCnLong?.() || '近 30 天'}销售数量` },
-          { field: 'createDate', label: '上架时间', value: initial.createDate || '-', accent: 'green', tip: '商品首次上架的日期' },
-          {
-            field: 'heroFollow', label: '跟卖',
-            value: initial.followSellCount != null ? String(initial.followSellCount) : '-',
-            sub: initial.followSellCount != null ? '卖家' : '',
-            accent: 'orange',
-            clickAction: 'show-followsell-modal',
-            tip: '\u70b9\u51fb\u67e5\u770b\u8ddf\u5356\u5546\u5bb6\u5217\u8868',
-          },
-          {
-            field: 'heroSize', label: '重量·尺寸',
-            value: initial.heroSizeMain || '-',
-            sub: initial.heroSizeSub || '',
-            accent: 'purple',
-            tip: '商品重量(g) · 长×宽×高(mm)',
-          },
-        ],
-      },
       {
         id: 'info', icon: _v2Icon('package'), title: '商品信息', accent: 'blue', rows: [
           { field: 'category', label: '一级类目', value: '-', tip: '商品一级类目', full: true },
@@ -3701,6 +3704,7 @@ if (!globalThis.__JZ_BRAND__) {
         statusState: 'loading',
       })}
       <div class="ozon-helper-sidebar-card-body">
+        ${overviewHtml}
         ${sections.map(_v2RenderSection).join('')}
       </div>
       ${actionsHtml}`;

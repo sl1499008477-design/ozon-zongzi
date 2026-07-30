@@ -2959,14 +2959,44 @@
   padding: 0;
 }
 
-/* === Hero section — 2×2 stat 卡片 (核心选品指标) === */
+/* === 首屏概览：SKU 状态 + 3 项经营指标 + 独立物流摘要 === */
+.oh-sku-status-card,
+.oh-size-summary {
+  margin: 10px 12px 0;
+  min-width: 0;
+  border: 1px solid #DDE9FA;
+  border-radius: 10px;
+  background: var(--ozz-soft);
+}
+
+.oh-sku-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+}
+.oh-sku-status-label {
+  color: #60718E;
+  font-size: 11px;
+  font-weight: 600;
+}
+.oh-sku-status-card strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #1268FF;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Monaco', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .oh-hero-section {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  padding: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 12px;
   background: #ffffff;
-  border-bottom: 1px solid var(--oh-border);
   align-items: stretch;
 }
 
@@ -2976,14 +3006,14 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 12px 8px;
+  gap: 3px;
+  padding: 8px 5px;
   border-radius: 10px;
   text-align: center;
   border: 1px solid #DDE9FA;
   background: var(--ozz-soft);
   min-width: 0;
-  min-height: 72px;
+  min-height: 58px;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   overflow: hidden;
 }
@@ -3014,6 +3044,25 @@
   letter-spacing: 0;
 }
 .oh-hero-stat .oh-hero-label { color: var(--oh-accent-color, #64748b); font-weight: 600; }
+
+.oh-size-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 0;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+}
+.oh-size-summary .oh-hero-value {
+  align-items: flex-end;
+  flex-direction: row;
+  gap: 6px;
+  font-size: 14px;
+}
+.oh-size-summary .oh-hero-value small {
+  font-size: 10px;
+}
 
 .oh-hero-value {
   font-size: 18px;
@@ -5506,7 +5555,7 @@
 
 @container (max-width: 420px) {
   .oh-hero-section {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -5540,13 +5589,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 22px 24px 12px;
+  padding: 14px 20px 8px;
 }
 .jz-fieldset-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
 }
 .jz-fieldset-title-icon {
@@ -5561,9 +5610,9 @@
   font-size: 24px;
   line-height: 1;
   cursor: pointer;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5575,20 +5624,20 @@
 }
 
 .jz-fieldset-note {
-  padding: 0 24px 16px;
+  padding: 0 20px 10px;
   font-size: 13px;
   color: #7184A4;
 }
 
 .jz-fieldset-summary {
-  margin: 0 20px;
-  padding: 14px 16px;
-  border-radius: 14px;
+  margin: 0 16px;
+  padding: 8px 10px;
+  border-radius: 12px;
   background: #F2F7FF;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px;
 }
 .jz-fieldset-summary small {
   display: block;
@@ -5598,7 +5647,7 @@
 }
 .jz-fieldset-summary strong {
   color: #10234A;
-  font-size: 22px;
+  font-size: 19px;
   line-height: 1;
 }
 .jz-fieldset-summary span {
@@ -5608,7 +5657,7 @@
 }
 .jz-fieldset-summary-actions {
   display: flex;
-  gap: 8px;
+  gap: 4px;
 }
 .jz-fieldset-summary-actions button,
 .jz-fieldset-group header button {
@@ -5629,17 +5678,17 @@
 .jz-fieldset-body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 12px 20px 20px;
+  gap: 8px;
+  padding: 8px 16px 10px;
   overflow-y: auto;
   flex: 1 1 auto;
 }
 
 .jz-fieldset-group {
   min-width: 0;
-  padding: 12px;
+  padding: 8px;
   border: 1px solid #E7EEF9;
-  border-radius: 14px;
+  border-radius: 12px;
   background: #FBFDFF;
 }
 .jz-fieldset-group header {
@@ -5647,7 +5696,7 @@
   align-items: center;
   min-height: 20px;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .jz-fieldset-group header strong {
   color: #10234A;
@@ -5660,8 +5709,45 @@
 .jz-fieldset-group header button {
   margin-left: auto;
 }
-.jz-fieldset-period-group {
-  grid-column: 1 / -1;
+.jz-fieldset-summary-period {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #D8E4F5;
+  border-radius: 9px;
+  background: #fff;
+}
+.jz-fieldset-summary-period > span {
+  margin: 0 4px 0 2px;
+  color: #7184A4;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.jz-fieldset-summary-period label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: #405677;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.jz-fieldset-summary-period label:hover {
+  background: #EAF2FF;
+}
+.jz-fieldset-summary-period input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #1268FF;
+}
+.jz-fieldset-summary-period label span {
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
 }
 .jz-fieldset-grid {
   display: grid;
@@ -5674,7 +5760,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 8px;
+  padding: 5px 6px;
   border-radius: 8px;
   background: #F5F8FD;
   font-size: 12px;
@@ -5706,7 +5792,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding: 14px 20px 20px;
+  padding: 10px 16px;
   border-top: 1px solid #EEF3FB;
 }
 .jz-fieldset-save-error {
@@ -5721,7 +5807,7 @@
   color: #405677;
   font-size: 13px;
   font-weight: 600;
-  padding: 9px 16px;
+  padding: 7px 14px;
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.15s;
@@ -5751,7 +5837,8 @@
   .jz-fieldset-header { padding: 16px 16px 8px; }
   .jz-fieldset-title { font-size: 17px; }
   .jz-fieldset-note { padding: 0 16px 12px; }
-  .jz-fieldset-summary { margin: 0 12px; padding: 12px; }
+  .jz-fieldset-summary { margin: 0 12px; padding: 8px; flex-wrap: wrap; }
+  .jz-fieldset-summary-period { order: 3; width: 100%; justify-content: center; }
   .jz-fieldset-summary-actions { gap: 2px; }
   .jz-fieldset-body { grid-template-columns: 1fr; padding: 12px; }
   .jz-fieldset-footer { flex-wrap: wrap; padding: 12px; }
