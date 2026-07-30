@@ -77,12 +77,12 @@ const assertReviewedUiDifference = (rel, expected) => {
   assert.equal(
     upstreamHash,
     expected.upstream,
-    `reviewed UI fingerprint mismatch: ${rel} (upstream full-file hash); review the complete diff before updating`,
+    `reviewed upstream UI fingerprint mismatch: ${rel} (upstream full-file hash); review the complete diff before updating`,
   );
   assert.equal(
     localHash,
     expected.local,
-    `reviewed UI fingerprint mismatch: ${rel} (local full-file hash); review the complete diff before updating`,
+    `reviewed local UI fingerprint mismatch: ${rel} (local full-file hash); review the complete diff before updating`,
   );
   assert.notEqual(
     localHash,
