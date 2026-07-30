@@ -55,10 +55,12 @@ const fixture = {
   sessions: {
     token_a: { token: "token_a", accountId: "acct_a", issuedAt: "2026-07-27T00:00:00.000Z" },
     token_b: { token: "token_b", accountId: "acct_b", issuedAt: "2026-07-27T00:00:00.000Z" },
+    token_c: { token: "token_c", accountId: "acct_c", issuedAt: "2026-07-27T00:00:00.000Z" },
   },
   accounts: [
     { id: "acct_a", username: "a", displayName: "A", role: "admin", status: "active" },
     { id: "acct_b", username: "b", displayName: "B", role: "user", status: "active" },
+    { id: "acct_c", username: "c", displayName: "C", role: "admin", status: "active" },
   ],
   currentStoreId: "",
   currentStoreIdsByAccount: { acct_a: "store_a", acct_b: "store_b" },
@@ -105,6 +107,27 @@ const fixture = {
         sku: "legacy-sku-b",
         name: "collect B",
       },
+      {
+        id: "collect_c_listing_ready",
+        accountId: "acct_c",
+        sku: "listing-ready-c",
+        name: "collect C listing ready",
+        listingDraft: {
+          sku: "listing-ready-c",
+          title: "Store-neutral listing item",
+          price: "100",
+          currencyCode: "CNY",
+          descriptionCategoryId: 17028941,
+          typeId: 91670,
+          packageWeight: "799",
+          packageLength: "350",
+          packageWidth: "85",
+          packageHeight: "50",
+          listingWarehouseId: "1020003087687000",
+          listingStock: "5",
+          images: ["https://cdn.example.test/main.jpg"],
+        },
+      },
     ],
     favorites: scopedPair("favorite"),
     promotions: scopedPair("promotion"),
@@ -134,7 +157,21 @@ const fixture = {
 const originalFetch = globalThis.fetch;
 const ozonRequests = [];
 globalThis.fetch = async (url) => {
-  ozonRequests.push(String(url));
+  const href = String(url);
+  ozonRequests.push(href);
+  if (href.endsWith("/scrape")) {
+    return new Response(JSON.stringify({
+      ok: true,
+      data: {
+        url: "https://www.ozon.ru/product/scraped-zero-store-7003/",
+        title: "Scraped without a bound store",
+        price: "77",
+        priceText: "77 ₽",
+        primaryImage: "https://cdn.example.test/scraped.jpg",
+        images: ["https://cdn.example.test/scraped.jpg"],
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
   return new Response(JSON.stringify({ code: "OZON_UNAVAILABLE" }), { status: 503 });
 };
 
@@ -142,6 +179,43 @@ const firstId = (payload) => {
   const list = Array.isArray(payload) ? payload : payload?.data || payload?.items || payload?.records || [];
   return list.map((item) => item.id);
 };
+
+const retiredPublicScopeKeys = new Set([
+  "accountid",
+  "createdby",
+  "clientid",
+  "storeid",
+  "localstoreid",
+  "operatingstoreid",
+  "datacollectionstoreid",
+  "datacollectionstore",
+  "datacollectionstores",
+  "datacollectionstoreids",
+  "currentdatacollectionstoreid",
+  "currentdatacollectionstoreidsbyaccount",
+  "sellercompanyid",
+  "sellercompany",
+  "legacyscope",
+]);
+
+function findRetiredPublicScopePath(value, currentPath = "$") {
+  if (!value || typeof value !== "object") return "";
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = findRetiredPublicScopePath(value[index], `${currentPath}[${index}]`);
+      if (found) return found;
+    }
+    return "";
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    const childPath = `${currentPath}.${key}`;
+    const canonicalKey = key.replace(/[_-]/g, "").toLowerCase();
+    if (retiredPublicScopeKeys.has(canonicalKey)) return childPath;
+    const found = findRetiredPublicScopePath(nested, childPath);
+    if (found) return found;
+  }
+  return "";
+}
 
 try {
   await writeFile(path.join(dataDir, "local-state.json"), JSON.stringify(fixture), "utf8");
@@ -225,6 +299,101 @@ try {
   assert.equal(createCollectEcho.body.id, "collect_create_echo");
   assert.equal("createdBy" in createCollectEcho.body, false);
   assert.equal("sellerCompanyId" in createCollectEcho.body, false);
+
+  const zeroStoreSingle = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box",
+    {
+      id: "collect_zero_store_single",
+      productUrl: "https://www.ozon.ru/product/zero-store-single-7001/",
+      name: "Zero-store single",
+      accountId: "acct_b",
+      createdBy: "caller-controlled",
+      storeId: "forged-store",
+      raw: {
+        localStoreId: "forged-nested-store",
+        data_collection_store_id: "forged-nested-data-store",
+      },
+    },
+    "token_c",
+  );
+  assert.equal(zeroStoreSingle.status, 200, "a signed-in account can collect before binding a store");
+  assert.equal(zeroStoreSingle.body.id, "collect_zero_store_single");
+  assert.equal(findRetiredPublicScopePath(zeroStoreSingle.body), "", "single-add response must be store-neutral");
+
+  const zeroStorePatch = await requestJson(
+    handle,
+    "PATCH",
+    "/ozon/collect-box/collect_zero_store_single",
+    {
+      name: "Zero-store single updated",
+      storeId: "forged-update-store",
+      raw: {
+        dataCollectionStoreId: "forged-update-data-store",
+      },
+    },
+    "token_c",
+  );
+  assert.equal(zeroStorePatch.status, 200);
+  assert.equal(zeroStorePatch.body.name, "Zero-store single updated");
+  assert.equal(findRetiredPublicScopePath(zeroStorePatch.body), "", "updates must not add runtime store scope");
+
+  const zeroStoreScrape = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box/scrape",
+    { sku: "7003" },
+    "token_c",
+  );
+  assert.equal(zeroStoreScrape.status, 200, "SKU scrape can save before the account binds a store");
+  assert.equal(zeroStoreScrape.body.scraped, true);
+  assert.equal(zeroStoreScrape.body.data.sku, "7003");
+  assert.equal(findRetiredPublicScopePath(zeroStoreScrape.body.data), "", "scrape response must be store-neutral");
+
+  const zeroStoreBatch = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box/batch",
+    {
+      items: [{
+        id: "collect_zero_store_batch",
+        sku: "7002",
+        name: "Zero-store batch",
+        accountId: "acct_b",
+        storeId: "forged-store",
+        raw: {
+          operatingStoreId: "forged-nested-operating-store",
+          dataCollectionStoreId: "forged-nested-data-store",
+        },
+      }],
+    },
+    "token_c",
+  );
+  assert.equal(zeroStoreBatch.status, 200, "legacy Web batch collection can save without a store");
+  assert.equal(zeroStoreBatch.body.imported, 1);
+  assert.equal(zeroStoreBatch.body.data[0].id, "collect_zero_store_batch");
+  assert.equal(findRetiredPublicScopePath(zeroStoreBatch.body.data[0]), "", "batch response must be store-neutral");
+
+  const missingPreviewTarget = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box/collect_c_listing_ready/listing/preview",
+    {},
+    "token_c",
+  );
+  assert.equal(missingPreviewTarget.status, 422);
+  assert.equal(missingPreviewTarget.body.code, "TARGET_STORE_REQUIRED");
+
+  const missingSubmitTarget = await requestJson(
+    handle,
+    "POST",
+    "/ozon/collect-box/collect_c_listing_ready/listing/submit",
+    { idempotencyKey: "zero-store-submit" },
+    "token_c",
+  );
+  assert.equal(missingSubmitTarget.status, 422);
+  assert.equal(missingSubmitTarget.body.code, "TARGET_STORE_REQUIRED");
 
   const ownCollectPatch = await requestJson(
     handle,
@@ -370,6 +539,20 @@ try {
     .find((item) => item.id === "collect_a");
   assert.equal(persistedHistoricalCollect.createdBy, "old-creator-a");
   assert.equal(persistedHistoricalCollect.sellerCompanyId, "old-seller-a");
+  for (const id of [
+    "collect_zero_store_single",
+    "7003",
+    "collect_zero_store_batch",
+  ]) {
+    const item = persisted.caches.collectBox.find((row) => row.id === id);
+    assert.ok(item, `${id} must be persisted`);
+    assert.equal(item.accountId, "acct_c", `${id} account scope must come from the authenticated session`);
+    assert.equal(item.createdBy, "acct_c", `${id} creator must come from the authenticated session`);
+    assert.equal("storeId" in item, false);
+    assert.equal("localStoreId" in item, false);
+    assert.equal("dataCollectionStoreId" in item, false);
+    assert.equal(findRetiredPublicScopePath(item.raw), "", `${id} nested raw data must not retain scope fields`);
+  }
   assert.ok(
     persisted.caches.messageTemplates.some(
       (item) => item.templateName === "Owned" && item.accountId === "acct_a" && item.storeId === "store_a",

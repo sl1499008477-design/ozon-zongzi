@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPrepareListingBody,
+  collectAddReadiness,
   eligibleTargetStores,
   listingPreparationModel,
   listingSubmissionErrorIsDefinitive,
@@ -9,6 +10,48 @@ import {
   settleListingSubmissionIntent,
   targetStoreSelection,
 } from "../src/collect-box-target-store.js";
+
+test("collection add only requires input and an authenticated account, not a bound store", () => {
+  assert.deepEqual(collectAddReadiness({
+    value: "  https://www.ozon.ru/product/account-owned-7004/  ",
+    token: "account-session-token",
+    hasStore: false,
+  }), {
+    ok: true,
+    input: "https://www.ozon.ru/product/account-owned-7004/",
+    isUrl: true,
+  });
+
+  assert.deepEqual(collectAddReadiness({
+    value: "7005",
+    token: "account-session-token",
+    hasStore: false,
+  }), {
+    ok: true,
+    input: "7005",
+    isUrl: false,
+  });
+});
+
+test("collection add rejects missing input or account authentication without asking to bind a store", () => {
+  assert.deepEqual(collectAddReadiness({
+    value: " ",
+    token: "account-session-token",
+  }), {
+    ok: false,
+    reason: "INPUT_REQUIRED",
+    message: "请输入 Ozon 商品链接或 SKU",
+  });
+
+  assert.deepEqual(collectAddReadiness({
+    value: "7006",
+    token: "",
+  }), {
+    ok: false,
+    reason: "AUTH_REQUIRED",
+    message: "登录已过期，请重新登录",
+  });
+});
 
 test("eligible target stores are active account-visible stores with saved credentials", () => {
   const eligible = eligibleTargetStores({

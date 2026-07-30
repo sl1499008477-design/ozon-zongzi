@@ -1,3 +1,26 @@
+export function collectAddReadiness({ value, token } = {}) {
+  const input = String(value || "").trim();
+  if (!input) {
+    return {
+      ok: false,
+      reason: "INPUT_REQUIRED",
+      message: "请输入 Ozon 商品链接或 SKU",
+    };
+  }
+  if (!String(token || "").trim()) {
+    return {
+      ok: false,
+      reason: "AUTH_REQUIRED",
+      message: "登录已过期，请重新登录",
+    };
+  }
+  return {
+    ok: true,
+    input,
+    isUrl: /^https?:\/\//i.test(input),
+  };
+}
+
 export function eligibleTargetStores(localData = {}) {
   return (Array.isArray(localData.stores) ? localData.stores : [])
     .filter((store) => store?.status !== "disabled" && store?.credentialsSaved === true);

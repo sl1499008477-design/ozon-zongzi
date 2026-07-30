@@ -106,7 +106,7 @@ import {
   dashboardMoneyGroups,
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
-import { buildPrepareListingBody, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
+import { buildPrepareListingBody, collectAddReadiness, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
 import { installCollectorAuthBridge } from "./collector-auth-bridge.js";
@@ -3551,21 +3551,13 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
     });
   };
   const handleCollectAdd = async (value) => {
-    const input = String(value || "").trim();
-    if (!input) {
-      message.warning("请输入 Ozon 商品链接或 SKU");
-      return;
-    }
-    if (!hasStore) {
-      if (dryRun) { message.warning("请先绑定门店"); onBind?.(); return; }
-    }
     const token = localStorage.getItem("token");
-    if (!token) {
-      message.warning("本地登录已过期，请重新绑定门店");
-      onBind?.();
+    const readiness = collectAddReadiness({ value, token });
+    if (!readiness.ok) {
+      message.warning(readiness.message);
       return;
     }
-    const isUrl = /^https?:\/\//i.test(input);
+    const { input, isUrl } = readiness;
     if (!isUrl) {
       // SKU 输入：调用后端抓取端点，自动从 ozon.ru 获取竞品数据
       message.loading({ content: "正在从 ozon.ru 抓取商品数据…", key: "collect-scrape", duration: 0 });

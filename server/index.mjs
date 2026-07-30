@@ -83,7 +83,7 @@ import {
   softDeleteCollectItemsForAccountV4,
   updateCollectItemDraftV4,
 } from "./listing-pipeline.mjs";
-import { assertListingPreparationInput, publicQueuedListingSubmission, resolveLocalListingTarget, validateTargetStoreRecord } from "./listing-submission-policy.mjs";
+import { assertListingPreparationInput, publicQueuedListingSubmission, resolveLocalListingTarget } from "./listing-submission-policy.mjs";
 import {
   authenticateCollectionRequest,
   getCollectRequestForAccount,
@@ -127,6 +127,7 @@ import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
 import { createJsonAccountScopedCollectionHandler } from "./account-scoped-collection-routes.mjs";
 import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
+import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
@@ -734,18 +735,17 @@ function collectItemKey(item) {
   return String(item?.id || item?.sourceExternalId || item?.sku || item?.productUrl || "");
 }
 
-async function saveCollectBoxItemAtomic(item, { account, store }) {
-  const latest = await loadState();
-  const latestStore = activeStore(latest, store?.id, account.id);
-  if (!latestStore) {
-    const error = new Error("经营店铺已被删除或转移");
-    error.status = 409;
-    throw error;
-  }
-  const scopedItem = {
-    ...scopeCacheItemForAccount(item, account, latestStore),
-    localStoreId: latestStore.id,
+function accountOwnedCollectBoxItem(item, account) {
+  return {
+    ...withoutCollectorScope(item),
+    accountId: account.id,
+    createdBy: account.id,
   };
+}
+
+async function saveCollectBoxItemAtomic(item, { account }) {
+  const latest = await loadState();
+  const scopedItem = accountOwnedCollectBoxItem(item, account);
   const key = collectItemKey(scopedItem);
   latest.caches.collectBox = (latest.caches.collectBox || []).filter((row) =>
     !(collectItemKey(row) === key && cacheItemBelongsToAccount(latest, row, account))
@@ -754,7 +754,6 @@ async function saveCollectBoxItemAtomic(item, { account, store }) {
   await saveState(latest);
   await mirrorCollectItemV3(scopedItem, {
     accountId: account.id,
-    storeId: latestStore.id,
     captureRaw: true,
   }).catch((error) => console.warn(`[listing-v3] 采集数据镜像失败: ${error?.message || error}`));
   return { item: scopedItem, state: latest };
@@ -769,17 +768,15 @@ async function updateCollectBoxItemAtomic(id, patch, { account }) {
   const current = latest.caches.collectBox[index];
   latest.caches.collectBox[index] = {
     ...current,
-    ...patch,
+    ...withoutCollectorScope(patch),
     id,
     accountId: account.id,
-    storeId: current.storeId || current.localStoreId || "",
-    localStoreId: current.localStoreId || current.storeId || "",
+    createdBy: current.createdBy || account.id,
     updatedAt: new Date().toISOString(),
   };
   await saveState(latest);
   await mirrorCollectItemV3(latest.caches.collectBox[index], {
     accountId: account.id,
-    storeId: latest.caches.collectBox[index].storeId || latest.caches.collectBox[index].localStoreId || "",
   }).catch((error) => console.warn(`[listing-v3] 草稿镜像失败: ${error?.message || error}`));
   return latest.caches.collectBox[index];
 }
@@ -802,19 +799,10 @@ async function deleteCollectBoxItemsAtomic(latest, ids = [], { account }) {
   };
 }
 
-async function saveCollectBoxBatchAtomic(items, { account, store }) {
+async function saveCollectBoxBatchAtomic(items, { account }) {
   const latest = await loadState();
-  const latestStore = activeStore(latest, store?.id, account.id);
-  if (!latestStore) {
-    const error = new Error("经营店铺已被删除或转移");
-    error.status = 409;
-    throw error;
-  }
   latest.caches.collectBox = latest.caches.collectBox || [];
-  const scopedItems = items.map((item) => ({
-    ...scopeCacheItemForAccount(item, account, latestStore),
-    localStoreId: latestStore.id,
-  }));
+  const scopedItems = items.map((item) => accountOwnedCollectBoxItem(item, account));
   for (const item of scopedItems) {
     const key = collectItemKey(item);
     latest.caches.collectBox = latest.caches.collectBox.filter((row) =>
@@ -826,7 +814,6 @@ async function saveCollectBoxBatchAtomic(items, { account, store }) {
   for (const item of scopedItems) {
     await mirrorCollectItemV3(item, {
       accountId: account.id,
-      storeId: latestStore.id,
       captureRaw: true,
     }).catch((error) => console.warn(`[listing-v3] 批量采集数据镜像失败: ${error?.message || error}`));
   }
@@ -2154,7 +2141,8 @@ function validateCollectBoxListingDraft(item = {}, items = [], stocks = []) {
 }
 
 async function collectBoxListingRequest(state, req, id, body = {}, { account, dryRun = false } = {}) {
-  const frozenReplay = !dryRun && listingPipelineEnabled() ? await findListingPreparationReplayV3({ accountId: account?.id, collectItemId: id, targetStoreId: body.targetStoreId, idempotencyKey: body.idempotencyKey }) : null;
+  const requestedTargetStoreId = cleanText(body.targetStoreId || body.storeId);
+  const frozenReplay = !dryRun && listingPipelineEnabled() ? await findListingPreparationReplayV3({ accountId: account?.id, collectItemId: id, targetStoreId: requestedTargetStoreId, idempotencyKey: body.idempotencyKey }) : null;
   if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
   const item = cacheItemsForAccount(state, "collectBox", account)
     .find((row) => String(row.id) === String(id));
@@ -2163,21 +2151,13 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     err.status = 404;
     throw err;
   }
-  if (!dryRun) {
-    const preparation = assertListingPreparationInput({
-      accountId: account?.id,
-      collectItemId: item.id,
-      targetStoreId: body.targetStoreId,
-      idempotencyKey: body.idempotencyKey,
-    });
-    if (!activeStore(state, preparation.targetStoreId, preparation.accountId)) {
-      validateTargetStoreRecord({
-        accountId: preparation.accountId,
-        targetStoreId: preparation.targetStoreId,
-        store: null,
-      });
-    }
-  }
+  resolveLocalListingTarget({
+    accountId: account?.id,
+    collectItemId: item.id,
+    targetStoreId: requestedTargetStoreId,
+    idempotencyKey: dryRun ? `preview:${item.id}` : body.idempotencyKey,
+    findStore: (storeId) => activeStore(state, storeId, account.id),
+  });
   const items = buildCollectBoxListingItems(item);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);
   const errors = validateCollectBoxListingDraft(item, items, stocks);
@@ -2189,6 +2169,8 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
   }
   const payload = {
     ...body,
+    storeId: requestedTargetStoreId,
+    targetStoreId: requestedTargetStoreId,
     collectBoxId: item.id,
     sku: listingFirstText(item.listingDraft?.sku, item.sku, items[0]?.scraped_sku),
     entry: body.entry || "COLLECT_BOX_DRAFT",
@@ -3937,12 +3919,6 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/ozon/collect-box/scrape") {
     const account = requireAuth(req, state);
     const body = await readBody(req);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
     const sku = String(body.sku || body.skuId || "").trim();
     if (!sku) {
       sendError(res, 400, "SKU 不能为空");
@@ -3971,7 +3947,7 @@ async function handle(req, res) {
           status: "已采集",
           raw: { sku, scrapedAt: new Date().toISOString() },
         });
-        const saved = await saveCollectBoxItemAtomic(item, { account, store });
+        const saved = await saveCollectBoxItemAtomic(item, { account });
         sendJson(res, 200, { ok: true, data: publicPersistedCollectionItem(saved.item), scraped: true });
       } else {
         // 抓取失败，仍然创建条目但标记为待处理
@@ -3982,7 +3958,7 @@ async function handle(req, res) {
           status: "待处理",
           raw: { sku, error: "scrape_failed" },
         });
-        const saved = await saveCollectBoxItemAtomic(item, { account, store });
+        const saved = await saveCollectBoxItemAtomic(item, { account });
         sendJson(res, 200, {
           ok: true,
           data: publicPersistedCollectionItem(saved.item),
@@ -4028,12 +4004,6 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/ozon/collect-box") {
     const account = requireAuth(req, state);
     const body = await readBody(req);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
     const sku = String(body.sku || "").trim();
     const isUrl = /^https?:\/\//i.test(String(body.productUrl || body.url || body.name || ""));
     // 如果有 SKU 且不是 URL，尝试抓取 ozon.ru 数据
@@ -4062,7 +4032,7 @@ async function handle(req, res) {
             status: "已采集",
             raw: { sku, scrapedAt: new Date().toISOString() },
           });
-          const saved = await saveCollectBoxItemAtomic(item, { account, store });
+          const saved = await saveCollectBoxItemAtomic(item, { account });
           sendJson(res, 200, publicPersistedCollectionItem(saved.item));
           return;
         }
@@ -4071,7 +4041,7 @@ async function handle(req, res) {
       }
     }
     const item = normalizeCollectItem(body);
-    const saved = await saveCollectBoxItemAtomic(item, { account, store });
+    const saved = await saveCollectBoxItemAtomic(item, { account });
     sendJson(res, 200, publicPersistedCollectionItem(saved.item));
     return;
   }
@@ -4165,14 +4135,8 @@ async function handle(req, res) {
     const account = requireAuth(req, state);
     const body = await readBody(req);
     const items = Array.isArray(body.items) ? body.items : [];
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
     const imported = items.map((raw) => normalizeCollectItem(raw));
-    const saved = await saveCollectBoxBatchAtomic(imported, { account, store });
+    const saved = await saveCollectBoxBatchAtomic(imported, { account });
     sendJson(res, 200, {
       ok: true,
       imported: saved.items.length,
