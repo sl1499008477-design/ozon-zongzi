@@ -108,6 +108,14 @@ test("signed-in plugin page renders the approved wordmark and product title", ()
   assert.match(pluginHero, /<h2>ozon 粽子 浏览器插件<\/h2>/);
 });
 
+test("signed-in plugin wordmark renders in a contained horizontal presentation slot", () => {
+  const markup = renderAuthenticatedApp();
+  const pluginHero = markup.match(/<div class="plugin-hero">([\s\S]*?)<\/div><div class="ant-alert/)?.[1];
+  const wordmark = pluginHero?.match(/<img[^>]*\/>/)?.[0];
+  assert.ok(wordmark, "plugin hero must render its wordmark image");
+  assert.match(wordmark, /style="width:auto;max-width:156px;height:36px;object-fit:contain"/);
+});
+
 test.after(async () => {
   await vite.close();
 });

@@ -980,9 +980,10 @@ kbd {
 }
 
 .plugin-hero img {
-  width: 76px;
-  height: 76px;
-  border-radius: 16px;
+  width: auto;
+  max-width: 156px;
+  height: 36px;
+  object-fit: contain;
 }
 
 .plugin-hero h2 {

@@ -551,6 +551,13 @@ const requiredSteps = [
   "处理首个订单",
 ];
 
+const pluginWordmarkStyle = {
+  width: "auto",
+  maxWidth: 156,
+  height: 36,
+  objectFit: "contain",
+};
+
 export function AppShell({ initialState = null }) {
   const { message, modal } = AntApp.useApp();
   const [route, setRoute] = useState(() => initialState?.route || normalizePath(window.location.pathname));
@@ -8647,7 +8654,7 @@ function PluginPanel() {
   return (
     <div className="plugin-panel">
       <div className="plugin-hero">
-        <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
+        <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} style={pluginWordmarkStyle} />
         <div>
           <h2>{PRODUCT_BRAND.displayName} 浏览器插件</h2>
           <p>版本 {EXTENSION_VERSION}</p>
