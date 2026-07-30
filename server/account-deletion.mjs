@@ -92,10 +92,22 @@ export function removeAccountScope(
     .filter((item) => belongsToAccountScope(item, accountId, storeIds))
     .map((item) => normalized(item?.objectKey || item?.object_key || item?.key))
     .filter(Boolean);
+  const collectorAuthTickets = Array.isArray(state.collectorAuthTickets)
+    ? state.collectorAuthTickets
+    : [];
+  const collectorSessions = Array.isArray(state.collectorSessions)
+    ? state.collectorSessions
+    : [];
+  const retainedCollectorAuthTickets = collectorAuthTickets
+    .filter((ticket) => normalized(ticket?.accountId) !== accountId);
+  const retainedCollectorSessions = collectorSessions
+    .filter((session) => normalized(session?.accountId) !== accountId);
 
   state.accounts = accounts.filter((account) => normalized(account?.id) !== accountId);
   state.stores = stores.filter((store) => !storeIds.has(normalized(store?.id)));
   state.sessions = filterMap(state.sessions, accountId, storeIds);
+  state.collectorAuthTickets = retainedCollectorAuthTickets;
+  state.collectorSessions = retainedCollectorSessions;
   state.hashes = filterMap(state.hashes, accountId, storeIds);
   state.leases = filterMap(state.leases, accountId, storeIds);
   state.browserAgents = filterMap(state.browserAgents, accountId, storeIds);
@@ -135,5 +147,9 @@ export function removeAccountScope(
     storeIds: [...storeIds],
     fileObjectKeys: [...new Set(fileObjectKeys)],
     legacyArchivePurgedCount: legacyArchiveDeletion.purgedCount,
+    deletedCollectorAuthTicketCount:
+      collectorAuthTickets.length - retainedCollectorAuthTickets.length,
+    deletedCollectorSessionCount:
+      collectorSessions.length - retainedCollectorSessions.length,
   };
 }

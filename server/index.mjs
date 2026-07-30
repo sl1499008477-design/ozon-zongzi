@@ -2686,6 +2686,8 @@ async function handle(req, res) {
         deletedStoreCount: deletion.storeIds.length,
         deletedFileCount: deletion.fileObjectKeys.length,
         legacyArchivePurgedCount: deletion.legacyArchivePurgedCount,
+        deletedCollectorAuthTicketCount: deletion.deletedCollectorAuthTicketCount,
+        deletedCollectorSessionCount: deletion.deletedCollectorSessionCount,
       },
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);

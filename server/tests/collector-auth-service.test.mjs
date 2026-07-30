@@ -777,6 +777,13 @@ test("formal state mirroring ignores plaintext collector secret fields", async (
   };
 
   await mirrorCollectorAuthState(client, {
+    accounts: [structuredClone(ACTIVE_ACCOUNT)],
+    sessions: {
+      [PARENT_TOKEN]: {
+        accountId: ACTIVE_ACCOUNT.id,
+        expiresAt: "2026-07-30T00:00:00.000Z",
+      },
+    },
     collectorAuthTickets: [{
       id: "ticket_mirror",
       ticket,
@@ -815,6 +822,76 @@ test("formal state mirroring ignores plaintext collector secret fields", async (
   assert.equal(sessionParameters[4].includes(PARENT_TOKEN), false);
   assert.equal(sessionParameters[5].includes(PARENT_TOKEN), false);
   assert.equal(sessionParameters[9], "PARENT_SESSION_REVOKED");
+});
+
+test("formal mirroring skips Collector auth records without a surviving account and matching parent Web session", async () => {
+  const validTicketHash = hashCollectorSecret("ctt_valid-mirror-ticket");
+  const orphanTicketHash = hashCollectorSecret("ctt_orphan-mirror-ticket");
+  const validTokenHash = hashCollectorSecret("cst_valid-mirror-token");
+  const orphanTokenHash = hashCollectorSecret("cst_orphan-mirror-token");
+  const calls = [];
+  const client = {
+    async query(sql, values) {
+      calls.push({ sql, values });
+      return { rows: [], rowCount: 1 };
+    },
+  };
+
+  await mirrorCollectorAuthState(client, {
+    accounts: [
+      { id: "account-surviving" },
+      { id: "account-parent-mismatch" },
+    ],
+    sessions: {
+      "surviving-web-session": {
+        accountId: "account-surviving",
+      },
+      "mismatched-web-session": {
+        accountId: "account-parent-mismatch",
+      },
+    },
+    collectorAuthTickets: [{
+      id: "ticket-valid",
+      ticketHash: validTicketHash,
+      accountId: "account-surviving",
+      parentSessionToken: "surviving-web-session",
+      expiresAt: "2026-07-30T12:00:00.000Z",
+    }, {
+      id: "ticket-deleted-account",
+      ticketHash: orphanTicketHash,
+      accountId: "account-deleted",
+      parentSessionToken: "deleted-web-session",
+      expiresAt: "2026-07-30T12:00:00.000Z",
+    }, {
+      id: "ticket-parent-mismatch",
+      ticketHash: hashCollectorSecret("ctt_mismatched-parent-ticket"),
+      accountId: "account-surviving",
+      parentSessionToken: "mismatched-web-session",
+      expiresAt: "2026-07-30T12:00:00.000Z",
+    }],
+    collectorSessions: [{
+      id: "collector-session-valid",
+      tokenHash: validTokenHash,
+      accountId: "account-surviving",
+      parentSessionToken: "surviving-web-session",
+      expiresAt: "2026-07-30T12:00:00.000Z",
+    }, {
+      id: "collector-session-deleted-account",
+      tokenHash: orphanTokenHash,
+      accountId: "account-deleted",
+      parentSessionToken: "deleted-web-session",
+      deviceFingerprint: "private-deleted-device",
+      expiresAt: "2026-07-30T12:00:00.000Z",
+    }],
+  });
+
+  assert.equal(calls.length, 2);
+  const serializedParameters = JSON.stringify(calls.map((call) => call.values));
+  assert.equal(serializedParameters.includes(validTicketHash), true);
+  assert.equal(serializedParameters.includes(validTokenHash), true);
+  assert.equal(serializedParameters.includes(orphanTicketHash), false);
+  assert.equal(serializedParameters.includes(orphanTokenHash), false);
+  assert.equal(serializedParameters.includes("private-deleted-device"), false);
 });
 
 test("repositories reject non-SHA secret values without persisting them", async () => {
@@ -925,6 +1002,13 @@ test("formal mirroring replaces database errors that contain collector-related s
 
   await assert.rejects(
     mirrorCollectorAuthState(client, {
+      accounts: [structuredClone(ACTIVE_ACCOUNT)],
+      sessions: {
+        [PARENT_TOKEN]: {
+          accountId: ACTIVE_ACCOUNT.id,
+          expiresAt: "2026-07-30T00:00:00.000Z",
+        },
+      },
       collectorAuthTickets: [{
         id: "ticket_mirror_error",
         ticketHash,

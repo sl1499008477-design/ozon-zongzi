@@ -100,6 +100,23 @@ try {
     assert.equal(session.revokedReason, reason);
   }
 
+  async function assertCollectorAuthRemoved(accountId, collectorToken) {
+    const persisted = JSON.parse(await readFile(dataFile, "utf8"));
+    const tokenHash = crypto.createHash("sha256").update(collectorToken).digest("hex");
+    assert.equal(
+      persisted.collectorSessions.some((item) => item.tokenHash === tokenHash),
+      false,
+    );
+    assert.equal(
+      persisted.collectorSessions.some((item) => item.accountId === accountId),
+      false,
+    );
+    assert.equal(
+      persisted.collectorAuthTickets.some((item) => item.accountId === accountId),
+      false,
+    );
+  }
+
   const firstCollectorToken = await exchangeFor(firstLogin.body.token, "device-first");
   const secondCollectorToken = await exchangeFor(secondLogin.body.token, "device-second");
 
@@ -205,8 +222,8 @@ try {
     "/extension/collector-auth/status",
     null,
     `Collector ${deletedUser.collectorToken}`,
-  )).status, 403);
-  await assertCollectorRevoked(deletedUser.collectorToken, "ACCOUNT_DELETED");
+  )).status, 401);
+  await assertCollectorAuthRemoved(deletedUser.accountId, deletedUser.collectorToken);
 
   const naturallyExpiredUser = await createUserWithCollector("naturally-expired-user");
   const naturallyExpiredState = JSON.parse(await readFile(dataFile, "utf8"));

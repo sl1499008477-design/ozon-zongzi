@@ -14,6 +14,30 @@ function scopedFixture() {
       "target-token": { accountId: "account-target" },
       "other-token": { accountId: "account-other" },
     },
+    collectorAuthTickets: [{
+      id: "ticket-target",
+      accountId: "account-target",
+      parentSessionToken: "target-token",
+      ticketHash: "target-ticket-hash",
+    }, {
+      id: "ticket-other",
+      accountId: "account-other",
+      parentSessionToken: "other-token",
+      ticketHash: "other-ticket-hash",
+    }],
+    collectorSessions: [{
+      id: "collector-session-target",
+      accountId: "account-target",
+      parentSessionToken: "target-token",
+      tokenHash: "target-session-hash",
+      deviceFingerprint: "target-device",
+    }, {
+      id: "collector-session-other",
+      accountId: "account-other",
+      parentSessionToken: "other-token",
+      tokenHash: "other-session-hash",
+      deviceFingerprint: "other-device",
+    }],
     accounts: [
       { id: "account-target", role: "user" },
       { id: "account-other", role: "admin" },
@@ -74,9 +98,13 @@ test("removeAccountScope removes only the deleted account business scope and kee
 
   assert.deepEqual(result.storeIds, ["store-target"]);
   assert.deepEqual(result.fileObjectKeys, ["target/file.png"]);
+  assert.equal(result.deletedCollectorAuthTicketCount, 1);
+  assert.equal(result.deletedCollectorSessionCount, 1);
   assert.deepEqual(state.accounts.map((item) => item.id), ["account-other"]);
   assert.deepEqual(state.stores.map((item) => item.id), ["store-other"]);
   assert.deepEqual(Object.keys(state.sessions), ["other-token"]);
+  assert.deepEqual(state.collectorAuthTickets.map((item) => item.id), ["ticket-other"]);
+  assert.deepEqual(state.collectorSessions.map((item) => item.id), ["collector-session-other"]);
   assert.deepEqual(state.caches.products.map((item) => item.id), ["product-other"]);
   assert.deepEqual(state.caches.postings, []);
   assert.deepEqual(state.caches.announcements.map((item) => item.id), ["global-announcement"]);

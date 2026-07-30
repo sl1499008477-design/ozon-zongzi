@@ -723,13 +723,41 @@ async function mirrorAccounts(client, state = {}) {
 }
 
 async function mirrorCollectorAuthStateUnsafe(client, state = {}) {
+  const accountIds = new Set(
+    (Array.isArray(state.accounts) ? state.accounts : [])
+      .map((account) => text(account?.id, 240))
+      .filter(Boolean),
+  );
+  const parentSessionOwners = new Map();
+  const webSessions = state.sessions && typeof state.sessions === "object" && !Array.isArray(state.sessions)
+    ? state.sessions
+    : {};
+  for (const [token, session] of Object.entries(webSessions)) {
+    const accountId = text(session?.accountId, 240);
+    if (token && accountIds.has(accountId)) parentSessionOwners.set(token, accountId);
+  }
+  const legacyToken = text(state.token, 1000);
+  const legacyAccountId = text(state.currentAccountId, 240);
+  if (legacyToken && accountIds.has(legacyAccountId) && !parentSessionOwners.has(legacyToken)) {
+    parentSessionOwners.set(legacyToken, legacyAccountId);
+  }
+  const hasSurvivingParent = (accountId, parentSessionToken) => (
+    accountIds.has(accountId)
+    && parentSessionOwners.get(parentSessionToken) === accountId
+  );
   const tickets = Array.isArray(state.collectorAuthTickets) ? state.collectorAuthTickets : [];
   for (const ticket of tickets) {
     const ticketHash = String(ticket?.ticketHash || "").trim().toLowerCase();
     const accountId = text(ticket?.accountId, 240);
     const parentSessionToken = text(ticket?.parentSessionToken, 1000);
     const expiresAt = dateOrNull(ticket.expiresAt);
-    if (!/^[a-f0-9]{64}$/.test(ticketHash) || !accountId || !parentSessionToken || !expiresAt) continue;
+    if (
+      !/^[a-f0-9]{64}$/.test(ticketHash)
+      || !accountId
+      || !parentSessionToken
+      || !expiresAt
+      || !hasSurvivingParent(accountId, parentSessionToken)
+    ) continue;
     await client.query(
       `
         INSERT INTO collector_auth_tickets (
@@ -759,7 +787,13 @@ async function mirrorCollectorAuthStateUnsafe(client, state = {}) {
     const accountId = text(session?.accountId, 240);
     const parentSessionToken = text(session?.parentSessionToken, 1000);
     const expiresAt = dateOrNull(session.expiresAt);
-    if (!/^[a-f0-9]{64}$/.test(tokenHash) || !accountId || !parentSessionToken || !expiresAt) continue;
+    if (
+      !/^[a-f0-9]{64}$/.test(tokenHash)
+      || !accountId
+      || !parentSessionToken
+      || !expiresAt
+      || !hasSurvivingParent(accountId, parentSessionToken)
+    ) continue;
     await client.query(
       `
         INSERT INTO collector_sessions (

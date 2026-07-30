@@ -1,13 +1,10 @@
 import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { removeAccountScope } from "../account-deletion.mjs";
-import { protectStateForStorage } from "../crypto-secrets.mjs";
+import { Readable } from "node:stream";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
-import { deleteRemovedAccountScopes } from "../formal-persistence.mjs";
 import { readLegacyDataCollectionStoresForAudit } from "../legacy-data-collection-store.mjs";
-import { persistPostgresStateAtomically } from "../postgres-state-transaction.mjs";
 
 if (!postgresEnabled()) {
   console.log("account deletion PostgreSQL integration skipped: PostgreSQL is not configured");
@@ -15,7 +12,10 @@ if (!postgresEnabled()) {
 }
 
 const suffix = crypto.randomUUID();
+const adminAccountId = `delete_admin_${suffix}`;
+const adminSessionToken = `delete_admin_session_${suffix}`;
 const accountId = `delete_account_${suffix}`;
+const accountSessionToken = `delete_account_session_${suffix}`;
 const storeId = `delete_store_${suffix}`;
 const snapshotId = `delete_snapshot_${suffix}`;
 const jobId = `delete_job_${suffix}`;
@@ -25,15 +25,53 @@ const rawPayloadId = `delete_raw_payload_${suffix}`;
 const collectRequestId = `delete_collect_request_${suffix}`;
 const legacyDataStoreId = `delete_legacy_data_store_${suffix}`;
 const legacyVerificationRequestId = `delete_legacy_verification_${suffix}`;
-const legacyPurgeEventId =
-  `legacy-data-store-purge:${accountId}:2026-07-30T10:00:00.000Z`;
 const accountBId = `delete_account_b_${suffix}`;
+const accountBSessionToken = `delete_account_b_session_${suffix}`;
 const legacyDataStoreBId = `delete_legacy_data_store_b_${suffix}`;
 const accountBVerificationRequestId = `keep_b_verification_${suffix}`;
+const accountTicketHash = crypto.createHash("sha256").update(`delete-ticket-${suffix}`).digest("hex");
+const accountCollectorTokenHash = crypto.createHash("sha256").update(`delete-session-${suffix}`).digest("hex");
+const accountBTicketHash = crypto.createHash("sha256").update(`keep-b-ticket-${suffix}`).digest("hex");
+const accountBCollectorTokenHash = crypto.createHash("sha256").update(`keep-b-session-${suffix}`).digest("hex");
 const pool = await getPostgresPool();
+
+async function requestDeleteAccount(handle) {
+  const req = Readable.from([]);
+  req.method = "DELETE";
+  req.url = `/local/accounts/${encodeURIComponent(accountId)}`;
+  req.headers = { authorization: `Bearer ${adminSessionToken}` };
+  const res = {
+    status: 0,
+    body: "",
+    writeHead(status) {
+      this.status = status;
+    },
+    end(text = "") {
+      this.body = String(text || "");
+    },
+  };
+  try {
+    await handle(req, res);
+  } catch (error) {
+    res.writeHead(Number(error?.status || 500));
+    res.end(JSON.stringify({
+      ok: false,
+      code: error?.code || "LOCAL_ERROR",
+      message: error?.message || "本地服务异常",
+    }));
+  }
+  return {
+    status: res.status,
+    body: JSON.parse(res.body || "{}"),
+  };
+}
 
 try {
   await runMigrations(pool);
+  await pool.query(
+    "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,'Delete Admin','admin','active')",
+    [adminAccountId, `delete-admin-${suffix}`],
+  );
   await pool.query(
     "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,'Delete Test','user','active')",
     [accountId, `delete-${suffix}`],
@@ -41,6 +79,54 @@ try {
   await pool.query(
     "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,'Keep B','user','active')",
     [accountBId, `keep-b-${suffix}`],
+  );
+  for (const [token, ownerAccountId] of [
+    [adminSessionToken, adminAccountId],
+    [accountSessionToken, accountId],
+    [accountBSessionToken, accountBId],
+  ]) {
+    await pool.query(
+      `INSERT INTO sessions (token,account_id,issued_at,expires_at,last_seen_at)
+       VALUES ($1,$2,NOW(),TIMESTAMPTZ '2099-01-01T00:00:00.000Z',NOW())`,
+      [token, ownerAccountId],
+    );
+  }
+  await pool.query(
+    `INSERT INTO collector_auth_tickets (
+       id,ticket_hash,account_id,parent_session_token,permissions,expires_at
+     ) VALUES
+       ($1,$2,$3,$4,'["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z'),
+       ($5,$6,$7,$8,'["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z')`,
+    [
+      `delete-ticket-${suffix}`,
+      accountTicketHash,
+      accountId,
+      accountSessionToken,
+      `keep-b-ticket-${suffix}`,
+      accountBTicketHash,
+      accountBId,
+      accountBSessionToken,
+    ],
+  );
+  await pool.query(
+    `INSERT INTO collector_sessions (
+       id,token_hash,account_id,parent_session_token,device_fingerprint,
+       extension_version,permissions,expires_at
+     ) VALUES
+       ($1,$2,$3,$4,$5,'3.0.0-test','["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z'),
+       ($6,$7,$8,$9,$10,'3.0.0-test','["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z')`,
+    [
+      `delete-collector-session-${suffix}`,
+      accountCollectorTokenHash,
+      accountId,
+      accountSessionToken,
+      `private-delete-device-${suffix}`,
+      `keep-b-collector-session-${suffix}`,
+      accountBCollectorTokenHash,
+      accountBId,
+      accountBSessionToken,
+      `keep-b-device-${suffix}`,
+    ],
   );
   await pool.query(
     "INSERT INTO stores (id,owner_account_id,label,client_id,status) VALUES ($1,$2,'Delete Store',$3,'active')",
@@ -147,7 +233,11 @@ try {
     },
   };
   const state = {
+    token: adminSessionToken,
+    currentAccountId: adminAccountId,
+    sessionIssuedAt: "2026-07-30T08:00:00.000Z",
     accounts: [
+      { id: adminAccountId, username: `delete-admin-${suffix}`, role: "admin", status: "active" },
       { id: accountId, username: `delete-${suffix}`, role: "user", status: "active" },
       { id: accountBId, username: `keep-b-${suffix}`, role: "user", status: "active" },
     ],
@@ -158,7 +248,66 @@ try {
       clientId: `delete-client-${suffix}`,
       status: "active",
     }],
-    sessions: {},
+    sessions: {
+      [adminSessionToken]: {
+        token: adminSessionToken,
+        accountId: adminAccountId,
+        issuedAt: "2026-07-30T08:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      },
+      [accountSessionToken]: {
+        token: accountSessionToken,
+        accountId,
+        issuedAt: "2026-07-30T08:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      },
+      [accountBSessionToken]: {
+        token: accountBSessionToken,
+        accountId: accountBId,
+        issuedAt: "2026-07-30T08:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      },
+    },
+    collectorAuthTickets: [{
+      id: `delete-ticket-${suffix}`,
+      ticketHash: accountTicketHash,
+      accountId,
+      parentSessionToken: accountSessionToken,
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+    }, {
+      id: `keep-b-ticket-${suffix}`,
+      ticketHash: accountBTicketHash,
+      accountId: accountBId,
+      parentSessionToken: accountBSessionToken,
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+    }],
+    collectorSessions: [{
+      id: `delete-collector-session-${suffix}`,
+      tokenHash: accountCollectorTokenHash,
+      accountId,
+      parentSessionToken: accountSessionToken,
+      deviceFingerprint: `private-delete-device-${suffix}`,
+      extensionVersion: "3.0.0-test",
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+      lastSeenAt: "2026-07-30T08:00:00.000Z",
+    }, {
+      id: `keep-b-collector-session-${suffix}`,
+      tokenHash: accountBCollectorTokenHash,
+      accountId: accountBId,
+      parentSessionToken: accountBSessionToken,
+      deviceFingerprint: `keep-b-device-${suffix}`,
+      extensionVersion: "3.0.0-test",
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+      lastSeenAt: "2026-07-30T08:00:00.000Z",
+    }],
     hashes: {},
     leases: {},
     browserAgents: {},
@@ -192,33 +341,12 @@ try {
      ON CONFLICT (id) DO UPDATE SET state=EXCLUDED.state,version=EXCLUDED.version`,
     [JSON.stringify(state)],
   );
-  Object.defineProperty(state, "__storageVersion", {
-    value: 1,
-    enumerable: false,
-    configurable: true,
-    writable: true,
-  });
-  const deletion = removeAccountScope(state, accountId, {
-    actor: { type: "account", id: accountId },
-    reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
-    occurredAt: "2026-07-30T10:00:00.000Z",
-  });
-  assert.equal(deletion.legacyArchivePurgedCount, 1);
-
-  const client = await pool.connect();
-  try {
-    await persistPostgresStateAtomically({
-      client,
-      table: "local_state",
-      state,
-      protectedState: protectStateForStorage(state),
-      mirror: async (transactionClient, transactionState) => {
-        await deleteRemovedAccountScopes(transactionClient, transactionState);
-      },
-    });
-  } finally {
-    client.release();
-  }
+  process.env.QH_LOCAL_NO_LISTEN = "1";
+  process.env.QH_LOCAL_NO_DOTENV = "1";
+  const { handle } = await import("../index.mjs");
+  const deletionResponse = await requestDeleteAccount(handle);
+  assert.equal(deletionResponse.status, 200);
+  assert.equal(deletionResponse.body.ok, true);
 
   const counts = await pool.query(
     `SELECT
@@ -237,18 +365,29 @@ try {
         WHERE data_collection_store_id=$9) legacy_membership_count,
        (SELECT COUNT(*)::int FROM collection_store_verifications
         WHERE request_id=$10) legacy_verification_count,
-       (SELECT COUNT(*)::int FROM audit_events WHERE event_id=$11) legacy_purge_audit_count,
-       (SELECT account_id FROM audit_events WHERE event_id=$11) legacy_purge_audit_account_id,
-       (SELECT metadata FROM audit_events WHERE event_id=$11) legacy_purge_metadata,
-       (SELECT COUNT(*)::int FROM data_collection_stores WHERE id=$12) account_b_legacy_store_count,
+       (SELECT COUNT(*)::int FROM audit_events
+        WHERE action='LEGACY_DATA_COLLECTION_STORE_PURGED' AND entity_id=$1) legacy_purge_audit_count,
+       (SELECT account_id FROM audit_events
+        WHERE action='LEGACY_DATA_COLLECTION_STORE_PURGED' AND entity_id=$1) legacy_purge_audit_account_id,
+       (SELECT metadata FROM audit_events
+        WHERE action='LEGACY_DATA_COLLECTION_STORE_PURGED' AND entity_id=$1) legacy_purge_metadata,
+       (SELECT COUNT(*)::int FROM data_collection_stores WHERE id=$11) account_b_legacy_store_count,
        (SELECT COUNT(*)::int FROM account_data_collection_stores
-        WHERE account_id=$13 AND data_collection_store_id=$12) account_b_legacy_membership_count,
+        WHERE account_id=$12 AND data_collection_store_id=$11) account_b_legacy_membership_count,
        (SELECT COUNT(*)::int FROM collection_store_verifications
-        WHERE account_id=$13 AND request_id=$14) account_b_verification_count,
+        WHERE account_id=$12 AND request_id=$13) account_b_verification_count,
        (SELECT data_collection_store_id FROM collection_store_verifications
-        WHERE account_id=$13 AND request_id=$14) account_b_verification_store_id,
+        WHERE account_id=$12 AND request_id=$13) account_b_verification_store_id,
+       (SELECT COUNT(*)::int FROM collector_auth_tickets WHERE account_id=$1) collector_ticket_count,
+       (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$1) collector_session_count,
+       (SELECT COUNT(*)::int FROM collector_auth_tickets WHERE account_id=$12) account_b_collector_ticket_count,
+       (SELECT COUNT(*)::int FROM collector_sessions WHERE account_id=$12) account_b_collector_session_count,
        (SELECT state->'legacyDataCollectionStoreAuditArchive'
-        FROM local_state WHERE id='local-state') local_state_legacy_archive`,
+        FROM local_state WHERE id='local-state') local_state_legacy_archive,
+       (SELECT state->'collectorAuthTickets'
+        FROM local_state WHERE id='local-state') local_state_collector_tickets,
+       (SELECT state->'collectorSessions'
+        FROM local_state WHERE id='local-state') local_state_collector_sessions`,
     [
       accountId,
       storeId,
@@ -260,7 +399,6 @@ try {
       auditEntityId,
       legacyDataStoreId,
       legacyVerificationRequestId,
-      legacyPurgeEventId,
       legacyDataStoreBId,
       accountBId,
       accountBVerificationRequestId,
@@ -293,21 +431,58 @@ try {
     account_b_legacy_membership_count: 1,
     account_b_verification_count: 1,
     account_b_verification_store_id: null,
+    collector_ticket_count: 0,
+    collector_session_count: 0,
+    account_b_collector_ticket_count: 1,
+    account_b_collector_session_count: 1,
     local_state_legacy_archive: {
       schemaVersion: 1,
       readOnly: true,
       records: [keepBArchiveRecord],
       accountRecordCounts: { [accountBId]: 1 },
     },
+    local_state_collector_tickets: [{
+      id: `keep-b-ticket-${suffix}`,
+      ticketHash: accountBTicketHash,
+      accountId: accountBId,
+      parentSessionToken: accountBSessionToken,
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+    }],
+    local_state_collector_sessions: [{
+      id: `keep-b-collector-session-${suffix}`,
+      tokenHash: accountBCollectorTokenHash,
+      accountId: accountBId,
+      parentSessionToken: accountBSessionToken,
+      deviceFingerprint: `keep-b-device-${suffix}`,
+      extensionVersion: "3.0.0-test",
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+      lastSeenAt: "2026-07-30T08:00:00.000Z",
+    }],
   });
   assert.doesNotMatch(
     JSON.stringify(counts.rows[0].local_state_legacy_archive),
     new RegExp(`${accountId}|delete-seller-${suffix}`),
   );
+  assert.doesNotMatch(
+    JSON.stringify({
+      tickets: counts.rows[0].local_state_collector_tickets,
+      sessions: counts.rows[0].local_state_collector_sessions,
+    }),
+    new RegExp(`${accountId}|${accountSessionToken}|private-delete-device-${suffix}`),
+  );
   console.log("account deletion PostgreSQL integration passed");
 } finally {
   await pool.query("DELETE FROM audit_events WHERE entity_id=$1", [auditEntityId]).catch(() => {});
-  await pool.query("DELETE FROM audit_events WHERE event_id=$1", [legacyPurgeEventId]).catch(() => {});
+  await pool.query(
+    "DELETE FROM audit_events WHERE action='LEGACY_DATA_COLLECTION_STORE_PURGED' AND entity_id=$1",
+    [accountId],
+  ).catch(() => {});
+  await pool.query("DELETE FROM audit_events WHERE action='ACCOUNT_DELETED' AND entity_id=$1", [accountId]).catch(() => {});
+  await pool.query("DELETE FROM accounts WHERE id=$1", [adminAccountId]).catch(() => {});
   await pool.query("DELETE FROM accounts WHERE id=$1", [accountBId]).catch(() => {});
   await pool.query("DELETE FROM data_collection_stores WHERE id=$1", [legacyDataStoreBId]).catch(() => {});
   await closePostgresPool();

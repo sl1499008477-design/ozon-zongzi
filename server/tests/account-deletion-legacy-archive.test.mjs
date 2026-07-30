@@ -46,7 +46,52 @@ await writeFile(dataFile, JSON.stringify({
       issuedAt: "2026-07-30T08:00:00.000Z",
       currentDataCollectionStoreId: "data-store-a",
     },
+    "account-b-session": {
+      token: "account-b-session",
+      accountId: "account-b",
+      issuedAt: "2026-07-30T08:00:00.000Z",
+    },
   },
+  collectorAuthTickets: [{
+    id: "account-a-ticket",
+    ticketHash: "a".repeat(64),
+    accountId: "account-a",
+    parentSessionToken: "account-a-session",
+    permissions: ["collector.upload"],
+    expiresAt: "2026-07-30T12:00:00.000Z",
+    createdAt: "2026-07-30T08:00:00.000Z",
+  }, {
+    id: "account-b-ticket",
+    ticketHash: "b".repeat(64),
+    accountId: "account-b",
+    parentSessionToken: "account-b-session",
+    permissions: ["collector.upload"],
+    expiresAt: "2026-07-30T12:00:00.000Z",
+    createdAt: "2026-07-30T08:00:00.000Z",
+  }],
+  collectorSessions: [{
+    id: "account-a-collector-session",
+    tokenHash: "c".repeat(64),
+    accountId: "account-a",
+    parentSessionToken: "account-a-session",
+    deviceFingerprint: "account-a-private-device",
+    extensionVersion: "3.0.0",
+    permissions: ["collector.upload"],
+    expiresAt: "2026-07-30T12:00:00.000Z",
+    createdAt: "2026-07-30T08:00:00.000Z",
+    lastSeenAt: "2026-07-30T08:00:00.000Z",
+  }, {
+    id: "account-b-collector-session",
+    tokenHash: "d".repeat(64),
+    accountId: "account-b",
+    parentSessionToken: "account-b-session",
+    deviceFingerprint: "account-b-device",
+    extensionVersion: "3.0.0",
+    permissions: ["collector.upload"],
+    expiresAt: "2026-07-30T12:00:00.000Z",
+    createdAt: "2026-07-30T08:00:00.000Z",
+    lastSeenAt: "2026-07-30T08:00:00.000Z",
+  }],
   accounts: [{
     id: "account-admin",
     username: "admin",
@@ -131,7 +176,7 @@ async function requestJson(method, pathname, authorization = "") {
   };
 }
 
-test("real JSON account deletion persists no A archive and cannot recreate it on reload", async () => {
+test("real JSON account deletion persists no A archive or Collector auth artifacts and preserves B", async () => {
   const response = await requestJson(
     "DELETE",
     "/local/accounts/account-a",
@@ -150,6 +195,21 @@ test("real JSON account deletion persists no A archive and cannot recreate it on
     JSON.stringify(saved.legacyDataCollectionStoreAuditArchive),
     /account-a|seller-a-retired-on-disk/,
   );
+  assert.deepEqual(
+    saved.collectorAuthTickets.map((ticket) => ticket.id),
+    ["account-b-ticket"],
+  );
+  assert.deepEqual(
+    saved.collectorSessions.map((session) => session.id),
+    ["account-b-collector-session"],
+  );
+  assert.doesNotMatch(
+    JSON.stringify({
+      tickets: saved.collectorAuthTickets,
+      sessions: saved.collectorSessions,
+    }),
+    /account-a|account-a-session|account-a-private-device/,
+  );
   for (const retiredField of [
     "currentDataCollectionStoreIdsByAccount",
     "dataCollectionStore",
@@ -160,6 +220,8 @@ test("real JSON account deletion persists no A archive and cannot recreate it on
   const deletionAudit = saved.auditEvents.find((event) =>
     event.action === "ACCOUNT_DELETED" && event.entityId === "account-a");
   assert.equal(deletionAudit?.metadata?.legacyArchivePurgedCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectorAuthTicketCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectorSessionCount, 1);
 
   const reloaded = testExports.ensureAccountState(structuredClone(saved));
   assert.deepEqual(
