@@ -4,13 +4,13 @@
 
 分支：`codex/remove-selection-watermark`
 
-产品验证基线：`e77bc46b3a551d418de542a2295c15fb0584a4d6`
-
 功能分支起点：`37b01ce`
 
-最终审查整改基线：`2682532ee4947c49f88330343f16b27342b61c3a`
+完整 hermetic `scripts/verify.mjs` 验证提交：`32611daa717c54761a973fe962e1c4365eaf4a13`
 
-最终审查整改代码与派生物基线：`32611da`
+当前运行时、contract 与交付包聚焦验证提交：`e7d55e4e639874524500302146bcef896cfa74de`
+
+提交边界说明：`32611da` 是下文“完整验证”的精确被测提交；其后的 `3d2aa98`、`1ec91ae` 与 `e7d55e4` 通过本记录列出的聚焦门禁验证。`a882627`、`5b89d60` 以及写入本记录/`design-qa.md`/整改报告的后续提交仅修改文档，不改变运行时、contract、public 解压树或 ZIP。本文不写入自身提交 SHA，避免形成无法成立的自指验证声明。
 
 ## 交付范围与提交
 
@@ -33,6 +33,11 @@
 | `18b4482` | 让 follow-sell 的 dry-run 在 portal 标志同时存在时仍只走预检 |
 | `d2d68f2` | 用完整文件指纹锁定四个经审查的 UI 差异，并加入 mutation gate |
 | `32611da` | 从整改后的扩展源码重建 public 解压树与两个 ZIP |
+| `a882627` | 记录终审整改验证证据（仅文档） |
+| `3d2aa98` | 证明四个本地 UI 文件的无关 mutation 会被精确拒绝 |
+| `1ec91ae` | 从加强后的 UI parity contract 重建 public 解压树与两个 ZIP |
+| `5b89d60` | 澄清本地 UI mutation 失败证据（仅文档） |
+| `e7d55e4` | 修正数据面板职责注释、加入陈旧短语负向 contract，并重建 public 解压树与两个 ZIP |
 
 变更后的稳定 contract：
 
@@ -55,7 +60,25 @@
 | `node extension/tests/follow-sell-content-copy.test.js` | 1 content-copy runner；退出 0，输出 `follow-sell content copy test passed` |
 | `node extension/tests/portal-bridge-policy.test.js` | 1 portal-policy runner；退出 0，输出 `portal bridge policy tests passed` |
 
-以上行为测试合计 12 个顶层测试/runner：12 pass，0 fail，0 skip。另行运行 source parity、UI parity、diff contract、ZIP parity、两份 ZIP smoke 和 plugin readiness，全部退出 0。
+以上行为测试是 `32611da` 完整验证时的聚焦证据。`e7d55e4` 上又刷新执行以下门禁：
+
+| 命令 | 精确结果 |
+| --- | --- |
+| `QH_SOURCE_EXTENSION_DIR=/Users/songliang/Desktop/0.13.46.1 node --test app/tests/removed-selection-watermark-ui.test.mjs server/tests/removed-selection-watermark-routes.test.mjs extension/tests/ui-parity-exception-gate.test.js` | 6 tests；6 pass，0 fail，0 skip |
+| `node extension/tests/removed-selection-watermark-contract.test.js` | 退出 0；同时锁定 `ozon-data-panel.js` 不得再出现“选品模式”，并保留搜索页/其他页面的 `collect-one` 与 `jzRenderProductCardPanel` 入口 |
+| `node extension/tests/collector-session.test.js` | 19 tests；19 pass，0 fail，0 skip |
+| `node extension/tests/collector-removed.test.js` | 退出 0，输出 `collector removal and one-click collection guard passed` |
+| `node extension/popup/__tests__/popup-collector-session.runtime.test.js` | 退出 0，输出 `popup Collector-session runtime passed` |
+| `node scripts/check-extension-source-parity.mjs` | 退出 0；源码与 public 解压树 parity 通过 |
+| `node scripts/check-extension-ui-parity.mjs` | 退出 0；UI parity 通过 |
+| `node scripts/check-extension-diff-contract.mjs` | 退出 0；capture-only diff contract 通过 |
+| `node scripts/check-extension-zip.mjs` | 退出 0；public/dist 两个 ZIP 各 104 文件，均与扩展源码一致 |
+| `node scripts/check-extension-zip-smoke.mjs` | 退出 0；两份 ZIP 的 19/19 Collector session、7/7 capture-only 及 popup/bridge/dry-run/退役能力 runner 全部通过 |
+| `node scripts/check-plugin-readiness-gate.mjs` | 退出 0；7/7 capture-only 与 3/3 Web plugin-surface tests 通过 |
+
+本轮 negative contract 遵循 RED/GREEN：先加入 `ozon-data-panel.js` 的“选品模式”精确负向断言，runner 按预期失败于该断言；随后只修正职责注释，runner 转为退出 0。采集器与数据面板正向断言和上述相关测试均保留并通过。
+
+机械重建后，public ZIP 与 dist ZIP 的 SHA-256 均为 `a933152eb008f0fa4e2af38f46dbfa71184fcfaf32f7f0ef316e146f6deffe27`；两个归档自身逐字节相同，ZIP parity 进一步逐文件确认两份归档、`extension/` 与 public 解压树中的 104 个文件内容一致。`app/dist/` 按仓库规则被忽略，public 解压树与 public ZIP 是本次提交的 tracked 派生物。
 
 ## 最终审查整改证据
 
@@ -65,11 +88,11 @@
 - Finding 2 GREEN：`batch-upload/index.html`、`batch-upload/index.js`、`content/ozon-product.css`、`content/ozon-search.css` 分别锁定完整上游文件与完整本地文件的 SHA-256 对；mutation 测试先要求未修改扩展树通过，再对四个文件逐一复制真实扩展树并追加无关注释，每次都必须精确因对应文件的 local full-file fingerprint 不匹配而失败，不能用 upstream 漂移或其他错误假阳性通过。`batch-upload/index.css`、`content/jzc-calc.css`、`lib/store-picker.css` 等未豁免 UI 文件继续做 exact equality。
 - 指纹更新规则：未来的有意变更必须先审查该文件完整的 upstream/local diff，只更新该文件对应的一对完整文件哈希；单边漂移、顺手改动或新例外都默认失败，不能通过增加关键词或目录通配放行。
 
-## 完整验证
+## `32611da` 的完整验证
 
 使用计划指定的 hermetic 环境运行 `node scripts/verify.mjs`；`QH_LOCAL_NO_DOTENV=1`，外部源扩展目录固定为 `/Users/songliang/Desktop/0.13.46.1`，PostgreSQL、MinIO、加密密钥、管理员密码和 Web 端口均通过进程环境提供，秘密值未写入本文档。
 
-结果：退出码 0，最终输出 `All verification checks passed.`
+结果：在 `32611daa717c54761a973fe962e1c4365eaf4a13` 上退出码 0，最终输出 `All verification checks passed.`。后续提交没有冒充为这次完整 suite 的被测提交；当前交付头 `e7d55e4` 的增量范围由上一节聚焦门禁覆盖。
 
 - App production build：4,827 modules transformed，构建成功；仅保留已有的 chunk size warning。
 - Test inventory：121 active test files，14 historical/manual。
@@ -128,8 +151,9 @@
 - `extension/background/follow-sell-request.js` 及其 public 分发副本：旧扩展消息的防御性字段剥离，不是水印能力。
 - `server/index.mjs`：历史状态兼容迁移时的字段剥离，不是公开或写入 contract。
 - `follow-sell-watermark-boundary.test.js`、`removed-selection-watermark-routes.test.mjs` 及 public 测试副本：负向/兼容行为测试。
+- `docs/`、`.superpowers/` 与根 `design-qa.md`：设计历史、实现计划、验证记录和整改报告，不是活动能力；其中 `design-qa.md` 已在首行前置醒目历史标记。
 
-`git diff --check` 通过；写记录前工作树为 clean。记录完成后再次执行相同扫描和 Git 卫生检查。
+`node scripts/check-personal-data.mjs`、`git diff --check` 和提交后的 `git status --short` 均通过；写入记录后再次执行相同扫描和 Git 卫生检查。
 
 ## 未验证范围
 
@@ -140,14 +164,17 @@
 
 ## 回滚与恢复
 
-优先通过 Git revert 保留可追溯历史。在功能分支或合并后的目标分支上，从新到旧 revert 产品提交：
+优先通过 Git revert 保留可追溯历史。以下过程把运行时/交付包验证头固定为 `e7d55e4e639874524500302146bcef896cfa74de`，完整覆盖 `37b01ce..e7d55e4` 的 21 个提交；`git rev-list --topo-order` 生成的顺序为真正的新到旧，单次 sequencer 失败时可完整 `--abort`。本记录自身以及同时更新 `design-qa.md`/整改报告的后续提交仅含文档，不在运行时恢复范围内，也不会被误称为已验证产品 SHA。
 
 ```bash
-git revert --no-commit \
-  e77bc46 4742764 fa3748d c6f337e 3ac28ec 7592b19 \
-  c32b04a 4c9da24 bd53c9e ea9b72d 19afce7 43d2f8e
+git status --short
+git switch -c restore-selection-watermark e7d55e4e639874524500302146bcef896cfa74de
+test "$(git rev-list --count e7d55e4e639874524500302146bcef896cfa74de ^37b01ce)" -eq 21
+git revert --no-commit $(git rev-list --topo-order e7d55e4e639874524500302146bcef896cfa74de ^37b01ce)
 git commit -m "revert: restore selection and watermark capabilities"
 ```
+
+开始前 `git status --short` 必须无输出；出现冲突时先检查 `git status`，选择 `git revert --abort` 完整返回开始前状态，或在逐项确认业务 contract 后解决冲突并执行 `git revert --continue`。不要跳过提交，也不要用 `reset --hard`。
 
 恢复扩展源码后必须重新打包，不能手改分发目录或 ZIP：
 

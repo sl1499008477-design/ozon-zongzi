@@ -1,3 +1,6 @@
+> [!WARNING]
+> **历史证据（选品/水印移除前）**：本文中的 “Current Build”、“当前”、选品路由、水印页面与相关交互结论只描述移除前的旧实现，不能用于判断现在的产品行为。当前交付以 [《选品与水印能力移除验证记录》](docs/superpowers/verification/2026-07-30-remove-selection-watermark.md) 为准；现行 contract 是退役这些能力，同时保留商品、采集箱、数据面板、店铺选择与 AI 功能。
+
 **Source Visual Truth**
 - URL: https://qh.jizhangerp.com/ozon/dashboard/
 - Status: partial. The authenticated dashboard is available in ego lite for DOM/text/style extraction, sanitized source screenshots capture successfully, and source/local responsive structure has been verified. Pixel-perfect overlay is still not authoritative because ego reports different per-origin zoom/viewport state; a calibrated capture can match `innerWidth/innerHeight` at 1920 x 1080, but the local visual viewport/screenshot width still differs by 22px.
