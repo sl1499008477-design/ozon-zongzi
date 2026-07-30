@@ -24,7 +24,6 @@ const emptySummary = () => ({
   messageTemplates: 0,
   messageHistory: 0,
   productTemplates: 0,
-  watermarkTemplates: 0,
   lastSyncAt: null,
 });
 
@@ -40,7 +39,6 @@ const emptyCaches = () => ({
   messageTemplates: [],
   messageHistory: [],
   productTemplates: [],
-  watermarkTemplates: [],
 });
 
 export function emptyLocalRuntimeData() {
