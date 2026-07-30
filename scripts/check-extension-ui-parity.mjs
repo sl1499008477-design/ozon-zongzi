@@ -38,7 +38,7 @@ const reviewedUiFingerprints = new Map([
     "content/ozon-product.css",
     {
       upstream: "d10a9c8b0982d0f9637c7a907c665a5c2c070cc289b921d5a9357edbd41c3a44",
-      local: "44707c1f8a2bc96cbc3fc64c3a6df564c75ff5ec6b9ff2d8be0571d5f72efeb8",
+      local: "a1a7977cb723ff1a1c8d2cf6e43d1bde8c7b3c8d1bbab235067fdbc1aeadba58",
     },
   ],
   [

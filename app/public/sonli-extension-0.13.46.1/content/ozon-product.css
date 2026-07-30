@@ -2813,6 +2813,11 @@
 }
 
 .ozon-helper-sidebar-card {
+  --ozz-blue: #1268FF;
+  --ozz-navy: #10234A;
+  --ozz-border: #E7EEF9;
+  --ozz-soft: #F2F7FF;
+  --ozz-success: #16A34A;
   --oh-card-space: 12px;
   --oh-card-space-lg: 16px;
   --oh-card-radius: 14px;
@@ -2837,39 +2842,86 @@
 
   margin-top: 12px;
   background: #fff;
-  border-radius: var(--oh-card-radius);
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 8px 24px -6px rgba(15, 23, 42, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(16, 35, 74, 0.08);
   overflow: hidden;
   font-size: 12px;
   line-height: 1.5;
   font-feature-settings: "tnum" 1;
-  border: 1px solid rgba(15, 23, 42, 0.05);
+  border: 1px solid var(--ozz-border);
+  container-type: inline-size;
 }
 
 .ozon-helper-sidebar-card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 14px;
-  background: linear-gradient(135deg, #1d6bff 0%, #1452cc 100%);
-  color: #fff;
-  position: relative;
-}
-.ozon-helper-sidebar-card-header::after {
-  content: '';
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  padding: 14px 16px;
+  background: #fff;
+  color: var(--ozz-navy);
+  border-bottom: 1px solid var(--ozz-border);
 }
 
-.ozon-helper-sidebar-card-logo {
-  font-weight: 700;
+.ozon-helper-sidebar-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+.ozon-helper-sidebar-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--ozz-blue);
+}
+.ozon-helper-sidebar-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.ozon-helper-sidebar-brand-mark.is-logo-fallback,
+.ozon-helper-sidebar-brand-fallback {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+}
+.ozon-helper-sidebar-brand-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.ozon-helper-sidebar-brand-title {
+  overflow: hidden;
+  color: var(--ozz-navy);
   font-size: 13px;
-  letter-spacing: 0.3px;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  font-weight: 750;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ozon-helper-sidebar-brand-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ozz-success);
+  font-size: 10px;
+  line-height: 1.2;
+}
+.ozon-helper-sidebar-brand-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .ozon-helper-sidebar-card-close {
@@ -2899,7 +2951,7 @@
 /* === Hero section — 2×2 stat 卡片 (核心选品指标) === */
 .oh-hero-section {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   padding: 12px;
   background: #ffffff;
@@ -2917,10 +2969,10 @@
   padding: 12px 8px;
   border-radius: 10px;
   text-align: center;
-  border: 1px solid #e2e8f0;
-  background: #f5f8fc;
+  border: 1px solid #DDE9FA;
+  background: var(--ozz-soft);
   min-width: 0;
-  min-height: 76px;
+  min-height: 72px;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   overflow: hidden;
 }
@@ -2935,7 +2987,7 @@
 
 /* Accent 视觉差异 — 每个 hero stat 一个 brand-aware tint,通过 CSS 变量
    驱动 hover/border,避免之前"统一蓝色"导致视觉无层级 */
-.oh-hero-stat.is-accent-blue   { --oh-accent-color: #1d6bff; background: #eff6ff; border-color: #dbeafe; }
+.oh-hero-stat.is-accent-blue   { --oh-accent-color: var(--ozz-blue); background: var(--ozz-soft); border-color: #DDE9FA; }
 .oh-hero-stat.is-accent-green  { --oh-accent-color: #16a34a; background: #ecfdf5; border-color: #d1fae5; }
 .oh-hero-stat.is-accent-orange { --oh-accent-color: #ea580c; background: #fff7ed; border-color: #fed7aa; }
 .oh-hero-stat.is-accent-purple { --oh-accent-color: #7c3aed; background: #f5f3ff; border-color: #ddd6fe; }
@@ -3011,27 +3063,27 @@
   align-items: center;
   justify-content: space-between;
   padding: 7px 14px 7px 12px;
-  background: var(--oh-section-bg);
+  background: #F8FAFE;
   cursor: pointer;
   font-weight: 600;
   font-size: 11px;
-  color: #475569;
+  color: var(--ozz-navy);
   user-select: none;
   transition: all 0.15s;
   border-left: 3px solid transparent;
   letter-spacing: 0.2px;
 }
 .ozon-helper-sidebar-section-header:hover {
-  background: #f1f5f9;
+  background: var(--ozz-soft);
   padding-left: 14px;
 }
 /* Section accent — 跟 hero accent 同色系,给每组一个视觉锚 */
-.ozon-helper-sidebar-section.is-accent-blue   .ozon-helper-sidebar-section-header { border-left-color: #1d6bff; }
+.ozon-helper-sidebar-section.is-accent-blue   .ozon-helper-sidebar-section-header { border-left-color: var(--ozz-blue); }
 .ozon-helper-sidebar-section.is-accent-green  .ozon-helper-sidebar-section-header { border-left-color: #16a34a; }
 .ozon-helper-sidebar-section.is-accent-orange .ozon-helper-sidebar-section-header { border-left-color: #ea580c; }
 .ozon-helper-sidebar-section.is-accent-purple .ozon-helper-sidebar-section-header { border-left-color: #7c3aed; }
 .ozon-helper-sidebar-section.is-accent-pink   .ozon-helper-sidebar-section-header { border-left-color: #ec4899; }
-.ozon-helper-sidebar-section.is-accent-blue   .oh-section-icon { color: #1d6bff; }
+.ozon-helper-sidebar-section.is-accent-blue   .oh-section-icon { color: var(--ozz-blue); }
 .ozon-helper-sidebar-section.is-accent-green  .oh-section-icon { color: #16a34a; }
 .ozon-helper-sidebar-section.is-accent-orange .oh-section-icon { color: #ea580c; }
 .ozon-helper-sidebar-section.is-accent-purple .oh-section-icon { color: #7c3aed; }
@@ -3165,8 +3217,8 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border-top: 1px solid var(--oh-border);
-  background: linear-gradient(180deg, #fafbfc 0%, #f5f7fa 100%);
+  border-top: 1px solid var(--ozz-border);
+  background: #fff;
 }
 .ozon-helper-sidebar-card-actions-row {
   display: flex;
@@ -3204,16 +3256,16 @@
   letter-spacing: 0.2px;
 }
 .ozon-helper-sidebar-card-btn:hover {
-  background: #f8fafc;
-  border-color: #1d6bff;
-  color: #1452cc;
+  background: var(--ozz-soft);
+  border-color: var(--ozz-blue);
+  color: var(--ozz-blue);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px -4px rgba(29, 107, 255, 0.25);
 }
 .ozon-helper-sidebar-card-btn.is-primary {
   min-height: 42px;
   font-size: 13px;
-  background: linear-gradient(135deg, #1d6bff 0%, #1452cc 100%);
+  background: var(--ozz-blue);
   color: #fff;
   border: none;
   box-shadow:
@@ -3221,16 +3273,8 @@
     0 4px 12px -2px rgba(29, 107, 255, 0.35);
   position: relative;
 }
-.ozon-helper-sidebar-card-btn.is-primary::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.2), transparent 50%);
-  pointer-events: none;
-}
 .ozon-helper-sidebar-card-btn.is-primary:hover {
-  background: linear-gradient(135deg, #1452cc 0%, #0e3d99 100%);
+  background: #0C56D8;
   box-shadow:
     0 2px 4px rgba(20, 82, 204, 0.35),
     0 8px 20px -4px rgba(29, 107, 255, 0.5);
@@ -5418,29 +5462,36 @@
 }
 
 .ozon-helper-sidebar-card-gear {
-  background: rgba(255, 255, 255, 0.18);
-  border: none;
-  color: rgba(255, 255, 255, 0.92);
+  background: #fff;
+  border: 1px solid var(--ozz-border);
+  color: #60718E;
   cursor: pointer;
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0;
   transition: all 0.15s;
 }
 .ozon-helper-sidebar-card-gear:hover {
-  background: rgba(255, 255, 255, 0.3);
-  color: #fff;
-  transform: rotate(45deg);
+  background: var(--ozz-soft);
+  border-color: #B9D3FF;
+  color: var(--ozz-blue);
+  transform: rotate(30deg);
 }
 .ozon-helper-sidebar-card-gear svg {
   width: 14px;
   height: 14px;
   display: block;
+}
+
+@container (max-width: 420px) {
+  .oh-hero-section {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* 遮罩:固定全屏半透明,居中放卡片 */

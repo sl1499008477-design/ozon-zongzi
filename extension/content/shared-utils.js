@@ -1572,12 +1572,38 @@ if (!globalThis.__JZ_BRAND__) {
     </div>`;
   }
 
+  // 所有数据卡复用同一个品牌标题。它只负责展示层，字段、事件 action 和数据灌入
+  // contract 仍由各渲染器与 caller 保持原样。
+  function _jzPanelBrandHeaderHtml() {
+    const brand = globalThis.__JZ_BRAND__ || {};
+    const displayName = brand.displayName || BRAND_DISPLAY_NAME_FALLBACK;
+    const logo = brand.logoUrl
+      ? `<img src="${_v2Escape(brand.logoUrl)}" alt="" />`
+      : `<span class="ozon-helper-sidebar-brand-fallback">${_v2Escape(displayName.slice(0, 1))}</span>`;
+    return `<div class="ozon-helper-sidebar-card-header">
+      <div class="ozon-helper-sidebar-brand">
+        <span class="ozon-helper-sidebar-brand-mark">${logo}</span>
+        <span class="ozon-helper-sidebar-brand-copy">
+          <strong class="ozon-helper-sidebar-brand-title">${_v2Escape(displayName)} · 选品助手</strong>
+          <small class="ozon-helper-sidebar-brand-status">商品数据已更新</small>
+        </span>
+      </div>
+      ${window.jzFieldSettingsGearHtml()}
+    </div>`;
+  }
+
+  function _jzBindPanelBrandFallback(panel) {
+    panel?.querySelectorAll?.('.ozon-helper-sidebar-brand-mark img').forEach((img) => {
+      img.addEventListener('error', () => {
+        img.hidden = true;
+        img.parentElement?.classList.add('is-logo-fallback');
+      }, { once: true });
+    });
+  }
+
   window.jzRenderPanelSkeleton = function(panel) {
     panel.innerHTML = `
-      <div class="ozon-helper-sidebar-card-header">
-        <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon">${_ohSvg(_OH_ICONS.zap)}</span>${globalThis.__JZ_BRAND__.displayName}ERP</span>
-        ${window.jzFieldSettingsGearHtml()}
-      </div>
+      ${_jzPanelBrandHeaderHtml()}
       <div class="ozon-helper-sidebar-card-body">
         <div class="oh-hero-section">
           <div class="oh-hero-stat is-skeleton"></div>
@@ -1591,6 +1617,7 @@ if (!globalThis.__JZ_BRAND__) {
           <div class="oh-skeleton-row"></div>
         </div>
       </div>`;
+    _jzBindPanelBrandFallback(panel);
   };
 
   // 挂载即渲染**真实 V2 面板结构**(字段 '-' 占位),不再走 shimmer 骨架 ——
@@ -1775,10 +1802,7 @@ if (!globalThis.__JZ_BRAND__) {
     </div>` : '';
 
     panel.innerHTML = `
-      <div class="ozon-helper-sidebar-card-header">
-        <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon">${_ohSvg(_OH_ICONS.zap)}</span>${globalThis.__JZ_BRAND__.displayName}ERP</span>
-        ${window.jzFieldSettingsGearHtml()}
-      </div>
+      ${_jzPanelBrandHeaderHtml()}
       <div class="ozon-helper-sidebar-card-body">
         ${heroHtml}
         ${sections.map(_ohRenderSection).join('')}
@@ -1791,6 +1815,7 @@ if (!globalThis.__JZ_BRAND__) {
     // 复用),open-field-settings 由那套统一捕获 → 走同一条 handlePanelAction 路径。
     panel.setAttribute('data-jz-datacard', '1');
     window.jzBindDataCardCopyButtons(panel);
+    _jzBindPanelBrandFallback(panel);
     window.jzLoadFieldVisibility().then((v) => window.jzApplyFieldVisibility(panel, v));
   };
 
@@ -3483,10 +3508,7 @@ if (!globalThis.__JZ_BRAND__) {
     </div>` : '';
 
     panel.innerHTML = `
-      <div class="ozon-helper-sidebar-card-header">
-        <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon">${_v2Icon('zap')}</span>${(globalThis.__JZ_BRAND__ && globalThis.__JZ_BRAND__.displayName) || BRAND_DISPLAY_NAME_FALLBACK}ERP</span>
-        ${window.jzFieldSettingsGearHtml()}
-      </div>
+      ${_jzPanelBrandHeaderHtml()}
       <div class="ozon-helper-sidebar-card-body">
         ${sections.map(_v2RenderSection).join('')}
       </div>
@@ -3495,6 +3517,7 @@ if (!globalThis.__JZ_BRAND__) {
     // 标记为数据卡 + 应用当前显隐(齿轮点击由 caller 的 [data-action] 委托统一捕获)。
     panel.setAttribute('data-jz-datacard', '1');
     window.jzBindDataCardCopyButtons(panel);
+    _jzBindPanelBrandFallback(panel);
     window.jzLoadFieldVisibility().then((v) => window.jzApplyFieldVisibility(panel, v));
   };
 
