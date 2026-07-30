@@ -76,6 +76,7 @@ const allowedLocalOnly = new Set([
   "tests/collector-session.test.js",
   "tests/collector-removed.test.js",
   "tests/data-panel-logistics.test.js",
+  "tests/data-panel-visual-browser.test.js",
   "tests/fixtures/data-panel-visual-browser.fixture.html",
   "tests/fx-observation-replay.test.js",
   "tests/jizhangerp-bridge-follow-sell.test.js",
