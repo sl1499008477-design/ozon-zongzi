@@ -62,7 +62,7 @@
 - Finding 1 RED：在真实 `runFollowSellRequest` handler 上加入 `dryRun: true, viaPortal: true` 后，测试稳定失败于 `dryRun must not call the portal import pipeline`，实际 portal 调用 1 次、期望 0 次。
 - Finding 1 GREEN：只把 `dryRun` 分支移动到 `viaPortal` 之前；组合消息不调用 portal，preview 精确调用 1 次，使用 120,000ms 超时，返回 preview 原响应；DTO 保留 store、items、stocks、AI 开关、`strictTypeMatch` 和两个路由标志，同时剥离 `_aiwDebug`、`applyWatermark`、`watermarkTemplateId`。
 - Finding 2 RED：对 `batch-upload/index.html` 追加无关 HTML 注释后，旧 UI parity gate 仍退出 0，mutation 测试报出 `UI parity accepted an unrelated mutation`。
-- Finding 2 GREEN：`batch-upload/index.html`、`batch-upload/index.js`、`content/ozon-product.css`、`content/ozon-search.css` 分别锁定完整上游文件与完整本地文件的 SHA-256 对；测试对四个文件逐一复制真实扩展树并追加无关注释，每次都必须因对应文件的 reviewed fingerprint 不匹配而失败。`batch-upload/index.css`、`content/jzc-calc.css`、`lib/store-picker.css` 等未豁免 UI 文件继续做 exact equality。
+- Finding 2 GREEN：`batch-upload/index.html`、`batch-upload/index.js`、`content/ozon-product.css`、`content/ozon-search.css` 分别锁定完整上游文件与完整本地文件的 SHA-256 对；mutation 测试先要求未修改扩展树通过，再对四个文件逐一复制真实扩展树并追加无关注释，每次都必须精确因对应文件的 local full-file fingerprint 不匹配而失败，不能用 upstream 漂移或其他错误假阳性通过。`batch-upload/index.css`、`content/jzc-calc.css`、`lib/store-picker.css` 等未豁免 UI 文件继续做 exact equality。
 - 指纹更新规则：未来的有意变更必须先审查该文件完整的 upstream/local diff，只更新该文件对应的一对完整文件哈希；单边漂移、顺手改动或新例外都默认失败，不能通过增加关键词或目录通配放行。
 
 ## 完整验证
