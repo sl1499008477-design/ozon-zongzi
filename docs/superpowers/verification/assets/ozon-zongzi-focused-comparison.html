@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8" />
+    <title>ozon 粽子重点区域 QA 对比</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 16px; background: #eef3fb; color: #10234a; font: 14px/1.4 system-ui, sans-serif; }
+      h1, h2 { margin: 0 0 12px; }
+      h2 { margin-top: 22px; font-size: 16px; }
+      main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+      figure { margin: 0; background: #fff; border: 1px solid #d4e2fa; border-radius: 12px; overflow: hidden; }
+      figcaption { padding: 8px 12px; font-weight: 700; }
+      .crop { position: relative; height: 420px; overflow: hidden; border-top: 1px solid #d4e2fa; }
+      .crop img { position: absolute; display: block; }
+      .panel-reference img { width: 1530px; right: 0; top: -246px; }
+      .panel-implementation img { width: 1530px; left: 0; top: 0; }
+      .settings-reference img { width: 1530px; left: -218px; top: -39px; }
+      .settings-implementation img { width: 1530px; left: -392px; top: -134px; }
+    </style>
+  </head>
+  <body>
+    <h1>重点区域：reference 与 production fixture implementation</h1>
+    <h2>数据面板的标题、齿轮、指标与分组起始</h2>
+    <main>
+      <figure class="panel-reference">
+        <figcaption>Reference focus</figcaption>
+        <div class="crop"><img src="ozon-zongzi-reference-panel.png" alt="原型面板重点区域" /></div>
+      </figure>
+      <figure class="panel-implementation">
+        <figcaption>Implementation focus</figcaption>
+        <div class="crop"><img src="ozon-zongzi-implementation-panel.png" alt="生产面板重点区域" /></div>
+      </figure>
+    </main>
+    <h2>设置弹窗的标题、概览、控制项、字段卡片与操作区</h2>
+    <main>
+      <figure class="settings-reference">
+        <figcaption>Reference focus</figcaption>
+        <div class="crop"><img src="ozon-zongzi-reference-settings.png" alt="原型设置重点区域" /></div>
+      </figure>
+      <figure class="settings-implementation">
+        <figcaption>Implementation focus</figcaption>
+        <div class="crop"><img src="ozon-zongzi-implementation-settings.png" alt="生产设置重点区域" /></div>
+      </figure>
+    </main>
+  </body>
+</html>
