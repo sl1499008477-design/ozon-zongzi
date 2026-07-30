@@ -18,7 +18,6 @@ const actionLabels = {
   "import-history": "上架记录",
   reshelf: "下架重上",
   pricing: "sonli 算价",
-  watermark: "水印管理",
   stores: "店铺管理",
   "premium-pivot": "数据透视眼",
   "data-panel": "数据面板",
@@ -35,7 +34,6 @@ const routeContracts = {
   "collect-box": "/ozon/products/collect",
   "import-history": "/ozon/products/import-history",
   reshelf: "/ozon/products/reshelf",
-  watermark: "/ozon/tools/watermark",
   stores: "/ozon/settings/stores",
 };
 

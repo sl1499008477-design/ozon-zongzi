@@ -4814,11 +4814,10 @@
                 : country === 'KZ' ? '#0891b2'
                 : '#6b7a93';
     const tier = s.isPremium ? 'Premium' : 'Standard';
-    const bound = !!s.watermarkTemplateId;
     const cleanName = name.replace(/[#\u00b7\s].*$/, '').trim();
     const initials = (cleanName.slice(0, 2) || '##').toUpperCase();
     const code = s.shopId != null ? String(s.shopId).padStart(5, '0') : (id ? String(id).slice(-5) : '-----');
-    return { id: String(id), name, country, flag, group, color, tier, bound, initials, code, isActive: s.isActive !== false };
+    return { id: String(id), name, country, flag, group, color, tier, initials, code, isActive: s.isActive !== false };
   }
 
   function _cssEscape(id) {
@@ -4847,7 +4846,7 @@
     } catch {}
   }
 
-  // 一键上架面板的「记住上次选择」—— 店铺/品牌/图片顺序/上架货币/水印/AI 改图/AI 重写。
+  // 一键上架面板的「记住上次选择」—— 店铺/品牌/图片顺序/上架货币/AI 改图/AI 重写。
   // 单 key 存一个 config 对象;按字段 partial 合并,避免某次只改一个字段时把别的清掉。
   const MV_LISTING_CFG_KEY = 'mv-listing-config';
   function _getListingConfig() {
@@ -5180,8 +5179,6 @@
       // 不缓存合并型号名(attr 9048):复用上次竞品的型号名会被 Ozon 错误并卡;
       // 只记「是否合并」,恢复时生成全新型号名(见 applyManualListingConfig)。
       uploadMode: panel.querySelector('input[name="jz-upload-mode"]:checked')?.value || 'api',
-      applyWatermark: !!panel.querySelector('[data-field="apply-watermark"]')?.checked,
-      watermarkTemplateId: panel.querySelector('[data-field="watermark-template-id"]')?.value || '',
       applyPoster: !!panel.querySelector('[data-field="apply-poster"]')?.checked,
       posterPrimaryOnly: !!panel.querySelector('[data-field="poster-primary-only"]')?.checked,
       applyAiRewrite: !!panel.querySelector('[data-field="apply-ai-rewrite"]')?.checked,
@@ -5241,17 +5238,11 @@
       const el = panel.querySelector(`[data-field="${field}"]`);
       if (el && !el.disabled) el.checked = val;
     };
-    setChecked('apply-watermark', cfg.applyWatermark);
     setChecked('apply-poster', cfg.applyPoster);
     setChecked('poster-primary-only', cfg.posterPrimaryOnly);
     setChecked('apply-ai-rewrite', cfg.applyAiRewrite);
     if (typeof cfg.applyAiRewrite === 'boolean') panel._aiRewriteUserTouched = true;
 
-    const wmSelect = panel.querySelector('[data-field="watermark-template-id"]');
-    if (wmSelect && typeof cfg.watermarkTemplateId === 'string' &&
-      [...wmSelect.options].some((o) => o.value === cfg.watermarkTemplateId)) {
-      wmSelect.value = cfg.watermarkTemplateId;
-    }
     if (cfg.uploadMode === 'api' || cfg.uploadMode === 'portal') {
       const mode = panel.querySelector(`input[name="jz-upload-mode"][value="${cfg.uploadMode}"]`);
       if (mode) mode.checked = true;
@@ -5375,7 +5366,7 @@
       views.forEach(v => v.lastUsed = recentSet.has(v.id));
 
       let query = '';
-      let activeTab = '\u5168\u90e8'; // \u5168\u90e8 / \u5df2\u9009 / \u6700\u8fd1 / Premium / \u672a\u7ed1\u6c34\u5370
+      let activeTab = '\u5168\u90e8'; // \u5168\u90e8 / \u5df2\u9009 / \u6700\u8fd1 / Premium
 
       const pop = document.createElement('div');
       pop.className = 'ozon-helper-mv-storepick-pop';
@@ -5395,7 +5386,6 @@
         if (activeTab === '\u5df2\u9009') list = list.filter(v => isChecked(v.id));
         else if (activeTab === '\u6700\u8fd1') list = list.filter(v => v.lastUsed);
         else if (activeTab === 'Premium') list = list.filter(v => v.tier === 'Premium');
-        else if (activeTab === '\u672a\u7ed1\u6c34\u5370') list = list.filter(v => !v.bound);
         if (query) {
           const q = query.toLowerCase();
           list = list.filter(v =>
@@ -5416,12 +5406,10 @@
           '\u5df2\u9009': hiddenDropdown.querySelectorAll('.ozon-helper-mv-store-cb:checked').length,
           '\u6700\u8fd1': views.filter(v => v.lastUsed).length,
           'Premium': views.filter(v => v.tier === 'Premium').length,
-          '\u672a\u7ed1\u6c34\u5370': views.filter(v => !v.bound).length,
         };
-        const tabs = ['\u5168\u90e8', '\u5df2\u9009', '\u6700\u8fd1', 'Premium', '\u672a\u7ed1\u6c34\u5370'];
+        const tabs = ['\u5168\u90e8', '\u5df2\u9009', '\u6700\u8fd1', 'Premium'];
         const allInListChecked = list.length > 0 && list.every(v => isChecked(v.id));
         const totalSelected = counts['\u5df2\u9009'];
-        const boundCount = views.filter(v => v.bound).length;
 
         pop.innerHTML = `
           <div class="ohm-sp-search">
@@ -5433,7 +5421,6 @@
             <span class="ohm-sp-chip" data-quick="all">\u5168\u90e8 ${counts['\u5168\u90e8']} \u5bb6</span>
             <span class="ohm-sp-chip" data-quick="premium">\u4ec5 Premium (${counts['Premium']})</span>
             <span class="ohm-sp-chip" data-quick="recent">\u6700\u8fd1\u7528\u8fc7 (${counts['\u6700\u8fd1']})</span>
-            <span class="ohm-sp-chip" data-quick="bound">\u5df2\u7ed1\u6c34\u5370 (${boundCount})</span>
             <span class="ohm-sp-chip" data-quick="invert">\u53cd\u9009</span>
             <span class="ohm-sp-chip is-danger" data-quick="clear">\u6e05\u7a7a</span>
           </div>
@@ -5466,7 +5453,6 @@
                           <span class="ohm-sp-name">${_escHtml(v.name)}${v.lastUsed ? ' <em class="ohm-sp-tag">\u6700\u8fd1</em>' : ''}</span>
                           <span class="ohm-sp-meta">${v.code}${v.flag ? ' \u00b7 ' + v.flag : ''}${v.tier === 'Premium' ? ' \u00b7 <b>Premium</b>' : ''}</span>
                         </span>
-                        <span class="ohm-sp-status ${v.bound?'is-ok':''}">${v.bound?'\ud83d\udca7 \u5df2\u7ed1':'\u2014 \u672a\u7ed1'}</span>
                         <span class="ohm-sp-only" data-only="${_escHtml(v.id)}">\u4ec5\u6b64\u5e97</span>
                       </label>
                     `;
@@ -5505,7 +5491,6 @@
           if (t === 'all') views.forEach(v => setChecked(v.id, true));
           else if (t === 'premium') views.forEach(v => setChecked(v.id, v.tier === 'Premium'));
           else if (t === 'recent') views.forEach(v => setChecked(v.id, v.lastUsed));
-          else if (t === 'bound') views.forEach(v => setChecked(v.id, v.bound));
           else if (t === 'invert') views.forEach(v => setChecked(v.id, !isChecked(v.id)));
           else if (t === 'clear') views.forEach(v => setChecked(v.id, false));
           renderPop();
@@ -5932,24 +5917,12 @@
                 <span class="ozon-helper-mv-card-no">02</span>
                 <span class="ozon-helper-mv-card-title">AI \u589e\u5f3a</span>
                 <span class="ozon-helper-mv-optional-pill">\u53ef\u9009</span>
-                <span class="ozon-helper-mv-card-hint">\u6c34\u5370/\u8fb9\u6846 / AI \u5927\u6a21\u578b\u6539\u56fe / AI \u91cd\u5199 \u00b7 \u672a\u542f\u7528\u90fd\u53ef\u53d1\u5e03</span>
+                <span class="ozon-helper-mv-card-hint">AI \u5927\u6a21\u578b\u6539\u56fe / AI \u91cd\u5199 \u00b7 \u672a\u542f\u7528\u90fd\u53ef\u53d1\u5e03</span>
                 <span class="ozon-helper-mv-ai-enabled-count" data-field="ai-enabled-count" style="display:none;">\u5df2\u542f\u7528 0</span>
               </div>
               <svg class="ozon-helper-mv-card-chevron" data-field="ai-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
             </div>
             <div class="ozon-helper-mv-card-body ozon-helper-mv-ai-grid ozon-helper-mv-card-body-collapsed" data-field="ai-section">
-              <div class="ozon-helper-mv-opt-card ozon-helper-mv-opt-watermark">
-                <div class="ozon-helper-mv-opt-header">
-                  <label class="ozon-helper-mv-opt-toggle">
-                    <input type="checkbox" data-field="apply-watermark" />
-                    <span class="ozon-helper-mv-opt-toggle-slider"></span>
-                  </label>
-                  <span class="ozon-helper-mv-opt-title">\u6c34\u5370/\u8fb9\u6846</span>
-                </div>
-                <select data-field="watermark-template-id" class="ozon-helper-mv-opt-select">
-                  <option value="">\u52a0\u8f7d\u4e2d...</option>
-                </select>
-              </div>
               <div class="ozon-helper-mv-opt-card ozon-helper-mv-opt-ai">
                 <div class="ozon-helper-mv-opt-header">
                   <label class="ozon-helper-mv-opt-toggle">
@@ -6264,34 +6237,6 @@
       jzRefreshMultiVariantSort(panel);
     })();
 
-    // Load watermark templates and populate select \u2014 \u5171\u4eab\u903b\u8f91\u89c1 lib/watermark-templates.js
-    (async () => {
-      const wmSelect = panel.querySelector('[data-field="watermark-template-id"]');
-      const wmCb = panel.querySelector('[data-field="apply-watermark"]');
-      if (!wmSelect) return;
-      await window.JZWatermarkTemplates.loadIntoSelect({
-        getAuth: () => window.sendMessage('getAuth'),
-        loadData: () => window.sendMessage('getWatermarkTemplates'),
-        selectEl: wmSelect,
-        applyCheckboxEl: wmCb,
-      });
-      // 恢复上次的水印/边框选择 —— 覆盖 loadIntoSelect 的「店铺绑定水印/边框」默认 + 自动勾选。
-      try {
-        const cfg = await _getListingConfig();
-        if (cfg) {
-          if (typeof cfg.watermarkTemplateId === 'string' &&
-            [...wmSelect.options].some((o) => o.value === cfg.watermarkTemplateId)) {
-            wmSelect.value = cfg.watermarkTemplateId;
-          }
-          if (typeof cfg.applyWatermark === 'boolean' && wmCb) {
-            wmCb.checked = cfg.applyWatermark;
-          }
-          panel._updateAiEnabledCount?.();
-          panel._maybeExpandAiCard?.();
-        }
-      } catch {}
-    })();
-
     // Load warehouses for current/selected store and populate the warehouse select.
     // Warehouse ID is seller-scoped, so switching stores must switch the option list too.
     (async () => {
@@ -6455,9 +6400,9 @@
         if (aiChevron) aiChevron.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0)';
       });
     }
-    // 有任一 AI 选项启用时展开 AI 卡 —— 恢复设置/水印异步加载后都复用它。
+    // 有任一 AI 选项启用时展开 AI 卡。
     panel._maybeExpandAiCard = () => {
-      const anyEnabled = ['apply-watermark', 'apply-poster', 'apply-ai-rewrite']
+      const anyEnabled = ['apply-poster', 'apply-ai-rewrite']
         .some((f) => panel.querySelector(`[data-field="${f}"]`)?.checked);
       if (anyEnabled && aiSectionBody) {
         aiSectionBody.classList.remove('ozon-helper-mv-card-body-collapsed');
@@ -6468,7 +6413,7 @@
     // AI 启用计数同步 + 启用项卡片高亮 (.is-on)
     // V1 旧版 ai-image 已下线，仅 V2 海报
     const updateAiEnabledCount = () => {
-      const checks = ['apply-watermark', 'apply-poster', 'apply-ai-rewrite'];
+      const checks = ['apply-poster', 'apply-ai-rewrite'];
       let enabled = 0;
       checks.forEach((f) => {
         const cb = panel.querySelector(`[data-field="${f}"]`);
@@ -6494,7 +6439,7 @@
     // loadAiQuota(分离的顶层函数,不在本闭包作用域内)给会员默认勾选 AI 重写后,
     // 需要刷新「已启用 N」徽标 —— 通过 panel 暴露(同 panel._updatePosterEstimate 模式)。
     panel._updateAiEnabledCount = updateAiEnabledCount;
-    ['apply-watermark', 'apply-poster', 'apply-ai-rewrite'].forEach((f) => {
+    ['apply-poster', 'apply-ai-rewrite'].forEach((f) => {
       panel.querySelector(`[data-field="${f}"]`)?.addEventListener('change', updateAiEnabledCount);
     });
     // 用户手动动过 AI 重写开关后,loadAiQuota 的「会员默认勾选」不再覆盖其选择。
@@ -6598,7 +6543,7 @@
     }, 0);
 
     // ── 恢复上次选择 + 选择变更后持久化 ──
-    // 店铺在 loadStoresForPanel 里恢复;水印在水印异步加载后恢复。
+    // 店铺在 loadStoresForPanel 里恢复。
     // 这里恢复同步存在的字段:品牌 / 图片顺序 / 上架货币 / AI 改图 / AI 重写。
     (async () => {
       const cfg = await _getListingConfig();
@@ -7946,12 +7891,6 @@
         if (imgSelect) imgSelect.value = mapped;
       }
 
-      // Watermark
-      if (ts.watermarkText) {
-        const wmCheckbox = panel.querySelector('[data-field="apply-watermark"]');
-        if (wmCheckbox) wmCheckbox.checked = true;
-      }
-
       // Remove keywords from variant names
       if (ts.removeKeywords && ts.removeKeywords.length > 0) {
         panel.querySelectorAll('[data-field="variant-tbody"] tr[data-sku]').forEach(row => {
@@ -8026,8 +7965,6 @@
     if (brandSelect) brandSelect.value = 'no_brand';
     const imgSelect = panel.querySelector('[data-field="image-order"]');
     if (imgSelect) imgSelect.value = 'keep';
-    const wmCheckbox = panel.querySelector('[data-field="apply-watermark"]');
-    if (wmCheckbox) wmCheckbox.checked = false;
 
     // Reset stocks to 10
     panel.querySelectorAll('.ozon-helper-mv-stock').forEach(input => { input.value = '10'; });
@@ -8197,27 +8134,6 @@
     const imageOrder = panel.querySelector('[data-field="image-order"]')?.value || 'keep';
     const mergeModel = (panel.querySelector('[data-field="merge-model"]')?.value || '').trim();
     const currencyCode = panel.querySelector('[data-field="currency"]')?.value || 'CNY';
-    const applyWatermark = panel.querySelector('[data-field="apply-watermark"]')?.checked || false;
-    const watermarkSelectValue = panel.querySelector('[data-field="watermark-template-id"]')?.value || '';
-    const watermarkTemplateId =
-      watermarkSelectValue === window.JZWatermarkTemplates?.STORE_BOUND_VALUE
-        ? ''
-        : watermarkSelectValue;
-    if (applyWatermark && watermarkSelectValue === window.JZWatermarkTemplates?.STORE_BOUND_VALUE) {
-      const storeList = Array.isArray(panel._followSellStoreList) ? panel._followSellStoreList : [];
-      const storeById = new Map(
-        storeList.map(s => [String(s.id || s.storeId || ''), s])
-      );
-      const missing = selectedStoreIds.filter(id => !storeById.get(String(id))?.watermarkTemplateId);
-      if (missing.length > 0) {
-        const names = missing.map(id => {
-          const s = storeById.get(String(id));
-          return s?.label || s?.companyName || s?.legalName || `\u5e97\u94fa ${id}`;
-        }).join('\u3001');
-        showMvStatus(statusDiv, 'error', `\u5e97\u94fa\u300c${names}\u300d\u672a\u7ed1\u5b9a\u6c34\u5370/\u8fb9\u6846\u6a21\u677f\u3002\u8bf7\u6539\u9009\u5177\u4f53\u6a21\u677f\uff0c\u6216\u5148\u53bb\u5e97\u94fa\u7ba1\u7406\u7ed1\u5b9a\u6c34\u5370/\u8fb9\u6846\u3002`);
-        return;
-      }
-    }
     const applyPoster = panel.querySelector('[data-field="apply-poster"]')?.checked || false;
     // 只改主图:仅在 applyPoster 启用时有意义,关闭海报时这个标志透传也不影响 backend
     // (product-import.worker.ts:316 primaryOnly = Boolean(payload.posterPrimaryOnly),
@@ -8930,8 +8846,6 @@
           storeId,
           items,
           ...(stocks && stocks.length > 0 ? { stocks } : {}),
-          applyWatermark,
-          watermarkTemplateId: watermarkTemplateId || undefined,
           applyPoster,
           ...(applyPoster && posterPrimaryOnly ? { posterPrimaryOnly: true } : {}),
           applyAiRewrite,
@@ -8949,7 +8863,7 @@
         // 门户上架:upload_task_id 走 seller.ozon.ru 任务系统(get-list/get-errors)轮询,
         // 与官方 task_id 来源不同,回显时按 _viaPortal 分流。companyId 留给状态查询。
         const isPortalTask = !!importResult?.result?.viaPortal;
-        // Backend 已入队（QUEUED），worker 异步执行 AI/水印/Ozon 调用与库存导入。
+        // Backend 已入队（QUEUED），worker 异步执行 AI/Ozon 调用与库存导入。
         return {
           storeName, ok: true, taskId, warnings: [],
           _viaPortal: isPortalTask,

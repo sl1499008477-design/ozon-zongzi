@@ -3080,21 +3080,6 @@ try {
             },
           };
         }
-        case 'getWatermarkTemplates': {
-          if (!token) return { ok: false, error: 'no auth' };
-          const targetStoreId = message?.storeId || storeId;
-          const [templates, stores] = await Promise.all([
-            apiRequest('GET', `${backendUrl}/ozon/watermark-settings`, null, token, targetStoreId),
-            apiRequest('GET', `${backendUrl}/auth/ozon-stores`, null, token, targetStoreId),
-          ]);
-          return {
-            ok: true,
-            data: {
-              templates: Array.isArray(templates) ? templates : [],
-              stores: Array.isArray(stores) ? stores : [],
-            },
-          };
-        }
         case 'usageTrack': {
           // 通用功能埋点。当天每个 (featureKey, client, version) 组合只发一次到
           // backend — 设备级去重避免高频写,backend 用 (tenantId, featureKey,
@@ -3665,9 +3650,9 @@ try {
             console.log('[followSell] Preview response:', JSON.stringify(previewResult).slice(0, 200));
             return { ok: true, data: previewResult };
           }
-          // Backend now enqueues and returns within ~1s; AI/watermark run in the worker.
+          // Backend now enqueues and returns within ~1s; AI runs in the worker.
           const importTimeout = 120_000;
-          console.log(`[followSell] Enqueueing import: items=${importMessage.items?.length}, bodySize=${bodySize}, aiImage=${importMessage.applyAiImage}, watermark=${importMessage.applyWatermark}, url=${backendUrl}/ozon/products/import`);
+          console.log(`[followSell] Enqueueing import: items=${importMessage.items?.length}, bodySize=${bodySize}, aiImage=${importMessage.applyAiImage}, url=${backendUrl}/ozon/products/import`);
           const followSellResult = await apiRequest(
             'POST',
             `${backendUrl}/ozon/products/import`,
@@ -3712,9 +3697,7 @@ try {
           }
           const body = {
             rows: [row],
-            applyWatermark: message.applyWatermark,
             applyAiRewrite: message.applyAiRewrite,
-            watermarkTemplateId: message.watermarkTemplateId,
             stocks: message.stocks,
           };
           console.log(`[importFromPublic] sku=${row.sku} chars=${row.source_characteristics.length} crumbs=${row.breadcrumb.length} → ${backendUrl}/ozon/products/import-from-public`);
@@ -3856,7 +3839,7 @@ try {
         }
         // ── 1688 AI 采集向导：采集箱条目的 AI 上架草稿（重写+类目智选+改图+定价）──
         // 三段式对应后端 collect-box/:id/ai-listing-draft 的 create→confirm→publish。
-        // body 透传 DTO（targetMarginPercent / priceRub / applyPoster / applyWatermark
+        // body 透传 DTO（targetMarginPercent / priceRub / applyPoster
         // / warehouseId / offerId 等），storeId 走 x-ozon-store-id 头由 apiRequest 注入。
         case 'aiListingDraftCreate': {
           const aiStoreId = message.storeId || storeId;

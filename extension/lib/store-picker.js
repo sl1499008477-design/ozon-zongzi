@@ -65,7 +65,6 @@
         ? "#0891b2"
         : "#6b7a93";
     const tier = s.isPremium ? "Premium" : "Standard";
-    const bound = !!s.watermarkTemplateId;
     const cleanName = name.replace(/[#·\s].*$/, "").trim();
     const initials = (cleanName.slice(0, 2) || "##").toUpperCase();
     const code =
@@ -82,7 +81,6 @@
       group,
       color,
       tier,
-      bound,
       initials,
       code,
       isActive: s.isActive !== false,
@@ -315,8 +313,6 @@
         else if (activeTab === "最近") list = list.filter((v) => v.lastUsed);
         else if (activeTab === "Premium")
           list = list.filter((v) => v.tier === "Premium");
-        else if (activeTab === "未绑水印")
-          list = list.filter((v) => !v.bound);
         if (query) {
           const q = query.toLowerCase();
           list = list.filter(
@@ -342,13 +338,11 @@
           ).length,
           最近: views.filter((v) => v.lastUsed).length,
           Premium: views.filter((v) => v.tier === "Premium").length,
-          未绑水印: views.filter((v) => !v.bound).length,
         };
-        const tabs = ["全部", "已选", "最近", "Premium", "未绑水印"];
+        const tabs = ["全部", "已选", "最近", "Premium"];
         const allInListChecked =
           list.length > 0 && list.every((v) => isChecked(v.id));
         const totalSelected = counts["已选"];
-        const boundCount = views.filter((v) => v.bound).length;
 
         pop.innerHTML = `
           <div class="ohm-sp-search">
@@ -362,7 +356,6 @@
             <span class="ohm-sp-chip" data-quick="all">全部 ${counts["全部"]} 家</span>
             <span class="ohm-sp-chip" data-quick="premium">仅 Premium (${counts["Premium"]})</span>
             <span class="ohm-sp-chip" data-quick="recent">最近用过 (${counts["最近"]})</span>
-            <span class="ohm-sp-chip" data-quick="bound">已绑水印 (${boundCount})</span>
             <span class="ohm-sp-chip" data-quick="invert">反选</span>
             <span class="ohm-sp-chip is-danger" data-quick="clear">清空</span>
           </div>
@@ -409,7 +402,6 @@
                           <span class="ohm-sp-name">${_escHtml(v.name)}${v.lastUsed ? ' <em class="ohm-sp-tag">最近</em>' : ""}</span>
                           <span class="ohm-sp-meta">${v.code}${v.flag ? " · " + v.flag : ""}${v.tier === "Premium" ? " · <b>Premium</b>" : ""}</span>
                         </span>
-                        <span class="ohm-sp-status ${v.bound ? "is-ok" : ""}">${v.bound ? "💧 已绑" : "— 未绑"}</span>
                         <span class="ohm-sp-only" data-only="${_escHtml(v.id)}">仅此店</span>
                       </label>
                     `;
@@ -461,8 +453,6 @@
             views.forEach((v) => setChecked(v.id, v.tier === "Premium"));
           else if (t === "recent")
             views.forEach((v) => setChecked(v.id, v.lastUsed));
-          else if (t === "bound")
-            views.forEach((v) => setChecked(v.id, v.bound));
           else if (t === "invert")
             views.forEach((v) => setChecked(v.id, !isChecked(v.id)));
           else if (t === "clear") views.forEach((v) => setChecked(v.id, false));
