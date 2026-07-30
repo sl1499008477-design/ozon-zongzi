@@ -17,16 +17,27 @@
       const fixtureStorage = {};
       let fixtureStorageMode = "success";
       let fixtureStorageSetCalls = 0;
+      const fixtureStorageSetPayloads = [];
+      const fixtureStoragePendingSets = [];
       window.__setPanelStorageFixtureMode = (mode) => { fixtureStorageMode = mode; };
       window.__setPanelStorageFixtureState = (next) => {
         Object.keys(fixtureStorage).forEach((key) => delete fixtureStorage[key]);
         Object.assign(fixtureStorage, next || {});
         fixtureStorageSetCalls = 0;
+        fixtureStorageSetPayloads.length = 0;
+        fixtureStoragePendingSets.length = 0;
       };
       window.__getPanelStorageFixtureState = () => ({
         values: { ...fixtureStorage },
         setCalls: fixtureStorageSetCalls,
+        payloads: fixtureStorageSetPayloads.map((payload) => ({ ...payload })),
+        pendingSets: fixtureStoragePendingSets.length,
       });
+      window.__resolveNextPanelStorageSet = (outcome = "success") => {
+        const pending = fixtureStoragePendingSets.shift();
+        if (!pending) throw new Error("no delayed storage callback to resolve");
+        pending(outcome);
+      };
       window.chrome = {
         runtime: {
           id: "panel-fixture",
@@ -48,14 +59,22 @@
             },
             set(next, callback) {
               fixtureStorageSetCalls += 1;
-              if (fixtureStorageMode === "failure") {
-                window.chrome.runtime.lastError = { message: "fixture storage failed" };
+              fixtureStorageSetPayloads.push({ ...next });
+              const finish = (outcome) => {
+                if (outcome === "failure") {
+                  window.chrome.runtime.lastError = { message: "fixture storage failed" };
+                  callback?.();
+                  window.chrome.runtime.lastError = null;
+                  return;
+                }
+                Object.assign(fixtureStorage, next);
                 callback?.();
-                window.chrome.runtime.lastError = null;
+              };
+              if (fixtureStorageMode === "deferred") {
+                fixtureStoragePendingSets.push(finish);
                 return Promise.resolve();
               }
-              Object.assign(fixtureStorage, next);
-              callback?.();
+              finish(fixtureStorageMode);
               return Promise.resolve();
             },
           },

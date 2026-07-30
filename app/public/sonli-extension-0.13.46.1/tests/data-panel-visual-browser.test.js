@@ -213,7 +213,12 @@ async function runBrowserFixture({
     await settingsModal.locator('input[data-jz-field="rating"]').uncheck();
     await settingsModal.getByRole("button", { name: "取消" }).click();
     await settingsMask.waitFor({ state: "hidden" });
-    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), { values: {}, setCalls: 0 }, "cancel must discard unsaved field changes");
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: {},
+      setCalls: 0,
+      payloads: [],
+      pendingSets: 0,
+    }, "cancel must discard unsaved field changes");
 
     await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
     await settingsMask.waitFor();
@@ -222,8 +227,10 @@ async function runBrowserFixture({
     await settingsMask.waitFor({ state: "hidden" });
     assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
       values: { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
-      setCalls: 2,
-    }, "save must persist visibility and the selected sales period through the existing keys");
+      setCalls: 1,
+      payloads: [{ dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" }],
+      pendingSets: 0,
+    }, "save must atomically persist visibility and the selected sales period through the existing keys");
     assert.equal(
       await page.locator('.ozon-helper-data-panel [data-field="rating"]').evaluate((field) => getComputedStyle(field.closest('.ozon-helper-sidebar-card-row') || field).display),
       "none",
@@ -231,22 +238,67 @@ async function runBrowserFixture({
     );
 
     await page.evaluate(() => {
-      window.__setPanelStorageFixtureState({ dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" });
+      window.__setPanelStorageFixtureState({ dataCardFieldVisibility: { sku: false }, dataCardSalesPeriod: "weekly" });
       window.__setPanelStorageFixtureMode("failure");
     });
     await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
     await settingsMask.waitFor();
+    assert.equal(
+      await settingsModal.locator('section[data-jz-group="商品信息"] [data-jz-act="toggle-group"]').innerText(),
+      "全选",
+      "a partially selected group should offer 全选 when the modal opens",
+    );
     await settingsModal.locator('input[data-jz-field="rating"]').uncheck();
     await settingsModal.locator('[data-jz-act="save"]').click();
     await settingsModal.locator("[data-jz-save-error]").waitFor();
     assert.equal(await settingsModal.locator("[data-jz-save-error]").innerText(), "fixture storage failed");
+    assert.equal(await settingsModal.locator('[data-jz-act="save"]').isDisabled(), false, "a failed save should be retryable");
     assert.equal(await settingsMask.count(), 1, "a failed save must leave the modal available for recovery");
     assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
-      values: { dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" },
-      setCalls: 2,
-    });
+      values: { dataCardFieldVisibility: { sku: false }, dataCardSalesPeriod: "weekly" },
+      setCalls: 1,
+      payloads: [{ dataCardFieldVisibility: { sku: false, rating: false }, dataCardSalesPeriod: "monthly" }],
+      pendingSets: 0,
+    }, "an atomic storage failure must not leave one setting persisted");
     await page.evaluate(() => window.__setPanelStorageFixtureMode("success"));
-    await settingsModal.getByRole("button", { name: "取消" }).click();
+    await settingsModal.locator('[data-jz-act="save"]').click();
+    await settingsMask.waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: { dataCardFieldVisibility: { sku: false, rating: false }, dataCardSalesPeriod: "monthly" },
+      setCalls: 2,
+      payloads: [
+        { dataCardFieldVisibility: { sku: false, rating: false }, dataCardSalesPeriod: "monthly" },
+        { dataCardFieldVisibility: { sku: false, rating: false }, dataCardSalesPeriod: "monthly" },
+      ],
+      pendingSets: 0,
+    }, "retry after an atomic failure must send one fresh atomic write");
+
+    await page.evaluate(() => {
+      window.__setPanelStorageFixtureState({ dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" });
+      window.__setPanelStorageFixtureMode("deferred");
+    });
+    await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
+    await settingsMask.waitFor();
+    await settingsModal.locator('input[data-jz-field="rating"]').uncheck();
+    const saveButton = settingsModal.locator('[data-jz-act="save"]');
+    await saveButton.click();
+    assert.equal(await saveButton.isDisabled(), true, "save is disabled while the atomic write is in flight");
+    await page.evaluate(() => document.querySelector('[data-jz-act="save"]').click());
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: { dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" },
+      setCalls: 1,
+      payloads: [{ dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" }],
+      pendingSets: 1,
+    }, "a repeated save click must not start a second write");
+    await settingsModal.locator('input[data-jz-field="rating"]').check();
+    await page.evaluate(() => window.__resolveNextPanelStorageSet());
+    await settingsMask.waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
+      setCalls: 1,
+      payloads: [{ dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" }],
+      pendingSets: 0,
+    }, "the completed request must apply its captured intent without a stale second request overwriting it");
 
     for (const [width, expectedColumns] of [[880, 2], [600, 1]]) {
       await page.setViewportSize({ width, height: 900 });

@@ -1304,6 +1304,23 @@ if (!globalThis.__JZ_BRAND__) {
 
   const _JZ_FIELDVIS_KEY = 'dataCardFieldVisibility';
 
+  function _jzSaveDataCardStorage(payload, savedValue) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.set(payload, () => {
+          const error = chrome.runtime?.lastError;
+          if (error) {
+            reject(new Error(error.message || '设置保存失败'));
+            return;
+          }
+          resolve(savedValue);
+        });
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('设置保存失败'));
+      }
+    });
+  }
+
   // 读字段显隐 map:{ [field]: bool }。缺省 {}(全显)。
   window.jzLoadFieldVisibility = function () {
     return new Promise((resolve) => {
@@ -1320,20 +1337,7 @@ if (!globalThis.__JZ_BRAND__) {
   // 写字段显隐 map。
   window.jzSaveFieldVisibility = function (map) {
     const savedMap = map || {};
-    return new Promise((resolve, reject) => {
-      try {
-        chrome.storage.local.set({ [_JZ_FIELDVIS_KEY]: savedMap }, () => {
-          const error = chrome.runtime?.lastError;
-          if (error) {
-            reject(new Error(error.message || '设置保存失败'));
-            return;
-          }
-          resolve(savedMap);
-        });
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error('设置保存失败'));
-      }
-    });
+    return _jzSaveDataCardStorage({ [_JZ_FIELDVIS_KEY]: savedMap }, savedMap);
   };
 
   // ── 数据卡销量周期(月 / 周)──────────────────────────────────
@@ -1359,21 +1363,24 @@ if (!globalThis.__JZ_BRAND__) {
   window.jzSalesPeriodCnLong = () => (_jzSalesPeriod === 'weekly' ? '近 7 天' : '近 30 天');
   window.jzSalesPeriodCnUnit = () => (_jzSalesPeriod === 'weekly' ? '近一周' : '近一个月');
   window.jzSalesPeriodCnPrev = () => (_jzSalesPeriod === 'weekly' ? '上一周' : '上一个月');
-  window.jzSaveSalesPeriod = (p) => new Promise((resolve, reject) => {
+  window.jzSaveSalesPeriod = (p) => {
     const v = p === 'weekly' ? 'weekly' : 'monthly';
-    try {
-      chrome.storage.local.set({ [_JZ_SALESPERIOD_KEY]: v }, () => {
-        const error = chrome.runtime?.lastError;
-        if (error) {
-          reject(new Error(error.message || '设置保存失败'));
-          return;
-        }
-        resolve(v);
-      });
-    } catch (error) {
-      reject(error instanceof Error ? error : new Error('设置保存失败'));
-    }
-  });
+    return _jzSaveDataCardStorage({ [_JZ_SALESPERIOD_KEY]: v }, v);
+  };
+
+  // 字段显隐与销售周期由设置弹窗作为一个整体提交，避免独立写入产生半保存状态。
+  // 单项 API 保留给已有兼容调用方；弹窗只调用此原子 helper。
+  window.jzSaveDataCardSettings = function (map, period) {
+    const savedMap = map || {};
+    const savedPeriod = period === 'weekly' ? 'weekly' : 'monthly';
+    return _jzSaveDataCardStorage({
+      [_JZ_FIELDVIS_KEY]: savedMap,
+      [_JZ_SALESPERIOD_KEY]: savedPeriod,
+    }, {
+      visibility: savedMap,
+      period: savedPeriod,
+    });
+  };
 
   window.jzGroupDataCardFields = function (fields) {
     const groups = [];
@@ -1512,6 +1519,7 @@ if (!globalThis.__JZ_BRAND__) {
 
       const close = () => mask.remove();
       const fieldBoxes = () => Array.from(modal.querySelectorAll('input[data-jz-field]'));
+      let saving = false;
       const refreshSummary = () => {
         const visible = fieldBoxes().filter((box) => box.checked).length;
         modal.querySelector('[data-jz-visible-count]').textContent = String(visible);
@@ -1521,6 +1529,7 @@ if (!globalThis.__JZ_BRAND__) {
           if (toggle) toggle.textContent = boxes.length && boxes.every((box) => box.checked) ? '全不选' : '全选';
         });
       };
+      refreshSummary();
 
       // modal 内点击:先阻止冒泡到 Ozon 页面 / 卡片 click 委托,再处理按钮动作。
       // (此前把动作处理挂在 mask 委托上,又给 modal 加了 stopPropagation 监听 →
@@ -1531,6 +1540,7 @@ if (!globalThis.__JZ_BRAND__) {
         const act = e.target.closest('[data-jz-act]')?.getAttribute('data-jz-act');
         if (!act) return;
         e.preventDefault();
+        if (saving) return;
         if (act === 'cancel') { close(); return; }
         if (act === 'enable-all' || act === 'disable-all') {
           const checked = act === 'enable-all';
@@ -1554,6 +1564,9 @@ if (!globalThis.__JZ_BRAND__) {
           return;
         }
         if (act === 'save') {
+          saving = true;
+          const saveButton = modal.querySelector('[data-jz-act="save"]');
+          if (saveButton) saveButton.disabled = true;
           const next = {};
           modal.querySelectorAll('input[data-jz-field]').forEach((cb) => {
             // 只持久化「关闭」项(false);默认全显,map 越小越好、向后兼容
@@ -1565,16 +1578,15 @@ if (!globalThis.__JZ_BRAND__) {
           const message = modal.querySelector('[data-jz-save-error]');
           message.hidden = true;
           message.textContent = '';
-          Promise.all([
-            window.jzSaveFieldVisibility(next),
-            window.jzSaveSalesPeriod ? window.jzSaveSalesPeriod(selPeriod) : Promise.resolve(),
-          ]).then(() => {
+          window.jzSaveDataCardSettings(next, selPeriod).then(() => {
             window.jzApplyFieldVisibilityToAll(next);
             close();
             if (periodChanged) { try { location.reload(); } catch {} }
           }).catch((error) => {
             message.hidden = false;
             message.textContent = error?.message || '设置保存失败，请重试';
+            saving = false;
+            if (saveButton) saveButton.disabled = false;
           });
         }
       });
