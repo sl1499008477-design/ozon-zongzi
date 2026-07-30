@@ -8,6 +8,7 @@ const manifest = JSON.parse(read("manifest.json"));
 const product = read("content/ozon-product.js");
 const productCss = read("content/ozon-product.css");
 const search = read("content/ozon-search.js");
+const dataPanel = read("content/ozon-data-panel.js");
 const serviceWorker = read("background/service-worker.js");
 const sellerBridge = read("content/ozon-seller-bridge.js");
 const popupHtml = read("popup/popup.html");
@@ -29,10 +30,15 @@ for (const source of [product, productCss, serviceWorker, sellerBridge]) {
   assert(!/选品推荐|recommendation-panel|getRecommendations|fetchBestsellers|reportCategoryMapping|JZC_BESTSELLERS_REPORT/.test(source));
 }
 assert(!/选品模式/.test(search));
+assert(!dataPanel.includes("选品模式"));
 
 assert(product.includes("一键采集"));
 assert(product.includes("利润"));
 assert(product.includes("OZON以图搜图"));
+assert(search.includes("collect-one"));
+assert(search.includes("window.jzRenderProductCardPanel"));
+assert(dataPanel.includes("collect-one"));
+assert(dataPanel.includes("window.jzRenderProductCardPanel"));
 assert(serviceWorker.includes("getCollectCount"));
 assert(serviceWorker.includes("getProductStatusCounts"));
 assert(sellerBridge.includes("JZC_PREMIUM_QUERY"));

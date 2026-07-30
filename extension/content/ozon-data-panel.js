@@ -2,11 +2,11 @@
  * 数据面板 — 在所有 ozon.ru 商品卡下方注入「极掌 ERP」销量/转化数据卡。
  *
  * 跟 ozon-search.js 的关系：
- *   - 之前数据面板逻辑跟「选品模式 / 采集器 / 自动滚动 / 关键词导航」捆在 ozon-search.js
+ *   - 搜索结果页的数据面板、采集器、自动滚动和关键词导航集中在 ozon-search.js
  *   - manifest matches 仅 search / category / search-by-image，其他页（首页、商品详情页推荐区、
  *     品牌页、卖家店铺页、收藏夹）注不进去 → 看不到数据卡
  *   - 抽出独立脚本 + manifest matches 改成 www.ozon.ru/*，全站注入
- *   - 选品模式等 search-only 功能仍留在 ozon-search.js
+ *   - 搜索/类目/search-by-image 页的数据面板和采集器等行为仍由 ozon-search.js 负责
  *
  * 共用资源（shared-utils.js 提供，content_scripts 加载顺序保证）：
  *   - window.formatNumber
@@ -688,8 +688,8 @@
 
   // ─── 启动 ─────────────────────────────────────────
   async function init() {
-    // 搜索/类目/search-by-image 页由 ozon-search.js 管数据面板（它跟选品模式、
-    // 采集器、关键词导航深度耦合）。本脚本仅负责"其他页面"——首页、品牌页、
+    // 搜索/类目/search-by-image 页由 ozon-search.js 管数据面板及采集器、
+    // 关键词导航。本脚本仅负责"其他页面"——首页、品牌页、
     // 卖家店铺、收藏夹、商品详情页"也看了"等，避免跟 ozon-search 重复挂面板。
     if (window.OzonHelperSearchInjected) return;
 
