@@ -111,6 +111,12 @@ assertPng("icons/icon16.png", 16, 16);
 assertPng("icons/icon48.png", 48, 48);
 assertPng("icons/icon128.png", 128, 128);
 assertPng("icons/sonli-logo.png", 1254, 1254);
+for (const rel of [
+  "icons/ozon-zongzi-logo-primary.svg",
+  "icons/ozon-zongzi-symbol.svg",
+]) {
+  assert.ok(existsSync(path.join(localDir, rel)), `brand SVG missing: ${rel}`);
+}
 
 const popupHtml = readFileSync(path.join(localDir, "popup/popup.html"), "utf8");
 const popupJs = readFileSync(path.join(localDir, "popup/popup.js"), "utf8");

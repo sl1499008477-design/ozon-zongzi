@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
 // Shared utility functions for 极掌 (JiZhang) Extension
 // This file is loaded before other content scripts via manifest.json
 
@@ -7,17 +7,17 @@ globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"s
 // 静态 inline 成实际 brand 对象,该 if 判断恒为 false,赋值被 DCE。
 // per-field 兜底:防止某个 brand build 漏配字段(如 distributor 配置只有
 // displayName/logoUrl 没 webHost)→ `https://${undefined}` 这种线上 bug。
-const BRAND_DISPLAY_NAME_FALLBACK = /__BRAND/.test("sonli")
+const BRAND_DISPLAY_NAME_FALLBACK = /__BRAND/.test("ozon 粽子")
   ? "平台"
-  : "sonli";
-const BRAND_PRODUCT_NAME_FALLBACK = /__BRAND/.test("sonli")
+  : "ozon 粽子";
+const BRAND_PRODUCT_NAME_FALLBACK = /__BRAND/.test("ozon 粽子")
   ? `${BRAND_DISPLAY_NAME_FALLBACK}算价`
-  : "sonli";
+  : "ozon 粽子";
 const __JZ_BRAND_DEFAULTS__ = {
   code: "platform",
   displayName: BRAND_DISPLAY_NAME_FALLBACK,
   productName: BRAND_PRODUCT_NAME_FALLBACK,
-  primaryColor: "#1677ff",
+  primaryColor: "#1268FF",
   apiHost: "127.0.0.1:3000/api",
   webHost: "127.0.0.1:3000",
   logoUrl: null,

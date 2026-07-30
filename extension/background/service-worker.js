@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
 // Electron host compatibility shim — Electron 36+ extension system 不实现
 // chrome.contextMenus / chrome.cookies / chrome.notifications,SW 顶层调到
 // chrome.contextMenus.onClicked.addListener 会抛 TypeError 导致整个 SW 注册失败。
@@ -126,7 +126,7 @@ try {
   // 5 次都可能在第一次 fetch 返回前 miss cache,各自发请求 → backend 收到 5 次重复 upsert。
   // 加 SW 内存级 Map:key 命中时 await 同一个 in-flight Promise,合并并发。
 
-  // ── sonli 算价：用配置 SKU 的 Ozon 前台 RUB/CNY 实价计算动态汇率 ──
+  // ── ozon 粽子算价：用配置 SKU 的 Ozon 前台 RUB/CNY 实价计算动态汇率 ──
   // 每两小时刷新一次写入 chrome.storage.local。content/jzc-calc.js 监听 storage 变化自动重算。
   const FX_STORAGE_KEY = 'jz_calc_fx_rate_v1';
   const FX_ALARM = 'jzc-fx-refresh';
@@ -2633,7 +2633,7 @@ try {
     });
   };
 
-  // ── sonli 算价：按 SKU 采集 Ozon 前台 RUB/CNY 实价 ──
+  // ── ozon 粽子算价：按 SKU 采集 Ozon 前台 RUB/CNY 实价 ──
   const collectFxProbe = async (sku) => {
     if (!globalThis.JzFxProbe?.extractFrontendPricePair) throw new Error('汇率采价组件未加载');
     const buyerTab = await ensureBuyerTab();
@@ -2659,7 +2659,7 @@ try {
     try {
       lastFxRefreshError = '';
       const token = null;
-      if (!token) throw new Error('请先登录 sonli');
+      if (!token) throw new Error('请先登录 ozon 粽子');
       const backendUrl = await getBackendUrl();
       const deviceId = await getExtensionFingerprint();
       let probeResponse = await apiRequest('GET', `${backendUrl}/pricing/fx/probes/active`, null, token, null, 15_000);

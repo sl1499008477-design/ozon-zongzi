@@ -53,6 +53,11 @@ const allowedLocalOnly = new Set([
   "background/__tests__/follow-sell-watermark-boundary.test.js",
   "background/follow-sell-request.js",
   "background/collector-client.js",
+  "icons/ozon-zongzi-logo-dark.svg",
+  "icons/ozon-zongzi-logo-mono.svg",
+  "icons/ozon-zongzi-logo-primary.svg",
+  "icons/ozon-zongzi-logo-white.svg",
+  "icons/ozon-zongzi-symbol.svg",
   "icons/sonli-logo.png",
   "lib/category-readiness.js",
   "lib/chrome-storage-promises.js",
@@ -74,6 +79,7 @@ const allowedLocalOnly = new Set([
   "tests/fx-observation-replay.test.js",
   "tests/jizhangerp-bridge-follow-sell.test.js",
   "tests/manifest-security-contract.test.js",
+  "tests/brand-contract.test.js",
   "tests/market-item-normalization.test.js",
   "tests/helpers/chrome-match-pattern.js",
   "tests/portal-bridge-policy.test.js",
@@ -141,10 +147,10 @@ assert.doesNotMatch(
   "retired bestsellers hook reference must not remain in the BFF protocol comment",
 );
 const localManifest = JSON.parse(readFileSync(path.join(localDir, "manifest.json"), "utf8"));
-assert.equal(localManifest.name, "sonli");
-assert.equal(localManifest.description, "sonli");
+assert.equal(localManifest.name, "ozon 粽子");
+assert.equal(localManifest.description, "ozon 粽子 · Ozon 选品采集与运营助手");
 assert.equal(localManifest.update_url, undefined);
-assert.equal(localManifest.action?.default_title, "sonli");
+assert.equal(localManifest.action?.default_title, "ozon 粽子");
 assert.ok(localManifest.host_permissions.includes("http://localhost:3000/*"));
 assert.ok(localManifest.host_permissions.includes("http://store.localhost:3000/*"));
 assert.ok(localManifest.host_permissions.includes("http://127.0.0.1:3000/*"));

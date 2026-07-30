@@ -37,6 +37,11 @@ const reviewedChangedFiles = new Set([
   "icons/icon128.png",
   "icons/icon16.png",
   "icons/icon48.png",
+  "icons/ozon-zongzi-logo-dark.svg",
+  "icons/ozon-zongzi-logo-mono.svg",
+  "icons/ozon-zongzi-logo-primary.svg",
+  "icons/ozon-zongzi-logo-white.svg",
+  "icons/ozon-zongzi-symbol.svg",
   "lib/cn-source-panel.js",
   "lib/store-picker.js",
   "manifest.json",
@@ -125,10 +130,10 @@ assertPopupWebLoginGuidance(
   readFileSync(path.join(localDir, "popup/popup.js"), "utf8"),
 );
 
-assert.equal(localManifest.name, "sonli");
-assert.equal(localManifest.description, "sonli");
+assert.equal(localManifest.name, "ozon 粽子");
+assert.equal(localManifest.description, "ozon 粽子 · Ozon 选品采集与运营助手");
 assert.equal(localManifest.update_url, undefined);
-assert.equal(localManifest.action?.default_title, "sonli");
+assert.equal(localManifest.action?.default_title, "ozon 粽子");
 
 const bridgeSource = readFileSync(
   path.join(localDir, "content/jizhangerp-bridge.js"),

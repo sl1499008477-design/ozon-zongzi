@@ -11,13 +11,13 @@ const js = read("popup/popup.js");
 const manifest = JSON.parse(read("manifest.json"));
 
 const actionLabels = {
-  dashboard: "打开 sonli ERP",
+  dashboard: "打开 ozon 粽子 Web 管理系统",
   products: "商品列表",
   "collect-box": "采集箱",
   "batch-upload": "批量上架",
   "import-history": "上架记录",
   reshelf: "下架重上",
-  pricing: "sonli 算价",
+  pricing: "ozon 粽子算价",
   stores: "店铺管理",
   "premium-pivot": "数据透视眼",
   "data-panel": "数据面板",

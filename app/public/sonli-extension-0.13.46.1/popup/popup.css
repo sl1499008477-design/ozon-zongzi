@@ -100,17 +100,11 @@ summary:focus-visible {
   margin-bottom: 6px;
 }
 
-.logo-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-}
-
-.logo-text {
-  color: var(--accent);
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.6px;
+.logo-area .brand-lockup {
+  display: block;
+  width: 165px;
+  height: 40px;
+  object-fit: contain;
 }
 
 .login-subtitle {
@@ -441,17 +435,11 @@ button:disabled {
   gap: 7px;
 }
 
-.header-icon {
-  width: 27px;
+.header-left .brand-lockup {
+  display: block;
+  width: 112px;
   height: 27px;
-  border-radius: 7px;
-}
-
-.header-title {
-  color: var(--accent);
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -0.5px;
+  object-fit: contain;
 }
 
 .connection-pill {

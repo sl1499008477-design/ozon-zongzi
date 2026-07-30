@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">ozon 粽子图形标志</title>
+  <defs>
+    <mask id="leaf-cuts" maskUnits="userSpaceOnUse">
+      <rect width="512" height="512" fill="#fff"/>
+      <path d="M82 208C151 232 204 267 250 319" fill="none" stroke="#000" stroke-width="25" stroke-linecap="round"/>
+      <path d="M192 420C236 316 293 237 390 181" fill="none" stroke="#000" stroke-width="25" stroke-linecap="round"/>
+      <path d="M281 399v-73l55-55h72M333 403v-54l39-39h58" fill="none" stroke="#000" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <g fill="currentColor">
+    <path mask="url(#leaf-cuts)" d="M255 45c-24 0-43 14-56 37L69 308c-26 45 7 102 59 102h236c38 0 68-31 68-69 0-19-5-36-14-52L311 82c-12-23-32-37-56-37Z"/>
+    <path d="M401 271h34l28-28" fill="none" stroke="currentColor" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M430 310h38M410 365h48" fill="none" stroke="currentColor" stroke-width="18" stroke-linecap="round"/>
+    <rect x="451" y="211" width="45" height="45" rx="8"/>
+    <rect x="457" y="288" width="45" height="45" rx="8"/>
+    <rect x="448" y="344" width="45" height="45" rx="8"/>
+  </g>
+</svg>

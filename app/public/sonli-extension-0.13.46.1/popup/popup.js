@@ -4,7 +4,7 @@
   // 若把探测串也写全,分销商 build 会被错误兜底成平台默认(store.jizhangerp.com / sonli)。
   const _brandFallback = (val, fb) => (/__BRAND/.test(val) ? fb : val);
   const BRAND_WEB_HOST = _brandFallback("qh.jizhangerp.com", "store.jizhangerp.com");
-  const BRAND_DISPLAY_NAME = _brandFallback("sonli", "sonli");
+  const BRAND_DISPLAY_NAME = _brandFallback("ozon 粽子", "ozon 粽子");
   const LOCAL_FRONTEND_BASE_URL = "http://127.0.0.1:3000";
   const isLocalBackendUrl = (value) => /^http:\/\/127\.0\.0\.1:3000\/api\b/.test(String(value || ""));
 

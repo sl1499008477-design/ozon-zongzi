@@ -34,12 +34,12 @@
   const MAIN_EXT_UPDATE_URL = 'http://127.0.0.1:3000/api/extension/latest';
   const MAIN_EXT_INSTALL_URL_FALLBACK = 'http://127.0.0.1:3000/extension';
   const MAIN_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-  const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test('sonli')
-    ? 'sonli'
-    : 'sonli';
-  const DEFAULT_BRAND_PRODUCT_NAME = /__BRAND/.test('sonli')
+  const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test('ozon 粽子')
+    ? 'ozon 粽子'
+    : 'ozon 粽子';
+  const DEFAULT_BRAND_PRODUCT_NAME = /__BRAND/.test('ozon 粽子')
     ? `${DEFAULT_BRAND_DISPLAY_NAME} - Ozon选品管理工具`
-    : 'sonli';
+    : 'ozon 粽子';
 
   // ── Freight tables ──────────────────────────────
   // base 单位：¥/包；rates 单位：¥/g

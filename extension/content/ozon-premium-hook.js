@@ -1,4 +1,4 @@
-globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"sonli","primaryColor":"#1677ff","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":null};
+globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"ozon 粽子","productName":"ozon 粽子","primaryColor":"#1268FF","apiHost":"127.0.0.1:3000/api","webHost":"127.0.0.1:3000","logoUrl":(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/ozon-zongzi-symbol.svg") : null};
 /**
  * ozon-premium-hook.js — 数据透视眼（Ozon Premium 客户端伪造）。
  *
@@ -28,7 +28,7 @@ globalThis.__JZ_BRAND__ = {"code":"sonli","displayName":"sonli","productName":"s
   window.__JZC_PREMIUM_HOOK_INSTALLED__ = true;
   const BRAND_DISPLAY_NAME =
     (globalThis.__JZ_BRAND__ && globalThis.__JZ_BRAND__.displayName) ||
-    (/__BRAND/.test("sonli") ? "平台" : "sonli");
+    (/__BRAND/.test("ozon 粽子") ? "平台" : "ozon 粽子");
 
   function escapeHtml(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => {
