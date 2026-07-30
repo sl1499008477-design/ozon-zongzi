@@ -14,6 +14,19 @@
       <a href="/product/fixture-product-123456789" aria-label="fixture product">fixture product</a>
     </article>
     <script>
+      const fixtureStorage = {};
+      let fixtureStorageMode = "success";
+      let fixtureStorageSetCalls = 0;
+      window.__setPanelStorageFixtureMode = (mode) => { fixtureStorageMode = mode; };
+      window.__setPanelStorageFixtureState = (next) => {
+        Object.keys(fixtureStorage).forEach((key) => delete fixtureStorage[key]);
+        Object.assign(fixtureStorage, next || {});
+        fixtureStorageSetCalls = 0;
+      };
+      window.__getPanelStorageFixtureState = () => ({
+        values: { ...fixtureStorage },
+        setCalls: fixtureStorageSetCalls,
+      });
       window.chrome = {
         runtime: {
           id: "panel-fixture",
@@ -27,8 +40,24 @@
         },
         storage: {
           local: {
-            get(_key, callback) { const value = {}; callback?.(value); return Promise.resolve(value); },
-            set(_value, callback) { callback?.(); return Promise.resolve(); },
+            get(keys, callback) {
+              const keyList = Array.isArray(keys) ? keys : [keys];
+              const value = Object.fromEntries(keyList.filter((key) => key in fixtureStorage).map((key) => [key, fixtureStorage[key]]));
+              callback?.(value);
+              return Promise.resolve(value);
+            },
+            set(next, callback) {
+              fixtureStorageSetCalls += 1;
+              if (fixtureStorageMode === "failure") {
+                window.chrome.runtime.lastError = { message: "fixture storage failed" };
+                callback?.();
+                window.chrome.runtime.lastError = null;
+                return Promise.resolve();
+              }
+              Object.assign(fixtureStorage, next);
+              callback?.();
+              return Promise.resolve();
+            },
           },
           onChanged: { addListener() {} },
         },

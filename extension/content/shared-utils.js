@@ -1319,11 +1319,19 @@ if (!globalThis.__JZ_BRAND__) {
 
   // 写字段显隐 map。
   window.jzSaveFieldVisibility = function (map) {
-    return new Promise((resolve) => {
+    const savedMap = map || {};
+    return new Promise((resolve, reject) => {
       try {
-        chrome.storage.local.set({ [_JZ_FIELDVIS_KEY]: map || {} }, () => resolve());
-      } catch {
-        resolve();
+        chrome.storage.local.set({ [_JZ_FIELDVIS_KEY]: savedMap }, () => {
+          const error = chrome.runtime?.lastError;
+          if (error) {
+            reject(new Error(error.message || '设置保存失败'));
+            return;
+          }
+          resolve(savedMap);
+        });
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('设置保存失败'));
       }
     });
   };
@@ -1351,10 +1359,44 @@ if (!globalThis.__JZ_BRAND__) {
   window.jzSalesPeriodCnLong = () => (_jzSalesPeriod === 'weekly' ? '近 7 天' : '近 30 天');
   window.jzSalesPeriodCnUnit = () => (_jzSalesPeriod === 'weekly' ? '近一周' : '近一个月');
   window.jzSalesPeriodCnPrev = () => (_jzSalesPeriod === 'weekly' ? '上一周' : '上一个月');
-  window.jzSaveSalesPeriod = (p) => new Promise((res) => {
+  window.jzSaveSalesPeriod = (p) => new Promise((resolve, reject) => {
     const v = p === 'weekly' ? 'weekly' : 'monthly';
-    try { chrome.storage.local.set({ [_JZ_SALESPERIOD_KEY]: v }, () => res(v)); } catch { res(v); }
+    try {
+      chrome.storage.local.set({ [_JZ_SALESPERIOD_KEY]: v }, () => {
+        const error = chrome.runtime?.lastError;
+        if (error) {
+          reject(new Error(error.message || '设置保存失败'));
+          return;
+        }
+        resolve(v);
+      });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error('设置保存失败'));
+    }
   });
+
+  window.jzGroupDataCardFields = function (fields) {
+    const groups = [];
+    const byName = new Map();
+    for (const field of fields || []) {
+      if (!byName.has(field.group)) {
+        const group = { name: field.group, fields: [] };
+        byName.set(field.group, group);
+        groups.push(group);
+      }
+      byName.get(field.group).fields.push(field);
+    }
+    return groups;
+  };
+
+  window.jzCountVisibleDataCardFields = function (fields, visibilityMap) {
+    const all = fields || [];
+    const map = visibilityMap || {};
+    return {
+      visible: all.filter((item) => map[item.field] !== false).length,
+      total: all.length,
+    };
+  };
 
   // 应用显隐:visMap[field]===false 才隐藏(未列出 / true 都显示,向后兼容默认全显)。
   // 再逐 section 检查:若 body 内所有行都被隐藏则整段隐藏。
@@ -1405,22 +1447,15 @@ if (!globalThis.__JZ_BRAND__) {
       modal.className = 'jz-fieldset-modal';
       modal.setAttribute('translate', 'no');
 
-      // 按 group 分组
-      const groups = [];
-      const byGroup = new Map();
-      for (const f of window.JZ_DATACARD_FIELDS) {
-        if (!byGroup.has(f.group)) {
-          byGroup.set(f.group, []);
-          groups.push(f.group);
-        }
-        byGroup.get(f.group).push(f);
-      }
+      const fields = window.JZ_DATACARD_FIELDS || [];
+      const groups = window.jzGroupDataCardFields(fields);
+      const count = window.jzCountVisibleDataCardFields(fields, map);
 
       const gearIcon = window.lucideIcon ? window.lucideIcon('settings', 16) : '';
       // 数据周期(月/周)单选 —— 放在字段列表最上方
       const _curPeriod = window.jzGetSalesPeriod ? window.jzGetSalesPeriod() : 'monthly';
-      const periodHtml = `<div class="jz-fieldset-group">
-          <div class="jz-fieldset-group-title">数据周期</div>
+      const periodHtml = `<section class="jz-fieldset-group jz-fieldset-period-group">
+          <header><strong>数据周期</strong><span>不计入字段</span></header>
           <div class="jz-fieldset-grid">
             <label class="jz-fieldset-item">
               <input type="radio" name="jz-sales-period" value="monthly" ${_curPeriod === 'monthly' ? 'checked' : ''} />
@@ -1431,38 +1466,61 @@ if (!globalThis.__JZ_BRAND__) {
               <span>周销量(近 7 天)</span>
             </label>
           </div>
-        </div>`;
-      let bodyHtml = '';
-      for (const g of groups) {
-        const items = byGroup.get(g).map((f) => {
+        </section>`;
+      let groupsHtml = '';
+      for (const group of groups) {
+        const items = group.fields.map((f) => {
           const checked = map[f.field] === false ? '' : 'checked';
           return `<label class="jz-fieldset-item">
             <input type="checkbox" data-jz-field="${_ohEsc(f.field)}" ${checked} />
             <span>${_ohEsc(f.label)}</span>
           </label>`;
         }).join('');
-        bodyHtml += `<div class="jz-fieldset-group">
-          <div class="jz-fieldset-group-title">${_ohEsc(g)}</div>
+        groupsHtml += `<section class="jz-fieldset-group" data-jz-group="${_ohEsc(group.name)}">
+          <header>
+            <strong>${_ohEsc(group.name)}</strong>
+            <span>${group.fields.length} 项</span>
+            <button type="button" data-jz-act="toggle-group" data-jz-group-name="${_ohEsc(group.name)}">全不选</button>
+          </header>
           <div class="jz-fieldset-grid">${items}</div>
-        </div>`;
+        </section>`;
       }
 
       modal.innerHTML = `
         <div class="jz-fieldset-header">
-          <span class="jz-fieldset-title"><span class="jz-fieldset-title-icon">${gearIcon}</span>数据卡字段设置</span>
+          <span class="jz-fieldset-title"><span class="jz-fieldset-title-icon">${gearIcon}</span>插件展示设置</span>
           <button class="jz-fieldset-close" data-jz-act="cancel" title="关闭">&times;</button>
         </div>
-        <div class="jz-fieldset-note">关闭的字段在所有数据卡生效(店铺详情页 / 搜索 / 列表)</div>
-        <div class="jz-fieldset-body">${periodHtml}${bodyHtml}</div>
+        <div class="jz-fieldset-note">选择商品详情页面板中需要展示的全部信息。</div>
+        <div class="jz-fieldset-summary">
+          <div><small>当前已展示</small><strong data-jz-visible-count>${count.visible}</strong><span>/ ${count.total} 项信息</span></div>
+          <div class="jz-fieldset-summary-actions">
+            <button type="button" data-jz-act="enable-all">全部开启</button>
+            <button type="button" data-jz-act="disable-all">全部隐藏</button>
+          </div>
+        </div>
+        <div class="jz-fieldset-body">${periodHtml}${groupsHtml}</div>
         <div class="jz-fieldset-footer">
+          <p class="jz-fieldset-save-error" data-jz-save-error hidden></p>
+          <button class="jz-fieldset-btn" data-jz-act="restore-default">恢复默认</button>
           <button class="jz-fieldset-btn" data-jz-act="cancel">取消</button>
-          <button class="jz-fieldset-btn is-primary" data-jz-act="save">保存</button>
+          <button class="jz-fieldset-btn is-primary" data-jz-act="save">完成设置</button>
         </div>`;
 
       mask.appendChild(modal);
       document.body.appendChild(mask);
 
       const close = () => mask.remove();
+      const fieldBoxes = () => Array.from(modal.querySelectorAll('input[data-jz-field]'));
+      const refreshSummary = () => {
+        const visible = fieldBoxes().filter((box) => box.checked).length;
+        modal.querySelector('[data-jz-visible-count]').textContent = String(visible);
+        modal.querySelectorAll('section[data-jz-group]').forEach((section) => {
+          const boxes = Array.from(section.querySelectorAll('input[data-jz-field]'));
+          const toggle = section.querySelector('[data-jz-act="toggle-group"]');
+          if (toggle) toggle.textContent = boxes.length && boxes.every((box) => box.checked) ? '全不选' : '全选';
+        });
+      };
 
       // modal 内点击:先阻止冒泡到 Ozon 页面 / 卡片 click 委托,再处理按钮动作。
       // (此前把动作处理挂在 mask 委托上,又给 modal 加了 stopPropagation 监听 →
@@ -1474,6 +1532,27 @@ if (!globalThis.__JZ_BRAND__) {
         if (!act) return;
         e.preventDefault();
         if (act === 'cancel') { close(); return; }
+        if (act === 'enable-all' || act === 'disable-all') {
+          const checked = act === 'enable-all';
+          fieldBoxes().forEach((box) => { box.checked = checked; });
+          refreshSummary();
+          return;
+        }
+        if (act === 'toggle-group') {
+          const section = e.target.closest('section[data-jz-group]');
+          const boxes = Array.from(section?.querySelectorAll('input[data-jz-field]') || []);
+          const checked = !boxes.every((box) => box.checked);
+          boxes.forEach((box) => { box.checked = checked; });
+          refreshSummary();
+          return;
+        }
+        if (act === 'restore-default') {
+          fieldBoxes().forEach((box) => { box.checked = true; });
+          const monthly = modal.querySelector('input[name="jz-sales-period"][value="monthly"]');
+          if (monthly) monthly.checked = true;
+          refreshSummary();
+          return;
+        }
         if (act === 'save') {
           const next = {};
           modal.querySelectorAll('input[data-jz-field]').forEach((cb) => {
@@ -1483,15 +1562,24 @@ if (!globalThis.__JZ_BRAND__) {
           // 数据周期:切换需重新取数(getMarketStats 的 period 变 + 标签月/周),保存后若变化则刷新本页。
           const selPeriod = modal.querySelector('input[name="jz-sales-period"]:checked')?.value === 'weekly' ? 'weekly' : 'monthly';
           const periodChanged = selPeriod !== (window.jzGetSalesPeriod ? window.jzGetSalesPeriod() : 'monthly');
+          const message = modal.querySelector('[data-jz-save-error]');
+          message.hidden = true;
+          message.textContent = '';
           Promise.all([
             window.jzSaveFieldVisibility(next),
             window.jzSaveSalesPeriod ? window.jzSaveSalesPeriod(selPeriod) : Promise.resolve(),
           ]).then(() => {
             window.jzApplyFieldVisibilityToAll(next);
+            close();
             if (periodChanged) { try { location.reload(); } catch {} }
+          }).catch((error) => {
+            message.hidden = false;
+            message.textContent = error?.message || '设置保存失败，请重试';
           });
-          close();
         }
+      });
+      modal.addEventListener('change', (e) => {
+        if (e.target.matches('input[data-jz-field]')) refreshSummary();
       });
       // 点遮罩空白处(modal 之外)关闭。
       mask.addEventListener('click', (e) => {

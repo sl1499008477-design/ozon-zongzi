@@ -124,12 +124,30 @@ async function runBrowserFixture({
       throw new Error("forced browser launch failure");
     }
     browser = await chromium.launch({ executablePath: resolveBrowserPath(), headless: true });
-    context = await browser.newContext({ viewport: { width: 720, height: 900 } });
+    context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     page = await context.newPage();
 
     await page.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
     await page.waitForSelector('.ozon-helper-data-panel [data-field="sales30d"]');
     await page.evaluate(() => window.__setPanelFixtureWidth(640));
+
+    const settingsHelpers = await page.evaluate(() => ({
+      groups: window.jzGroupDataCardFields([
+        { field: "sku", label: "SKU", group: "商品信息" },
+        { field: "rating", label: "评分", group: "物流商品" },
+      ]),
+      count: window.jzCountVisibleDataCardFields(
+        [{ field: "sku" }, { field: "rating" }],
+        { rating: false },
+      ),
+    }));
+    assert.deepEqual(settingsHelpers, {
+      groups: [
+        { name: "商品信息", fields: [{ field: "sku", label: "SKU", group: "商品信息" }] },
+        { name: "物流商品", fields: [{ field: "rating", label: "评分", group: "物流商品" }] },
+      ],
+      count: { visible: 1, total: 2 },
+    });
 
     const wide = await page.evaluate(() => {
       const panel = document.querySelector(".ozon-helper-data-panel");
@@ -153,8 +171,91 @@ async function runBrowserFixture({
     }
 
     await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
-    await page.waitForSelector(".jz-fieldset-mask");
-    await page.locator(".jz-fieldset-mask").evaluate((mask) => mask.remove());
+    const settingsMask = page.locator(".jz-fieldset-mask");
+    const settingsModal = settingsMask.locator(".jz-fieldset-modal");
+    await settingsMask.waitFor();
+    assert.equal(await settingsModal.locator(".jz-fieldset-title").innerText(), "插件展示设置");
+    assert.match(await settingsModal.locator(".jz-fieldset-note").innerText(), /选择商品详情页面板中需要展示的全部信息/);
+
+    const fieldCount = await settingsModal.locator('input[data-jz-field]').count();
+    assert.ok(fieldCount > 0, "settings must use the real field catalogue");
+    assert.equal(await settingsModal.locator("[data-jz-visible-count]").innerText(), String(fieldCount));
+    assert.equal(await settingsModal.locator(".jz-fieldset-summary span").innerText(), `/ ${fieldCount} 项信息`);
+    for (const action of ["enable-all", "disable-all", "toggle-group", "restore-default", "save"]) {
+      assert.ok(await settingsModal.locator(`[data-jz-act="${action}"]`).count() > 0, `missing ${action} settings action`);
+    }
+
+    const desktopSettings = await settingsModal.evaluate((modal) => ({
+      modalWidth: getComputedStyle(modal).width,
+      columns: getComputedStyle(modal.querySelector(".jz-fieldset-body")).gridTemplateColumns,
+      maskBackground: getComputedStyle(modal.parentElement).backgroundColor,
+    }));
+    assert.equal(desktopSettings.modalWidth, "960px");
+    assert.equal(gridColumnCount(desktopSettings.columns), 3);
+    assert.equal(desktopSettings.maskBackground, "rgba(16, 35, 74, 0.38)");
+
+    await settingsModal.locator('[data-jz-act="disable-all"]').click();
+    assert.equal(await settingsModal.locator('input[data-jz-field]:checked').count(), 0);
+    assert.equal(await settingsModal.locator("[data-jz-visible-count]").innerText(), "0");
+    assert.equal((await page.evaluate(() => window.__getPanelStorageFixtureState())).setCalls, 0, "batch controls must not persist before save");
+
+    const firstFieldGroup = settingsModal.locator('section.jz-fieldset-group[data-jz-group]').first();
+    const firstGroupFieldCount = await firstFieldGroup.locator('input[data-jz-field]').count();
+    await firstFieldGroup.locator('[data-jz-act="toggle-group"]').click();
+    assert.equal(await firstFieldGroup.locator('input[data-jz-field]:checked').count(), firstGroupFieldCount);
+    assert.equal(await settingsModal.locator("[data-jz-visible-count]").innerText(), String(firstGroupFieldCount));
+
+    await settingsModal.locator('input[name="jz-sales-period"][value="weekly"]').check();
+    await settingsModal.locator('[data-jz-act="restore-default"]').click();
+    assert.equal(await settingsModal.locator('input[data-jz-field]:checked').count(), fieldCount);
+    assert.equal(await settingsModal.locator('input[name="jz-sales-period"][value="monthly"]').isChecked(), true);
+
+    await settingsModal.locator('input[data-jz-field="rating"]').uncheck();
+    await settingsModal.getByRole("button", { name: "取消" }).click();
+    await settingsMask.waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), { values: {}, setCalls: 0 }, "cancel must discard unsaved field changes");
+
+    await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
+    await settingsMask.waitFor();
+    await settingsModal.locator('input[data-jz-field="rating"]').uncheck();
+    await settingsModal.locator('[data-jz-act="save"]').click();
+    await settingsMask.waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: { dataCardFieldVisibility: { rating: false }, dataCardSalesPeriod: "monthly" },
+      setCalls: 2,
+    }, "save must persist visibility and the selected sales period through the existing keys");
+    assert.equal(
+      await page.locator('.ozon-helper-data-panel [data-field="rating"]').evaluate((field) => getComputedStyle(field.closest('.ozon-helper-sidebar-card-row') || field).display),
+      "none",
+      "successful save should apply visibility to the rendered production panel",
+    );
+
+    await page.evaluate(() => {
+      window.__setPanelStorageFixtureState({ dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" });
+      window.__setPanelStorageFixtureMode("failure");
+    });
+    await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
+    await settingsMask.waitFor();
+    await settingsModal.locator('input[data-jz-field="rating"]').uncheck();
+    await settingsModal.locator('[data-jz-act="save"]').click();
+    await settingsModal.locator("[data-jz-save-error]").waitFor();
+    assert.equal(await settingsModal.locator("[data-jz-save-error]").innerText(), "fixture storage failed");
+    assert.equal(await settingsMask.count(), 1, "a failed save must leave the modal available for recovery");
+    assert.deepEqual(await page.evaluate(() => window.__getPanelStorageFixtureState()), {
+      values: { dataCardFieldVisibility: {}, dataCardSalesPeriod: "monthly" },
+      setCalls: 2,
+    });
+    await page.evaluate(() => window.__setPanelStorageFixtureMode("success"));
+    await settingsModal.getByRole("button", { name: "取消" }).click();
+
+    for (const [width, expectedColumns] of [[880, 2], [600, 1]]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
+      await settingsMask.waitFor();
+      const columns = await settingsModal.locator(".jz-fieldset-body").evaluate((body) => getComputedStyle(body).gridTemplateColumns);
+      assert.equal(gridColumnCount(columns), expectedColumns, `${width}px viewport should use ${expectedColumns} settings columns`);
+      await settingsModal.getByRole("button", { name: "取消" }).click();
+    }
 
     await page.locator('.ozon-helper-data-panel [data-action="toggle-section"]').first().click();
     assert.equal(
