@@ -1,7 +1,7 @@
 # Account-Scoped Collection and Backend-Only Sync Verification
 
 - Verification date: 2026-07-30
-- Verified implementation head: `293b8b8`
+- Verified implementation head: `490073cd` (documentation closeout commit follows)
 - Overall status: **PASS WITH EXPLICIT BROWSER-PROFILE GAPS**
 - Automated gate status: **PASS**
 - Disposable PostgreSQL 16 status: **PASS**
@@ -134,7 +134,7 @@ Detailed results:
 - App production build transformed 4,827 modules and completed successfully.
 - Vite reported a non-failing warning that one minified chunk exceeds 500 kB.
 - Test inventory: 116 active and 14 historical/manual tests.
-- Complete active suite: 317 tests, 316 passed, 0 failed, 1 skipped.
+- Complete active suite: 319 tests, 318 passed, 0 failed, 1 skipped.
 - The one skip was explicitly
   `account-scoped collection PostgreSQL behavior — PostgreSQL is not configured`
   inside the general suite. It is not counted as a pass here; dedicated PostgreSQL
@@ -222,6 +222,9 @@ node server/tests/collector-desktop.integration.mjs
 
 node server/tests/listing-pipeline-v3.integration.mjs
 # listing pipeline v3 integration passed
+
+node server/tests/account-deletion-postgres.integration.mjs
+# account deletion PostgreSQL integration passed
 ```
 
 Observed ownership and recovery coverage includes:
@@ -236,7 +239,17 @@ Observed ownership and recovery coverage includes:
   idempotency, and route-level target isolation;
 - migration fail-closed checks create deliberately unowned rows inside a
   transaction, require migration 019 to reject them, and execute `ROLLBACK` in
-  `finally`.
+  `finally`;
+- production-real account deletion with empty Collector-auth arrays in
+  `local_state` and active A/B rows in PostgreSQL: deleting A returned 200,
+  removed all A tickets/sessions, preserved both B rows, and wrote authoritative
+  numeric counts to both relational and `local_state` `ACCOUNT_DELETED` audit
+  metadata;
+- deterministic concurrent Collector writers: a second committed pre-lock A
+  ticket/session pair was included in the exact `2/2` audit counts, while
+  post-lock ticket/session repository writes were observed blocked by
+  `pg_blocking_pids`, then failed or returned no row after account deletion and
+  persisted nothing. The target-account row lock did not lock account B.
 
 After all integrations and their cleanup:
 
@@ -255,7 +268,7 @@ query returned no remaining Task 12 container.
 
 ### Environment and evidence boundary
 
-- Feature worktree HEAD: `293b8b8`, including browser-discovered fixes
+- Browser-evidence implementation HEAD: `293b8b8`, including browser-discovered fixes
   `405e519` and `293b8b8`.
 - Isolated stack: Web `http://127.0.0.1:3200`, API
   `http://127.0.0.1:3201`, and a fresh temporary JSON data directory with zero
@@ -327,7 +340,9 @@ Final browser conclusion: **PASS WITH EXPLICIT BROWSER-PROFILE GAPS**. The isola
 zero-store Web collection and listing boundary passed. Checks requiring the real
 extension remain unverified for the exact reason that the target extension was not
 loaded in the controlled profile and extension inspection was blocked by browser
-security policy.
+security policy. Later server-only privacy, audit-count, and account-deletion
+concurrency fixes through `490073cd` did not change this browser evidence boundary
+or convert any blocked browser check into a pass.
 
 ## Regression coverage
 
@@ -351,17 +366,42 @@ The isolated zero-store Web UI flow passed. Real-extension popup/session behavio
 and real-page capture remain explicitly blocked as recorded in the browser
 section.
 
+## Final whole-branch review closeout
+
+The whole implementation branch was reviewed through `490073cd`. Three Important
+findings were closed in bounded review rounds:
+
+1. Round 1/5, `888e9bd`: account privacy deletion now removes exact-account JSON
+   Collector tickets/sessions, records sanitized deletion counts, preserves other
+   accounts, and prevents formal persistence from recreating auth rows whose
+   account or parent Web session no longer exists.
+2. Round 2/5, `8dd6780`: PostgreSQL account deletion explicitly deletes and counts
+   Collector tickets/sessions in the formal transaction, replaces stale JSON
+   counts with authoritative PostgreSQL counts without double-counting, and
+   refreshes corrected `local_state` audit metadata at the same storage version
+   before commit.
+3. Round 3/5, `490073c`: the formal deletion transaction locks only the target
+   account row before child deletion/counting. A concurrent Collector FK child
+   writer therefore either commits before the lock and is counted, or waits until
+   deletion and cannot persist afterward.
+
+Final review result: **Ready: Yes; Critical: 0; Important: 0.** Existing deferred
+Minor rulings remain deferred, including exact-permission repository hardening,
+independent Collector audit entity IDs, optional parent-session-leading indexes,
+the desktop pricing-bootstrap test hermeticity cleanup, malformed private archive
+garbage-count cleanup, and the later compatibility-index removal review.
+
 ## Final repository and security review
 
 At final verification:
 
-- implementation HEAD was `293b8b8`;
-- `git status --short` contained only this untracked verification document; the
-  explicitly requested Task 12 ledger append remained under the SDD directory's
-  existing ignore rule until precise forced staging;
+- verified implementation HEAD was `490073cd`;
+- `git status --short` was clean after the implementation commit and disposable
+  PostgreSQL cleanup; during documentation closeout, only this verification
+  document and the tracked SDD progress ledger were modified;
 - `git diff --check`: passed;
 - `git diff --cached --check`: passed;
-- implementation history through `293b8b8` was reviewed;
+- implementation history through `490073cd` was reviewed;
 - the implementation range whitespace check passed;
 - tracked personal-data and credential scan passed;
 - no temporary database/container artifact remained.
@@ -387,8 +427,9 @@ production endpoint credential, or copied browser token.
   PostgreSQL-backed atomic claim.
 - The old two-column collection-request compatibility index remains intentionally
   stricter until all old runtimes are retired and a later migration is reviewed.
-- Collector-auth PostgreSQL SQL shape and migration behavior are covered, but this
-  Task 12 run did not add a new multi-process concurrent ticket-exchange load test.
+- Collector-auth PostgreSQL SQL shape, migration behavior, and account-deletion
+  concurrency are covered, but this Task 12 run did not add a general
+  multi-process concurrent ticket-exchange load test.
 - A deferred audit-quality issue remains: some collector audit entity IDs are
   prefixes derived from credential hashes. Secret text is not serialized, but a
   future cleanup should use independent entity IDs or omit them.
@@ -415,6 +456,12 @@ production endpoint credential, or copied browser token.
 6. Preserve account-scoped collection data and audit/history records during
    application rollback. Use a forward reviewed recovery migration for database
    corrections instead of destructive manual SQL.
+7. Treat `888e9bd`, `8dd6780`, and `490073c` as dependent correctness fixes.
+   Reverting `490073c` restores the concurrent child-writer audit race; reverting
+   `8dd6780` restores non-authoritative PostgreSQL deletion counts and stale
+   `local_state` audit metadata; reverting `888e9bd` restores deleted-account
+   Collector privacy artifacts and the formal-mirror FK rollback defect. Do not
+   revert these commits merely to roll back this documentation record.
 
 ## Completion gate
 
@@ -424,8 +471,12 @@ production endpoint credential, or copied browser token.
   exact reason.
 - Both browser-discovered defects followed focused fixes and automated regression
   coverage in `405e519` and `293b8b8`.
-- The final automated gate passed at implementation HEAD `293b8b8`: 317 total,
-  316 passed, 0 failed, and 1 general-suite PostgreSQL skip; the dedicated
-  disposable PostgreSQL verification remains passed.
+- The final automated gate passed at implementation HEAD `490073cd`: 319 total,
+  318 passed, 0 failed, and 1 general-suite PostgreSQL skip.
+- Dedicated disposable PostgreSQL verification passed, including
+  production-real account deletion and deterministic concurrent Collector writer
+  coverage.
+- Final whole-branch review is Ready with 0 Critical and 0 Important findings;
+  the explicitly listed Minor rulings remain deferred.
 - Final repository status, whitespace/diff checks, history, and personal-data
   checks were rerun after this section was updated.
