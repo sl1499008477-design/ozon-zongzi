@@ -606,6 +606,12 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
     const accountId = text(scope?.accountId, 240);
     if (!accountId) continue;
 
+    // FK child writers take a KEY SHARE lock on this parent. Lock the account
+    // first so a writer either commits before the count or waits until deletion.
+    await client.query(
+      "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+      [accountId],
+    );
     const deletedCollectorAuthTickets = await client.query(
       "DELETE FROM collector_auth_tickets WHERE account_id=$1",
       [accountId],

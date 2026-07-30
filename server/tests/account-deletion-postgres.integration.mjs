@@ -2,6 +2,7 @@ import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
+import { createPostgresCollectorAuthRepository } from "../collector-auth-repository.mjs";
 import { closePostgresPool, getPostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import { readLegacyDataCollectionStoresForAudit } from "../legacy-data-collection-store.mjs";
@@ -33,13 +34,58 @@ const accountTicketHash = crypto.createHash("sha256").update(`delete-ticket-${su
 const accountCollectorTokenHash = crypto.createHash("sha256").update(`delete-session-${suffix}`).digest("hex");
 const accountBTicketHash = crypto.createHash("sha256").update(`keep-b-ticket-${suffix}`).digest("hex");
 const accountBCollectorTokenHash = crypto.createHash("sha256").update(`keep-b-session-${suffix}`).digest("hex");
+const preLockTicketHash = crypto.createHash("sha256").update(`pre-lock-ticket-${suffix}`).digest("hex");
+const preLockCollectorTokenHash = crypto.createHash("sha256").update(`pre-lock-session-${suffix}`).digest("hex");
+const postLockTicketHash = crypto.createHash("sha256").update(`post-lock-ticket-${suffix}`).digest("hex");
+const postLockCollectorTokenHash = crypto.createHash("sha256").update(`post-lock-session-${suffix}`).digest("hex");
 const pool = await getPostgresPool();
 
-async function requestDeleteAccount(handle) {
+async function waitForBlockedQueries(pids, timeoutMs = 3000) {
+  const expected = [...new Set(pids.map(Number).filter(Number.isInteger))];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await pool.query(
+      `SELECT pid,cardinality(pg_blocking_pids(pid))::int AS blocker_count
+       FROM pg_stat_activity
+       WHERE pid=ANY($1::int[])`,
+      [expected],
+    );
+    if (
+      result.rows.length === expected.length
+      && result.rows.every((row) => Number(row.blocker_count) > 0)
+    ) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
+async function waitForBlockedStoreDeletion(timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await pool.query(
+      `SELECT pid
+       FROM pg_stat_activity
+       WHERE datname=current_database()
+         AND query LIKE '%DELETE FROM stores WHERE owner_account_id%'
+         AND cardinality(pg_blocking_pids(pid))>0`,
+    );
+    if (result.rowCount > 0) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
+async function requestApi(handle, {
+  method,
+  pathname,
+  authorization = "",
+}) {
   const req = Readable.from([]);
-  req.method = "DELETE";
-  req.url = `/local/accounts/${encodeURIComponent(accountId)}`;
-  req.headers = { authorization: `Bearer ${adminSessionToken}` };
+  req.method = method;
+  req.url = pathname;
+  req.headers = authorization ? { authorization } : {};
   const res = {
     status: 0,
     body: "",
@@ -64,6 +110,14 @@ async function requestDeleteAccount(handle) {
     status: res.status,
     body: JSON.parse(res.body || "{}"),
   };
+}
+
+async function requestDeleteAccount(handle) {
+  return requestApi(handle, {
+    method: "DELETE",
+    pathname: `/local/accounts/${encodeURIComponent(accountId)}`,
+    authorization: `Bearer ${adminSessionToken}`,
+  });
 }
 
 try {
@@ -96,7 +150,8 @@ try {
        id,ticket_hash,account_id,parent_session_token,permissions,expires_at
      ) VALUES
        ($1,$2,$3,$4,'["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z'),
-       ($5,$6,$7,$8,'["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z')`,
+       ($5,$6,$7,$8,'["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z'),
+       ($9,$10,$3,$4,'["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z')`,
     [
       `delete-ticket-${suffix}`,
       accountTicketHash,
@@ -106,6 +161,8 @@ try {
       accountBTicketHash,
       accountBId,
       accountBSessionToken,
+      `pre-lock-ticket-${suffix}`,
+      preLockTicketHash,
     ],
   );
   await pool.query(
@@ -114,7 +171,8 @@ try {
        extension_version,permissions,expires_at
      ) VALUES
        ($1,$2,$3,$4,$5,'3.0.0-test','["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z'),
-       ($6,$7,$8,$9,$10,'3.0.0-test','["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z')`,
+       ($6,$7,$8,$9,$10,'3.0.0-test','["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z'),
+       ($11,$12,$3,$4,$13,'3.0.0-test','["collector.upload"]'::jsonb,TIMESTAMPTZ '2099-01-01T00:00:00.000Z')`,
     [
       `delete-collector-session-${suffix}`,
       accountCollectorTokenHash,
@@ -126,6 +184,9 @@ try {
       accountBId,
       accountBSessionToken,
       `keep-b-device-${suffix}`,
+      `pre-lock-collector-session-${suffix}`,
+      preLockCollectorTokenHash,
+      `pre-lock-device-${suffix}`,
     ],
   );
   await pool.query(
@@ -306,7 +367,98 @@ try {
   process.env.QH_LOCAL_NO_LISTEN = "1";
   process.env.QH_LOCAL_NO_DOTENV = "1";
   const { handle } = await import("../index.mjs");
-  const deletionResponse = await requestDeleteAccount(handle);
+  const healthResponse = await requestApi(handle, {
+    method: "GET",
+    pathname: "/health",
+  });
+  assert.equal(healthResponse.status, 200);
+  const storeBlocker = await pool.connect();
+  const ticketWriter = await pool.connect();
+  const sessionWriter = await pool.connect();
+  let storeBlockerOpen = false;
+  let deletionPromise;
+  let ticketWritePromise;
+  let sessionWritePromise;
+  let deletionReachedBlockedStore = false;
+  let concurrentWritesBlocked = false;
+  let deletionResponse;
+  let ticketWriteResult;
+  let sessionWriteResult;
+  try {
+    await storeBlocker.query("BEGIN");
+    storeBlockerOpen = true;
+    await storeBlocker.query("SELECT id FROM stores WHERE id=$1 FOR UPDATE", [storeId]);
+    deletionPromise = requestDeleteAccount(handle);
+    deletionReachedBlockedStore = await waitForBlockedStoreDeletion();
+
+    const ticketWriterPid = Number(
+      (await ticketWriter.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+    );
+    const sessionWriterPid = Number(
+      (await sessionWriter.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+    );
+    const ticketRepository = createPostgresCollectorAuthRepository({
+      pool: { query: (sql, values) => ticketWriter.query(sql, values) },
+    });
+    const sessionRepository = createPostgresCollectorAuthRepository({
+      pool: { query: (sql, values) => sessionWriter.query(sql, values) },
+    });
+    ticketWritePromise = ticketRepository.createTicket({
+      id: `post-lock-ticket-${suffix}`,
+      ticketHash: postLockTicketHash,
+      accountId,
+      parentSessionToken: accountSessionToken,
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      consumedAt: null,
+      createdAt: "2026-07-30T08:00:00.000Z",
+    }).then(
+      (value) => ({ status: "resolved", value }),
+      (error) => ({ status: "rejected", code: error?.code || "" }),
+    );
+    sessionWritePromise = sessionRepository.createSession({
+      id: `post-lock-collector-session-${suffix}`,
+      tokenHash: postLockCollectorTokenHash,
+      accountId,
+      parentSessionToken: accountSessionToken,
+      deviceFingerprint: `post-lock-device-${suffix}`,
+      extensionVersion: "3.0.0-test",
+      permissions: ["collector.upload"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      revokedAt: null,
+      revokedReason: "",
+      lastSeenAt: "2026-07-30T08:00:00.000Z",
+      createdAt: "2026-07-30T08:00:00.000Z",
+    }).then(
+      (value) => ({ status: "resolved", value }),
+      (error) => ({ status: "rejected", code: error?.code || "" }),
+    );
+    concurrentWritesBlocked = await waitForBlockedQueries([
+      ticketWriterPid,
+      sessionWriterPid,
+    ]);
+  } finally {
+    if (storeBlockerOpen) {
+      await storeBlocker.query("COMMIT");
+      storeBlockerOpen = false;
+    }
+    deletionResponse = deletionPromise ? await deletionPromise : null;
+    ticketWriteResult = ticketWritePromise ? await ticketWritePromise : null;
+    sessionWriteResult = sessionWritePromise ? await sessionWritePromise : null;
+    storeBlocker.release();
+    ticketWriter.release();
+    sessionWriter.release();
+  }
+  assert.equal(deletionReachedBlockedStore, true);
+  assert.equal(concurrentWritesBlocked, true);
+  for (const writeResult of [ticketWriteResult, sessionWriteResult]) {
+    assert.equal(
+      writeResult.status === "resolved"
+        ? writeResult.value === null
+        : writeResult.code === "COLLECTOR_AUTH_PERSISTENCE_FAILED",
+      true,
+    );
+  }
   assert.equal(deletionResponse.status, 200);
   assert.equal(deletionResponse.body.ok, true);
 
@@ -411,8 +563,8 @@ try {
       deletedStoreIds: [storeId],
       deletedStoreCount: 1,
       legacyArchivePurgedCount: 1,
-      deletedCollectorAuthTicketCount: 1,
-      deletedCollectorSessionCount: 1,
+      deletedCollectorAuthTicketCount: 2,
+      deletedCollectorSessionCount: 2,
     },
     local_state_legacy_archive: {
       schemaVersion: 1,
@@ -427,8 +579,8 @@ try {
       deletedStoreIds: [storeId],
       deletedStoreCount: 1,
       legacyArchivePurgedCount: 1,
-      deletedCollectorAuthTicketCount: 1,
-      deletedCollectorSessionCount: 1,
+      deletedCollectorAuthTicketCount: 2,
+      deletedCollectorSessionCount: 2,
     },
   });
   assert.doesNotMatch(

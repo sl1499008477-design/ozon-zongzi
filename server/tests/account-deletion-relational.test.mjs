@@ -59,10 +59,17 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
   const collectorSessionDeleteIndex = sql.findIndex(
     (statement) => statement.startsWith("DELETE FROM collector_sessions"),
   );
+  const accountLockIndex = sql.findIndex(
+    (statement) => statement.startsWith("SELECT id FROM accounts")
+      && statement.endsWith("FOR UPDATE"),
+  );
 
   assert.ok(accountDeleteIndex > storeDeleteIndex);
   assert.ok(storeDeleteIndex > taskDeleteIndex);
   assert.ok(storeDeleteIndex > submissionDeleteIndex);
+  assert.ok(accountLockIndex >= 0);
+  assert.ok(collectorTicketDeleteIndex > accountLockIndex);
+  assert.ok(collectorSessionDeleteIndex > accountLockIndex);
   assert.ok(accountDeleteIndex > collectorTicketDeleteIndex);
   assert.ok(accountDeleteIndex > collectorSessionDeleteIndex);
   assert.equal(sql.some((statement) => statement.includes("DELETE FROM audit_events")), false);
