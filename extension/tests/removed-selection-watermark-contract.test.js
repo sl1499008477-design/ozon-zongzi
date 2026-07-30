@@ -16,6 +16,9 @@ const batchHtml = read("batch-upload/index.html");
 const batchJs = read("batch-upload/index.js");
 const listingActions = read("background/agent/listing-actions.js");
 const storePicker = read("lib/store-picker.js");
+const jizhangerpBridge = read("content/jizhangerp-bridge.js");
+const portalBridgePolicy = read("lib/portal-bridge-policy.js");
+const aiWizard = read("content/1688-ai-wizard.js");
 
 assert(!fs.existsSync(path.join(root, "content/ozon-bestsellers-hook.js")));
 assert(!manifest.content_scripts.some((entry) =>
@@ -48,6 +51,9 @@ for (const source of [
   serviceWorker,
   listingActions,
   storePicker,
+  jizhangerpBridge,
+  portalBridgePolicy,
+  aiWizard,
 ]) {
   assert(!/watermark|水印|边框模板|未绑水印|已绑水印/i.test(source));
 }

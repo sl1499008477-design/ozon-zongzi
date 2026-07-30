@@ -155,7 +155,6 @@
         items: [built.item],
         strictTypeMatch: true,
         dryRun: !!payload?.dryRun,
-        applyWatermark: !!payload?.applyWatermark,
         applyPoster: !!payload?.applyPoster,
         applyAiRewrite: !!payload?.applyAiRewrite,
       };

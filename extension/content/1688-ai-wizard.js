@@ -1592,7 +1592,7 @@
       if (!requireCategoryDataReady(categoryScope)) return;
       const pubResp = await bg({
         action: 'followSell', storeId: W.opts.storeId, items: built.items,
-        applyPoster: W.opts.imageTranslate, posterPrimaryOnly: true, applyWatermark: false,
+        applyPoster: W.opts.imageTranslate, posterPrimaryOnly: true,
         applyAiRewrite: false, strictTypeMatch: false,
         stocks: built.stocks.length ? built.stocks : undefined,
       });
@@ -2036,7 +2036,7 @@
         const pubResp = await bg({
           action: 'followSell', storeId: W.opts.storeId, items: built.items,
           // 「图片翻译」走后端海报/改图：正确字段是 applyPoster（applyAiImage 已下线、import 不读）
-          applyPoster: W.opts.imageTranslate, posterPrimaryOnly: true, applyWatermark: false,
+          applyPoster: W.opts.imageTranslate, posterPrimaryOnly: true,
           applyAiRewrite: false, strictTypeMatch: false,
           stocks: built.stocks.length ? built.stocks : undefined,
         });
