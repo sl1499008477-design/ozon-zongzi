@@ -165,7 +165,6 @@ const defaultState = () => ({
     messageTemplates: [],
     messageHistory: [],
     productTemplates: [],
-    watermarkTemplates: [],
     files: [],
   },
   hashes: {},
@@ -220,6 +219,7 @@ function ensureAccountState(state) {
   state.stores = Array.isArray(state.stores) ? state.stores : [];
   migrateLegacyDataCollectionStoreStateForAudit(state);
   state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
+  delete state.caches.watermarkTemplates;
   normalizeCollectBoxListingStates(state);
   normalizeListingJobStates(state);
   state.sessions =
@@ -248,10 +248,13 @@ function ensureAccountState(state) {
     !Array.isArray(state.currentStoreIdsByAccount)
       ? state.currentStoreIdsByAccount
       : {};
-  state.stores = state.stores.map((store) => ({
-    ...store,
-    ownerAccountId: resolveLegacyStoreOwner(store, state.accounts),
-  }));
+  state.stores = state.stores.map((store) => {
+    const { watermarkTemplateId: _retiredWatermarkTemplateId, ...activeStoreFields } = store;
+    return {
+      ...activeStoreFields,
+      ownerAccountId: resolveLegacyStoreOwner(activeStoreFields, state.accounts),
+    };
+  });
   const defaultOwnerAccountId = state.accounts.length === 1 ? String(state.accounts[0]?.id || "") : "";
   if (defaultOwnerAccountId && state.currentStoreId && !state.currentStoreIdsByAccount[defaultOwnerAccountId]) {
     state.currentStoreIdsByAccount[defaultOwnerAccountId] = state.currentStoreId;
@@ -468,7 +471,6 @@ function publicStore(store, state = null) {
     currency,
     currencyCode: currency,
     companyCurrency: currency,
-    watermarkTemplateId: store.watermarkTemplateId || "",
     sellerCompanyId: store.sellerCompanyId || "",
     sellerCookieSyncedAt: store.sellerCookieSyncedAt || "",
     savedAt: store.savedAt,
@@ -617,7 +619,6 @@ function summarize(state) {
     messageTemplates: state.caches.messageTemplates?.length || 0,
     messageHistory: state.caches.messageHistory?.length || 0,
     productTemplates: state.caches.productTemplates?.length || 0,
-    watermarkTemplates: state.caches.watermarkTemplates?.length || 0,
     files: state.caches.files?.length || 0,
     lastSyncAt: state.reports.findLast?.((r) => r.status === "SUCCESS" && syncTypes.has(r.type))?.createdAt || null,
   };
@@ -701,7 +702,6 @@ function localStatePayload(state, options = {}) {
     messageTemplates: accountScopedCache(state.caches.messageTemplates, account, accountStoreIds),
     messageHistory: accountScopedCache(state.caches.messageHistory, account, accountStoreIds),
     productTemplates: accountScopedCache(state.caches.productTemplates, account, accountStoreIds),
-    watermarkTemplates: accountScopedCache(state.caches.watermarkTemplates, account, accountStoreIds),
     files: visibleFiles,
   };
   return {
@@ -1056,46 +1056,6 @@ function normalizeProductTemplate(body, existing = {}, store = null) {
       ...(existing.templateSettings || {}),
       content,
     },
-    createdAt: existing.createdAt || now,
-    updatedAt: now,
-  };
-}
-
-function normalizeWatermarkTemplate(body, existing = {}) {
-  const now = new Date().toISOString();
-  const name = cleanText(
-    hasOwn(body, "name") ? body.name : hasOwn(body, "templateName") ? body.templateName : existing.name || existing.templateName,
-    80
-  );
-  if (!name) {
-    const err = new Error("模板名称必填");
-    err.status = 400;
-    throw err;
-  }
-  const typeValue = cleanText(hasOwn(body, "type") ? body.type : existing.type || "text", 24);
-  const allowedTypes = new Set(["text", "border", "image"]);
-  const fontSize = Math.max(8, Math.min(120, Number(body.fontSize ?? existing.fontSize ?? 28) || 28));
-  const opacity = Math.max(0, Math.min(100, Number(body.opacity ?? existing.opacity ?? 40) || 40));
-  const rotate = Math.max(-180, Math.min(180, Number(body.rotate ?? existing.rotate ?? -30) || -30));
-  const margin = Math.max(0, Math.min(50, Number(body.margin ?? existing.margin ?? 8) || 8));
-  const positionValue = cleanText(hasOwn(body, "position") ? body.position : existing.position || "center", 24);
-  const allowedPositions = new Set(["center", "tile", "top-left", "top-right", "bottom-left", "bottom-right"]);
-  const isDefault = hasOwn(body, "isDefault") ? Boolean(body.isDefault) : Boolean(existing.isDefault);
-  return {
-    ...existing,
-    id: existing.id || crypto.randomUUID(),
-    name,
-    templateName: name,
-    type: allowedTypes.has(typeValue) ? typeValue : "text",
-    text: cleanText(hasOwn(body, "text") ? body.text : existing.text || "", 200),
-    font: cleanText(hasOwn(body, "font") ? body.font : existing.font || "system", 40),
-    fontSize,
-    color: cleanText(hasOwn(body, "color") ? body.color : existing.color || "#ffffff", 24),
-    opacity,
-    rotate,
-    margin,
-    position: allowedPositions.has(positionValue) ? positionValue : "center",
-    isDefault,
     createdAt: existing.createdAt || now,
     updatedAt: now,
   };
@@ -3192,114 +3152,6 @@ async function handle(req, res) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/ozon/watermark-settings") {
-    const account = requireAuth(req, state);
-    sendJson(res, 200, cacheItemsForAccount(state, "watermarkTemplates", account));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/ozon/watermark-settings") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    state.caches.watermarkTemplates = state.caches.watermarkTemplates || [];
-    const accountTemplates = cacheItemsForAccount(state, "watermarkTemplates", account);
-    const item = scopeCacheItemForAccount(
-      normalizeWatermarkTemplate({
-        ...body,
-        isDefault: hasOwn(body, "isDefault") ? body.isDefault : accountTemplates.length === 0,
-      }),
-      account,
-      store,
-    );
-    if (item.isDefault) {
-      state.caches.watermarkTemplates = state.caches.watermarkTemplates.map((template) => (
-        cacheItemBelongsToAccount(state, template, account)
-          ? { ...template, isDefault: false }
-          : template
-      ));
-      if (store) store.watermarkTemplateId = item.id;
-    }
-    state.caches.watermarkTemplates.unshift(item);
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      item,
-      state: localStatePayload(state, { account, token: bearerToken(req) }),
-      local: true,
-    });
-    return;
-  }
-
-  const watermarkTemplateMatch = url.pathname.match(/^\/ozon\/watermark-settings\/([^/]+)$/);
-  if (watermarkTemplateMatch && (req.method === "PUT" || req.method === "DELETE")) {
-    const account = requireAuth(req, state);
-    const id = decodeURIComponent(watermarkTemplateMatch[1]);
-    state.caches.watermarkTemplates = state.caches.watermarkTemplates || [];
-    const index = state.caches.watermarkTemplates.findIndex((item) =>
-      String(item.id) === String(id) && cacheItemBelongsToAccount(state, item, account),
-    );
-    if (index < 0) {
-      sendError(res, 404, "水印模板不存在");
-      return;
-    }
-    const storeId = storeIdForAccountRequest(
-      state,
-      account,
-      req.headers["x-ozon-store-id"] || state.caches.watermarkTemplates[index].storeId || "",
-    );
-    const store = activeStore(state, storeId, account.id);
-    if (req.method === "DELETE") {
-      const [removed] = state.caches.watermarkTemplates.splice(index, 1);
-      if (store?.watermarkTemplateId === removed.id) {
-        const nextTemplate = cacheItemsForAccount(state, "watermarkTemplates", account)[0] || null;
-        store.watermarkTemplateId = nextTemplate?.id || "";
-        state.caches.watermarkTemplates = state.caches.watermarkTemplates.map((template, templateIndex) => ({
-          ...template,
-          isDefault: cacheItemBelongsToAccount(state, template, account)
-            ? String(template.id) === String(store.watermarkTemplateId)
-            : template.isDefault,
-        }));
-      }
-      await saveState(state);
-      sendJson(res, 200, {
-        ok: true,
-        removedId: removed.id,
-        state: localStatePayload(state, { account, token: bearerToken(req) }),
-        local: true,
-      });
-      return;
-    }
-    const body = await readBody(req);
-    const item = scopeCacheItemForAccount(
-      normalizeWatermarkTemplate(body, state.caches.watermarkTemplates[index]),
-      account,
-      store,
-    );
-    if (item.isDefault) {
-      state.caches.watermarkTemplates = state.caches.watermarkTemplates.map((template) => (
-        !cacheItemBelongsToAccount(state, template, account) || String(template.id) === String(item.id)
-          ? template
-          : { ...template, isDefault: false }
-      ));
-      if (store) store.watermarkTemplateId = item.id;
-    }
-    state.caches.watermarkTemplates[index] = item;
-    await saveState(state);
-    sendJson(res, 200, {
-      ok: true,
-      item,
-      state: localStatePayload(state, { account, token: bearerToken(req) }),
-      local: true,
-    });
-    return;
-  }
-
   if (req.method === "POST" && url.pathname === "/usage/track") {
     const account = requireAuth(req, state);
     const body = await readBody(req);
@@ -4262,39 +4114,6 @@ async function handle(req, res) {
     });
     await saveState(state);
     sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/ozon/selection/bestsellers/snapshot") {
-    const account = requireAuth(req, state);
-    const body = await readBody(req);
-    state.reports.unshift({
-      id: crypto.randomUUID(),
-      type: "BESTSELLERS_SNAPSHOT",
-      status: "SUCCESS",
-      period: body.period || "",
-      itemCount: Array.isArray(body.items) ? body.items.length : 0,
-      createdAt: new Date().toISOString(),
-    });
-    state.reports = state.reports.slice(0, 200);
-    appendRequestAudit(state, req, account, {
-      action: "BESTSELLERS_SNAPSHOT",
-      storeId: currentStoreIdForAccount(state, account.id),
-      source: "extension",
-      entityType: "selection_snapshot",
-      metadata: {
-        period: body.period || "",
-        itemCount: Array.isArray(body.items) ? body.items.length : 0,
-      },
-    });
-    await saveState(state);
-    sendJson(res, 200, { ok: true, imported: Array.isArray(body.items) ? body.items.length : 0 });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/ozon/selection/category-mapping") {
-    requireAuth(req, state);
-    sendJson(res, 200, { ok: true, local: true });
     return;
   }
 

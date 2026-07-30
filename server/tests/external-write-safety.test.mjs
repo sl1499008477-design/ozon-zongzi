@@ -79,7 +79,6 @@ await writeFile(path.join(dataDir, "local-state.json"), JSON.stringify({
     messageTemplates: [],
     messageHistory: [],
     productTemplates: [],
-    watermarkTemplates: [],
     files: [],
   },
   hashes: {},

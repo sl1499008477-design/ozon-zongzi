@@ -137,7 +137,6 @@ const fixture = {
     messageTemplates: scopedPair("message_template"),
     messageHistory: scopedPair("message_history"),
     productTemplates: scopedPair("product_template"),
-    watermarkTemplates: scopedPair("watermark_template"),
     files: [
       { id: "file_a", createdBy: "acct_a", key: "a.xlsx" },
       { id: "file_b", createdBy: "acct_b", key: "b.xlsx" },
@@ -254,7 +253,6 @@ try {
   );
 
   const reads = [
-    ["/ozon/watermark-settings", ["watermark_template_a"]],
     ["/ozon/collect-box", ["collect_a"]],
     ["/ozon/favorites", ["favorite_a"]],
     ["/ozon/warehouses", ["warehouse_a"]],

@@ -79,7 +79,6 @@ const fixture = {
     messageTemplates: [],
     messageHistory: [],
     productTemplates: [],
-    watermarkTemplates: [],
     files: [],
   },
   hashes: {},
