@@ -7,13 +7,48 @@ import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
 
 const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-ui-parity.mjs");
 if (!sourceDir) process.exit(2);
-const localDir = "extension";
+const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
 
 const exactUiFiles = [
   "batch-upload/index.css",
   "content/jzc-calc.css",
   "lib/store-picker.css",
 ];
+
+// These pairs lock the complete reviewed contents on both sides of each
+// deliberate UI difference. A future intentional change is safe only after
+// reviewing the full upstream/local diff and updating the affected pair here;
+// unrelated edits and unnoticed upstream drift both fail closed.
+const reviewedUiFingerprints = new Map([
+  [
+    "batch-upload/index.html",
+    {
+      upstream: "cc6d244da650e31d24e38484f9c7ea3d1777f91acfb58d8817efb33117d05a03",
+      local: "c0c01051fde9630910a5d6b00b31a8e258ca545deb25b9f879409552c03ad0a2",
+    },
+  ],
+  [
+    "batch-upload/index.js",
+    {
+      upstream: "d6a6cba6639fecd68965f0a782d4289821b833d2d913e5e59a72bc82193e075e",
+      local: "f99be1f9bdc7cd6d7e0f3107bcacffba47965545c18917e7e7fc998c93681c5e",
+    },
+  ],
+  [
+    "content/ozon-product.css",
+    {
+      upstream: "d10a9c8b0982d0f9637c7a907c665a5c2c070cc289b921d5a9357edbd41c3a44",
+      local: "44707c1f8a2bc96cbc3fc64c3a6df564c75ff5ec6b9ff2d8be0571d5f72efeb8",
+    },
+  ],
+  [
+    "content/ozon-search.css",
+    {
+      upstream: "510c3f330ce5c227733cc8da60499b17c766871408e8380af1078d5ef55a5aba",
+      local: "59b4126a06b00ea0b80dfaf250e342baa36828fac651a9b01716e4bd90846faf",
+    },
+  ],
+]);
 
 const hashFile = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
@@ -32,6 +67,30 @@ const assertSameFile = (rel) => {
   assert.equal(hashFile(local), hashFile(source), `extension UI file must match source exactly: ${rel}`);
 };
 
+const assertReviewedUiDifference = (rel, expected) => {
+  const source = path.join(sourceDir, rel);
+  const local = path.join(localDir, rel);
+  assert.ok(existsSync(source), `source UI file missing: ${rel}`);
+  assert.ok(existsSync(local), `local UI file missing: ${rel}`);
+  const upstreamHash = hashFile(source);
+  const localHash = hashFile(local);
+  assert.equal(
+    upstreamHash,
+    expected.upstream,
+    `reviewed UI fingerprint mismatch: ${rel} (upstream full-file hash); review the complete diff before updating`,
+  );
+  assert.equal(
+    localHash,
+    expected.local,
+    `reviewed UI fingerprint mismatch: ${rel} (local full-file hash); review the complete diff before updating`,
+  );
+  assert.notEqual(
+    localHash,
+    upstreamHash,
+    `reviewed UI exception must remain an explicit full-file difference: ${rel}`,
+  );
+};
+
 const assertPng = (rel, width, height) => {
   const file = path.join(localDir, rel);
   assert.ok(existsSync(file), `local PNG missing: ${rel}`);
@@ -44,6 +103,9 @@ const assertPng = (rel, width, height) => {
 requireExistingSource();
 
 for (const rel of exactUiFiles) assertSameFile(rel);
+for (const [rel, expected] of reviewedUiFingerprints) {
+  assertReviewedUiDifference(rel, expected);
+}
 
 assertPng("icons/icon16.png", 16, 16);
 assertPng("icons/icon48.png", 48, 48);

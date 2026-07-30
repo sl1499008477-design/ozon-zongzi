@@ -79,6 +79,7 @@ const allowedLocalOnly = new Set([
   "tests/seller-identity-policy.test.js",
   "tests/sync-capability-removed.test.js",
   "tests/removed-selection-watermark-contract.test.js",
+  "tests/ui-parity-exception-gate.test.js",
   "tests/web-bridge-policy.test.js",
 ]);
 
