@@ -841,7 +841,13 @@ try {
       // 物流与商品
       stock: pick('stock', 'Stock', 'balance'),
       salesSchema: pick('salesSchema', 'SalesSchema', 'sales_schema'),
-      nullableRedemptionRate: pick('nullableRedemptionRate', 'NullableRedemptionRate', 'redemptionRate'),
+      nullableRedemptionRate: pick(
+        'nullableRedemptionRate',
+        'NullableRedemptionRate',
+        'nullable_redemption_rate',
+        'redemptionRate',
+        'redemption_rate',
+      ),
       nullableCreateDate: pick('nullableCreateDate', 'NullableCreateDate', 'createDate', 'CreateDate'),
     };
   };
