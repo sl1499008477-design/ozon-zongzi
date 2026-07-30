@@ -472,6 +472,60 @@ try {
     } catch {}
   })();
 
+  // 把 Ozon bundle 完整商品包统一合并为下游使用的 sv attributes。
+  // fleet 与浏览器本地两条取数路线必须共用，避免同一 SKU 因路线不同丢重量/尺寸。
+  const mergeBundleItemIntoSourceVariant = (sourceVariant, bundleItem) => {
+    const source = sourceVariant && typeof sourceVariant === 'object' ? sourceVariant : {};
+    if (!bundleItem || typeof bundleItem !== 'object') return source;
+    const attributes = Array.isArray(source.attributes)
+      ? source.attributes.map((attribute) => ({ ...attribute }))
+      : [];
+    const keys = new Set(attributes.map((attribute) => String(attribute?.key || '')).filter(Boolean));
+    const append = (key, value, { positiveNumber = false } = {}) => {
+      const normalizedKey = String(key || '');
+      if (!normalizedKey || keys.has(normalizedKey)) return;
+      if (positiveNumber) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) return;
+      }
+      const normalizedValue = String(value ?? '').trim();
+      if (!normalizedValue) return;
+      attributes.push({ key: normalizedKey, value: normalizedValue });
+      keys.add(normalizedKey);
+    };
+
+    append('4497', bundleItem.weight, { positiveNumber: true });
+    append('9454', bundleItem.depth, { positiveNumber: true });
+    append('9455', bundleItem.width, { positiveNumber: true });
+    append('9456', bundleItem.height, { positiveNumber: true });
+    append('7822', bundleItem.barcode);
+
+    const complexAttributes = [];
+    for (const raw of Array.isArray(bundleItem.attributes) ? bundleItem.attributes : []) {
+      if (raw?.complex_id && String(raw.complex_id) !== '0') {
+        complexAttributes.push(raw);
+        continue;
+      }
+      const key = String(raw?.attribute_id || '');
+      if (!key || keys.has(key)) continue;
+      const values = Array.isArray(raw?.values)
+        ? raw.values.filter((value) => value && value.value != null && value.value !== '')
+        : [];
+      if (!values.length) continue;
+      attributes.push(values.length > 1
+        ? { key, collection: values.map((value) => String(value.value)) }
+        : { key, value: String(values[0].value) });
+      keys.add(key);
+    }
+
+    return {
+      ...source,
+      attributes,
+      _bundleItem: bundleItem,
+      ...(complexAttributes.length ? { _bundleComplexAttrs: complexAttributes } : {}),
+    };
+  };
+
   const fetchBundleByVariantId = async (sku, variantId, companyId, opts = {}) => {
     const cacheKey = _bundleCacheKey(companyId, variantId);
     // L1: chrome.storage.local cache(同 company+variant 24h 复用)
@@ -787,7 +841,13 @@ try {
       // 物流与商品
       stock: pick('stock', 'Stock', 'balance'),
       salesSchema: pick('salesSchema', 'SalesSchema', 'sales_schema'),
-      nullableRedemptionRate: pick('nullableRedemptionRate', 'NullableRedemptionRate', 'redemptionRate'),
+      nullableRedemptionRate: pick(
+        'nullableRedemptionRate',
+        'NullableRedemptionRate',
+        'nullable_redemption_rate',
+        'redemptionRate',
+        'redemption_rate',
+      ),
       nullableCreateDate: pick('nullableCreateDate', 'NullableCreateDate', 'createDate', 'CreateDate'),
     };
   };
@@ -4000,39 +4060,14 @@ try {
             }
             const _fc = await callFleet(backendUrl, token, storeId, 'collect', { sku });
             if (_fc && _fc.sourceVariant) {
-              // 兜底:旧版 fleet 的 mergeBundleIntoSv 只合物理属性(业务属性漏了 → 特征 0/30,
-              // 实测 sku 3270906481/2720736474),但完整 bundleItem 一直随响应带回。这里本地把
-              // complex_id=0 的业务属性合进 sourceVariant —— 覆盖「fleet 未重部署」和「backend
-              // Redis 旧缓存」两个窗口;fleet 侧修好后 existing 去重使本段自然空转。
-              const _sv = _fc.sourceVariant;
-              try {
-                const _bi = _fc.bundleItem;
-                if (_bi && Array.isArray(_bi.attributes) && Array.isArray(_sv.attributes)) {
-                  const _has = new Set(_sv.attributes.map((a) => String(a.key)));
-                  for (const ba of _bi.attributes) {
-                    if (ba?.complex_id && String(ba.complex_id) !== '0') continue;
-                    const key = String(ba?.attribute_id || '');
-                    if (!key || _has.has(key)) continue;
-                    const vals = Array.isArray(ba?.values)
-                      ? ba.values.filter((v) => v && v.value != null && v.value !== '')
-                      : [];
-                    if (vals.length === 0) continue;
-                    if (vals.length > 1) {
-                      _sv.attributes.push({ key, collection: vals.map((v) => String(v.value)) });
-                    } else {
-                      _sv.attributes.push({ key, value: String(vals[0].value) });
-                    }
-                    _has.add(key);
-                  }
-                }
-              } catch (e) {
-                console.warn('[searchVariants] fleet bundleItem 属性兜底合并失败(忽略):', e?.message || e);
-              }
+              // 兜底旧 fleet / Redis 缓存窗口：以完整 bundleItem 同时补物理属性和
+              // 业务属性，跟浏览器本地路线使用同一幂等合并规则。
+              const _sv = mergeBundleItemIntoSourceVariant(_fc.sourceVariant, _fc.bundleItem);
+              const _enrichedFleet = { ..._fc, sourceVariant: _sv };
               // 只缓存完整包:残包(缺 bundleItem → 没有重量/尺寸/完整属性包,后端仅
               // 600s 短缓存等重试补全)写本地会钉死 24h;失败/null 更不写(PR#332 红线)。
-              // 缓存放在业务属性合并之后 —— _sv === _fc.sourceVariant 同引用,存进去的已是
-              // 富化后的 sv,读缓存命中路径(上面 _hit.sourceVariant 直接返回)无需再合。
-              if (_fc.bundleItem) _fleetCacheSet(_ck, _fc);
+              // 缓存放在统一富化之后，命中路径直接返回完整 sourceVariant。
+              if (_fc.bundleItem) _fleetCacheSet(_ck, _enrichedFleet);
               return { ok: true, data: { items: [_sv] } };
             }
           }
@@ -4145,57 +4180,10 @@ try {
                       // 内容评分「特征」0 分。留痕便于区分「源本就没属性」vs「取数降级」。
                       console.warn(`[searchVariants] bundle attributes EMPTY for sku=${sku} — 特征属性无法随上架带出(仅物理字段)`);
                     }
-                    const existingKeys = new Set(items[0].attributes.map((a) => String(a.key)));
-                    const physicalAttrs = [];
-                    if (Number(bundleItem.weight) > 0 && !existingKeys.has('4497')) {
-                      physicalAttrs.push({ key: '4497', value: String(bundleItem.weight) });
+                    items[0] = mergeBundleItemIntoSourceVariant(items[0], bundleItem);
+                    if (items[0]._bundleComplexAttrs?.length) {
+                      console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${items[0]._bundleComplexAttrs.length} for sku=${sku}`);
                     }
-                    if (Number(bundleItem.depth) > 0 && !existingKeys.has('9454')) {
-                      physicalAttrs.push({ key: '9454', value: String(bundleItem.depth) });
-                    }
-                    if (Number(bundleItem.width) > 0 && !existingKeys.has('9455')) {
-                      physicalAttrs.push({ key: '9455', value: String(bundleItem.width) });
-                    }
-                    if (Number(bundleItem.height) > 0 && !existingKeys.has('9456')) {
-                      physicalAttrs.push({ key: '9456', value: String(bundleItem.height) });
-                    }
-                    if (bundleItem.barcode && !existingKeys.has('7822')) {
-                      physicalAttrs.push({ key: '7822', value: String(bundleItem.barcode) });
-                    }
-                    // bundle.attributes shape: { attribute_id, values:[{value, dictionary_value_id}], complex_id }
-                    // 简单 attr(complex_id=0)转成 sv 兼容 { key, value | collection } 让 backend
-                    // resolveViaSearchVariantModel 的 sourceAttrMap 能 hit 到类目业务 attr(刷子类型/季卡/材质/...)。
-                    // complex attr(complex_id>0,即视频/PDF)单独收集成 _bundleComplexAttrs,follow-sell
-                    // 据此重建 import 的 complex_attributes(带上原 SKU 视频)。bundle 是 Ozon 自家"复制商品"
-                    // API,返回的视频 URL 本就给 import 重新消费用,不是页面播放器的 m3u8 临时签名地址。
-                    const bundleComplexAttrs = [];
-                    if (Array.isArray(bundleItem.attributes)) {
-                      for (const ba of bundleItem.attributes) {
-                        if (ba.complex_id && String(ba.complex_id) !== '0') {
-                          bundleComplexAttrs.push(ba);
-                          continue;
-                        }
-                        const key = String(ba.attribute_id || '');
-                        if (!key || existingKeys.has(key)) continue;
-                        const vals = Array.isArray(ba.values) ? ba.values.filter(v => v && v.value != null && v.value !== '') : [];
-                        if (vals.length === 0) continue;
-                        if (vals.length > 1) {
-                          physicalAttrs.push({ key, collection: vals.map(v => String(v.value)) });
-                        } else {
-                          physicalAttrs.push({ key, value: String(vals[0].value) });
-                        }
-                        existingKeys.add(key);
-                      }
-                    }
-                    if (physicalAttrs.length > 0) {
-                      items[0] = { ...items[0], attributes: [...items[0].attributes, ...physicalAttrs] };
-                    }
-                    if (bundleComplexAttrs.length > 0) {
-                      items[0]._bundleComplexAttrs = bundleComplexAttrs;
-                      console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${bundleComplexAttrs.length} for sku=${sku}`);
-                    }
-                    // 完整 bundle item 也挂上(供高级 caller — 如 follow-sell 拿全 40-63 个 attr)
-                    items[0]._bundleItem = bundleItem;
                   }
                 }
               } catch (e) {

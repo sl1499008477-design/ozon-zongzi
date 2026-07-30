@@ -705,6 +705,21 @@ if (!globalThis.__JZ_BRAND__) {
     });
   };
 
+  window.jzReturnRateFromRedemption = function(value) {
+    const redemption = Number(value);
+    if (!Number.isFinite(redemption) || redemption < 0 || redemption > 100) return null;
+    return 100 - redemption;
+  };
+
+  window.jzFormatRating = function(rating, reviewCount) {
+    const value = Number(rating);
+    if (!Number.isFinite(value)) return null;
+    const reviews = Number(reviewCount);
+    return `${value.toFixed(1)}${Number.isFinite(reviews) && reviews > 0
+      ? ` (${window.formatNumber(reviews)})`
+      : ''}`;
+  };
+
   // Global singleton tooltip for [data-oh-tip] elements.
   // Uses position: fixed + document.body append so it escapes any overflow:hidden ancestor.
   (function() {
@@ -3664,10 +3679,8 @@ if (!globalThis.__JZ_BRAND__) {
       if (data.categoryL3) updateField('categoryL3', data.categoryL3);
       if (data.brand) updateField('brand', data.brand, 'blue');
       if (data.rating != null) {
-        const star = window.lucideIcon ? window.lucideIcon('star', 12) : '★';
-        const ratingStr = `${Number(data.rating).toFixed(1)}<span class="ozon-helper-rating-star">${star}</span>` +
-          (data.reviewCount ? ` (${window.formatNumber(data.reviewCount)})` : '');
-        updateField('rating', ratingStr, 'gold', false, { raw: true });
+        const ratingText = window.jzFormatRating(data.rating, data.reviewCount);
+        if (ratingText) updateField('rating', ratingText, 'gold');
       }
       if (data.sales30d != null) updateField('sales30d', window.formatNumber(data.sales30d), 'blue');
 
@@ -3759,8 +3772,10 @@ if (!globalThis.__JZ_BRAND__) {
       // 退货率:marketRedemptionRate 是快照透传的原始 nullableRedemptionRate(签收率),
       // 与下面 market 直连路径同口径 —— 退货率 = 100 - 签收率,不能直显原值。
       if (data.marketRedemptionRate != null) {
-        const redemption = Number(data.marketRedemptionRate);
-        updateField('returnRate', `${(100 - redemption).toFixed(0)}%`, redemption < 100 ? 'red' : 'green');
+        const returnRate = window.jzReturnRateFromRedemption(data.marketRedemptionRate);
+        if (returnRate != null) {
+          updateField('returnRate', `${returnRate.toFixed(0)}%`, returnRate > 0 ? 'red' : 'green');
+        }
       }
 
       // 跟卖字段兜底(fill-if-empty:PDP 页面 widget 同步初值优先;列表卡无这些
@@ -3892,13 +3907,15 @@ if (!globalThis.__JZ_BRAND__) {
         updateField('salesSchema', schema, '', true);
       }
       if (d.nullableRedemptionRate != null) {
-        const redemption = Number(d.nullableRedemptionRate);
-        updateField(
-          'returnRate',
-          `${(100 - redemption).toFixed(0)}%`,
-          redemption < 100 ? 'red' : 'green',
-          true,
-        );
+        const returnRate = window.jzReturnRateFromRedemption(d.nullableRedemptionRate);
+        if (returnRate != null) {
+          updateField(
+            'returnRate',
+            `${returnRate.toFixed(0)}%`,
+            returnRate > 0 ? 'red' : 'green',
+            true,
+          );
+        }
       }
       if (d.nullableCreateDate) {
         const cd = new Date(d.nullableCreateDate);
