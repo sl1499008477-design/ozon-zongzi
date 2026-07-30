@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawn } = require("node:child_process");
 const { createServer } = require("node:http");
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
@@ -7,6 +8,39 @@ const { chromium } = require("playwright-core");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 const fixturePath = "/extension/tests/fixtures/data-panel-visual-browser.fixture.html";
+const cleanupChildMode = process.env.JZ_BROWSER_TEST_CHILD_MODE === "forced-launch-failure";
+
+function runCleanupChild() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [__filename], {
+      env: {
+        ...process.env,
+        JZ_BROWSER_TEST_CHILD_MODE: "forced-launch-failure",
+        JZ_BROWSER_TEST_FORCE_LAUNCH_FAILURE: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("cleanup child did not exit within 5 seconds"));
+    }, 5_000);
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, output, signal });
+    });
+  });
+}
 
 function resolveBrowserPath() {
   const candidates = [
@@ -58,16 +92,41 @@ function gridColumnCount(columns) {
   return columns.trim().split(/\s+/).filter(Boolean).length;
 }
 
-test("data panel browser fixture preserves production contracts and responsive visual hierarchy", async () => {
-  const server = await startFixtureServer();
-  const address = server.address();
-  const browser = await chromium.launch({
-    executablePath: resolveBrowserPath(),
-    headless: true,
-  });
-  const page = await browser.newPage({ viewport: { width: 720, height: 900 } });
-
+async function closeQuietly(label, close, cleanupErrors) {
   try {
+    await close();
+    return true;
+  } catch (error) {
+    cleanupErrors.push(new Error(`Could not close ${label}`, { cause: error }));
+    return false;
+  }
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function runBrowserFixture({
+  forceLaunchFailure = process.env.JZ_BROWSER_TEST_FORCE_LAUNCH_FAILURE === "1",
+  onServerClosed,
+} = {}) {
+  let server;
+  let browser;
+  let context;
+  let page;
+  let primaryError;
+  try {
+    server = await startFixtureServer();
+    const address = server.address();
+    if (forceLaunchFailure) {
+      throw new Error("forced browser launch failure");
+    }
+    browser = await chromium.launch({ executablePath: resolveBrowserPath(), headless: true });
+    context = await browser.newContext({ viewport: { width: 720, height: 900 } });
+    page = await context.newPage();
+
     await page.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
     await page.waitForSelector('.ozon-helper-data-panel [data-field="sales30d"]');
     await page.evaluate(() => window.__setPanelFixtureWidth(640));
@@ -131,8 +190,52 @@ test("data panel browser fixture preserves production contracts and responsive v
       return getComputedStyle(panel.querySelector(".oh-hero-section")).gridTemplateColumns;
     });
     assert.equal(gridColumnCount(narrowColumns), 2);
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await browser.close();
-    await new Promise((resolve) => server.close(resolve));
+    const cleanupErrors = [];
+    await closeQuietly("page", () => page?.close(), cleanupErrors);
+    await closeQuietly("browser context", () => context?.close(), cleanupErrors);
+    await closeQuietly("browser", () => browser?.close(), cleanupErrors);
+    const serverClosed = await closeQuietly("fixture server", () => server ? closeServer(server) : undefined, cleanupErrors);
+    if (serverClosed && server && onServerClosed) {
+      onServerClosed();
+    }
+    if (cleanupErrors.length && !primaryError) {
+      throw new AggregateError(cleanupErrors, "Browser fixture cleanup failed");
+    }
   }
+}
+
+async function verifyForcedLaunchFailureCleanup() {
+  let serverClosed = false;
+  await assert.rejects(
+    runBrowserFixture({
+      onServerClosed: () => {
+        serverClosed = true;
+      },
+    }),
+    /forced browser launch failure/,
+  );
+  assert.equal(serverClosed, true, "fixture server should close after launch setup fails");
+  process.stdout.write("forced launch cleanup complete\n");
+}
+
+if (cleanupChildMode) {
+  void verifyForcedLaunchFailureCleanup().catch((error) => {
+    process.stderr.write(`${error.stack}\n`);
+    process.exitCode = 1;
+  });
+} else {
+test("data panel browser fixture preserves production contracts and responsive visual hierarchy", async () => {
+  await runBrowserFixture();
 });
+
+test("data panel browser fixture releases its server after browser launch fails", async () => {
+  const result = await runCleanupChild();
+  assert.equal(result.signal, null, result.output);
+  assert.equal(result.code, 0, result.output);
+  assert.match(result.output, /forced launch cleanup complete/);
+});
+}
