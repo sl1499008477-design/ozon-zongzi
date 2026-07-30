@@ -6786,6 +6786,1520 @@ function ReshelfPage({ binding, hasStore, localData, onSync }) {
   );
 }
 
++function AiPosterPage({ localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [collapsed, setCollapsed] = useState(false);
+  const [imageLinks, setImageLinks] = useState("");
+  const [uploadedImageCount, setUploadedImageCount] = useState(0);
+  const [status, setStatus] = useState("全部状态");
+  const [productName, setProductName] = useState("");
+  const [categoryName, setCategoryName] = useState("");
+  const [query, setQuery] = useState("");
+  const [dateStart, setDateStart] = useState(null);
+  const [dateEnd, setDateEnd] = useState(null);
+  const [submittingAiTask, setSubmittingAiTask] = useState(false);
+  const parsedImageLinks = imageLinks
+    .split(/[\n\r,\s]+/)
+    .map((value) => value.trim())
+    .filter((value) => /^https?:\/\//i.test(value))
+    .slice(0, 10);
+  const imageCount = Math.min(10, uploadedImageCount + parsedImageLinks.length);
+  const submitCost = imageCount ? imageCount : 0;
+  const aiJobs = Object.values(localData?.jobs || {})
+    .filter((job) => String(job.type || "").toUpperCase() === "AI_POSTER")
+    .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+  const aiStatusText = (job = {}) => {
+    const raw = String(job.status || "").toUpperCase();
+    if (["SUCCESS", "COMPLETED", "DONE"].includes(raw)) return "已完成";
+    if (["FAILED", "ERROR"].includes(raw)) return "失败";
+    return "处理中";
+  };
+  const filteredAiJobs = aiJobs.filter((job) => {
+    const statusText = aiStatusText(job);
+    const createdAt = new Date(job.createdAt || "");
+    const createdMs = createdAt.getTime();
+    const start = pickerBoundaryMs(dateStart, "start");
+    const end = pickerBoundaryMs(dateEnd, "end");
+    const queryText = String(query || "").trim().toLowerCase();
+    const searchable = [job.clientJobId, job.id, job.productName, job.categoryName]
+      .map((value) => String(value || "").toLowerCase())
+      .join(" ");
+    return (status === "全部状态" || statusText === status) &&
+      (!queryText || searchable.includes(queryText)) &&
+      (start == null || (!Number.isNaN(createdMs) && createdMs >= start)) &&
+      (end == null || (!Number.isNaN(createdMs) && createdMs <= end));
+  });
+  const rows = filteredAiJobs.map((job, index) => ({
+    id: job.id || job.clientJobId || `ai-poster-${index}`,
+    "原图": `${Number(job.imageCount || 0)} 张`,
+    "改图结果": aiStatusText(job) === "已完成" ? "已生成" : "本地记录",
+    "货号": job.productName || job.clientJobId || "本地任务",
+    "状态": aiStatusText(job),
+    "创建时间": job.createdAt ? new Date(job.createdAt).toLocaleString() : "—",
+    "操作": "查看",
+  }));
+  const submitAiTask = async () => {
+    if (!imageCount) {
+      message.warning("请先上传图片或填写图片链接");
+      return;
+    }
+    setSubmittingAiTask(true);
+    try {
+      const clientJobId = `ai-poster-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await apiRequest("/ozon/sync/client-report", {
+        method: "POST",
+        body: {
+          clientJobId,
+          type: "AI_POSTER",
+          status: "PENDING",
+          imageCount,
+          uploadedImageCount,
+          linkCount: parsedImageLinks.length,
+          productName: productName.trim(),
+          categoryName: categoryName.trim(),
+          localOnly: true,
+        },
+      });
+      setImageLinks("");
+      setUploadedImageCount(0);
+      await onRefresh?.();
+      message.success(`AI 改图任务已记录 · ${imageCount} 张`);
+    } catch (error) {
+      message.error(`任务记录失败: ${error.message}`);
+    } finally {
+      setSubmittingAiTask(false);
+    }
+  };
+  const resetFilters = () => {
+    setQuery("");
+    setDateStart(null);
+    setDateEnd(null);
+    setStatus("全部状态");
+    message.info("筛选条件已重置");
+  };
+  const addImageFiles = (files) => {
+    const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    setUploadedImageCount((current) => {
+      const next = Math.min(10, current + imageFiles.length);
+      message.success(`已识别 ${next} 张图片`);
+      return next;
+    });
+  };
+  return (
+    <div className="source-page ai-page">
+      <SourceSectionTitle
+        title="AI 改图神器"
+        subtitle="Gemini 大模型改图历史 · 原图 vs 改图 实时对比"
+        actions={[<Select className="source-select narrow" key="status" value={status} onChange={setStatus} options={[{ value: "全部状态", label: "全部状态" }, { value: "处理中", label: "处理中" }, { value: "已完成", label: "已完成" }, { value: "失败", label: "失败" }]} />]}
+      />
+      {!collapsed ? (
+        <Card className="panel-card ai-upload">
+          <div className="card-title-row">
+            <span>Gemini 快速改图 <em>上传图片或粘贴图片链接,无需绑定商品</em></span>
+            <Button onClick={() => setCollapsed(true)}>收起</Button>
+          </div>
+          <div className="ai-upload-label">上传图片</div>
+          <label
+            className="upload-drop"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              addImageFiles(event.dataTransfer.files);
+            }}
+            onPaste={(event) => addImageFiles(event.clipboardData.files)}
+          >
+            <input
+              className="upload-drop-input"
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                addImageFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <PictureOutlined />
+            <strong>点击、拖拽,或 Ctrl/⌘+V 粘贴图片</strong>
+            <span>支持多张,单次最多 10 张</span>
+          </label>
+          <div className="ai-work-grid">
+            <div className="ai-link-panel">
+              <label>或粘贴图片链接</label>
+              <Input.TextArea
+                rows={5}
+                placeholder={"每行一个图片链接,http(s)://...\nhttps://example.com/a.jpg"}
+                value={imageLinks}
+                onChange={(event) => setImageLinks(event.target.value)}
+              />
+            </div>
+            <div className="ai-queue-panel">
+              <strong>已识别 {imageCount} 条</strong>
+              <span>待处理图片{imageCount} / 10</span>
+              <p>上传 / 拖拽 / Ctrl·⌘+V 粘贴图片,或在右侧粘贴图片链接 —— 都会汇总到这里</p>
+            </div>
+          </div>
+          <div className="ai-meta-row">
+            <label className="ai-meta-field">
+              <span>商品名(可选)</span>
+              <Input placeholder="例:女士夏季短袖 T 恤" allowClear value={productName} onChange={(event) => setProductName(event.target.value)} />
+            </label>
+            <label className="ai-meta-field">
+              <span>类目(可选)</span>
+              <Input placeholder="例:服饰 / 电子 / 家居" allowClear value={categoryName} onChange={(event) => setCategoryName(event.target.value)} />
+            </label>
+            <Tag className="ai-submit-summary">将提交 {imageCount} 张,预计消耗 {submitCost}</Tag>
+          </div>
+          <Space>
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              loading={submittingAiTask}
+              onClick={submitAiTask}
+            >
+              开始生成
+            </Button>
+          </Space>
+        </Card>
+      ) : (
+        <Button icon={<PictureOutlined />} onClick={() => setCollapsed(false)}>展开上传</Button>
+      )}
+      <Card className="panel-card source-card">
+        <div className="filter-panel inline">
+          <DatePicker placeholder="开始日期" value={dateStart} onChange={setDateStart} />
+          <DatePicker placeholder="结束日期" value={dateEnd} onChange={setDateEnd} />
+          <Input.Search placeholder="搜索货号" allowClear value={query} onChange={(event) => setQuery(event.target.value)} onSearch={() => message.success(`查询完成 · ${rows.length} 条`)} />
+          <Button type="primary" onClick={() => message.success(`查询完成 · ${rows.length} 条`)}>查询</Button>
+          <Button onClick={resetFilters}>重置</Button>
+        </div>
+        <SourceTable
+          hasStore
+          rows={rows}
+          rowSelection={false}
+          columns={["原图", "改图结果", "货号", "状态", "创建时间", "操作"]}
+          empty="暂无改图记录"
+          sourceEmpty
+        />
+      </Card>
+    </div>
+  );
+}
+
+function AiImagePage() {
+  return (
+    <div className="ai-image-gated-page">
+      <div className="ai-image-gated-content">
+        <AppstoreOutlined />
+        <h2>AI 商品套图</h2>
+        <p>该功能正在灰度内测中，尚未对当前账号开放。</p>
+      </div>
+    </div>
+  );
+}
+
+function SourceQueryBar({
+  fields = [],
+  buttons = [],
+  expanded,
+  onToggle,
+  onReset,
+  onSearch,
+  values = {},
+  onFieldChange,
+}) {
+  return (
+    <Card className="panel-card source-card">
+      <div className="source-query-grid">
+        {fields.map((field) => (
+          <label key={field.name}>
+            <span>{field.label}</span>
+            {field.type === "select" ? (
+              <Select
+                placeholder={field.placeholder || "请选择"}
+                options={field.options || []}
+                allowClear
+                value={values[field.name]}
+                onChange={(value) => onFieldChange?.(field.name, value)}
+              />
+            ) : (
+              <Input
+                placeholder={field.placeholder || "请输入"}
+                allowClear
+                value={values[field.name]}
+                onChange={(event) => onFieldChange?.(field.name, event.target.value)}
+              />
+            )}
+          </label>
+        ))}
+        <Space className="source-query-actions">
+          {buttons.includes("重 置") ? <Button onClick={onReset}>重 置</Button> : null}
+          {buttons.includes("查 询") ? <Button type="primary" onClick={onSearch}>查 询</Button> : null}
+          {onToggle ? (
+            <Button type="link" onClick={onToggle}>
+              {expanded ? "收起" : "展开"}
+            </Button>
+          ) : null}
+        </Space>
+      </div>
+    </Card>
+  );
+}
+
+function SourcePager({ current = 1, total = 1, pageSize = 20 }) {
+  return (
+    <div className="source-pager">
+      <span>共 0 条 · 第 {current} / {total} 页</span>
+      <Space size={4}>
+        <Button size="small">‹</Button>
+        <Button size="small" type="primary">{current}</Button>
+        <Button size="small">›</Button>
+      </Space>
+      <span>每页</span>
+      <Select
+        size="small"
+        value={pageSize}
+        options={[10, 20, 50, 100].map((value) => ({ value, label: `${value}` }))}
+      />
+      <span>条</span>
+    </div>
+  );
+}
+
+function PriceDiscountPage({ hasStore, binding, localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [activeTab, setActiveTab] = useState("价格");
+  const [query, setQuery] = useState("");
+  const [draftIds, setDraftIds] = useState([]);
+  const [syncingProducts, setSyncingProducts] = useState(false);
+  const products = localData?.caches?.products || [];
+  const draftIdSet = useMemo(() => new Set(draftIds), [draftIds]);
+  const visibleProducts = products
+    .filter((item) => productMatchesQuery(item, query))
+    .filter((item, index) => {
+      if (activeTab !== "改价草稿") return true;
+      const id = item.id || item.product_id || item.offer_id || `price-product-${index}`;
+      return draftIdSet.has(String(id));
+    });
+  const rows = priceDiscountRows(visibleProducts, activeTab).map((row) => ({
+    ...row,
+    _drafted: draftIdSet.has(String(row.id)),
+  }));
+  const syncProducts = async () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (syncingProducts) return;
+    setSyncingProducts(true);
+    try {
+      message.loading({ content: "正在只读同步商品价格", key: "price-products-sync", duration: 0 });
+      const response = await apiRequest("/local/sync/PRODUCTS", { method: "POST", body: { storeId: binding?.id } });
+      await onRefresh?.();
+      const fetched = Number(response?.job?.fetchedCount ?? response?.fetchedCount) || 0;
+      message.success({ content: `商品价格已刷新 · ${fetched} 条`, key: "price-products-sync" });
+    } catch (error) {
+      message.error({ content: `刷新失败: ${error.message}`, key: "price-products-sync" });
+    } finally {
+      setSyncingProducts(false);
+    }
+  };
+  const addDraft = (record) => {
+    const id = String(record.id);
+    setDraftIds((current) => current.includes(id) ? current : [...current, id]);
+    message.success("已加入本地改价草稿");
+  };
+  const removeDraft = (record) => {
+    const id = String(record.id);
+    setDraftIds((current) => current.filter((item) => item !== id));
+    message.success("已移出草稿");
+  };
+  const openBuyerView = (record) => {
+    const url = record._raw?.url || record._raw?.product_url || record._raw?.productUrl || record._raw?.link;
+    if (!url) {
+      message.info("暂无买家页链接");
+      return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+  const priceColumns = [
+    "主图",
+    "商品",
+    "当前价格",
+    ...(activeTab === "折扣" ? ["划线价", "折扣"] : []),
+    ...(activeTab === "选择商品" ? ["库存", "状态"] : []),
+    ...(activeTab === "改价草稿" ? ["目标价格", "草稿状态"] : []),
+    {
+      title: "操作",
+      dataIndex: "操作",
+      width: activeTab === "改价草稿" ? 112 : 156,
+      render: (_value, record) => activeTab === "改价草稿" ? (
+        <Button type="link" size="small" onClick={() => removeDraft(record)}>移出草稿</Button>
+      ) : (
+        <Space size={0}>
+          <Button type="link" size="small" onClick={() => openBuyerView(record)}>买家看</Button>
+          <Button type="link" size="small" onClick={() => addDraft(record)} disabled={record._drafted}>改价</Button>
+        </Space>
+      ),
+    },
+  ];
+  return (
+    <div className="source-page">
+      <SourceSectionTitle
+        title="价格与折扣"
+        subtitle="从商品列表选品并设置售价 / 划线价 / 折扣,先加入草稿,确认无误后一键同步到 Ozon。"
+      />
+      <Card className="panel-card source-card">
+        <SourceLineTabs
+          active={activeTab}
+          onChange={setActiveTab}
+          items={["价格", "折扣", "选择商品", "改价草稿"]}
+        />
+        <div className="table-action-row">
+          <label className="source-inline-field">
+            <span>搜索</span>
+            <Input
+              className="toolbar-search"
+              placeholder="请输入"
+              allowClear
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <Space>
+            <Button onClick={() => {
+              setQuery("");
+              message.success("已重置");
+            }}>重 置</Button>
+            <Button type="primary" onClick={() => message.success(`查询完成 · ${rows.length} 条`)}>查 询</Button>
+            <Button loading={syncingProducts} onClick={syncProducts}>刷新</Button>
+            {activeTab === "改价草稿" ? (
+              <Button disabled={!draftIds.length} onClick={() => {
+                setDraftIds([]);
+                message.success("草稿已清空");
+              }}>
+                清空草稿
+              </Button>
+            ) : null}
+          </Space>
+        </div>
+        <SourceTable
+          hasStore={hasStore}
+          rows={rows}
+          rowSelection={false}
+          loading={syncingProducts}
+          columns={priceColumns}
+          empty="暂无数据"
+          sourceEmpty
+          scrollX={1120}
+        />
+      </Card>
+    </div>
+  );
+}
+
+function CampaignsPage({ hasStore, binding, localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [activeStatus, setActiveStatus] = useState("全部");
+  const [query, setQuery] = useState("");
+  const [syncingPromotions, setSyncingPromotions] = useState(false);
+  const promotions = localData?.caches?.promotions || [];
+  const counts = {
+    total: promotions.length,
+    participating: promotions.filter((item) => item.is_participating).length,
+    available: promotions.filter((item) => !item.is_participating && (Number(item.potential_products_count) || 0) > 0).length,
+    endingSoon: promotions.filter(promotionIsEndingSoon).length,
+  };
+  const filteredPromotions = promotions.filter((promotion) => {
+    if (!promotionMatchesQuery(promotion, query)) return false;
+    if (activeStatus === "参与中") return Boolean(promotion.is_participating);
+    if (activeStatus === "可参与") return !promotion.is_participating && (Number(promotion.potential_products_count) || 0) > 0;
+    if (activeStatus === "即将结束") return promotionIsEndingSoon(promotion);
+    return true;
+  });
+  const rows = promotionRows(filteredPromotions);
+  const syncPromotions = async () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (syncingPromotions) return;
+    setSyncingPromotions(true);
+    try {
+      message.loading({ content: "正在只读同步促销活动", key: "promotions-sync", duration: 0 });
+      await apiRequest("/local/sync/PROMOTIONS", { method: "POST", body: { storeId: binding?.id } });
+      await onRefresh?.();
+      message.success({ content: "促销活动已同步", key: "promotions-sync" });
+    } catch (error) {
+      message.error({ content: `同步失败: ${error.message}`, key: "promotions-sync" });
+    } finally {
+      setSyncingPromotions(false);
+    }
+  };
+  return (
+    <div className="source-page">
+      <SourceSectionTitle
+        title="促销活动"
+        subtitle="实时同步 Ozon 平台促销活动，掌握参与状态、商品数量与活动周期"
+      />
+      <SourceMetricStrip
+        items={[
+          ["全部活动", String(counts.total), "平台当前可见活动"],
+          ["参与中", String(counts.participating), counts.participating ? "本店已参与" : "暂未参与"],
+          ["可参与", String(counts.available), counts.available ? "可加入活动" : "尚未加入"],
+          ["即将结束（7天内）", String(counts.endingSoon), counts.endingSoon ? "需关注" : "暂无临期活动"],
+        ]}
+      />
+      <Card className="panel-card source-card">
+        <div className="filter-panel inline">
+          <span className="source-filter-label">筛选</span>
+          <Input.Search
+            className="toolbar-search"
+            placeholder="搜索活动名称 / ID"
+            allowClear
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onSearch={() => message.success(`查询完成 · ${rows.length} 条`)}
+          />
+          <PromotionStatusButtons
+            active={activeStatus}
+            onChange={setActiveStatus}
+            items={[
+              { label: "全部", count: counts.total },
+              { label: "参与中", count: counts.participating },
+              { label: "可参与", count: counts.available },
+              { label: "即将结束", count: counts.endingSoon },
+            ]}
+          />
+          <Button loading={syncingPromotions} onClick={syncPromotions}>刷新</Button>
+        </div>
+      </Card>
+      <Card className="panel-card source-card">
+        <div className="table-result-title">活动列表· 共 {rows.length} 条</div>
+        <SourceTable
+          hasStore={hasStore}
+          rows={rows}
+          rowSelection={false}
+          columns={["活动", "状态", "折扣", "商品", "活动周期", "操作"]}
+          empty="暂无数据"
+          sourceEmpty
+          scrollX={1050}
+          showPageSizeText
+        />
+      </Card>
+    </div>
+  );
+}
+
+function AutoDeletePromoPage({ hasStore, binding, localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [queryExpanded, setQueryExpanded] = useState(false);
+  const [syncingPromotions, setSyncingPromotions] = useState(false);
+  const [filters, setFilters] = useState({ name: "", type: undefined, status: undefined });
+  const promotions = localData?.caches?.promotions || [];
+  const storeLabel = hasStore ? (binding?.storeName || binding?.storeId || "当前店铺") : "加载店铺中…";
+  const typeOptions = Array.from(new Set(promotions.map(promotionTypeText).filter((value) => value && value !== "—")))
+    .map((value) => ({ value, label: value }));
+  const statusOptions = Array.from(new Set(promotions.map(promotionStatusLabel).filter(Boolean)))
+    .map((value) => ({ value, label: value }));
+  const filteredPromotions = promotions.filter((promotion) => {
+    const matchesName = promotionMatchesQuery(promotion, filters.name);
+    const matchesType = !filters.type || promotionTypeText(promotion) === filters.type;
+    const matchesStatus = !filters.status || promotionStatusLabel(promotion) === filters.status;
+    return matchesName && matchesType && matchesStatus;
+  });
+  const rows = autoDeletePromotionRows(filteredPromotions);
+  const warnReadonly = () => message.warning("本地复刻仅做只读验证，自动删促销写入已禁用");
+  const updateFilter = (name, value) => {
+    setFilters((current) => ({ ...current, [name]: value }));
+  };
+  const resetFilters = () => {
+    setFilters({ name: "", type: undefined, status: undefined });
+    message.success("已重置");
+  };
+  const syncPromotions = async () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (syncingPromotions) return;
+    setSyncingPromotions(true);
+    try {
+      message.loading({ content: "正在只读同步促销活动", key: "auto-delete-promotions-sync", duration: 0 });
+      await apiRequest("/local/sync/PROMOTIONS", { method: "POST", body: { storeId: binding?.id } });
+      await onRefresh?.();
+      message.success({ content: "促销活动已同步", key: "auto-delete-promotions-sync" });
+    } catch (error) {
+      message.error({ content: `同步失败: ${error.message}`, key: "auto-delete-promotions-sync" });
+    } finally {
+      setSyncingPromotions(false);
+    }
+  };
+  return (
+    <div className="source-page">
+      <SourceSectionTitle
+        title="促销活动自动清理 · 利润保护"
+        subtitle="按设定频率自动检测各店铺正在参与的促销，将折扣力度 ≥「最大可接受折扣」的活动商品自动移出，避免被过深折扣拖垮利润。检测在服务端定时执行，无需保持页面打开。 首次使用请先点下方「从 Ozon 同步」拉取当前店铺的促销活动。"
+      />
+      <Card className="panel-card source-card auto-delete-config-card">
+        <div className="card-title-row">
+          <span>自动清理配置</span>
+          <Tag>{storeLabel}</Tag>
+        </div>
+        <div className="auto-delete-config-grid">
+          <label className="auto-delete-config-item switch-item">
+            <span>自动清理</span>
+            <Switch checked={false} checkedChildren="开" unCheckedChildren="关" onChange={warnReadonly} />
+          </label>
+          <label className="auto-delete-config-item">
+            <span>最大可接受折扣 %</span>
+            <Input value="30" onChange={warnReadonly} />
+          </label>
+          <label className="auto-delete-config-item">
+            <span>检测频率</span>
+            <Select
+              value="daily"
+              options={[{ value: "daily", label: "每天一次" }]}
+              onChange={warnReadonly}
+            />
+          </label>
+        </div>
+      </Card>
+      <SourceQueryBar
+        fields={[
+          { label: "活动名称", name: "name", placeholder: "请输入" },
+          { label: "类型", name: "type", type: "select", placeholder: "请选择", options: typeOptions },
+          ...(queryExpanded
+            ? [
+                { label: "状态", name: "status", type: "select", placeholder: "请选择", options: statusOptions },
+              ]
+            : []),
+        ]}
+        buttons={["重 置", "查 询"]}
+        expanded={queryExpanded}
+        values={filters}
+        onFieldChange={updateFilter}
+        onToggle={() => setQueryExpanded((value) => !value)}
+        onReset={resetFilters}
+        onSearch={() => message.success(`查询完成，共 ${rows.length} 条`)}
+      />
+      <Card className="panel-card source-card">
+        <div className="table-action-row">
+          <strong>当前店铺促销活动 · 共 {rows.length} 条</strong>
+          <Space>
+            <Button loading={syncingPromotions} onClick={syncPromotions}>从 Ozon 同步</Button>
+            <Button loading={syncingPromotions} onClick={syncPromotions}>刷新</Button>
+          </Space>
+        </div>
+        <SourceTable
+          hasStore={hasStore}
+          rows={rows}
+          loading={syncingPromotions}
+          rowSelection={false}
+          columns={["活动名称", "类型", "折扣力度", "商品数量", "有效期", "状态", "操作"]}
+          empty={hasStore ? "暂无促销活动，请先从 Ozon 同步" : "请先绑定门店"}
+          sourceEmpty
+          scrollX={1080}
+        />
+      </Card>
+    </div>
+  );
+}
+
+function PostingsPage({ binding, hasStore, localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [activeStatus, setActiveStatus] = useState("所有订单");
+  const [query, setQuery] = useState("");
+  const [dateRange, setDateRange] = useState(null);
+  const [syncingPostings, setSyncingPostings] = useState(false);
+  const [autoSync, setAutoSync] = useState(false);
+  const summary = localData?.summary || emptyLocalData.summary;
+  const postings = localData?.caches?.postings || [];
+  const statusCounts = summary.statusCounts || {};
+  const statusItems = postingStatusTabs.map((label) => ({
+    label,
+    count: postingStatusCount(postings, statusCounts, label),
+  }));
+  const filteredPostings = postings.filter((posting) =>
+    postingMatchesTab(posting, activeStatus) &&
+    postingMatchesQuery(posting, query) &&
+    postingMatchesDateRange(posting, dateRange),
+  );
+  const rows = postingRows(filteredPostings);
+  const orderColumns = ["倒计时", "货件 / 状态", "店铺", "商品", "仓库 / 配送", "订单金额", "利润", "操作"];
+
+  const syncPostings = async (days, successText) => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (syncingPostings) return;
+    setSyncingPostings(true);
+    message.loading({ content: "正在只读同步订单", key: "postings-sync", duration: 0 });
+    try {
+      const report = await apiRequest("/local/sync/POSTINGS", {
+        method: "POST",
+        body: { storeId: binding?.id, postingsSinceDays: days },
+      });
+      await onRefresh?.();
+      const fetched = Number(report?.fetchedCount) || 0;
+      message.success({ content: `${successText} · ${fetched} 条`, key: "postings-sync" });
+    } catch (error) {
+      message.error({ content: `同步失败: ${error.message}`, key: "postings-sync" });
+    } finally {
+      setSyncingPostings(false);
+    }
+  };
+
+  const resetFilters = () => {
+    setQuery("");
+    setDateRange(null);
+    setActiveStatus("所有订单");
+    message.success("已重置");
+  };
+
+  const exportOrders = () => {
+    if (!rows.length) {
+      message.warning("暂无可导出的数据");
+      return;
+    }
+    downloadCsv(`qh-orders-${localDayFormatter.format(new Date())}.csv`, orderColumns, rows);
+    message.success(`已导出 ${rows.length} 条订单`);
+  };
+
+  return (
+    <div className="source-page">
+      <SourceSectionTitle
+        title="订单"
+        subtitle={`${formatDate()} · ${binding?.storeName || "当前店铺"} · 已关闭自动同步`}
+        actions={[
+          <Button key="refresh" loading={syncingPostings} onClick={() => syncPostings(30, "订单已刷新")}><span>刷新</span></Button>,
+          <Button className="dark-action-button" key="pull" loading={syncingPostings} onClick={() => syncPostings(1, "最新订单已拉取")}>拉取最新订单</Button>,
+          <Button key="doing" loading={syncingPostings} onClick={() => syncPostings(7, "进行中订单已刷新")}>刷新进行中订单</Button>,
+        ]}
+      />
+      <Alert
+        type="info"
+        showIcon
+        message="同步范围：已同步过：上次同步前 1 天至现在；首次同步：最近 30 天至现在"
+      />
+      <SourceMetricStrip
+        items={[
+          ["本周 GMV", dashboardSummaryMoney(summary, "week"), "当前店铺"],
+          ["本周利润", "¥—", "当前店铺"],
+          ["本周利润率", "—%", "当前店铺"],
+          ["待处理", String(summary.pendingPostings || 0), (summary.pendingPostings || 0) ? "需及时处理" : "↑ 全部已处理"],
+        ]}
+      />
+      <Card className="panel-card source-card">
+        <SourceStatusTabs
+          active={activeStatus}
+          onChange={setActiveStatus}
+          items={statusItems}
+        />
+        <div className="table-action-row">
+          <Space wrap>
+            <Select className="source-select" value="current" options={[{ value: "current", label: "当前店铺" }]} />
+            <Select className="source-select narrow" value="postingNumber" options={[{ value: "postingNumber", label: "货件编号" }]} />
+            <Input
+              className="toolbar-search wide"
+              placeholder="搜索货件号 / SKU / 货号 / 物流单号…"
+              allowClear
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onPressEnter={() => message.success(`筛选完成 · ${rows.length} 条`)}
+            />
+            <DatePicker.RangePicker value={dateRange} onChange={setDateRange} placeholder={["下单时间", "结束时间"]} />
+            <Button onClick={() => message.success(`筛选完成 · ${rows.length} 条`)}>筛 选</Button>
+            <Button onClick={resetFilters}>重 置</Button>
+            <Button className="warning-action-button" onClick={exportOrders}>订单导出</Button>
+          </Space>
+          <Space>
+            <span className="sync-label">自动同步</span>
+            <Switch
+              size="small"
+              checked={autoSync}
+              onChange={(checked) => {
+                setAutoSync(checked);
+                message.info(checked ? "已开启本地自动同步开关" : "已关闭自动同步");
+              }}
+            />
+          </Space>
+        </div>
+        <SourceTable
+          hasStore={hasStore}
+          rows={rows}
+          columns={orderColumns}
+          empty="暂无数据"
+          sourceEmpty
+          scrollX={1280}
+        />
+      </Card>
+      <SourceMetricStrip
+        items={[
+          ["近 7 天订单", "—", "当前筛选"],
+          ["客单价", "¥—", "当前筛选"],
+          ["当前筛选", `${rows.length}`, "条订单"],
+          ["待处理", "0", "已关闭自动同步"],
+        ]}
+      />
+    </div>
+  );
+}
+
+function ReturnsPage({ binding, hasStore, localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [activeType, setActiveType] = useState("退货申请 (rFBS)");
+  const [query, setQuery] = useState("");
+  const [syncingReturns, setSyncingReturns] = useState(false);
+  const returnItems = [
+    ...(localData?.caches?.returns || []),
+    ...(localData?.caches?.refunds || []),
+  ];
+  const visibleItems = returnItems.filter((item) => returnTypeMatches(item, activeType) && returnMatchesQuery(item, query));
+  const rows = returnRows(visibleItems);
+  const pendingApprovalCount = visibleItems.filter(returnIsPendingApproval).length;
+  const waitingReturnCount = visibleItems.filter(returnIsWaitingReturn).length;
+  const waitingRefundCount = visibleItems.filter(returnIsWaitingRefund).length;
+  const refreshReturns = async () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (syncingReturns) return;
+    setSyncingReturns(true);
+    try {
+      const response = await apiRequest(`/ozon/returns?type=${encodeURIComponent(activeType)}&q=${encodeURIComponent(query)}`);
+      await onRefresh?.();
+      message.success(`退货缓存已刷新 · ${Number(response?.total) || 0} 条`);
+    } catch (error) {
+      message.error(`刷新失败: ${error.message}`);
+    } finally {
+      setSyncingReturns(false);
+    }
+  };
+  const runSearch = () => message.success(`搜索完成 · ${rows.length} 条`);
+  const resetReturns = () => {
+    setQuery("");
+    message.success("已重置");
+  };
+  return (
+    <div className="source-page">
+      <SourceSectionTitle
+        title="退货 / 退款"
+        subtitle={`${formatDate()} · ${binding?.storeName || "—"} · 透传 Ozon API,刷新即同步`}
+        actions={[<Button key="refresh" loading={syncingReturns} onClick={refreshReturns}>刷新</Button>]}
+      />
+      <SourceMetricStrip
+        items={[
+          ["本页申请数", String(rows.length), "已到末页"],
+          ["待审批", String(pendingApprovalCount), pendingApprovalCount ? "需处理" : "无待处理"],
+          ["等待退货", String(waitingReturnCount), waitingReturnCount ? "等待买家退回" : "无"],
+          ["等待退款", String(waitingRefundCount), waitingRefundCount ? "需跟进退款" : "无"],
+        ]}
+      />
+      <Card className="panel-card source-card">
+        <SourceStatusTabs
+          active={activeType}
+          onChange={setActiveType}
+          items={["退货申请 (rFBS)", "FBS", "FBO"]}
+        />
+        <div className="table-action-row">
+          <Space>
+            <Input
+              className="toolbar-search wide"
+              placeholder="搜索货件号 / 货号 / SKU"
+              allowClear
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onPressEnter={runSearch}
+            />
+            <Button className="dark-action-button" onClick={runSearch}>搜 索</Button>
+            <Button onClick={resetReturns}>重 置</Button>
+          </Space>
+          <Tag>{returnItems.length ? "本地缓存,按当前店铺过滤" : "暂无本地退货缓存"}</Tag>
+        </div>
+        <SourceTable
+          hasStore={hasStore}
+          rowSelection={false}
+          rows={rows}
+          columns={["申请 / 货件", "店铺", "商品", "申请时间", "操作"]}
+          empty="暂无数据"
+          sourceEmpty
+          scrollX={980}
+        />
+        <div className="source-pager">
+          <span>第 1 页</span>
+          <span>·</span>
+          <span>本页 {rows.length} 条</span>
+          <span>20/页</span>
+          <Button size="small" disabled>上一页</Button>
+          <Button size="small" type="primary" disabled>下一页</Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function MessageTaskPage({ type, hasStore, binding, localData, onRefresh, navigate }) {
+  const isReview = type === "review";
+  const { message } = AntApp.useApp();
+  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [syncingPostings, setSyncingPostings] = useState(false);
+  const [filters, setFilters] = useState({
+    postingNumber: "",
+    extra: "",
+    productName: "",
+    sku: "",
+  });
+  const postings = localData?.caches?.postings || [];
+  const messageHistory = localData?.caches?.messageHistory || [];
+  const localRecords = messageHistory.filter((item) => item.kind === type);
+  const candidatePostings = messageTaskPostings(postings, type);
+  const rows = messageTaskRows(candidatePostings, type).filter((row) =>
+    rowMatchesAllTerms(row, [filters.postingNumber, filters.extra, filters.productName, filters.sku])
+  );
+  const selectedRows = rows.filter((row) => selectedRowKeys.includes(row.id));
+  const showTaskMonitor = () => {
+    setTaskOpen(true);
+  };
+  const showTemplateModal = () => {
+    setTemplateOpen(true);
+  };
+  const handleSync = async (label) => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (syncingPostings) return;
+    setSyncingPostings(true);
+    message.loading({ content: "正在只读同步订单", key: `message-task-sync-${type}`, duration: 0 });
+    try {
+      const report = await apiRequest("/local/sync/POSTINGS", {
+        method: "POST",
+        body: { storeId: binding?.id, postingsSinceDays: label.includes("全部") ? 60 : 30 },
+      });
+      await onRefresh?.();
+      const fetched = Number(report?.fetchedCount) || 0;
+      message.success({ content: `${label}已同步 · ${fetched} 条`, key: `message-task-sync-${type}` });
+    } catch (error) {
+      message.error({ content: `同步失败: ${error.message}`, key: `message-task-sync-${type}` });
+    } finally {
+      setSyncingPostings(false);
+    }
+  };
+  const updateFilter = (name, value) => {
+    setFilters((current) => ({ ...current, [name]: value }));
+  };
+  const resetFilters = () => {
+    setFilters({ postingNumber: "", extra: "", productName: "", sku: "" });
+    setSelectedRowKeys([]);
+    message.success("已重置");
+  };
+  const recordLocalSend = async () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    if (!selectedRows.length) {
+      message.warning("请先选择数据");
+      return;
+    }
+    const templateName = isReview ? "索要好评" : "提醒取货";
+    const content = isReview
+      ? "本地记录：索要好评邀请未真实发送"
+      : "本地记录：取货提醒未真实发送";
+    try {
+      await apiRequest("/ozon/message-history/batch", {
+        method: "POST",
+        body: {
+          items: selectedRows.map((row) => ({
+            kind: type,
+            receiver: row["货件编号"],
+            postingNumber: row["货件编号"],
+            templateName,
+            content,
+            status: "local_record",
+          })),
+        },
+      });
+      setSelectedRowKeys([]);
+      await onRefresh?.();
+      message.success(`已记录 ${selectedRows.length} 条本地发送记录`);
+    } catch (error) {
+      message.error(`记录失败: ${error.message}`);
+    }
+  };
+  return (
+    <div className="source-page">
+      <SourceSectionTitle
+        title={isReview ? "索要好评" : "提醒取货"}
+        subtitle={`${formatDate()} · 当前店铺`}
+        actions={[
+          isReview ? <Button key="template" onClick={showTemplateModal}>文案模板</Button> : null,
+          <Button key="monitor" onClick={showTaskMonitor}>任务监控 (0)</Button>,
+        ].filter(Boolean)}
+      />
+      <SourceMetricStrip
+        items={isReview
+          ? [
+              ["当前筛选", String(rows.length), "条候选记录"],
+              ["待发送", String(rows.length), "本页待处理"],
+              ["已发送", String(localRecords.length), "本地记录"],
+              ["失败 / 不可发", "0", "需查看原因"],
+            ]
+          : [
+              ["当前筛选", String(rows.length), "条候选记录"],
+              ["待发送", String(rows.length), "本页待处理"],
+              ["已发送", String(localRecords.length), "本地记录"],
+              ["到货未取", String(rows.length), "本页可提醒"],
+            ]}
+      />
+      <Card className="panel-card source-card">
+        <div className="table-action-row">
+          <Space wrap>
+            <Select className="source-select" value="current" options={[{ value: "current", label: "当前店铺" }]} />
+            <Input
+              className="toolbar-search compact"
+              placeholder="货件编号"
+              allowClear
+              value={filters.postingNumber}
+              onChange={(event) => updateFilter("postingNumber", event.target.value)}
+            />
+            <Input
+              className="toolbar-search compact"
+              placeholder={isReview ? "货号" : "物流单号"}
+              allowClear
+              value={filters.extra}
+              onChange={(event) => updateFilter("extra", event.target.value)}
+            />
+            <Input
+              className="toolbar-search compact"
+              placeholder="商品名称"
+              allowClear
+              value={filters.productName}
+              onChange={(event) => updateFilter("productName", event.target.value)}
+            />
+            <Input
+              className="toolbar-search compact"
+              placeholder="SKU"
+              allowClear
+              value={filters.sku}
+              onChange={(event) => updateFilter("sku", event.target.value)}
+            />
+            {!isReview ? (
+              <>
+                <Select className="source-select" value="arrived" options={[{ value: "arrived", label: "已到取件点" }]} />
+                <Select className="source-select" value="notPicked" options={[{ value: "notPicked", label: "买家未取" }]} />
+              </>
+            ) : null}
+            <Button onClick={() => message.success("筛选条件已应用")}>筛选</Button>
+            <Button onClick={resetFilters}>重置</Button>
+          </Space>
+          <Space wrap>
+            {isReview ? <Button onClick={() => navigate("/ozon/messaging/history")}>查看结果</Button> : null}
+            <Button loading={syncingPostings} onClick={() => handleSync("当前店铺")}>同步当前店铺</Button>
+            <Button loading={syncingPostings} onClick={() => handleSync("全部店铺")}>同步全部店铺</Button>
+            <Button disabled={!selectedRowKeys.length} onClick={recordLocalSend}>批量发送</Button>
+          </Space>
+        </div>
+        <Alert
+          type="info"
+          showIcon
+          message={isReview
+            ? "建议仅对履约体验稳定、商品质量有把握的订单发送评价邀请，以提升好评转化并降低负面反馈风险。"
+            : "默认仅展示已到取件点且买家未取的订单；需要排查更多物流阶段时，可切换到货状态和取货状态筛选。"}
+        />
+        <SourceTable
+          hasStore={hasStore}
+          selectedRowKeys={selectedRowKeys}
+          onSelectionChange={setSelectedRowKeys}
+          rows={rows}
+          columns={isReview
+            ? ["操作", "店铺", "货件编号", "发运", "图片", "货号，数量 名称", "查看商品", "价格", "仓库", "配送服务 方式", "送达"]
+            : ["操作", "店铺", "货件编号", "取货状态", "图片", "货号，数量 名称", "物流单号", "配送", "最近物流时间", "查看商品"]}
+          empty="暂无数据"
+          sourceEmpty
+          scrollX={isReview ? 1540 : 1420}
+        />
+      </Card>
+      <Modal
+        rootClassName="prototype-overlay"
+        title="索要好评文案模板"
+        open={templateOpen}
+        footer={null}
+        onCancel={() => setTemplateOpen(false)}
+        width={760}
+      >
+        <div className="review-template-modal">
+          <p className="review-template-copy">
+            可为不同店铺保存多套文案，发送前选择模板后仍可临时修改。
+          </p>
+          <div className="review-template-action">
+            <Button type="primary">新建模板</Button>
+          </div>
+          <SourceTable
+            hasStore={hasStore}
+            rowSelection={false}
+            columns={["模板名称", "适用范围", "内容预览", "操作"]}
+            empty="暂无文案模板"
+            sourceEmpty
+            scrollX={640}
+          />
+        </div>
+      </Modal>
+      <Drawer
+        rootClassName="prototype-overlay"
+        title="任务监控"
+        open={taskOpen}
+        onClose={() => setTaskOpen(false)}
+        width={420}
+      >
+        {isReview ? (
+          <div className="task-empty-list">
+            <Tag>{localRecords.length} 条本地记录</Tag>
+            <p>{localRecords.length ? "最近本地记录已写入发送记录" : "暂无本页触发的任务"}</p>
+          </div>
+        ) : (
+          <SourceTable
+            hasStore={hasStore}
+            rowSelection={false}
+            rows={localRecords.slice(0, 20).map((item) => ({
+              id: item.id,
+              "店铺": item.storeName || "当前店铺",
+              "状态": "本地记录",
+              "错误": "未真实发送",
+            }))}
+            columns={["店铺", "状态", "错误"]}
+            empty="暂无数据"
+            sourceEmpty
+            scrollX={360}
+          />
+        )}
+      </Drawer>
+    </div>
+  );
+}
+
+const messageTemplateCategoryOptions = [
+  { value: "review", label: "索要好评" },
+  { value: "pickup", label: "提醒取货" },
+  { value: "custom", label: "自定义" },
+];
+
+const messageTemplateCategoryLabel = (value) =>
+  messageTemplateCategoryOptions.find((item) => item.value === value)?.label || "自定义";
+
+const formatTemplateTime = (value) => {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+};
+
+const rangeBoundary = (value, position) => {
+  if (!value) return null;
+  if (position === "start" && value.startOf) return value.startOf("day").valueOf();
+  if (position === "end" && value.endOf) return value.endOf("day").valueOf();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
+};
+
+function MessageTemplatesPage({ hasStore, localData, onRefresh }) {
+  const { message, modal } = AntApp.useApp();
+  const [form] = Form.useForm();
+  const [templateForm] = Form.useForm();
+  const [expanded, setExpanded] = useState(false);
+  const [filters, setFilters] = useState({});
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const templates = localData?.caches?.messageTemplates || [];
+
+  const filteredTemplates = useMemo(() => {
+    const values = filters || {};
+    const nameFilter = String(values.templateName || "").trim().toLowerCase();
+    const contentFilter = String(values.contentPreview || "").trim().toLowerCase();
+    const categoryFilter = values.category || "";
+    const [startValue, endValue] = values.updatedAt || [];
+    const startAt = rangeBoundary(startValue, "start");
+    const endAt = rangeBoundary(endValue, "end");
+    return templates.filter((item) => {
+      const itemName = String(item.templateName || item.name || "").toLowerCase();
+      const itemContent = String(item.content || "").toLowerCase();
+      const updatedAt = new Date(item.updatedAt || item.createdAt || "").getTime();
+      if (nameFilter && !itemName.includes(nameFilter)) return false;
+      if (categoryFilter && item.category !== categoryFilter) return false;
+      if (contentFilter && !itemContent.includes(contentFilter)) return false;
+      if (startAt !== null && (!updatedAt || updatedAt < startAt)) return false;
+      if (endAt !== null && (!updatedAt || updatedAt > endAt)) return false;
+      return true;
+    });
+  }, [filters, templates]);
+
+  const openCreateTemplate = () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    setEditingTemplate(null);
+    templateForm.resetFields();
+    setTemplateOpen(true);
+  };
+
+  const openEditTemplate = (record) => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    setEditingTemplate(record);
+    templateForm.setFieldsValue({
+      templateName: record.templateName || record.name || "",
+      category: record.category || "custom",
+      content: record.content || "",
+    });
+    setTemplateOpen(true);
+  };
+
+  const closeTemplateModal = () => {
+    setTemplateOpen(false);
+    setEditingTemplate(null);
+    templateForm.resetFields();
+  };
+
+  const saveTemplate = async () => {
+    if (!hasStore) {
+      message.warning("请先绑定门店");
+      return;
+    }
+    const values = await templateForm.validateFields();
+    setSaving(true);
+    try {
+      const isEditing = Boolean(editingTemplate?.id);
+      await apiRequest(
+        isEditing ? `/ozon/message-templates/${encodeURIComponent(editingTemplate.id)}` : "/ozon/message-templates",
+        {
+          method: isEditing ? "PUT" : "POST",
+          body: values,
+        },
+      );
+      await onRefresh?.();
+      closeTemplateModal();
+      message.success("模板已保存");
+    } catch (error) {
+      message.error(`保存失败: ${error.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteTemplate = (record) => {
+    modal.confirm({
+      title: "删除模板",
+      icon: null,
+      content: "确认删除该模板？",
+      okText: "删 除",
+      okButtonProps: { danger: true },
+      cancelText: "取 消",
+      onOk: async () => {
+        try {
+          await apiRequest(`/ozon/message-templates/${encodeURIComponent(record.id)}`, { method: "DELETE" });
+          await onRefresh?.();
+          message.success("模板已删除");
+        } catch (error) {
+          message.error(`删除失败: ${error.message}`);
+        }
+      },
+    });
+  };
+
+  const rows = filteredTemplates.map((item) => ({
+    ...item,
+    id: item.id,
+    "模板名称": item.templateName || item.name || "—",
+    "分类": messageTemplateCategoryLabel(item.category),
+    "内容预览": item.content || "",
+    "更新时间": formatTemplateTime(item.updatedAt || item.createdAt),
+  }));
+
+  const columns = [
+    "模板名称",
+    "分类",
+    {
+      title: "内容预览",
+      dataIndex: "内容预览",
+      key: "内容预览",
+      width: 280,
+      render: (value) => {
+        const text = String(value || "");
+        return <span className="source-table-cell-text" title={text || "—"}>{text || "—"}</span>;
+      },
+    },
+    "更新时间",
+    {
+      title: "操作",
+      dataIndex: "操作",
+      key: "操作",
+      width: 96,
+      ellipsis: false,
+      render: (_, record) => (
+        <Space size={2}>
+          <Tooltip rootClassName="prototype-overlay" title="编辑">
+            <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEditTemplate(record)} />
+          </Tooltip>
+          <Tooltip rootClassName="prototype-overlay" title="删除">
+            <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => deleteTemplate(record)} />
+          </Tooltip>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div className="source-page">
+      <Card className="panel-card source-card">
+        <Form form={form} layout="inline" className="template-query-form">
+          <Form.Item label="模板名称" name="templateName">
+            <Input placeholder="请输入" allowClear />
+          </Form.Item>
+          <Form.Item label="分类" name="category">
+            <Select
+              className="template-category-select"
+              placeholder="请选择"
+              allowClear
+              options={messageTemplateCategoryOptions}
+            />
+          </Form.Item>
+          {expanded && (
+            <>
+              <Form.Item label="内容预览" name="contentPreview">
+                <Input placeholder="请输入" allowClear />
+              </Form.Item>
+              <Form.Item label="更新时间" name="updatedAt">
+                <DatePicker.RangePicker placeholder={["", ""]} />
+              </Form.Item>
+            </>
+          )}
+          <Space>
+            <Button
+              onClick={() => {
+                form.resetFields();
+                setFilters({});
+                message.success("已重置");
+              }}
+            >
+              重 置
+            </Button>
+            <Button
+              type="primary"
+              onClick={() => {
+                setFilters(form.getFieldsValue());
+                message.success(`查询完成 · ${rows.length} 条`);
+              }}
+            >
+              查 询
+            </Button>
+            <a onClick={() => setExpanded((value) => !value)}>
+              {expanded ? "收起" : "展开"}
+            </a>
+          </Space>
+        </Form>
+      </Card>
+      <Card className="panel-card source-card">
+        <div className="table-action-row">
+          <strong>模板列表</strong>
+          <Space size={12}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateTemplate}>
+              新建模板
+            </Button>
+            <Button type="text" size="small" className="source-icon-button" icon={<SyncOutlined />} />
+            <Button type="text" size="small" className="source-icon-button" icon={<SettingOutlined />} />
+          </Space>
+        </div>
+        <SourceTable
+          hasStore={hasStore}
+          rowSelection={false}
+          columns={columns}
+          rows={rows}
+          empty="暂无模板"
+          sourceEmpty
+          scrollX={980}
+        />
+      </Card>
+      <Modal
+        rootClassName="prototype-overlay"
+        title={editingTemplate ? "编辑模板" : "新建模板"}
+        open={templateOpen}
+        className="message-template-modal"
+        wrapClassName="message-template-modal-wrap"
+        okText="保 存"
+        cancelText="取 消"
+        confirmLoading={saving}
+        onOk={saveTemplate}
+        onCancel={closeTemplateModal}
+        footer={[
+          <Button key="cancel" onClick={closeTemplateModal}>
+            取 消
+          </Button>,
+          <Button key="submit" type="primary" loading={saving} onClick={saveTemplate}>
+            保 存
+          </Button>,
+        ]}
+        destroyOnHidden
+        transitionName=""
+        maskTransitionName=""
+      >
+        <Form form={templateForm} layout="vertical" className="template-preview">
+          <Form.Item label="模板名称" name="templateName" rules={[{ required: true, message: "请输入模板名称" }]}>
+            <Input placeholder="请输入" maxLength={80} />
+          </Form.Item>
+          <Form.Item label="所属分类" name="category" rules={[{ required: true, message: "请选择分类" }]}>
+            <Select placeholder="请选择" options={messageTemplateCategoryOptions} />
+          </Form.Item>
+          <Form.Item label="消息内容" name="content">
+            <Input.TextArea rows={5} placeholder="请输入" maxLength={2000} showCount />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}
+
+const messageHistoryStatusLabel = (value) => ({
+  local_record: "本地记录",
+  success: "成功",
+  failed: "失败",
+  pending: "待发送",
+}[value] || "本地记录");
+
+function MessageHistoryPage({ hasStore, localData, onRefresh }) {
+  const { message } = AntApp.useApp();
+  const [form] = Form.useForm();
+  const [expanded, setExpanded] = useState(false);
+  const [filters, setFilters] = useState({});
+  const historyRecords = localData?.caches?.messageHistory || [];
+  const filteredRecords = useMemo(() => {
+    const values = filters || {};
+    const receiverFilter = String(values.receiver || "").trim().toLowerCase();
+    const templateFilter = String(values.template || "").trim().toLowerCase();
+    const contentFilter = String(values.content || "").trim().toLowerCase();
+    const statusFilter = values.status || "";
+    const [startValue, endValue] = values.sentAt || [];
+    const startAt = rangeBoundary(startValue, "start");
+    const endAt = rangeBoundary(endValue, "end");
+    return historyRecords.filter((item) => {
+      const receiver = String(item.receiver || item.postingNumber || "").toLowerCase();
+      const template = String(item.templateName || "").toLowerCase();
+      const content = String(item.content || "").toLowerCase();
+      const sentAt = new Date(item.sentAt || item.createdAt || "").getTime();
+      if (receiverFilter && !receiver.includes(receiverFilter)) return false;
+      if (templateFilter && !template.includes(templateFilter)) return false;
+      if (contentFilter && !content.includes(contentFilter)) return false;
+      if (statusFilter && item.status !== statusFilter) return false;
+      if (startAt !== null && (!sentAt || sentAt < startAt)) return false;
+      if (endAt !== null && (!sentAt || sentAt > endAt)) return false;
+      return true;
+    });
+  }, [filters, historyRecords]);
+  const rows = filteredRecords.map((item) => ({
+    id: item.id,
+    "接收人": item.receiver || item.postingNumber || "—",
+    "使用模板": item.templateName || "—",
+    "发送内容": item.content || "—",
+    "状态": messageHistoryStatusLabel(item.status),
+    "发送时间": formatTemplateTime(item.sentAt || item.createdAt),
+    "操作": "查看",
+  }));
+  return (
+    <div className="source-page">
+      <Card className="panel-card source-card">
+        <Form form={form} layout="inline" className="template-query-form">
+          <Form.Item label="接收人" name="receiver">
+            <Input placeholder="请输入" allowClear />
+          </Form.Item>
+          <Form.Item label="使用模板" name="template">
+            <Input placeholder="请输入" allowClear />
+          </Form.Item>
+          {expanded && (
+            <>
+              <Form.Item label="发送内容" name="content">
+                <Input placeholder="请输入" allowClear />
+              </Form.Item>
+              <Form.Item label="状态" name="status">
+                <Select
+                  className="template-category-select"
+                  placeholder="请选择"
+                  allowClear
+                  options={[
+                    { value: "local_record", label: "本地记录" },
+                    { value: "success", label: "成功" },
+                    { value: "failed", label: "失败" },
+                    { value: "pending", label: "待发送" },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item label="发送时间" name="sentAt">
+                <DatePicker.RangePicker placeholder={["", ""]} />
+              </Form.Item>
+            </>
+          )}
+          <Space>
+            <Button
+              onClick={() => {
+                form.resetFields();
+                setFilters({});
+                message.success("已重置");
+              }}
+            >
+              重 置
+            </Button>
+            <Button
+              type="primary"
+              onClick={() => {
+                setFilters(form.getFieldsValue());
+                message.success(`查询完成 · ${rows.length} 条`);
+              }}
+            >
+              查 询
+            </Button>
+            <a onClick={() => setExpanded((value) => !value)}>
+              {expanded ? "收起" : "展开"}
+            </a>
+          </Space>
+        </Form>
+      </Card>
+      <Card className="panel-card source-card">
+        <div className="table-action-row table-action-row-compact">
+          <strong>历史记录</strong>
+          <Space size={12}>
+            <Button
+              type="text"
+              size="small"
+              className="source-icon-button"
+              icon={<SyncOutlined />}
+              onClick={async () => {
+                await onRefresh?.();
+                message.success("已刷新");
+              }}
+            />
+            <Button type="text" size="small" className="source-icon-button" icon={<SettingOutlined />} />
+          </Space>
+        </div>
+        <SourceTable
+          hasStore={hasStore}
+          rowSelection={false}
+          rows={rows}
+          columns={["接收人", "使用模板", "发送内容", "状态", "发送时间", "操作"]}
+          empty="暂无发送记录"
+          sourceEmpty
+          scrollX={1050}
+        />
+      </Card>
+    </div>
+  );
+}
+
+
 function ProductTemplatesPage({ hasStore, binding, localData, onRefresh }) {
   const { message, modal } = AntApp.useApp();
   const [form] = Form.useForm();

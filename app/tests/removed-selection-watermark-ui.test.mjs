@@ -33,3 +33,22 @@ test("AI and non-selection business routes remain without the recommendation tag
   assert.match(app, /\/ozon\/products\/collect/);
   assert.match(app, /\/ozon\/settings\/stores/);
 });
+
+test("every retained business route dispatches to a defined page component", () => {
+  for (const [route, component] of [
+    ["/ozon/tools/ai-poster-records", "AiPosterPage"],
+    ["/ozon/ai-image", "AiImagePage"],
+    ["/ozon/promotions/prices", "PriceDiscountPage"],
+    ["/ozon/promotions/campaigns", "CampaignsPage"],
+    ["/ozon/promotions/auto-delete", "AutoDeletePromoPage"],
+    ["/ozon/postings/list", "PostingsPage"],
+    ["/ozon/postings/returns", "ReturnsPage"],
+    ["/ozon/postings/review-request", "MessageTaskPage"],
+    ["/ozon/postings/pickup-reminder", "MessageTaskPage"],
+    ["/ozon/messaging/templates", "MessageTemplatesPage"],
+    ["/ozon/messaging/history", "MessageHistoryPage"],
+  ]) {
+    assert.match(app, new RegExp(`function ${component}\\b`));
+    assert.match(app, new RegExp(`if \\(route === "${route}"\\) return <${component}\\b`));
+  }
+});
