@@ -114,6 +114,12 @@ import {
   emptyLocalRuntimeData,
   localRuntimeStateFromApi,
 } from "./local-runtime-state.js";
+import {
+  EXTENSION_CAPABILITIES,
+  EXTENSION_DOWNLOAD_PATH,
+  EXTENSION_POPUP_PREVIEW_PATH,
+  EXTENSION_VERSION,
+} from "./extension-page-contract.mjs";
 
 const { Header, Sider, Content } = Layout;
 
@@ -9671,7 +9677,7 @@ function PluginPanel() {
         <img src="/icons/icon128.png" alt="sonli" />
         <div>
           <h2>sonli 浏览器插件</h2>
-          <p>版本 0.13.46.1</p>
+          <p>版本 {EXTENSION_VERSION}</p>
           <Space size={8} wrap>
             <Tag color="green">已复制到本地项目</Tag>
             <Tag color={connected ? "blue" : partial ? "orange" : pingState.status === "checking" ? "processing" : "red"}>
@@ -9708,7 +9714,7 @@ function PluginPanel() {
         {[
           ["1", "打开 Chrome 扩展管理页", "进入 chrome://extensions/ 并开启开发者模式"],
           ["2", "加载或重新加载本地目录", "选择上面的 extension 目录；已加载时点击扩展卡片的刷新按钮"],
-          ["3", "回到本页重新检测", "状态应显示 已连接 0.13.46.1，然后再做上架预检"],
+          ["3", "回到本页重新检测", `状态应显示 已连接 ${EXTENSION_VERSION}，然后再做上架预检`],
         ].map(([step, title, desc]) => (
           <div key={step}>
             <strong>{step}</strong>
@@ -9720,29 +9726,22 @@ function PluginPanel() {
       <div className="plugin-actions">
         <a
           className="ant-btn ant-btn-primary ant-btn-color-primary ant-btn-variant-solid plugin-download"
-          href="/sonli-extension-0.13.46.1.zip"
+          href={EXTENSION_DOWNLOAD_PATH}
           download
         >
           <DownloadOutlined />
           <span>插件下载</span>
         </a>
-        <Button icon={<EyeOutlined />} href="/plugin/popup.html" target="_blank">
+        <Button icon={<EyeOutlined />} href={EXTENSION_POPUP_PREVIEW_PATH} target="_blank">
           弹窗预览
         </Button>
       </div>
       <div className="plugin-package-status">
         <CheckOutlined />
-        <span>下载包 sonli-extension-0.13.46.1.zip 已与本地 extension 目录逐文件校验一致</span>
+        <span>下载包 sonli-extension-{EXTENSION_VERSION}.zip 已与本地 extension 目录逐文件校验一致</span>
       </div>
       <div className="plugin-capabilities">
-        {[
-          ["Ozon 商品采集", "content/ozon-product.js"],
-          ["Ozon 搜索采集", "content/ozon-search.js"],
-          ["Seller Cookie 同步", "content/ozon-seller-bridge.js"],
-          ["1688 商品采集", "content/alibaba-1688.js"],
-          ["批量上架页", "batch-upload/index.html"],
-          ["后台同步引擎", "background/service-worker.js"],
-        ].map(([title, file]) => (
+        {EXTENSION_CAPABILITIES.map(([title, file]) => (
           <div key={title}>
             <ChromeOutlined />
             <span>{title}</span>

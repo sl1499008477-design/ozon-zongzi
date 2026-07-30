@@ -80,4 +80,15 @@ assert.equal(
   "plugin readiness requires passing capture-only extension behavior",
 );
 
+const extensionPageBehavior = spawnSync(
+  process.execPath,
+  ["--test", "app/tests/extension-page-capture-only.test.mjs"],
+  { stdio: "inherit", shell: false },
+);
+assert.equal(
+  extensionPageBehavior.status,
+  0,
+  "plugin readiness requires the canonical capture-only Web preview",
+);
+
 console.log("plugin readiness gate ok");
