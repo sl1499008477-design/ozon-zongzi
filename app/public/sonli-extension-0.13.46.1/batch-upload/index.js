@@ -32,9 +32,9 @@
   const RECHARGE_PATH = "/ozon/settings/jidian";
   const MEMBERSHIP_PATH = "/ozon/settings/membership";
   const BATCH_UPLOAD_LISTING_CFG_KEY = "batch-upload-listing-config-v1";
-  const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test("sonli")
+  const DEFAULT_BRAND_DISPLAY_NAME = /__BRAND/.test("ozon 粽子")
     ? "平台"
-    : "sonli";
+    : "ozon 粽子";
 
   // ─── State ──────────────────────────────────────
   const state = {
@@ -1338,8 +1338,8 @@
       }
     }
     // dev 加载源码时占位符没被 build 替换 → 兜底
-    if (document.title.includes("sonli")) {
-      document.title = document.title.split("sonli").join(displayName);
+    if (document.title.includes("ozon 粽子")) {
+      document.title = document.title.split("ozon 粽子").join(displayName);
     }
   }
 

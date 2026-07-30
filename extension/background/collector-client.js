@@ -86,7 +86,7 @@
       return {
         ok: false,
         code: 'COLLECTOR_AUTH_REQUIRED',
-        error: '请先在 Web 端登录 sonli',
+        error: '请先在 ozon 粽子 Web 管理系统登录',
       };
     }
 

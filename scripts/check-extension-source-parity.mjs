@@ -80,6 +80,7 @@ const allowedLocalOnly = new Set([
   "tests/jizhangerp-bridge-follow-sell.test.js",
   "tests/manifest-security-contract.test.js",
   "tests/brand-contract.test.js",
+  "tests/brand-fallback-runtime.test.js",
   "tests/market-item-normalization.test.js",
   "tests/helpers/chrome-match-pattern.js",
   "tests/portal-bridge-policy.test.js",

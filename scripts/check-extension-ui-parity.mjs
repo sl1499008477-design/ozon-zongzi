@@ -24,14 +24,14 @@ const reviewedUiFingerprints = new Map([
     "batch-upload/index.html",
     {
       upstream: "cc6d244da650e31d24e38484f9c7ea3d1777f91acfb58d8817efb33117d05a03",
-      local: "c0c01051fde9630910a5d6b00b31a8e258ca545deb25b9f879409552c03ad0a2",
+      local: "f6b02cb769d42bd90f34dcf2e6411047998121cfb3e10c118b64f6d58fb572e5",
     },
   ],
   [
     "batch-upload/index.js",
     {
       upstream: "d6a6cba6639fecd68965f0a782d4289821b833d2d913e5e59a72bc82193e075e",
-      local: "f99be1f9bdc7cd6d7e0f3107bcacffba47965545c18917e7e7fc998c93681c5e",
+      local: "f45d3efaee577e8f188792a29f80d611eb06a7b503fef2d4c58dcaf701dc0d19",
     },
   ],
   [
