@@ -12,6 +12,7 @@ import { runMigrations } from "../db/migrate.mjs";
 import { ingestCollectRequestV4 } from "../collection-pipeline.mjs";
 import {
   createSubmissionV3,
+  hydrateLegacyStateWithV3,
   listCollectItemsV3,
   softDeleteCollectItemsForAccountV4,
   updateCollectItemDraftV4,
@@ -140,16 +141,9 @@ if (!postgresEnabled()) {
           sku: sourceSku,
           title: "Account A draft",
           price: "100.00",
-          targetStore: {
-            id: `listing-target-${suffix}`,
-            label: "Listing target",
-            clientId: `valid-listing-client-${suffix}`,
-            currencyCode: "RUB",
-          },
           variants: [{ sku: sourceSku, offerId: `offer-a-${suffix}` }],
         },
         collectorMetadata: {
-          clientId: `forged-collector-client-${suffix}`,
           keep: "collector-source",
         },
       },
@@ -176,9 +170,9 @@ if (!postgresEnabled()) {
       [first.collectItemId, accountA],
     );
     assert.deepEqual(rawListingMetadata.rows[0], {
-      target_client_id: `valid-listing-client-${suffix}`,
-      forged_collector_client_id: `forged-collector-client-${suffix}`,
-    }, "raw evidence remains intact while public projection applies context");
+      target_client_id: null,
+      forged_collector_client_id: null,
+    }, "collection remains store-neutral until listing preparation");
 
     const persisted = await pool.query(
       `SELECT
@@ -271,12 +265,21 @@ if (!postgresEnabled()) {
     assert.equal(accountAItems.some((item) => item.id === accountBResult.collectItemId), false);
     const accountAItem = accountAItems.find((item) => item.id === first.collectItemId);
     assert.equal(Object.hasOwn(accountAItem, "legacyScope"), false, "forged raw JSON legacyScope is never trusted");
-    assert.equal(
-      accountAItem.listingDraft.targetStore.clientId,
-      `valid-listing-client-${suffix}`,
-      "listing target clientId remains public",
-    );
+    assert.equal(accountAItem.listingDraft.targetStore, undefined);
     assert.deepEqual(accountAItem.collectorMetadata, { keep: "collector-source" });
+
+    const hydrated = await hydrateLegacyStateWithV3({
+      accounts: [{ id: accountA }],
+      caches: { collectBox: [] },
+      jobs: {},
+    });
+    const hydratedItem = hydrated.caches.collectBox.find((item) => item.id === first.collectItemId);
+    assert.equal(hydratedItem.accountId, accountA, "trusted hydration restores Web account visibility");
+    assert.equal(
+      hydrated.caches.collectBox.some((item) => item.id === accountBResult.collectItemId),
+      false,
+      "trusted hydration keeps other accounts invisible",
+    );
 
     const updatedTargetClientId = `updated-listing-client-${suffix}`;
     const updatedListing = await updateCollectItemDraftV4({
@@ -286,8 +289,10 @@ if (!postgresEnabled()) {
         listingDraft: {
           ...accountAItem.listingDraft,
           targetStore: {
-            ...accountAItem.listingDraft.targetStore,
+            id: `listing-target-${suffix}`,
+            label: "Listing target",
             clientId: updatedTargetClientId,
+            currencyCode: "RUB",
           },
           sourceMetadata: {
             clientId: `forged-draft-source-client-${suffix}`,
