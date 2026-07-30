@@ -551,12 +551,12 @@ const requiredSteps = [
   "处理首个订单",
 ];
 
-function AppShell() {
+export function AppShell({ initialState = null }) {
   const { message, modal } = AntApp.useApp();
-  const [route, setRoute] = useState(() => normalizePath(window.location.pathname));
-  const [account, setAccount] = useState(null);
+  const [route, setRoute] = useState(() => initialState?.route || normalizePath(window.location.pathname));
+  const [account, setAccount] = useState(() => initialState?.account || null);
   const [accounts, setAccounts] = useState([]);
-  const [authChecked, setAuthChecked] = useState(false);
+  const [authChecked, setAuthChecked] = useState(() => initialState?.authChecked === true);
   const [loggingIn, setLoggingIn] = useState(false);
   const [binding, setBinding] = useState(() => {
     const stored = readJson(STORAGE_KEY, null);
@@ -1094,7 +1094,6 @@ function AppShell() {
         <Header className="qh-topbar">
           <a className="qh-brand" onClick={() => navigate("/ozon/dashboard")}>
             <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
-            <span>{PRODUCT_BRAND.displayName}</span>
           </a>
           <Button
             aria-label="打开导航"
@@ -1325,7 +1324,6 @@ function LoginPage({ checking = false, loading = false, onLogin }) {
         <div className="sonli-login-brand">
           <img src={PRODUCT_BRAND.logoPrimaryUrl} alt={PRODUCT_BRAND.displayName} />
           <div>
-            <strong>{PRODUCT_BRAND.displayName}</strong>
             <span>Ozon 本地管理后台</span>
           </div>
         </div>
