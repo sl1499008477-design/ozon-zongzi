@@ -176,6 +176,52 @@ async function runBrowserFixture({
     assert.equal(logoFallback.display, "none");
     assert.equal(logoFallback.title, "ozon 粽子 · 选品助手");
 
+    const legacyHeader = await page.evaluate(() => {
+      const card = document.createElement("article");
+      card.className = "ozon-helper-sidebar-card";
+      card.innerHTML = `
+        <div class="ozon-helper-sidebar-card-header">
+          <span class="ozon-helper-sidebar-card-logo"><span class="oh-logo-icon"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z" /></svg></span>ozon 粽子ERP</span>
+          <div class="ozon-helper-sidebar-card-header-actions">
+            <button class="ozon-helper-sidebar-card-close" data-action="close-sidebar-card">&times;</button>
+          </div>
+        </div>`;
+      document.body.appendChild(card);
+      const header = card.querySelector(".ozon-helper-sidebar-card-header");
+      const logo = card.querySelector(".ozon-helper-sidebar-card-logo");
+      const icon = card.querySelector(".oh-logo-icon");
+      const close = card.querySelector(".ozon-helper-sidebar-card-close");
+      return {
+        headerBackground: getComputedStyle(header).backgroundColor,
+        logoColor: getComputedStyle(logo).color,
+        iconColor: getComputedStyle(icon).color,
+        close: {
+          action: close.dataset.action,
+          background: getComputedStyle(close).backgroundColor,
+          borderColor: getComputedStyle(close).borderTopColor,
+          borderWidth: getComputedStyle(close).borderTopWidth,
+          color: getComputedStyle(close).color,
+        },
+      };
+    });
+    assert.equal(legacyHeader.headerBackground, "rgb(255, 255, 255)");
+    assert.equal(legacyHeader.logoColor, "rgb(16, 35, 74)");
+    assert.equal(legacyHeader.iconColor, "rgb(18, 104, 255)");
+    assert.deepEqual(legacyHeader.close, {
+      action: "close-sidebar-card",
+      background: "rgb(242, 247, 255)",
+      borderColor: "rgb(212, 226, 250)",
+      borderWidth: "1px",
+      color: "rgb(18, 104, 255)",
+    });
+    await page.locator('.ozon-helper-sidebar-card-close[data-action="close-sidebar-card"]').hover();
+    await page.waitForTimeout(200);
+    assert.equal(
+      await page.locator('.ozon-helper-sidebar-card-close[data-action="close-sidebar-card"]').evaluate((close) => getComputedStyle(close).backgroundColor),
+      "rgb(229, 240, 255)",
+      "legacy close affordance should remain visible on hover",
+    );
+
     const skeletonStatus = await page.evaluate(() => {
       const panel = document.querySelector(".ozon-helper-data-panel");
       window.jzRenderPanelSkeleton(panel);

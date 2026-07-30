@@ -2923,9 +2923,9 @@
 }
 
 .ozon-helper-sidebar-card-close {
-  background: rgba(255, 255, 255, 0.18);
-  border: none;
-  color: rgba(255, 255, 255, 0.95);
+  background: #f2f7ff;
+  border: 1px solid #d4e2fa;
+  color: var(--ozz-blue);
   font-size: 15px;
   cursor: pointer;
   width: 22px;
@@ -2938,7 +2938,8 @@
   transition: all 0.15s;
 }
 .ozon-helper-sidebar-card-close:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: #e5f0ff;
+  border-color: #9dc1ff;
   transform: rotate(90deg);
 }
 
@@ -3128,7 +3129,7 @@
   stroke: currentColor;
   display: block;
 }
-.ozon-helper-sidebar-card-logo .oh-logo-icon { color: #ffffff; }
+.ozon-helper-sidebar-card-logo .oh-logo-icon { color: var(--ozz-blue); }
 .ozon-helper-sidebar-card-btn .oh-btn-icon { color: #1d6bff; }
 .ozon-helper-sidebar-card-btn.is-primary .oh-btn-icon { color: #ffffff; }
 
