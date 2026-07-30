@@ -43,6 +43,7 @@ try {
     '../lib/fx-observation-replay.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
+    'follow-sell-request.js',
     'collector-client.js',
   );
 } catch (e) {
@@ -1666,14 +1667,6 @@ try {
 
   function aiWizardDebugMeta(message, action, body) {
     return message?._aiwDebug ? { debug: true, action: action || message.action, body: body || message.body || {} } : null;
-  }
-
-  function stripInternalMessageFields(message) {
-    const copy = { ...(message || {}) };
-    delete copy._aiwDebug;
-    delete copy.applyWatermark;
-    delete copy.watermarkTemplateId;
-    return copy;
   }
 
   // 上架入口推断:content script 不用逐个改,SW 按消息来源页归因。
@@ -3621,55 +3614,10 @@ try {
           }
         }
         case 'followSell': {
-          const targetStoreId = message.storeId || storeId;
-          const importMessage = stripInternalMessageFields(message);
-          // 上架入口 → 后端 listingSettings 快照(上架记录详情展示)
-          importMessage.entry = deriveImportEntry(message, sender);
-          // 门户上架(灰度):message.viaPortal=true 时不走官方 API,改走 seller.ozon.ru
-          // bundle 接口创建商品(绕官方 import 限流/封控)。后端只备 bundle items,
-          // create/update/upload 三步在浏览器里跑。preferTabId 用发起页(www.ozon.ru)
-          // 标签,走 fetchSellerPortal 的跨域快路免依赖 seller 专用标签。
-          if (importMessage.viaPortal) {
-            console.log(`[followSell] viaPortal: items=${importMessage.items?.length}, url=${backendUrl}/ozon/products/prepare-bundle-items`);
-            const portalResult = await importViaPortal(importMessage, token, targetStoreId, backendUrl, sender?.tab?.id);
-            console.log('[followSell] portal response:', JSON.stringify(portalResult).slice(0, 200));
-            return { ok: true, data: portalResult };
-          }
-          const bodySize = JSON.stringify(importMessage).length;
-          if (importMessage.dryRun) {
-            console.log(`[followSell] Preview import: items=${importMessage.items?.length}, bodySize=${bodySize}, url=${backendUrl}/ozon/products/import/preview`);
-            const previewResult = await apiRequest(
-              'POST',
-              `${backendUrl}/ozon/products/import/preview`,
-              importMessage,
-              token,
-              targetStoreId,
-              120_000,
-              aiWizardDebugMeta(message, 'followSellPreview', {
-                items: Array.isArray(importMessage.items) ? importMessage.items.length : undefined,
-              }),
-            );
-            console.log('[followSell] Preview response:', JSON.stringify(previewResult).slice(0, 200));
-            return { ok: true, data: previewResult };
-          }
-          // Backend now enqueues and returns within ~1s; AI runs in the worker.
-          const importTimeout = 120_000;
-          console.log(`[followSell] Enqueueing import: items=${importMessage.items?.length}, bodySize=${bodySize}, aiImage=${importMessage.applyAiImage}, url=${backendUrl}/ozon/products/import`);
-          const followSellResult = await apiRequest(
-            'POST',
-            `${backendUrl}/ozon/products/import`,
-            importMessage,
-            token,
-            targetStoreId,
-            importTimeout,
-            aiWizardDebugMeta(message, 'followSell', {
-              items: Array.isArray(importMessage.items) ? importMessage.items.length : undefined,
-              stocks: Array.isArray(importMessage.stocks) ? importMessage.stocks.length : undefined,
-              applyPoster: !!importMessage.applyPoster,
-            }),
+          return globalThis.JzFollowSellRequest.runFollowSellRequest(
+            { message, sender, token, storeId, backendUrl },
+            { apiRequest, importViaPortal, deriveImportEntry, aiWizardDebugMeta, log: console },
           );
-          console.log('[followSell] Enqueue response:', JSON.stringify(followSellResult).slice(0, 200));
-          return { ok: true, data: followSellResult };
         }
         case 'importFromPublic': {
           // maozi 公开商详上架(灰度 ozon_public_import):从公开买家商详页 page-json
