@@ -6786,7 +6786,7 @@ function ReshelfPage({ binding, hasStore, localData, onSync }) {
   );
 }
 
-+function AiPosterPage({ localData, onRefresh }) {
+function AiPosterPage({ localData, onRefresh }) {
   const { message } = AntApp.useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [imageLinks, setImageLinks] = useState("");

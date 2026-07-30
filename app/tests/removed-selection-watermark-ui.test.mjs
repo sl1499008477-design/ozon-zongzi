@@ -35,20 +35,33 @@ test("AI and non-selection business routes remain without the recommendation tag
 });
 
 test("every retained business route dispatches to a defined page component", () => {
-  for (const [route, component] of [
-    ["/ozon/tools/ai-poster-records", "AiPosterPage"],
-    ["/ozon/ai-image", "AiImagePage"],
-    ["/ozon/promotions/prices", "PriceDiscountPage"],
-    ["/ozon/promotions/campaigns", "CampaignsPage"],
-    ["/ozon/promotions/auto-delete", "AutoDeletePromoPage"],
-    ["/ozon/postings/list", "PostingsPage"],
-    ["/ozon/postings/returns", "ReturnsPage"],
-    ["/ozon/postings/review-request", "MessageTaskPage"],
-    ["/ozon/postings/pickup-reminder", "MessageTaskPage"],
-    ["/ozon/messaging/templates", "MessageTemplatesPage"],
-    ["/ozon/messaging/history", "MessageHistoryPage"],
+  for (const [route, component, definition] of [
+    ["/ozon/products/list", "ProductListPage", "function"],
+    ["/ozon/products/collect", "CollectPage", "function"],
+    ["/ozon/products/import-history", "ImportHistoryPage", "function"],
+    ["/ozon/products/stocks", "StocksPage", "function"],
+    ["/ozon/products/reshelf", "ReshelfPage", "function"],
+    ["/ozon/tools/ai-poster-records", "AiPosterPage", "function"],
+    ["/ozon/ai-image", "AiImagePage", "function"],
+    ["/ozon/promotions/prices", "PriceDiscountPage", "function"],
+    ["/ozon/promotions/campaigns", "CampaignsPage", "function"],
+    ["/ozon/promotions/auto-delete", "AutoDeletePromoPage", "function"],
+    ["/ozon/postings/list", "PostingsPage", "function"],
+    ["/ozon/postings/returns", "ReturnsPage", "function"],
+    ["/ozon/postings/profit-trend", "ProfitTrendPage", "import"],
+    ["/ozon/postings/review-request", "MessageTaskPage", "function"],
+    ["/ozon/postings/pickup-reminder", "MessageTaskPage", "function"],
+    ["/ozon/messaging/templates", "MessageTemplatesPage", "function"],
+    ["/ozon/messaging/history", "MessageHistoryPage", "function"],
+    ["/ozon/templates", "ProductTemplatesPage", "function"],
+    ["/ozon/settings/stores", "StoresSettingsPage", "import"],
+    ["/ozon/settings/accounts", "AccountSettingsPage", "import"],
+    ["/ozon/settings/pricing", "PricingSettingsPage", "import"],
+    ["/datascreen", "DataScreenPage", "import"],
   ]) {
-    assert.match(app, new RegExp(`function ${component}\\b`));
+    assert.match(app, new RegExp(`^${definition} ${component}\\b`, "m"));
     assert.match(app, new RegExp(`if \\(route === "${route}"\\) return <${component}\\b`));
   }
+  assert.match(app, /if \(route\.startsWith\("\/ozon\/products\/collect\/edit"\)\) return <CollectEditPage\b/);
+  assert.match(app, /^function CollectEditPage\b/m);
 });
