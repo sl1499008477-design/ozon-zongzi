@@ -15,23 +15,30 @@ if (!sourceDir) process.exit(2);
 const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
 
 const allowedDiffs = new Set([
+  "background/agent/listing-actions.js",
   "background/service-worker.js",
   "batch-upload/index.html",
   "batch-upload/index.js",
   "content/alibaba-1688.js",
   "content/1688-ai-wizard.js",
+  // Retires the stale ozon-bestsellers-hook protocol reference in a comment.
+  "content/ozon-bff-interceptor.js",
   "content/jizhangerp-bridge.js",
   "content/jzc-calc.js",
   "content/ozon-data-panel.js",
   "content/ozon-premium-hook.js",
+  "content/ozon-product.css",
   "content/ozon-product.js",
+  "content/ozon-search.css",
   "content/ozon-search.js",
+  "content/ozon-seller-bridge.js",
   "content/shared-utils.js",
   "content/sync-auth.js",
   "icons/icon128.png",
   "icons/icon16.png",
   "icons/icon48.png",
   "lib/cn-source-panel.js",
+  "lib/store-picker.js",
   "manifest.json",
   "popup/popup.html",
   "popup/popup.css",
@@ -42,6 +49,9 @@ const allowedDiffs = new Set([
 const allowedLocalOnly = new Set([
   "background/__tests__/fx-probe.smoke.test.js",
   "background/__tests__/follow-sell-dry-run-route.test.js",
+  // Task 4 reviewed follow-sell removal boundary coverage and route module.
+  "background/__tests__/follow-sell-watermark-boundary.test.js",
+  "background/follow-sell-request.js",
   "background/collector-client.js",
   "icons/sonli-logo.png",
   "lib/category-readiness.js",
@@ -68,6 +78,7 @@ const allowedLocalOnly = new Set([
   "tests/pricing-config-cache-policy.test.js",
   "tests/seller-identity-policy.test.js",
   "tests/sync-capability-removed.test.js",
+  "tests/removed-selection-watermark-contract.test.js",
   "tests/web-bridge-policy.test.js",
 ]);
 
@@ -85,6 +96,8 @@ const intentionallyRetiredFiles = new Set([
   "content/collector/keyword-pilot.js",
   "content/collector/panel.css",
   "content/collector/panel.js",
+  "content/ozon-bestsellers-hook.js",
+  "lib/watermark-templates.js",
   "popup/__tests__/browser-agent-popup.smoke.test.js",
   "tests/collector-manual-start.test.js",
   "tests/keyword-pilot-ownership.test.js",
@@ -111,6 +124,19 @@ const hashFile = (file) => createHash("sha256").update(readFileSync(file)).diges
 
 const localFiles = new Set(walk(localDir));
 assertCaptureOnlyFileSet(localFiles);
+assert.ok(
+  localFiles.has("background/__tests__/follow-sell-watermark-boundary.test.js"),
+  "reviewed follow-sell removal boundary test missing",
+);
+assert.ok(
+  localFiles.has("background/follow-sell-request.js"),
+  "reviewed follow-sell request module missing",
+);
+assert.doesNotMatch(
+  readFileSync(path.join(localDir, "content/ozon-bff-interceptor.js"), "utf8"),
+  /ozon-bestsellers-hook/,
+  "retired bestsellers hook reference must not remain in the BFF protocol comment",
+);
 const localManifest = JSON.parse(readFileSync(path.join(localDir, "manifest.json"), "utf8"));
 assert.equal(localManifest.name, "sonli");
 assert.equal(localManifest.description, "sonli");

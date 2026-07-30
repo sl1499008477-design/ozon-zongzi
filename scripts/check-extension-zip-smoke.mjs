@@ -73,6 +73,7 @@ for (const zipPath of zipPaths) {
       ["collector service-worker startup", path.join(scriptsDir, "check-packaged-collector-runtime.mjs"), tmpDir],
       ["collector session runtime", path.join(tmpDir, "tests", "collector-session.test.js")],
       ["capture-only behavior", path.join(tmpDir, "tests", "sync-capability-removed.test.js")],
+      ["retired selection/watermark contract", path.join(tmpDir, "tests", "removed-selection-watermark-contract.test.js")],
       ["popup Collector-session runtime", path.join(tmpDir, "popup", "__tests__", "popup-collector-session.runtime.test.js")],
       ["popup routing", path.join(tmpDir, "popup", "__tests__", "popup-routing.smoke.test.js")],
       ["bridge smoke", path.join(tmpDir, "tests", "jizhangerp-bridge-follow-sell.test.js")],

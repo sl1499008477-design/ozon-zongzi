@@ -12,8 +12,6 @@ const localDir = "extension";
 const exactUiFiles = [
   "batch-upload/index.css",
   "content/jzc-calc.css",
-  "content/ozon-product.css",
-  "content/ozon-search.css",
   "lib/store-picker.css",
 ];
 
@@ -43,14 +41,6 @@ const assertPng = (rel, width, height) => {
   assert.equal(bytes.readUInt32BE(20), height, `unexpected PNG height: ${rel}`);
 };
 
-const normalizeBatchUploadHtml = (source) => source.split("sonli").join("QH");
-
-const normalizeBatchUploadJs = (source) =>
-  source
-    .split("sonli")
-    .join("QH")
-    .replace("document.title：brand 占位符", "document.title：QH 占位符");
-
 requireExistingSource();
 
 for (const rel of exactUiFiles) assertSameFile(rel);
@@ -68,16 +58,31 @@ assert.doesNotMatch(popupHtml, /sonli 采集器|采集器实时状态/);
 assert.doesNotMatch(popupJs, /toggleCollector|collectorGetState/);
 assert.doesNotMatch(popupCss, /\.collector-mon/);
 
-assert.equal(
-  normalizeBatchUploadHtml(readFileSync(path.join(localDir, "batch-upload/index.html"), "utf8")),
-  readFileSync(path.join(sourceDir, "batch-upload/index.html"), "utf8"),
-  "batch-upload/index.html must only differ by sonli branding substitutions",
-);
+const productCss = readFileSync(path.join(localDir, "content/ozon-product.css"), "utf8");
+const searchCss = readFileSync(path.join(localDir, "content/ozon-search.css"), "utf8");
+const batchHtml = readFileSync(path.join(localDir, "batch-upload/index.html"), "utf8");
+const batchJs = readFileSync(path.join(localDir, "batch-upload/index.js"), "utf8");
 
-assert.equal(
-  normalizeBatchUploadJs(readFileSync(path.join(localDir, "batch-upload/index.js"), "utf8")),
-  readFileSync(path.join(sourceDir, "batch-upload/index.js"), "utf8"),
-  "batch-upload/index.js must only differ by sonli branding substitutions",
+for (const source of [productCss, searchCss, batchHtml, batchJs]) {
+  assert.doesNotMatch(
+    source,
+    /watermark|水印|边框模板|未绑水印|已绑水印/i,
+    "retired watermark UI token must not remain",
+  );
+}
+assert.doesNotMatch(
+  productCss,
+  /选品推荐|recommendation-panel|getRecommendations|fetchBestsellers|reportCategoryMapping|JZC_BESTSELLERS_REPORT/,
+  "retired selection UI token must not remain in product styles",
 );
+assert.doesNotMatch(searchCss, /选品模式/, "retired selection UI token must not remain in search styles");
+
+assert.match(productCss, /ozon-helper-ai-section/);
+assert.match(productCss, /is-collected/);
+assert.match(searchCss, /「采集」/);
+assert.match(batchHtml, /AI 大模型改图/);
+assert.match(batchHtml, /SEO/);
+assert.match(batchJs, /cfg-ai-poster/);
+assert.match(batchJs, /cfg-ai-rewrite/);
 
 console.log(`extension ui parity ok against ${sourceDir}`);

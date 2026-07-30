@@ -15,23 +15,30 @@ if (!sourceDir) process.exit(2);
 const localDir = "extension";
 
 const reviewedChangedFiles = new Set([
+  "background/agent/listing-actions.js",
   "background/service-worker.js",
   "batch-upload/index.html",
   "batch-upload/index.js",
   "content/1688-ai-wizard.js",
   "content/alibaba-1688.js",
+  // Retires the stale ozon-bestsellers-hook protocol reference in a comment.
+  "content/ozon-bff-interceptor.js",
   "content/jizhangerp-bridge.js",
   "content/jzc-calc.js",
   "content/ozon-data-panel.js",
   "content/ozon-premium-hook.js",
+  "content/ozon-product.css",
   "content/ozon-product.js",
+  "content/ozon-search.css",
   "content/ozon-search.js",
+  "content/ozon-seller-bridge.js",
   "content/shared-utils.js",
   "content/sync-auth.js",
   "icons/icon128.png",
   "icons/icon16.png",
   "icons/icon48.png",
   "lib/cn-source-panel.js",
+  "lib/store-picker.js",
   "manifest.json",
   "popup/popup.css",
   "popup/popup.html",
@@ -60,6 +67,14 @@ if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
 
 const sourceFiles = new Set(walk(sourceDir));
 const localFiles = new Set(walk(localDir));
+assert.ok(
+  localFiles.has("background/__tests__/follow-sell-watermark-boundary.test.js"),
+  "reviewed follow-sell removal boundary test missing",
+);
+assert.ok(
+  localFiles.has("background/follow-sell-request.js"),
+  "reviewed follow-sell request module missing",
+);
 const changedSharedFiles = [...sourceFiles].filter(
   (rel) =>
     localFiles.has(rel)
@@ -76,6 +91,7 @@ assert.deepEqual(
 
 for (const rel of [
   "background/service-worker.js",
+  "content/ozon-bff-interceptor.js",
   "manifest.json",
   "popup/popup.html",
   "popup/popup.js",
@@ -85,6 +101,12 @@ for (const rel of [
     `capture-only integration must remain explicit in ${rel}`,
   );
 }
+
+assert.doesNotMatch(
+  readFileSync(path.join(localDir, "content/ozon-bff-interceptor.js"), "utf8"),
+  /ozon-bestsellers-hook/,
+  "retired bestsellers hook reference must not remain in the BFF protocol comment",
+);
 
 const localManifest = JSON.parse(
   readFileSync(path.join(localDir, "manifest.json"), "utf8"),
