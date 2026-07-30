@@ -48,7 +48,6 @@ for (const source of [
   batchJs,
   product,
   productCss,
-  serviceWorker,
   listingActions,
   storePicker,
   jizhangerpBridge,

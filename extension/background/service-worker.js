@@ -1671,6 +1671,8 @@ try {
   function stripInternalMessageFields(message) {
     const copy = { ...(message || {}) };
     delete copy._aiwDebug;
+    delete copy.applyWatermark;
+    delete copy.watermarkTemplateId;
     return copy;
   }
 
