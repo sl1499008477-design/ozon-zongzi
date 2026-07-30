@@ -31,6 +31,22 @@ test("Chrome match semantics treat wildcard subdomains as covering Seller API", 
     true,
     "Chrome host permissions grant the matched origin regardless of path",
   );
+  assert.equal(
+    chromeMatchPatternCovers(
+      "https://api-seller.ozon.ru:8443/harmless-only",
+      "https://api-seller.ozon.ru/v3/product/info/list",
+    ),
+    true,
+    "Chrome host permissions do not use ports as an origin boundary",
+  );
+  assert.equal(
+    chromeMatchPatternCovers(
+      "http://127.0.0.1:3000/*",
+      "http://127.0.0.1:4173/login",
+    ),
+    true,
+    "an approved localhost host permission covers equivalent ports",
+  );
 });
 
 test("capture-only permissions may remove upstream permissions but never add one", () => {

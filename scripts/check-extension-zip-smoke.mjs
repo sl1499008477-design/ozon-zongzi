@@ -6,19 +6,27 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 import {
   assertCaptureOnlyFileSet,
-  assertCaptureOnlyPermissionPolicy,
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
+  assertReviewedCaptureOnlyPermissionPolicy,
 } from "./extension-capture-only-policy.mjs";
 
 const rootDir = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(await readFile(path.join(rootDir, "extension", "manifest.json"), "utf8"));
 const fileName = `sonli-extension-${manifest.version}.zip`;
-const zipPaths = [
-  path.join(rootDir, "app", "public", fileName),
-  path.join(rootDir, "app", "dist", fileName),
-];
+const configuredZipPaths = String(
+  process.env.QH_EXTENSION_ZIP_PATHS || "",
+).trim();
+const zipPaths = configuredZipPaths
+  ? configuredZipPaths
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((entry) => path.resolve(entry))
+  : [
+      path.join(rootDir, "app", "public", fileName),
+      path.join(rootDir, "app", "dist", fileName),
+    ];
 
 let failed = false;
 
@@ -52,7 +60,7 @@ for (const zipPath of zipPaths) {
       await readFile(path.join(tmpDir, "manifest.json"), "utf8"),
     );
     assertCaptureOnlyFileSet(packagedFiles);
-    assertCaptureOnlyPermissionPolicy(packagedManifest, packagedManifest);
+    assertReviewedCaptureOnlyPermissionPolicy(packagedManifest);
     assertCaptureOnlyServiceWorker(
       await readFile(path.join(tmpDir, "background", "service-worker.js"), "utf8"),
     );
@@ -65,6 +73,8 @@ for (const zipPath of zipPaths) {
       ["collector service-worker startup", path.join(scriptsDir, "check-packaged-collector-runtime.mjs"), tmpDir],
       ["collector session runtime", path.join(tmpDir, "tests", "collector-session.test.js")],
       ["capture-only behavior", path.join(tmpDir, "tests", "sync-capability-removed.test.js")],
+      ["popup Collector-session runtime", path.join(tmpDir, "popup", "__tests__", "popup-collector-session.runtime.test.js")],
+      ["popup routing", path.join(tmpDir, "popup", "__tests__", "popup-routing.smoke.test.js")],
       ["bridge smoke", path.join(tmpDir, "tests", "jizhangerp-bridge-follow-sell.test.js")],
       ["dryRun route guard", path.join(tmpDir, "background", "__tests__", "follow-sell-dry-run-route.test.js")],
     ];

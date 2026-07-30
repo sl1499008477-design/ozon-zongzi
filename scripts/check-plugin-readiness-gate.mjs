@@ -5,9 +5,9 @@ import path from "node:path";
 import process from "node:process";
 import {
   assertCaptureOnlyFileSet,
-  assertCaptureOnlyPermissionPolicy,
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
+  assertReviewedCaptureOnlyPermissionPolicy,
 } from "./extension-capture-only-policy.mjs";
 
 const walk = (root, current = "") => {
@@ -20,17 +20,25 @@ const walk = (root, current = "") => {
   return files;
 };
 
+const extensionDir = path.resolve(
+  process.env.QH_LOCAL_EXTENSION_DIR || "extension",
+);
 const appSource = readFileSync("app/src/App.jsx", "utf8");
-const bridgeSource = readFileSync("extension/content/jizhangerp-bridge.js", "utf8");
-const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8"));
-assertCaptureOnlyPermissionPolicy(manifest, manifest);
-assertCaptureOnlyFileSet(walk("extension"));
+const bridgeSource = readFileSync(
+  path.join(extensionDir, "content/jizhangerp-bridge.js"),
+  "utf8",
+);
+const manifest = JSON.parse(
+  readFileSync(path.join(extensionDir, "manifest.json"), "utf8"),
+);
+assertReviewedCaptureOnlyPermissionPolicy(manifest);
+assertCaptureOnlyFileSet(walk(extensionDir));
 assertCaptureOnlyServiceWorker(
-  readFileSync("extension/background/service-worker.js", "utf8"),
+  readFileSync(path.join(extensionDir, "background/service-worker.js"), "utf8"),
 );
 assertPopupWebLoginGuidance(
-  readFileSync("extension/popup/popup.html", "utf8"),
-  readFileSync("extension/popup/popup.js", "utf8"),
+  readFileSync(path.join(extensionDir, "popup/popup.html"), "utf8"),
+  readFileSync(path.join(extensionDir, "popup/popup.js"), "utf8"),
 );
 
 const requirePattern = (source, pattern, message) => {
@@ -53,8 +61,18 @@ requirePattern(appSource, /className="collect-listing-result"[\s\S]*listingResul
 
 const captureOnlyBehavior = spawnSync(
   process.execPath,
-  ["--test", "extension/tests/sync-capability-removed.test.js"],
-  { stdio: "inherit", shell: false },
+  [
+    "--test",
+    path.join(extensionDir, "tests/sync-capability-removed.test.js"),
+  ],
+  {
+    stdio: "inherit",
+    shell: false,
+    env: {
+      ...process.env,
+      SONLI_EXTENSION_ROOT: extensionDir,
+    },
+  },
 );
 assert.equal(
   captureOnlyBehavior.status,

@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import {
+  REQUIRED_CAPTURE_ONLY_PERMISSIONS,
+  REQUIRED_CAPTURE_ONLY_URLS,
+  REVIEWED_CAPTURE_ONLY_CAPABILITIES,
+} from "./extension-capture-only-baseline.mjs";
 
 export const REQUIRED_CAPTURE_ONLY_FILES = Object.freeze([
   "background/collector-client.js",
@@ -38,7 +43,9 @@ export function chromeMatchPatternCovers(pattern, input) {
   if (!schemeAllowed) return false;
 
   const hostname = url.hostname.toLowerCase();
-  const normalizedHostPattern = hostPattern.toLowerCase();
+  const normalizedHostPattern = hostPattern
+    .toLowerCase()
+    .replace(/:\d+$/, "");
   const hostAllowed =
     normalizedHostPattern === "*"
     || (
@@ -101,6 +108,30 @@ export function assertCaptureOnlyPermissionPolicy(localManifest, upstreamManifes
     assert.ok(
       reviewedOptionalHosts.has(permission) || REVIEWED_LOCAL_HOST_PERMISSIONS.has(permission),
       `unreviewed optional extension host permission: ${permission}`,
+    );
+  }
+}
+
+export function assertReviewedCaptureOnlyPermissionPolicy(candidateManifest) {
+  assertCaptureOnlyPermissionPolicy(
+    candidateManifest,
+    REVIEWED_CAPTURE_ONLY_CAPABILITIES,
+  );
+
+  const candidatePermissions = new Set(candidateManifest.permissions || []);
+  for (const permission of REQUIRED_CAPTURE_ONLY_PERMISSIONS) {
+    assert.ok(
+      candidatePermissions.has(permission),
+      `required capture-only permission missing: ${permission}`,
+    );
+  }
+
+  const candidateHosts = candidateManifest.host_permissions || [];
+  for (const requiredUrl of REQUIRED_CAPTURE_ONLY_URLS) {
+    assert.ok(
+      candidateHosts.some((pattern) =>
+        chromeMatchPatternCovers(pattern, requiredUrl)),
+      `required capture-only host access missing: ${requiredUrl}`,
     );
   }
 }
