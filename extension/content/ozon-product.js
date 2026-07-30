@@ -9,8 +9,6 @@
     window.ensurePdpState().catch(() => {});
   }
 
-  let _recBtn = null;
-
   function _escHtml(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -71,7 +69,6 @@
     followSell: _svgIcon('<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>'),
     batchUpload: _svgIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>'),
     keyword:    _svgIcon('<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
-    recommend:  _svgIcon('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>'),
     variantSearch: _svgIcon('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>'),
     erp:        _svgIcon('<rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
     imageSearch: _svgIcon('<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>'),
@@ -2297,9 +2294,6 @@
 
     const keywordBtn = createActionButton(_ICONS.keyword, '主题标签', () => toggleKeywordPanel(keywordBtn));
 
-    const recBtn = createActionButton(_ICONS.recommend, '选品推荐', () => toggleRecommendationPanel(_recBtn));
-    _recBtn = recBtn;
-
     // Assign colors to action buttons (colored pill style — from Pencil design)
     collectBtn.dataset.color = 'coral';
     followSellBtn.dataset.color = 'purple';
@@ -2547,7 +2541,6 @@
       '.ozon-helper-profit-panel',
       '.ozon-helper-followsell-panel',
       '.ozon-helper-keyword-panel',
-      '.ozon-helper-recommendation-panel',
     ].forEach(sel => {
       const p = document.querySelector(sel);
       if (p && p !== exceptPanel && p.classList.contains('is-open')) {
@@ -10619,114 +10612,6 @@
     priceAnchor.appendChild(badge);
   }
 
-  function createRecommendationPanel() {
-    let panel = document.querySelector('.ozon-helper-recommendation-panel');
-    if (panel) {
-      return panel;
-    }
-
-    panel = document.createElement('div');
-    panel.className = 'ozon-helper-panel ozon-helper-recommendation-panel';
-    panel.innerHTML = `
-      <div class="ozon-helper-panel-header">
-        <span>选品推荐</span>
-        <button class="ozon-helper-close-btn" data-action="close">×</button>
-      </div>
-      <div class="ozon-helper-panel-content">
-        <div class="ozon-helper-recommendation-tabs">
-          <button class="ozon-helper-tab active" data-tab="hot">${window.lucideIcon('flame', 13)} 热卖榜单</button>
-          <button class="ozon-helper-tab" data-tab="blue">${window.lucideIcon('gem', 13)} 蓝海商品</button>
-          <button class="ozon-helper-tab" data-tab="china">${window.lucideIcon('flag', 13)} 中国卖家</button>
-        </div>
-        <div class="ozon-helper-recommendation-content">
-          <div class="ozon-helper-recommendation-loading">加载中...</div>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(panel);
-
-    const closeBtn = panel.querySelector('[data-action="close"]');
-    closeBtn.addEventListener('click', () => closePanel(panel));
-
-    const tabs = panel.querySelectorAll('.ozon-helper-tab');
-    tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        tabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        loadRecommendations(tab.dataset.tab);
-      });
-    });
-
-    return panel;
-  }
-
-  async function loadRecommendations(type) {
-    const panel = document.querySelector('.ozon-helper-recommendation-panel');
-    const content = panel.querySelector('.ozon-helper-recommendation-content');
-
-    content.innerHTML = '<div class="ozon-helper-recommendation-loading">加载中...</div>';
-
-    try {
-      const response = await window.sendMessage('getRecommendations', { type });
-
-      if (!response.ok || !response.data?.products || response.data.products.length === 0) {
-        content.innerHTML = '<div class="ozon-helper-panel-empty">暂无推荐商品</div>';
-        return;
-      }
-
-      const products = response.data.products.slice(0, 20);
-      // All backend strings escaped — title/url/image are user-derived data
-      // and must not be inlined raw into innerHTML, even from a "trusted" backend.
-      const isHttpUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u);
-      content.innerHTML = products.map(product => {
-        const imgRaw = product.image || product.images?.[0] || '';
-        const urlRaw = product.url || product.link || '';
-        const img = isHttpUrl(imgRaw) ? _escHtml(imgRaw) : '';
-        const url = isHttpUrl(urlRaw) ? _escHtml(urlRaw) : '';
-        const title = _escHtml(product.title || product.name || '未知商品');
-        return `
-        <div class="ozon-helper-recommendation-card">
-          <img src="${img}" alt="${title}" class="ozon-helper-recommendation-thumb" data-oh-zoom="${img}" referrerpolicy="no-referrer" />
-          <div class="ozon-helper-recommendation-info">
-            <div class="ozon-helper-recommendation-title">${title}</div>
-            <div class="ozon-helper-recommendation-meta">
-              <span class="ozon-helper-recommendation-price">${window.formatNumber(product.price || 0)} ₽</span>
-              <span class="ozon-helper-recommendation-sales">月销 ${window.formatNumber(product.sold_count || product.sales || 0)}</span>
-            </div>
-          </div>
-          <button class="ozon-helper-btn ozon-helper-btn-sm ozon-helper-btn-primary" data-action="follow-sell" data-url="${url}">跟卖</button>
-        </div>
-      `;
-      }).join('');
-
-      content.querySelectorAll('[data-action="follow-sell"]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const url = btn.dataset.url;
-          if (url) {
-            window.open(url, '_blank');
-          }
-        });
-      });
-    } catch (error) {
-      content.innerHTML = `<div class="ozon-helper-panel-empty">加载失败: ${_escHtml(error?.message || '未知错误')}</div>`;
-    }
-  }
-
-
-  function toggleRecommendationPanel(btn) {
-    const panel = createRecommendationPanel();
-    if (panel.classList.contains('is-open')) {
-      closePanel(panel);
-    } else {
-      closeAllPanels(panel);
-      panel.style.right = ''; // 清除 JS 覆盖
-      panel.classList.add('is-open');
-      setActiveButton(btn);
-      loadRecommendations('hot');
-    }
-  }
-
   async function init() {
     const auth = await window.checkAuth();
     if (!auth.loggedIn) {
@@ -10746,11 +10631,6 @@
 
     // 监听来自 service worker / popup 的消息
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message.action === 'openRecommendations') {
-        toggleRecommendationPanel(_recBtn);
-        sendResponse({ ok: true });
-        return true;
-      }
       if (message.action === 'triggerCollectFromPopup') {
         // 跟 action bar 一键采集一致:采当前商品所有变体合并成一条记录(popup 消费方
         // 只看 resp.ok,ok=true 时会把该 URL 标记为已采集并移出列表)。母体单次 push 失败

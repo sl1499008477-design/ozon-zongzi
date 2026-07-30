@@ -13,10 +13,6 @@
  */
 
 (() => {
-  // ── Bestsellers 类目映射 relay ──────────────────────────────
-  // page-world hook（content/ozon-bestsellers-hook.js）通过 window.postMessage 上报
-  // {name, leafIds}，这里转发给 service worker → 极掌后端入库。
-  //
   // ── Premium 透视眼 storage 同步 relay ─────────────────────
   // page-world hook（content/ozon-premium-hook.js）通过 window.postMessage 询问
   // 开关状态 / 请求切换 / 持久化面板位置；这里跟 chrome.storage.local 对接。
@@ -26,23 +22,6 @@
     if (event.source !== window) return;
     const d = event.data;
     if (!d || d.__jzcReport !== 1) return;
-
-    // 老逻辑：bestsellers 类目映射上报
-    if (d.type === 'JZC_BESTSELLERS_REPORT') {
-      const { name, leafIds, source } = d;
-      if (!name || !Array.isArray(leafIds) || leafIds.length === 0) return;
-      try {
-        chrome.runtime.sendMessage({
-          action: 'reportCategoryMapping',
-          name,
-          leafIds,
-          source: source || 'bestsellers-hook',
-        });
-      } catch {
-        // SW 未唤醒等场景静默忽略
-      }
-      return;
-    }
 
     // 透视眼：拉初值
     if (d.type === 'JZC_PREMIUM_QUERY') {

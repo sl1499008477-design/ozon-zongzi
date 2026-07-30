@@ -3,7 +3,7 @@
 
   // 标记：ozon-search.js 已经在本页注入。
   // ozon-data-panel.js 看到这个 flag 就跳过自己的数据面板渲染逻辑，
-  // 让搜索/类目页继续由 ozon-search.js 一手管（含选品模式 / 采集器联动）。
+  // 让搜索/类目页继续由 ozon-search.js 一手管（含采集器联动）。
   window.OzonHelperSearchInjected = true;
   // 注:L1 (composer-api 拦截) bridge 已经在 content/collector/l1-bridge.js 注入,
   // 不在本文件耦合,见 manifest content_scripts。

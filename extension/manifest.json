@@ -204,16 +204,6 @@
     },
     {
       "matches": [
-        "https://seller.ozon.ru/app/analytics/competitors/ozon-bestsellers*"
-      ],
-      "js": [
-        "content/ozon-bestsellers-hook.js"
-      ],
-      "world": "MAIN",
-      "run_at": "document_start"
-    },
-    {
-      "matches": [
         "https://seller.ozon.ru/app/analytics*"
       ],
       "js": [

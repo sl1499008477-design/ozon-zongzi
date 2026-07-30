@@ -1220,7 +1220,7 @@ try {
 
   // ── seller.ozon.ru 门户全局节奏闸门 ──────────────────────────────────────────
   // 所有走 fetchSellerPortal 的门户调用(采集 /search + create-bundle、跟卖预取、
-  // 数据面板、bestsellers 等)共用这一把闸门,保证相邻两次门户请求至少间隔
+  // 数据面板等)共用这一把闸门,保证相邻两次门户请求至少间隔
   // SELLER_PORTAL_MIN_INTERVAL_MS。seller portal 按"短时请求密度"做反爬风险评分,
   // 批量上架 / 快速浏览叠加时会瞬时打出大量请求触发验证码 / 限制登录;这里把所有出口的
   // 请求节奏串行摊平,是采集层 BATCH 节流之外的全局兜底(作用域不同,二者互补)。
@@ -4286,52 +4286,6 @@ try {
             }
           }
         }
-        case 'fetchBestsellers': {
-          // 拉 Ozon 官方 Bestsellers (what_to_sell/data/v3) 并转交给后端入库
-          const period = message.period || 'weekly'; // weekly | monthly
-          const sortKey = message.sortKey || 'sum_gmv_desc';
-          const limit = String(message.limit || 50);
-          const offset = String(message.offset || 0);
-          const categories = Array.isArray(message.categories) ? message.categories : [];
-          try {
-            const data = await fetchSellerPortal(
-              '/site/seller-analytics/what_to_sell/data/v3',
-              {
-                limit,
-                offset,
-                filter: { stock: 'any_stock', period, categories },
-                sort: { key: sortKey },
-              },
-              { urlPrefix: '/api', pageType: 'analytics_platform', timeoutMs: 30000 },
-            );
-            const items = Array.isArray(data?.items) ? data.items : [];
-            // 同步到后端按日存档（前端日常查后端快照）
-            if (items.length > 0 && token && storeId) {
-              try {
-                await apiRequest(
-                  'POST',
-                  `${backendUrl}/ozon/selection/bestsellers/snapshot`,
-                  { period, items },
-                  token,
-                  storeId,
-                );
-              } catch (e) {
-                console.warn('[fetchBestsellers] backend ingest failed:', e?.message || e);
-              }
-            }
-            return {
-              ok: true,
-              data: {
-                items,
-                totals: data?.totals,
-                updateDate: data?.updateDate,
-                benchmark: data?.benchmark,
-              },
-            };
-          } catch (e) {
-            return { ok: false, error: e?.message || String(e) };
-          }
-        }
         case 'fetchOzonPublicProduct': {
           // 按 SKU 抓 ozon.ru 公开商品页，提炼 pageProduct（name/images/breadcrumbs/brand/weight/dims）。
           // Ozon 反爬会 ban 掉 service-worker 直 fetch（缺浏览器指纹），所以**优先**
@@ -4529,28 +4483,6 @@ try {
             return { ok: false, error: e?.message || String(e) };
           }
         }
-        case 'reportCategoryMapping': {
-          // 由 ozon-bestsellers-hook 在 seller.ozon.ru 上学到的 (一级类目名 → leaf IDs[])
-          // 转发上报到极掌后端入库。失败仅 console，不阻塞任何用户操作。
-          try {
-            if (!token || !storeId) return { ok: false, error: 'no auth' };
-            const { name, leafIds, source } = message;
-            if (!name || !Array.isArray(leafIds) || leafIds.length === 0) {
-              return { ok: false, error: 'invalid payload' };
-            }
-            await apiRequest(
-              'POST',
-              `${backendUrl}/ozon/selection/category-mapping`,
-              { name, leafIds, source: source || null },
-              token,
-              storeId,
-            );
-            return { ok: true };
-          } catch (e) {
-            console.warn('[reportCategoryMapping] failed:', e?.message || e);
-            return { ok: false, error: e?.message || String(e) };
-          }
-        }
         case 'syncSellerCookies': {
           let identity;
           try {
@@ -4605,12 +4537,6 @@ try {
         }
         case 'aiOptimize': {
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/extension/ai-optimize`, { title: message.title, description: message.description, category: message.category, keywords: message.keywords }, token, storeId) };
-        }
-        case 'getRecommendations': {
-          const type = message.type || 'hot';
-          let sortBy = type === 'blue' ? 'views' : 'sold_count';
-          const resp = await apiRequest('GET', `${backendUrl}/ozon/products/cache?currentPage=1&pageSize=20&sortBy=${sortBy}&sortOrder=desc`, null, token, storeId);
-          return { ok: true, data: { products: resp.data || [] } };
         }
         case 'getCollectCount': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/collect-box?currentPage=1&pageSize=1`, null, token, storeId) };
