@@ -540,7 +540,6 @@
     "import-history": "/ozon/products/import-history",
     reshelf: "/ozon/products/reshelf",
     // 'pricing' 不走通用 openFrontend，单独处理（见 openJzcCalc）
-    watermark: "/ozon/tools/watermark",
     stores: "/ozon/settings/stores",
   };
 

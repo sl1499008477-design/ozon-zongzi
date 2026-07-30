@@ -15,7 +15,7 @@
       return { protocol, action: message.action, requestId, ticket, expiresAt };
     }
     if (protocol === 'JZ_ERP') {
-      if (message.action === 'followSell') return { protocol, action: message.action, ...copy(message, ['storeId', 'items', 'strictTypeMatch', 'dryRun', 'applyWatermark', 'applyPoster', 'applyAiRewrite', 'stocks', 'viaPortal']) };
+      if (message.action === 'followSell') return { protocol, action: message.action, ...copy(message, ['storeId', 'items', 'strictTypeMatch', 'dryRun', 'applyPoster', 'applyAiRewrite', 'stocks', 'viaPortal']) };
     }
     throw new Error('PORTAL_BRIDGE_FORBIDDEN');
   };

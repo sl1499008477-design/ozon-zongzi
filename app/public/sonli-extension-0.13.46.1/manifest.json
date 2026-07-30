@@ -123,7 +123,6 @@
         "content/collector/l1-bridge.js",
         "lib/cdn-buster.js",
         "lib/pricing-config-cache.js",
-        "lib/watermark-templates.js",
         "lib/follow-sell-content-copy.js",
         "lib/ozon-video-extract.js",
         "lib/sku-collect.js",
@@ -201,16 +200,6 @@
         "content/ozon-seller-bridge.js"
       ],
       "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://seller.ozon.ru/app/analytics/competitors/ozon-bestsellers*"
-      ],
-      "js": [
-        "content/ozon-bestsellers-hook.js"
-      ],
-      "world": "MAIN",
-      "run_at": "document_start"
     },
     {
       "matches": [

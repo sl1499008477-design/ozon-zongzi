@@ -40,7 +40,6 @@
   const state = {
     selectedStoreIds: [], // 由 JZStorePicker.onChange 维护
     storeLabels: new Map(), // id → label，用于结果面板展示
-    storeWatermarkTemplateIds: new Map(), // id → 店铺绑定水印/边框模板 ID
     rows: [], // QuickListRow[]
     submitting: false,
     abortCtrl: null,
@@ -112,8 +111,6 @@
       currency: cfg.currencyCode,
       // 不缓存合并型号名(attr 9048):复用上次批次的型号名会被 Ozon 错误并卡;只记「是否合并」。
       mergeEnabled: !!$("cfg-merge-card")?.checked || !!cfg.mergeModel,
-      applyWatermark: cfg.applyWatermark,
-      watermarkTemplateId: $("cfg-watermark-template")?.value || "",
       applyPoster: cfg.applyPoster,
       posterPrimaryOnly: cfg.posterPrimaryOnly,
       applyAiRewrite: cfg.applyAiRewrite,
@@ -149,13 +146,11 @@
         mergeField.value = "JZ-" + Date.now().toString(36).toUpperCase();
       }
     }
-    setChecked("cfg-watermark", cfg.applyWatermark);
     setChecked("cfg-ai-poster", cfg.applyPoster);
     setChecked("cfg-poster-primary-only", cfg.posterPrimaryOnly);
     setChecked("cfg-ai-rewrite", cfg.applyAiRewrite);
     setChecked("cfg-capture-video", cfg.captureVideo);
     if (typeof cfg.applyAiRewrite === "boolean") state.aiRewriteUserTouched = true;
-    setSelect("cfg-watermark-template", cfg.watermarkTemplateId);
     if (Number.isFinite(Number(cfg.defaultStock))) {
       const stockInput = $("cfg-default-stock");
       if (stockInput) stockInput.value = String(Number(cfg.defaultStock));
@@ -268,13 +263,11 @@
     if (storesResp?.ok) {
       const list = storesResp.data?.data || storesResp.data || [];
       state.storeLabels.clear();
-      state.storeWatermarkTemplateIds.clear();
       list.forEach((s) => {
         const id = String(s.id || s.storeId || "");
         const label =
           s.label || s.companyName || s.legalName || `店铺 ${id}`;
         state.storeLabels.set(id, label);
-        state.storeWatermarkTemplateIds.set(id, s.watermarkTemplateId || "");
       });
     }
 
@@ -516,22 +509,6 @@
     }
 
     const cfg = readCfg();
-    if (cfg.applyWatermark && isStoreBoundWatermarkSelected()) {
-      const missing = state.selectedStoreIds.filter(
-        (sid) => !state.storeWatermarkTemplateIds.get(String(sid))
-      );
-      if (missing.length > 0) {
-        const names = missing
-          .map((sid) => state.storeLabels.get(String(sid)) || `店铺 ${sid}`)
-          .join("、");
-        showAuthNotice(
-          "warn",
-          `店铺「${names}」未绑定水印/边框模板。请改选具体模板,或先去店铺管理绑定水印/边框。`
-        );
-        return;
-      }
-    }
-
     // 默认库存>0 时,所有选中店铺都必须选了仓库(否则该店无法挂库存,默认行为不一致)
     const defaultStockNow = parseInt($("cfg-default-stock")?.value || "0", 10) || 0;
     if (defaultStockNow > 0) {
@@ -810,10 +787,6 @@
             storeId: sid,
             items,
             ...(stocks && stocks.length > 0 ? { stocks } : {}),
-            applyWatermark: cfg.applyWatermark,
-            ...(cfg.watermarkTemplateId
-              ? { watermarkTemplateId: cfg.watermarkTemplateId }
-              : {}),
             applyPoster: cfg.applyPoster,
             ...(cfg.applyPoster && cfg.posterPrimaryOnly ? { posterPrimaryOnly: true } : {}),
             applyAiRewrite: cfg.applyAiRewrite,
@@ -923,7 +896,6 @@
   }
 
   function readCfg() {
-    const applyWatermark = $("cfg-watermark").checked;
     const applyPoster = $("cfg-ai-poster")?.checked || false;
     // 只改主图:仅在 applyPoster 启用时有意义。透传给 backend 后,
     // product-import.worker.ts 按 primaryOnly 分支只跑第一张图,其余原图直送 Ozon。
@@ -944,12 +916,6 @@
       // 填写后整批共享同一型号名 → Ozon 合并为同一张卡。
       mergeModel: ($("cfg-merge-model")?.value || "").trim(),
       // 02 AI 增强（V1 旧版改图已下线，仅 V2 海报）
-      applyWatermark,
-      watermarkTemplateId: (() => {
-        if (!applyWatermark) return "";
-        const value = $("cfg-watermark-template").value;
-        return value === window.JZWatermarkTemplates?.STORE_BOUND_VALUE ? "" : value;
-      })(),
       applyPoster,
       posterPrimaryOnly,
       applyAiRewrite,
@@ -958,11 +924,6 @@
       // 默认库存:每店独立的 warehouseId 走 state.selectedWarehouseByStore
       defaultStock: Number.isFinite(defaultStock) && defaultStock > 0 ? defaultStock : 0,
     };
-  }
-
-  function isStoreBoundWatermarkSelected() {
-    const value = $("cfg-watermark-template")?.value || "";
-    return value === window.JZWatermarkTemplates?.STORE_BOUND_VALUE;
   }
 
   // 客户端 shuffle，跟 ozon-product.js:4987-5000 同款
@@ -1134,22 +1095,6 @@
     return msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
   }
 
-  // ─── 水印模板加载 — 共享逻辑见 lib/watermark-templates.js ─────────
-  async function loadWatermarkTemplates() {
-    const sel = $("cfg-watermark-template");
-    if (!sel) return;
-    const { boundId } = await window.JZWatermarkTemplates.loadIntoSelect({
-      getAuth: fetchAuth,
-      loadData: async () => {
-        const response = await sendMessage({ action: "getWatermarkTemplates" });
-        return response?.data || response || {};
-      },
-      selectEl: sel,
-      applyCheckboxEl: $("cfg-watermark"),
-    });
-    if (boundId) updateAiEnabledCount();
-  }
-
   // AI 改图额度（getAiQuota action）
   async function loadAiQuota() {
     try {
@@ -1286,7 +1231,6 @@
 
   function updateAiEnabledCount() {
     let count = 0;
-    if ($("cfg-watermark").checked) count++;
     if ($("cfg-ai-poster")?.checked) count++;
     if ($("cfg-ai-rewrite").checked) count++;
     const el = $("ai-enabled-count");
@@ -1310,7 +1254,7 @@
 
     // 自定义提示词输入框可见性跟随场景 select
     // 任一 toggle 改时更新已启用计数（V1 旧版改图已下线）
-    ["cfg-watermark", "cfg-ai-poster", "cfg-ai-rewrite"].forEach((id) =>
+    ["cfg-ai-poster", "cfg-ai-rewrite"].forEach((id) =>
       $(id) && $(id).addEventListener("change", updateAiEnabledCount)
     );
     // 海报 toggle 单独触发成本预估刷新
@@ -1415,11 +1359,10 @@
     await checkSellerTab();
     await loadStores();
 
-    // 模板 / AI 增强相关初始化（不阻塞主流程）
+    // AI 增强相关初始化（不阻塞主流程）
     // 仓库走 picker.onChange 的懒加载,不在这里全局加载
     bindAiSection();
     bindMergeCard();
-    await loadWatermarkTemplates();
     applyBatchListingConfig(await readBatchListingConfig());
     loadAiQuota();
     updatePosterEstimate();

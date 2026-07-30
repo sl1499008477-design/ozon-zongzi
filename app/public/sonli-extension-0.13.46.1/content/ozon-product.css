@@ -1135,12 +1135,6 @@
   margin-top: 4px;
 }
 
-.ozon-helper-recommendation-panel {
-  width: 420px;
-  max-height: 80vh;
-  overflow-y: auto;
-}
-
 .ozon-helper-close-btn {
   background: none;
   border: none;
@@ -1160,109 +1154,6 @@
 .ozon-helper-close-btn:hover {
   background: #f5f5f5;
   color: #333;
-}
-
-.ozon-helper-recommendation-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
-  padding-bottom: 8px;
-}
-
-.ozon-helper-tab {
-  flex: 1;
-  padding: 8px 12px;
-  background: #f7f8fa;
-  border: 1px solid #e8e8e8;
-  border-radius: var(--oh-radius-md);
-  color: #888;
-  font-size: var(--oh-text-base);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.ozon-helper-tab:hover {
-  background: #f0f2f5;
-}
-
-.ozon-helper-tab.active {
-  background: #e8f0ff;
-  border-color: rgba(0, 91, 255, 0.3);
-  color: #005bff;
-}
-
-.ozon-helper-recommendation-content {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: 450px;
-  overflow-y: auto;
-}
-
-.ozon-helper-recommendation-loading {
-  text-align: center;
-  padding: 40px;
-  color: var(--oh-text-secondary);
-  font-size: var(--oh-text-md);
-}
-
-.ozon-helper-recommendation-card {
-  display: flex;
-  gap: 12px;
-  padding: 12px;
-  background: #f7f8fa;
-  border-radius: var(--oh-radius-md);
-  border: 1px solid #f0f0f0;
-  border-left: 2px solid transparent;
-  transition: all 0.2s ease;
-}
-
-.ozon-helper-recommendation-card:hover {
-  background: #f0f5ff;
-  border-color: rgba(0, 91, 255, 0.2);
-  border-left-color: #005bff;
-}
-
-.ozon-helper-recommendation-thumb {
-  width: 80px;
-  height: 80px;
-  object-fit: cover;
-  border-radius: var(--oh-radius-sm);
-  border: 1px solid #f0f0f0;
-  flex-shrink: 0;
-}
-
-.ozon-helper-recommendation-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ozon-helper-recommendation-title {
-  font-size: var(--oh-text-base);
-  color: var(--oh-text-primary);
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.ozon-helper-recommendation-meta {
-  display: flex;
-  gap: 12px;
-  font-size: var(--oh-text-sm);
-}
-
-.ozon-helper-recommendation-price {
-  color: var(--oh-green);
-  font-weight: 600;
-}
-
-.ozon-helper-recommendation-sales {
-  color: var(--oh-text-secondary);
 }
 
 .ozon-helper-price-badge {
@@ -1310,22 +1201,18 @@
 
 /* Custom scrollbar */
 .ozon-helper-panel::-webkit-scrollbar,
-.ozon-helper-recommendation-content::-webkit-scrollbar,
 .ozon-helper-modal-body::-webkit-scrollbar { width: 4px; }
 
 .ozon-helper-panel::-webkit-scrollbar-track,
-.ozon-helper-recommendation-content::-webkit-scrollbar-track,
 .ozon-helper-modal-body::-webkit-scrollbar-track { background: transparent; }
 
 .ozon-helper-panel::-webkit-scrollbar-thumb,
-.ozon-helper-recommendation-content::-webkit-scrollbar-thumb,
 .ozon-helper-modal-body::-webkit-scrollbar-thumb {
   background: #d9d9d9;
   border-radius: var(--oh-radius-full);
 }
 
 .ozon-helper-panel::-webkit-scrollbar-thumb:hover,
-.ozon-helper-recommendation-content::-webkit-scrollbar-thumb:hover,
 .ozon-helper-modal-body::-webkit-scrollbar-thumb:hover {
   background: #bbb;
 }
@@ -2317,20 +2204,6 @@
   flex-shrink: 0;
 }
 
-/* Watermark toggle */
-.ozon-helper-mv-watermark-label {
-  display: inline-flex !important;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-weight: 400;
-}
-.ozon-helper-mv-watermark-label input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: #005bff;
-}
 .ozon-helper-mv-setting-hint {
   font-size: 12px;
   color: #999;
@@ -4199,10 +4072,6 @@
   border: 1px solid #E2E8F0;
   background: #F8FAFC;
 }
-.ozon-helper-mv-opt-watermark {
-  background: #F0F9FF;
-  border-color: #BFDBFE;
-}
 .ozon-helper-mv-opt-ai,
 .ozon-helper-mv-opt-rewrite {
   background: #FFFFFF;
@@ -4246,9 +4115,6 @@
   left: 2px;
   transition: left 0.15s;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-}
-.ozon-helper-mv-opt-watermark .ozon-helper-mv-opt-toggle input:checked + .ozon-helper-mv-opt-toggle-slider {
-  background: #1D4ED8;
 }
 .ozon-helper-mv-opt-ai .ozon-helper-mv-opt-toggle input:checked + .ozon-helper-mv-opt-toggle-slider,
 .ozon-helper-mv-opt-rewrite .ozon-helper-mv-opt-toggle input:checked + .ozon-helper-mv-opt-toggle-slider {
@@ -4617,15 +4483,13 @@
 .ozon-helper-mv-card-ai .ozon-helper-mv-card-icon {
   stroke: #1d6bff !important;
 }
-/* 默认 (未启用) 三张子卡 → 中性灰白 */
-.ozon-helper-mv-opt-watermark,
+/* 默认 (未启用) 子卡 → 中性灰白 */
 .ozon-helper-mv-opt-ai,
 .ozon-helper-mv-opt-rewrite {
   background: #ffffff !important;
   border-color: #e2e8f0 !important;
 }
 /* 所有 toggle:checked → 蓝色 */
-.ozon-helper-mv-opt-watermark .ozon-helper-mv-opt-toggle input:checked + .ozon-helper-mv-opt-toggle-slider,
 .ozon-helper-mv-opt-ai .ozon-helper-mv-opt-toggle input:checked + .ozon-helper-mv-opt-toggle-slider,
 .ozon-helper-mv-opt-rewrite .ozon-helper-mv-opt-toggle input:checked + .ozon-helper-mv-opt-toggle-slider {
   background: #1d6bff !important;

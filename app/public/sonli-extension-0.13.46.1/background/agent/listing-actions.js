@@ -45,10 +45,6 @@
       out.posterPrimaryUploadOnly = coerceBool(params.posterPrimaryUploadOnly);
     }
     if (params.applyAiRewrite !== undefined) out.applyAiRewrite = coerceBool(params.applyAiRewrite);
-    if (params.applyWatermark !== undefined) out.applyWatermark = coerceBool(params.applyWatermark);
-    if (params.watermarkTemplateId !== undefined) {
-      out.watermarkTemplateId = String(params.watermarkTemplateId);
-    }
     if (params.stock !== undefined) out.stock = Number(params.stock);
     if (params.warehouseId !== undefined) out.warehouseId = params.warehouseId;
     return out;

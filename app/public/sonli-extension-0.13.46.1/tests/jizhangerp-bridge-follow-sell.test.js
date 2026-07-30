@@ -168,7 +168,6 @@ function createHarness(overrides = {}) {
     ],
     strictTypeMatch: true,
     dryRun: false,
-    applyWatermark: false,
     applyPoster: false,
     applyAiRewrite: false,
   });

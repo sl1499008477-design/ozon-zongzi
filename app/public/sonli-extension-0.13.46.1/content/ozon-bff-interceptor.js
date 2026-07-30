@@ -32,7 +32,7 @@
 
   // ─── 常量 ─────────────────────────────────────────
   // 跨 world 通信:用 window.postMessage 与 ISOLATED world 对话,与仓库现有
-  // ozon-bestsellers-hook / ozon-premium-hook ↔ ozon-seller-bridge 约定一致。
+  // ozon-premium-hook ↔ ozon-seller-bridge 使用相同的通信约定。
   // 不用 CustomEvent — Chrome MV3 下 CustomEvent.detail 跨 world 时部分场景会
   // 被包成 wrapper,可调试性差。postMessage 走 structured clone 一致性更好。
   const MSG_TYPE = "JZC_OZON_COMPOSER_RESPONSE";

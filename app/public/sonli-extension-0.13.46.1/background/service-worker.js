@@ -43,6 +43,7 @@ try {
     '../lib/fx-observation-replay.js',
     '../lib/fx-probe.js',
     '../lib/ozon-video-extract.js',
+    'follow-sell-request.js',
     'collector-client.js',
   );
 } catch (e) {
@@ -1220,7 +1221,7 @@ try {
 
   // ── seller.ozon.ru 门户全局节奏闸门 ──────────────────────────────────────────
   // 所有走 fetchSellerPortal 的门户调用(采集 /search + create-bundle、跟卖预取、
-  // 数据面板、bestsellers 等)共用这一把闸门,保证相邻两次门户请求至少间隔
+  // 数据面板等)共用这一把闸门,保证相邻两次门户请求至少间隔
   // SELLER_PORTAL_MIN_INTERVAL_MS。seller portal 按"短时请求密度"做反爬风险评分,
   // 批量上架 / 快速浏览叠加时会瞬时打出大量请求触发验证码 / 限制登录;这里把所有出口的
   // 请求节奏串行摊平,是采集层 BATCH 节流之外的全局兜底(作用域不同,二者互补)。
@@ -1666,12 +1667,6 @@ try {
 
   function aiWizardDebugMeta(message, action, body) {
     return message?._aiwDebug ? { debug: true, action: action || message.action, body: body || message.body || {} } : null;
-  }
-
-  function stripInternalMessageFields(message) {
-    const copy = { ...(message || {}) };
-    delete copy._aiwDebug;
-    return copy;
   }
 
   // 上架入口推断:content script 不用逐个改,SW 按消息来源页归因。
@@ -3080,21 +3075,6 @@ try {
             },
           };
         }
-        case 'getWatermarkTemplates': {
-          if (!token) return { ok: false, error: 'no auth' };
-          const targetStoreId = message?.storeId || storeId;
-          const [templates, stores] = await Promise.all([
-            apiRequest('GET', `${backendUrl}/ozon/watermark-settings`, null, token, targetStoreId),
-            apiRequest('GET', `${backendUrl}/auth/ozon-stores`, null, token, targetStoreId),
-          ]);
-          return {
-            ok: true,
-            data: {
-              templates: Array.isArray(templates) ? templates : [],
-              stores: Array.isArray(stores) ? stores : [],
-            },
-          };
-        }
         case 'usageTrack': {
           // 通用功能埋点。当天每个 (featureKey, client, version) 组合只发一次到
           // backend — 设备级去重避免高频写,backend 用 (tenantId, featureKey,
@@ -3634,55 +3614,10 @@ try {
           }
         }
         case 'followSell': {
-          const targetStoreId = message.storeId || storeId;
-          const importMessage = stripInternalMessageFields(message);
-          // 上架入口 → 后端 listingSettings 快照(上架记录详情展示)
-          importMessage.entry = deriveImportEntry(message, sender);
-          // 门户上架(灰度):message.viaPortal=true 时不走官方 API,改走 seller.ozon.ru
-          // bundle 接口创建商品(绕官方 import 限流/封控)。后端只备 bundle items,
-          // create/update/upload 三步在浏览器里跑。preferTabId 用发起页(www.ozon.ru)
-          // 标签,走 fetchSellerPortal 的跨域快路免依赖 seller 专用标签。
-          if (importMessage.viaPortal) {
-            console.log(`[followSell] viaPortal: items=${importMessage.items?.length}, url=${backendUrl}/ozon/products/prepare-bundle-items`);
-            const portalResult = await importViaPortal(importMessage, token, targetStoreId, backendUrl, sender?.tab?.id);
-            console.log('[followSell] portal response:', JSON.stringify(portalResult).slice(0, 200));
-            return { ok: true, data: portalResult };
-          }
-          const bodySize = JSON.stringify(importMessage).length;
-          if (importMessage.dryRun) {
-            console.log(`[followSell] Preview import: items=${importMessage.items?.length}, bodySize=${bodySize}, url=${backendUrl}/ozon/products/import/preview`);
-            const previewResult = await apiRequest(
-              'POST',
-              `${backendUrl}/ozon/products/import/preview`,
-              importMessage,
-              token,
-              targetStoreId,
-              120_000,
-              aiWizardDebugMeta(message, 'followSellPreview', {
-                items: Array.isArray(importMessage.items) ? importMessage.items.length : undefined,
-              }),
-            );
-            console.log('[followSell] Preview response:', JSON.stringify(previewResult).slice(0, 200));
-            return { ok: true, data: previewResult };
-          }
-          // Backend now enqueues and returns within ~1s; AI/watermark run in the worker.
-          const importTimeout = 120_000;
-          console.log(`[followSell] Enqueueing import: items=${importMessage.items?.length}, bodySize=${bodySize}, aiImage=${importMessage.applyAiImage}, watermark=${importMessage.applyWatermark}, url=${backendUrl}/ozon/products/import`);
-          const followSellResult = await apiRequest(
-            'POST',
-            `${backendUrl}/ozon/products/import`,
-            importMessage,
-            token,
-            targetStoreId,
-            importTimeout,
-            aiWizardDebugMeta(message, 'followSell', {
-              items: Array.isArray(importMessage.items) ? importMessage.items.length : undefined,
-              stocks: Array.isArray(importMessage.stocks) ? importMessage.stocks.length : undefined,
-              applyPoster: !!importMessage.applyPoster,
-            }),
+          return globalThis.JzFollowSellRequest.runFollowSellRequest(
+            { message, sender, token, storeId, backendUrl },
+            { apiRequest, importViaPortal, deriveImportEntry, aiWizardDebugMeta, log: console },
           );
-          console.log('[followSell] Enqueue response:', JSON.stringify(followSellResult).slice(0, 200));
-          return { ok: true, data: followSellResult };
         }
         case 'importFromPublic': {
           // maozi 公开商详上架(灰度 ozon_public_import):从公开买家商详页 page-json
@@ -3712,9 +3647,7 @@ try {
           }
           const body = {
             rows: [row],
-            applyWatermark: message.applyWatermark,
             applyAiRewrite: message.applyAiRewrite,
-            watermarkTemplateId: message.watermarkTemplateId,
             stocks: message.stocks,
           };
           console.log(`[importFromPublic] sku=${row.sku} chars=${row.source_characteristics.length} crumbs=${row.breadcrumb.length} → ${backendUrl}/ozon/products/import-from-public`);
@@ -3856,7 +3789,7 @@ try {
         }
         // ── 1688 AI 采集向导：采集箱条目的 AI 上架草稿（重写+类目智选+改图+定价）──
         // 三段式对应后端 collect-box/:id/ai-listing-draft 的 create→confirm→publish。
-        // body 透传 DTO（targetMarginPercent / priceRub / applyPoster / applyWatermark
+        // body 透传 DTO（targetMarginPercent / priceRub / applyPoster
         // / warehouseId / offerId 等），storeId 走 x-ozon-store-id 头由 apiRequest 注入。
         case 'aiListingDraftCreate': {
           const aiStoreId = message.storeId || storeId;
@@ -4286,52 +4219,6 @@ try {
             }
           }
         }
-        case 'fetchBestsellers': {
-          // 拉 Ozon 官方 Bestsellers (what_to_sell/data/v3) 并转交给后端入库
-          const period = message.period || 'weekly'; // weekly | monthly
-          const sortKey = message.sortKey || 'sum_gmv_desc';
-          const limit = String(message.limit || 50);
-          const offset = String(message.offset || 0);
-          const categories = Array.isArray(message.categories) ? message.categories : [];
-          try {
-            const data = await fetchSellerPortal(
-              '/site/seller-analytics/what_to_sell/data/v3',
-              {
-                limit,
-                offset,
-                filter: { stock: 'any_stock', period, categories },
-                sort: { key: sortKey },
-              },
-              { urlPrefix: '/api', pageType: 'analytics_platform', timeoutMs: 30000 },
-            );
-            const items = Array.isArray(data?.items) ? data.items : [];
-            // 同步到后端按日存档（前端日常查后端快照）
-            if (items.length > 0 && token && storeId) {
-              try {
-                await apiRequest(
-                  'POST',
-                  `${backendUrl}/ozon/selection/bestsellers/snapshot`,
-                  { period, items },
-                  token,
-                  storeId,
-                );
-              } catch (e) {
-                console.warn('[fetchBestsellers] backend ingest failed:', e?.message || e);
-              }
-            }
-            return {
-              ok: true,
-              data: {
-                items,
-                totals: data?.totals,
-                updateDate: data?.updateDate,
-                benchmark: data?.benchmark,
-              },
-            };
-          } catch (e) {
-            return { ok: false, error: e?.message || String(e) };
-          }
-        }
         case 'fetchOzonPublicProduct': {
           // 按 SKU 抓 ozon.ru 公开商品页，提炼 pageProduct（name/images/breadcrumbs/brand/weight/dims）。
           // Ozon 反爬会 ban 掉 service-worker 直 fetch（缺浏览器指纹），所以**优先**
@@ -4529,28 +4416,6 @@ try {
             return { ok: false, error: e?.message || String(e) };
           }
         }
-        case 'reportCategoryMapping': {
-          // 由 ozon-bestsellers-hook 在 seller.ozon.ru 上学到的 (一级类目名 → leaf IDs[])
-          // 转发上报到极掌后端入库。失败仅 console，不阻塞任何用户操作。
-          try {
-            if (!token || !storeId) return { ok: false, error: 'no auth' };
-            const { name, leafIds, source } = message;
-            if (!name || !Array.isArray(leafIds) || leafIds.length === 0) {
-              return { ok: false, error: 'invalid payload' };
-            }
-            await apiRequest(
-              'POST',
-              `${backendUrl}/ozon/selection/category-mapping`,
-              { name, leafIds, source: source || null },
-              token,
-              storeId,
-            );
-            return { ok: true };
-          } catch (e) {
-            console.warn('[reportCategoryMapping] failed:', e?.message || e);
-            return { ok: false, error: e?.message || String(e) };
-          }
-        }
         case 'syncSellerCookies': {
           let identity;
           try {
@@ -4605,12 +4470,6 @@ try {
         }
         case 'aiOptimize': {
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/extension/ai-optimize`, { title: message.title, description: message.description, category: message.category, keywords: message.keywords }, token, storeId) };
-        }
-        case 'getRecommendations': {
-          const type = message.type || 'hot';
-          let sortBy = type === 'blue' ? 'views' : 'sold_count';
-          const resp = await apiRequest('GET', `${backendUrl}/ozon/products/cache?currentPage=1&pageSize=20&sortBy=${sortBy}&sortOrder=desc`, null, token, storeId);
-          return { ok: true, data: { products: resp.data || [] } };
         }
         case 'getCollectCount': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/collect-box?currentPage=1&pageSize=1`, null, token, storeId) };

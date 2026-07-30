@@ -3,21 +3,23 @@
 /**
  * Guard followSell dryRun routing.
  *
- * This is intentionally a static test: service-worker.js depends on a full MV3
- * runtime, but this route ordering is critical because dryRun must never hit
- * the real Ozon import endpoint.
+ * This is intentionally a static test: the followSell helper is loaded by the
+ * MV3 service worker, and its route ordering is critical because dryRun must
+ * never hit the real Ozon import endpoint.
  */
 
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const source = fs.readFileSync(path.resolve(__dirname, '../service-worker.js'), 'utf8');
-const start = source.indexOf("case 'followSell':");
-const end = source.indexOf("case 'importFromPublic':", start);
+const worker = fs.readFileSync(path.resolve(__dirname, '../service-worker.js'), 'utf8');
+const source = fs.readFileSync(path.resolve(__dirname, '../follow-sell-request.js'), 'utf8');
+const start = source.indexOf('async function runFollowSellRequest');
+const end = source.indexOf('\n  return { runFollowSellRequest };', start);
 
-assert.ok(start > 0, "service worker should contain followSell case");
-assert.ok(end > start, "service worker should keep importFromPublic after followSell");
+assert.ok(worker.includes('JzFollowSellRequest.runFollowSellRequest'), 'service worker should delegate followSell requests to its helper');
+assert.ok(start > 0, 'followSell helper should contain its request handler');
+assert.ok(end > start, 'followSell helper should end after its request handler');
 
 const block = source.slice(start, end);
 const dryRunIndex = block.indexOf('if (importMessage.dryRun)');
