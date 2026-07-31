@@ -33,6 +33,11 @@
 
   const panelState = { enabled: true };
   const panelDataCache = new Map();
+  const collectCoordinator = window.JzOzonCollectCoordinator.create({
+    sendMessage: (action, payload) => window.sendMessage(action, payload),
+    now: () => Date.now(),
+    timeoutMs: 20_000,
+  });
 
   // 节流并发：跟原 ozon-search 配置一致
   const taskQueue = new window.JZTaskQueue({
@@ -211,6 +216,7 @@
       renderLockedPanel(gate);
       return;
     }
+    collectCoordinator.prefetch({ sku: productId }).catch(() => {});
 
     // tile 可见实价(RUB)传给 populate 定佣金档 —— 比市场月均价更贴近当前档位;
     // 币种明确是 CNY/USD(跨境视图)才不用,与 PDP 同口径。
@@ -491,9 +497,8 @@
       variantItems = collectVariantItems(variantResponse);
     }
     const variantMatch =
-      variantItems.find((item) => String(item?.variant_id) === String(productId)) ||
-      variantItems[0] ||
-      null;
+      variantItems.find((item) =>
+        window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
     const catalog = window.jzExtractCatalogFromSv?.(variantMatch) || {};
     const persistedDimensions = await (window
       .jzReadCachedWeightDims?.(productId)
@@ -552,19 +557,63 @@
     };
   }
 
-  function assertCompleteCollectSource(sourceFields = {}) {
-    const missing = [
-      sourceFields.description_category_id ? null : "类目",
-      sourceFields.weight ? null : "重量",
-      sourceFields.depth ? null : "长度",
-      sourceFields.width ? null : "宽度",
-      sourceFields.height ? null : "高度",
-    ].filter(Boolean);
-    if (!missing.length) return;
-    const error = new Error(`COLLECT_CAPTURE_INCOMPLETE:${missing.join("、")}`);
-    error.code = "COLLECT_CAPTURE_INCOMPLETE";
-    error.missing = missing;
-    throw error;
+  function cachedPanelVariant(productId, cachedPanelData) {
+    const cachedVariantResult = cachedPanelData?.preFetched?.variant;
+    const cachedVariantResponse = cachedVariantResult?.status === "fulfilled"
+      ? cachedVariantResult.value
+      : null;
+    const items = collectVariantItems(cachedVariantResponse);
+    return items.find((item) =>
+      window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+  }
+
+  function mergeInfoHashtags(variant, info) {
+    if (!variant || !Array.isArray(info?.hashtags) || !info.hashtags.length) return;
+    try {
+      window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variant, info.hashtags);
+    } catch {}
+  }
+
+  async function localCompleteEnrichment(productId, cachedPanelData, info) {
+    const { variantMatch, payload } = await collectSourceFields(productId, cachedPanelData);
+    mergeInfoHashtags(variantMatch, info);
+    const variantData = {
+      ...(variantMatch || {}),
+      description_category_id: payload.description_category_id,
+      ...(payload.type_id ? { type_id: payload.type_id } : {}),
+      weight: payload.weight,
+      depth: payload.depth,
+      width: payload.width,
+      height: payload.height,
+    };
+    return window.JzOzonEnrichmentContract.normalizeVariantData({
+      sku: String(productId),
+      variantData,
+      source: "EXTENSION_SELLER_CAPTURE",
+      capturedAt: new Date().toISOString(),
+    });
+  }
+
+  function buildPanelCollectRaw(productId, info, data) {
+    return {
+      sku: String(productId),
+      url: info.url,
+      name: info.name,
+      price: info.price != null ? String(info.price) : undefined,
+      priceCurrency: info.priceCurrency || undefined,
+      marketingPrice: info.marketingPrice != null ? String(info.marketingPrice) : undefined,
+      marketingPriceCurrency: info.marketingPriceCurrency || undefined,
+      image: info.image || undefined,
+      images: info.image ? [info.image] : undefined,
+      hashtags: Array.isArray(info.hashtags) && info.hashtags.length ? [...info.hashtags] : undefined,
+      soldCount: data?.soldCount ?? undefined,
+      soldSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
+      views: data?.views ?? undefined,
+      convViewToOrder:
+        data?.convViewToOrder != null ? String(data.convViewToOrder) : undefined,
+      discount: data?.discount != null ? String(data.discount) : undefined,
+      gmvSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
+    };
   }
 
   function collectFailurePresentation(error) {
@@ -593,6 +642,18 @@
         title: message,
       };
     }
+    if (/OZON_ENRICH_INCOMPLETE|OZON_ENRICH_CONTRACT_MISMATCH/.test(code) || message.startsWith("缺少：")) {
+      return { text: message || "商品资料不完整，未写入采集箱", title: message };
+    }
+    if (/OZON_ENRICH_BUSY/.test(code)) {
+      return { text: "商品资料正在排队，请稍后重试", title: message };
+    }
+    if (/OZON_ENRICH_NOT_FOUND/.test(code)) {
+      return { text: "未找到该商品的完整资料", title: message };
+    }
+    if (/OZON_ENRICH_UPSTREAM_FAILED/.test(code)) {
+      return { text: "Ozon 商品资料暂时无法读取", title: message };
+    }
     if (/NETWORK_ERROR|超时|timeout|网络/i.test(code + message)) {
       return { text: "网络错误", title: message };
     }
@@ -616,54 +677,36 @@
     try {
       const data = panelDataCache.get(productId) || null;
       info = await enrichInfoWithDetailMarketingPrice(info);
-
-      // 1. 优先复用数据面板已加载的 sv 真值。点击时的二次请求可能瞬时失败，
-      // 不能因此把已显示过的类目和物流尺寸丢掉后仍提示采集成功。
-      const { variantMatch, payload: sourceFields } =
-        await collectSourceFields(productId, data);
-      assertCompleteCollectSource(sourceFields);
-      if (variantMatch && Array.isArray(info.hashtags) && info.hashtags.length) {
-        try { window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variantMatch, info.hashtags); } catch {}
-      }
-
-      // 2. 写 backend 采集箱
-      const collectPayload = {
-        sku: String(productId),
-        url: info.url,
-        name: info.name,
-        price: info.price != null ? String(info.price) : undefined,
-        priceCurrency: info.priceCurrency || undefined,
-        marketingPrice: info.marketingPrice != null ? String(info.marketingPrice) : undefined,
-        marketingPriceCurrency: info.marketingPriceCurrency || undefined,
-        image: info.image || undefined,
-        images: info.image ? [info.image] : undefined,
-        ...sourceFields,
-        soldCount: data?.soldCount ?? undefined,
-        soldSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
-        views: data?.views ?? undefined,
-        convViewToOrder:
-          data?.convViewToOrder != null ? String(data.convViewToOrder) : undefined,
-        discount: data?.discount != null ? String(data.discount) : undefined,
-        gmvSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
-      };
-      const resp = await window.sendMessage("pushSourceCollect", {
-        sourceId: "ozon",
-        raw: collectPayload,
+      mergeInfoHashtags(cachedPanelVariant(productId, data), info);
+      const collectPromise = collectCoordinator.collect({
+        sku: productId,
+        raw: buildPanelCollectRaw(productId, info, data),
+        localFallback: () => localCompleteEnrichment(productId, data, info),
       });
+      if (collectCoordinator.getState(productId).status === "PREFETCHING") {
+        btn.dataset.jzOriginalHtml = btn.innerHTML;
+        btn.innerHTML = "正在补全商品资料";
+      }
+      const resp = await collectPromise;
 
       const label = resp?.dedupeHit ? "近期已采集" : "已采集";
       _flashBtn(btn, label, "is-collected", 1800);
     } catch (e) {
       console.warn("[ozon-helper] data-panel collect-one failed:", e);
+      if (collectCoordinator.getState(productId).status === "BLOCKED_AUTH") {
+        const body = panel.querySelector(".ozon-helper-sidebar-card-body") || panel;
+        window.jzRenderDataCardLoginRequired(body);
+        return;
+      }
       const failure = collectFailurePresentation(e);
-      _flashBtn(btn, failure.text, "is-failed", 2800, failure.title);
+      _flashBtn(btn, failure.text, "is-failed", 7000, failure.title);
     } finally {
       btn.dataset.busy = "";
     }
   }
 
   function _flashBtn(btn, text, cls, ms, title = "") {
-    const original = btn.innerHTML;
+    const original = btn.dataset.jzOriginalHtml || btn.innerHTML;
     const originalTitle = btn.getAttribute("title");
     btn.classList.add(cls);
     btn.innerHTML = `<span class="oh-btn-icon">✓</span>${text}`;
@@ -671,6 +714,7 @@
     setTimeout(() => {
       btn.classList.remove(cls);
       btn.innerHTML = original;
+      delete btn.dataset.jzOriginalHtml;
       if (originalTitle == null) btn.removeAttribute("title");
       else btn.setAttribute("title", originalTitle);
     }, ms);
@@ -690,33 +734,17 @@
       if (!sku) throw new Error("missing-sku");
 
       const data = panelDataCache.get(sku) || null;
-      const { variantMatch, payload: sourceFields } =
-        await collectSourceFields(sku, data);
-      assertCompleteCollectSource(sourceFields);
-      if (variantMatch && Array.isArray(info.hashtags) && info.hashtags.length) {
-        try { window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variantMatch, info.hashtags); } catch {}
-      }
-
-      const collectPayload = {
+      mergeInfoHashtags(cachedPanelVariant(sku, data), info);
+      const collectPromise = collectCoordinator.collect({
         sku,
-        url: info.url,
-        name: info.name,
-        price: info.price != null ? String(info.price) : undefined,
-        priceCurrency: info.priceCurrency || undefined,
-        marketingPrice: info.marketingPrice != null ? String(info.marketingPrice) : undefined,
-        marketingPriceCurrency: info.marketingPriceCurrency || undefined,
-        image: info.image || undefined,
-        images: info.image ? [info.image] : undefined,
-        ...sourceFields,
-      };
-      // SW 把 envelope (dedupeHit/lastAt) + 后端 result 都装进 data,这里 resp 已是
-      // { dedupeHit, lastAt, result }。itemId 在 result.id。
-      const resp = await window.sendMessage("pushSourceCollect", {
-        sourceId: "ozon",
-        raw: collectPayload,
+        raw: buildPanelCollectRaw(sku, info, data),
+        localFallback: () => localCompleteEnrichment(sku, data, info),
       });
+      if (collectCoordinator.getState(sku).status === "PREFETCHING") {
+        btn.innerHTML = "正在补全商品资料";
+      }
+      const resp = await collectPromise;
       const itemId = resp?.result?.id;
-      const auth = await window.sendMessage("getAuth");
       // 从 brand webHost 直接构造,不要从 backendUrl 反推 — 旧 `.replace('/api','')`
       // 会把 `https://api.jizhangerp.com` 中 `://api` 后 4 字符 `/api` 误删,
       // 得到 `https:/.jizhangerp.com` 残缺 URL,浏览器按相对路径解析 →
@@ -735,7 +763,13 @@
       btn.dataset.busy = "0";
     } catch (err) {
       console.warn("[ozon-helper] data-panel edit-list failed:", err);
-      btn.innerHTML = "失败";
+      const sku = extractProductId(extractCardInfo(card).url);
+      if (sku && collectCoordinator.getState(sku).status === "BLOCKED_AUTH") {
+        const body = panel.querySelector(".ozon-helper-sidebar-card-body") || panel;
+        window.jzRenderDataCardLoginRequired(body);
+        return;
+      }
+      btn.innerHTML = collectFailurePresentation(err).text || "失败";
       setTimeout(() => {
         btn.innerHTML = original;
         btn.disabled = false;

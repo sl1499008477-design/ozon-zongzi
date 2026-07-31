@@ -91,7 +91,7 @@
       window.jzMakeStaggeredQueue = () => ({ add: (task) => Promise.resolve().then(task), setParams() {} });
       window.jzFetchPublicFollowSell = async () => ({ count: 0, sellers: [] });
       const collectFixtureMode = new URLSearchParams(window.location.search).get("collect");
-      const collectFixtureEnabled = ["1", "missing", "auth-missing", "seller-auth"].includes(collectFixtureMode);
+      const collectFixtureEnabled = Boolean(collectFixtureMode);
       window.checkAuth = async () => ({
         loggedIn: collectFixtureMode !== "auth-missing",
         account: collectFixtureMode === "auth-missing" ? null : { id: "fixture-account" },
@@ -104,6 +104,7 @@
       let collectFixtureVariantCalls = 0;
       const collectFixtureSourceVariant = {
         variant_id: "123456789",
+        _searchMeta: { skus: [{ sku: "123456789" }] },
         description_category_id: 17012345,
         type_id: 910001,
         attributes: [
@@ -116,12 +117,72 @@
       };
       window.__getCollectFixtureMessages = () =>
         collectFixtureMessages.map((message) => JSON.parse(JSON.stringify(message)));
+      const collectFixtureOpenedUrls = [];
+      window.__getCollectFixtureOpenedUrls = () => [...collectFixtureOpenedUrls];
+      window.open = (url, target) => {
+        collectFixtureOpenedUrls.push({ url: String(url), target: String(target || "") });
+        return null;
+      };
+      const completeEnrichment = (overrides = {}) => ({
+        status: "COMPLETE",
+        contractVersion: "collector.ozon.enrichment.v1",
+        sku: "123456789",
+        descriptionCategoryId: 17012345,
+        typeId: 910001,
+        logistics: { weightG: 350, lengthMm: 120, widthMm: 80, heightMm: 30 },
+        variantData: collectFixtureSourceVariant,
+        source: "BACKEND_FLEET",
+        capturedAt: "2026-07-31T00:00:00.000Z",
+        cache: {
+          hit: collectFixtureMode === "cache",
+          expiresAt: "2026-07-31T06:00:00.000Z",
+        },
+        ...overrides,
+      });
+      const throwFixtureError = (code, message, extra = {}) => {
+        throw Object.assign(new Error(message), { code, ...extra });
+      };
       window.sendMessage = async (action, payload) => {
         if (!collectFixtureEnabled) return { data: {}, items: [] };
         collectFixtureMessages.push({ action, payload });
+        if (action === "enrichOzonCollect") {
+          if (collectFixtureMode === "collector-auth") {
+            throwFixtureError("COLLECTOR_AUTH_REQUIRED", "Collector auth required", { status: 401 });
+          }
+          if (["backend-failure", "local-failure", "seller-auth"].includes(collectFixtureMode)) {
+            throwFixtureError("OZON_ENRICH_UPSTREAM_FAILED", "backend unavailable", {
+              status: 502,
+              retryable: true,
+            });
+          }
+          const missingByMode = {
+            missing: ["descriptionCategoryId", "weightG", "lengthMm", "widthMm", "heightMm"],
+            "missing-category": ["descriptionCategoryId"],
+            "missing-weight": ["weightG"],
+            "missing-length": ["lengthMm"],
+            "missing-width": ["widthMm"],
+            "missing-height": ["heightMm"],
+          };
+          if (missingByMode[collectFixtureMode]) {
+            throwFixtureError("OZON_ENRICH_INCOMPLETE", "incomplete", {
+              status: 422,
+              missingFields: missingByMode[collectFixtureMode],
+              retryable: true,
+            });
+          }
+          if (collectFixtureMode === "cold") {
+            await new Promise((resolve) => setTimeout(resolve, 700));
+          }
+          return completeEnrichment();
+        }
         if (action === "searchVariants") {
           collectFixtureVariantCalls += 1;
-          if (collectFixtureMode === "missing") return { items: [] };
+          if (
+            collectFixtureMode === "missing"
+            || collectFixtureMode.startsWith("missing-")
+            || collectFixtureMode === "backend-failure"
+            || collectFixtureMode === "local-failure"
+          ) return { items: [] };
           if (collectFixtureMode === "seller-auth") {
             const error = new Error("Seller 页面已打开，但公司上下文尚未就绪");
             error.code = "SELLER_CONTEXT_REQUIRED";
@@ -132,6 +193,9 @@
             : { items: [] };
         }
         if (action === "pushSourceCollect") {
+          if (collectFixtureMode === "upload-failure") {
+            throwFixtureError("COLLECTOR_UPLOAD_FAILED", "upload failed", { status: 502, retryable: true });
+          }
           return { result: { id: "collect-fixture" } };
         }
         return { data: {}, items: [] };
@@ -140,6 +204,8 @@
         document.querySelector(".tile-root").style.width = `${width}px`;
       };
     </script>
+    <script src="/extension/lib/ozon-collect-coordinator.js"></script>
+    <script src="/extension/lib/ozon-enrichment-contract.js"></script>
     <script src="/extension/content/ozon-data-panel.js"></script>
   </body>
 </html>

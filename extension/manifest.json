@@ -127,6 +127,7 @@
         "lib/ozon-video-extract.js",
         "lib/sku-collect.js",
         "lib/title-quality.js",
+        "lib/ozon-collect-coordinator.js",
         "lib/ozon-enrichment-contract.js",
         "content/ozon-product.js"
       ],
@@ -155,6 +156,8 @@
         "content/collector/l1-bridge.js",
         "lib/pricing-config-cache.js",
         "lib/sidebar-section-toggle.js",
+        "lib/ozon-collect-coordinator.js",
+        "lib/ozon-enrichment-contract.js",
         "content/ozon-search.js"
       ],
       "css": [
@@ -185,6 +188,7 @@
         "content/collector/task-queue.js",
         "lib/pricing-config-cache.js",
         "lib/sidebar-section-toggle.js",
+        "lib/ozon-collect-coordinator.js",
         "lib/ozon-enrichment-contract.js",
         "content/ozon-data-panel.js"
       ],

@@ -196,17 +196,34 @@ async function runBrowserFixture({
       assert.ok(wide.actions.includes(action), `missing rendered action ${action}`);
     }
 
-    const collectPage = await context.newPage();
-    extraPages.push(collectPage);
-    await collectPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=1`,
+    const openCollectFixture = async (mode) => {
+      const fixturePage = await context.newPage();
+      extraPages.push(fixturePage);
+      await fixturePage.goto(
+        `http://127.0.0.1:${address.port}${fixturePath}?collect=${encodeURIComponent(mode)}`,
+      );
+      const fixturePanel = fixturePage.locator(".ozon-helper-data-panel");
+      await fixturePanel.waitFor();
+      await fixturePage.waitForFunction(() =>
+        document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+      );
+      return { fixturePage, fixturePanel };
+    };
+
+    const { fixturePage: collectPage, fixturePanel: collectPanel } =
+      await openCollectFixture("cache");
+    assert.deepEqual(
+      await collectPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => ["enrichOzonCollect", "pushSourceCollect"].includes(action))
+        .map(({ action }) => action)),
+      ["enrichOzonCollect"],
+      "panel load must prefetch complete enrichment without writing the collection box",
     );
-    const collectPanel = collectPage.locator(".ozon-helper-data-panel");
-    await collectPanel.waitFor();
-    await collectPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
-    );
-    await collectPanel.locator('[data-action="collect-one"]').click();
+    await collectPage.evaluate(() => {
+      const button = document.querySelector('[data-action="collect-one"]');
+      button.click();
+      button.click();
+    });
     await collectPage.waitForFunction(() =>
       window.__getCollectFixtureMessages()
         .some((message) => message.action === "pushSourceCollect"),
@@ -239,70 +256,112 @@ async function runBrowserFixture({
       },
       "collect must persist category and package dimensions as explicit fields for Web draft hydration",
     );
-
-    const incompleteCollectPage = await context.newPage();
-    extraPages.push(incompleteCollectPage);
-    await incompleteCollectPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=missing`,
-    );
-    const incompleteCollectPanel = incompleteCollectPage.locator(".ozon-helper-data-panel");
-    await incompleteCollectPanel.waitFor();
-    await incompleteCollectPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
-    );
-    const incompleteCollectButton = incompleteCollectPanel.locator('[data-action="collect-one"]');
-    await incompleteCollectButton.click();
-    await incompleteCollectPage.waitForFunction(() =>
-      document.querySelector('[data-action="collect-one"]')?.textContent.includes("缺少：类目、重量、长、宽、高"),
-    );
     assert.equal(
-      await incompleteCollectPage.evaluate(() =>
-        window.__getCollectFixtureMessages()
-          .filter((message) => message.action === "pushSourceCollect").length,
-      ),
-      0,
-      "collect must not report success or persist a partial record when category and logistics capture failed",
+      await collectPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      1,
+      "repeated clicks must share one upload",
     );
 
-    const sellerContextPage = await context.newPage();
-    extraPages.push(sellerContextPage);
-    await sellerContextPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=seller-auth`,
+    const { fixturePage: coldPage, fixturePanel: coldPanel } =
+      await openCollectFixture("cold");
+    await coldPanel.locator('[data-action="collect-one"]').click();
+    await coldPage.waitForFunction(() =>
+      document.querySelector('[data-action="collect-one"]')?.textContent.includes("正在补全商品资料"),
     );
-    const sellerContextPanel = sellerContextPage.locator(".ozon-helper-data-panel");
-    await sellerContextPanel.waitFor();
-    await sellerContextPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    await coldPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
     );
-    const sellerContextButton = sellerContextPanel.locator('[data-action="collect-one"]');
-    await sellerContextButton.click();
-    await sellerContextPage.waitForFunction(() =>
-      document.querySelector('[data-action="collect-one"]')?.textContent.includes("Seller 未就绪"),
+
+    for (const [mode, expected] of [
+      ["missing", "缺少：类目、重量、长、宽、高"],
+      ["missing-category", "缺少：类目"],
+      ["missing-weight", "缺少：重量"],
+      ["missing-length", "缺少：长"],
+      ["missing-width", "缺少：宽"],
+      ["missing-height", "缺少：高"],
+    ]) {
+      const { fixturePage, fixturePanel } = await openCollectFixture(mode);
+      await fixturePanel.locator('[data-action="collect-one"]').click();
+      try {
+        await fixturePage.waitForFunction((message) =>
+          document.querySelector('[data-action="collect-one"]')?.textContent.includes(message),
+        expected, { timeout: 5_000 });
+      } catch (error) {
+        const diagnostics = await fixturePage.evaluate(() => ({
+          button: document.querySelector('[data-action="collect-one"]')?.textContent || "",
+          messages: window.__getCollectFixtureMessages(),
+        }));
+        throw new Error(`${mode} did not render ${expected}: ${JSON.stringify(diagnostics)}`, { cause: error });
+      }
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "pushSourceCollect").length),
+        0,
+        `${mode} must not upload an incomplete record`,
+      );
+    }
+
+    const { fixturePage: collectorAuthPage, fixturePanel: collectorAuthPanel } =
+      await openCollectFixture("collector-auth");
+    await collectorAuthPanel.locator('[data-action="collect-one"]').click();
+    await collectorAuthPanel.locator('[data-action="datacard-login"]').waitFor();
+    assert.match(await collectorAuthPanel.innerText(), /请先登录.*Web/);
+    assert.equal(
+      await collectorAuthPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      0,
     );
+
+    for (const mode of ["backend-failure", "local-failure", "upload-failure"]) {
+      const { fixturePage, fixturePanel } = await openCollectFixture(mode);
+      const button = fixturePanel.locator('[data-action="collect-one"]');
+      await button.click();
+      try {
+        await fixturePage.waitForFunction(() => {
+          const text = document.querySelector('[data-action="collect-one"]')?.textContent || "";
+          return /失败|暂时无法读取|缺少：/.test(text);
+        }, null, { timeout: 5_000 });
+      } catch (error) {
+        const diagnostics = await fixturePage.evaluate(() => ({
+          button: document.querySelector('[data-action="collect-one"]')?.textContent || "",
+          messages: window.__getCollectFixtureMessages(),
+        }));
+        throw new Error(`${mode} did not render a terminal error: ${JSON.stringify(diagnostics)}`, { cause: error });
+      }
+      assert.doesNotMatch(await button.innerText(), /已采集|采集成功/);
+      if (mode !== "upload-failure") {
+        assert.equal(
+          await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+            .filter(({ action }) => action === "pushSourceCollect").length),
+          0,
+        );
+      }
+    }
+
+    const { fixturePage: failedEditPage, fixturePanel: failedEditPanel } =
+      await openCollectFixture("upload-failure");
+    await failedEditPanel.locator('[data-action="edit-list"]').click();
+    await failedEditPage.waitForFunction(() =>
+      document.querySelector('[data-action="edit-list"]')?.textContent.includes("失败"),
+    );
+    assert.deepEqual(
+      await failedEditPage.evaluate(() => window.__getCollectFixtureOpenedUrls()),
+      [],
+      "Web edit must not open before a successful upload",
+    );
+
+    const { fixturePage: successfulEditPage, fixturePanel: successfulEditPanel } =
+      await openCollectFixture("cache");
+    await successfulEditPanel.locator('[data-action="edit-list"]').click();
+    await successfulEditPage.waitForFunction(() => window.__getCollectFixtureOpenedUrls().length === 1);
     assert.match(
-      await sellerContextButton.getAttribute("title"),
-      /公司上下文尚未就绪/,
-      "Seller context failure should preserve the safe diagnostic message",
-    );
-    assert.equal(
-      await sellerContextPage.evaluate(() =>
-        window.__getCollectFixtureMessages()
-          .filter((message) => message.action === "pushSourceCollect").length,
-      ),
-      0,
-      "Seller context failure must not upload a partial record",
+      (await successfulEditPage.evaluate(() => window.__getCollectFixtureOpenedUrls()[0].url)),
+      /\/ozon\/products\/collect\/edit\?id=collect-fixture$/,
     );
 
-    const anonymousCollectPage = await context.newPage();
-    extraPages.push(anonymousCollectPage);
-    await anonymousCollectPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=auth-missing`,
-    );
-    const anonymousCollectPanel = anonymousCollectPage.locator(".ozon-helper-data-panel");
-    await anonymousCollectPanel.waitFor();
-    await anonymousCollectPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
-    );
+    const { fixturePage: anonymousCollectPage, fixturePanel: anonymousCollectPanel } =
+      await openCollectFixture("auth-missing");
     assert.match(
       await anonymousCollectPanel.innerText(),
       /请先登录.*Web/,
@@ -316,7 +375,7 @@ async function runBrowserFixture({
     assert.deepEqual(
       await anonymousCollectPage.evaluate(() =>
         window.__getCollectFixtureMessages()
-          .filter((message) => ["searchVariants", "pushSourceCollect"].includes(message.action))
+          .filter((message) => ["enrichOzonCollect", "searchVariants", "pushSourceCollect"].includes(message.action))
           .map((message) => message.action),
       ),
       [],
