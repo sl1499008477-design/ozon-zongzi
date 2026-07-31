@@ -494,7 +494,7 @@ test('production coordinator and message wrapper resist native MutationObserver 
     const batch = messages.find(({ action }) => action === 'enrichOzonCollectBatch');
     const retry = messages.find(({ action }) => action === 'enrichOzonCollect');
     const upload = messages.find(({ action }) => action === 'pushSourceCollect');
-    assert.equal(retry.requestId, batch.requestId);
+    assert.notEqual(retry.requestId, batch.requestId);
     assert.equal(upload.requestId, batch.requestId);
     assert.match(batch.requestId, /^ozon-collect-\d+-[A-Za-z0-9_-]{16,}-1-8123456789$/);
     assert.equal(errors.length, 0, errors.join('\n'));

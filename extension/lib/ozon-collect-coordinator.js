@@ -171,10 +171,12 @@
       const sku = normalizeSku(value);
       let entry = entries.get(sku);
       if (!entry) {
+        const requestId = requestIdFor(sku);
         entry = {
           sku,
           status: 'IDLE',
-          requestId: requestIdFor(sku),
+          requestId,
+          enrichmentRequestId: requestId,
           promise: null,
           result: null,
           error: null,
@@ -346,7 +348,7 @@
       let operation;
       try {
         operation = sendMessage('enrichOzonCollect', {
-          requestId: entry.requestId,
+          requestId: entry.enrichmentRequestId,
           sku: entry.sku,
         });
       } catch (error) {
@@ -381,6 +383,9 @@
       ) {
         return Promise.reject(entry.error);
       }
+      if (retryFailed && (entry.status === 'ERROR' || entry.status === 'BLOCKED_AUTH')) {
+        entry.enrichmentRequestId = requestIdFor(entry.sku);
+      }
       return startPrefetch(entry);
     };
 
@@ -398,7 +403,7 @@
 
     const startBatchChunk = (chunk) => {
       const batchOperation = Promise.resolve().then(() => sendMessage('enrichOzonCollectBatch', {
-        requestId: chunk[0].requestId,
+        requestId: chunk[0].enrichmentRequestId,
         skus: chunk.map(({ sku }) => sku),
       }));
       const batchPromise = withTimeout(batchOperation, 'enrich').then((items) => {
@@ -463,6 +468,13 @@
         && !(entry.status === 'PREFETCHING' && entry.promise)
         && (retryFailed === true
           || (entry.status !== 'ERROR' && entry.status !== 'BLOCKED_AUTH')));
+      if (retryFailed === true) {
+        fresh
+          .filter((entry) => entry.status === 'ERROR' || entry.status === 'BLOCKED_AUTH')
+          .forEach((entry) => {
+            entry.enrichmentRequestId = requestIdFor(entry.sku);
+          });
+      }
       for (let index = 0; index < fresh.length; index += 20) {
         startBatchChunk(fresh.slice(index, index + 20));
       }
