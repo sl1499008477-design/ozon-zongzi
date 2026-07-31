@@ -145,6 +145,34 @@ test("JSON cache lease has one owner and permits takeover only after expiry", as
   }), true);
 });
 
+test("JSON cache lease admission counts unique live owners per account", async () => {
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state: {} });
+  const at = new Date("2026-07-31T00:00:00.000Z");
+  for (let index = 0; index < 4; index += 1) {
+    await repository.tryAcquireCacheLease({
+      key: { ...ACCOUNT_A_KEY, sku: `sku-capacity-${index}` },
+      leaseOwner: `owner-${index}`,
+      leaseExpiresAt: new Date("2026-07-31T00:01:00.000Z"),
+      now: at,
+      maxActiveLeases: 4,
+    });
+  }
+  assert.equal(await repository.tryAcquireCacheLease({
+    key: { ...ACCOUNT_A_KEY, sku: "sku-capacity-0" },
+    leaseOwner: "same-key-follower",
+    leaseExpiresAt: new Date("2026-07-31T00:01:00.000Z"),
+    now: at,
+    maxActiveLeases: 4,
+  }), null);
+  await assert.rejects(repository.tryAcquireCacheLease({
+    key: { ...ACCOUNT_A_KEY, sku: "sku-capacity-fifth" },
+    leaseOwner: "owner-fifth",
+    leaseExpiresAt: new Date("2026-07-31T00:01:00.000Z"),
+    now: at,
+    maxActiveLeases: 4,
+  }), (error) => error?.status === 429 && error?.code === "OZON_ENRICH_BUSY");
+});
+
 test("JSON job creation is stable and claims at most four unexpired jobs per account", async () => {
   const state = {
     collectorSessions: [
@@ -221,6 +249,192 @@ test("JSON job creation is stable and claims at most four unexpired jobs per acc
   assert.equal(claimedB.accountId, "account-b");
 });
 
+test("preferred claim is exclusive for one second then falls back only within the same account", async () => {
+  const state = {
+    collectorSessions: [
+      activeSession("collector-preferred", "account-a"),
+      activeSession("collector-fallback", "account-a"),
+      activeSession("collector-other-account", "account-b"),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-preferred-window",
+    accountId: "account-a",
+    requestId: "request-preferred-window",
+    sku: "sku-preferred-window",
+    preferredSessionId: "collector-preferred",
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:00:20.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+
+  assert.equal(await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-fallback",
+    now: new Date("2026-07-31T00:00:00.999Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:05.999Z"),
+  }), null);
+  await assert.rejects(repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-other-account",
+    now: new Date("2026-07-31T00:00:01.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:06.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  const fallback = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-fallback",
+    now: new Date("2026-07-31T00:00:01.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:06.000Z"),
+  });
+  assert.equal(fallback.id, "job-preferred-window");
+  assert.equal(fallback.claimedSessionId, "collector-fallback");
+});
+
+test("JSON claim prioritizes the polling session preferred job before older general work", async () => {
+  const state = { collectorSessions: [activeSession("collector-preferred", "account-a")] };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-general-older",
+    accountId: "account-a",
+    requestId: "request-general-older",
+    sku: "sku-general-older",
+    preferredSessionId: null,
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:01:00.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  await repository.createOrGetJob({
+    id: "job-preferred-newer",
+    accountId: "account-a",
+    requestId: "request-preferred-newer",
+    sku: "sku-preferred-newer",
+    preferredSessionId: "collector-preferred",
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:01:00.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.100Z"),
+  });
+  const claimed = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-preferred",
+    now: new Date("2026-07-31T00:00:00.200Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:05.200Z"),
+  });
+  assert.equal(claimed.id, "job-preferred-newer");
+});
+
+test("JSON drops an expired cached executor preference instead of blocking a new job", async () => {
+  const state = {
+    collectorSessions: [activeSession("collector-expired", "account-a", {
+      expiresAt: "2026-07-30T23:59:59.999Z",
+    })],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const created = await repository.createOrGetJob({
+    id: "job-optional-preference",
+    accountId: "account-a",
+    requestId: "request-optional-preference",
+    sku: "sku-optional-preference",
+    preferredSessionId: "collector-expired",
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:00:20.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  assert.equal(created.preferredSessionId, null);
+});
+
+test("JSON atomic terminal write rejects a lost claim without publishing cache", async () => {
+  const state = {
+    collectorSessions: [
+      activeSession("collector-old", "account-a"),
+      activeSession("collector-new", "account-a"),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-atomic-lost-claim",
+    accountId: "account-a",
+    requestId: "request-atomic-lost-claim",
+    sku: "sku-atomic-lost-claim",
+    preferredSessionId: null,
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:00:20.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-old",
+    now: new Date("2026-07-31T00:00:00.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:05.000Z"),
+  });
+  await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-new",
+    now: new Date("2026-07-31T00:00:05.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:10.000Z"),
+  });
+  await assert.rejects(repository.completeJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-old",
+    jobId: "job-atomic-lost-claim",
+    key: ACCOUNT_A_KEY,
+    result: completeResult(919),
+    responseHash: "lost-claim-hash",
+    capturedAt: new Date("2026-07-31T00:00:05.001Z"),
+    expiresAt: new Date("2026-07-31T06:00:05.001Z"),
+    now: new Date("2026-07-31T00:00:05.001Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  assert.equal(await repository.readCache({
+    key: ACCOUNT_A_KEY,
+    now: new Date("2026-07-31T00:00:05.001Z"),
+    includeExpired: true,
+  }), null);
+  assert.equal((await repository.readJob({
+    accountId: "account-a",
+    jobId: "job-atomic-lost-claim",
+  })).claimedSessionId, "collector-new");
+});
+
+test("JSON atomic terminal persistence failure rolls back both job and cache", async () => {
+  const state = {
+    collectorSessions: [activeSession("collector-owner", "account-a")],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-atomic-rollback",
+      accountId: "account-a",
+      requestId: "request-atomic-rollback",
+      sku: ACCOUNT_A_KEY.sku,
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-owner",
+      claimExpiresAt: "2026-07-31T00:00:10.000Z",
+      refreshBundle: true,
+      deadlineAt: "2026-07-31T00:00:20.000Z",
+      result: null,
+      error: null,
+      createdAt: "2026-07-31T00:00:00.000Z",
+      updatedAt: "2026-07-31T00:00:00.000Z",
+      completedAt: null,
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({
+    state,
+    persist: async () => { throw new Error("disk full"); },
+  });
+  await assert.rejects(repository.failJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-owner",
+    jobId: "job-atomic-rollback",
+    key: ACCOUNT_A_KEY,
+    error: { status: 502, code: "OZON_ENRICH_UPSTREAM_FAILED" },
+    responseHash: "atomic-rollback-hash",
+    capturedAt: new Date("2026-07-31T00:00:01.000Z"),
+    expiresAt: new Date("2026-07-31T00:01:01.000Z"),
+    now: new Date("2026-07-31T00:00:01.000Z"),
+  }));
+  assert.equal(state.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.equal(state.collectorOzonEnrichmentCache, undefined);
+});
+
 test("JSON create-or-get returns the stable job before validating a changed preferred session", async () => {
   const state = {
     collectorSessions: [activeSession("collector-preferred", "account-a")],
@@ -250,6 +464,80 @@ test("JSON create-or-get returns the stable job before validating a changed pref
   });
 
   assert.deepEqual(retried, created);
+});
+
+test("JSON create-or-get atomically requeues only an expired nonterminal stable job", async () => {
+  const state = {
+    collectorSessions: [
+      activeSession("collector-original", "account-a"),
+      activeSession("collector-retry", "account-a"),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-expired-stable",
+    accountId: "account-a",
+    requestId: "request-expired-stable",
+    sku: "sku-expired-stable",
+    preferredSessionId: "collector-original",
+    refreshBundle: false,
+    deadlineAt: new Date("2026-07-31T00:00:20.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-original",
+    now: new Date("2026-07-31T00:00:00.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:05.000Z"),
+  });
+
+  const retried = await repository.createOrGetJob({
+    id: "job-new-id-must-not-replace-stable-id",
+    accountId: "account-a",
+    requestId: "request-expired-stable",
+    sku: "sku-expired-stable",
+    preferredSessionId: "collector-retry",
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:00:41.000Z"),
+    createdAt: new Date("2026-07-31T00:00:21.000Z"),
+  });
+
+  assert.equal(retried.id, "job-expired-stable");
+  assert.equal(retried.status, "PENDING");
+  assert.equal(retried.preferredSessionId, "collector-retry");
+  assert.equal(retried.claimedSessionId, null);
+  assert.equal(retried.claimExpiresAt, null);
+  assert.equal(retried.result, null);
+  assert.equal(retried.error, null);
+  assert.equal(retried.completedAt, null);
+  assert.equal(retried.createdAt, "2026-07-31T00:00:21.000Z");
+  assert.equal(retried.deadlineAt, "2026-07-31T00:00:41.000Z");
+  assert.equal(retried.refreshBundle, true);
+
+  const claimed = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-retry",
+    now: new Date("2026-07-31T00:00:21.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:26.000Z"),
+  });
+  const succeeded = await repository.completeJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-retry",
+    jobId: claimed.id,
+    result: completeResult(818),
+    now: new Date("2026-07-31T00:00:22.000Z"),
+  });
+  const terminalRetry = await repository.createOrGetJob({
+    id: "job-terminal-must-not-revive",
+    accountId: "account-a",
+    requestId: "request-expired-stable",
+    sku: "sku-expired-stable",
+    preferredSessionId: null,
+    refreshBundle: false,
+    deadlineAt: new Date("2026-07-31T00:01:20.000Z"),
+    createdAt: new Date("2026-07-31T00:01:00.000Z"),
+  });
+  assert.deepEqual(terminalRetry, succeeded);
 });
 
 test("JSON create-or-get rejects one job id mapped to a different stable key", async () => {
@@ -695,6 +983,8 @@ test("PostgreSQL cache lease acquisition is one atomic account-scoped upsert", a
   });
 
   assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /pg_advisory_xact_lock/);
+  assert.match(calls[0].sql, /COUNT\(DISTINCT lease_owner\)/);
   assert.match(calls[0].sql, /INSERT INTO collector_ozon_enrichment_cache/);
   assert.match(calls[0].sql, /ON CONFLICT \(account_id, source, sku, contract_version\) DO UPDATE/);
   assert.match(calls[0].sql, /lease_expires_at <= EXCLUDED\.updated_at OR collector_ozon_enrichment_cache\.lease_owner = EXCLUDED\.lease_owner/);
@@ -703,6 +993,25 @@ test("PostgreSQL cache lease acquisition is one atomic account-scoped upsert", a
     "account-a", "ozon", "4862904234", "ozon-enrichment-v1",
   ]);
   assert.equal(acquired.leaseOwner, "owner-a");
+});
+
+test("PostgreSQL cache lease admission reports account capacity without exposing SQL", async () => {
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: {
+      async query() {
+        return { rows: [{ busy: true }] };
+      },
+    },
+  });
+  await assert.rejects(repository.tryAcquireCacheLease({
+    key: ACCOUNT_A_KEY,
+    leaseOwner: "owner-fifth",
+    leaseExpiresAt: new Date("2026-07-31T00:01:00.000Z"),
+    now: new Date("2026-07-31T00:00:00.000Z"),
+    maxActiveLeases: 4,
+  }), (error) => error?.status === 429
+    && error?.code === "OZON_ENRICH_BUSY"
+    && !error?.message.includes("SELECT"));
 });
 
 test("PostgreSQL cache writes keep a finite reacquisition sentinel and scope executor session", async () => {
@@ -739,6 +1048,54 @@ test("PostgreSQL cache writes keep a finite reacquisition sentinel and scope exe
   assert.match(calls[0].sql, /lease_expires_at/);
   assert.match(calls[0].sql, /'-infinity'/);
   assert.match(calls[1].sql, /lease_expires_at='-infinity'/);
+});
+
+test("PostgreSQL atomic terminal write rolls back the job when cache persistence fails", async () => {
+  const calls = [];
+  const client = {
+    async query(sql) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push(normalized);
+      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+        return { rows: [{
+          id: "job-pg-atomic",
+          account_id: "account-a",
+          request_id: "request-pg-atomic",
+          sku: ACCOUNT_A_KEY.sku,
+          status: "SUCCESS",
+          result_json: completeResult(929),
+          claimed_session_id: "collector-owner",
+          claim_expires_at: "2026-07-31T00:00:10.000Z",
+          deadline_at: "2026-07-31T00:00:20.000Z",
+          created_at: "2026-07-31T00:00:00.000Z",
+          updated_at: "2026-07-31T00:00:01.000Z",
+        }] };
+      }
+      if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_cache")) {
+        throw new Error("cache insert failed");
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async connect() { return client; }, async query() { return { rows: [] }; } },
+  });
+  await assert.rejects(repository.completeJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-owner",
+    jobId: "job-pg-atomic",
+    key: ACCOUNT_A_KEY,
+    result: completeResult(929),
+    responseHash: "pg-atomic-hash",
+    capturedAt: new Date("2026-07-31T00:00:01.000Z"),
+    expiresAt: new Date("2026-07-31T06:00:01.000Z"),
+    now: new Date("2026-07-31T00:00:01.000Z"),
+  }));
+  assert.equal(calls[0], "BEGIN");
+  assert.match(calls[1], /deadline_at>\$4/);
+  assert.equal(calls.at(-1), "ROLLBACK");
+  assert.equal(calls.includes("COMMIT"), false);
 });
 
 test("PostgreSQL job claim locks the account transaction and enforces the four-job limit", async () => {
@@ -792,6 +1149,8 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   assert.match(calls[4].sql, /FOR UPDATE SKIP LOCKED/);
   assert.match(calls[4].sql, /account_id=\$1/);
   assert.match(calls[4].sql, /claimed_session_id=\$2/);
+  assert.match(calls[4].sql, /job\.created_at \+ INTERVAL '1 second'<=\$3/);
+  assert.match(calls[4].sql, /claim_expires_at=LEAST\(\$4, job\.deadline_at\)/);
   assert.equal(calls.at(-1).sql, "COMMIT");
 
   calls.length = 0;
@@ -871,6 +1230,7 @@ test("PostgreSQL job creation scopes a preferred Collector session to the accoun
   assert.match(calls[0].sql, /LEFT JOIN collector_sessions AS preferred/);
   assert.match(calls[0].sql, /preferred\.account_id=\$2/);
   assert.match(calls[0].sql, /preferred\.revoked_at IS NULL/);
+  assert.match(calls[0].sql, /CASE WHEN preferred\.id IS NULL THEN NULL ELSE \$6 END/);
 });
 
 test("PostgreSQL create-or-get returns a concurrent stable row despite an invalid retry preference", async () => {
@@ -915,6 +1275,61 @@ test("PostgreSQL create-or-get returns a concurrent stable row despite an invali
   assert.equal(retried.id, "job-stable");
   assert.deepEqual(retried.refreshBundle, { revision: 1 });
   assert.match(calls[0].sql, /ON CONFLICT DO NOTHING/);
+});
+
+test("PostgreSQL create-or-get atomically resets an expired nonterminal stable row", async () => {
+  const calls = [];
+  const resetRow = {
+    id: "job-expired-stable",
+    account_id: "account-a",
+    request_id: "request-expired-stable",
+    sku: "sku-expired-stable",
+    status: "PENDING",
+    refresh_bundle: true,
+    preferred_session_id: "collector-retry",
+    claimed_session_id: null,
+    claim_expires_at: null,
+    deadline_at: "2026-07-31T00:00:41.000Z",
+    created_at: "2026-07-31T00:00:21.000Z",
+    updated_at: "2026-07-31T00:00:21.000Z",
+    completed_at: null,
+  };
+  const pool = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs AS job")) {
+        return { rows: [resetRow], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
+  const retried = await repository.createOrGetJob({
+    id: "job-new-id-must-not-replace-stable-id",
+    accountId: "account-a",
+    requestId: "request-expired-stable",
+    sku: "sku-expired-stable",
+    preferredSessionId: "collector-retry",
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:00:41.000Z"),
+    createdAt: new Date("2026-07-31T00:00:21.000Z"),
+  });
+
+  assert.equal(retried.id, "job-expired-stable");
+  assert.equal(retried.status, "PENDING");
+  assert.match(calls[1].sql, /status='PENDING'/);
+  assert.match(calls[1].sql, /claimed_session_id=NULL/);
+  assert.match(calls[1].sql, /claim_expires_at=NULL/);
+  assert.match(calls[1].sql, /result_json=NULL/);
+  assert.match(calls[1].sql, /error_json=NULL/);
+  assert.match(calls[1].sql, /completed_at=NULL/);
+  assert.match(calls[1].sql, /status IN \('PENDING','PROCESSING'\)/);
+  assert.match(calls[1].sql, /deadline_at<=\$8/);
+  assert.match(calls[1].sql, /preferred\.account_id=\$2/);
 });
 
 test("PostgreSQL create-or-get reports an explicit id conflict after atomic insert loses", async () => {
@@ -995,6 +1410,7 @@ test("PostgreSQL terminal writes include account, owning session, processing sta
     assert.match(call.sql, /id=\$3/);
     assert.match(call.sql, /status='PROCESSING'/);
     assert.match(call.sql, /claim_expires_at>\$4/);
+    assert.match(call.sql, /deadline_at>\$4/);
     assert.match(call.sql, /EXISTS \(SELECT 1 FROM collector_sessions AS session/);
     assert.match(call.sql, /session\.revoked_at IS NULL/);
     assert.match(call.sql, /session\.expires_at>\$4/);

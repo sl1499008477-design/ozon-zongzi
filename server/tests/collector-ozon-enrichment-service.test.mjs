@@ -1,0 +1,1028 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createCollectorOzonEnrichmentService } from "../collector-ozon-enrichment-service.mjs";
+import { createJsonCollectorOzonEnrichmentRepository } from "../collector-ozon-enrichment-repository.mjs";
+
+const START = Date.parse("2026-07-31T00:00:00.000Z");
+const CONTRACT_VERSION = "collector.ozon.enrichment.v1";
+
+function session(collectorSessionId, accountId = "account-a") {
+  return { collectorSessionId, accountId };
+}
+
+function variantData(descriptionCategoryId = 123) {
+  return {
+    description_category_id: descriptionCategoryId,
+    type_id: 456,
+    attributes: [
+      { key: "4497", value: "500" },
+      { key: "9454", value: "300" },
+      { key: "9455", value: "200" },
+      { key: "9456", value: "100" },
+    ],
+  };
+}
+
+function completeResult(sku, descriptionCategoryId = 123) {
+  return {
+    status: "COMPLETE",
+    contractVersion: CONTRACT_VERSION,
+    sku,
+    descriptionCategoryId,
+    typeId: 456,
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    variantData: variantData(descriptionCategoryId),
+    source: "BACKEND_FLEET",
+    capturedAt: new Date(START).toISOString(),
+    cache: {
+      hit: false,
+      expiresAt: new Date(START + 6 * 60 * 60 * 1000).toISOString(),
+    },
+  };
+}
+
+const clone = (value) => value === undefined ? undefined : structuredClone(value);
+
+class FakeRepository {
+  constructor({ clock, sessions = [] } = {}) {
+    this.clock = clock;
+    this.sessions = new Map(sessions.map((value) => [
+      `${value.accountId}:${value.collectorSessionId}`,
+      value,
+    ]));
+    this.cache = new Map();
+    this.jobs = [];
+    this.createdJobCount = 0;
+    this.maximumProcessing = 0;
+    this.atomicCompleteCount = 0;
+    this.atomicFailCount = 0;
+    this.leaseAttempts = [];
+  }
+
+  cacheKey(key) {
+    return `${key.accountId}:${key.source}:${key.sku}:${key.contractVersion}`;
+  }
+
+  requireSession(accountId, collectorSessionId) {
+    if (!this.sessions.has(`${accountId}:${collectorSessionId}`)) {
+      throw Object.assign(new Error("session scope rejected"), {
+        status: 403,
+        code: "OZON_ENRICHMENT_SESSION_SCOPE",
+      });
+    }
+  }
+
+  setCache(key, value) {
+    this.cache.set(this.cacheKey(key), clone(value));
+  }
+
+  async readCache({ key, now, includeExpired = false }) {
+    const value = this.cache.get(this.cacheKey(key));
+    if (!value?.status) return null;
+    if (!includeExpired && new Date(value.expiresAt).getTime() <= now.getTime()) return null;
+    return clone(value);
+  }
+
+  async tryAcquireCacheLease({ key, leaseOwner, leaseExpiresAt, now, maxActiveLeases = Infinity }) {
+    this.leaseAttempts.push({ key: clone(key), leaseOwner, now: now.toISOString() });
+    const cacheKey = this.cacheKey(key);
+    const existing = this.cache.get(cacheKey) || { ...key };
+    if (
+      existing.leaseOwner
+      && existing.leaseOwner !== leaseOwner
+      && new Date(existing.leaseExpiresAt).getTime() > now.getTime()
+    ) return null;
+    const activeOwners = new Set(
+      [...this.cache.values()]
+        .filter((entry) => entry.accountId === key.accountId
+          && entry.leaseOwner
+          && new Date(entry.leaseExpiresAt).getTime() > now.getTime())
+        .map((entry) => entry.leaseOwner),
+    );
+    if (!activeOwners.has(leaseOwner) && activeOwners.size >= maxActiveLeases) {
+      throw Object.assign(new Error("repository lease capacity detail"), {
+        status: 429,
+        code: "OZON_ENRICH_BUSY",
+      });
+    }
+    Object.assign(existing, {
+      leaseOwner,
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+    this.cache.set(cacheKey, existing);
+    return clone(existing);
+  }
+
+  async releaseCacheLease({ key, leaseOwner }) {
+    const existing = this.cache.get(this.cacheKey(key));
+    if (!existing || existing.leaseOwner !== leaseOwner) return false;
+    existing.leaseOwner = null;
+    existing.leaseExpiresAt = null;
+    return true;
+  }
+
+  async writeCompleteCache(input) {
+    this.requireSession(input.key.accountId, input.executorSessionId);
+    this.setCache(input.key, {
+      ...input.key,
+      status: "COMPLETE",
+      result: clone(input.result),
+      error: null,
+      responseHash: input.responseHash,
+      executorSessionId: input.executorSessionId,
+      capturedAt: input.capturedAt.toISOString(),
+      expiresAt: input.expiresAt.toISOString(),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+    return this.readCache({ key: input.key, now: input.capturedAt, includeExpired: true });
+  }
+
+  async writeNegativeCache(input) {
+    this.setCache(input.key, {
+      ...input.key,
+      status: "ERROR",
+      result: null,
+      error: clone(input.error),
+      responseHash: input.responseHash,
+      executorSessionId: null,
+      capturedAt: input.capturedAt.toISOString(),
+      expiresAt: input.expiresAt.toISOString(),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+    return this.readCache({ key: input.key, now: input.capturedAt, includeExpired: true });
+  }
+
+  async createOrGetJob(input) {
+    const existing = this.jobs.find((job) =>
+      job.accountId === input.accountId
+      && job.requestId === input.requestId
+      && job.sku === input.sku);
+    if (existing) return clone(existing);
+    const job = {
+      ...clone(input),
+      status: "PENDING",
+      claimedSessionId: null,
+      claimExpiresAt: null,
+      result: null,
+      error: null,
+      createdAt: input.createdAt.toISOString(),
+      deadlineAt: input.deadlineAt.toISOString(),
+    };
+    this.jobs.push(job);
+    this.createdJobCount += 1;
+    return clone(job);
+  }
+
+  async claimNextJob({ accountId, collectorSessionId, now, claimExpiresAt }) {
+    this.requireSession(accountId, collectorSessionId);
+    const active = this.jobs.filter((job) =>
+      job.accountId === accountId
+      && job.status === "PROCESSING"
+      && new Date(job.claimExpiresAt).getTime() > now.getTime()).length;
+    if (active >= 4) return null;
+    const candidate = this.jobs
+      .filter((job) =>
+        job.accountId === accountId
+        && new Date(job.deadlineAt).getTime() > now.getTime()
+        && (
+          job.status === "PENDING"
+          || (job.status === "PROCESSING" && new Date(job.claimExpiresAt).getTime() <= now.getTime())
+        )
+        && (
+          !job.preferredSessionId
+          || job.preferredSessionId === collectorSessionId
+          || new Date(job.createdAt).getTime() + 1000 <= now.getTime()
+        ))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+    if (!candidate) return null;
+    Object.assign(candidate, {
+      status: "PROCESSING",
+      claimedSessionId: collectorSessionId,
+      claimExpiresAt: claimExpiresAt.toISOString(),
+    });
+    const processing = this.jobs.filter((job) =>
+      job.accountId === accountId
+      && job.status === "PROCESSING"
+      && new Date(job.claimExpiresAt).getTime() > now.getTime()).length;
+    this.maximumProcessing = Math.max(this.maximumProcessing, processing);
+    return clone(candidate);
+  }
+
+  async finish({ accountId, collectorSessionId, jobId, now, result, error, status }) {
+    this.requireSession(accountId, collectorSessionId);
+    const job = this.jobs.find((value) => value.accountId === accountId && value.id === jobId);
+    if (
+      !job
+      || job.status !== "PROCESSING"
+      || job.claimedSessionId !== collectorSessionId
+      || new Date(job.claimExpiresAt).getTime() <= now.getTime()
+    ) {
+      throw Object.assign(new Error("claim ownership rejected"), {
+        status: 409,
+        code: "OZON_ENRICHMENT_JOB_OWNERSHIP",
+      });
+    }
+    Object.assign(job, { status, result: clone(result ?? null), error: clone(error ?? null) });
+    return clone(job);
+  }
+
+  completeJob(input) {
+    return this.finish({ ...input, status: "SUCCESS", error: null });
+  }
+
+  failJob(input) {
+    return this.finish({ ...input, status: "FAILED", result: null });
+  }
+
+  async completeJobAndCache(input) {
+    const job = await this.finish({ ...input, status: "SUCCESS", error: null });
+    this.setCache(input.key, {
+      ...input.key,
+      status: "COMPLETE",
+      result: clone(input.result),
+      error: null,
+      responseHash: input.responseHash,
+      executorSessionId: input.collectorSessionId,
+      capturedAt: input.capturedAt.toISOString(),
+      expiresAt: input.expiresAt.toISOString(),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+    this.atomicCompleteCount += 1;
+    return job;
+  }
+
+  async failJobAndCache(input) {
+    const job = await this.finish({ ...input, status: "FAILED", result: null });
+    this.setCache(input.key, {
+      ...input.key,
+      status: "ERROR",
+      result: null,
+      error: clone(input.error),
+      responseHash: input.responseHash,
+      executorSessionId: null,
+      capturedAt: input.capturedAt.toISOString(),
+      expiresAt: input.expiresAt.toISOString(),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+    this.atomicFailCount += 1;
+    return job;
+  }
+
+  async readJob({ accountId, jobId }) {
+    return clone(this.jobs.find((job) => job.accountId === accountId && job.id === jobId) || null);
+  }
+}
+
+function harness({ repository, start = START } = {}) {
+  const clock = { value: start };
+  const sessions = [
+    session("collector-request"),
+    session("collector-preferred"),
+    session("collector-fallback"),
+    session("collector-other-account", "account-b"),
+  ];
+  const fake = repository || new FakeRepository({ clock, sessions });
+  let sequence = 0;
+  const audits = [];
+  const service = createCollectorOzonEnrichmentService({
+    repository: fake,
+    now: () => new Date(clock.value),
+    randomUUID: () => `job-${++sequence}`,
+    sleep: async (milliseconds) => {
+      clock.value += milliseconds;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    audit: async (event) => audits.push(event),
+  });
+  return { audits, clock, repository: fake, service };
+}
+
+async function waitFor(check, message = "condition") {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const value = check();
+    if (value) return value;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`timed out waiting for ${message}`);
+}
+
+function key(accountId, sku) {
+  return { accountId, source: "ozon", sku, contractVersion: CONTRACT_VERSION };
+}
+
+test("returns a live six-hour cache hit without creating a job", async () => {
+  const h = harness();
+  h.repository.setCache(key("account-a", "sku-hit"), {
+    status: "COMPLETE",
+    result: completeResult("sku-hit"),
+    executorSessionId: "collector-preferred",
+    capturedAt: new Date(START).toISOString(),
+    expiresAt: new Date(START + 6 * 60 * 60 * 1000).toISOString(),
+  });
+
+  const result = await h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-hit",
+    sku: "sku-hit",
+  });
+
+  assert.equal(result.cache.hit, true);
+  assert.equal(result.cache.expiresAt, new Date(START + 6 * 60 * 60 * 1000).toISOString());
+  assert.equal(h.repository.createdJobCount, 0);
+});
+
+test("concurrent cold callers share one cache lease and fixed job", async () => {
+  const h = harness();
+  const input = { session: session("collector-request"), requestId: "request-cold", sku: "sku-cold" };
+  const first = h.service.enrichOne(input);
+  const second = h.service.enrichOne(input);
+  await waitFor(() => h.repository.jobs[0], "cold job");
+
+  const claimed = await h.service.claimNext({ session: session("collector-fallback") });
+  assert.deepEqual(claimed, {
+    id: h.repository.jobs[0].id,
+    requestId: "request-cold",
+    sku: "sku-cold",
+    refreshBundle: true,
+  });
+  await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: claimed.id,
+    variantData: variantData(701),
+  });
+
+  const results = await Promise.all([first, second]);
+  assert.equal(results[0].descriptionCategoryId, 701);
+  assert.deepEqual(results[1], results[0]);
+  assert.equal(h.repository.createdJobCount, 1);
+});
+
+test("prefers the last successful executor for one second then permits same-account fallback", async () => {
+  const h = harness();
+  h.repository.setCache(key("account-a", "sku-preferred"), {
+    status: "COMPLETE",
+    result: completeResult("sku-preferred", 100),
+    executorSessionId: "collector-preferred",
+    capturedAt: new Date(START - 7 * 60 * 60 * 1000).toISOString(),
+    expiresAt: new Date(START).toISOString(),
+  });
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-preferred",
+    sku: "sku-preferred",
+  });
+  const job = await waitFor(() => h.repository.jobs[0], "preferred job");
+
+  h.clock.value = new Date(job.createdAt).getTime() + 999;
+  assert.equal(await h.service.claimNext({ session: session("collector-fallback") }), null);
+  h.clock.value = new Date(job.createdAt).getTime() + 1000;
+  const fallbackClaim = await h.service.claimNext({ session: session("collector-fallback") });
+  assert.equal(fallbackClaim.id, job.id);
+  await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: job.id,
+    variantData: variantData(702),
+  });
+  assert.equal((await pending).descriptionCategoryId, 702);
+});
+
+test("normalizes a claimed variant before persisting success for exactly six hours", async () => {
+  const h = harness();
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-normalize",
+    sku: "sku-normalize",
+  });
+  await waitFor(() => h.repository.jobs[0], "normalization job");
+  const claim = await h.service.claimNext({ session: session("collector-fallback") });
+  const completedAt = h.clock.value;
+  await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    variantData: variantData(703),
+  });
+
+  const result = await pending;
+  assert.equal(result.descriptionCategoryId, 703);
+  assert.deepEqual(result.logistics, { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 });
+  assert.equal(result.source, "BACKEND_FLEET");
+  assert.equal(result.cache.hit, false);
+  assert.equal(new Date(result.cache.expiresAt).getTime(), completedAt + 6 * 60 * 60 * 1000);
+  assert.equal(h.repository.jobs[0].status, "SUCCESS");
+  assert.equal(h.repository.atomicCompleteCount, 1);
+});
+
+test("fails a cold request at the shared twenty-second deadline without real sleeps", async () => {
+  const h = harness();
+  await assert.rejects(
+    h.service.enrichOne({
+      session: session("collector-request"),
+      requestId: "request-timeout",
+      sku: "sku-timeout",
+    }),
+    (error) => error?.status === 504
+      && error?.code === "OZON_ENRICH_UPSTREAM_FAILED"
+      && error?.retryable === true,
+  );
+  assert.equal(h.clock.value, START + 20_000);
+});
+
+test("same request id recovers its expired nonterminal job after a twenty-second timeout", async () => {
+  let clock = START;
+  let sequence = 0;
+  const state = {
+    collectorSessions: [{
+      id: "collector-retry",
+      accountId: "account-a",
+      expiresAt: new Date(START + 60 * 60 * 1000).toISOString(),
+      revokedAt: null,
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const service = createCollectorOzonEnrichmentService({
+    repository,
+    now: () => new Date(clock),
+    randomUUID: () => `job-retry-${++sequence}`,
+    sleep: async (milliseconds) => {
+      clock += milliseconds;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  });
+  const input = {
+    session: session("collector-retry"),
+    requestId: "request-retry-stable",
+    sku: "sku-retry-stable",
+  };
+  await assert.rejects(service.enrichOne(input), (error) => error?.status === 504);
+  assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
+  const originalJobId = state.collectorOzonEnrichmentJobs[0].id;
+  assert.equal(state.collectorOzonEnrichmentJobs[0].deadlineAt, new Date(clock).toISOString());
+
+  const retried = service.enrichOne(input);
+  await waitFor(
+    () => state.collectorOzonEnrichmentJobs[0].createdAt === new Date(START + 20_000).toISOString(),
+    "requeued stable job",
+  );
+  const claim = await service.claimNext({ session: session("collector-retry") });
+  assert.equal(claim.id, originalJobId);
+  await service.completeClaim({
+    session: session("collector-retry"),
+    jobId: claim.id,
+    variantData: variantData(799),
+  });
+  assert.equal((await retried).descriptionCategoryId, 799);
+  assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
+});
+
+test("recovers an expired processing claim with another valid same-account session", async () => {
+  const h = harness();
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-recover",
+    sku: "sku-recover",
+  });
+  await waitFor(() => h.repository.jobs[0], "recovery job");
+  const first = await h.service.claimNext({ session: session("collector-preferred") });
+  const claimExpiry = new Date(h.repository.jobs[0].claimExpiresAt).getTime();
+  h.clock.value = claimExpiry;
+  const recovered = await h.service.claimNext({ session: session("collector-fallback") });
+  assert.equal(recovered.id, first.id);
+  await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: recovered.id,
+    variantData: variantData(704),
+  });
+  assert.equal((await pending).descriptionCategoryId, 704);
+});
+
+test("negative-caches stable executor failures for no more than sixty seconds", async () => {
+  const h = harness();
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-negative",
+    sku: "sku-negative",
+  });
+  await waitFor(() => h.repository.jobs[0], "negative job");
+  const claim = await h.service.claimNext({ session: session("collector-fallback") });
+  const failedAt = h.clock.value;
+  await h.service.failClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    code: "OZON_ENRICH_NOT_FOUND",
+    message: "not found cst_should-never-leak",
+  });
+
+  await assert.rejects(pending, (error) =>
+    error?.status === 404
+      && error?.code === "OZON_ENRICH_NOT_FOUND"
+      && !String(error?.message).includes("cst_should-never-leak"));
+  const cached = h.repository.cache.get(h.repository.cacheKey(key("account-a", "sku-negative")));
+  assert.ok(new Date(cached.expiresAt).getTime() - failedAt <= 60_000);
+  assert.equal(h.repository.atomicFailCount, 1);
+  const jobsBefore = h.repository.createdJobCount;
+  await assert.rejects(h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-negative-retry",
+    sku: "sku-negative",
+  }), (error) => error?.code === "OZON_ENRICH_NOT_FOUND");
+  assert.equal(h.repository.createdJobCount, jobsBefore);
+});
+
+test("never returns a six-hour-expired result and creates a server-owned refresh job", async () => {
+  const h = harness();
+  h.repository.setCache(key("account-a", "sku-stale"), {
+    status: "COMPLETE",
+    result: completeResult("sku-stale", 111),
+    executorSessionId: "collector-preferred",
+    capturedAt: new Date(START - 6 * 60 * 60 * 1000).toISOString(),
+    expiresAt: new Date(START).toISOString(),
+  });
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-stale",
+    sku: "sku-stale",
+    refreshBundle: false,
+  });
+  const job = await waitFor(() => h.repository.jobs[0], "stale refresh job");
+  assert.equal(job.refreshBundle, true);
+  assert.equal(job.preferredSessionId, "collector-preferred");
+  assert.equal(job.descriptionCategoryId, undefined);
+  const claim = await h.service.claimNext({ session: session("collector-preferred") });
+  await h.service.completeClaim({
+    session: session("collector-preferred"),
+    jobId: claim.id,
+    variantData: variantData(705),
+  });
+  assert.equal((await pending).descriptionCategoryId, 705);
+});
+
+test("rejects malformed and wrong-account claim completion sessions", async () => {
+  const h = harness();
+  await assert.rejects(
+    h.service.enrichOne({ session: {}, requestId: "request", sku: "sku" }),
+    (error) => error?.status === 401 && error?.code === "COLLECTOR_AUTH_REQUIRED",
+  );
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-scope",
+    sku: "sku-scope",
+  });
+  await waitFor(() => h.repository.jobs[0], "scoped job");
+  const claim = await h.service.claimNext({ session: session("collector-preferred") });
+  await assert.rejects(h.service.completeClaim({
+    session: session("collector-other-account", "account-b"),
+    jobId: claim.id,
+    variantData: variantData(),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  await assert.rejects(h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    variantData: variantData(),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+  await h.service.completeClaim({
+    session: session("collector-preferred"),
+    jobId: claim.id,
+    variantData: variantData(706),
+  });
+  await pending;
+});
+
+test("batch preserves order and isolates a failed item from successful siblings", async () => {
+  const h = harness();
+  for (const sku of ["sku-a", "sku-c"]) {
+    h.repository.setCache(key("account-a", sku), {
+      status: "COMPLETE",
+      result: completeResult(sku),
+      executorSessionId: "collector-preferred",
+      capturedAt: new Date(START).toISOString(),
+      expiresAt: new Date(START + 6 * 60 * 60 * 1000).toISOString(),
+    });
+  }
+  h.repository.setCache(key("account-a", "sku-b"), {
+    status: "ERROR",
+    error: {
+      status: 422,
+      code: "OZON_ENRICH_INCOMPLETE",
+      message: "商品资料不完整",
+      missingFields: ["weightG"],
+      retryable: true,
+    },
+    capturedAt: new Date(START).toISOString(),
+    expiresAt: new Date(START + 60_000).toISOString(),
+  });
+
+  const batch = await h.service.enrichBatch({
+    session: session("collector-request"),
+    requestId: "request-batch",
+    skus: ["sku-a", "sku-b", "sku-c"],
+  });
+
+  assert.deepEqual(batch.map((item) => [item.sku, item.status]), [
+    ["sku-a", "COMPLETE"],
+    ["sku-b", "ERROR"],
+    ["sku-c", "COMPLETE"],
+  ]);
+  assert.deepEqual(batch[1].error, {
+    code: "OZON_ENRICH_INCOMPLETE",
+    message: "Ozon 商品资料不完整",
+    missingFields: ["weightG"],
+    retryable: true,
+  });
+});
+
+test("batch schedules at most four repository reads concurrently", async () => {
+  let active = 0;
+  let maximum = 0;
+  const h = harness();
+  h.repository.readCache = async ({ key }) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setImmediate(resolve));
+    active -= 1;
+    return {
+      status: "COMPLETE",
+      result: completeResult(key.sku),
+      expiresAt: new Date(START + 6 * 60 * 60 * 1000).toISOString(),
+    };
+  };
+  const items = await h.service.enrichBatch({
+    session: session("collector-request"),
+    requestId: "request-capacity",
+    skus: Array.from({ length: 9 }, (_, index) => `sku-${index + 1}`),
+  });
+  assert.equal(items.length, 9);
+  assert.equal(maximum, 4);
+});
+
+test("batch maps an unexpected repository exception to the fixed public upstream error", async () => {
+  const h = harness();
+  h.repository.readCache = async () => {
+    throw Object.assign(new Error("disk path /private/secret cst_secret-secret-secret"), {
+      code: "INTERNAL_DISK_FAILURE",
+    });
+  };
+  const items = await h.service.enrichBatch({
+    session: session("collector-request"),
+    requestId: "request-batch-private-error",
+    skus: ["sku-private-error"],
+  });
+  assert.deepEqual(items, [{
+    sku: "sku-private-error",
+    status: "ERROR",
+    error: {
+      code: "OZON_ENRICH_UPSTREAM_FAILED",
+      message: "Ozon 商品资料暂时无法读取",
+      missingFields: [],
+      retryable: true,
+    },
+  }]);
+  assert.equal(JSON.stringify(items).includes("/private/secret"), false);
+});
+
+test("expired terminal idempotency replay releases its lease and returns stable 409", async () => {
+  const h = harness();
+  const staleKey = key("account-a", "sku-terminal-expired");
+  h.repository.setCache(staleKey, {
+    status: "COMPLETE",
+    result: completeResult("sku-terminal-expired", 222),
+    executorSessionId: "collector-preferred",
+    capturedAt: new Date(START - 7 * 60 * 60 * 1000).toISOString(),
+    expiresAt: new Date(START).toISOString(),
+  });
+  h.repository.jobs.push({
+    id: "job-terminal-expired",
+    accountId: "account-a",
+    requestId: "request-terminal-expired",
+    sku: "sku-terminal-expired",
+    status: "SUCCESS",
+    preferredSessionId: "collector-preferred",
+    claimedSessionId: "collector-preferred",
+    claimExpiresAt: new Date(START - 1).toISOString(),
+    refreshBundle: true,
+    deadlineAt: new Date(START - 1).toISOString(),
+    result: completeResult("sku-terminal-expired", 222),
+    error: null,
+    createdAt: new Date(START - 20_001).toISOString(),
+  });
+
+  await assert.rejects(h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-terminal-expired",
+    sku: "sku-terminal-expired",
+  }), (error) => error?.status === 409
+    && error?.code === "OZON_ENRICH_REQUEST_EXPIRED"
+    && error?.retryable === false);
+  const cache = h.repository.cache.get(h.repository.cacheKey(staleKey));
+  assert.equal(cache.leaseOwner, null);
+  assert.equal(cache.result.descriptionCategoryId, 222);
+});
+
+test("a terminal replay follower reacquires the released lease instead of waiting to timeout", async () => {
+  const h = harness();
+  h.repository.jobs.push({
+    id: "job-terminal-followers",
+    accountId: "account-a",
+    requestId: "request-terminal-followers",
+    sku: "sku-terminal-followers",
+    status: "SUCCESS",
+    preferredSessionId: null,
+    claimedSessionId: "collector-preferred",
+    claimExpiresAt: new Date(START - 1).toISOString(),
+    refreshBundle: true,
+    deadlineAt: new Date(START - 1).toISOString(),
+    result: completeResult("sku-terminal-followers"),
+    error: null,
+    createdAt: new Date(START - 20_001).toISOString(),
+  });
+  const originalCreate = h.repository.createOrGetJob.bind(h.repository);
+  let enterFirst;
+  let releaseFirst;
+  const firstEntered = new Promise((resolve) => { enterFirst = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let createCalls = 0;
+  h.repository.createOrGetJob = async (input) => {
+    createCalls += 1;
+    if (createCalls === 1) {
+      enterFirst();
+      await firstGate;
+    }
+    return originalCreate(input);
+  };
+  const input = {
+    session: session("collector-request"),
+    requestId: "request-terminal-followers",
+    sku: "sku-terminal-followers",
+  };
+  const owner = h.service.enrichOne(input);
+  await firstEntered;
+  const follower = h.service.enrichOne(input);
+  await waitFor(() => h.repository.leaseAttempts.length >= 2, "contended follower lease");
+  releaseFirst();
+
+  const outcomes = await Promise.allSettled([owner, follower]);
+  assert.deepEqual(outcomes.map((outcome) => outcome.reason?.code), [
+    "OZON_ENRICH_REQUEST_EXPIRED",
+    "OZON_ENRICH_REQUEST_EXPIRED",
+  ]);
+  assert.equal(createCalls, 2);
+  assert.ok(h.clock.value < START + 20_000);
+});
+
+test("a follower recovers after the first lease owner fails before creating a job", async () => {
+  const h = harness();
+  const originalCreate = h.repository.createOrGetJob.bind(h.repository);
+  let enterFirst;
+  let releaseFirst;
+  const firstEntered = new Promise((resolve) => { enterFirst = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let createCalls = 0;
+  h.repository.createOrGetJob = async (input) => {
+    createCalls += 1;
+    if (createCalls === 1) {
+      enterFirst();
+      await firstGate;
+      throw Object.assign(new Error("database path and credentials"), {
+        code: "OZON_ENRICHMENT_PERSISTENCE_FAILED",
+        status: 500,
+      });
+    }
+    return originalCreate(input);
+  };
+  const input = {
+    session: session("collector-request"),
+    requestId: "request-create-follower",
+    sku: "sku-create-follower",
+  };
+  const owner = h.service.enrichOne(input);
+  await firstEntered;
+  const follower = h.service.enrichOne(input);
+  await waitFor(() => h.repository.leaseAttempts.length >= 2, "create follower contention");
+  releaseFirst();
+  await assert.rejects(owner, (error) => error?.code === "OZON_ENRICH_UPSTREAM_FAILED"
+    && error?.message === "Ozon 商品资料暂时无法读取");
+  const job = await waitFor(() => h.repository.jobs[0], "follower-created job");
+  const claim = await h.service.claimNext({ session: session("collector-fallback") });
+  await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    variantData: variantData(902),
+  });
+  assert.equal((await follower).descriptionCategoryId, 902);
+  assert.equal(job.id, h.repository.jobs[0].id);
+  assert.equal(createCalls, 2);
+});
+
+test("claim expiry is capped at the job deadline and completion at the boundary cannot write cache", async () => {
+  let clock = START;
+  const state = {
+    collectorSessions: [{
+      id: "collector-deadline",
+      accountId: "account-a",
+      expiresAt: new Date(START + 60_000).toISOString(),
+      revokedAt: null,
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-deadline-cap",
+    accountId: "account-a",
+    requestId: "request-deadline-cap",
+    sku: "sku-deadline-cap",
+    preferredSessionId: null,
+    refreshBundle: true,
+    deadlineAt: new Date(START + 1000),
+    createdAt: new Date(START),
+  });
+  const service = createCollectorOzonEnrichmentService({
+    repository,
+    now: () => new Date(clock),
+  });
+  clock = START + 800;
+  const claim = await service.claimNext({ session: session("collector-deadline") });
+  assert.equal(claim.id, "job-deadline-cap");
+  assert.equal(state.collectorOzonEnrichmentJobs[0].claimExpiresAt, new Date(START + 1000).toISOString());
+  clock = START + 1000;
+  await assert.rejects(service.completeClaim({
+    session: session("collector-deadline"),
+    jobId: claim.id,
+    variantData: variantData(901),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP"
+    && error?.message === "Collector 会话不拥有该 Ozon 商品补全任务");
+  assert.equal(state.collectorOzonEnrichmentCache, undefined);
+});
+
+test("complete persistence failures use a stable public error and audit the rejected attempt", async () => {
+  const h = harness();
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-complete-persistence",
+    sku: "sku-complete-persistence",
+  });
+  await waitFor(() => h.repository.jobs[0], "persistence job");
+  const claim = await h.service.claimNext({ session: session("collector-fallback") });
+  h.repository.completeJobAndCache = async () => {
+    throw Object.assign(new Error("PostgreSQL relation and filesystem detail"), {
+      code: "OZON_ENRICHMENT_PERSISTENCE_FAILED",
+      status: 500,
+    });
+  };
+
+  await assert.rejects(h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    variantData: variantData(903),
+  }), (error) => error?.code === "OZON_ENRICH_UPSTREAM_FAILED"
+    && error?.message === "Ozon 商品资料暂时无法读取");
+  const audit = h.audits.at(-1);
+  assert.equal(audit.action, "collector.ozon.enrichment.complete");
+  assert.equal(audit.status, "FAILED");
+  assert.equal(audit.code, "OZON_ENRICH_UPSTREAM_FAILED");
+  assert.equal(JSON.stringify(audit).includes("filesystem detail"), false);
+  await assert.rejects(pending);
+});
+
+test("a rejected fail attempt is audited with stable ownership semantics", async () => {
+  const h = harness();
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-fail-audit",
+    sku: "sku-fail-audit",
+  });
+  await waitFor(() => h.repository.jobs[0], "failure audit job");
+  const claim = await h.service.claimNext({ session: session("collector-preferred") });
+  await assert.rejects(h.service.failClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    code: "OZON_ENRICH_NOT_FOUND",
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP"
+    && error?.message === "Collector 会话不拥有该 Ozon 商品补全任务");
+  assert.equal(h.audits.at(-1).action, "collector.ozon.enrichment.fail");
+  assert.equal(h.audits.at(-1).status, "FAILED");
+  assert.equal(h.audits.at(-1).code, "OZON_ENRICHMENT_JOB_OWNERSHIP");
+
+  await h.service.completeClaim({
+    session: session("collector-preferred"),
+    jobId: claim.id,
+    variantData: variantData(904),
+  });
+  await pending;
+});
+
+test("audit sink failure emits a safe operational signal without failing a cache hit", async () => {
+  const signals = [];
+  const clock = { value: START };
+  const repository = new FakeRepository({ clock, sessions: [session("collector-request")] });
+  repository.setCache(key("account-a", "sku-audit-signal"), {
+    status: "COMPLETE",
+    result: completeResult("sku-audit-signal"),
+    executorSessionId: "collector-request",
+    capturedAt: new Date(START).toISOString(),
+    expiresAt: new Date(START + 6 * 60 * 60 * 1000).toISOString(),
+  });
+  const service = createCollectorOzonEnrichmentService({
+    repository,
+    now: () => new Date(START),
+    audit: async () => { throw new Error("audit database secret"); },
+    onAuditError: (event) => signals.push(event),
+  });
+  const enriched = await service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-audit-signal",
+    sku: "sku-audit-signal",
+  });
+  assert.equal(enriched.cache.hit, true);
+  assert.deepEqual(signals, [{
+    action: "collector.ozon.enrich",
+    accountId: "account-a",
+    requestId: "request-audit-signal",
+    jobId: "",
+  }]);
+  assert.equal(JSON.stringify(signals).includes("audit database secret"), false);
+});
+
+test("rejects a fifth simultaneous cold request for one account with stable busy error", async () => {
+  const h = harness();
+  const pending = Array.from({ length: 4 }, (_, index) => h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: `request-busy-${index + 1}`,
+    sku: `sku-busy-${index + 1}`,
+  }));
+  await waitFor(() => h.repository.jobs.length === 4, "four account jobs");
+
+  await assert.rejects(h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-busy-5",
+    sku: "sku-busy-5",
+  }), (error) => error?.status === 429
+    && error?.code === "OZON_ENRICH_BUSY"
+    && error?.retryable === true);
+  assert.equal(h.repository.jobs.length, 4);
+
+  for (let index = 0; index < 4; index += 1) {
+    const claim = await h.service.claimNext({ session: session("collector-fallback") });
+    await h.service.completeClaim({
+      session: session("collector-fallback"),
+      jobId: claim.id,
+      variantData: variantData(800 + index),
+    });
+  }
+  await Promise.all(pending);
+});
+
+test("same-key followers share one admission slot so an unrelated SKU can still start", async () => {
+  const h = harness();
+  const sharedInput = {
+    session: session("collector-request"),
+    requestId: "request-shared-capacity",
+    sku: "sku-shared-capacity",
+  };
+  const followers = Array.from({ length: 4 }, () => h.service.enrichOne(sharedInput));
+  await waitFor(() => h.repository.jobs.length === 1, "shared capacity job");
+  const unrelated = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-unrelated-capacity",
+    sku: "sku-unrelated-capacity",
+  });
+  await waitFor(() => h.repository.jobs.length === 2, "unrelated capacity job");
+
+  for (let index = 0; index < 2; index += 1) {
+    const claim = await h.service.claimNext({ session: session("collector-fallback") });
+    await h.service.completeClaim({
+      session: session("collector-fallback"),
+      jobId: claim.id,
+      variantData: variantData(910 + index),
+    });
+  }
+  await Promise.all([...followers, unrelated]);
+  assert.equal(h.repository.createdJobCount, 2);
+});
+
+test("batch preserves request-expired as a non-retryable public item error", async () => {
+  const h = harness();
+  h.repository.jobs.push({
+    id: "job-batch-expired",
+    accountId: "account-a",
+    requestId: "request-batch-expired",
+    sku: "sku-batch-expired",
+    status: "FAILED",
+    refreshBundle: true,
+    deadlineAt: new Date(START - 1).toISOString(),
+    createdAt: new Date(START - 20_001).toISOString(),
+  });
+  const output = await h.service.enrichBatch({
+    session: session("collector-request"),
+    requestId: "request-batch-expired",
+    skus: ["sku-batch-expired"],
+  });
+  assert.deepEqual(output[0].error, {
+    code: "OZON_ENRICH_REQUEST_EXPIRED",
+    message: "该补全请求已过期，请使用新的 requestId 重试",
+    missingFields: [],
+    retryable: false,
+  });
+});

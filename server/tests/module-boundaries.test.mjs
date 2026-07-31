@@ -8,6 +8,9 @@ const [
   collectionPipeline,
   legacyDataCollectionStore,
   formalPersistence,
+  enrichmentService,
+  enrichmentRoutes,
+  enrichmentRuntime,
 ] = await Promise.all([
   readFile(new URL("../index.mjs", import.meta.url), "utf8"),
   readFile(new URL("../../app/src/App.jsx", import.meta.url), "utf8"),
@@ -15,6 +18,9 @@ const [
   readFile(new URL("../collection-pipeline.mjs", import.meta.url), "utf8"),
   readFile(new URL("../legacy-data-collection-store.mjs", import.meta.url), "utf8"),
   readFile(new URL("../formal-persistence.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../collector-ozon-enrichment-service.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../collector-ozon-enrichment-routes.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../collector-ozon-enrichment-runtime.mjs", import.meta.url), "utf8"),
 ]);
 
 assert.ok(
@@ -24,6 +30,52 @@ assert.ok(
 assert.ok(
   appEntry.split("\n").length <= 9850,
   "app/src/App.jsx exceeded its migration guard; add new pages outside App.jsx",
+);
+
+for (const functionName of [
+  "createCollectorOzonEnrichmentService",
+  "createCollectorOzonEnrichmentHttpHandler",
+  "createCollectorOzonEnrichmentRuntime",
+]) {
+  assert.doesNotMatch(
+    serverEntry,
+    new RegExp(`function\\s+${functionName}\\s*\\(`),
+    `${functionName} must remain in the focused Ozon enrichment modules`,
+  );
+}
+assert.doesNotMatch(
+  enrichmentService,
+  /(?:persistenceMode|getPostgresPool|loadState|saveState)/,
+  "Ozon enrichment service must depend only on its repository port",
+);
+assert.doesNotMatch(
+  enrichmentRoutes,
+  /(?:getPostgresPool|createJsonCollectorOzonEnrichmentRepository|loadState|saveState)/,
+  "Ozon enrichment routes must not own persistence",
+);
+assert.match(
+  enrichmentRuntime,
+  /createJsonCollectorOzonEnrichmentRepository/,
+  "Ozon enrichment runtime must own JSON repository selection",
+);
+assert.match(
+  enrichmentRuntime,
+  /createPostgresCollectorOzonEnrichmentRepository/,
+  "Ozon enrichment runtime must own PostgreSQL repository selection",
+);
+const collectorAuthRouteIndex = serverEntry.indexOf("collectorAuthRuntime.handleHttpRoute(req, res, url)");
+const enrichmentRouteIndex = serverEntry.indexOf("collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)");
+const fastCollectionRouteIndex = serverEntry.indexOf(
+  "handleFastCollectionRoute(req, res, url)",
+  enrichmentRouteIndex,
+);
+const broadJsonTransactionIndex = serverEntry.indexOf("return jsonStateTransaction.run(async () =>", enrichmentRouteIndex);
+assert.ok(
+  collectorAuthRouteIndex >= 0
+    && enrichmentRouteIndex > collectorAuthRouteIndex
+    && fastCollectionRouteIndex > enrichmentRouteIndex
+    && broadJsonTransactionIndex > enrichmentRouteIndex,
+  "Ozon enrichment routes must run after Collector auth and before waiting could hold broad state",
 );
 
 for (const functionName of [

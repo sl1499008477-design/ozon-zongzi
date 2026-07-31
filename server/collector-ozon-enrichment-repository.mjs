@@ -63,6 +63,18 @@ function requiredPayload(value, field) {
   return value;
 }
 
+function positiveLimit(value, field) {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw repositoryError(
+      `Ozon enrichment ${field} is invalid`,
+      "OZON_ENRICHMENT_LIMIT_INVALID",
+      400,
+    );
+  }
+  return limit;
+}
+
 function optionalIso(value) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -201,6 +213,8 @@ function terminalJobError(record, collectorSessionId, now) {
     || record.claimedSessionId !== collectorSessionId
     || !record.claimExpiresAt
     || new Date(record.claimExpiresAt).getTime() <= now.getTime()
+    || !record.deadlineAt
+    || new Date(record.deadlineAt).getTime() <= now.getTime()
   ) {
     return repositoryError(
       "Collector session does not own the Ozon enrichment job",
@@ -219,21 +233,23 @@ export function createJsonCollectorOzonEnrichmentRepository({
     throw new TypeError("Ozon enrichment JSON state required");
   }
 
-  function requireScopedCollectorSession(accountId, sessionId, now = null) {
+  function scopedCollectorSession(accountId, sessionId, now = null) {
     const session = Array.isArray(state.collectorSessions)
       ? state.collectorSessions.find((record) => record?.id === sessionId)
       : null;
     const expiryMillis = session?.expiresAt
       ? new Date(session.expiresAt).getTime()
       : Number.NaN;
-    if (
-      !session
-      || session.accountId !== accountId
-      || session.revokedAt
-      || !Number.isFinite(expiryMillis)
-      || !now
-      || expiryMillis <= now.getTime()
-    ) {
+    return Boolean(session)
+      && session.accountId === accountId
+      && !session.revokedAt
+      && Number.isFinite(expiryMillis)
+      && Boolean(now)
+      && expiryMillis > now.getTime();
+  }
+
+  function requireScopedCollectorSession(accountId, sessionId, now = null) {
+    if (!scopedCollectorSession(accountId, sessionId, now)) {
       throw repositoryError(
         "Collector session is outside the Ozon enrichment account scope",
         "OZON_ENRICHMENT_SESSION_SCOPE",
@@ -281,11 +297,18 @@ export function createJsonCollectorOzonEnrichmentRepository({
     return copy(found);
   }
 
-  async function tryAcquireCacheLease({ key: rawKey, leaseOwner, leaseExpiresAt, now }) {
+  async function tryAcquireCacheLease({
+    key: rawKey,
+    leaseOwner,
+    leaseExpiresAt,
+    now,
+    maxActiveLeases = 4,
+  }) {
     const key = enrichmentKey(rawKey);
     const owner = requiredText(leaseOwner, "leaseOwner");
     const expires = requiredDate(leaseExpiresAt, "leaseExpiresAt");
     const at = requiredDate(now, "now");
+    const capacity = positiveLimit(maxActiveLeases, "maxActiveLeases");
     return serializeJsonOperation(async () => {
       const existing = cacheEntries().find((record) => sameCacheKey(record, key));
       const heldByOther = existing?.leaseOwner
@@ -293,6 +316,19 @@ export function createJsonCollectorOzonEnrichmentRepository({
         && existing.leaseExpiresAt
         && new Date(existing.leaseExpiresAt).getTime() > at.getTime();
       if (heldByOther) return null;
+      const activeOwners = new Set(cacheEntries()
+        .filter((record) => record.accountId === key.accountId
+          && record.leaseOwner
+          && record.leaseExpiresAt
+          && new Date(record.leaseExpiresAt).getTime() > at.getTime())
+        .map((record) => record.leaseOwner));
+      if (!activeOwners.has(owner) && activeOwners.size >= capacity) {
+        throw repositoryError(
+          "Ozon enrichment account has reached its active lease capacity",
+          "OZON_ENRICH_BUSY",
+          429,
+        );
+      }
       return commitMutation(["collectorOzonEnrichmentCache"], () => {
         state.collectorOzonEnrichmentCache = cacheEntries();
         let mutable = state.collectorOzonEnrichmentCache.find((record) => sameCacheKey(record, key));
@@ -393,7 +429,39 @@ export function createJsonCollectorOzonEnrichmentRepository({
         record.accountId === stableKey.accountId
         && record.requestId === stableKey.requestId
         && record.sku === stableKey.sku);
-      if (existing) return copy(existing);
+      if (existing) {
+        const retryAt = requiredDate(input.createdAt, "createdAt");
+        const terminal = existing.status === "SUCCESS" || existing.status === "FAILED";
+        const existingDeadline = new Date(existing.deadlineAt).getTime();
+        if (terminal || (Number.isFinite(existingDeadline) && existingDeadline > retryAt.getTime())) {
+          return copy(existing);
+        }
+        const retried = newJob({ ...input, id: existing.id });
+        if (
+          retried.preferredSessionId
+          && !scopedCollectorSession(
+            retried.accountId,
+            retried.preferredSessionId,
+            requiredDate(retried.createdAt, "createdAt"),
+          )
+        ) {
+          retried.preferredSessionId = null;
+        }
+        return commitMutation(["collectorOzonEnrichmentJobs"], () => {
+          existing.status = "PENDING";
+          existing.preferredSessionId = retried.preferredSessionId;
+          existing.claimedSessionId = null;
+          existing.claimExpiresAt = null;
+          existing.refreshBundle = copy(retried.refreshBundle);
+          existing.deadlineAt = retried.deadlineAt;
+          existing.result = null;
+          existing.error = null;
+          existing.createdAt = retried.createdAt;
+          existing.updatedAt = retried.updatedAt;
+          existing.completedAt = null;
+          return existing;
+        });
+      }
       if (jobEntries().some((record) => record.id === stableKey.id)) {
         throw repositoryError(
           "Ozon enrichment job id belongs to another stable key",
@@ -402,12 +470,15 @@ export function createJsonCollectorOzonEnrichmentRepository({
         );
       }
       const candidate = newJob(input);
-      if (candidate.preferredSessionId) {
-        requireScopedCollectorSession(
+      if (
+        candidate.preferredSessionId
+        && !scopedCollectorSession(
           candidate.accountId,
           candidate.preferredSessionId,
           requiredDate(candidate.createdAt, "createdAt"),
-        );
+        )
+      ) {
+        candidate.preferredSessionId = null;
       }
       return commitMutation(["collectorOzonEnrichmentJobs"], () => {
         state.collectorOzonEnrichmentJobs = jobEntries();
@@ -439,14 +510,26 @@ export function createJsonCollectorOzonEnrichmentRepository({
             && new Date(record.claimExpiresAt).getTime() <= at.getTime()
           ))
           && new Date(record.deadlineAt).getTime() > at.getTime()
-          && (!record.preferredSessionId || record.preferredSessionId === sessionId))
-        .sort((left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+          && (
+            !record.preferredSessionId
+            || record.preferredSessionId === sessionId
+            || new Date(record.createdAt).getTime() + 1000 <= at.getTime()
+          ))
+        .sort((left, right) => {
+          const preference = Number(right.preferredSessionId === sessionId)
+            - Number(left.preferredSessionId === sessionId);
+          return preference
+            || left.createdAt.localeCompare(right.createdAt)
+            || left.id.localeCompare(right.id);
+        })[0];
       if (!candidate) return null;
       return commitMutation(["collectorOzonEnrichmentJobs"], () => {
         candidate.status = "PROCESSING";
         candidate.claimedSessionId = sessionId;
-        candidate.claimExpiresAt = claimExpiry.toISOString();
+        candidate.claimExpiresAt = new Date(Math.min(
+          claimExpiry.getTime(),
+          new Date(candidate.deadlineAt).getTime(),
+        )).toISOString();
         candidate.updatedAt = at.toISOString();
         return candidate;
       });
@@ -501,6 +584,88 @@ export function createJsonCollectorOzonEnrichmentRepository({
     return found ? copy(found) : null;
   }
 
+  async function finishJobAndCache({
+    accountId,
+    collectorSessionId,
+    jobId,
+    key: rawKey,
+    result,
+    error,
+    responseHash,
+    capturedAt,
+    expiresAt,
+    now,
+    status,
+  }) {
+    const lookup = jobLookupInput({ accountId, jobId });
+    const key = enrichmentKey(rawKey);
+    const sessionId = requiredText(collectorSessionId, "collectorSessionId");
+    const at = requiredDate(now, "now");
+    const captured = requiredDate(capturedAt, "capturedAt");
+    const expires = requiredDate(expiresAt, "expiresAt");
+    const payload = status === "SUCCESS" ? result : error;
+    requiredPayload(payload, status === "SUCCESS" ? "result" : "error");
+    const response = requiredText(responseHash, "responseHash");
+    if (key.accountId !== lookup.accountId) {
+      throw repositoryError(
+        "Ozon enrichment cache and job account scopes differ",
+        "OZON_ENRICHMENT_SESSION_SCOPE",
+        403,
+      );
+    }
+    return serializeJsonOperation(async () => {
+      requireScopedCollectorSession(lookup.accountId, sessionId, at);
+      const record = jobEntries().find((item) =>
+        item.accountId === lookup.accountId && item.id === lookup.jobId);
+      const invalid = terminalJobError(record, sessionId, at);
+      if (invalid) throw invalid;
+      if (record.sku !== key.sku) {
+        throw repositoryError(
+          "Ozon enrichment cache and job SKU differ",
+          "OZON_ENRICHMENT_JOB_OWNERSHIP",
+          409,
+        );
+      }
+      return commitMutation(
+        ["collectorOzonEnrichmentJobs", "collectorOzonEnrichmentCache"],
+        () => {
+          record.status = status;
+          record.result = copy(result ?? null);
+          record.error = copy(error ?? null);
+          record.completedAt = at.toISOString();
+          record.updatedAt = at.toISOString();
+
+          state.collectorOzonEnrichmentCache = cacheEntries();
+          let cache = state.collectorOzonEnrichmentCache
+            .find((item) => sameCacheKey(item, key));
+          if (!cache) {
+            cache = cacheRecord(key);
+            state.collectorOzonEnrichmentCache.push(cache);
+          }
+          cache.status = status === "SUCCESS" ? "COMPLETE" : "ERROR";
+          cache.result = copy(result ?? null);
+          cache.error = copy(error ?? null);
+          cache.responseHash = response;
+          cache.executorSessionId = status === "SUCCESS" ? sessionId : null;
+          cache.capturedAt = captured.toISOString();
+          cache.expiresAt = expires.toISOString();
+          cache.leaseOwner = null;
+          cache.leaseExpiresAt = null;
+          cache.updatedAt = captured.toISOString();
+          return record;
+        },
+      );
+    });
+  }
+
+  async function completeJobAndCache(input) {
+    return finishJobAndCache({ ...input, status: "SUCCESS", error: null });
+  }
+
+  async function failJobAndCache(input) {
+    return finishJobAndCache({ ...input, status: "FAILED", result: null });
+  }
+
   return Object.freeze({
     readCache,
     tryAcquireCacheLease,
@@ -511,6 +676,8 @@ export function createJsonCollectorOzonEnrichmentRepository({
     claimNextJob,
     completeJob,
     failJob,
+    completeJobAndCache,
+    failJobAndCache,
     readJob,
   });
 }
@@ -541,25 +708,68 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
     return result.rows[0] ? cacheFromRow(result.rows[0]) : null;
   }
 
-  async function tryAcquireCacheLease({ key: rawKey, leaseOwner, leaseExpiresAt, now }) {
+  async function tryAcquireCacheLease({
+    key: rawKey,
+    leaseOwner,
+    leaseExpiresAt,
+    now,
+    maxActiveLeases = 4,
+  }) {
     const key = enrichmentKey(rawKey);
     const owner = requiredText(leaseOwner, "leaseOwner");
     const expires = requiredDate(leaseExpiresAt, "leaseExpiresAt");
     const at = requiredDate(now, "now");
+    const capacity = positiveLimit(maxActiveLeases, "maxActiveLeases");
     const result = await query(
-      `INSERT INTO collector_ozon_enrichment_cache (
-         account_id, source, sku, contract_version, lease_owner, lease_expires_at, updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (account_id, source, sku, contract_version) DO UPDATE
-       SET lease_owner = EXCLUDED.lease_owner,
-           lease_expires_at = EXCLUDED.lease_expires_at,
-           updated_at = EXCLUDED.updated_at
-       WHERE collector_ozon_enrichment_cache.lease_expires_at <= EXCLUDED.updated_at
-          OR collector_ozon_enrichment_cache.lease_owner = EXCLUDED.lease_owner
-       RETURNING account_id, source, sku, contract_version, lease_owner, lease_expires_at`,
-      [key.accountId, key.source, key.sku, key.contractVersion, owner, expires, at],
+      `WITH account_lock AS MATERIALIZED (
+         SELECT pg_advisory_xact_lock(hashtextextended($1, 0))
+       ), lease_state AS MATERIALIZED (
+         SELECT COUNT(DISTINCT lease_owner) FILTER (
+                  WHERE lease_owner IS NOT NULL AND lease_expires_at>$7
+                ) AS active_lease_count,
+                COALESCE(BOOL_OR(
+                  source=$2 AND sku=$3 AND contract_version=$4
+                  AND lease_owner IS NOT NULL AND lease_owner<>$5 AND lease_expires_at>$7
+                ), FALSE) AS key_held_by_other,
+                COALESCE(BOOL_OR(
+                  source=$2 AND sku=$3 AND contract_version=$4
+                  AND lease_owner=$5 AND lease_expires_at>$7
+                ), FALSE) AS key_held_by_owner
+           FROM account_lock
+           LEFT JOIN collector_ozon_enrichment_cache ON account_id=$1
+       ), acquired AS (
+         INSERT INTO collector_ozon_enrichment_cache (
+           account_id, source, sku, contract_version, lease_owner, lease_expires_at, updated_at
+         )
+         SELECT $1,$2,$3,$4,$5,$6,$7
+           FROM lease_state
+          WHERE key_held_by_other OR key_held_by_owner OR active_lease_count<$8
+         ON CONFLICT (account_id, source, sku, contract_version) DO UPDATE
+         SET lease_owner = EXCLUDED.lease_owner,
+             lease_expires_at = EXCLUDED.lease_expires_at,
+             updated_at = EXCLUDED.updated_at
+         WHERE collector_ozon_enrichment_cache.lease_expires_at <= EXCLUDED.updated_at
+            OR collector_ozon_enrichment_cache.lease_owner = EXCLUDED.lease_owner
+         RETURNING account_id, source, sku, contract_version, lease_owner, lease_expires_at
+       )
+       SELECT TO_JSONB(acquired) AS lease, FALSE AS busy FROM acquired
+       UNION ALL
+       SELECT NULL::jsonb AS lease, TRUE AS busy
+         FROM lease_state
+        WHERE NOT EXISTS (SELECT 1 FROM acquired)
+          AND NOT key_held_by_other AND NOT key_held_by_owner
+          AND active_lease_count>=$8`,
+      [key.accountId, key.source, key.sku, key.contractVersion, owner, expires, at, capacity],
     );
-    return result.rows[0] ? cacheFromRow(result.rows[0]) : null;
+    if (result.rows[0]?.busy === true) {
+      throw repositoryError(
+        "Ozon enrichment account has reached its active lease capacity",
+        "OZON_ENRICH_BUSY",
+        429,
+      );
+    }
+    const acquired = result.rows[0]?.lease || result.rows[0];
+    return acquired ? cacheFromRow(acquired) : null;
   }
 
   async function releaseCacheLease({ key: rawKey, leaseOwner }) {
@@ -668,37 +878,74 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
 
   async function createOrGetJob(input) {
     const record = newJob(input);
+    const recordParams = [
+      record.id,
+      record.accountId,
+      record.requestId,
+      record.sku,
+      JSON.stringify(record.refreshBundle),
+      record.preferredSessionId,
+      requiredDate(record.deadlineAt, "deadlineAt"),
+      requiredDate(record.createdAt, "createdAt"),
+    ];
     const result = await query(
       `INSERT INTO collector_ozon_enrichment_jobs (
          id, account_id, request_id, sku, status, refresh_bundle,
          preferred_session_id, deadline_at, created_at, updated_at
        )
-       SELECT $1,$2,$3,$4,'PENDING',$5::jsonb,$6,$7,$8,$8
+       SELECT $1,$2,$3,$4,'PENDING',$5::jsonb,
+              CASE WHEN preferred.id IS NULL THEN NULL ELSE $6 END,$7,$8,$8
          FROM accounts AS account
          LEFT JOIN collector_sessions AS preferred
            ON preferred.id=$6 AND preferred.account_id=$2
           AND preferred.revoked_at IS NULL AND preferred.expires_at>$8
-        WHERE account.id=$2 AND ($6::text IS NULL OR preferred.id IS NOT NULL)
+        WHERE account.id=$2
        ON CONFLICT DO NOTHING
        RETURNING *`,
-      [
-        record.id,
-        record.accountId,
-        record.requestId,
-        record.sku,
-        JSON.stringify(record.refreshBundle),
-        record.preferredSessionId,
-        requiredDate(record.deadlineAt, "deadlineAt"),
-        requiredDate(record.createdAt, "createdAt"),
-      ],
+      recordParams,
     );
     if (result.rows[0]) return jobFromRow(result.rows[0]);
+    const reset = await query(
+      `UPDATE collector_ozon_enrichment_jobs AS job
+          SET status='PENDING', refresh_bundle=$5::jsonb,
+              preferred_session_id=CASE WHEN preferred.id IS NULL THEN NULL ELSE $6 END,
+              claimed_session_id=NULL,
+              claim_expires_at=NULL, deadline_at=$7,
+              result_json=NULL, error_json=NULL,
+              created_at=$8, updated_at=$8, completed_at=NULL
+         FROM accounts AS account
+         LEFT JOIN collector_sessions AS preferred
+           ON preferred.id=$6 AND preferred.account_id=$2
+          AND preferred.revoked_at IS NULL AND preferred.expires_at>$8
+        WHERE job.account_id=$2 AND job.request_id=$3 AND job.sku=$4
+          AND job.status IN ('PENDING','PROCESSING')
+          AND job.deadline_at<=$8
+          AND account.id=$2
+       RETURNING job.*`,
+      recordParams,
+    );
+    if (reset.rows[0]) return jobFromRow(reset.rows[0]);
     const stable = await query(
       `SELECT * FROM collector_ozon_enrichment_jobs
         WHERE account_id=$1 AND request_id=$2 AND sku=$3`,
       [record.accountId, record.requestId, record.sku],
     );
-    if (stable.rows[0]) return jobFromRow(stable.rows[0]);
+    if (stable.rows[0]) {
+      const stableJob = jobFromRow(stable.rows[0]);
+      const terminal = stableJob.status === "SUCCESS" || stableJob.status === "FAILED";
+      const stableDeadline = new Date(stableJob.deadlineAt).getTime();
+      if (
+        !terminal
+        && (!Number.isFinite(stableDeadline) || stableDeadline <= recordParams[7].getTime())
+      ) {
+        throw repositoryError(
+          "Preferred Collector session is outside the Ozon enrichment account scope",
+          "OZON_ENRICHMENT_SESSION_SCOPE",
+          403,
+        );
+      }
+      return stableJob;
+    }
     const idConflict = await query(
       "SELECT id FROM collector_ozon_enrichment_jobs WHERE id=$1",
       [record.id],
@@ -769,7 +1016,11 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
                 OR (job.status='PROCESSING' AND job.claim_expires_at<=$3)
               )
               AND job.deadline_at>$3
-              AND (job.preferred_session_id IS NULL OR job.preferred_session_id=$2)
+              AND (
+                job.preferred_session_id IS NULL
+                OR job.preferred_session_id=$2
+                OR job.created_at + INTERVAL '1 second'<=$3
+              )
             ORDER BY CASE WHEN job.preferred_session_id=$2 THEN 0 ELSE 1 END,
                      job.created_at,
                      job.id
@@ -778,7 +1029,7 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
          )
          UPDATE collector_ozon_enrichment_jobs AS job
             SET status='PROCESSING', claimed_session_id=$2,
-                claim_expires_at=$4, updated_at=$3
+                claim_expires_at=LEAST($4, job.deadline_at), updated_at=$3
            FROM candidate
           WHERE job.id=candidate.id AND job.account_id=$1
          RETURNING job.*`,
@@ -821,7 +1072,7 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
           SET status='${status}', ${resultColumn}=$5::jsonb, ${otherColumn}=NULL,
               completed_at=$4, updated_at=$4
         WHERE account_id=$1 AND claimed_session_id=$2 AND id=$3
-          AND status='PROCESSING' AND claim_expires_at>$4
+          AND status='PROCESSING' AND claim_expires_at>$4 AND deadline_at>$4
           AND EXISTS (SELECT 1 FROM collector_sessions AS session
                        WHERE session.id=$2 AND session.account_id=$1
                          AND session.revoked_at IS NULL AND session.expires_at>$4)
@@ -876,6 +1127,145 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
     return result.rows[0] ? jobFromRow(result.rows[0]) : null;
   }
 
+  async function finishJobAndCache({
+    accountId,
+    collectorSessionId,
+    jobId,
+    key: rawKey,
+    result,
+    error,
+    responseHash,
+    capturedAt,
+    expiresAt,
+    now,
+    status,
+  }) {
+    const lookup = jobLookupInput({ accountId, jobId });
+    const key = enrichmentKey(rawKey);
+    const sessionId = requiredText(collectorSessionId, "collectorSessionId");
+    const at = requiredDate(now, "now");
+    const captured = requiredDate(capturedAt, "capturedAt");
+    const expires = requiredDate(expiresAt, "expiresAt");
+    const payload = status === "SUCCESS" ? result : error;
+    requiredPayload(payload, status === "SUCCESS" ? "result" : "error");
+    const response = requiredText(responseHash, "responseHash");
+    if (key.accountId !== lookup.accountId) {
+      throw repositoryError(
+        "Ozon enrichment cache and job account scopes differ",
+        "OZON_ENRICHMENT_SESSION_SCOPE",
+        403,
+      );
+    }
+    if (!pool.connect) throw new TypeError("Ozon enrichment PostgreSQL pool.connect required");
+    const client = await pool.connect();
+    let began = false;
+    try {
+      await client.query("BEGIN");
+      began = true;
+      const resultColumn = status === "SUCCESS" ? "result_json" : "error_json";
+      const otherColumn = status === "SUCCESS" ? "error_json" : "result_json";
+      const updated = await client.query(
+        `UPDATE collector_ozon_enrichment_jobs
+            SET status='${status}', ${resultColumn}=$5::jsonb, ${otherColumn}=NULL,
+                completed_at=$4, updated_at=$4
+          WHERE account_id=$1 AND claimed_session_id=$2 AND id=$3 AND sku=$6
+            AND status='PROCESSING' AND claim_expires_at>$4 AND deadline_at>$4
+            AND EXISTS (SELECT 1 FROM collector_sessions AS session
+                         WHERE session.id=$2 AND session.account_id=$1
+                           AND session.revoked_at IS NULL AND session.expires_at>$4)
+         RETURNING *`,
+        [
+          lookup.accountId,
+          sessionId,
+          lookup.jobId,
+          at,
+          JSON.stringify(payload ?? null),
+          key.sku,
+        ],
+      );
+      if (!updated.rows[0]) {
+        const activeSession = await client.query(
+          `SELECT id FROM collector_sessions
+            WHERE account_id=$1 AND id=$2
+              AND revoked_at IS NULL AND expires_at>$3`,
+          [lookup.accountId, sessionId, at],
+        );
+        if (!activeSession.rows[0]) {
+          throw repositoryError(
+            "Collector session is outside the Ozon enrichment account scope",
+            "OZON_ENRICHMENT_SESSION_SCOPE",
+            403,
+          );
+        }
+        const found = await client.query(
+          `SELECT * FROM collector_ozon_enrichment_jobs
+            WHERE account_id=$1 AND id=$2`,
+          [lookup.accountId, lookup.jobId],
+        );
+        throw terminalJobError(
+          found.rows[0] ? jobFromRow(found.rows[0]) : null,
+          sessionId,
+          at,
+        ) || repositoryError(
+          "Collector session no longer owns an updatable Ozon enrichment job",
+          "OZON_ENRICHMENT_JOB_OWNERSHIP",
+          409,
+        );
+      }
+
+      const cacheStatus = status === "SUCCESS" ? "COMPLETE" : "ERROR";
+      await client.query(
+        `INSERT INTO collector_ozon_enrichment_cache (
+           account_id, source, sku, contract_version, status, result_json, error_json,
+           response_hash, last_executor_session_id, captured_at, expires_at,
+           lease_owner, lease_expires_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,NULL,'-infinity',$10)
+         ON CONFLICT (account_id, source, sku, contract_version) DO UPDATE SET
+           status=EXCLUDED.status, result_json=EXCLUDED.result_json,
+           error_json=EXCLUDED.error_json, response_hash=EXCLUDED.response_hash,
+           last_executor_session_id=EXCLUDED.last_executor_session_id,
+           captured_at=EXCLUDED.captured_at, expires_at=EXCLUDED.expires_at,
+           lease_owner=NULL, lease_expires_at='-infinity', updated_at=EXCLUDED.updated_at`,
+        [
+          key.accountId,
+          key.source,
+          key.sku,
+          key.contractVersion,
+          cacheStatus,
+          status === "SUCCESS" ? JSON.stringify(result ?? null) : null,
+          status === "FAILED" ? JSON.stringify(error ?? null) : null,
+          response,
+          status === "SUCCESS" ? sessionId : null,
+          captured,
+          expires,
+        ],
+      );
+      await client.query("COMMIT");
+      began = false;
+      return jobFromRow(updated.rows[0]);
+    } catch (errorValue) {
+      if (began) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // Preserve the original terminal transition failure.
+        }
+      }
+      if (errorValue?.code?.startsWith("OZON_ENRICHMENT_")) throw errorValue;
+      throw repositoryError("Ozon enrichment PostgreSQL terminal transaction failed");
+    } finally {
+      client.release();
+    }
+  }
+
+  async function completeJobAndCache(input) {
+    return finishJobAndCache({ ...input, status: "SUCCESS", error: null });
+  }
+
+  async function failJobAndCache(input) {
+    return finishJobAndCache({ ...input, status: "FAILED", result: null });
+  }
+
   return Object.freeze({
     readCache,
     tryAcquireCacheLease,
@@ -886,6 +1276,8 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
     claimNextJob,
     completeJob,
     failJob,
+    completeJobAndCache,
+    failJobAndCache,
     readJob,
   });
 }

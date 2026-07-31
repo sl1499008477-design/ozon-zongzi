@@ -130,6 +130,7 @@ import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
+import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
@@ -350,6 +351,15 @@ async function saveState(state) {
 
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
+const collectorOzonEnrichmentRuntime = createCollectorOzonEnrichmentRuntime({
+  loadState,
+  saveState,
+  persistenceMode,
+  stateTransaction: jsonStateTransaction,
+  authenticate: collectorAuthRuntime.authenticateSessionRequest,
+  readJson: readBody,
+  sendJson,
+});
 const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollectionHandler({
   authenticate: collectorAuthRuntime.authenticateRequest,
   readJson: readBody,
@@ -2283,6 +2293,7 @@ async function handle(req, res) {
 
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
+  if (await collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: (request) => collectorAuthRuntime.authenticateRequest(
       request,
