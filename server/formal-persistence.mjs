@@ -575,12 +575,14 @@ export async function ensureFormalSchema(pool) {
   formalSchemaReady = true;
 }
 
-function overwriteAccountDeletionCollectorAuthCounts(
+function overwriteAccountDeletionCollectorCounts(
   state,
   accountId,
   {
     deletedCollectorAuthTicketCount,
     deletedCollectorSessionCount,
+    deletedCollectorOzonEnrichmentCacheCount,
+    deletedCollectorOzonEnrichmentJobCount,
   },
 ) {
   const auditEvent = (Array.isArray(state.auditEvents) ? state.auditEvents : []).find((event) =>
@@ -594,6 +596,10 @@ function overwriteAccountDeletionCollectorAuthCounts(
     Math.max(0, Number(deletedCollectorAuthTicketCount) || 0);
   auditEvent.metadata.deletedCollectorSessionCount =
     Math.max(0, Number(deletedCollectorSessionCount) || 0);
+  auditEvent.metadata.deletedCollectorOzonEnrichmentCacheCount =
+    Math.max(0, Number(deletedCollectorOzonEnrichmentCacheCount) || 0);
+  auditEvent.metadata.deletedCollectorOzonEnrichmentJobCount =
+    Math.max(0, Number(deletedCollectorOzonEnrichmentJobCount) || 0);
   return true;
 }
 
@@ -612,6 +618,14 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
       [accountId],
     );
+    const deletedCollectorOzonEnrichmentJobs = await client.query(
+      "DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=$1",
+      [accountId],
+    );
+    const deletedCollectorOzonEnrichmentCache = await client.query(
+      "DELETE FROM collector_ozon_enrichment_cache WHERE account_id=$1",
+      [accountId],
+    );
     const deletedCollectorAuthTickets = await client.query(
       "DELETE FROM collector_auth_tickets WHERE account_id=$1",
       [accountId],
@@ -620,12 +634,16 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       "DELETE FROM collector_sessions WHERE account_id=$1",
       [accountId],
     );
-    persistedStateChanged = overwriteAccountDeletionCollectorAuthCounts(
+    persistedStateChanged = overwriteAccountDeletionCollectorCounts(
       state,
       accountId,
       {
         deletedCollectorAuthTicketCount: deletedCollectorAuthTickets.rowCount,
         deletedCollectorSessionCount: deletedCollectorSessions.rowCount,
+        deletedCollectorOzonEnrichmentCacheCount:
+          deletedCollectorOzonEnrichmentCache.rowCount,
+        deletedCollectorOzonEnrichmentJobCount:
+          deletedCollectorOzonEnrichmentJobs.rowCount,
       },
     ) || persistedStateChanged;
 

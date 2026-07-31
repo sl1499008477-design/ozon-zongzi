@@ -20,6 +20,12 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
       if (normalized.startsWith("DELETE FROM collector_sessions")) {
         return { rows: [], rowCount: 3 };
       }
+      if (normalized.startsWith("DELETE FROM collector_ozon_enrichment_cache")) {
+        return { rows: [], rowCount: 4 };
+      }
+      if (normalized.startsWith("DELETE FROM collector_ozon_enrichment_jobs")) {
+        return { rows: [], rowCount: 5 };
+      }
       return { rows: [], rowCount: 1 };
     },
   };
@@ -30,6 +36,8 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
       metadata: {
         deletedCollectorAuthTicketCount: 9,
         deletedCollectorSessionCount: 8,
+        deletedCollectorOzonEnrichmentCacheCount: 7,
+        deletedCollectorOzonEnrichmentJobCount: 6,
       },
     }],
   };
@@ -59,6 +67,12 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
   const collectorSessionDeleteIndex = sql.findIndex(
     (statement) => statement.startsWith("DELETE FROM collector_sessions"),
   );
+  const enrichmentCacheDeleteIndex = sql.findIndex(
+    (statement) => statement.startsWith("DELETE FROM collector_ozon_enrichment_cache"),
+  );
+  const enrichmentJobDeleteIndex = sql.findIndex(
+    (statement) => statement.startsWith("DELETE FROM collector_ozon_enrichment_jobs"),
+  );
   const accountLockIndex = sql.findIndex(
     (statement) => statement.startsWith("SELECT id FROM accounts")
       && statement.endsWith("FOR UPDATE"),
@@ -72,10 +86,16 @@ test("deleteRemovedAccountScopes removes relational business data before the acc
   assert.ok(collectorSessionDeleteIndex > accountLockIndex);
   assert.ok(accountDeleteIndex > collectorTicketDeleteIndex);
   assert.ok(accountDeleteIndex > collectorSessionDeleteIndex);
+  assert.ok(enrichmentCacheDeleteIndex > accountLockIndex);
+  assert.ok(enrichmentJobDeleteIndex > accountLockIndex);
+  assert.ok(accountDeleteIndex > enrichmentCacheDeleteIndex);
+  assert.ok(accountDeleteIndex > enrichmentJobDeleteIndex);
   assert.equal(sql.some((statement) => statement.includes("DELETE FROM audit_events")), false);
   assert.deepEqual(state.auditEvents[0].metadata, {
     deletedCollectorAuthTicketCount: 2,
     deletedCollectorSessionCount: 3,
+    deletedCollectorOzonEnrichmentCacheCount: 4,
+    deletedCollectorOzonEnrichmentJobCount: 5,
   });
   assert.equal(result.persistedStateChanged, true);
   assert.ok(

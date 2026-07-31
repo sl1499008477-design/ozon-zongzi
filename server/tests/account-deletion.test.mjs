@@ -38,6 +38,28 @@ function scopedFixture() {
       tokenHash: "other-session-hash",
       deviceFingerprint: "other-device",
     }],
+    collectorOzonEnrichmentCache: [{
+      accountId: "account-target",
+      source: "ozon",
+      sku: "4862904234",
+      contractVersion: "ozon-enrichment-v1",
+    }, {
+      accountId: "account-other",
+      source: "ozon",
+      sku: "4862904234",
+      contractVersion: "ozon-enrichment-v1",
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "enrichment-job-target",
+      accountId: "account-target",
+      requestId: "request-target",
+      sku: "4862904234",
+    }, {
+      id: "enrichment-job-other",
+      accountId: "account-other",
+      requestId: "request-other",
+      sku: "4862904234",
+    }],
     accounts: [
       { id: "account-target", role: "user" },
       { id: "account-other", role: "admin" },
@@ -100,11 +122,21 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.deepEqual(result.fileObjectKeys, ["target/file.png"]);
   assert.equal(result.deletedCollectorAuthTicketCount, 1);
   assert.equal(result.deletedCollectorSessionCount, 1);
+  assert.equal(result.deletedCollectorOzonEnrichmentCacheCount, 1);
+  assert.equal(result.deletedCollectorOzonEnrichmentJobCount, 1);
   assert.deepEqual(state.accounts.map((item) => item.id), ["account-other"]);
   assert.deepEqual(state.stores.map((item) => item.id), ["store-other"]);
   assert.deepEqual(Object.keys(state.sessions), ["other-token"]);
   assert.deepEqual(state.collectorAuthTickets.map((item) => item.id), ["ticket-other"]);
   assert.deepEqual(state.collectorSessions.map((item) => item.id), ["collector-session-other"]);
+  assert.deepEqual(
+    state.collectorOzonEnrichmentCache.map((item) => item.accountId),
+    ["account-other"],
+  );
+  assert.deepEqual(
+    state.collectorOzonEnrichmentJobs.map((item) => item.id),
+    ["enrichment-job-other"],
+  );
   assert.deepEqual(state.caches.products.map((item) => item.id), ["product-other"]);
   assert.deepEqual(state.caches.postings, []);
   assert.deepEqual(state.caches.announcements.map((item) => item.id), ["global-announcement"]);

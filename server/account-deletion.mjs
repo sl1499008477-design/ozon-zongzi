@@ -102,12 +102,24 @@ export function removeAccountScope(
     .filter((ticket) => normalized(ticket?.accountId) !== accountId);
   const retainedCollectorSessions = collectorSessions
     .filter((session) => normalized(session?.accountId) !== accountId);
+  const collectorOzonEnrichmentCache = Array.isArray(state.collectorOzonEnrichmentCache)
+    ? state.collectorOzonEnrichmentCache
+    : [];
+  const collectorOzonEnrichmentJobs = Array.isArray(state.collectorOzonEnrichmentJobs)
+    ? state.collectorOzonEnrichmentJobs
+    : [];
+  const retainedCollectorOzonEnrichmentCache = collectorOzonEnrichmentCache
+    .filter((record) => normalized(record?.accountId) !== accountId);
+  const retainedCollectorOzonEnrichmentJobs = collectorOzonEnrichmentJobs
+    .filter((record) => normalized(record?.accountId) !== accountId);
 
   state.accounts = accounts.filter((account) => normalized(account?.id) !== accountId);
   state.stores = stores.filter((store) => !storeIds.has(normalized(store?.id)));
   state.sessions = filterMap(state.sessions, accountId, storeIds);
   state.collectorAuthTickets = retainedCollectorAuthTickets;
   state.collectorSessions = retainedCollectorSessions;
+  state.collectorOzonEnrichmentCache = retainedCollectorOzonEnrichmentCache;
+  state.collectorOzonEnrichmentJobs = retainedCollectorOzonEnrichmentJobs;
   state.hashes = filterMap(state.hashes, accountId, storeIds);
   state.leases = filterMap(state.leases, accountId, storeIds);
   state.browserAgents = filterMap(state.browserAgents, accountId, storeIds);
@@ -151,5 +163,9 @@ export function removeAccountScope(
       collectorAuthTickets.length - retainedCollectorAuthTickets.length,
     deletedCollectorSessionCount:
       collectorSessions.length - retainedCollectorSessions.length,
+    deletedCollectorOzonEnrichmentCacheCount:
+      collectorOzonEnrichmentCache.length - retainedCollectorOzonEnrichmentCache.length,
+    deletedCollectorOzonEnrichmentJobCount:
+      collectorOzonEnrichmentJobs.length - retainedCollectorOzonEnrichmentJobs.length,
   };
 }
