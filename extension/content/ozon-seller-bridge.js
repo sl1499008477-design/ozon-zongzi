@@ -13,6 +13,36 @@
  */
 
 (() => {
+  const SELLER_CONTEXT_MARKER = '__jzSellerCompanyContext';
+  const SELLER_CONTEXT_TYPE = 'JZ_SELLER_COMPANY_CONTEXT';
+  const SELLER_CONTEXT_QUERY_TYPE = 'JZ_SELLER_COMPANY_CONTEXT_QUERY';
+
+  window.addEventListener('message', (event) => {
+    if (
+      event.source !== window
+      || event.origin !== window.location.origin
+      || window.location.origin !== 'https://seller.ozon.ru'
+      || event.data?.[SELLER_CONTEXT_MARKER] !== 1
+      || event.data?.type !== SELLER_CONTEXT_TYPE
+      || !/^\d{4,15}$/.test(String(event.data?.companyId || ''))
+    ) {
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({
+        action: 'sellerCompanyContextObserved',
+        companyId: String(event.data.companyId),
+      }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch {}
+  });
+
+  window.postMessage({
+    [SELLER_CONTEXT_MARKER]: 1,
+    type: SELLER_CONTEXT_QUERY_TYPE,
+  }, window.location.origin);
+
   // ── Premium 透视眼 storage 同步 relay ─────────────────────
   // page-world hook（content/ozon-premium-hook.js）通过 window.postMessage 询问
   // 开关状态 / 请求切换 / 持久化面板位置；这里跟 chrome.storage.local 对接。

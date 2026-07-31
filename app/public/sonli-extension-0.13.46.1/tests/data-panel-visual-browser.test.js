@@ -196,6 +196,133 @@ async function runBrowserFixture({
       assert.ok(wide.actions.includes(action), `missing rendered action ${action}`);
     }
 
+    const collectPage = await context.newPage();
+    extraPages.push(collectPage);
+    await collectPage.goto(
+      `http://127.0.0.1:${address.port}${fixturePath}?collect=1`,
+    );
+    const collectPanel = collectPage.locator(".ozon-helper-data-panel");
+    await collectPanel.waitFor();
+    await collectPage.waitForFunction(() =>
+      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    );
+    await collectPanel.locator('[data-action="collect-one"]').click();
+    await collectPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages()
+        .some((message) => message.action === "pushSourceCollect"),
+    );
+    const uploadedCapture = await collectPage.evaluate(() =>
+      window.__getCollectFixtureMessages()
+        .find((message) => message.action === "pushSourceCollect")?.payload?.raw,
+    );
+    assert.equal(
+      uploadedCapture.variantData.description_category_id,
+      17012345,
+      "collect must reuse the category payload already loaded by the data panel when a second lookup misses",
+    );
+    assert.deepEqual(
+      {
+        descriptionCategoryId: uploadedCapture.description_category_id,
+        typeId: uploadedCapture.type_id,
+        weight: uploadedCapture.weight,
+        depth: uploadedCapture.depth,
+        width: uploadedCapture.width,
+        height: uploadedCapture.height,
+      },
+      {
+        descriptionCategoryId: 17012345,
+        typeId: 910001,
+        weight: 350,
+        depth: 120,
+        width: 80,
+        height: 30,
+      },
+      "collect must persist category and package dimensions as explicit fields for Web draft hydration",
+    );
+
+    const incompleteCollectPage = await context.newPage();
+    extraPages.push(incompleteCollectPage);
+    await incompleteCollectPage.goto(
+      `http://127.0.0.1:${address.port}${fixturePath}?collect=missing`,
+    );
+    const incompleteCollectPanel = incompleteCollectPage.locator(".ozon-helper-data-panel");
+    await incompleteCollectPanel.waitFor();
+    await incompleteCollectPage.waitForFunction(() =>
+      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    );
+    const incompleteCollectButton = incompleteCollectPanel.locator('[data-action="collect-one"]');
+    await incompleteCollectButton.click();
+    await incompleteCollectPage.waitForFunction(() =>
+      document.querySelector('[data-action="collect-one"]')?.textContent.includes("缺少：类目、重量、长、宽、高"),
+    );
+    assert.equal(
+      await incompleteCollectPage.evaluate(() =>
+        window.__getCollectFixtureMessages()
+          .filter((message) => message.action === "pushSourceCollect").length,
+      ),
+      0,
+      "collect must not report success or persist a partial record when category and logistics capture failed",
+    );
+
+    const sellerContextPage = await context.newPage();
+    extraPages.push(sellerContextPage);
+    await sellerContextPage.goto(
+      `http://127.0.0.1:${address.port}${fixturePath}?collect=seller-auth`,
+    );
+    const sellerContextPanel = sellerContextPage.locator(".ozon-helper-data-panel");
+    await sellerContextPanel.waitFor();
+    await sellerContextPage.waitForFunction(() =>
+      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    );
+    const sellerContextButton = sellerContextPanel.locator('[data-action="collect-one"]');
+    await sellerContextButton.click();
+    await sellerContextPage.waitForFunction(() =>
+      document.querySelector('[data-action="collect-one"]')?.textContent.includes("Seller 未就绪"),
+    );
+    assert.match(
+      await sellerContextButton.getAttribute("title"),
+      /公司上下文尚未就绪/,
+      "Seller context failure should preserve the safe diagnostic message",
+    );
+    assert.equal(
+      await sellerContextPage.evaluate(() =>
+        window.__getCollectFixtureMessages()
+          .filter((message) => message.action === "pushSourceCollect").length,
+      ),
+      0,
+      "Seller context failure must not upload a partial record",
+    );
+
+    const anonymousCollectPage = await context.newPage();
+    extraPages.push(anonymousCollectPage);
+    await anonymousCollectPage.goto(
+      `http://127.0.0.1:${address.port}${fixturePath}?collect=auth-missing`,
+    );
+    const anonymousCollectPanel = anonymousCollectPage.locator(".ozon-helper-data-panel");
+    await anonymousCollectPanel.waitFor();
+    await anonymousCollectPage.waitForFunction(() =>
+      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    );
+    assert.match(
+      await anonymousCollectPanel.innerText(),
+      /请先登录.*Web/,
+      "an anonymous browser profile should see the Web login requirement before data collection starts",
+    );
+    assert.equal(
+      await anonymousCollectPanel.locator('[data-action="datacard-login"]').count(),
+      1,
+      "the unauthenticated panel should expose one direct Web login action",
+    );
+    assert.deepEqual(
+      await anonymousCollectPage.evaluate(() =>
+        window.__getCollectFixtureMessages()
+          .filter((message) => ["searchVariants", "pushSourceCollect"].includes(message.action))
+          .map((message) => message.action),
+      ),
+      [],
+      "Web auth must gate Seller reads and collection uploads",
+    );
+
     await page.locator('.ozon-helper-data-panel [data-action="open-field-settings"]').click();
     const settingsMask = page.locator(".jz-fieldset-mask");
     const settingsModal = settingsMask.locator(".jz-fieldset-modal");

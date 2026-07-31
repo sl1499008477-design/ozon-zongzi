@@ -89,10 +89,53 @@
         add(_key, task) { return Promise.resolve().then(task); }
       };
       window.jzMakeStaggeredQueue = () => ({ add: (task) => Promise.resolve().then(task), setParams() {} });
-      window.checkAuth = async () => ({ loggedIn: true });
-      window.jzDataCardAllowed = async () => ({ allowed: true });
       window.jzFetchPublicFollowSell = async () => ({ count: 0, sellers: [] });
-      window.sendMessage = async () => ({ data: {}, items: [] });
+      const collectFixtureMode = new URLSearchParams(window.location.search).get("collect");
+      const collectFixtureEnabled = ["1", "missing", "auth-missing", "seller-auth"].includes(collectFixtureMode);
+      window.checkAuth = async () => ({
+        loggedIn: collectFixtureMode !== "auth-missing",
+        account: collectFixtureMode === "auth-missing" ? null : { id: "fixture-account" },
+        permissions: collectFixtureMode === "auth-missing" ? [] : ["collector.upload"],
+      });
+      if (collectFixtureMode !== "auth-missing") {
+        window.jzDataCardAllowed = async () => ({ allowed: true });
+      }
+      const collectFixtureMessages = [];
+      let collectFixtureVariantCalls = 0;
+      const collectFixtureSourceVariant = {
+        variant_id: "123456789",
+        description_category_id: 17012345,
+        type_id: 910001,
+        attributes: [
+          { key: "4180", value: "fixture product" },
+          { key: "4497", value: "350" },
+          { key: "9454", value: "120" },
+          { key: "9455", value: "80" },
+          { key: "9456", value: "30" },
+        ],
+      };
+      window.__getCollectFixtureMessages = () =>
+        collectFixtureMessages.map((message) => JSON.parse(JSON.stringify(message)));
+      window.sendMessage = async (action, payload) => {
+        if (!collectFixtureEnabled) return { data: {}, items: [] };
+        collectFixtureMessages.push({ action, payload });
+        if (action === "searchVariants") {
+          collectFixtureVariantCalls += 1;
+          if (collectFixtureMode === "missing") return { items: [] };
+          if (collectFixtureMode === "seller-auth") {
+            const error = new Error("Seller 页面已打开，但公司上下文尚未就绪");
+            error.code = "SELLER_CONTEXT_REQUIRED";
+            throw error;
+          }
+          return collectFixtureVariantCalls === 1
+            ? { items: [collectFixtureSourceVariant] }
+            : { items: [] };
+        }
+        if (action === "pushSourceCollect") {
+          return { result: { id: "collect-fixture" } };
+        }
+        return { data: {}, items: [] };
+      };
       window.__setPanelFixtureWidth = (width) => {
         document.querySelector(".tile-root").style.width = `${width}px`;
       };

@@ -199,7 +199,18 @@
       "js": [
         "content/ozon-seller-bridge.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://seller.ozon.ru/*"
+      ],
+      "js": [
+        "lib/seller-company-context.js",
+        "content/seller-company-context-hook.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
     },
     {
       "matches": [

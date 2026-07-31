@@ -2788,7 +2788,7 @@
 
     // —— 会员门控:数据卡为会员功能,免费档渲染锁定卡(不抽页面数据、不发请求) ——
     // 首次进入先异步查(页面级只查一次),就绪后重入本函数;jzDataCardAllowed 内部
-    // fail-open(未登录/后端不可达 → 放行),后端 product-data 403 兜底。
+    // Web 未登录时 fail-closed；已登录但会员接口暂不可达时放行。
     if (_dataCardGate === null) {
       _dataCardGate = 'pending';
       window.jzDataCardAllowed().then((g) => {
@@ -2810,7 +2810,12 @@
           showClose: true,
         })}
         <div class="ozon-helper-sidebar-card-body"></div>`;
-      window.jzRenderDataCardLocked(lockedCard.querySelector('.ozon-helper-sidebar-card-body'));
+      const lockedBody = lockedCard.querySelector('.ozon-helper-sidebar-card-body');
+      if (_dataCardGate.reason === 'WEB_AUTH_REQUIRED') {
+        window.jzRenderDataCardLoginRequired(lockedBody);
+      } else {
+        window.jzRenderDataCardLocked(lockedBody);
+      }
       try {
         if (insertAnchor && insertAnchor.nextSibling) {
           insertParent.insertBefore(lockedCard, insertAnchor.nextSibling);
@@ -10517,6 +10522,7 @@
     const auth = await window.checkAuth();
     if (!auth.loggedIn) {
       window.createLoginPrompt();
+      if (_JZ_IS_PRODUCT_PAGE) createSidebarDataCard();
       return;
     }
 

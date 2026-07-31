@@ -247,16 +247,20 @@
 
     // —— 会员门控:数据卡为会员功能,免费档渲染锁定卡、不发任何数据请求 ——
     // (页面级缓存一次;fail-open,后端 product-data 403 + __featureGated 兜底)
-    const renderLockedPanel = () => {
+    const renderLockedPanel = (gate) => {
       if (!panel) return;
       panel.dataset.jzLoadStatus = 'ready';
       window.jzRenderPanelSkeleton(panel); // 复用卡头(品牌 + 齿轮)
       const body = panel.querySelector('.ozon-helper-sidebar-card-body') || panel;
-      window.jzRenderDataCardLocked(body);
+      if (gate?.reason === 'WEB_AUTH_REQUIRED') {
+        window.jzRenderDataCardLoginRequired(body);
+      } else {
+        window.jzRenderDataCardLocked(body);
+      }
     };
     const gate = await window.jzDataCardAllowed();
     if (!gate.allowed) {
-      renderLockedPanel();
+      renderLockedPanel(gate);
       return;
     }
 
@@ -734,7 +738,6 @@
     const auth = await window.checkAuth();
     if (!auth.loggedIn) {
       window.createLoginPrompt();
-      return;
     }
 
     await loadPanelEnabled();

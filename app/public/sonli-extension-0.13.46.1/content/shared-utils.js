@@ -987,30 +987,58 @@ if (!globalThis.__JZ_BRAND__) {
                 ? ` — ${response.message}`
                 : ''),
           );
-          reject(new Error(response?.message || response?.error || 'Unknown error'));
+          const error = new Error(response?.message || response?.error || 'Unknown error');
+          error.code = String(response?.error || 'UNKNOWN_ERROR');
+          error.status = Number(response?.status) || 0;
+          reject(error);
         }
       });
     });
   };
 
   // ─── 数据卡会员门控 ─────────────────────────
-  // 数据卡(搜索页面板 + 详情页侧栏卡)为会员功能。渲染前调这里判断:
+  // 数据卡(搜索页面板 + 详情页侧栏卡)先检查账号级 Collector 会话，再查会员功能。
+  // Web 未登录时 fail-closed；已登录但会员接口暂时不可达时才 fail-open，避免把后端
+  // 抖动误判成退出登录。
   // 后端 usage-summary 的 canUse.DATA_CARD === false(FREE 档)→ 锁定卡。
-  // 页面级缓存一次(promise 复用),搜索页几十张卡只打一次 usage-summary。
-  // fail-open:未登录/后端不可达/旧后端无该键 → 不拦,由后端 product-data 403 兜底。
+  // 页面级缓存一次(promise 复用),搜索页几十张卡只做一次会话与 usage-summary 检查。
   let _dataCardGatePromise = null;
   window.jzDataCardAllowed = function () {
     if (!_dataCardGatePromise) {
-      _dataCardGatePromise = window.sendMessage('getMembershipSummary', {})
-        .then((s) => {
-          if (s && s.canUse && s.canUse.DATA_CARD === false) {
-            return { allowed: false };
-          }
-          return { allowed: true };
+      _dataCardGatePromise = Promise.resolve()
+        .then(() => window.checkAuth())
+        .then((auth) => {
+          if (!auth?.loggedIn) return { allowed: false, reason: 'WEB_AUTH_REQUIRED' };
+          return window.sendMessage('getMembershipSummary', {})
+            .then((s) => {
+              if (s && s.canUse && s.canUse.DATA_CARD === false) {
+                return { allowed: false, reason: 'MEMBERSHIP_REQUIRED' };
+              }
+              return { allowed: true };
+            })
+            .catch(() => ({ allowed: true }));
         })
-        .catch(() => ({ allowed: true }));
+        .catch(() => ({ allowed: false, reason: 'WEB_AUTH_REQUIRED' }));
     }
     return _dataCardGatePromise;
+  };
+
+  window.jzRenderDataCardLoginRequired = function (container) {
+    container.innerHTML = `
+      <div class="ozon-helper-datacard-locked" translate="no" style="padding:28px 16px;text-align:center;">
+        <div style="font-size:26px;line-height:1;margin-bottom:10px;">🔐</div>
+        <div style="font-size:13px;font-weight:600;color:#1f2733;margin-bottom:4px;">请先登录 ozon 粽子 Web</div>
+        <div style="font-size:12px;color:#8a94a6;margin-bottom:14px;">插件使用 Web 端账号级采集箱，不再单独登录</div>
+        <button data-action="datacard-login" style="background:#005bff;color:#fff;border:none;border-radius:8px;padding:8px 22px;font-size:13px;font-weight:600;cursor:pointer;">去 Web 登录</button>
+      </div>`;
+    window.jzSetPanelBrandStatus?.(
+      container.closest?.('.ozon-helper-sidebar-card, [data-jz-datacard], .ozon-helper-data-panel'),
+      '请登录 Web',
+      'locked',
+    );
+    container.querySelector('[data-action="datacard-login"]')?.addEventListener('click', () => {
+      window.sendMessage('openFrontend', { path: '/login' }).catch(() => {});
+    });
   };
 
   // 锁定卡片正文(两类数据卡共用):蒙层文案 + 升级会员按钮。
@@ -2112,6 +2140,9 @@ if (!globalThis.__JZ_BRAND__) {
       followSellMinPrice,
       canFollow: Boolean(matchedItem || productData?.canFollow),
       createDate: md.nullableCreateDate ?? null,
+      descriptionCategoryId:
+        Number(item?.description_category_id || item?.descriptionCategoryId) || null,
+      typeId: Number(item?.type_id || item?.typeId) || null,
       weightG, lengthMm, widthMm, heightMm,
     };
   };

@@ -38,6 +38,7 @@ try {
     '../lib/web-bridge-policy.js',
     '../lib/collector-session.js',
     '../lib/seller-identity-policy.js',
+    '../lib/seller-company-context-runtime.js',
     '../lib/portal-bridge-policy.js',
     '../lib/chrome-storage-promises.js',
     '../lib/fx-observation-replay.js',
@@ -277,6 +278,11 @@ try {
     sessionManager: collectorSessionManager,
     getDeviceFingerprint: () => getExtensionFingerprint(),
   });
+  const sellerCompanyContextRuntime =
+    globalThis.JzSellerCompanyContextRuntime.createSellerCompanyContextRuntime({
+      chromeApi: chrome,
+      policy: globalThis.JzSellerIdentityPolicy,
+    });
 
   /**
    * Execute fetch in a seller.ozon.ru tab's page context (MAIN world).
@@ -559,7 +565,14 @@ try {
         variant_id: String(variantId),
         source: 'SOURCE_UI_COPY_APPAREL',
       },
-      { urlPrefix: '/api/site', pageType: 'products', timeoutMs: 30000, allowOzonTab: true, preferTabId: opts.preferTabId },
+      {
+        urlPrefix: '/api/site',
+        pageType: 'products',
+        timeoutMs: 30000,
+        allowOzonTab: true,
+        preferTabId: opts.preferTabId,
+        companyId,
+      },
     );
     const item = resp?.item || null;
     if (!item) return null;
@@ -644,15 +657,15 @@ try {
   const getSellerCompanyIdCandidates = async (options = {}) => {
     if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
     try {
-      const cookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-      return [globalThis.JzSellerIdentityPolicy.resolveTrustedSellerCompanyId(cookies)];
+      return [(await sellerCompanyContextRuntime.resolveCurrent()).companyId];
     } catch { return []; }
   };
 
-  // 解析当前登录店铺的 sc_company_id(门户接口都要它)
+  // 解析当前 Seller 页面实际使用的公司编号。Cookie 是第一来源；Ozon 不再下发
+  // sc_company_id 时，使用页面正常 API 请求中观测到的 x-o3-company-id。
   const resolveSellerCompanyId = async (options = {}) => {
     const companyId = (await getSellerCompanyIdCandidates(options))[0] || '';
-    if (!companyId) throw new Error('sc_company_id cookie 未找到,请确保已登录 seller.ozon.ru');
+    if (!companyId) throw new Error('SELLER_COMPANY_CONTEXT_REQUIRED');
     return companyId;
   };
 
@@ -1431,12 +1444,13 @@ try {
 
     console.log(`[fetchSellerPortal] tab=${targetTab.id} url=${targetTab.url} path=${path}`);
 
-    // 2. Resolve sc_company_id from chrome.cookies
-    const scCookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-    const companyId = scCookies[0]?.value || '';
-    if (!companyId) {
-      throw new Error('sc_company_id cookie 未找到，请确保已登录 seller.ozon.ru');
-    }
+    // 2. Resolve the current Seller company context. Callers that already
+    // resolved it pass companyId so search + bundle stay inside one identity
+    // snapshot even if the user switches Seller tabs during the request.
+    const companyId = globalThis.JzSellerIdentityPolicy.normalizeCompanyId(
+      opts.companyId || await resolveSellerCompanyId(),
+    );
+    if (!companyId) throw new Error('SELLER_COMPANY_CONTEXT_REQUIRED');
 
     // 3. Try executeScript first (with hard timeout), fallback to bridge
     const doFetch = async (apiPath, reqBody, xCompanyId, timeout, prefix, pageTypeHdr) => {
@@ -3120,6 +3134,20 @@ try {
       const backendUrl = await getBackendUrl();
 
       switch (message?.action) {
+        case 'sellerCompanyContextObserved': {
+          try {
+            await sellerCompanyContextRuntime.rememberFromSender(
+              sender,
+              message.companyId,
+            );
+            return { ok: true, data: { captured: true } };
+          } catch (error) {
+            return {
+              ok: false,
+              error: error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
+            };
+          }
+        }
         case 'getAuth': {
           const manifest = chrome.runtime.getManifest() || {};
           const version = String(manifest.version || '');
@@ -3962,11 +3990,7 @@ try {
             }
           }
           try {
-            const scCookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-            const companyId = scCookies[0]?.value || '';
-            if (!companyId) {
-              return { ok: false, error: 'NO_COMPANY_ID', message: 'sc_company_id cookie 未找到，请先登录 seller.ozon.ru' };
-            }
+            const companyId = await resolveSellerCompanyId();
             const resp = await fetchSellerPortal(
               '/search',
               {
@@ -3983,7 +4007,14 @@ try {
                 pagination: { limit: '50' },
                 is_copy_allowed: false,
               },
-              { urlPrefix: '/api/v1', pageType: 'products', timeoutMs: 30000, allowOzonTab: true, preferTabId: senderTabId },
+              {
+                urlPrefix: '/api/v1',
+                pageType: 'products',
+                timeoutMs: 30000,
+                allowOzonTab: true,
+                preferTabId: senderTabId,
+                companyId,
+              },
             );
             // /api/v1/search 返回字段是 `variants`，且 shape 跟 sv 不同
             // 必须 normalize 成 sv 兼容（含 attributes 数组）才能让下游 distillSource / resolveViaSearchVariantModel 直接用
@@ -4121,17 +4152,27 @@ try {
             return { errorCode, msg };
           };
 
-          // /search 必须 body 带 company_id(否则 403 PermissionDenied)
-          const scCookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-          const companyId = scCookies[0]?.value || '';
-          if (!companyId) {
-            // 本机没登卖家端 → 透明回退:派给同租户已登录设备代采。message.noProxy
-            // 由代采执行端(agent action)设置,杜绝"代采里再触发代采"的递归。
+          // /search 必须带当前 Seller 公司编号。Ozon 页面已经不保证下发
+          // sc_company_id Cookie，因此统一解析 Cookie + 页面真实请求观测值。
+          let companyId = '';
+          try {
+            companyId = await resolveSellerCompanyId();
+          } catch (contextError) {
+            // 本机没有可验证 Seller 上下文时仍保留同租户代采兜底。
             if (!message.noProxy) {
               const proxied = await proxyCollectVariant(backendUrl, token, storeId, sku);
               if (proxied) return proxied;
             }
-            return { ok: false, error: 'AUTH_REQUIRED', message: 'sc_company_id cookie 未找到，请先登录 seller.ozon.ru' };
+            const contextCode = /CONFLICT/.test(contextError?.message || '')
+              ? 'SELLER_COMPANY_CONTEXT_CONFLICT'
+              : 'SELLER_CONTEXT_REQUIRED';
+            return {
+              ok: false,
+              error: contextCode,
+              message: contextCode === 'SELLER_COMPANY_CONTEXT_CONFLICT'
+                ? '检测到多个 Seller 公司编号，请只保留当前经营公司的 Seller 页面后重试'
+                : 'Seller 页面已打开，但公司上下文尚未就绪，请刷新 Seller 页面后重试',
+            };
           }
 
           const MAX_RETRIES = 2;
@@ -4153,7 +4194,14 @@ try {
                   pagination: { limit: '50' },
                   is_copy_allowed: false,
                 },
-                { urlPrefix: '/api/v1', pageType: 'products', timeoutMs: 30000, allowOzonTab: true, preferTabId: senderTabId },
+                {
+                  urlPrefix: '/api/v1',
+                  pageType: 'products',
+                  timeoutMs: 30000,
+                  allowOzonTab: true,
+                  preferTabId: senderTabId,
+                  companyId,
+                },
               );
               const rawVariants = Array.isArray(resp?.variants) ? resp.variants
                 : Array.isArray(resp?.items) ? resp.items
@@ -4410,6 +4458,8 @@ try {
             identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity({
               findSellerTabs: () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' }),
               getCookies: (details) => chrome.cookies.getAll(details),
+              getObservedContexts: (sellerTabs) =>
+                sellerCompanyContextRuntime.observationsForTabs(sellerTabs),
             });
           } catch (error) {
             return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };
@@ -4438,6 +4488,8 @@ try {
             identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity({
               findSellerTabs: () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' }),
               getCookies: (details) => chrome.cookies.getAll(details),
+              getObservedContexts: (sellerTabs) =>
+                sellerCompanyContextRuntime.observationsForTabs(sellerTabs),
             });
           } catch (error) {
             return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };

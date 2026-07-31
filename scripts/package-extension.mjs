@@ -15,8 +15,13 @@ const unpackedTarget = path.join(rootDir, "app", "public", `sonli-extension-${ma
 const collectorRuntimeFiles = [
   "background/collector-client.js",
   "background/service-worker.js",
+  "content/seller-company-context-hook.js",
   "lib/collector-session.js",
+  "lib/seller-company-context.js",
+  "lib/seller-company-context-runtime.js",
   "tests/collector-session.test.js",
+  "tests/seller-company-context-contract.test.js",
+  "tests/seller-company-context.test.js",
   "tests/sync-capability-removed.test.js",
 ];
 

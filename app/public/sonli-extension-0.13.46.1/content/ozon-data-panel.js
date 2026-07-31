@@ -195,16 +195,20 @@
 
     // —— 会员门控:数据卡为会员功能,免费档渲染锁定卡、不发任何数据请求 ——
     // (页面级缓存一次;fail-open,后端 product-data 403 + __featureGated 兜底)
-    const renderLockedPanel = () => {
+    const renderLockedPanel = (gate) => {
       if (!panel) return;
       panel.dataset.jzLoadStatus = "ready";
       window.jzRenderPanelSkeleton(panel); // 复用卡头(品牌 + 齿轮)
       const body = panel.querySelector(".ozon-helper-sidebar-card-body") || panel;
-      window.jzRenderDataCardLocked(body);
+      if (gate?.reason === "WEB_AUTH_REQUIRED") {
+        window.jzRenderDataCardLoginRequired(body);
+      } else {
+        window.jzRenderDataCardLocked(body);
+      }
     };
     const gate = await window.jzDataCardAllowed();
     if (!gate.allowed) {
-      renderLockedPanel();
+      renderLockedPanel(gate);
       return;
     }
 
@@ -467,6 +471,134 @@
     }
   }
 
+  function collectVariantItems(response) {
+    return response?.items || response?.data?.items || [];
+  }
+
+  async function collectSourceFields(productId, cachedPanelData) {
+    const cachedVariantResult = cachedPanelData?.preFetched?.variant;
+    const cachedVariantResponse = cachedVariantResult?.status === "fulfilled"
+      ? cachedVariantResult.value
+      : null;
+    let variantItems = collectVariantItems(cachedVariantResponse);
+    if (!variantItems.length) {
+      let variantResponse;
+      try {
+        variantResponse = await window.sendMessage("searchVariants", { sku: productId });
+      } catch (error) {
+        throw error;
+      }
+      variantItems = collectVariantItems(variantResponse);
+    }
+    const variantMatch =
+      variantItems.find((item) => String(item?.variant_id) === String(productId)) ||
+      variantItems[0] ||
+      null;
+    const catalog = window.jzExtractCatalogFromSv?.(variantMatch) || {};
+    const persistedDimensions = await (window
+      .jzReadCachedWeightDims?.(productId)
+      .catch(() => null) ?? null);
+    const positiveNumber = (...values) => {
+      for (const value of values) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) return Math.round(number);
+      }
+      return undefined;
+    };
+    const descriptionCategoryId = positiveNumber(
+      variantMatch?.description_category_id,
+      variantMatch?.descriptionCategoryId,
+      cachedPanelData?.descriptionCategoryId,
+      cachedPanelData?.categoryId,
+    );
+    const typeId = positiveNumber(
+      variantMatch?.type_id,
+      variantMatch?.typeId,
+      cachedPanelData?.typeId,
+    );
+    const weight = positiveNumber(
+      catalog.weightG,
+      cachedPanelData?.weightG,
+      persistedDimensions?.weightG,
+    );
+    const depth = positiveNumber(
+      catalog.depthMm,
+      cachedPanelData?.lengthMm,
+      persistedDimensions?.lengthMm,
+    );
+    const width = positiveNumber(
+      catalog.widthMm,
+      cachedPanelData?.widthMm,
+      persistedDimensions?.widthMm,
+    );
+    const height = positiveNumber(
+      catalog.heightMm,
+      cachedPanelData?.heightMm,
+      persistedDimensions?.heightMm,
+    );
+    return {
+      variantMatch,
+      payload: {
+        variantData: variantMatch || undefined,
+        description_category_id: descriptionCategoryId,
+        type_id: typeId,
+        weight,
+        depth,
+        width,
+        height,
+        weight_unit: weight ? "g" : undefined,
+        dimension_unit: depth || width || height ? "mm" : undefined,
+      },
+    };
+  }
+
+  function assertCompleteCollectSource(sourceFields = {}) {
+    const missing = [
+      sourceFields.description_category_id ? null : "类目",
+      sourceFields.weight ? null : "重量",
+      sourceFields.depth ? null : "长度",
+      sourceFields.width ? null : "宽度",
+      sourceFields.height ? null : "高度",
+    ].filter(Boolean);
+    if (!missing.length) return;
+    const error = new Error(`COLLECT_CAPTURE_INCOMPLETE:${missing.join("、")}`);
+    error.code = "COLLECT_CAPTURE_INCOMPLETE";
+    error.missing = missing;
+    throw error;
+  }
+
+  function collectFailurePresentation(error) {
+    const code = String(error?.code || "");
+    const message = String(error?.message || "");
+    if (/COLLECTOR_AUTH_REQUIRED|WEB_AUTH_REQUIRED/.test(code + message)) {
+      return { text: "请先登录 Web", title: message || "请先登录 ozon 粽子 Web" };
+    }
+    if (
+      /SELLER_CONTEXT_REQUIRED|SELLER_COMPANY_CONTEXT|AUTH_REQUIRED|NO_COMPANY_ID/.test(
+        code + message,
+      )
+    ) {
+      return { text: "Seller 未就绪", title: message || "Seller 公司上下文尚未就绪" };
+    }
+    if (/COLLECT_CAPTURE_INCOMPLETE/.test(code + message)) {
+      const rawMissing = Array.isArray(error?.missing)
+        ? error.missing.join("、")
+        : message.split(":").slice(1).join(":");
+      const compactMissing = rawMissing
+        .replaceAll("长度", "长")
+        .replaceAll("宽度", "宽")
+        .replaceAll("高度", "高");
+      return {
+        text: `缺少：${compactMissing || "必要商品数据"}`,
+        title: message,
+      };
+    }
+    if (/NETWORK_ERROR|超时|timeout|网络/i.test(code + message)) {
+      return { text: "网络错误", title: message };
+    }
+    return { text: "采集失败", title: message };
+  }
+
   // 「采集」按钮与 action bar 上的「一键采集」语义统一，只写后台采集箱。
   //
   // resp shape (SW ENVELOPE_FIX 2025-05):{ dedupeHit, lastAt, result }
@@ -485,16 +617,11 @@
       const data = panelDataCache.get(productId) || null;
       info = await enrichInfoWithDetailMarketingPrice(info);
 
-      // 1. searchVariants 补 sv 数据(品牌/类目/属性等富字段),失败兜底空
-      const variantResp = await window
-        .sendMessage("searchVariants", { sku: productId })
-        .catch(() => null);
-      const variantItems =
-        variantResp?.items || variantResp?.data?.items || [];
-      const variantMatch =
-        variantItems.find((it) => String(it.variant_id) === productId) ||
-        variantItems[0] ||
-        null;
+      // 1. 优先复用数据面板已加载的 sv 真值。点击时的二次请求可能瞬时失败，
+      // 不能因此把已显示过的类目和物流尺寸丢掉后仍提示采集成功。
+      const { variantMatch, payload: sourceFields } =
+        await collectSourceFields(productId, data);
+      assertCompleteCollectSource(sourceFields);
       if (variantMatch && Array.isArray(info.hashtags) && info.hashtags.length) {
         try { window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variantMatch, info.hashtags); } catch {}
       }
@@ -510,7 +637,7 @@
         marketingPriceCurrency: info.marketingPriceCurrency || undefined,
         image: info.image || undefined,
         images: info.image ? [info.image] : undefined,
-        variantData: variantMatch || undefined,
+        ...sourceFields,
         soldCount: data?.soldCount ?? undefined,
         soldSum: data?.gmvSum != null ? String(data.gmvSum) : undefined,
         views: data?.views ?? undefined,
@@ -528,23 +655,24 @@
       _flashBtn(btn, label, "is-collected", 1800);
     } catch (e) {
       console.warn("[ozon-helper] data-panel collect-one failed:", e);
-      const msg = e?.message || "";
-      const friendly = /NETWORK_ERROR|超时|timeout|网络/i.test(msg)
-        ? "网络错误"
-        : "失败";
-      _flashBtn(btn, friendly, "is-failed", 1800);
+      const failure = collectFailurePresentation(e);
+      _flashBtn(btn, failure.text, "is-failed", 2800, failure.title);
     } finally {
       btn.dataset.busy = "";
     }
   }
 
-  function _flashBtn(btn, text, cls, ms) {
+  function _flashBtn(btn, text, cls, ms, title = "") {
     const original = btn.innerHTML;
+    const originalTitle = btn.getAttribute("title");
     btn.classList.add(cls);
     btn.innerHTML = `<span class="oh-btn-icon">✓</span>${text}`;
+    if (title) btn.setAttribute("title", title);
     setTimeout(() => {
       btn.classList.remove(cls);
       btn.innerHTML = original;
+      if (originalTitle == null) btn.removeAttribute("title");
+      else btn.setAttribute("title", originalTitle);
     }, ms);
   }
 
@@ -561,14 +689,10 @@
       const sku = extractProductId(info.url);
       if (!sku) throw new Error("missing-sku");
 
-      const variantResp = await window
-        .sendMessage("searchVariants", { sku })
-        .catch(() => null);
-      const variantItems = variantResp?.items || variantResp?.data?.items || [];
-      const variantMatch =
-        variantItems.find((it) => String(it.variant_id) === sku) ||
-        variantItems[0] ||
-        null;
+      const data = panelDataCache.get(sku) || null;
+      const { variantMatch, payload: sourceFields } =
+        await collectSourceFields(sku, data);
+      assertCompleteCollectSource(sourceFields);
       if (variantMatch && Array.isArray(info.hashtags) && info.hashtags.length) {
         try { window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variantMatch, info.hashtags); } catch {}
       }
@@ -583,7 +707,7 @@
         marketingPriceCurrency: info.marketingPriceCurrency || undefined,
         image: info.image || undefined,
         images: info.image ? [info.image] : undefined,
-        variantData: variantMatch || undefined,
+        ...sourceFields,
       };
       // SW 把 envelope (dedupeHit/lastAt) + 后端 result 都装进 data,这里 resp 已是
       // { dedupeHit, lastAt, result }。itemId 在 result.id。
@@ -698,15 +822,6 @@
         new RegExp(`^${p.replace(/\*/g, ".*")}$`).test(window.location.pathname)
       )
     ) {
-      return;
-    }
-
-    // 鉴权检查：未登录就不加载（避免无 token 调极掌后端打 401 产生 spam）
-    try {
-      const auth = await window.checkAuth?.();
-      if (auth && !auth.loggedIn) return;
-    } catch {
-      // checkAuth 失败也按未登录处理
       return;
     }
 
