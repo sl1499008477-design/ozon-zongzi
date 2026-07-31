@@ -37,8 +37,9 @@ Verified feature range, in order:
 17. `f8480898ea82893843d91501f5c139c70d157253` — `fix(extension): unify product collection completeness`
 18. `0e0acb33cb8e18e96c4a4862088ac55ff9246e3b` — `fix(extension): retry product variant enrichment`
 19. `a7d4a7f1cecb4fb632702a134f5d1fec2153cfa6` — `fix(extension): register product collection parity`
+20. `806a5db` — `fix(extension): renew failed enrichment requests`
 
-The Task 9 delivery commit uses the required message `test: verify complete Ozon collection enrichment`; its SHA is recorded in the Task 9 SDD report and handoff because a commit cannot embed its own final SHA.
+The Task 9 delivery commit is `5bf7e03c4230c113a7ef99515932274f94f7b74d` (`test: verify complete Ozon collection enrichment`). The final retry fix was independently reviewed after that delivery commit and the packages and full repository gate were regenerated from `806a5db`.
 
 ## Exact files and artifacts
 
@@ -154,10 +155,10 @@ The unpacked directory contains the complete extension tree; Git records only fi
 ### Extension runtime and packaging
 
 - The extension uses fixed Collector routes, visible Seller capture only, strict SKU binding, deadline-aware drain leases, recursive sensitive-data rejection, and no arbitrary credentialed transport.
-- Data panel, search/category, and product-page collection share the page coordinator. Prefetch never uploads; concurrent actions share work; upload success is required before success UI/edit navigation; retries keep the stable request ID.
+- Data panel, search/category, and product-page collection share the page coordinator. Prefetch never uploads; concurrent actions share work; upload success is required before success UI/edit navigation. Failed enrichment retries rotate only the enrichment task ID, while collection uploads retain the original stable request ID for idempotency.
 - No Chrome permission or host permission was added. Retired sync/manual capabilities remain absent.
 - Source, public unpacked, public ZIP, and dist ZIP contain the same 129 extension files with byte-equal content. The final public and dist ZIP byte hashes are checked again in the post-package gate.
-- Final public/dist ZIP SHA-256: `6c9a77c165afeee38c5509b420ace4cde74631166a9665847349414f3b89734f` for each archive.
+- Final public/dist ZIP SHA-256: `b4ed2671518ece6aa27a29e25dffdc5b16837df4aac3628e923003af48d8613d` for each archive.
 
 ## Fresh focused verification
 
@@ -170,6 +171,7 @@ All focused commands used managed Node v24.14.0.
 - Data-panel headless Chrome fixture: **2/2 passed**.
 - Product-page headless Chrome fixture: **1/1 passed**.
 - Extension focused total: **61/61 passed**, including **3/3** controlled headless Chrome cases.
+- Final retry regression: coordinator tests **25/25 passed**; related server/extension cross-layer tests **207/207 passed**; product/search browser regressions **3/3 passed**. The regression verifies a failed terminal enrichment request receives a new enrichment task ID while the collection upload keeps its original idempotency ID.
 
 ## Full repository verification
 
@@ -181,7 +183,7 @@ All focused commands used managed Node v24.14.0.
 - Public and dist ZIP parity: both matched all 129 source files.
 - Public and dist packaged runtime smoke: passed, including service-worker startup, Collector session/runtime/security, popup, bridge, and dry-run guards.
 - Server syntax, bridge syntax, manifest parsing, test inventory, Docker Compose interpolation, import-history filter, readiness gate, collection edit/delete contracts, store isolation, whitespace, and personal-data/credential scan: passed.
-- Complete active suite: **540 total; 538 passed; 0 failed; 2 skipped**.
+- Complete active suite: **542 total; 540 passed; 0 failed; 2 skipped**.
 - Test inventory: **144 active entry files; 14 historical/manual exclusions**.
 - Full verification result: `All verification checks passed.`
 
@@ -225,7 +227,7 @@ Accordingly, none of the five live observations was executed or claimed. There i
 
 Rollback in dependency order, newest fix first within each group:
 
-1. Extension product/coordinator/client/runtime changes: `a7d4a7f`, `0e0acb3`, `f848089`, `ff62424`, `951cf92`, `14ab45d`, `d6ca6ff`, `1ec9576`, `d16c3d5`, `7e039e5`.
+1. Extension product/coordinator/client/runtime changes: `806a5db`, `a7d4a7f`, `0e0acb3`, `f848089`, `ff62424`, `951cf92`, `14ab45d`, `d6ca6ff`, `1ec9576`, `d16c3d5`, `7e039e5`.
 2. Server collection gate and orchestration routes/service: `3060e23`, `dab4afd`, `2277246`, `c187685`.
 3. Collector permission/authentication: `3556f3c`.
 4. Persistence/runtime/contract code: `c31447b`, `b43209d`, `1d99208`, `947d3a3`.

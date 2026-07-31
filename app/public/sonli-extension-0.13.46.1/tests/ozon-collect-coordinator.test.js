@@ -458,6 +458,67 @@ test('background prefetch reuses ERROR until collect explicitly retries', async 
   assert.equal(calls.filter((action) => action === 'pushSourceCollect').length, 1);
 });
 
+test('explicit collect retry advances the enrichment generation but keeps one upload request ID', async () => {
+  const calls = [];
+  const terminalEnrichmentIds = new Set();
+  const coordinator = create({
+    now: () => 2100,
+    randomUUID: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    async sendMessage(action, payload) {
+      calls.push({ action, payload });
+      if (action === 'enrichOzonCollect') {
+        if (terminalEnrichmentIds.has(payload.requestId)) {
+          throw codedError('OZON_ENRICH_REQUEST_EXPIRED', 'terminal request replay', {
+            status: 409,
+            retryable: false,
+          });
+        }
+        terminalEnrichmentIds.add(payload.requestId);
+        if (terminalEnrichmentIds.size === 1) {
+          throw codedError('OZON_ENRICH_UPSTREAM_FAILED', 'first executor failure', {
+            status: 502,
+            retryable: true,
+          });
+        }
+        return completeResult();
+      }
+      if (action === 'pushSourceCollect') {
+        return { dedupeHit: false, result: { id: 'generation-retry-ok' } };
+      }
+      throw new Error(`unexpected action ${action}`);
+    },
+  });
+
+  const uploadRequestId = coordinator.getState(SKU).requestId;
+  await assert.rejects(
+    coordinator.prefetch({ sku: SKU }),
+    (error) => error?.code === 'OZON_ENRICH_UPSTREAM_FAILED',
+  );
+
+  assert.deepEqual(
+    await coordinator.collect({ sku: SKU, raw: { sku: SKU } }),
+    { dedupeHit: false, result: { id: 'generation-retry-ok' } },
+  );
+
+  const enrichmentCalls = calls.filter(({ action }) => action === 'enrichOzonCollect');
+  const uploadCalls = calls.filter(({ action }) => action === 'pushSourceCollect');
+  assert.equal(enrichmentCalls.length, 2);
+  assert.equal(enrichmentCalls[0].payload.requestId, uploadRequestId);
+  assert.notEqual(enrichmentCalls[1].payload.requestId, uploadRequestId);
+  assert.equal(uploadCalls[0].payload.requestId, uploadRequestId);
+  assert.equal(coordinator.getState(SKU).requestId, uploadRequestId);
+
+  assert.deepEqual(
+    await coordinator.collect({ sku: SKU, raw: { sku: SKU } }),
+    { dedupeHit: false, result: { id: 'generation-retry-ok' } },
+  );
+  assert.equal(
+    calls.filter(({ action }) => action === 'enrichOzonCollect').length,
+    2,
+    'SUCCESS must not start another enrichment generation',
+  );
+});
+
 test('a complete local v1 fallback may upload after backend failure', async () => {
   const calls = [];
   const fallbackCalls = [];
@@ -797,7 +858,7 @@ test('repeated batch prefetch reuses ERROR and BLOCKED_AUTH until a click retrie
   assert.equal(calls.filter(({ action }) => action === 'enrichOzonCollect').length, 1);
 });
 
-test('user-initiated batch retry recovers a failed or blocked anchor with its stable request ID', async () => {
+test('user-initiated batch retry recovers a failed or blocked anchor with a new enrichment generation', async () => {
   for (const [code, expectedState] of [
     ['OZON_ENRICH_UPSTREAM_FAILED', 'ERROR'],
     ['COLLECTOR_AUTH_REQUIRED', 'BLOCKED_AUTH'],
@@ -834,11 +895,78 @@ test('user-initiated batch retry recovers a failed or blocked anchor with its st
     assert.equal(coordinator.getState(sku).status, 'READY');
     const retryCall = calls.find(({ action }) => action === 'enrichOzonCollectBatch');
     assert.deepEqual(retryCall.payload.skus, [sku]);
-    assert.equal(retryCall.payload.requestId, requestId);
+    assert.notEqual(retryCall.payload.requestId, requestId);
+    assert.equal(coordinator.getState(sku).requestId, requestId);
   }
 });
 
-test('failed user batch retry replaces the stored error and keeps the stable request ID', async () => {
+test('explicit batch retry advances the enrichment generation without changing the collection ID', async () => {
+  const sku = '7200000004';
+  const calls = [];
+  const terminalEnrichmentIds = new Set();
+  const coordinator = create({
+    now: () => 8100,
+    randomUUID: () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    async sendMessage(action, payload) {
+      calls.push({ action, payload });
+      if (action === 'enrichOzonCollectBatch') {
+        if (terminalEnrichmentIds.has(payload.requestId)) {
+          return [{
+            sku,
+            status: 'ERROR',
+            error: {
+              code: 'OZON_ENRICH_REQUEST_EXPIRED',
+              message: 'terminal request replay',
+              missingFields: [],
+              retryable: false,
+            },
+          }];
+        }
+        terminalEnrichmentIds.add(payload.requestId);
+        if (terminalEnrichmentIds.size === 1) {
+          return [{
+            sku,
+            status: 'ERROR',
+            error: {
+              code: 'OZON_ENRICH_UPSTREAM_FAILED',
+              message: 'first executor failure',
+              missingFields: [],
+              retryable: true,
+            },
+          }];
+        }
+        return [{ sku, status: 'COMPLETE', result: completeResult(sku) }];
+      }
+      if (action === 'pushSourceCollect') {
+        return { dedupeHit: false, result: { id: 'batch-generation-retry-ok' } };
+      }
+      throw new Error(`unexpected action ${action}`);
+    },
+  });
+
+  const uploadRequestId = coordinator.getState(sku).requestId;
+  const first = await coordinator.prefetchBatch({ skus: [sku] });
+  assert.equal(first[0].status, 'ERROR');
+
+  const retried = await coordinator.prefetchBatch({ skus: [sku], retryFailed: true });
+  assert.equal(retried[0].status, 'COMPLETE');
+  assert.equal(retried[0].sku, sku);
+
+  const enrichmentCalls = calls.filter(({ action }) => action === 'enrichOzonCollectBatch');
+  assert.equal(enrichmentCalls.length, 2);
+  assert.equal(enrichmentCalls[0].payload.requestId, uploadRequestId);
+  assert.notEqual(enrichmentCalls[1].payload.requestId, uploadRequestId);
+
+  assert.deepEqual(
+    await coordinator.collect({ sku, raw: { sku } }),
+    { dedupeHit: false, result: { id: 'batch-generation-retry-ok' } },
+  );
+  const upload = calls.find(({ action }) => action === 'pushSourceCollect');
+  assert.equal(upload.payload.requestId, uploadRequestId);
+  assert.equal(coordinator.getState(sku).requestId, uploadRequestId);
+});
+
+test('failed user batch retry replaces the stored error without changing the collection ID', async () => {
   const sku = '7200000003';
   const calls = [];
   const coordinator = create({
@@ -874,7 +1002,7 @@ test('failed user batch retry replaces the stored error and keeps the stable req
   assert.deepEqual(retried[0].error.missingFields, ['lengthMm', 'widthMm']);
   assert.equal(coordinator.getState(sku).error.message, '缺少：长、宽');
   assert.equal(coordinator.getState(sku).requestId, requestId);
-  assert.equal(calls.at(-1).payload.requestId, requestId);
+  assert.notEqual(calls.at(-1).payload.requestId, requestId);
 });
 
 test('concurrent user batch retries isolate the failed sibling and share one retry and upload', async () => {
@@ -934,7 +1062,8 @@ test('concurrent user batch retries isolate the failed sibling and share one ret
   assert.equal(batchAttempt, 2);
   const retryCalls = calls.filter(({ action }) => action === 'enrichOzonCollectBatch');
   assert.deepEqual(retryCalls[1].payload.skus, [failedSiblingSku]);
-  assert.equal(retryCalls[1].payload.requestId, failedRequestId);
+  assert.notEqual(retryCalls[1].payload.requestId, failedRequestId);
+  assert.equal(coordinator.getState(failedSiblingSku).requestId, failedRequestId);
   assert.equal(coordinator.getState(anchorSku).status, 'READY');
   assert.equal(coordinator.getState(failedSiblingSku).status, 'PREFETCHING');
 
