@@ -172,6 +172,9 @@ async function runBrowserFixture({
         } : null,
         sizeField: sizeSummary?.querySelector("[data-field]")?.getAttribute("data-field") || "",
         fields: [...panel.querySelectorAll("[data-field]")].map((field) => field.getAttribute("data-field")),
+        missingCatalogFields: window.JZ_DATACARD_FIELDS
+          .map(({ field }) => field)
+          .filter((field) => !panel.querySelector(`[data-field="${field}"]`)),
         actions: [...panel.querySelectorAll("[data-action]")].map((action) => action.getAttribute("data-action")),
       };
     });
@@ -181,6 +184,11 @@ async function runBrowserFixture({
     assert.deepEqual(wide.heroFields, ["sales30d", "createDate", "heroFollow"]);
     assert.deepEqual(wide.skuStatus, { field: "skuStatus", text: "SKU 采集状态123456789" });
     assert.equal(wide.sizeField, "heroSize");
+    assert.deepEqual(
+      wide.missingCatalogFields,
+      [],
+      "V2 renderer must expose a data-field node for every real settings-catalog field",
+    );
     for (const field of ["sales30d", "createDate", "heroFollow", "heroSize", "category", "sku", "returnRate", "rating", "dimensions", "volume", "weight"]) {
       assert.ok(wide.fields.includes(field), `missing rendered field ${field}`);
     }
@@ -435,6 +443,8 @@ async function runBrowserFixture({
       await pdpPage.evaluate((gateAllowed) => {
         history.replaceState(null, "", "/product/browser-fixture-123456789");
         document.body.innerHTML = `
+          <div data-state="state-paginator">{"detail_info":{"views":3456,"discount":17.25}}</div>
+          <div data-state='{"isInCart":false,"toCart":{},"freeRest":23}'></div>
           <div data-widget="webStickyColumn"></div>
           <div data-widget="webStickyColumn"></div>
           <div data-widget="webStickyColumn"><div><div data-widget="webSale"></div></div></div>`;
@@ -451,6 +461,7 @@ async function runBrowserFixture({
       await card.waitFor();
       return card.evaluate((renderedCard) => {
         const image = renderedCard.querySelector(".ozon-helper-sidebar-brand-mark img");
+        const valueOf = (field) => renderedCard.querySelector(`[data-field="${field}"]`)?.textContent.trim() || "";
         return {
           html: renderedCard.innerHTML,
           image: image?.getAttribute("src") || "",
@@ -458,6 +469,14 @@ async function runBrowserFixture({
           status: renderedCard.querySelector(".ozon-helper-sidebar-brand-status")?.textContent.trim() || "",
           gearAction: renderedCard.querySelector(".ozon-helper-sidebar-card-gear")?.dataset.action || "",
           closeAction: renderedCard.querySelector(".ozon-helper-sidebar-card-close")?.dataset.action || "",
+          missingCatalogFields: window.JZ_DATACARD_FIELDS
+            .map(({ field }) => field)
+            .filter((field) => !renderedCard.querySelector(`[data-field="${field}"]`)),
+          contractValues: {
+            discount: valueOf("discount"),
+            views: valueOf("views").replace(/\s/g, ""),
+            stock: valueOf("stock"),
+          },
         };
       });
     };
@@ -470,6 +489,16 @@ async function runBrowserFixture({
     assert.equal(normalPdpHeader.closeAction, "close-sidebar-card");
     assert.match(normalPdpHeader.html, /class="oh-sku-status-card"/);
     assert.match(normalPdpHeader.html, /class="oh-size-summary"/);
+    assert.deepEqual(
+      normalPdpHeader.missingCatalogFields,
+      [],
+      "PDP renderer must expose a data-field node for every real settings-catalog field",
+    );
+    assert.deepEqual(normalPdpHeader.contractValues, {
+      discount: "17.25%",
+      views: "3456",
+      stock: "23",
+    });
     assert.doesNotMatch(normalPdpHeader.html, /ozon 粽子ERP|data-lucide="zap"/);
 
     const lockedPdpHeader = await loadRealPdpHeader(false);
@@ -507,8 +536,29 @@ async function runBrowserFixture({
       );
       return { text: status.textContent.trim(), state: status.dataset.state || "" };
     }, outcomes);
+    const readV2ContractValues = async () => page.evaluate(() => {
+      const panel = document.querySelector(".ozon-helper-data-panel");
+      const valueOf = (field) => panel.querySelector(`[data-field="${field}"]`)?.textContent.trim() || "";
+      return {
+        discount: valueOf("discount"),
+        views: valueOf("views").replace(/\s/g, ""),
+        stock: valueOf("stock"),
+        followMinPrice: valueOf("followMinPrice"),
+        canFollow: valueOf("canFollow"),
+      };
+    });
     const fulfilledSources = {
-      getProductStats: { status: "fulfilled", value: { sales30d: 12 } },
+      getProductStats: {
+        status: "fulfilled",
+        value: {
+          sales30d: 12,
+          marketDiscount: 17.25,
+          marketViews: 3456,
+          stock: 9,
+          lowestPriceUsd: 8.5,
+          canFollow: false,
+        },
+      },
       getMarketStats: { status: "fulfilled", value: { soldCount: 12 } },
       searchVariants: { status: "fulfilled", value: { items: [] } },
       followCount: { status: "fulfilled", value: { count: 0, sellers: [] } },
@@ -524,6 +574,13 @@ async function runBrowserFixture({
       { text: "商品数据已更新", state: "ready" },
       "V2 should announce success only after all real data sources fulfill",
     );
+    assert.deepEqual(await readV2ContractValues(), {
+      discount: "17.25%",
+      views: "3456",
+      stock: "9",
+      followMinPrice: "$8.50",
+      canFollow: "不能",
+    });
 
     assert.deepEqual(
       await startDeferredPopulation(),

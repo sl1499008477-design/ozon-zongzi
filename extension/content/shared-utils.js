@@ -1302,7 +1302,7 @@ if (!globalThis.__JZ_BRAND__) {
     { field: 'dimensions', label: '长宽高', group: '物流商品' },
     { field: 'volume', label: '体积', group: '物流商品' },
     { field: 'weight', label: '重量', group: '物流商品' },
-    // 跟卖信息(仅 PDP 有)
+    // 跟卖信息
     { field: 'followMinPrice', label: '跟卖最低价', group: '跟卖信息' },
     { field: 'canFollow', label: '能否跟卖', group: '跟卖信息' },
   ];
@@ -3661,6 +3661,13 @@ if (!globalThis.__JZ_BRAND__) {
           { field: 'promoDiscount', label: '促销折扣', value: '-', tip: '近一个月参与促销的平均折扣' },
           { field: 'promoConvRate', label: '促销转化率', value: '-', color: 'green', tip: '促销期间订购的金额,在总订购金额的占比' },
           { field: 'daysWithAds', label: '推广天数', value: '-', tip: '近一个月参与模版付费推广的天数' },
+          {
+            field: 'discount', label: '折扣',
+            value: initial.discount != null && Number.isFinite(Number(initial.discount))
+              ? `${Number(initial.discount)}%`
+              : '-',
+            color: 'orange', tip: '当前商品的折扣百分比',
+          },
         ],
       },
       {
@@ -3669,6 +3676,13 @@ if (!globalThis.__JZ_BRAND__) {
           { field: 'pdpCartRate', label: '卡片加购率', value: '-', tip: '商品卡片浏览次数与浏览后将商品添加到购物车的数量之间的比例' },
           { field: 'searchViews', label: '搜索浏览', value: '-', tip: '买家在搜索结果中和类目中查看商品的次数' },
           { field: 'searchCartRate', label: '搜索加购率', value: '-', tip: '商品添加到购物车的次数与在目录和搜索结果中浏览次数之间的比例' },
+          {
+            field: 'views', label: '展示量',
+            value: initial.views != null && Number.isFinite(Number(initial.views))
+              ? window.formatNumber(Number(initial.views))
+              : '-',
+            tip: '商品在网站所有页面上的展示次数',
+          },
           { field: 'convViewToOrder', label: '展示转化率', value: '-', tip: '商品在网站所有页面上的展示次数与订单数量的比例' },
           { field: 'clickRate', label: '点击率', value: '-', color: 'orange', tip: '买家点击商品的次数与商品在网站所有页面上的展示次数之间的比例' },
         ],
@@ -3677,6 +3691,13 @@ if (!globalThis.__JZ_BRAND__) {
         id: 'logistics', icon: _v2Icon('truck'), title: '物流详情', accent: 'purple', rows: [
           { field: 'returnRate', label: '退货率', value: '-', color: 'red', tip: '商品退货取消率' },
           { field: 'rating', label: '评分', value: '-', color: 'gold', tip: '商品评分及评论数量' },
+          {
+            field: 'stock', label: '库存',
+            value: initial.stock != null && Number.isFinite(Number(initial.stock))
+              ? window.formatNumber(Number(initial.stock))
+              : '-',
+            tip: '当前商品库存量',
+          },
           { field: 'dimensions', label: '长宽高', value: '-', tip: '商品长宽高(毫米)', full: true },
           {
             field: 'volume', label: '体积',
@@ -3684,6 +3705,23 @@ if (!globalThis.__JZ_BRAND__) {
             tip: '按长×宽×高估算的体积(升)', full: true,
           },
           { field: 'weight', label: '重量', value: '-', tip: '商品重量(克)', full: true },
+        ],
+      },
+      {
+        id: 'follow', icon: _v2Icon('link'), title: '跟卖信息', accent: 'pink', rows: [
+          {
+            field: 'followMinPrice', label: '跟卖最低价',
+            value: initial.followSellMinPrice != null && Number.isFinite(Number(initial.followSellMinPrice))
+              ? `₽${window.formatNumber(Number(initial.followSellMinPrice), 2)}`
+              : '-',
+            color: 'green', tip: '商品的跟卖最低价',
+          },
+          {
+            field: 'canFollow', label: '能否跟卖',
+            value: initial.canFollow == null ? '-' : (initial.canFollow ? '能' : '不能'),
+            color: initial.canFollow == null ? '' : (initial.canFollow ? 'green' : 'red'),
+            tip: '该商品是否支持跟卖', full: true,
+          },
         ],
       },
     ];
@@ -3975,19 +4013,29 @@ if (!globalThis.__JZ_BRAND__) {
         const v = Number(data.marketSalesDynamics);
         updateField('salesDynamics', `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`, v > 0 ? 'green' : v < 0 ? 'red' : '');
       }
-      // marketDiscount = 快照促销折扣(market.discount) → 促销折扣行;广告费占比走 marketDrr。
-      if (data.marketDiscount != null) updateField('promoDiscount', `${Number(data.marketDiscount).toFixed(2)}%`);
+      // marketDiscount = 快照促销折扣(market.discount):既是促销统计,也是当前折扣
+      // 的唯一稳定后端来源；两个 catalog 字段都要有可见结果。
+      if (data.marketDiscount != null) {
+        const discount = `${Number(data.marketDiscount).toFixed(2)}%`;
+        updateField('promoDiscount', discount);
+        updateField('discount', discount, 'orange');
+      }
       if (data.marketDrr != null) updateField('drr', `${Number(data.marketDrr).toFixed(2)}%`);
       if (data.adCostRatio != null) updateField('drr', `${Number(data.adCostRatio).toFixed(2)}%`, '', true);
 
       // 流量转化
-      if (data.marketViews != null) updateField('pdpViews', window.formatNumber(data.marketViews));
+      if (data.marketViews != null) {
+        const views = window.formatNumber(data.marketViews);
+        updateField('pdpViews', views);
+        updateField('views', views);
+      }
       if (data.analyticsConvRate != null) updateField('pdpCartRate', `${Number(data.analyticsConvRate).toFixed(2)}%`);
       if (data.marketSearchViews != null) updateField('searchViews', window.formatNumber(data.marketSearchViews));
       if (data.analyticsSearchCartRate != null) updateField('searchCartRate', `${Number(data.analyticsSearchCartRate).toFixed(2)}%`);
       if (data.marketConvRate != null) updateField('convViewToOrder', `${Number(data.marketConvRate).toFixed(2)}%`, 'green');
       if (data.clickRate != null) updateField('clickRate', `${Number(data.clickRate).toFixed(2)}%`, 'orange');
       if (data.paidPromoDays != null) updateField('daysWithAds', String(data.paidPromoDays));
+      if (data.stock != null) updateField('stock', window.formatNumber(Number(data.stock)));
 
       // 退货率:marketRedemptionRate 是快照透传的原始 nullableRedemptionRate(签收率),
       // 与下面 market 直连路径同口径 —— 退货率 = 100 - 签收率,不能直显原值。
@@ -4081,7 +4129,9 @@ if (!globalThis.__JZ_BRAND__) {
         updateField('daysInPromo', String(d.daysInPromo), '', true);
       }
       if (d.discount != null) {
-        updateField('promoDiscount', `${Number(d.discount).toFixed(2)}%`, '', true);
+        const discount = `${Number(d.discount).toFixed(2)}%`;
+        updateField('promoDiscount', discount, '', true);
+        updateField('discount', discount, 'orange', true);
       }
       if (d.promoRevenueShare != null) {
         updateField('promoConvRate', `${Number(d.promoRevenueShare).toFixed(2)}%`, 'green', true);
@@ -4117,6 +4167,7 @@ if (!globalThis.__JZ_BRAND__) {
       const viewsForCtr = Number(d.views) || 0;
       const sessionsForCtr = Number(d.sessionCount || d.qtyViewPdp) || 0;
       if (viewsForCtr > 0) {
+        updateField('views', window.formatNumber(viewsForCtr), '', true);
         const ctr = ((sessionsForCtr / viewsForCtr) * 100).toFixed(2);
         updateField('clickRate', `${ctr}%`, Number(ctr) > 5 ? 'orange' : '', true);
       }
@@ -4126,6 +4177,7 @@ if (!globalThis.__JZ_BRAND__) {
           d.salesSchema || (d.sources?.length ? d.sources.join('/').toUpperCase() : '-');
         updateField('salesSchema', schema, '', true);
       }
+      if (d.stock != null) updateField('stock', window.formatNumber(Number(d.stock)), '', true);
       if (d.nullableRedemptionRate != null) {
         const returnRate = window.jzReturnRateFromRedemption(d.nullableRedemptionRate);
         if (returnRate != null) {

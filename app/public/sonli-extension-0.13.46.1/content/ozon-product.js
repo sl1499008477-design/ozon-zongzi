@@ -2916,6 +2916,11 @@
           { field: 'promoDiscount', label: '促销折扣', value: '-', tip: '近一个月参与促销的平均折扣' },
           { field: 'promoConvRate', label: '促销转化率', value: '-', color: 'green', tip: '促销期间订购的金额，在总订购金额的占比' },
           { field: 'daysWithAds', label: '推广天数', value: '-', tip: '近一个月参与模版付费推广的天数' },
+          {
+            field: 'discount', label: '折扣',
+            value: stats.discount != null && Number.isFinite(Number(stats.discount)) ? `${Number(stats.discount)}%` : '-',
+            color: 'orange', tip: '当前商品的折扣百分比',
+          },
         ],
       },
       {
@@ -2924,6 +2929,11 @@
           { field: 'pdpCartRate', label: '卡片加购率', value: '-', tip: '商品卡片浏览次数与浏览后将商品添加到购物车的数量之间的比例' },
           { field: 'searchViews', label: '搜索浏览', value: '-', tip: '买家在搜索结果中和类目中查看商品的次数' },
           { field: 'searchCartRate', label: '搜索加购率', value: '-', tip: '商品添加到购物车的次数与在目录和搜索结果中浏览次数之间的比例' },
+          {
+            field: 'views', label: '展示量',
+            value: stats.views != null && Number.isFinite(Number(stats.views)) ? window.formatNumber(Number(stats.views)) : '-',
+            tip: '商品在网站所有页面上的展示次数',
+          },
           { field: 'convViewToOrder', label: '展示转化率', value: '-', tip: '商品在网站所有页面上的展示次数与订单数量的比例' },
           { field: 'clickRate', label: '点击率', value: '-', color: 'orange', tip: '买家点击商品的次数与商品在网站所有页面上的展示次数之间的比例' },
         ],
@@ -2932,6 +2942,11 @@
         id: 'logistics', icon: _lucideSvg('truck'), title: '物流详情', accent: 'purple', rows: [
           { field: 'returnRate', label: '退货率', value: '-', color: 'red', tip: '商品退货取消率' },
           { field: 'rating', label: '评分', value: formatRating(product.rating, product.reviewCount), color: product.rating ? 'gold' : '', tip: '商品评分及评论数量' },
+          {
+            field: 'stock', label: '库存',
+            value: product.freeRest != null && Number.isFinite(Number(product.freeRest)) ? window.formatNumber(Number(product.freeRest)) : '-',
+            tip: '当前商品库存量',
+          },
           { field: 'dimensions', label: '长宽高', value: '-', tip: '商品长宽高(毫米)', full: true },
           { field: 'volume', label: '体积', value: _pdpInitialVolume, tip: '按长×宽×高估算的体积(升)', full: true },
           { field: 'weight', label: '重量', value: formatWeightG(product.characteristics?.weightG) || '-', tip: '商品重量(克)', full: true },

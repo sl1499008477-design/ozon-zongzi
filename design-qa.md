@@ -18,7 +18,7 @@ Implementation:
 - Panel component crop: `docs/superpowers/verification/assets/ozon-zongzi-implementation-panel-component.png`
 - Settings component crop: `docs/superpowers/verification/assets/ozon-zongzi-implementation-settings-component.png`
 
-The implementation evidence was freshly captured after production fix commit `7a2808d`. The fixture runs the production renderers from `extension/content/ozon-data-panel.js`, `extension/content/ozon-product.js`, `extension/content/ozon-product.css`, `extension/content/shared-utils.js`, and `extension/lib/sidebar-section-toggle.js`. It isolates only the Chrome storage/message boundary and uses the real 32-field catalogue; it does not recreate the panel DOM.
+The screenshot fixture loads the production V2 path from `extension/content/ozon-data-panel.js`, `extension/content/ozon-product.css`, `extension/content/shared-utils.js`, and `extension/lib/sidebar-section-toggle.js`; it does not load `extension/content/ozon-product.js`. A separate PDP DOM regression dynamically loads the real `ozon-product.js` on a synthetic PDP URL. Together they cover both production renderers against the real 32-field catalogue while isolating only the Chrome storage/message boundary; neither test recreates the panel DOM.
 
 ## Capture normalization and state
 
@@ -74,8 +74,9 @@ The two prior actionable findings are resolved:
 
 ## Functional checks
 
-- GUI-capable active Chrome fixture: 2 passed, 0 failed.
-- Focused brand/logistics/sidebar regression: 3 passed, 0 failed.
+- The previous visual baseline's GUI-capable Chrome fixture passed 2/2. After the latest 32-field contract patch, that CLI suite was not rerun because the session's elevated Chrome-launch quota was exhausted; the sandboxed attempt stopped at browser launch and did not reach assertions.
+- A fresh connected-Chrome integration check loaded both the production V2 renderer and an independently dynamic-loaded `ozon-product.js` PDP renderer. RED found V2 missing `discount`, `views`, `stock`, `followMinPrice`, and `canFollow`; GREEN found no missing catalogue fields in either renderer. Both rendered the controlled real-source values `17.25%`, `3456`, `9`, `$8.50`, and `不能`.
+- Focused non-GUI regression: 6 passed, 0 failed; UI parity mutation gate: 1 passed, 0 failed.
 - Gear-to-settings transition: passed; capture was opened through the production gear.
 - Field visibility and monthly/weekly persistence: passed.
 - Atomic save failure/retry, duplicate-save lock, cancel, restore, group/all controls: passed.
@@ -90,13 +91,15 @@ The two prior actionable findings are resolved:
 ## Console errors
 
 - Production fixture capture: none.
-- Active Chrome regression: no browser-console assertion failure.
+- Connected-Chrome field-contract integration: no visible application exception; the CLI regression did not reach browser assertions in this latest round.
 - Existing web checks emitted only known Ant Design deprecation warnings; no application exception was observed.
 
 ## Verification evidence
 
-- `node --test extension/tests/data-panel-visual-browser.test.js`: 2 passed, 0 failed.
-- `node --test extension/tests/brand-contract.test.js extension/tests/data-panel-logistics.test.js extension/tests/sidebar-section-toggle.test.js`: 3 passed, 0 failed.
+- Latest `node --test extension/tests/data-panel-visual-browser.test.js`: not completed. Elevated Chrome launch was denied after the session quota was exhausted; the sandboxed attempt failed during browser launch, before any contract assertion. The prior pre-contract-patch baseline was 2 passed, 0 failed and is not presented as fresh evidence for this patch.
+- Fresh connected Chrome: V2 RED missing set was `[discount, views, stock, followMinPrice, canFollow]`; after the patch, V2 and PDP missing sets were both `[]`, with both renderers showing `discount=17.25%`, `views=3456`, `stock=9`, `followMinPrice=$8.50`, and `canFollow=不能`.
+- `node --test` focused brand/fallback/copy/logistics/follow-copy/sidebar suite: 6 passed, 0 failed.
+- UI parity exception mutation test with the required upstream environment: 1 passed, 0 failed.
 - Source parity: passed.
 - Distribution parity: passed.
 - UI parity: passed after updating the reviewed local CSS fingerprint.
