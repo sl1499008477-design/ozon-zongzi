@@ -2,6 +2,7 @@ import {
   assertCollectorScopeFieldsAbsentV4,
   prepareCollectRequestV4,
 } from "./collection-pipeline.mjs";
+import { assertCompleteOzonCollectPayload } from "./collector-ozon-enrichment-contract.mjs";
 
 function routeError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
@@ -57,15 +58,19 @@ export function createJsonAccountScopedCollectionHandler({
       if (!inputs.length) throw routeError("采集请求没有商品数据", 422, "COLLECT_ITEMS_EMPTY");
 
       const imported = [];
-      state.collectRequests = Array.isArray(state.collectRequests) ? state.collectRequests : [];
-      state.caches.collectBox = Array.isArray(state.caches.collectBox) ? state.caches.collectBox : [];
-      for (const value of inputs) {
+      const collectRequests = Array.isArray(state.collectRequests) ? state.collectRequests : [];
+      let collectBox = Array.isArray(state.caches.collectBox) ? state.caches.collectBox : [];
+      const preparedInputs = inputs.map((value) => {
         const input = value && typeof value === "object" ? value : {};
         const prepared = prepareCollectRequestV4({
           authenticatedAccount: account,
           input: { ...input, source: input.source || pathSource },
         });
-        const existing = state.collectRequests.find((request) =>
+        assertCompleteOzonCollectPayload(prepared.identity.source, input.payload);
+        return { input, prepared };
+      });
+      for (const { input, prepared } of preparedInputs) {
+        const existing = collectRequests.find((request) =>
           request.accountId === prepared.identity.accountId
           && request.source === prepared.identity.source
           && request.sourceSku === prepared.identity.sourceSku
@@ -110,11 +115,11 @@ export function createJsonAccountScopedCollectionHandler({
           "dataCollectionStoreId",
           "sellerCompanyId",
         ]) delete item[field];
-        state.caches.collectBox = state.caches.collectBox.filter((row) =>
+        collectBox = collectBox.filter((row) =>
           !(String(row.id) === item.id && String(row.accountId || "") === account.id));
-        state.caches.collectBox.unshift(item);
+        collectBox.unshift(item);
         const response = { item, collectItemId: item.id };
-        state.collectRequests.push({
+        collectRequests.push({
           id: prepared.persistedRequestId,
           idempotencyKey: prepared.idempotencyKey,
           accountId: account.id,
@@ -130,6 +135,8 @@ export function createJsonAccountScopedCollectionHandler({
         });
         imported.push({ ...item, collectRequestId: prepared.persistedRequestId, duplicate: false });
       }
+      state.collectRequests = collectRequests;
+      state.caches.collectBox = collectBox;
       await saveState(state);
       sendJson(res, 200, isBatch
         ? {
@@ -149,6 +156,7 @@ export function createJsonAccountScopedCollectionHandler({
         error?.status || 500,
         error?.message || "采集请求处理失败",
         error?.code || "COLLECT_REQUEST_FAILED",
+        error?.missingFields?.length ? { missingFields: error.missingFields } : undefined,
       );
     }
     return true;

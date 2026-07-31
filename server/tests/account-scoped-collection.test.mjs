@@ -136,6 +136,13 @@ if (!postgresEnabled()) {
       payload: {
         sku: sourceSku,
         name: "Account A item",
+        descriptionCategoryId: 17000001,
+        logistics: {
+          weightG: 500,
+          lengthMm: 300,
+          widthMm: 200,
+          heightMm: 100,
+        },
         images: ["https://cdn.example.test/a.jpg"],
         listingDraft: {
           sku: sourceSku,

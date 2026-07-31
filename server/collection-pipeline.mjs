@@ -3,6 +3,7 @@ import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import { mirrorCollectItemV3 } from "./listing-pipeline.mjs";
 import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
+import { assertCompleteOzonCollectPayload } from "./collector-ozon-enrichment-contract.mjs";
 
 let ready = false;
 
@@ -226,6 +227,8 @@ export async function ingestCollectRequestV4(options = {}) {
     sourceSku,
     requestId: sourceRequestId,
   } = identity;
+
+  assertCompleteOzonCollectPayload(sourceId, normalizedItem);
 
   try {
     return await transaction(async (client) => {

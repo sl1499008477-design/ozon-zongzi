@@ -390,8 +390,8 @@ function sendJson(res, status, data, extraHeaders = {}) {
   res.end(JSON.stringify(data));
 }
 
-function sendError(res, status, message, code = "LOCAL_ERROR") {
-  sendJson(res, status, { ok: false, message, code });
+function sendError(res, status, message, code = "LOCAL_ERROR", details = {}) {
+  sendJson(res, status, { ok: false, message, code, ...(details || {}) });
 }
 
 const handleOzonCategoryRoute = createOzonCategoryRouteHandler({
@@ -2271,7 +2271,13 @@ async function handleFastCollectionRoute(req, res, url) {
       return true;
     }
   } catch (error) {
-    sendError(res, error?.status || 500, error?.message || "采集请求处理失败", error?.code || "COLLECT_REQUEST_FAILED");
+    sendError(
+      res,
+      error?.status || 500,
+      error?.message || "采集请求处理失败",
+      error?.code || "COLLECT_REQUEST_FAILED",
+      error?.missingFields?.length ? { missingFields: error.missingFields } : undefined,
+    );
     return true;
   }
   return false;

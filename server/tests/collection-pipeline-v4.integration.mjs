@@ -87,6 +87,13 @@ try {
     id: sku,
     sku,
     name: "V4 原始标题",
+    descriptionCategoryId: 17000001,
+    logistics: {
+      weightG: 500,
+      lengthMm: 300,
+      widthMm: 200,
+      heightMm: 100,
+    },
     images: ["https://example.invalid/v4.jpg"],
     variants: [{ sku: `${sku}-red`, offerId: `${sku}-offer-red`, name: "红色" }],
     listingDraft: {

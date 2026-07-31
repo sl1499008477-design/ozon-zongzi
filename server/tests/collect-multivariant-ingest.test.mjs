@@ -72,6 +72,13 @@ const secondSource = {
 const raw = {
   sku: "sku-red",
   name: "Multi variant product",
+  descriptionCategoryId: 17000001,
+  logistics: {
+    weightG: 500,
+    lengthMm: 300,
+    widthMm: 200,
+    heightMm: 100,
+  },
   variantData: {
     variants: [
       { sku: "sku-red", name: "Red", sourceVariant: firstSource },
