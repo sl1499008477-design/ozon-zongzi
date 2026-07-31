@@ -37,6 +37,7 @@ try {
     '../lib/cdn-buster.js',
     '../lib/web-bridge-policy.js',
     '../lib/collector-session.js',
+    '../lib/ozon-enrichment-contract.js',
     '../lib/seller-identity-policy.js',
     '../lib/seller-company-context-runtime.js',
     '../lib/portal-bridge-policy.js',
@@ -46,6 +47,8 @@ try {
     '../lib/ozon-video-extract.js',
     'follow-sell-request.js',
     'collector-client.js',
+    'collector-ozon-enrichment-agent.js',
+    'collector-ozon-enrichment-client.js',
   );
 } catch (e) {
   console.warn('[SW] dependency import failed:', e?.message || e);
@@ -283,6 +286,66 @@ try {
       chromeApi: chrome,
       policy: globalThis.JzSellerIdentityPolicy,
     });
+  const collectorOzonAgent = globalThis.JzCollectorOzonAgent.create({
+    sessionManager: collectorSessionManager,
+    canCapture: async () => {
+      try {
+        await sellerCompanyContextRuntime.resolveCurrent();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    captureVariant: ({ sku, noProxy, forceRefresh }) => searchVariantsLocal({
+      sku,
+      noProxy: noProxy === true,
+      forceRefresh: forceRefresh === true,
+      sender: null,
+    }),
+    sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  });
+  const collectorOzonClient = globalThis.JzCollectorOzonClient.create({
+    sessionManager: collectorSessionManager,
+    agent: collectorOzonAgent,
+    getBackendUrl,
+  });
+  const exactRuntimeMessage = (message, keys) => {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+    return Object.keys(message).length === keys.length
+      && keys.every((key) => Object.hasOwn(message, key));
+  };
+  const ozonRuntimeErrorEnvelope = (error) => ({
+    ok: false,
+    status: Number.isInteger(Number(error?.status)) ? Number(error.status) : 0,
+    code: globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
+      error?.code,
+      'OZON_ENRICH_UPSTREAM_FAILED',
+    ),
+    error: globalThis.JzCollectorSession.redactCollectorSecrets(
+      error?.message || 'Ozon 商品资料补全失败',
+    ),
+    missingFields: [...new Set(
+      (Array.isArray(error?.missingFields) ? error.missingFields : [])
+        .map((field) => String(field || ''))
+        .filter((field) => [
+          'descriptionCategoryId',
+          'weightG',
+          'lengthMm',
+          'widthMm',
+          'heightMm',
+        ].includes(field)),
+    )],
+    retryable: error?.retryable === true,
+  });
+  const invalidOzonRuntimeMessage = () => Object.assign(
+    new Error('Ozon 商品补全请求格式无效'),
+    {
+      status: 400,
+      code: 'OZON_ENRICH_REQUEST_INVALID',
+      missingFields: [],
+      retryable: false,
+    },
+  );
 
   /**
    * Execute fetch in a seller.ozon.ru tab's page context (MAIN world).
@@ -2869,6 +2932,197 @@ try {
     });
   }
 
+  const searchVariantsLocal = async (input = {}) => {
+    const message = {
+      sku: input.sku,
+      noProxy: input.noProxy,
+      forceRefresh: input.forceRefresh,
+    };
+    const sender = input.sender || null;
+    const token = null;
+    const storeId = null;
+    const backendUrl = await getBackendUrl();
+    const sku = message.sku;
+    const forceRefresh = Boolean(message.forceRefresh);
+    // 跟卖时用户本就在 www 商品页 → 用来源标签走跨域快路,免依赖 seller 专用标签
+    const senderTabId = sender?.tab?.id || null;
+    // 灰度:服务端 collect(search→bundle 链式;命中走俄罗斯 VPS,失败/未命中回落老路)
+    if (await isFleetServerSide(backendUrl, token)) {
+      const _ck = `${_FLEET_COLLECT_CACHE_PREFIX}${String(sku)}`;
+      // 本地缓存 24h(≤后端 30d,不引入更陈数据);forceRefresh 跳读不跳写,
+      // 与老路 fetchBundleByVariantId 的 forceRefresh 语义一致。fleet collect
+      // 数据来自机群账号(平台级、非用户店铺),key 只用 sku 即可,无串店风险。
+      if (!forceRefresh) {
+        const _hit = await _fleetCacheGet(_ck, _FLEET_COLLECT_CACHE_TTL_MS);
+        if (_hit && _hit.sourceVariant) return { ok: true, data: { items: [_hit.sourceVariant] } };
+      }
+      const _fc = await callFleet(backendUrl, token, storeId, 'collect', { sku });
+      if (_fc && _fc.sourceVariant) {
+        // 兜底旧 fleet / Redis 缓存窗口：以完整 bundleItem 同时补物理属性和
+        // 业务属性，跟浏览器本地路线使用同一幂等合并规则。
+        const _sv = mergeBundleItemIntoSourceVariant(_fc.sourceVariant, _fc.bundleItem);
+        const _enrichedFleet = { ..._fc, sourceVariant: _sv };
+        // 只缓存完整包:残包(缺 bundleItem → 没有重量/尺寸/完整属性包,后端仅
+        // 600s 短缓存等重试补全)写本地会钉死 24h;失败/null 更不写(PR#332 红线)。
+        // 缓存放在统一富化之后，命中路径直接返回完整 sourceVariant。
+        if (_fc.bundleItem) _fleetCacheSet(_ck, _enrichedFleet);
+        return { ok: true, data: { items: [_sv] } };
+      }
+    }
+    // 2026-05 Ozon 把 /api/v1/search-variant-model endpoint 下线(实测所有
+    // SKU/参数都返 404 ResourceNotFound)。新流程是 /api/v1/search 拿元数据
+    // + /api/site/seller-prototype/create-bundle-by-variant-id 补完整 attributes:
+    //
+    // Step 1: /api/v1/search filter sku.values 拿 variants[0].variant_id
+    //         (URL 数字 SKU 与 variant_id 不同 namespace,必须先转换)
+    // Step 2: /api/site/seller-prototype/create-bundle-by-variant-id 拿 item
+    //         含 weight/depth/width/height(物理) + barcode + 40-63 个 attributes
+    // Step 3: 把 item.weight/depth/width/height 以 sv attr key 形式
+    //         (4497/9454/9455/9456)push 进 items[0].attributes,
+    //         让下游 distillSource / resolveViaSearchVariantModel /
+    //         jzMergeCardPanelData 等所有 caller 无感升级 — 它们的代码不动
+    //
+    // 副作用:bundle endpoint 每次创建 draft bundle_id。fetchBundleByVariantId
+    // 内部用 chrome.storage.local 24h cache(下调自 30d,牺牲少量 draft 增长换取
+    // 源商品改类目/属性时及时刷新);传 message.forceRefresh=true 可绕过 cache 立即重拉。
+    //
+    // NOT_IN_OWN_CATALOG label 保留以兼容 caller 的 errorCode 检查,语义
+    // 现在变成 SKU_NOT_FOUND_ON_PLATFORM(/search 对找不到的 SKU 通常返 200
+    // + 空 variants,而不是 404,所以这分支实际很少触发)。
+    const classifyError = (e) => {
+      const msg = e.message || String(e);
+      const status = typeof e.status === 'number' ? e.status : null;
+      const code = typeof e.code === 'string' ? e.code : null;
+      let errorCode = 'UNKNOWN_ERROR';
+      if (status === 404 && code === 'ResourceNotFound') {
+        errorCode = 'NOT_IN_OWN_CATALOG';
+      } else if (msg.includes('请先打开') || msg.includes('No seller tab')) {
+        errorCode = 'NO_SELLER_TAB';
+      } else if (msg.includes('Cannot access contents') || msg.includes('permission to access')) {
+        errorCode = 'PERMISSION_DENIED';
+      } else if (status === 401 || code === 'AUTH_REDIRECT' || msg.includes('sc_company_id') || msg.includes('过期') || msg.includes('登录') || msg.includes('signin') || msg.includes('login')) {
+        errorCode = 'AUTH_REQUIRED';
+      } else if (status === 403 || msg.includes('403')) {
+        // 403 细分:Ozon 反爬挑战是 HTML 页;而 company_id 失效 / 会话过期 / 账号无权限的
+        // PermissionDenied 是结构化 JSON。早期一律当反爬 → 误冷却 10min + 误导用户"换网络"
+        // (实际该重登 / 重选店)。按 body 形状分流:仅当明确是结构化 JSON 权限/会话错时改判
+        // AUTH_REQUIRED;HTML 挑战页 / 裸 403 无线索仍按反爬(保留熔断保护,宁可多冷却不要猛打)。
+        const blob = `${code || ''} ${msg}`.toLowerCase();
+        const looksHtmlChallenge = /<html|<!doctype|just a moment|attention required|enable javascript|are you a robot|вы не робот|captcha|challenge|too many requests/.test(blob);
+        const looksStructuredApiError = /"code"|"message"|permission_?denied|company_?id|sc_company|unauthenticated|invalid.?token|session/.test(blob);
+        errorCode = (looksStructuredApiError && !looksHtmlChallenge) ? 'AUTH_REQUIRED' : 'ANTIBOT_BLOCKED';
+      } else if (msg.includes('超时') || msg.includes('timeout') || msg.includes('AbortError') || msg.includes('Timeout')) {
+        errorCode = 'TIMEOUT';
+      } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network')) {
+        errorCode = 'NETWORK_ERROR';
+      }
+      return { errorCode, msg };
+    };
+
+    // /search 必须带当前 Seller 公司编号。Ozon 页面已经不保证下发
+    // sc_company_id Cookie，因此统一解析 Cookie + 页面真实请求观测值。
+    let companyId = '';
+    try {
+      companyId = await resolveSellerCompanyId();
+    } catch (contextError) {
+      // 本机没有可验证 Seller 上下文时仍保留同租户代采兜底。
+      if (!message.noProxy) {
+        const proxied = await proxyCollectVariant(backendUrl, token, storeId, sku);
+        if (proxied) return proxied;
+      }
+      const contextCode = /CONFLICT/.test(contextError?.message || '')
+        ? 'SELLER_COMPANY_CONTEXT_CONFLICT'
+        : 'SELLER_CONTEXT_REQUIRED';
+      return {
+        ok: false,
+        error: contextCode,
+        message: contextCode === 'SELLER_COMPANY_CONTEXT_CONFLICT'
+          ? '检测到多个 Seller 公司编号，请只保留当前经营公司的 Seller 页面后重试'
+          : 'Seller 页面已打开，但公司上下文尚未就绪，请刷新 Seller 页面后重试',
+      };
+    }
+
+    const MAX_RETRIES = 2;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const resp = await fetchSellerPortal(
+          '/search',
+          {
+            company_id: companyId,
+            need_total: true,
+            filter: {
+              children_nodes: {
+                children_nodes: [
+                  { input_leaf: { sku: { values: [String(sku)] } } },
+                ],
+                operator: 'AND',
+              },
+            },
+            pagination: { limit: '50' },
+            is_copy_allowed: false,
+          },
+          {
+            urlPrefix: '/api/v1',
+            pageType: 'products',
+            timeoutMs: 30000,
+            allowOzonTab: true,
+            preferTabId: senderTabId,
+            companyId,
+          },
+        );
+        const rawVariants = Array.isArray(resp?.variants) ? resp.variants
+          : Array.isArray(resp?.items) ? resp.items
+          : Array.isArray(resp?.products) ? resp.products
+          : Array.isArray(resp) ? resp : [];
+        const items = rawVariants.map(normalizeSearchVariantToSv).filter(Boolean);
+        if (items.length === 0) {
+          if (attempt === 1) {
+            console.log(`[searchVariants] sku=${sku} no variants from /search, raw:`, JSON.stringify(resp).slice(0, 400));
+          }
+          return { ok: true, data: { items: [] } };
+        }
+
+        // Step 2: bundle 补完整 attributes(物理 + 含 40-63 个完整 attr)
+        // 失败不致命 — items 已有基础元数据(品牌/类目/GTIN/图片),caller 仍可用,
+        // 只是 4497/9454-9456 物理 attr 缺失 → 数据卡片重量·尺寸退化为公开兜底。
+        try {
+          const variantId = items[0].variant_id;
+          if (variantId) {
+            const bundleItem = await fetchBundleByVariantId(sku, variantId, companyId, { forceRefresh, preferTabId: senderTabId });
+            if (bundleItem) {
+              if (!Array.isArray(bundleItem.attributes) || bundleItem.attributes.length === 0) {
+                // 只有物理字段、没有业务属性 → 下游批量上架的特征属性(材料/尺寸/配套…)会缺失,
+                // 内容评分「特征」0 分。留痕便于区分「源本就没属性」vs「取数降级」。
+                console.warn(`[searchVariants] bundle attributes EMPTY for sku=${sku} — 特征属性无法随上架带出(仅物理字段)`);
+              }
+              items[0] = mergeBundleItemIntoSourceVariant(items[0], bundleItem);
+              if (items[0]._bundleComplexAttrs?.length) {
+                console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${items[0]._bundleComplexAttrs.length} for sku=${sku}`);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`[searchVariants] bundle injection failed for sku=${sku}:`, e.message || e);
+        }
+
+        return { ok: true, data: { items } };
+      } catch (e) {
+        const { errorCode, msg } = classifyError(e);
+        // 业务空结果(罕见 — /search 通常返 200 + 空 variants):立即降级
+        if (errorCode === 'NOT_IN_OWN_CATALOG') {
+          console.log(`[searchVariants] sku=${sku} not found on platform (404) — returning empty items`);
+          return { ok: true, data: { items: [] } };
+        }
+        console.warn(`[searchVariants] attempt ${attempt}/${MAX_RETRIES} failed [${errorCode}]:`, msg, e);
+        const isRetryable = ['TIMEOUT', 'NETWORK_ERROR', 'UNKNOWN_ERROR'].includes(errorCode);
+        if (attempt >= MAX_RETRIES || !isRetryable) {
+          return { ok: false, error: errorCode, message: msg };
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  };
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const webBridgePolicy = globalThis.JzWebBridgePolicy;
     const senderIsWebPortal = webBridgePolicy?.isTrustedWebBridgeSender(sender);
@@ -3146,6 +3400,38 @@ try {
               ok: false,
               error: error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
             };
+          }
+        }
+        case 'enrichOzonCollect': {
+          try {
+            if (!exactRuntimeMessage(message, ['action', 'requestId', 'sku'])) {
+              throw invalidOzonRuntimeMessage();
+            }
+            return {
+              ok: true,
+              data: await collectorOzonClient.enrich({
+                requestId: message.requestId,
+                sku: message.sku,
+              }),
+            };
+          } catch (error) {
+            return ozonRuntimeErrorEnvelope(error);
+          }
+        }
+        case 'enrichOzonCollectBatch': {
+          try {
+            if (!exactRuntimeMessage(message, ['action', 'requestId', 'skus'])) {
+              throw invalidOzonRuntimeMessage();
+            }
+            return {
+              ok: true,
+              data: await collectorOzonClient.enrichBatch({
+                requestId: message.requestId,
+                skus: message.skus,
+              }),
+            };
+          } catch (error) {
+            return ozonRuntimeErrorEnvelope(error);
           }
         }
         case 'getAuth': {
@@ -4074,187 +4360,13 @@ try {
             return { ok: true, data: { richContent: '', description: '', hashtags: [] } };
           }
         }
-        case 'searchVariants': {
-          const sku = message.sku;
-          const forceRefresh = Boolean(message.forceRefresh);
-          // 跟卖时用户本就在 www 商品页 → 用来源标签走跨域快路,免依赖 seller 专用标签
-          const senderTabId = sender?.tab?.id || null;
-          // 灰度:服务端 collect(search→bundle 链式;命中走俄罗斯 VPS,失败/未命中回落老路)
-          if (await isFleetServerSide(backendUrl, token)) {
-            const _ck = `${_FLEET_COLLECT_CACHE_PREFIX}${String(sku)}`;
-            // 本地缓存 24h(≤后端 30d,不引入更陈数据);forceRefresh 跳读不跳写,
-            // 与老路 fetchBundleByVariantId 的 forceRefresh 语义一致。fleet collect
-            // 数据来自机群账号(平台级、非用户店铺),key 只用 sku 即可,无串店风险。
-            if (!forceRefresh) {
-              const _hit = await _fleetCacheGet(_ck, _FLEET_COLLECT_CACHE_TTL_MS);
-              if (_hit && _hit.sourceVariant) return { ok: true, data: { items: [_hit.sourceVariant] } };
-            }
-            const _fc = await callFleet(backendUrl, token, storeId, 'collect', { sku });
-            if (_fc && _fc.sourceVariant) {
-              // 兜底旧 fleet / Redis 缓存窗口：以完整 bundleItem 同时补物理属性和
-              // 业务属性，跟浏览器本地路线使用同一幂等合并规则。
-              const _sv = mergeBundleItemIntoSourceVariant(_fc.sourceVariant, _fc.bundleItem);
-              const _enrichedFleet = { ..._fc, sourceVariant: _sv };
-              // 只缓存完整包:残包(缺 bundleItem → 没有重量/尺寸/完整属性包,后端仅
-              // 600s 短缓存等重试补全)写本地会钉死 24h;失败/null 更不写(PR#332 红线)。
-              // 缓存放在统一富化之后，命中路径直接返回完整 sourceVariant。
-              if (_fc.bundleItem) _fleetCacheSet(_ck, _enrichedFleet);
-              return { ok: true, data: { items: [_sv] } };
-            }
-          }
-          // 2026-05 Ozon 把 /api/v1/search-variant-model endpoint 下线(实测所有
-          // SKU/参数都返 404 ResourceNotFound)。新流程是 /api/v1/search 拿元数据
-          // + /api/site/seller-prototype/create-bundle-by-variant-id 补完整 attributes:
-          //
-          // Step 1: /api/v1/search filter sku.values 拿 variants[0].variant_id
-          //         (URL 数字 SKU 与 variant_id 不同 namespace,必须先转换)
-          // Step 2: /api/site/seller-prototype/create-bundle-by-variant-id 拿 item
-          //         含 weight/depth/width/height(物理) + barcode + 40-63 个 attributes
-          // Step 3: 把 item.weight/depth/width/height 以 sv attr key 形式
-          //         (4497/9454/9455/9456)push 进 items[0].attributes,
-          //         让下游 distillSource / resolveViaSearchVariantModel /
-          //         jzMergeCardPanelData 等所有 caller 无感升级 — 它们的代码不动
-          //
-          // 副作用:bundle endpoint 每次创建 draft bundle_id。fetchBundleByVariantId
-          // 内部用 chrome.storage.local 24h cache(下调自 30d,牺牲少量 draft 增长换取
-          // 源商品改类目/属性时及时刷新);传 message.forceRefresh=true 可绕过 cache 立即重拉。
-          //
-          // NOT_IN_OWN_CATALOG label 保留以兼容 caller 的 errorCode 检查,语义
-          // 现在变成 SKU_NOT_FOUND_ON_PLATFORM(/search 对找不到的 SKU 通常返 200
-          // + 空 variants,而不是 404,所以这分支实际很少触发)。
-          const classifyError = (e) => {
-            const msg = e.message || String(e);
-            const status = typeof e.status === 'number' ? e.status : null;
-            const code = typeof e.code === 'string' ? e.code : null;
-            let errorCode = 'UNKNOWN_ERROR';
-            if (status === 404 && code === 'ResourceNotFound') {
-              errorCode = 'NOT_IN_OWN_CATALOG';
-            } else if (msg.includes('请先打开') || msg.includes('No seller tab')) {
-              errorCode = 'NO_SELLER_TAB';
-            } else if (msg.includes('Cannot access contents') || msg.includes('permission to access')) {
-              errorCode = 'PERMISSION_DENIED';
-            } else if (status === 401 || code === 'AUTH_REDIRECT' || msg.includes('sc_company_id') || msg.includes('过期') || msg.includes('登录') || msg.includes('signin') || msg.includes('login')) {
-              errorCode = 'AUTH_REQUIRED';
-            } else if (status === 403 || msg.includes('403')) {
-              // 403 细分:Ozon 反爬挑战是 HTML 页;而 company_id 失效 / 会话过期 / 账号无权限的
-              // PermissionDenied 是结构化 JSON。早期一律当反爬 → 误冷却 10min + 误导用户"换网络"
-              // (实际该重登 / 重选店)。按 body 形状分流:仅当明确是结构化 JSON 权限/会话错时改判
-              // AUTH_REQUIRED;HTML 挑战页 / 裸 403 无线索仍按反爬(保留熔断保护,宁可多冷却不要猛打)。
-              const blob = `${code || ''} ${msg}`.toLowerCase();
-              const looksHtmlChallenge = /<html|<!doctype|just a moment|attention required|enable javascript|are you a robot|вы не робот|captcha|challenge|too many requests/.test(blob);
-              const looksStructuredApiError = /"code"|"message"|permission_?denied|company_?id|sc_company|unauthenticated|invalid.?token|session/.test(blob);
-              errorCode = (looksStructuredApiError && !looksHtmlChallenge) ? 'AUTH_REQUIRED' : 'ANTIBOT_BLOCKED';
-            } else if (msg.includes('超时') || msg.includes('timeout') || msg.includes('AbortError') || msg.includes('Timeout')) {
-              errorCode = 'TIMEOUT';
-            } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('network')) {
-              errorCode = 'NETWORK_ERROR';
-            }
-            return { errorCode, msg };
-          };
-
-          // /search 必须带当前 Seller 公司编号。Ozon 页面已经不保证下发
-          // sc_company_id Cookie，因此统一解析 Cookie + 页面真实请求观测值。
-          let companyId = '';
-          try {
-            companyId = await resolveSellerCompanyId();
-          } catch (contextError) {
-            // 本机没有可验证 Seller 上下文时仍保留同租户代采兜底。
-            if (!message.noProxy) {
-              const proxied = await proxyCollectVariant(backendUrl, token, storeId, sku);
-              if (proxied) return proxied;
-            }
-            const contextCode = /CONFLICT/.test(contextError?.message || '')
-              ? 'SELLER_COMPANY_CONTEXT_CONFLICT'
-              : 'SELLER_CONTEXT_REQUIRED';
-            return {
-              ok: false,
-              error: contextCode,
-              message: contextCode === 'SELLER_COMPANY_CONTEXT_CONFLICT'
-                ? '检测到多个 Seller 公司编号，请只保留当前经营公司的 Seller 页面后重试'
-                : 'Seller 页面已打开，但公司上下文尚未就绪，请刷新 Seller 页面后重试',
-            };
-          }
-
-          const MAX_RETRIES = 2;
-          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-              const resp = await fetchSellerPortal(
-                '/search',
-                {
-                  company_id: companyId,
-                  need_total: true,
-                  filter: {
-                    children_nodes: {
-                      children_nodes: [
-                        { input_leaf: { sku: { values: [String(sku)] } } },
-                      ],
-                      operator: 'AND',
-                    },
-                  },
-                  pagination: { limit: '50' },
-                  is_copy_allowed: false,
-                },
-                {
-                  urlPrefix: '/api/v1',
-                  pageType: 'products',
-                  timeoutMs: 30000,
-                  allowOzonTab: true,
-                  preferTabId: senderTabId,
-                  companyId,
-                },
-              );
-              const rawVariants = Array.isArray(resp?.variants) ? resp.variants
-                : Array.isArray(resp?.items) ? resp.items
-                : Array.isArray(resp?.products) ? resp.products
-                : Array.isArray(resp) ? resp : [];
-              const items = rawVariants.map(normalizeSearchVariantToSv).filter(Boolean);
-              if (items.length === 0) {
-                if (attempt === 1) {
-                  console.log(`[searchVariants] sku=${sku} no variants from /search, raw:`, JSON.stringify(resp).slice(0, 400));
-                }
-                return { ok: true, data: { items: [] } };
-              }
-
-              // Step 2: bundle 补完整 attributes(物理 + 含 40-63 个完整 attr)
-              // 失败不致命 — items 已有基础元数据(品牌/类目/GTIN/图片),caller 仍可用,
-              // 只是 4497/9454-9456 物理 attr 缺失 → 数据卡片重量·尺寸退化为公开兜底。
-              try {
-                const variantId = items[0].variant_id;
-                if (variantId) {
-                  const bundleItem = await fetchBundleByVariantId(sku, variantId, companyId, { forceRefresh, preferTabId: senderTabId });
-                  if (bundleItem) {
-                    if (!Array.isArray(bundleItem.attributes) || bundleItem.attributes.length === 0) {
-                      // 只有物理字段、没有业务属性 → 下游批量上架的特征属性(材料/尺寸/配套…)会缺失,
-                      // 内容评分「特征」0 分。留痕便于区分「源本就没属性」vs「取数降级」。
-                      console.warn(`[searchVariants] bundle attributes EMPTY for sku=${sku} — 特征属性无法随上架带出(仅物理字段)`);
-                    }
-                    items[0] = mergeBundleItemIntoSourceVariant(items[0], bundleItem);
-                    if (items[0]._bundleComplexAttrs?.length) {
-                      console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${items[0]._bundleComplexAttrs.length} for sku=${sku}`);
-                    }
-                  }
-                }
-              } catch (e) {
-                console.warn(`[searchVariants] bundle injection failed for sku=${sku}:`, e.message || e);
-              }
-
-              return { ok: true, data: { items } };
-            } catch (e) {
-              const { errorCode, msg } = classifyError(e);
-              // 业务空结果(罕见 — /search 通常返 200 + 空 variants):立即降级
-              if (errorCode === 'NOT_IN_OWN_CATALOG') {
-                console.log(`[searchVariants] sku=${sku} not found on platform (404) — returning empty items`);
-                return { ok: true, data: { items: [] } };
-              }
-              console.warn(`[searchVariants] attempt ${attempt}/${MAX_RETRIES} failed [${errorCode}]:`, msg, e);
-              const isRetryable = ['TIMEOUT', 'NETWORK_ERROR', 'UNKNOWN_ERROR'].includes(errorCode);
-              if (attempt >= MAX_RETRIES || !isRetryable) {
-                return { ok: false, error: errorCode, message: msg };
-              }
-              await new Promise(r => setTimeout(r, 2000));
-            }
-          }
-        }
+        case 'searchVariants':
+          return searchVariantsLocal({
+            sku: message.sku,
+            noProxy: message.noProxy,
+            forceRefresh: message.forceRefresh,
+            sender,
+          });
         case 'fetchOzonPublicProduct': {
           // 按 SKU 抓 ozon.ru 公开商品页，提炼 pageProduct（name/images/breadcrumbs/brand/weight/dims）。
           // Ozon 反爬会 ban 掉 service-worker 直 fetch（缺浏览器指纹），所以**优先**

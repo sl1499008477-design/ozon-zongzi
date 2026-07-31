@@ -127,6 +127,7 @@
         "lib/ozon-video-extract.js",
         "lib/sku-collect.js",
         "lib/title-quality.js",
+        "lib/ozon-enrichment-contract.js",
         "content/ozon-product.js"
       ],
       "css": [
@@ -184,6 +185,7 @@
         "content/collector/task-queue.js",
         "lib/pricing-config-cache.js",
         "lib/sidebar-section-toggle.js",
+        "lib/ozon-enrichment-contract.js",
         "content/ozon-data-panel.js"
       ],
       "css": [

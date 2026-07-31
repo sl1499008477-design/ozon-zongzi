@@ -62,7 +62,7 @@ function createStorageArea(initial = {}) {
   };
 }
 
-function loadServiceWorker() {
+function loadServiceWorker({ fetchImpl, sellerCapture = false, executeScriptImpl } = {}) {
   const workerPath = path.join(extensionRoot, manifest.background.service_worker);
   const runtimeOnInstalled = createEvent();
   const runtimeOnStartup = createEvent();
@@ -70,18 +70,26 @@ function loadServiceWorker() {
   const alarmsOnAlarm = createEvent();
   const createdAlarms = [];
   const fetchCalls = [];
+  const executeScriptCalls = [];
+  const runtimeSendMessageCalls = [];
   const importedScripts = [];
   const session = createStorageArea({
     sonliCollectorSession: {
       collectorToken: 'csess_behavior_test_secret_123456789',
       expiresAt: '2099-01-01T00:00:00.000Z',
       account: { id: 'account-behavior', displayName: 'Behavior' },
-      permissions: ['collector.upload', 'collector.job.read', 'collector.config.read'],
+      permissions: [
+        'collector.upload',
+        'collector.job.read',
+        'collector.config.read',
+        'collector.ozon.read',
+      ],
     },
   });
   const local = createStorageArea();
   const sync = createStorageArea();
   const event = createEvent();
+  let context;
   const chrome = {
     action: { openPopup: async () => {} },
     alarms: {
@@ -97,7 +105,11 @@ function loadServiceWorker() {
       create() {},
       onClicked: event,
     },
-    cookies: { getAll: async () => [] },
+    cookies: {
+      getAll: async () => sellerCapture
+        ? [{ name: 'sc_company_id', value: '1234', domain: '.seller.ozon.ru' }]
+        : [],
+    },
     notifications: {
       create() {},
       clear() {},
@@ -114,22 +126,39 @@ function loadServiceWorker() {
       onInstalled: runtimeOnInstalled,
       onMessage: runtimeOnMessage,
       onStartup: runtimeOnStartup,
+      async sendMessage(...args) {
+        runtimeSendMessageCalls.push(args);
+        throw new Error('service worker must not self-send searchVariants');
+      },
     },
-    scripting: { executeScript: async () => [] },
+    scripting: {
+      async executeScript(input) {
+        executeScriptCalls.push(input);
+        const result = executeScriptImpl ? await executeScriptImpl(input) : [];
+        return vm.runInContext(`JSON.parse(${JSON.stringify(JSON.stringify(result))})`, context);
+      },
+    },
     storage: { local, session, sync },
     tabs: {
       create: async () => ({ id: 1 }),
       onCreated: event,
       onRemoved: event,
       onUpdated: event,
-      query: async () => [],
+      query: async () => sellerCapture
+        ? [{
+            id: 9,
+            url: 'https://seller.ozon.ru/app/products',
+            status: 'complete',
+            active: true,
+          }]
+        : [],
       reload() {},
       remove: async () => {},
       sendMessage: async () => null,
       update: async () => ({}),
     },
   };
-  const context = vm.createContext({
+  context = vm.createContext({
     AbortController,
     AbortSignal,
     Blob,
@@ -155,6 +184,7 @@ function loadServiceWorker() {
     crypto: webcrypto,
     fetch: async (url, options = {}) => {
       fetchCalls.push({ url: String(url), options });
+      if (fetchImpl) return fetchImpl(String(url), options);
       return new Response(JSON.stringify({ ok: true, data: { id: 'collected-1' } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -191,11 +221,13 @@ function loadServiceWorker() {
   return {
     context,
     createdAlarms,
+    executeScriptCalls,
     fetchCalls,
     importedScripts,
     local,
     runtimeOnMessage,
     runtimeOnStartup,
+    runtimeSendMessageCalls,
   };
 }
 
@@ -253,6 +285,208 @@ test('actual service worker starts without retired sync modules or sync alarms',
     false,
   );
   assert.equal(typeof harness.context.JzCollectorClient?.upload, 'function');
+  assert.equal(typeof harness.context.JzOzonEnrichmentContract?.normalizeResult, 'function');
+  assert.equal(typeof harness.context.JzCollectorOzonAgent?.create, 'function');
+  assert.equal(typeof harness.context.JzCollectorOzonClient?.create, 'function');
+  const enrichmentImports = harness.importedScripts.filter((entry) =>
+    /ozon-enrichment/.test(entry));
+  assert.deepEqual(enrichmentImports, [
+    '../lib/ozon-enrichment-contract.js',
+    'collector-ozon-enrichment-agent.js',
+    'collector-ozon-enrichment-client.js',
+  ]);
+});
+
+test('Ozon enrichment runtime messages are exact, Collector-authenticated, and preserve stable errors', async () => {
+  const completeResult = {
+    status: 'COMPLETE',
+    contractVersion: 'collector.ozon.enrichment.v1',
+    sku: '4862904234',
+    descriptionCategoryId: 123,
+    typeId: 456,
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    variantData: {
+      description_category_id: 123,
+      type_id: 456,
+      attributes: [
+        { key: '4497', value: '500' },
+        { key: '9454', value: '300' },
+        { key: '9455', value: '200' },
+        { key: '9456', value: '100' },
+      ],
+    },
+    source: 'BACKEND_FLEET',
+    capturedAt: '2026-07-31T00:00:00.000Z',
+    cache: { hit: false, expiresAt: '2026-07-31T06:00:00.000Z' },
+  };
+  const successHarness = loadServiceWorker({
+    fetchImpl: async (url) => {
+      assert.equal(new URL(url).pathname, '/api/collector/ozon/enrich');
+      return new Response(JSON.stringify({ ok: true, data: completeResult }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const sender = {
+    tab: { id: 7, url: 'https://www.ozon.ru/product/example-4862904234/' },
+    url: 'https://www.ozon.ru/product/example-4862904234/',
+  };
+  const rejected = await sendRuntimeMessage(successHarness, {
+    action: 'enrichOzonCollect',
+    requestId: 'runtime-invalid',
+    sku: '4862904234',
+    storeId: 'store-attacker',
+  }, sender);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.code, 'OZON_ENRICH_REQUEST_INVALID');
+  assert.equal(rejected.error, 'Ozon 商品补全请求格式无效');
+  assert.deepEqual([...rejected.missingFields], []);
+  assert.equal(rejected.retryable, false);
+  assert.equal(successHarness.fetchCalls.length, 0);
+
+  const success = await sendRuntimeMessage(successHarness, {
+    action: 'enrichOzonCollect',
+    requestId: 'runtime-success',
+    sku: '4862904234',
+  }, sender);
+  assert.equal(success.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(success.data)), completeResult);
+  assert.equal(successHarness.fetchCalls.length, 1);
+  assert.deepEqual(JSON.parse(successHarness.fetchCalls[0].options.body), {
+    requestId: 'runtime-success',
+    sku: '4862904234',
+  });
+  assert.equal(
+    successHarness.fetchCalls.some(({ url }) => /\/ozon\/sync|api-seller\.ozon\.ru/.test(url)),
+    false,
+  );
+
+  const errorHarness = loadServiceWorker({
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      code: 'OZON_ENRICH_INCOMPLETE',
+      message: 'missing cst_do-not-leak-runtime-secret',
+      missingFields: ['weightG'],
+      retryable: true,
+    }), {
+      status: 422,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  const failed = await sendRuntimeMessage(errorHarness, {
+    action: 'enrichOzonCollect',
+    requestId: 'runtime-failed',
+    sku: '4862904234',
+  }, sender);
+  assert.equal(failed.ok, false);
+  assert.equal(failed.status, 422);
+  assert.equal(failed.code, 'OZON_ENRICH_INCOMPLETE');
+  assert.deepEqual([...failed.missingFields], ['weightG']);
+  assert.equal(failed.retryable, true);
+  assert.doesNotMatch(failed.error, /do-not-leak|cst_/);
+});
+
+test('held enrichment directly invokes the local visible Seller capture and posts its exact result', async () => {
+  const sku = '4862904234';
+  const variantData = {
+    sku,
+    description_category_id: 123,
+    type_id: 456,
+    attributes: [
+      { key: '4497', value: '500' },
+      { key: '9454', value: '300' },
+      { key: '9455', value: '200' },
+      { key: '9456', value: '100' },
+    ],
+  };
+  const completeResult = {
+    status: 'COMPLETE',
+    contractVersion: 'collector.ozon.enrichment.v1',
+    sku,
+    descriptionCategoryId: 123,
+    typeId: 456,
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    variantData,
+    source: 'EXTENSION_SELLER_CAPTURE',
+    capturedAt: '2026-07-31T00:00:00.000Z',
+    cache: { hit: false, expiresAt: '2026-07-31T06:00:00.000Z' },
+  };
+  let resolvePublic;
+  const publicResponse = new Promise((resolve) => { resolvePublic = resolve; });
+  let nextCalls = 0;
+  let postedVariantData = null;
+  const harness = loadServiceWorker({
+    sellerCapture: true,
+    executeScriptImpl: async (input) => {
+      assert.equal(input.args[0], '/search');
+      assert.equal(input.args[1].company_id, '1234');
+      return [{ result: { ok: true, data: { variants: [variantData] } } }];
+    },
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/collector/ozon/enrich') return publicResponse;
+      if (pathname === '/api/collector/ozon/enrichment-jobs/next') {
+        nextCalls += 1;
+        return new Response(JSON.stringify({
+          ok: true,
+          job: nextCalls === 1
+            ? { id: 'job-local', requestId: 'runtime-local', sku, refreshBundle: false }
+            : null,
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === '/api/collector/ozon/enrichment-jobs/job-local/result') {
+        postedVariantData = JSON.parse(options.body).variantData;
+        resolvePublic(new Response(JSON.stringify({ ok: true, data: completeResult }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname === '/api/collector/ozon/enrichment-jobs/job-local/fail') {
+        resolvePublic(new Response(JSON.stringify({
+          ok: false,
+          code: 'OZON_ENRICH_UPSTREAM_FAILED',
+          message: 'capture failed',
+          missingFields: [],
+          retryable: true,
+        }), { status: 502, headers: { 'content-type': 'application/json' } }));
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected Collector path: ${pathname}`);
+    },
+  });
+
+  const response = await Promise.race([
+    new Promise((resolve) => {
+      harness.runtimeOnMessage.listeners[0]({
+        action: 'enrichOzonCollect',
+        requestId: 'runtime-local',
+        sku,
+      }, {}, resolve);
+    }),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error(`local enrichment wiring did not settle: ${JSON.stringify({
+        fetchPaths: harness.fetchCalls.slice(0, 10).map(({ url }) => new URL(url).pathname),
+        fetchCount: harness.fetchCalls.length,
+        executePaths: harness.executeScriptCalls.map(({ args }) => args?.[0]),
+        runtimeSelfSends: harness.runtimeSendMessageCalls.length,
+      })}`)),
+      500,
+    )),
+  ]);
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(postedVariantData)), variantData);
+  assert.equal(harness.executeScriptCalls.length, 1);
+  assert.equal(harness.runtimeSendMessageCalls.length, 0);
 });
 
 test('collector client exposes no arbitrary credentialed transport', async () => {

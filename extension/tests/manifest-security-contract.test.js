@@ -7,6 +7,25 @@ assert.equal(manifest.description, 'ozon 粽子 · Ozon 选品采集与运营助
 assert.equal(manifest.action?.default_title, 'ozon 粽子');
 const assets = manifest.content_scripts.flatMap((entry) => entry.js || []);
 assert.equal(assets.includes('content/collector/l1-diff.js'), false);
+assert.deepEqual(manifest.permissions, [
+  'storage',
+  'contextMenus',
+  'alarms',
+  'cookies',
+  'scripting',
+  'notifications',
+  'unlimitedStorage',
+]);
+for (const target of ['content/ozon-product.js', 'content/ozon-data-panel.js']) {
+  const scripts = manifest.content_scripts.find((entry) => entry.js?.includes(target))?.js || [];
+  const targetIndex = scripts.indexOf(target);
+  assert.ok(targetIndex > 0, `${target} content script entry missing`);
+  assert.equal(
+    scripts[targetIndex - 1],
+    'lib/ozon-enrichment-contract.js',
+    `shared Ozon enrichment contract must load immediately before ${target}`,
+  );
+}
 assert.equal(manifest.host_permissions.includes('https://open.er-api.com/*'), false);
 for (const sellerApiUrl of [
   'https://api-seller.ozon.ru/v3/product/info/list',

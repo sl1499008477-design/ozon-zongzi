@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  REQUIRED_CAPTURE_ONLY_FILES,
   assertCaptureOnlyFileSet,
   assertCaptureOnlyPermissionPolicy,
   assertCaptureOnlyServiceWorker,
@@ -119,14 +120,28 @@ test("capture-only permissions may remove upstream permissions but never add one
 test("capture-only package requires Collector dependencies and rejects retired sync modules", () => {
   const requiredFiles = [
     "background/collector-client.js",
+    "background/collector-ozon-enrichment-agent.js",
+    "background/collector-ozon-enrichment-client.js",
     "background/service-worker.js",
     "lib/collector-session.js",
+    "lib/ozon-enrichment-contract.js",
     "popup/popup.html",
     "popup/popup.js",
+    "tests/collector-ozon-enrichment-client.test.js",
     "tests/collector-session.test.js",
+    "tests/ozon-enrichment-contract.test.js",
     "tests/sync-capability-removed.test.js",
   ];
+  for (const file of requiredFiles) {
+    assert.equal(REQUIRED_CAPTURE_ONLY_FILES.includes(file), true, file);
+  }
   assert.doesNotThrow(() => assertCaptureOnlyFileSet(requiredFiles));
+  assert.throws(
+    () => assertCaptureOnlyFileSet(
+      requiredFiles.filter((file) => file !== "background/collector-ozon-enrichment-agent.js"),
+    ),
+    /required capture-only file missing/,
+  );
   assert.throws(
     () =>
       assertCaptureOnlyFileSet([
@@ -154,13 +169,20 @@ test("popup and service worker expose only the Web-login capture flow", () => {
 
   assert.doesNotThrow(() =>
     assertCaptureOnlyServiceWorker(
-      "importScripts('../lib/collector-session.js', 'collector-client.js');",
+      "importScripts('../lib/collector-session.js', '../lib/ozon-enrichment-contract.js', 'collector-client.js', 'collector-ozon-enrichment-agent.js', 'collector-ozon-enrichment-client.js');",
     ));
   assert.throws(
     () =>
       assertCaptureOnlyServiceWorker(
-        "importScripts('../lib/collector-session.js', 'sync/sync-engine.js');",
+        "importScripts('../lib/collector-session.js', '../lib/ozon-enrichment-contract.js', 'collector-client.js', 'collector-ozon-enrichment-agent.js');",
       ),
-    /Collector client dependency/,
+    /Collector Ozon client dependency/,
+  );
+  assert.throws(
+    () =>
+      assertCaptureOnlyServiceWorker(
+        "importScripts('../lib/collector-session.js', '../lib/ozon-enrichment-contract.js', 'collector-client.js', 'collector-ozon-enrichment-agent.js', 'collector-ozon-enrichment-client.js', 'sync/sync-engine.js');",
+      ),
+    /capture-only/,
   );
 });

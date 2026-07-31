@@ -31,6 +31,7 @@ const chrome = {
   tabs: { query: async () => [], reload() {} },
 };
 const context = vm.createContext({
+  AbortController,
   AbortSignal,
   URL,
   chrome,

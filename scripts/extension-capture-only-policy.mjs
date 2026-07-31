@@ -7,11 +7,16 @@ import {
 
 export const REQUIRED_CAPTURE_ONLY_FILES = Object.freeze([
   "background/collector-client.js",
+  "background/collector-ozon-enrichment-agent.js",
+  "background/collector-ozon-enrichment-client.js",
   "background/service-worker.js",
   "lib/collector-session.js",
+  "lib/ozon-enrichment-contract.js",
   "popup/popup.html",
   "popup/popup.js",
+  "tests/collector-ozon-enrichment-client.test.js",
   "tests/collector-session.test.js",
+  "tests/ozon-enrichment-contract.test.js",
   "tests/sync-capability-removed.test.js",
 ]);
 
@@ -168,6 +173,21 @@ export function assertCaptureOnlyServiceWorker(serviceWorkerSource) {
     serviceWorkerSource,
     /collector-client\.js/,
     "Collector client dependency missing from service worker",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /\.\.\/lib\/ozon-enrichment-contract\.js/,
+    "Ozon enrichment contract dependency missing from service worker",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /collector-ozon-enrichment-agent\.js/,
+    "Collector Ozon agent dependency missing from service worker",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /collector-ozon-enrichment-client\.js/,
+    "Collector Ozon client dependency missing from service worker",
   );
   assert.doesNotMatch(
     serviceWorkerSource,

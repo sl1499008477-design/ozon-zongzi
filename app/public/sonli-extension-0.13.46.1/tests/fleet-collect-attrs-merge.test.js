@@ -69,9 +69,9 @@ const endStart = workerSource.indexOf(endToken, start);
 assert.notEqual(start, -1, "searchVariants must retain the fleet collect call");
 assert.notEqual(endStart, -1, "searchVariants must return the enriched fleet sourceVariant");
 
-const branchClose = workerSource.indexOf("\n            }", endStart + endToken.length);
+const branchClose = workerSource.indexOf("\n      }", endStart + endToken.length);
 assert.notEqual(branchClose, -1, "fleet sourceVariant branch must remain syntactically complete");
-const executableBranch = workerSource.slice(start, branchClose + "\n            }".length);
+const executableBranch = workerSource.slice(start, branchClose + "\n      }".length);
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const runFleetBranch = new AsyncFunction(
   "callFleet",

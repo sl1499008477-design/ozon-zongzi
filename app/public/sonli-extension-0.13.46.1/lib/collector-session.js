@@ -8,6 +8,7 @@
     'collector.upload',
     'collector.job.read',
     'collector.config.read',
+    'collector.ozon.read',
   ]);
   const RETIRED_COLLECTOR_SCOPE_KEYS = new Set([
     'accountid',

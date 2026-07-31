@@ -90,6 +90,22 @@ test('collector token is persisted only in chrome.storage.session and unsafe fie
   assert.equal(JSON.stringify(harness.sessionState).includes('store-1'), false);
 });
 
+test('safe session permission allowlist retains Ozon read and discards arbitrary permissions', async () => {
+  const harness = createHarness();
+  const saved = await harness.manager.setCollectorSession(validSession({
+    permissions: [
+      'collector.upload',
+      'collector.ozon.read',
+      'collector.admin',
+      'ozon.sync',
+    ],
+  }));
+
+  assert.deepEqual(saved.permissions, ['collector.upload', 'collector.ozon.read']);
+  assert.equal(saved.permissions.includes('collector.admin'), false);
+  assert.equal(saved.permissions.includes('ozon.sync'), false);
+});
+
 test('expired collector sessions are cleared from session storage', async () => {
   const harness = createHarness();
   harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY] = validSession({

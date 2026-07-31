@@ -14,12 +14,17 @@ const targets = [
 const unpackedTarget = path.join(rootDir, "app", "public", `sonli-extension-${manifest.version}`);
 const collectorRuntimeFiles = [
   "background/collector-client.js",
+  "background/collector-ozon-enrichment-agent.js",
+  "background/collector-ozon-enrichment-client.js",
   "background/service-worker.js",
   "content/seller-company-context-hook.js",
   "lib/collector-session.js",
+  "lib/ozon-enrichment-contract.js",
   "lib/seller-company-context.js",
   "lib/seller-company-context-runtime.js",
   "tests/collector-session.test.js",
+  "tests/collector-ozon-enrichment-client.test.js",
+  "tests/ozon-enrichment-contract.test.js",
   "tests/seller-company-context-contract.test.js",
   "tests/seller-company-context.test.js",
   "tests/sync-capability-removed.test.js",
