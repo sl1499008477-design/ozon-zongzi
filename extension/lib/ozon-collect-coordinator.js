@@ -1,6 +1,18 @@
 (function (root) {
   'use strict';
 
+  // The manifest may list this shared helper in more than one matching content-script
+  // group. Preserve the first page-scoped registry so product, search, and data-panel
+  // callers cannot accidentally create separate coordinators for the same frame.
+  if (
+    root.JzOzonCollectCoordinator
+    && typeof root.JzOzonCollectCoordinator.getPageCoordinator === 'function'
+    && typeof root.JzOzonCollectCoordinator.matchesSku === 'function'
+  ) {
+    if (typeof module !== 'undefined') module.exports = root.JzOzonCollectCoordinator;
+    return;
+  }
+
   const STATES = Object.freeze([
     'IDLE',
     'PREFETCHING',
@@ -83,6 +95,28 @@
     return values;
   };
   const matchesSku = (value, sku) => candidateSkuValues(value).includes(cleanText(sku));
+  const mergeVariantData = (rawVariantData, serverVariantData) => {
+    if (!plainObject(rawVariantData)) return serverVariantData;
+    if (!plainObject(serverVariantData)) return rawVariantData;
+    const merged = { ...rawVariantData, ...serverVariantData };
+    const serverAttributes = Array.isArray(serverVariantData.attributes)
+      ? serverVariantData.attributes
+      : [];
+    const serverAttributeKeys = new Set(
+      serverAttributes.map((attribute) => cleanText(attribute?.key)).filter(Boolean),
+    );
+    const pageOnlyAttributes = (Array.isArray(rawVariantData.attributes)
+      ? rawVariantData.attributes
+      : [])
+      .filter((attribute) => {
+        const key = cleanText(attribute?.key);
+        return key && !serverAttributeKeys.has(key);
+      });
+    if (serverAttributes.length || pageOnlyAttributes.length) {
+      merged.attributes = [...serverAttributes, ...pageOnlyAttributes];
+    }
+    return merged;
+  };
   let pageCoordinator = null;
 
   function create({
@@ -482,6 +516,7 @@
           contract.assertComplete(result);
           if (!entry.finalizedUpload) {
             const timestamp = Number(now());
+            const collectFields = contract.toCollectFields(result);
             entry.finalizedUpload = finalizedJsonPayload({
               sourceId: 'ozon',
               requestId: entry.requestId,
@@ -491,7 +526,8 @@
               raw: {
                 ...(plainObject(raw) ? raw : {}),
                 sku: entry.sku,
-                ...contract.toCollectFields(result),
+                ...collectFields,
+                variantData: mergeVariantData(raw?.variantData, collectFields.variantData),
               },
             });
           }

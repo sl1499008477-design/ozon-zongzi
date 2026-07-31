@@ -266,6 +266,66 @@ test('concurrent collect clicks share one enrichment and one upload before SUCCE
   assert.equal(calls.filter(({ action }) => action === 'pushSourceCollect').length, 1);
 });
 
+test('final upload preserves page-only rich and multivariant fields while server enrichment stays authoritative', async () => {
+  const calls = [];
+  const coordinator = create({
+    now: () => Date.parse('2026-08-01T00:00:00.000Z'),
+    randomUUID: () => '55555555-5555-4555-8555-555555555555',
+    async sendMessage(action, payload) {
+      calls.push({ action, payload });
+      if (action === 'enrichOzonCollect') return completeResult();
+      if (action === 'pushSourceCollect') {
+        return { dedupeHit: false, result: { id: 'preserved-product' } };
+      }
+      throw new Error(`unexpected action ${action}`);
+    },
+  });
+  const variants = [
+    { sku: SKU, name: 'Blue', sourceVariant: { description_category_id: 999 } },
+    { sku: '4862904235', name: 'Red', sourceVariant: { description_category_id: 998 } },
+  ];
+
+  await coordinator.collect({
+    sku: SKU,
+    raw: {
+      sku: SKU,
+      name: 'Page title',
+      images: ['https://cdn.test/page.jpg'],
+      videoUrl: 'https://cdn.test/video.mp4',
+      sellerName: 'Page seller',
+      variantData: {
+        variant_id: 'page-variant',
+        _searchMeta: { skus: [{ sku: SKU }] },
+        description_category_id: 999,
+        description: 'Page description',
+        hashtags: ['#page'],
+        variants,
+        attributes: [
+          { key: '4497', value: '1' },
+          { key: '11254', value: '{"content":"page rich content"}' },
+        ],
+      },
+    },
+  });
+
+  const upload = calls.find(({ action }) => action === 'pushSourceCollect').payload.raw;
+  assert.equal(upload.name, 'Page title');
+  assert.deepEqual(upload.images, ['https://cdn.test/page.jpg']);
+  assert.equal(upload.videoUrl, 'https://cdn.test/video.mp4');
+  assert.equal(upload.sellerName, 'Page seller');
+  assert.equal(upload.variantData.description_category_id, 123);
+  assert.equal(upload.variantData.description, 'Page description');
+  assert.deepEqual(upload.variantData.hashtags, ['#page']);
+  assert.deepEqual(upload.variantData.variants, variants);
+  assert.deepEqual(
+    upload.variantData.attributes.filter(({ key }) => ['4497', '11254'].includes(String(key))),
+    [
+      { key: '4497', value: '500' },
+      { key: '11254', value: '{"content":"page rich content"}' },
+    ],
+  );
+});
+
 test('malformed upload resolutions stay ERROR and never become SUCCESS', async () => {
   class UploadEnvelope {
     constructor(result) {

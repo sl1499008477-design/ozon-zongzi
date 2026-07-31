@@ -34,13 +34,13 @@ for (const target of ['content/ozon-search.js', 'content/ozon-data-panel.js']) {
 const productScripts = manifest.content_scripts
   .find((entry) => entry.js?.includes('content/ozon-product.js'))?.js || [];
 const productIndex = productScripts.indexOf('content/ozon-product.js');
-assert.equal(productScripts[productIndex - 1], 'lib/ozon-enrichment-contract.js');
-assert.equal(productScripts.includes('lib/ozon-collect-coordinator.js'), false);
+assert.equal(productScripts[productIndex - 1], 'lib/ozon-collect-coordinator.js');
+assert.equal(productScripts[productIndex - 2], 'lib/ozon-enrichment-contract.js');
 assert.equal(
   manifest.content_scripts.filter((entry) =>
     entry.js?.includes('lib/ozon-collect-coordinator.js')).length,
-  2,
-  'coordinator should only be injected on the two pages that collect through it',
+  3,
+  'all three Ozon collection surfaces must inject the singleton coordinator',
 );
 assert.equal(manifest.host_permissions.includes('https://open.er-api.com/*'), false);
 for (const sellerApiUrl of [
