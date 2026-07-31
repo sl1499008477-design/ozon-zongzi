@@ -448,7 +448,7 @@
       });
     };
 
-    const prefetchBatch = ({ skus } = {}) => {
+    const prefetchBatch = ({ skus, retryFailed = false } = {}) => {
       if (!Array.isArray(skus)) return Promise.reject(new TypeError('Ozon SKU list is required'));
       const orderedEntries = [];
       const seen = new Set();
@@ -461,8 +461,8 @@
       }
       const fresh = orderedEntries.filter((entry) => !entry.result
         && !(entry.status === 'PREFETCHING' && entry.promise)
-        && entry.status !== 'ERROR'
-        && entry.status !== 'BLOCKED_AUTH');
+        && (retryFailed === true
+          || (entry.status !== 'ERROR' && entry.status !== 'BLOCKED_AUTH')));
       for (let index = 0; index < fresh.length; index += 20) {
         startBatchChunk(fresh.slice(index, index + 20));
       }

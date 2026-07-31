@@ -1792,6 +1792,7 @@
     setBtn('正在补全商品资料');
     const gatedRows = await collectCoordinator.prefetchBatch({
       skus: variantRows.map((row) => row.sku),
+      retryFailed: true,
     });
     if (!Array.isArray(gatedRows) || gatedRows.length !== variantRows.length) {
       throw invalidProductVariantError();

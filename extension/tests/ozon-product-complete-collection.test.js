@@ -171,7 +171,12 @@ function fixtureHtml(mode) {
 
       const prefetchCalls = [];
       const prefetchBatchCalls = [];
+      const prefetchBatchRetryFlags = [];
+      const prefetchBatchNetworkCalls = [];
       const collectCalls = [];
+      const batchStates = new Map();
+      let batchAttempt = 0;
+      let loggedBackIn = false;
       let coordinatorStatus = 'IDLE';
       const normalizeResult = (sku) => ({
         status: 'COMPLETE',
@@ -186,22 +191,55 @@ function fixtureHtml(mode) {
       });
       const fixtureCoordinator = {
         prefetch({ sku }) {
-          prefetchCalls.push(String(sku));
-          coordinatorStatus = '${mode === 'cold-success' ? 'PREFETCHING' : 'READY'}';
-          return Promise.resolve(normalizeResult(sku));
-        },
-        prefetchBatch({ skus }) {
-          prefetchBatchCalls.push(skus.map(String));
-          if ('${mode}' === 'multivariant-gate-failure') {
-            return Promise.resolve(skus.map((sku, index) => index === 1
-              ? {
-                  sku: String(sku),
-                  status: 'ERROR',
-                  error: Object.assign(new Error('缺少：重量'), { code: 'OZON_ENRICH_INCOMPLETE' }),
-                }
-              : normalizeResult(sku)));
+          const normalizedSku = String(sku);
+          prefetchCalls.push(normalizedSku);
+          if ('${mode}' === 'multivariant-init-retry') {
+            const error = Object.assign(new Error('网络错误，请稍后重试'), { code: 'OZON_ENRICH_UPSTREAM_FAILED' });
+            batchStates.set(normalizedSku, { status: 'ERROR', error });
+            coordinatorStatus = 'ERROR';
+            return Promise.reject(error);
           }
-          return Promise.resolve(skus.map(normalizeResult));
+          if ('${mode}' === 'multivariant-auth-retry') {
+            const error = Object.assign(new Error('请先登录 Web'), { code: 'COLLECTOR_AUTH_REQUIRED' });
+            batchStates.set(normalizedSku, { status: 'BLOCKED_AUTH', error });
+            coordinatorStatus = 'BLOCKED_AUTH';
+            return Promise.reject(error);
+          }
+          coordinatorStatus = '${mode === 'cold-success' ? 'PREFETCHING' : 'READY'}';
+          const result = normalizeResult(normalizedSku);
+          batchStates.set(normalizedSku, { status: 'READY', result });
+          return Promise.resolve(result);
+        },
+        prefetchBatch({ skus, retryFailed = false }) {
+          const normalizedSkus = skus.map(String);
+          prefetchBatchCalls.push(normalizedSkus);
+          prefetchBatchRetryFlags.push(retryFailed === true);
+          const networkSkus = normalizedSkus.filter((sku) => {
+            const state = batchStates.get(sku);
+            return !state || ((state.status === 'ERROR' || state.status === 'BLOCKED_AUTH') && retryFailed === true);
+          });
+          prefetchBatchNetworkCalls.push(networkSkus);
+          if (networkSkus.length > 0) {
+            batchAttempt += 1;
+            networkSkus.forEach((sku) => {
+              if ('${mode}' === 'multivariant-gate-failure' && batchAttempt === 1 && sku === '${OTHER_SKU}') {
+                const error = Object.assign(new Error('缺少：重量'), { code: 'OZON_ENRICH_INCOMPLETE' });
+                batchStates.set(sku, { status: 'ERROR', error });
+                return;
+              }
+              if ('${mode}' === 'multivariant-auth-retry' && sku === '${SKU}' && !loggedBackIn) {
+                const error = Object.assign(new Error('请先登录 Web'), { code: 'COLLECTOR_AUTH_REQUIRED' });
+                batchStates.set(sku, { status: 'BLOCKED_AUTH', error });
+                return;
+              }
+              const result = normalizeResult(sku);
+              batchStates.set(sku, { status: 'READY', result });
+            });
+          }
+          return Promise.resolve(normalizedSkus.map((sku) => {
+            const state = batchStates.get(sku);
+            return state?.result || { sku, status: 'ERROR', error: state?.error };
+          }));
         },
         async collect(input) {
           const call = { sku: String(input.sku), raw: structuredClone(input.raw), local: null, localError: null };
@@ -235,9 +273,12 @@ function fixtureHtml(mode) {
         },
         getPageCoordinator() { return fixtureCoordinator; },
       };
+      window.__fixtureRelogin = () => { loggedBackIn = true; };
       window.__getProductFixtureState = () => ({
         prefetchCalls: structuredClone(prefetchCalls),
         prefetchBatchCalls: structuredClone(prefetchBatchCalls),
+        prefetchBatchRetryFlags: structuredClone(prefetchBatchRetryFlags),
+        prefetchBatchNetworkCalls: structuredClone(prefetchBatchNetworkCalls),
         collectCalls: structuredClone(collectCalls),
         runtimeMessages: structuredClone(runtimeMessages),
         label: document.querySelector('[aria-label="一键采集"] .ozon-helper-action-label')?.textContent
@@ -356,6 +397,7 @@ test('product page delegates complete single and multivariant collection to the 
     await multiPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
     state = await multiPage.evaluate(() => window.__getProductFixtureState());
     assert.deepEqual(state.prefetchBatchCalls, [[SKU, OTHER_SKU]]);
+    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
     assert.equal(state.collectCalls[0].sku, SKU);
     assert.deepEqual(state.collectCalls[0].raw.variantData.variants.map(({ sku }) => sku), [SKU, OTHER_SKU]);
@@ -378,8 +420,40 @@ test('product page delegates complete single and multivariant collection to the 
     await multiFailurePage.waitForFunction(() => window.__getProductFixtureState().label === '缺少：重量');
     state = await multiFailurePage.evaluate(() => window.__getProductFixtureState());
     assert.deepEqual(state.prefetchBatchCalls, [[SKU, OTHER_SKU]]);
+    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, [[OTHER_SKU]]);
     assert.equal(state.collectCalls.length, 0);
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
+
+    await multiFailurePage.evaluate(() => {
+      const button = document.querySelector('[aria-label="一键采集"]');
+      button.disabled = false;
+      button.click();
+    });
+    await multiFailurePage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
+    state = await multiFailurePage.evaluate(() => window.__getProductFixtureState());
+    assert.deepEqual(state.prefetchBatchRetryFlags, [true, true]);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, [[OTHER_SKU], [OTHER_SKU]]);
+    assert.equal(state.collectCalls.length, 1);
+
+    const initRetryPage = await openFixture('multivariant-init-retry');
+    await initRetryPage.waitForFunction(() => window.__getProductFixtureState().prefetchCalls.length === 1);
+    await initRetryPage.click('[aria-label="一键采集"]');
+    await initRetryPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
+    state = await initRetryPage.evaluate(() => window.__getProductFixtureState());
+    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, [[SKU, OTHER_SKU]]);
+    assert.equal(state.collectCalls.length, 1);
+
+    const authRetryPage = await openFixture('multivariant-auth-retry');
+    await authRetryPage.waitForFunction(() => window.__getProductFixtureState().prefetchCalls.length === 1);
+    await authRetryPage.evaluate(() => window.__fixtureRelogin());
+    await authRetryPage.click('[aria-label="一键采集"]');
+    await authRetryPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
+    state = await authRetryPage.evaluate(() => window.__getProductFixtureState());
+    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, [[SKU, OTHER_SKU]]);
+    assert.equal(state.collectCalls.length, 1);
   } finally {
     await context.close();
     await browser.close();

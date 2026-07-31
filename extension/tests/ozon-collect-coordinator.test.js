@@ -796,3 +796,159 @@ test('repeated batch prefetch reuses ERROR and BLOCKED_AUTH until a click retrie
   );
   assert.equal(calls.filter(({ action }) => action === 'enrichOzonCollect').length, 1);
 });
+
+test('user-initiated batch retry recovers a failed or blocked anchor with its stable request ID', async () => {
+  for (const [code, expectedState] of [
+    ['OZON_ENRICH_UPSTREAM_FAILED', 'ERROR'],
+    ['COLLECTOR_AUTH_REQUIRED', 'BLOCKED_AUTH'],
+  ]) {
+    const sku = code === 'COLLECTOR_AUTH_REQUIRED' ? '7200000002' : '7200000001';
+    const calls = [];
+    const coordinator = create({
+      now: () => 8000,
+      randomUUID: () => code === 'COLLECTOR_AUTH_REQUIRED'
+        ? '77777777-7777-4777-8777-777777777777'
+        : '66666666-6666-4666-8666-666666666666',
+      async sendMessage(action, payload) {
+        calls.push({ action, payload });
+        if (action === 'enrichOzonCollect') {
+          throw codedError(code, code);
+        }
+        if (action === 'enrichOzonCollectBatch') {
+          return [{ sku, status: 'COMPLETE', result: completeResult(sku) }];
+        }
+        throw new Error(`unexpected action ${action}`);
+      },
+    });
+
+    await assert.rejects(coordinator.prefetch({ sku }));
+    const requestId = coordinator.getState(sku).requestId;
+    assert.equal(coordinator.getState(sku).status, expectedState);
+
+    const background = await coordinator.prefetchBatch({ skus: [sku] });
+    assert.equal(background[0].status, 'ERROR');
+    assert.equal(calls.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 0);
+
+    const recovered = await coordinator.prefetchBatch({ skus: [sku], retryFailed: true });
+    assert.equal(recovered[0].sku, sku);
+    assert.equal(coordinator.getState(sku).status, 'READY');
+    const retryCall = calls.find(({ action }) => action === 'enrichOzonCollectBatch');
+    assert.deepEqual(retryCall.payload.skus, [sku]);
+    assert.equal(retryCall.payload.requestId, requestId);
+  }
+});
+
+test('failed user batch retry replaces the stored error and keeps the stable request ID', async () => {
+  const sku = '7200000003';
+  const calls = [];
+  const coordinator = create({
+    now: () => 8500,
+    randomUUID: () => '99999999-9999-4999-8999-999999999999',
+    async sendMessage(action, payload) {
+      calls.push({ action, payload });
+      if (action === 'enrichOzonCollect') {
+        throw codedError('OZON_ENRICH_UPSTREAM_FAILED', 'first failure');
+      }
+      if (action === 'enrichOzonCollectBatch') {
+        return [{
+          sku,
+          status: 'ERROR',
+          error: {
+            code: 'OZON_ENRICH_INCOMPLETE',
+            message: 'missing dimensions after retry',
+            missingFields: ['lengthMm', 'widthMm'],
+            retryable: true,
+          },
+        }];
+      }
+      throw new Error(`unexpected action ${action}`);
+    },
+  });
+
+  await assert.rejects(coordinator.prefetch({ sku }));
+  const requestId = coordinator.getState(sku).requestId;
+  const retried = await coordinator.prefetchBatch({ skus: [sku], retryFailed: true });
+
+  assert.equal(retried[0].status, 'ERROR');
+  assert.equal(retried[0].error.code, 'OZON_ENRICH_INCOMPLETE');
+  assert.deepEqual(retried[0].error.missingFields, ['lengthMm', 'widthMm']);
+  assert.equal(coordinator.getState(sku).error.message, '缺少：长、宽');
+  assert.equal(coordinator.getState(sku).requestId, requestId);
+  assert.equal(calls.at(-1).payload.requestId, requestId);
+});
+
+test('concurrent user batch retries isolate the failed sibling and share one retry and upload', async () => {
+  const anchorSku = '7300000001';
+  const failedSiblingSku = '7300000002';
+  const retry = deferred();
+  const upload = deferred();
+  const calls = [];
+  let batchAttempt = 0;
+  const coordinator = create({
+    now: () => 9000,
+    randomUUID: () => '88888888-8888-4888-8888-888888888888',
+    sendMessage(action, payload) {
+      calls.push({ action, payload });
+      if (action === 'enrichOzonCollectBatch') {
+        batchAttempt += 1;
+        if (batchAttempt === 1) {
+          return Promise.resolve([
+            { sku: anchorSku, status: 'COMPLETE', result: completeResult(anchorSku) },
+            {
+              sku: failedSiblingSku,
+              status: 'ERROR',
+              error: {
+                code: 'OZON_ENRICH_INCOMPLETE',
+                message: 'missing sibling weight',
+                missingFields: ['weightG'],
+                retryable: true,
+              },
+            },
+          ]);
+        }
+        return retry.promise;
+      }
+      if (action === 'pushSourceCollect') return upload.promise;
+      throw new Error(`unexpected action ${action}`);
+    },
+  });
+
+  const initial = await coordinator.prefetchBatch({ skus: [anchorSku, failedSiblingSku] });
+  assert.equal(initial[0].sku, anchorSku);
+  assert.equal(initial[1].status, 'ERROR');
+  const failedRequestId = coordinator.getState(failedSiblingSku).requestId;
+
+  const userFlow = async () => {
+    const gated = await coordinator.prefetchBatch({
+      skus: [anchorSku, failedSiblingSku],
+      retryFailed: true,
+    });
+    assert.deepEqual(gated.map(({ sku }) => sku), [anchorSku, failedSiblingSku]);
+    return coordinator.collect({ sku: anchorSku, raw: { sku: anchorSku } });
+  };
+  const first = userFlow();
+  const second = userFlow();
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(batchAttempt, 2);
+  const retryCalls = calls.filter(({ action }) => action === 'enrichOzonCollectBatch');
+  assert.deepEqual(retryCalls[1].payload.skus, [failedSiblingSku]);
+  assert.equal(retryCalls[1].payload.requestId, failedRequestId);
+  assert.equal(coordinator.getState(anchorSku).status, 'READY');
+  assert.equal(coordinator.getState(failedSiblingSku).status, 'PREFETCHING');
+
+  retry.resolve([{
+    sku: failedSiblingSku,
+    status: 'COMPLETE',
+    result: completeResult(failedSiblingSku),
+  }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter(({ action }) => action === 'pushSourceCollect').length, 1);
+  upload.resolve({ dedupeHit: false, result: { id: 'shared-product-upload' } });
+
+  assert.strictEqual(await second, await first);
+  assert.equal(coordinator.getState(failedSiblingSku).status, 'READY');
+  assert.equal(calls.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 2);
+  assert.equal(calls.filter(({ action }) => action === 'pushSourceCollect').length, 1);
+});
