@@ -94,6 +94,7 @@ const allowedLocalOnly = new Set([
   "tests/brand-fallback-runtime.test.js",
   "tests/market-item-normalization.test.js",
   "tests/ozon-enrichment-contract.test.js",
+  "tests/ozon-product-complete-collection.test.js",
   "tests/ozon-search-complete-collection.test.js",
   "tests/helpers/chrome-match-pattern.js",
   "tests/portal-bridge-policy.test.js",
