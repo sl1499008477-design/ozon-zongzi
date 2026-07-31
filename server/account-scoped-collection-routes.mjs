@@ -1,8 +1,7 @@
 import {
   assertCollectorScopeFieldsAbsentV4,
-  prepareCollectRequestV4,
+  preflightCompleteCollectRequestsV4,
 } from "./collection-pipeline.mjs";
-import { assertCompleteOzonCollectPayload } from "./collector-ozon-enrichment-contract.mjs";
 
 function routeError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
@@ -60,14 +59,10 @@ export function createJsonAccountScopedCollectionHandler({
       const imported = [];
       const collectRequests = Array.isArray(state.collectRequests) ? state.collectRequests : [];
       let collectBox = Array.isArray(state.caches.collectBox) ? state.caches.collectBox : [];
-      const preparedInputs = inputs.map((value) => {
-        const input = value && typeof value === "object" ? value : {};
-        const prepared = prepareCollectRequestV4({
-          authenticatedAccount: account,
-          input: { ...input, source: input.source || pathSource },
-        });
-        assertCompleteOzonCollectPayload(prepared.identity.source, input.payload);
-        return { input, prepared };
+      const preparedInputs = preflightCompleteCollectRequestsV4({
+        authenticatedAccount: account,
+        inputs,
+        source: pathSource,
       });
       for (const { input, prepared } of preparedInputs) {
         const existing = collectRequests.find((request) =>

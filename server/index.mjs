@@ -89,6 +89,7 @@ import {
   getCollectRequestForAccount,
   ingestCollectRequestV4,
   assertCollectorScopeFieldsAbsentV4,
+  preflightCompleteCollectRequestsV4,
 } from "./collection-pipeline.mjs";
 import {
   calculateWithActivePricing,
@@ -2236,11 +2237,16 @@ async function handleFastCollectionRoute(req, res, url) {
         sendError(res, 422, "采集请求没有商品数据", "COLLECT_ITEMS_EMPTY");
         return true;
       }
+      const preparedInputs = preflightCompleteCollectRequestsV4({
+        authenticatedAccount: account,
+        inputs,
+        source: sourceId,
+      });
       const imported = [];
       const results = [];
       const errors = [];
-      for (let index = 0; index < inputs.length; index += 1) {
-        const input = inputs[index] && typeof inputs[index] === "object" ? inputs[index] : {};
+      for (let index = 0; index < preparedInputs.length; index += 1) {
+        const { input } = preparedInputs[index];
         try {
           const result = await ingestCollectRequestV4({
             authenticatedAccount: account,
@@ -2262,6 +2268,7 @@ async function handleFastCollectionRoute(req, res, url) {
             sku: String(input.sourceSku || ""),
             code: error?.code || (error?.status ? `HTTP_${error.status}` : "COLLECT_FAILED"),
             reason: error?.message || "采集失败",
+            ...(Array.isArray(error?.missingFields) ? { missingFields: [...error.missingFields] } : {}),
           });
         }
       }

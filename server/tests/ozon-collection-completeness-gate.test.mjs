@@ -9,7 +9,10 @@ import {
   postgresEnabled,
 } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
-import { ingestCollectRequestV4 } from "../collection-pipeline.mjs";
+import {
+  ingestCollectRequestV4,
+  preflightCompleteCollectRequestsV4,
+} from "../collection-pipeline.mjs";
 
 const requiredFields = Object.freeze([
   "descriptionCategoryId",
@@ -77,14 +80,34 @@ function jsonHarness(body) {
     response,
     get normalized() { return normalized; },
     get saved() { return saved; },
-    invoke: async () => handler(
+    invoke: async (path = "/sources/ozon/collect") => handler(
       { method: "POST" },
       {},
-      new URL("http://localhost/sources/ozon/collect"),
+      new URL(`http://localhost${path}`),
       state,
     ),
   };
 }
+
+test("batch preflight rejects a later incomplete Ozon item before yielding any prepared request", () => {
+  assert.throws(
+    () => preflightCompleteCollectRequestsV4({
+      authenticatedAccount: { id: "preflight-account" },
+      source: "ozon",
+      inputs: [
+        collectInput({ sourceSku: "preflight-valid", requestId: "preflight-valid" }),
+        collectInput({
+          sourceSku: "preflight-incomplete",
+          requestId: "preflight-incomplete",
+          payload: withoutRequiredField("heightMm"),
+        }),
+      ],
+    }),
+    (error) => error?.status === 422
+      && error?.code === "OZON_COLLECT_INCOMPLETE"
+      && assert.deepEqual(error.missingFields, ["heightMm"]) === undefined,
+  );
+});
 
 test("JSON collection rejects each missing Ozon completeness field before normalization or state writes", async () => {
   for (const field of requiredFields) {
@@ -104,6 +127,29 @@ test("JSON collection rejects each missing Ozon completeness field before normal
     assert.deepEqual(harness.state.caches.collectBox, [], field);
     assert.deepEqual(harness.state.collectRequests, [], field);
   }
+});
+
+test("JSON mixed batch rejects an incomplete later Ozon item with no prior-item state write", async () => {
+  const harness = jsonHarness({
+    items: [
+      collectInput({ sourceSku: "json-batch-valid", requestId: "json-batch-valid" }),
+      collectInput({
+        sourceSku: "json-batch-incomplete",
+        requestId: "json-batch-incomplete",
+        payload: withoutRequiredField("widthMm"),
+      }),
+    ],
+  });
+
+  await harness.invoke("/sources/ozon/collect/batch");
+
+  assert.equal(harness.response.status, 422);
+  assert.equal(harness.response.body.code, "OZON_COLLECT_INCOMPLETE");
+  assert.deepEqual(harness.response.body.missingFields, ["widthMm"]);
+  assert.equal(harness.normalized, 0);
+  assert.equal(harness.saved, 0);
+  assert.deepEqual(harness.state.caches.collectBox, []);
+  assert.deepEqual(harness.state.collectRequests, []);
 });
 
 test("JSON collection preserves complete Ozon idempotency, conflicts, and incomplete 1688 behavior", async () => {
@@ -192,6 +238,85 @@ if (!postgresEnabled()) {
         }, field);
       }
     } finally {
+      await pool.query("DELETE FROM collect_requests WHERE account_id=$1", [accountId]);
+      await pool.query("DELETE FROM collect_raw_payloads WHERE account_id=$1", [accountId]);
+      await pool.query("DELETE FROM collect_items WHERE account_id=$1", [accountId]);
+      await pool.query("DELETE FROM accounts WHERE id=$1", [accountId]);
+      await closePostgresPool();
+    }
+  });
+
+  test("PostgreSQL mixed batch rejects an incomplete later Ozon item before any row writes", async () => {
+    const suffix = crypto.randomUUID();
+    const accountId = `ozon_gate_batch_${suffix}`;
+    const collectorToken = `ozon-gate-batch-${suffix}`;
+    const parentSessionToken = `ozon-gate-parent-${suffix}`;
+    const pool = await getPostgresPool();
+    try {
+      await runMigrations(pool);
+      await pool.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'user','active')",
+        [accountId, `ozon-gate-batch-${suffix}`],
+      );
+      await pool.query("INSERT INTO sessions (token,account_id) VALUES ($1,$2)", [parentSessionToken, accountId]);
+      await pool.query(
+        `INSERT INTO collector_sessions (
+           id,token_hash,account_id,parent_session_token,device_fingerprint,extension_version,permissions,expires_at
+         ) VALUES ($1,$2,$3,$4,'ozon-gate-device','test',$5::jsonb,NOW() + INTERVAL '1 hour')`,
+        [
+          `ozon-gate-session-${suffix}`,
+          crypto.createHash("sha256").update(collectorToken).digest("hex"),
+          accountId,
+          parentSessionToken,
+          JSON.stringify(["collector.upload"]),
+        ],
+      );
+      const { Readable } = await import("node:stream");
+      const request = Readable.from([Buffer.from(JSON.stringify({
+        items: [
+          collectInput({ sourceSku: `pg-batch-valid-${suffix}`, requestId: `pg-batch-valid-${suffix}` }),
+          collectInput({
+            sourceSku: `pg-batch-incomplete-${suffix}`,
+            requestId: `pg-batch-incomplete-${suffix}`,
+            payload: withoutRequiredField("lengthMm"),
+          }),
+        ],
+      }))]);
+      request.method = "POST";
+      request.url = "/sources/ozon/collect/batch";
+      request.headers = {
+        authorization: `Collector ${collectorToken}`,
+        "content-type": "application/json",
+      };
+      const response = {
+        status: 0,
+        body: "",
+        writeHead(status) { this.status = status; },
+        end(body = "") { this.body = String(body); },
+      };
+      const { handle } = await import("../index.mjs");
+      await handle(request, response);
+      const body = JSON.parse(response.body);
+      assert.equal(response.status, 422);
+      assert.equal(body.code, "OZON_COLLECT_INCOMPLETE");
+      assert.deepEqual(body.missingFields, ["lengthMm"]);
+      const persisted = await pool.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM collect_items WHERE account_id=$1) AS item_count,
+           (SELECT COUNT(*)::int FROM collect_requests WHERE account_id=$1) AS request_count,
+           (SELECT COUNT(*)::int FROM collect_requests WHERE account_id=$1 AND status='SUCCEEDED') AS succeeded_count,
+           (SELECT COUNT(*)::int FROM collect_requests WHERE account_id=$1 AND status='FAILED') AS failed_count`,
+        [accountId],
+      );
+      assert.deepEqual(persisted.rows[0], {
+        item_count: 0,
+        request_count: 0,
+        succeeded_count: 0,
+        failed_count: 0,
+      });
+    } finally {
+      await pool.query("DELETE FROM collector_sessions WHERE account_id=$1", [accountId]);
+      await pool.query("DELETE FROM sessions WHERE account_id=$1", [accountId]);
       await pool.query("DELETE FROM collect_requests WHERE account_id=$1", [accountId]);
       await pool.query("DELETE FROM collect_raw_payloads WHERE account_id=$1", [accountId]);
       await pool.query("DELETE FROM collect_items WHERE account_id=$1", [accountId]);

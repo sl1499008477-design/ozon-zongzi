@@ -131,6 +131,43 @@ export function prepareCollectRequestV4({
   };
 }
 
+export function prepareCompleteCollectRequestV4({
+  authenticatedAccount,
+  input = {},
+  enforceScopeFields = true,
+  completenessPayload,
+} = {}) {
+  const prepared = prepareCollectRequestV4({
+    authenticatedAccount,
+    input,
+    enforceScopeFields,
+  });
+  assertCompleteOzonCollectPayload(
+    prepared.identity.source,
+    completenessPayload === undefined ? prepared.normalizedItem : completenessPayload,
+  );
+  return prepared;
+}
+
+export function preflightCompleteCollectRequestsV4({
+  authenticatedAccount,
+  inputs = [],
+  source,
+  enforceScopeFields = true,
+} = {}) {
+  return inputs.map((value) => {
+    const input = value && typeof value === "object" ? value : {};
+    const effectiveInput = { ...input, source: input.source || source };
+    const prepared = prepareCompleteCollectRequestV4({
+      authenticatedAccount,
+      input: effectiveInput,
+      enforceScopeFields,
+      completenessPayload: input.payload,
+    });
+    return { input, prepared };
+  });
+}
+
 async function transaction(callback) {
   const pool = await poolReady();
   const client = await pool.connect();
@@ -206,7 +243,7 @@ export async function ingestCollectRequestV4(options = {}) {
         capturedAt: legacyItem.capturedAt || legacyItem.collectedAt || legacyItem.createdAt,
         payload: legacyItem,
       };
-  const prepared = prepareCollectRequestV4({
+  const prepared = prepareCompleteCollectRequestV4({
     authenticatedAccount,
     input,
     enforceScopeFields: usingAccountScopedContract,
@@ -227,8 +264,6 @@ export async function ingestCollectRequestV4(options = {}) {
     sourceSku,
     requestId: sourceRequestId,
   } = identity;
-
-  assertCompleteOzonCollectPayload(sourceId, normalizedItem);
 
   try {
     return await transaction(async (client) => {
