@@ -17,6 +17,7 @@ const RETIRED_SCOPE_KEY_SPELLINGS = [
   "LOCAL-STORE-ID",
   "operating_store_id",
   "data-collection-store-id",
+  "data_collection_store",
   "Data_Collection_Stores",
   "data_collection_store_ids",
   "current-data-collection-store-id",
@@ -164,6 +165,30 @@ test("Ozon completeness gate recognizes fields merged into a collection payload"
   }));
 });
 
+test("Ozon completeness gate does not accept retired logistics aliases", () => {
+  const payload = {
+    descriptionCategoryId: 123,
+    packageWeight: 500,
+    length: 300,
+    packageLength: 300,
+    packageWidth: 200,
+    packageHeight: 100,
+  };
+  assert.deepEqual(
+    missingOzonRequiredFields(payload),
+    ["weightG", "lengthMm", "widthMm", "heightMm"],
+  );
+  assert.throws(
+    () => assertCompleteOzonCollectPayload("ozon", payload),
+    (error) => error?.status === 422
+      && error?.code === "OZON_COLLECT_INCOMPLETE"
+      && assert.deepEqual(
+        error.missingFields,
+        ["weightG", "lengthMm", "widthMm", "heightMm"],
+      ) === undefined,
+  );
+});
+
 test("single enrichment requests accept only requestId and sku", () => {
   assert.deepEqual(
     parseOzonEnrichmentRequest({ requestId: " request-1 ", sku: " 4862904234 " }),
@@ -186,6 +211,14 @@ test("batch enrichment requests preserve first-seen SKUs and cap unique values a
   assert.deepEqual(
     parseOzonBatchEnrichmentRequest({ requestId: "batch-1", skus: ["4862904234", "4862904235", "4862904234"] }),
     { requestId: "batch-1", skus: ["4862904234", "4862904235"] },
+  );
+  const twentySkus = Array.from({ length: 20 }, (_, index) => String(index + 1));
+  assert.deepEqual(
+    parseOzonBatchEnrichmentRequest({
+      requestId: "batch-20",
+      skus: [twentySkus[0], ...twentySkus, twentySkus[19]],
+    }),
+    { requestId: "batch-20", skus: twentySkus },
   );
   assert.throws(
     () => parseOzonBatchEnrichmentRequest({

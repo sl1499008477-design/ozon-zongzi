@@ -87,10 +87,10 @@ function enrichmentFieldValues(value = {}) {
   const logistics = value?.logistics && typeof value.logistics === "object" ? value.logistics : {};
   return {
     descriptionCategoryId: value?.descriptionCategoryId,
-    weightG: value?.weightG ?? logistics.weightG ?? value?.weight ?? value?.packageWeight,
-    lengthMm: value?.lengthMm ?? logistics.lengthMm ?? value?.depth ?? value?.length ?? value?.packageLength,
-    widthMm: value?.widthMm ?? logistics.widthMm ?? value?.width ?? value?.packageWidth,
-    heightMm: value?.heightMm ?? logistics.heightMm ?? value?.height ?? value?.packageHeight,
+    weightG: value?.weightG ?? logistics.weightG ?? value?.weight,
+    lengthMm: value?.lengthMm ?? logistics.lengthMm ?? value?.depth,
+    widthMm: value?.widthMm ?? logistics.widthMm ?? value?.width,
+    heightMm: value?.heightMm ?? logistics.heightMm ?? value?.height,
   };
 }
 
