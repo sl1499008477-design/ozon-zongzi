@@ -37,9 +37,21 @@
   ]);
 
   const cleanText = (value) => String(value == null ? '' : value).trim();
-  const plainObject = (value) => Boolean(value)
-    && typeof value === 'object'
-    && !Array.isArray(value);
+  const plainObject = (value) => {
+    if (!value || typeof value !== 'object') return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  };
+  const deepFreeze = (value, seen = new WeakSet()) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return value;
+    seen.add(value);
+    Object.values(value).forEach((nested) => deepFreeze(nested, seen));
+    return Object.freeze(value);
+  };
+  const finalizedJsonPayload = (value) => deepFreeze(JSON.parse(JSON.stringify(value)));
+  const exactKeys = (value, keys) => plainObject(value)
+    && Object.keys(value).length === keys.length
+    && keys.every((key) => Object.hasOwn(value, key));
   const candidateSkuValues = (value) => {
     const values = [];
     const append = (candidate) => {
@@ -60,11 +72,13 @@
     return values;
   };
   const matchesSku = (value, sku) => candidateSkuValues(value).includes(cleanText(sku));
+  let pageCoordinator = null;
 
   function create({
     sendMessage,
     now = () => Date.now(),
     timeoutMs = 20_000,
+    randomUUID,
   } = {}) {
     const contract = root.JzOzonEnrichmentContract;
     if (
@@ -75,12 +89,26 @@
       || typeof contract?.assertComplete !== 'function'
       || typeof contract?.normalizeResult !== 'function'
       || typeof contract?.toCollectFields !== 'function'
+      || (randomUUID !== undefined && typeof randomUUID !== 'function')
     ) {
       throw new TypeError('Ozon collect coordinator dependencies are required');
     }
 
     const entries = new Map();
     let requestSequence = 0;
+    const createSecureNonce = randomUUID || (() => {
+      if (typeof root.crypto?.randomUUID === 'function') return root.crypto.randomUUID();
+      if (typeof root.crypto?.getRandomValues === 'function') {
+        const bytes = new Uint8Array(16);
+        root.crypto.getRandomValues(bytes);
+        return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      }
+      throw new TypeError('Secure randomness is required for Ozon collection request IDs');
+    });
+    const instanceNonce = cleanText(createSecureNonce()).replace(/[^A-Za-z0-9_-]/g, '-');
+    if (instanceNonce.length < 16) {
+      throw new TypeError('Ozon collection request ID nonce is invalid');
+    }
 
     const normalizeSku = (value) => {
       const sku = cleanText(value);
@@ -91,7 +119,7 @@
     const requestIdFor = (sku) => {
       requestSequence += 1;
       const safeSku = sku.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
-      return `ozon-collect-${Math.trunc(Number(now()) || 0)}-${requestSequence}-${safeSku}`;
+      return `ozon-collect-${Math.trunc(Number(now()) || 0)}-${instanceNonce}-${requestSequence}-${safeSku}`;
     };
 
     const entryFor = (value) => {
@@ -107,6 +135,7 @@
           error: null,
           collectPromise: null,
           collectResult: null,
+          finalizedUpload: null,
         };
         entries.set(sku, entry);
       }
@@ -114,6 +143,9 @@
     };
 
     const codeFrom = (error) => {
+      const status = Number(error?.status) || 0;
+      if (status === 401) return 'COLLECTOR_AUTH_REQUIRED';
+      if (status === 403) return 'COLLECTOR_PERMISSION_DENIED';
       const candidates = [error?.code, error?.error, error?.message]
         .map(cleanText)
         .filter(Boolean);
@@ -289,15 +321,23 @@
       return promise;
     };
 
-    const prefetch = ({ sku } = {}) => {
-      const entry = entryFor(sku);
+    const prefetchEntry = (entry, retryFailed = false) => {
       if (entry.result) {
         if (!entry.promise) entry.promise = Promise.resolve(entry.result);
         return entry.promise;
       }
       if (entry.status === 'PREFETCHING' && entry.promise) return entry.promise;
+      if (
+        !retryFailed
+        && (entry.status === 'ERROR' || entry.status === 'BLOCKED_AUTH')
+        && entry.error
+      ) {
+        return Promise.reject(entry.error);
+      }
       return startPrefetch(entry);
     };
+
+    const prefetch = ({ sku } = {}) => prefetchEntry(entryFor(sku));
 
     const batchItemError = (value) => Object.assign(
       new Error(cleanText(value?.message || value?.error) || 'Ozon 商品资料补全失败'),
@@ -372,14 +412,21 @@
           orderedEntries.push(entry);
         }
       }
-      const fresh = orderedEntries.filter((entry) => !entry.result && !(
-        entry.status === 'PREFETCHING' && entry.promise
-      ));
+      const fresh = orderedEntries.filter((entry) => !entry.result
+        && !(entry.status === 'PREFETCHING' && entry.promise)
+        && entry.status !== 'ERROR'
+        && entry.status !== 'BLOCKED_AUTH');
       for (let index = 0; index < fresh.length; index += 20) {
         startBatchChunk(fresh.slice(index, index + 20));
       }
       return Promise.all(orderedEntries.map((entry) => {
         if (entry.result) return entry.result;
+        if (
+          (entry.status === 'ERROR' || entry.status === 'BLOCKED_AUTH')
+          && entry.error
+        ) {
+          return { sku: entry.sku, status: 'ERROR', error: entry.error };
+        }
         return entry.promise
           .then((result) => result)
           .catch((error) => ({ sku: entry.sku, status: 'ERROR', error }));
@@ -390,7 +437,9 @@
       const entry = entryFor(sku);
       if (entry.collectPromise) return entry.collectPromise;
 
-      const enrichment = entry.result ? Promise.resolve(entry.result) : prefetch({ sku: entry.sku });
+      const enrichment = entry.result
+        ? Promise.resolve(entry.result)
+        : prefetchEntry(entry, true);
       let collectPromise;
       collectPromise = enrichment
         .catch(async (error) => {
@@ -418,27 +467,46 @@
         })
         .then((result) => {
           contract.assertComplete(result);
-          const completePayload = {
-            ...(plainObject(raw) ? raw : {}),
-            sku: entry.sku,
-            ...contract.toCollectFields(result),
-          };
+          if (!entry.finalizedUpload) {
+            const timestamp = Number(now());
+            entry.finalizedUpload = finalizedJsonPayload({
+              sourceId: 'ozon',
+              requestId: entry.requestId,
+              capturedAt: new Date(
+                Number.isFinite(timestamp) ? timestamp : Date.now(),
+              ).toISOString(),
+              raw: {
+                ...(plainObject(raw) ? raw : {}),
+                sku: entry.sku,
+                ...contract.toCollectFields(result),
+              },
+            });
+          }
           entry.status = 'SAVING';
           entry.error = null;
           return withTimeout(
-            Promise.resolve().then(() => sendMessage('pushSourceCollect', {
-              sourceId: 'ozon',
-              requestId: entry.requestId,
-              raw: completePayload,
-            })),
+            Promise.resolve().then(() => sendMessage(
+              'pushSourceCollect',
+              entry.finalizedUpload,
+            )),
             'collect',
           );
         })
         .then((response) => {
-          if (response?.ok === false) throw response;
+          if (
+            !exactKeys(response, ['dedupeHit', 'result'])
+            || typeof response.dedupeHit !== 'boolean'
+            || !plainObject(response.result)
+          ) {
+            throw Object.assign(new Error('采集上传响应格式无效'), {
+              code: 'COLLECTOR_UPLOAD_FAILED',
+              status: 502,
+              retryable: true,
+            });
+          }
           entry.collectResult = {
-            dedupeHit: response?.dedupeHit === true,
-            result: response?.result,
+            dedupeHit: response.dedupeHit,
+            result: response.result,
           };
           entry.status = 'SUCCESS';
           entry.error = null;
@@ -465,7 +533,12 @@
     return Object.freeze({ prefetch, prefetchBatch, collect, getState });
   }
 
-  const api = Object.freeze({ create, STATES, matchesSku });
+  const getPageCoordinator = (options) => {
+    if (!pageCoordinator) pageCoordinator = create(options);
+    return pageCoordinator;
+  };
+
+  const api = Object.freeze({ create, getPageCoordinator, STATES, matchesSku });
   root.JzOzonCollectCoordinator = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : self);

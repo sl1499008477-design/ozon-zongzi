@@ -33,7 +33,8 @@
 
   const panelState = { enabled: true };
   const panelDataCache = new Map();
-  const collectCoordinator = window.JzOzonCollectCoordinator.create({
+  const panelFastDataPromises = new Map();
+  const collectCoordinator = window.JzOzonCollectCoordinator.getPageCoordinator({
     sendMessage: (action, payload) => window.sendMessage(action, payload),
     now: () => Date.now(),
     timeoutMs: 20_000,
@@ -276,10 +277,30 @@
           window.sendMessage("getProductStats", { url: info.url, period: window.jzGetSalesPeriod?.() || "monthly" }),
         ]).then(([marketResult, productResult]) => ({ marketResult, productResult, slowVariant, slowFollow }));
       };
-      const { marketResult, productResult, slowVariant, slowFollow } =
-        await taskQueue.add(`stats-${productId}`, fetchTask);
+      const fastDataPromise = taskQueue.add(`stats-${productId}`, fetchTask)
+        .then(({ marketResult, productResult, slowVariant, slowFollow }) => {
+          const firstData = window.jzMergeCardPanelData(
+            marketResult.status === "fulfilled" ? marketResult.value : null,
+            productResult.status === "fulfilled" ? productResult.value : null,
+            null,
+            null,
+            productId,
+            null,
+          );
+          firstData.preFetched = {
+            stats: productResult,
+            market: marketResult,
+            variant: slowVariant,
+            followCount: slowFollow,
+          };
+          return { marketResult, productResult, slowVariant, slowFollow, firstData };
+        });
+      panelFastDataPromises.set(productId, fastDataPromise);
+      const { marketResult, productResult, slowVariant, slowFollow, firstData } =
+        await fastDataPromise;
 
       if (!card?.isConnected) {
+        panelFastDataPromises.delete(productId);
         if (panel) {
           panel.dataset.jzLoadStatus = "idle";
           panel.innerHTML = "";
@@ -294,27 +315,23 @@
         // 任务在队列里是 SUCCESS(allSettled 恒 fulfilled)但内容全失败 —— 不 evict
         // 的话「点击重试」会拿回同一份坏结果,永远无法真正重试。
         taskQueue.evict?.(`stats-${productId}`);
+        panelFastDataPromises.delete(productId);
         showError();
         return;
       }
 
       // 会员门控兜底(门控查询 fail-open 放行但后端拦了/会员刚过期)
       if (productResult.status === "fulfilled" && productResult.value?.__featureGated) {
+        panelFastDataPromises.delete(productId);
         renderLockedPanel();
         return;
       }
 
+      panelDataCache.set(productId, firstData);
+
       // —— 首帧:stats/market 到手立即渲染;variants/跟卖数由 populate 到货即补 ——
       let populatePromise = null;
       if (typeof window.jzRenderProductPanelV2 === 'function') {
-        const firstData = window.jzMergeCardPanelData(
-          marketResult.status === "fulfilled" ? marketResult.value : null,
-          productResult.status === "fulfilled" ? productResult.value : null,
-          null,
-          null,
-          productId,
-          null,
-        );
         if (!panel.getAttribute("data-jz-datacard")) {
           // 挂载时回退了旧骨架(极端情况)才需要在这里补渲染结构
           window.jzRenderProductPanelV2(panel, { sku: productId, initial: firstData });
@@ -333,6 +350,7 @@
       if (populatePromise) await populatePromise;
 
       if (!card?.isConnected) {
+        panelFastDataPromises.delete(productId);
         if (panel) {
           panel.dataset.jzLoadStatus = "idle";
           panel.innerHTML = "";
@@ -368,6 +386,7 @@
         followCount: followSellResult,
       };
       panelDataCache.set(productId, data);
+      panelFastDataPromises.delete(productId);
       // V1 老渲染兜底(V2 已在首帧渲染过,不重复整卡重绘)
       if (typeof window.jzRenderProductPanelV2 !== 'function') {
         window.jzRenderProductCardPanel(panel, data);
@@ -375,6 +394,7 @@
 
       if (panel) panel.dataset.jzLoadStatus = "ready";
     } catch {
+      panelFastDataPromises.delete(productId);
       showError();
     }
   }
@@ -481,24 +501,40 @@
     return response?.items || response?.data?.items || [];
   }
 
-  async function collectSourceFields(productId, cachedPanelData) {
-    const cachedVariantResult = cachedPanelData?.preFetched?.variant;
-    const cachedVariantResponse = cachedVariantResult?.status === "fulfilled"
-      ? cachedVariantResult.value
-      : null;
-    let variantItems = collectVariantItems(cachedVariantResponse);
-    if (!variantItems.length) {
-      let variantResponse;
-      try {
-        variantResponse = await window.sendMessage("searchVariants", { sku: productId });
-      } catch (error) {
-        throw error;
-      }
-      variantItems = collectVariantItems(variantResponse);
+  async function panelDataForCollect(productId) {
+    const cached = panelDataCache.get(productId);
+    if (cached) return cached;
+    const pending = panelFastDataPromises.get(productId);
+    if (!pending) return null;
+    try {
+      const loaded = await pending;
+      return panelDataCache.get(productId) || loaded?.firstData || null;
+    } catch {
+      return null;
     }
-    const variantMatch =
-      variantItems.find((item) =>
+  }
+
+  async function panelVariantState(productId, cachedPanelData) {
+    const slot = cachedPanelData?.preFetched?.variant;
+    let response = null;
+    if (slot?.status === "fulfilled") {
+      response = slot.value;
+    } else if (slot && typeof slot.then === "function") {
+      try { response = await slot; } catch {}
+    }
+    const variant = collectVariantItems(response).find((item) =>
+      window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+    return { attempted: Boolean(slot), variant };
+  }
+
+  async function collectSourceFields(productId, cachedPanelData) {
+    const currentVariant = await panelVariantState(productId, cachedPanelData);
+    let variantMatch = currentVariant.variant;
+    if (!variantMatch && !currentVariant.attempted) {
+      const variantResponse = await window.sendMessage("searchVariants", { sku: productId });
+      variantMatch = collectVariantItems(variantResponse).find((item) =>
         window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+    }
     const catalog = window.jzExtractCatalogFromSv?.(variantMatch) || {};
     const persistedDimensions = await (window
       .jzReadCachedWeightDims?.(productId)
@@ -555,16 +591,6 @@
         dimension_unit: depth || width || height ? "mm" : undefined,
       },
     };
-  }
-
-  function cachedPanelVariant(productId, cachedPanelData) {
-    const cachedVariantResult = cachedPanelData?.preFetched?.variant;
-    const cachedVariantResponse = cachedVariantResult?.status === "fulfilled"
-      ? cachedVariantResult.value
-      : null;
-    const items = collectVariantItems(cachedVariantResponse);
-    return items.find((item) =>
-      window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
   }
 
   function mergeInfoHashtags(variant, info) {
@@ -662,7 +688,7 @@
 
   // 「采集」按钮与 action bar 上的「一键采集」语义统一，只写后台采集箱。
   //
-  // resp shape (SW ENVELOPE_FIX 2025-05):{ dedupeHit, lastAt, result }
+  // resp shape: { dedupeHit, result }
   //   - dedupeHit:24h 内已采过同 SKU,SW 走 cache 没打 backend
   //   - result.id:backend OzonCollectBoxItem.id(可用于跳编辑页)
   // sendMessage 在 SW ok:false 时直接 reject(走外层 catch),不必检查 resp.ok。
@@ -675,9 +701,14 @@
     }
     btn.dataset.busy = "1";
     try {
-      const data = panelDataCache.get(productId) || null;
-      info = await enrichInfoWithDetailMarketingPrice(info);
-      mergeInfoHashtags(cachedPanelVariant(productId, data), info);
+      const [data, enrichedInfo] = await Promise.all([
+        panelDataForCollect(productId),
+        enrichInfoWithDetailMarketingPrice(info),
+      ]);
+      info = enrichedInfo;
+      const sourceVariant = (await panelVariantState(productId, data)).variant;
+      const variant = sourceVariant ? { ...sourceVariant } : null;
+      mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
         sku: productId,
         raw: buildPanelCollectRaw(productId, info, data),
@@ -729,12 +760,18 @@
     btn.innerHTML = "采集中…";
 
     try {
-      const info = await enrichInfoWithDetailMarketingPrice(extractCardInfo(card));
+      let info = extractCardInfo(card);
       const sku = extractProductId(info.url);
       if (!sku) throw new Error("missing-sku");
 
-      const data = panelDataCache.get(sku) || null;
-      mergeInfoHashtags(cachedPanelVariant(sku, data), info);
+      const [data, enrichedInfo] = await Promise.all([
+        panelDataForCollect(sku),
+        enrichInfoWithDetailMarketingPrice(info),
+      ]);
+      info = enrichedInfo;
+      const sourceVariant = (await panelVariantState(sku, data)).variant;
+      const variant = sourceVariant ? { ...sourceVariant } : null;
+      mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
         sku,
         raw: buildPanelCollectRaw(sku, info, data),

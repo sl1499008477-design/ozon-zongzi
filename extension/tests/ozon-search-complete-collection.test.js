@@ -48,7 +48,12 @@ function fixtureHtml() {
         observe(target) { this.callback([{ isIntersecting: true, target }]); }
         disconnect() {}
       };
-      window.MutationObserver = class { constructor() {} observe() {} };
+      const mutationObservers = [];
+      window.MutationObserver = class {
+        constructor(callback) { this.callback = callback; mutationObservers.push(this); }
+        observe() {}
+      };
+      window.__triggerSearchMutation = () => mutationObservers.forEach((observer) => observer.callback([]));
       window.requestAnimationFrame = (callback) => setTimeout(callback, 0);
       window.checkAuth = async () => ({ loggedIn: true });
       window.createLoginPrompt = () => {};
@@ -151,7 +156,7 @@ function fixtureHtml() {
         }
         return candidates.some((candidate) => String(candidate || '').trim() === String(sku));
       };
-      window.JzOzonCollectCoordinator = { matchesSku: matchesFixtureSku, create() { return {
+      const fixtureCoordinator = {
         prefetch: async ({ sku }) => coordinatorResult(sku),
         prefetchBatch: async ({ skus }) => {
           prefetchCalls.push([...skus]);
@@ -164,9 +169,148 @@ function fixtureHtml() {
             : Promise.resolve({ dedupeHit: false, result: { id: 'search-collect-id' } });
         },
         getState: () => ({ status: 'READY', requestId: 'fixture-request' }),
-      }; } };
+      };
+      window.JzOzonCollectCoordinator = {
+        matchesSku: matchesFixtureSku,
+        create() { throw new Error('page must use the shared coordinator singleton'); },
+        getPageCoordinator() { return fixtureCoordinator; },
+      };
     </script>
     <script src="/extension/content/ozon-search.js"></script>
+  </body></html>`;
+}
+
+function productionFixtureHtml() {
+  return `<!doctype html><html><body><main id="fixture-host"></main>
+    <script>
+      const runtimeMessages = [];
+      window.__getProductionRuntimeMessages = () => structuredClone(runtimeMessages);
+      const completeVariant = (sku) => ({
+        variant_id: 'variant-' + sku,
+        _searchMeta: { skus: [{ sku: String(sku) }] },
+        description_category_id: 123,
+        type_id: 456,
+        attributes: [
+          { key: '4497', value: '500' },
+          { key: '9454', value: '300' },
+          { key: '9455', value: '200' },
+          { key: '9456', value: '100' },
+        ],
+      });
+      const completeResult = (sku) => ({
+        status: 'COMPLETE',
+        contractVersion: 'collector.ozon.enrichment.v1',
+        sku: String(sku),
+        descriptionCategoryId: 123,
+        typeId: 456,
+        logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+        variantData: completeVariant(sku),
+        source: 'BACKEND_FLEET',
+        capturedAt: '2026-07-31T00:00:00.000Z',
+        cache: { hit: false, expiresAt: '2026-07-31T06:00:00.000Z' },
+      });
+      const envelopeFor = (message) => {
+        if (message.action === 'getFleetServersideFlag') return { ok: true, data: { on: false } };
+        if (message.action === 'enrichOzonCollectBatch') {
+          return {
+            ok: false,
+            status: 401,
+            code: 'COLLECTOR_AUTH_REQUIRED',
+            error: 'COLLECTOR_AUTH_REQUIRED',
+            message: 'expired fixture session',
+            missingFields: [],
+            retryable: false,
+          };
+        }
+        if (message.action === 'enrichOzonCollect') {
+          return { ok: true, data: completeResult(message.sku) };
+        }
+        if (message.action === 'pushSourceCollect') {
+          return { ok: true, data: { dedupeHit: false, result: { id: 'production-collect-id' } } };
+        }
+        if (message.action === 'searchVariants') {
+          return { ok: true, data: { items: [completeVariant(message.sku)] } };
+        }
+        if (message.action === 'getMarketStats') {
+          return { ok: true, data: { soldCount: 72, gmvSum: 7000, views: 900 } };
+        }
+        if (message.action === 'getProductStats') return { ok: true, data: {} };
+        if (message.action === 'reportSkuDims') return { ok: true, data: {} };
+        return { ok: true, data: {} };
+      };
+      window.chrome = {
+        storage: {
+          local: {
+            get(_keys, callback) {
+              const value = { ozon_data_panel_enabled: true };
+              callback?.(value);
+              return Promise.resolve(value);
+            },
+            set(_value, callback) { callback?.(); return Promise.resolve(); },
+          },
+          onChanged: { addListener() {} },
+        },
+        runtime: {
+          id: 'production-search-fixture',
+          lastError: null,
+          getURL: (value) => value,
+          onMessage: { addListener() {} },
+          sendMessage(message, callback) {
+            runtimeMessages.push(structuredClone(message));
+            queueMicrotask(() => callback(envelopeFor(message)));
+          },
+        },
+      };
+    </script>
+    <script src="/extension/content/shared-utils.js"></script>
+    <script>
+      window.JZTaskQueue = class { add(_key, task) { return Promise.resolve().then(task); } };
+      window.jzMakeStaggeredQueue = () => ({ add: (task) => Promise.resolve().then(task), setParams() {} });
+      window.IntersectionObserver = class {
+        constructor(callback) { this.callback = callback; }
+        observe(target) { this.callback([{ isIntersecting: true, target }]); }
+        disconnect() {}
+      };
+      window.checkAuth = async () => ({ loggedIn: true });
+      window.createLoginPrompt = () => {};
+      window.jzDataCardAllowed = async () => ({ allowed: true });
+      window.jzFetchPublicFollowSell = async () => ({ count: 0, sellers: [] });
+      window.jzFetchOzonPagePriceTags = async () => null;
+      window.jzReadCachedWeightDims = async () => null;
+      window.jzGetSalesPeriod = () => 'monthly';
+      window.jzMountPanelStructure = (panel) => {
+        panel.innerHTML = '<button data-action="collect-one">采集</button><button data-action="edit-list">编辑上架</button>';
+      };
+      window.jzRenderProductPanelV2 = undefined;
+      window.jzRenderProductCardPanel = () => {};
+      window.jzExtractCatalogFromSv = (variant) => variant ? ({
+        name: 'source ' + variant.variant_id,
+        mainImage: 'https://cdn.test/' + variant.variant_id + '.jpg',
+        images: ['https://cdn.test/' + variant.variant_id + '.jpg'],
+        weightG: 500,
+        depthMm: 300,
+        widthMm: 200,
+        heightMm: 100,
+      }) : null;
+      window.jzPreferSourceName = (source, page) => source || page;
+      window.JZFollowSellContentCopy = { mergeSourceHashtagsIntoVariant() {} };
+      window.__addProductionCard = () => {
+        document.getElementById('fixture-host').insertAdjacentHTML('beforeend',
+          '<article class="tile-root"><a href="/product/fixture-8123456789" aria-label="card title">card title</a><img src="https://cdn.test/card.jpg" alt="card title"><span data-widget="searchResultsPrice">999 ₽</span></article>');
+      };
+      window.__addProductionNoise = () => {
+        const node = document.createElement('i');
+        node.textContent = 'noise';
+        document.getElementById('fixture-host').appendChild(node);
+        node.remove();
+      };
+    </script>
+    <script src="/extension/lib/ozon-enrichment-contract.js"></script>
+    <script src="/extension/lib/ozon-collect-coordinator.js"></script>
+    <script src="/extension/content/ozon-search.js"></script>
+    <script>
+      window.addEventListener('load', () => setTimeout(() => window.__addProductionCard(), 0));
+    </script>
   </body></html>`;
 }
 
@@ -176,6 +320,11 @@ async function startServer() {
     if (pathname === '/fixture') {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(fixtureHtml());
+      return;
+    }
+    if (pathname === '/production-fixture') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(productionFixtureHtml());
       return;
     }
     const filePath = path.resolve(rootDir, `.${decodeURIComponent(pathname)}`);
@@ -215,6 +364,18 @@ test('search page batches visible prefetch and delegates both collection paths t
     assert.deepEqual(
       initial.prefetchCalls.flat(),
       Array.from({ length: 21 }, (_, index) => String(8000000000 + index)),
+    );
+    await page.evaluate(() => {
+      window.__triggerSearchMutation();
+      window.__triggerSearchMutation();
+      window.__triggerSearchMutation();
+    });
+    await page.waitForTimeout(50);
+    assert.deepEqual(
+      (await page.evaluate(() => window.__getSearchCoordinatorState())).prefetchCalls
+        .map((batch) => batch.length),
+      [20, 1],
+      'repeated DOM mutations must not schedule already-seen SKU batches again',
     );
     assert.equal(
       (await page.evaluate(() => window.__getSearchRuntimeMessages()))
@@ -284,6 +445,58 @@ test('search page batches visible prefetch and delegates both collection paths t
     const finalState = await page.evaluate(() => window.__getSearchCoordinatorState());
     assert.equal(finalState.collectCalls.length, 3);
     assert.match(finalState.opened[0].url, /\/ozon\/products\/collect\/edit\?id=search-collect-id$/);
+    assert.equal(errors.length, 0, errors.join('\n'));
+  } finally {
+    await browser?.close();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('production coordinator and message wrapper resist native MutationObserver prefetch floods', async () => {
+  const server = await startServer();
+  let browser;
+  try {
+    browser = await chromium.launch({ executablePath: browserPath(), headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.stack || error.message));
+    const address = server.address();
+    await page.goto(`http://127.0.0.1:${address.port}/production-fixture`);
+    await page.waitForFunction(() =>
+      window.__getProductionRuntimeMessages()
+        .filter(({ action }) => action === 'enrichOzonCollectBatch').length === 1
+      && document.querySelectorAll('.ozon-helper-data-panel').length === 1,
+    );
+    assert.equal(
+      await page.evaluate(() => /\[native code\]/.test(MutationObserver.toString())),
+      true,
+      'fixture must exercise the browser native MutationObserver',
+    );
+
+    await page.evaluate(() => {
+      window.__addProductionNoise();
+      window.__addProductionNoise();
+      window.__addProductionNoise();
+    });
+    await page.waitForTimeout(100);
+    let messages = await page.evaluate(() => window.__getProductionRuntimeMessages());
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 1);
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollect').length, 0);
+
+    await page.locator('[data-action="collect-one"]').click();
+    await page.waitForFunction(() =>
+      window.__getProductionRuntimeMessages().some(({ action }) => action === 'pushSourceCollect'),
+    );
+    messages = await page.evaluate(() => window.__getProductionRuntimeMessages());
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 1);
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollect').length, 1);
+    assert.equal(messages.filter(({ action }) => action === 'pushSourceCollect').length, 1);
+    const batch = messages.find(({ action }) => action === 'enrichOzonCollectBatch');
+    const retry = messages.find(({ action }) => action === 'enrichOzonCollect');
+    const upload = messages.find(({ action }) => action === 'pushSourceCollect');
+    assert.equal(retry.requestId, batch.requestId);
+    assert.equal(upload.requestId, batch.requestId);
+    assert.match(batch.requestId, /^ozon-collect-\d+-[A-Za-z0-9_-]{16,}-1-8123456789$/);
     assert.equal(errors.length, 0, errors.join('\n'));
   } finally {
     await browser?.close();

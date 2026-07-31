@@ -273,6 +273,39 @@ async function runBrowserFixture({
       window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
     );
 
+    const { fixturePage: fastLanePage, fixturePanel: fastLanePanel } =
+      await openCollectFixture("fast-lane");
+    await fastLanePanel.locator('[data-action="collect-one"]').click();
+    await fastLanePage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    const fastLaneMessages = await fastLanePage.evaluate(() => window.__getCollectFixtureMessages());
+    assert.equal(
+      fastLaneMessages.filter(({ action }) => action === "searchVariants").length,
+      1,
+      "early collect must await the panel's in-flight searchVariants instead of issuing another request",
+    );
+    const fastLaneRaw = fastLaneMessages.find(({ action }) => action === "pushSourceCollect").payload.raw;
+    assert.deepEqual(
+      {
+        soldCount: fastLaneRaw.soldCount,
+        soldSum: fastLaneRaw.soldSum,
+        views: fastLaneRaw.views,
+        convViewToOrder: fastLaneRaw.convViewToOrder,
+        discount: fastLaneRaw.discount,
+        gmvSum: fastLaneRaw.gmvSum,
+      },
+      {
+        soldCount: 72,
+        soldSum: "7000",
+        views: 900,
+        convViewToOrder: "8",
+        discount: "10",
+        gmvSum: "7000",
+      },
+      "early collect must preserve the fast-lane statistics already shown by the panel",
+    );
+
     for (const [mode, expected] of [
       ["missing", "缺少：类目、重量、长、宽、高"],
       ["missing-category", "缺少：类目"],
@@ -312,6 +345,19 @@ async function runBrowserFixture({
         .filter(({ action }) => action === "pushSourceCollect").length),
       0,
     );
+
+    for (const mode of ["upload-auth-401", "upload-auth-403"]) {
+      const { fixturePage, fixturePanel } = await openCollectFixture(mode);
+      await fixturePanel.locator('[data-action="collect-one"]').click();
+      await fixturePanel.locator('[data-action="datacard-login"]').waitFor();
+      assert.match(await fixturePanel.innerText(), /请先登录.*Web/);
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "pushSourceCollect").length),
+        1,
+        `${mode} must block after the completed enrichment reaches upload`,
+      );
+    }
 
     for (const mode of ["backend-failure", "local-failure", "upload-failure"]) {
       const { fixturePage, fixturePanel } = await openCollectFixture(mode);

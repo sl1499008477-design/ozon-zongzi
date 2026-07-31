@@ -149,7 +149,7 @@
           if (collectFixtureMode === "collector-auth") {
             throwFixtureError("COLLECTOR_AUTH_REQUIRED", "Collector auth required", { status: 401 });
           }
-          if (["backend-failure", "local-failure", "seller-auth"].includes(collectFixtureMode)) {
+          if (["backend-failure", "local-failure", "seller-auth", "fast-lane"].includes(collectFixtureMode)) {
             throwFixtureError("OZON_ENRICH_UPSTREAM_FAILED", "backend unavailable", {
               status: 502,
               retryable: true,
@@ -175,6 +175,15 @@
           }
           return completeEnrichment();
         }
+        if (action === "getMarketStats" && collectFixtureMode === "fast-lane") {
+          return {
+            soldCount: 72,
+            gmvSum: 7000,
+            views: 900,
+            convViewToOrder: 8,
+            discount: 10,
+          };
+        }
         if (action === "searchVariants") {
           collectFixtureVariantCalls += 1;
           if (
@@ -188,15 +197,23 @@
             error.code = "SELLER_CONTEXT_REQUIRED";
             throw error;
           }
+          if (collectFixtureMode === "fast-lane") {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            return { items: [collectFixtureSourceVariant] };
+          }
           return collectFixtureVariantCalls === 1
             ? { items: [collectFixtureSourceVariant] }
             : { items: [] };
         }
         if (action === "pushSourceCollect") {
+          if (collectFixtureMode === "upload-auth-401" || collectFixtureMode === "upload-auth-403") {
+            const status = collectFixtureMode.endsWith("401") ? 401 : 403;
+            throw Object.assign(new Error("upload auth expired"), { status });
+          }
           if (collectFixtureMode === "upload-failure") {
             throwFixtureError("COLLECTOR_UPLOAD_FAILED", "upload failed", { status: 502, retryable: true });
           }
-          return { result: { id: "collect-fixture" } };
+          return { dedupeHit: false, result: { id: "collect-fixture" } };
         }
         return { data: {}, items: [] };
       };
@@ -204,8 +221,8 @@
         document.querySelector(".tile-root").style.width = `${width}px`;
       };
     </script>
-    <script src="/extension/lib/ozon-collect-coordinator.js"></script>
     <script src="/extension/lib/ozon-enrichment-contract.js"></script>
+    <script src="/extension/lib/ozon-collect-coordinator.js"></script>
     <script src="/extension/content/ozon-data-panel.js"></script>
   </body>
 </html>

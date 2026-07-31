@@ -62,7 +62,13 @@ function createStorageArea(initial = {}) {
   };
 }
 
-function loadServiceWorker({ fetchImpl, sellerCapture = false, executeScriptImpl } = {}) {
+function loadServiceWorker({
+  fetchImpl,
+  sellerCapture = false,
+  executeScriptImpl,
+  localInitial = {},
+  rejectPendingUploadWrite = false,
+} = {}) {
   const workerPath = path.join(extensionRoot, manifest.background.service_worker);
   const runtimeOnInstalled = createEvent();
   const runtimeOnStartup = createEvent();
@@ -86,7 +92,30 @@ function loadServiceWorker({ fetchImpl, sellerCapture = false, executeScriptImpl
       ],
     },
   });
-  const local = createStorageArea();
+  const local = createStorageArea(localInitial);
+  if (rejectPendingUploadWrite) {
+    const set = local.set.bind(local);
+    local.set = (values, callback) => {
+      if (
+        Object.hasOwn(values || {}, 'sonliCollectorPendingUploads')
+        && (
+          rejectPendingUploadWrite === 'all'
+          || values.sonliCollectorPendingUploads.length > 0
+        )
+      ) {
+        const error = Object.assign(
+          new Error('unsafe storage cst_do-not-leak-queue-write'),
+          { code: 'EVIL_STORAGE_WRITE_FAILURE' },
+        );
+        if (callback) {
+          callback();
+          return undefined;
+        }
+        return Promise.reject(error);
+      }
+      return set(values, callback);
+    };
+  }
   const sync = createStorageArea();
   const event = createEvent();
   let context;
@@ -629,6 +658,10 @@ test('visible-page capture upload still reaches the collector client', async () 
     },
   );
   assert.equal(response?.ok, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(response.data)),
+    { dedupeHit: false, result: { id: 'collected-1' } },
+  );
   assert.equal(
     harness.fetchCalls.some(({ url, options }) =>
       url.endsWith('/sources/ozon/collect')
@@ -647,4 +680,241 @@ test('visible-page capture upload still reaches the collector client', async () 
   ]) {
     assert.equal(Object.hasOwn(captureBody, field), false, field);
   }
+});
+
+test('collector upload non-2xx responses expose only stable sanitized error metadata', async () => {
+  const sender = {
+    tab: { id: 7, url: 'https://www.ozon.ru/product/example-123456789/' },
+    url: 'https://www.ozon.ru/product/example-123456789/',
+  };
+  for (const fixture of [
+    {
+      status: 401,
+      body: {
+        code: 'EVIL_SECRET_CODE',
+        message: 'raw cst_do-not-leak-upload-secret',
+        missingFields: ['heightMm', 'authorization'],
+        retryable: false,
+        token: 'csess_do-not-leak-upload-token',
+      },
+      expected: {
+        code: 'COLLECTOR_AUTH_REQUIRED',
+        error: '请先登录 Web',
+        missingFields: ['heightMm'],
+        retryable: false,
+      },
+    },
+    {
+      status: 403,
+      body: { message: 'raw bearer do-not-leak', retryable: false },
+      expected: {
+        code: 'COLLECTOR_PERMISSION_DENIED',
+        error: '请重新连接 Web 采集授权',
+        missingFields: [],
+        retryable: false,
+      },
+    },
+    {
+      status: 422,
+      body: {
+        code: 'OZON_COLLECT_INCOMPLETE',
+        message: 'raw backend detail',
+        missingFields: ['widthMm', 'arbitrary'],
+        retryable: false,
+      },
+      expected: {
+        code: 'OZON_COLLECT_INCOMPLETE',
+        error: '商品资料不完整，未写入采集箱',
+        missingFields: ['widthMm'],
+        retryable: false,
+      },
+    },
+  ]) {
+    const harness = loadServiceWorker({
+      fetchImpl: async () => new Response(JSON.stringify(fixture.body), {
+        status: fixture.status,
+        headers: { 'content-type': 'application/json' },
+      }),
+    });
+    const response = await sendRuntimeMessage(harness, {
+      action: 'pushSourceCollect',
+      sourceId: 'ozon',
+      requestId: `upload-error-${fixture.status}`,
+      raw: { sku: '123456789' },
+    }, sender);
+    assert.deepEqual(
+      {
+        ok: response.ok,
+        status: response.status,
+        code: response.code,
+        error: response.error,
+        missingFields: [...(response.missingFields || [])],
+        retryable: response.retryable,
+      },
+      { ok: false, status: fixture.status, ...fixture.expected },
+    );
+    assert.doesNotMatch(JSON.stringify(response), /do-not-leak|cst_|csess_|bearer|raw backend/i);
+  }
+});
+
+test('collector upload retries preserve the exact captured body across a service-worker restart', async () => {
+  const sender = {
+    tab: { id: 7, url: 'https://www.ozon.ru/product/example-123456789/' },
+    url: 'https://www.ozon.ru/product/example-123456789/',
+  };
+  const message = {
+    action: 'pushSourceCollect',
+    sourceId: 'ozon',
+    requestId: 'stable-restart-request',
+    capturedAt: '2026-07-31T08:09:10.123Z',
+    raw: { sku: '123456789', title: 'Original title' },
+  };
+  const failure = () => new Response(JSON.stringify({
+    code: 'COLLECTOR_UPLOAD_FAILED',
+    message: 'raw backend cst_do-not-leak-restart',
+    retryable: true,
+  }), {
+    status: 500,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  const firstHarness = loadServiceWorker({ fetchImpl: failure });
+  const first = await sendRuntimeMessage(firstHarness, message, sender);
+  assert.equal(first.code, 'COLLECTOR_UPLOAD_FAILED');
+  assert.equal(first.queued, true);
+  const firstBody = firstHarness.fetchCalls.at(-1).options.body;
+
+  const restartedHarness = loadServiceWorker({
+    fetchImpl: failure,
+    localInitial: structuredClone(firstHarness.local.state),
+  });
+  const second = await sendRuntimeMessage(restartedHarness, message, sender);
+  assert.deepEqual(
+    {
+      status: second.status,
+      code: second.code,
+      retryable: second.retryable,
+      missingFields: [...(second.missingFields || [])],
+      queued: second.queued,
+      queueWriteFailed: second.queueWriteFailed,
+    },
+    {
+      status: 500,
+      code: 'COLLECTOR_UPLOAD_FAILED',
+      retryable: true,
+      missingFields: [],
+      queued: true,
+      queueWriteFailed: false,
+    },
+  );
+  assert.equal(
+    restartedHarness.fetchCalls.every(({ options }) => options.body === firstBody),
+    true,
+    'queued replay and direct retry must send the byte-identical body',
+  );
+  assert.doesNotMatch(JSON.stringify(second), /COLLECT_REQUEST_CONFLICT|do-not-leak|cst_/i);
+
+  const changed = await sendRuntimeMessage(restartedHarness, {
+    ...message,
+    raw: { sku: '123456789', title: 'Changed title' },
+  }, sender);
+  assert.equal(changed.status, 500);
+  assert.equal(changed.code, 'COLLECTOR_UPLOAD_FAILED');
+  assert.equal(changed.queued, false);
+  assert.equal(changed.queueWriteFailed, true);
+  assert.doesNotMatch(JSON.stringify(changed), /COLLECT_REQUEST_CONFLICT|do-not-leak|cst_/i);
+  assert.equal(
+    restartedHarness.local.state.sonliCollectorPendingUploads[0].body.payload.title,
+    'Original title',
+    'conflicting raw data must not replace the persisted request body',
+  );
+});
+
+test('collector upload keeps the original sanitized HTTP envelope when queue storage fails', async () => {
+  const harness = loadServiceWorker({
+    rejectPendingUploadWrite: true,
+    fetchImpl: async () => new Response(JSON.stringify({
+      code: 'OZON_COLLECT_INCOMPLETE',
+      message: 'raw backend cst_do-not-leak-http',
+      missingFields: ['heightMm', 'authorization'],
+      retryable: false,
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  const response = await sendRuntimeMessage(harness, {
+    action: 'pushSourceCollect',
+    sourceId: 'ozon',
+    requestId: 'queue-write-failure',
+    capturedAt: '2026-07-31T08:09:10.123Z',
+    raw: { sku: '123456789' },
+  }, {
+    tab: { id: 7, url: 'https://www.ozon.ru/product/example-123456789/' },
+    url: 'https://www.ozon.ru/product/example-123456789/',
+  });
+
+  assert.deepEqual(
+    {
+      ok: response.ok,
+      status: response.status,
+      code: response.code,
+      error: response.error,
+      missingFields: [...(response.missingFields || [])],
+      retryable: response.retryable,
+      queued: response.queued,
+      queueWriteFailed: response.queueWriteFailed,
+    },
+    {
+      ok: false,
+      status: 503,
+      code: 'OZON_COLLECT_INCOMPLETE',
+      error: '商品资料不完整，未写入采集箱',
+      missingFields: ['heightMm'],
+      retryable: false,
+      queued: false,
+      queueWriteFailed: true,
+    },
+  );
+  assert.doesNotMatch(JSON.stringify(response), /EVIL_STORAGE|do-not-leak|cst_|raw backend/i);
+
+  const flushFailureHarness = loadServiceWorker({
+    rejectPendingUploadWrite: 'all',
+    fetchImpl: async () => {
+      throw new Error('fetch must not run after queue flush storage failure');
+    },
+  });
+  const flushFailure = await sendRuntimeMessage(flushFailureHarness, {
+    action: 'pushSourceCollect',
+    sourceId: 'ozon',
+    requestId: 'queue-flush-write-failure',
+    capturedAt: '2026-07-31T08:09:10.123Z',
+    raw: { sku: '123456789' },
+  }, {
+    tab: { id: 7, url: 'https://www.ozon.ru/product/example-123456789/' },
+    url: 'https://www.ozon.ru/product/example-123456789/',
+  });
+  assert.deepEqual(
+    {
+      ok: flushFailure.ok,
+      status: flushFailure.status,
+      code: flushFailure.code,
+      error: flushFailure.error,
+      missingFields: [...(flushFailure.missingFields || [])],
+      retryable: flushFailure.retryable,
+      queued: flushFailure.queued,
+      queueWriteFailed: flushFailure.queueWriteFailed,
+    },
+    {
+      ok: false,
+      status: 0,
+      code: 'COLLECTOR_UPLOAD_FAILED',
+      error: '采集上传失败，请稍后重试',
+      missingFields: [],
+      retryable: true,
+      queued: false,
+      queueWriteFailed: true,
+    },
+  );
+  assert.doesNotMatch(JSON.stringify(flushFailure), /EVIL_STORAGE|do-not-leak|cst_|unsafe storage/i);
 });

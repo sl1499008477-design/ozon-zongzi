@@ -22,12 +22,13 @@
   const panelState = { enabled: true };
   const panelDataCache = new Map();
   const panelFastDataPromises = new Map();
-  const collectCoordinator = window.JzOzonCollectCoordinator.create({
+  const collectCoordinator = window.JzOzonCollectCoordinator.getPageCoordinator({
     sendMessage: (action, payload) => window.sendMessage(action, payload),
     now: () => Date.now(),
     timeoutMs: 20_000,
   });
   let collectionPrefetchAllowed = false;
+  const collectionPrefetchScheduledSkus = new Set();
 
   // queue 负责数据面板请求节流。
   // queue 由 collector/task-queue.js 提供（content_scripts 注入顺序保证）
@@ -638,7 +639,7 @@
 
   // 「采集」按钮与 action bar 上的「一键采集」语义统一，只写后台采集箱。
   //
-  // resp shape (SW ENVELOPE_FIX 2025-05):{ dedupeHit, lastAt, result }。
+  // resp shape: { dedupeHit, result }。
   // sendMessage 在 SW ok:false 时直接 reject(走外层 catch),不必检查 resp.ok。
   async function handleCollectOne(card, panel, btn, info) {
     if (btn.dataset.busy === '1') return;
@@ -832,12 +833,11 @@
   function prefetchVisibleCards(cards) {
     if (!collectionPrefetchAllowed) return;
     const skus = [];
-    const seen = new Set();
     for (const card of cards) {
       if (!card?.isConnected) continue;
       const sku = extractProductId(extractCardInfo(card).url);
-      if (sku && !seen.has(sku)) {
-        seen.add(sku);
+      if (sku && !collectionPrefetchScheduledSkus.has(sku)) {
+        collectionPrefetchScheduledSkus.add(sku);
         skus.push(sku);
       }
     }
