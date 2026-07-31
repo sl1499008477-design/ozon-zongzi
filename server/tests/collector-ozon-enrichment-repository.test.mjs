@@ -26,8 +26,29 @@ function completeResult(descriptionCategoryId) {
   };
 }
 
+function activeSession(id, accountId, overrides = {}) {
+  return {
+    id,
+    accountId,
+    expiresAt: "2026-08-01T00:00:00.000Z",
+    revokedAt: null,
+    ...overrides,
+  };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 test("JSON cache keeps equal SKUs isolated by account and honors complete and negative TTLs", async () => {
-  const state = {};
+  const state = {
+    collectorSessions: [
+      activeSession("collector-a", "account-a"),
+      activeSession("collector-b", "account-b"),
+    ],
+  };
   const repository = createJsonCollectorOzonEnrichmentRepository({ state });
   await repository.writeCompleteCache({
     key: ACCOUNT_A_KEY,
@@ -125,7 +146,15 @@ test("JSON cache lease has one owner and permits takeover only after expiry", as
 });
 
 test("JSON job creation is stable and claims at most four unexpired jobs per account", async () => {
-  const repository = createJsonCollectorOzonEnrichmentRepository({ state: {} });
+  const state = {
+    collectorSessions: [
+      ...Array.from({ length: 5 }, (_, index) =>
+        activeSession(`collector-a-${index + 1}`, "account-a")),
+      activeSession("collector-b-1", "account-b"),
+      activeSession("collector-later", "account-a"),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
   const created = await repository.createOrGetJob({
     id: "job-a-1",
     accountId: "account-a",
@@ -192,8 +221,70 @@ test("JSON job creation is stable and claims at most four unexpired jobs per acc
   assert.equal(claimedB.accountId, "account-b");
 });
 
-test("JSON job results require the owning session and terminal jobs are immutable", async () => {
+test("JSON create-or-get returns the stable job before validating a changed preferred session", async () => {
+  const state = {
+    collectorSessions: [activeSession("collector-preferred", "account-a")],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const created = await repository.createOrGetJob({
+    id: "job-stable",
+    accountId: "account-a",
+    requestId: "request-stable",
+    sku: "sku-stable",
+    preferredSessionId: "collector-preferred",
+    refreshBundle: { revision: 1 },
+    deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  state.collectorSessions[0].revokedAt = "2026-07-31T00:05:00.000Z";
+
+  const retried = await repository.createOrGetJob({
+    id: "job-retry-ignored",
+    accountId: "account-a",
+    requestId: "request-stable",
+    sku: "sku-stable",
+    preferredSessionId: "collector-preferred",
+    refreshBundle: { revision: 2 },
+    deadlineAt: new Date("2026-07-31T02:00:00.000Z"),
+    createdAt: new Date("2026-07-31T00:10:00.000Z"),
+  });
+
+  assert.deepEqual(retried, created);
+});
+
+test("JSON create-or-get rejects one job id mapped to a different stable key", async () => {
   const repository = createJsonCollectorOzonEnrichmentRepository({ state: {} });
+  await repository.createOrGetJob({
+    id: "job-collision",
+    accountId: "account-a",
+    requestId: "request-original",
+    sku: "sku-original",
+    preferredSessionId: null,
+    refreshBundle: {},
+    deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  await assert.rejects(repository.createOrGetJob({
+    id: "job-collision",
+    accountId: "account-a",
+    requestId: "request-other",
+    sku: "sku-other",
+    preferredSessionId: null,
+    refreshBundle: {},
+    deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
+    createdAt: new Date("2026-07-31T00:01:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_ID_CONFLICT");
+});
+
+test("JSON job results require the owning session and terminal jobs are immutable", async () => {
+  const repository = createJsonCollectorOzonEnrichmentRepository({
+    state: {
+      collectorSessions: [
+        activeSession("collector-owner", "account-a"),
+        activeSession("collector-attacker", "account-a"),
+      ],
+    },
+  });
   await repository.createOrGetJob({
     id: "job-success",
     accountId: "account-a",
@@ -315,8 +406,8 @@ test("JSON rejects Collector sessions from another account for writes and claims
   const repository = createJsonCollectorOzonEnrichmentRepository({
     state: {
       collectorSessions: [
-        { id: "collector-a", accountId: "account-a" },
-        { id: "collector-b", accountId: "account-b" },
+        activeSession("collector-a", "account-a"),
+        activeSession("collector-b", "account-b"),
       ],
     },
   });
@@ -345,6 +436,239 @@ test("JSON rejects Collector sessions from another account for writes and claims
     now: new Date("2026-07-31T00:10:00.000Z"),
     claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+});
+
+test("JSON cache writes fail closed for missing, malformed, expired, or revoked sessions", async (t) => {
+  const cases = [
+    ["missing collection", {}],
+    ["non-array collection", { collectorSessions: {} }],
+    ["missing record", { collectorSessions: [] }],
+    ["missing expiry", { collectorSessions: [{ id: "collector-a", accountId: "account-a" }] }],
+    ["invalid expiry", { collectorSessions: [activeSession("collector-a", "account-a", { expiresAt: "bad-date" })] }],
+    ["expired", { collectorSessions: [activeSession("collector-a", "account-a", { expiresAt: "2026-07-30T23:59:59.999Z" })] }],
+    ["revoked", { collectorSessions: [activeSession("collector-a", "account-a", { revokedAt: "2026-07-30T23:00:00.000Z" })] }],
+  ];
+  for (const [name, state] of cases) {
+    await t.test(name, async () => {
+      const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+      await assert.rejects(repository.writeCompleteCache({
+        key: ACCOUNT_A_KEY,
+        result: completeResult(707),
+        responseHash: "fail-closed-hash",
+        executorSessionId: "collector-a",
+        capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+        expiresAt: new Date("2026-07-31T06:00:00.000Z"),
+      }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+    });
+  }
+
+  const repository = createJsonCollectorOzonEnrichmentRepository({
+    state: { collectorSessions: [activeSession("collector-a", "account-a")] },
+  });
+  await assert.rejects(repository.writeCompleteCache({
+    key: ACCOUNT_A_KEY,
+    result: completeResult(708),
+    responseHash: "missing-executor-hash",
+    capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-31T06:00:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_SCOPE_REQUIRED");
+});
+
+test("JSON cache write rechecks session after waiting for the serialized mutation queue", async () => {
+  const enteredPersist = deferred();
+  const releasePersist = deferred();
+  let persistCalls = 0;
+  const state = { collectorSessions: [activeSession("collector-a", "account-a")] };
+  const repository = createJsonCollectorOzonEnrichmentRepository({
+    state,
+    persist: async () => {
+      persistCalls += 1;
+      if (persistCalls === 1) {
+        enteredPersist.resolve();
+        await releasePersist.promise;
+      }
+    },
+  });
+  const blocker = repository.writeNegativeCache({
+    key: ACCOUNT_B_KEY,
+    error: { code: "BLOCK" },
+    responseHash: "blocker-hash",
+    capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-31T00:01:00.000Z"),
+  });
+  await enteredPersist.promise;
+  const pending = repository.writeCompleteCache({
+    key: ACCOUNT_A_KEY,
+    result: completeResult(808),
+    responseHash: "raced-hash",
+    executorSessionId: "collector-a",
+    capturedAt: new Date("2026-07-31T00:00:01.000Z"),
+    expiresAt: new Date("2026-07-31T06:00:00.000Z"),
+  });
+  state.collectorSessions[0].revokedAt = "2026-07-31T00:00:00.500Z";
+  releasePersist.resolve();
+  await blocker;
+  await assert.rejects(pending, (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+});
+
+test("JSON claim and finish recheck session after waiting for the serialized mutation queue", async () => {
+  for (const operation of ["claim", "finish"]) {
+    const enteredPersist = deferred();
+    const releasePersist = deferred();
+    let persistCalls = 0;
+    const job = {
+      id: "job-race",
+      accountId: "account-a",
+      requestId: "request-race",
+      sku: "sku-race",
+      status: operation === "claim" ? "PENDING" : "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: operation === "finish" ? "collector-a" : null,
+      claimExpiresAt: operation === "finish" ? "2026-07-31T00:20:00.000Z" : null,
+      refreshBundle: {},
+      deadlineAt: "2026-07-31T01:00:00.000Z",
+      result: null,
+      error: null,
+      createdAt: "2026-07-31T00:00:00.000Z",
+      updatedAt: "2026-07-31T00:00:00.000Z",
+      completedAt: null,
+    };
+    const state = {
+      collectorSessions: [activeSession("collector-a", "account-a")],
+      collectorOzonEnrichmentJobs: [job],
+    };
+    const repository = createJsonCollectorOzonEnrichmentRepository({
+      state,
+      persist: async () => {
+        persistCalls += 1;
+        if (persistCalls === 1) {
+          enteredPersist.resolve();
+          await releasePersist.promise;
+        }
+      },
+    });
+    const blocker = repository.writeNegativeCache({
+      key: ACCOUNT_B_KEY,
+      error: { code: "BLOCK" },
+      responseHash: `blocker-${operation}`,
+      capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+      expiresAt: new Date("2026-07-31T00:01:00.000Z"),
+    });
+    await enteredPersist.promise;
+    const pending = operation === "claim"
+      ? repository.claimNextJob({
+        accountId: "account-a",
+        collectorSessionId: "collector-a",
+        now: new Date("2026-07-31T00:10:00.000Z"),
+        claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
+      })
+      : repository.completeJob({
+        accountId: "account-a",
+        collectorSessionId: "collector-a",
+        jobId: "job-race",
+        result: completeResult(909),
+        now: new Date("2026-07-31T00:10:00.000Z"),
+      });
+    state.collectorSessions[0].revokedAt = "2026-07-31T00:05:00.000Z";
+    releasePersist.resolve();
+    await blocker;
+    await assert.rejects(
+      pending,
+      (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE",
+      operation,
+    );
+  }
+});
+
+test("repository rejects absent dates and null terminal payloads before mutation or query", async () => {
+  const processingJob = {
+    id: "job-null-payload",
+    accountId: "account-a",
+    requestId: "request-null-payload",
+    sku: "sku-null-payload",
+    status: "PROCESSING",
+    preferredSessionId: null,
+    claimedSessionId: "collector-a",
+    claimExpiresAt: "2026-07-31T00:20:00.000Z",
+    refreshBundle: {},
+    deadlineAt: "2026-07-31T01:00:00.000Z",
+    result: null,
+    error: null,
+    createdAt: "2026-07-31T00:00:00.000Z",
+    updatedAt: "2026-07-31T00:00:00.000Z",
+    completedAt: null,
+  };
+  const state = {
+    collectorSessions: [activeSession("collector-a", "account-a")],
+    collectorOzonEnrichmentJobs: [processingJob],
+  };
+  const jsonRepository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await assert.rejects(jsonRepository.readCache({ key: ACCOUNT_A_KEY, now: null }),
+    (error) => error?.code === "OZON_ENRICHMENT_DATE_INVALID");
+  await assert.rejects(jsonRepository.writeCompleteCache({
+    key: ACCOUNT_A_KEY,
+    result: null,
+    responseHash: "null-result",
+    executorSessionId: "collector-a",
+    capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-31T06:00:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  await assert.rejects(jsonRepository.writeNegativeCache({
+    key: ACCOUNT_A_KEY,
+    error: null,
+    responseHash: "null-error",
+    capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-31T00:01:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  await assert.rejects(jsonRepository.completeJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-null-payload",
+    result: null,
+    now: new Date("2026-07-31T00:10:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  await assert.rejects(jsonRepository.failJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-null-payload",
+    error: null,
+    now: new Date("2026-07-31T00:10:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+
+  let queryCalls = 0;
+  const pgRepository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async query() { queryCalls += 1; return { rows: [] }; } },
+  });
+  await assert.rejects(pgRepository.writeCompleteCache({
+    key: ACCOUNT_A_KEY,
+    result: null,
+    responseHash: "null-result",
+    executorSessionId: "collector-a",
+    capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-31T06:00:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  await assert.rejects(pgRepository.writeNegativeCache({
+    key: ACCOUNT_A_KEY,
+    error: null,
+    responseHash: "null-error",
+    capturedAt: new Date("2026-07-31T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-31T00:01:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  await assert.rejects(pgRepository.completeJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-null-payload",
+    result: null,
+    now: new Date("2026-07-31T00:10:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  await assert.rejects(pgRepository.failJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-null-payload",
+    error: null,
+    now: new Date("2026-07-31T00:10:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
+  assert.equal(queryCalls, 0);
 });
 
 test("PostgreSQL cache lease acquisition is one atomic account-scoped upsert", async () => {
@@ -424,6 +748,9 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
     async query(sql, params = []) {
       const normalized = String(sql).replace(/\s+/g, " ").trim();
       calls.push({ sql: normalized, params });
+      if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+        return { rows: [{ id: params[1] }], rowCount: 1 };
+      }
       if (normalized.startsWith("SELECT COUNT(*)")) return { rows: [{ count: processingCount }] };
       if (normalized.includes("FOR UPDATE SKIP LOCKED")) {
         return { rows: [{
@@ -457,13 +784,14 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   assert.equal(calls[0].sql, "BEGIN");
   assert.match(calls[1].sql, /pg_advisory_xact_lock/);
   assert.deepEqual(calls[1].params, ["account-a"]);
-  assert.match(calls[2].sql, /status='PROCESSING'/);
-  assert.match(calls[2].sql, /claim_expires_at>/);
-  assert.match(calls[3].sql, /FOR UPDATE SKIP LOCKED/);
-  assert.match(calls[3].sql, /account_id=\$1/);
-  assert.match(calls[3].sql, /claimed_session_id=\$2/);
-  assert.match(calls[3].sql, /session\.revoked_at IS NULL/);
-  assert.match(calls[3].sql, /session\.expires_at>\$3/);
+  assert.match(calls[2].sql, /SELECT id FROM collector_sessions/);
+  assert.match(calls[2].sql, /revoked_at IS NULL/);
+  assert.match(calls[2].sql, /expires_at>\$3/);
+  assert.match(calls[3].sql, /status='PROCESSING'/);
+  assert.match(calls[3].sql, /claim_expires_at>/);
+  assert.match(calls[4].sql, /FOR UPDATE SKIP LOCKED/);
+  assert.match(calls[4].sql, /account_id=\$1/);
+  assert.match(calls[4].sql, /claimed_session_id=\$2/);
   assert.equal(calls.at(-1).sql, "COMMIT");
 
   calls.length = 0;
@@ -476,6 +804,36 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   }), null);
   assert.equal(calls.some((call) => call.sql.includes("FOR UPDATE SKIP LOCKED")), false);
   assert.equal(calls.at(-1).sql, "COMMIT");
+});
+
+test("PostgreSQL claim rejects an invalid session before checking account capacity", async () => {
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (normalized.startsWith("SELECT COUNT(*)")) {
+        return { rows: [{ count: "4" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async connect() { return client; }, async query() { return { rows: [] }; } },
+  });
+
+  await assert.rejects(repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-invalid",
+    now: new Date("2026-07-31T00:10:00.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_SESSION_SCOPE");
+  assert.equal(calls.some((call) => call.sql.startsWith("SELECT COUNT(*)")), false);
+  assert.equal(calls.at(-1).sql, "ROLLBACK");
 });
 
 test("PostgreSQL job creation scopes a preferred Collector session to the account", async () => {
@@ -513,6 +871,79 @@ test("PostgreSQL job creation scopes a preferred Collector session to the accoun
   assert.match(calls[0].sql, /LEFT JOIN collector_sessions AS preferred/);
   assert.match(calls[0].sql, /preferred\.account_id=\$2/);
   assert.match(calls[0].sql, /preferred\.revoked_at IS NULL/);
+});
+
+test("PostgreSQL create-or-get returns a concurrent stable row despite an invalid retry preference", async () => {
+  const existing = {
+    id: "job-stable",
+    account_id: "account-a",
+    request_id: "request-stable",
+    sku: "sku-stable",
+    status: "PENDING",
+    refresh_bundle: { revision: 1 },
+    preferred_session_id: "collector-expired",
+    deadline_at: "2026-07-31T01:00:00.000Z",
+    created_at: "2026-07-31T00:00:00.000Z",
+    updated_at: "2026-07-31T00:00:00.000Z",
+  };
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (normalized.includes("WHERE account_id=$1 AND request_id=$2 AND sku=$3")) {
+        return { rows: [existing], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
+  const retried = await repository.createOrGetJob({
+    id: "job-retry-ignored",
+    accountId: "account-a",
+    requestId: "request-stable",
+    sku: "sku-stable",
+    preferredSessionId: "collector-expired",
+    refreshBundle: { revision: 2 },
+    deadlineAt: new Date("2026-07-31T02:00:00.000Z"),
+    createdAt: new Date("2026-07-31T00:10:00.000Z"),
+  });
+
+  assert.equal(retried.id, "job-stable");
+  assert.deepEqual(retried.refreshBundle, { revision: 1 });
+  assert.match(calls[0].sql, /ON CONFLICT DO NOTHING/);
+});
+
+test("PostgreSQL create-or-get reports an explicit id conflict after atomic insert loses", async () => {
+  const pool = {
+    async query(sql) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (normalized.includes("WHERE account_id=$1 AND request_id=$2 AND sku=$3")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (normalized.includes("WHERE id=$1")) {
+        return { rows: [{ id: "job-collision" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
+  await assert.rejects(repository.createOrGetJob({
+    id: "job-collision",
+    accountId: "account-a",
+    requestId: "request-other",
+    sku: "sku-other",
+    preferredSessionId: null,
+    refreshBundle: {},
+    deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_ID_CONFLICT");
 });
 
 test("PostgreSQL terminal writes include account, owning session, processing state, and live claim", async () => {
@@ -573,5 +1004,63 @@ test("PostgreSQL terminal writes include account, owning session, processing sta
       index === 0 ? "job-a" : "job-b",
       new Date("2026-07-31T00:11:00.000Z"),
     ]);
+  }
+});
+
+test("PostgreSQL terminal fallback distinguishes session, ownership, terminal, missing, and update races", async (t) => {
+  const processingOwned = {
+    id: "job-a",
+    account_id: "account-a",
+    request_id: "request-a",
+    sku: "sku-a",
+    status: "PROCESSING",
+    refresh_bundle: {},
+    claimed_session_id: "collector-owner",
+    claim_expires_at: "2026-07-31T00:20:00.000Z",
+    deadline_at: "2026-07-31T01:00:00.000Z",
+    created_at: "2026-07-31T00:00:00.000Z",
+    updated_at: "2026-07-31T00:10:00.000Z",
+  };
+  const cases = [
+    ["invalid session", false, processingOwned, "OZON_ENRICHMENT_SESSION_SCOPE"],
+    ["wrong owner", true, { ...processingOwned, claimed_session_id: "collector-other" }, "OZON_ENRICHMENT_JOB_OWNERSHIP"],
+    ["terminal", true, { ...processingOwned, status: "SUCCESS" }, "OZON_ENRICHMENT_JOB_TERMINAL"],
+    ["missing", true, null, "OZON_ENRICHMENT_JOB_NOT_FOUND"],
+    ["concurrent update race", true, processingOwned, "OZON_ENRICHMENT_JOB_OWNERSHIP"],
+  ];
+  for (const [name, sessionValid, job, expectedCode] of cases) {
+    await t.test(name, async () => {
+      const calls = [];
+      const pool = {
+        async query(sql, params = []) {
+          const normalized = String(sql).replace(/\s+/g, " ").trim();
+          calls.push({ sql: normalized, params });
+          if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+            return { rows: [], rowCount: 0 };
+          }
+          if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+            return { rows: sessionValid ? [{ id: "collector-owner" }] : [], rowCount: sessionValid ? 1 : 0 };
+          }
+          if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
+            return { rows: job ? [job] : [], rowCount: job ? 1 : 0 };
+          }
+          return { rows: [], rowCount: 0 };
+        },
+      };
+      const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
+      await assert.rejects(repository.completeJob({
+        accountId: "account-a",
+        collectorSessionId: "collector-owner",
+        jobId: "job-a",
+        result: completeResult(1001),
+        now: new Date("2026-07-31T00:11:00.000Z"),
+      }), (error) => error?.code === expectedCode);
+      assert.match(calls[1].sql, /SELECT id FROM collector_sessions/);
+      if (!sessionValid) {
+        assert.equal(calls.length, 2);
+      } else {
+        assert.match(calls[2].sql, /SELECT \* FROM collector_ozon_enrichment_jobs/);
+      }
+    });
   }
 });

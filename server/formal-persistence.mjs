@@ -614,10 +614,15 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
 
     // FK child writers take a KEY SHARE lock on this parent. Lock the account
     // first so a writer either commits before the count or waits until deletion.
-    await client.query(
+    const lockedAccount = await client.query(
       "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
       [accountId],
     );
+    if (!lockedAccount.rows?.some((row) => text(row?.id, 240) === accountId)) {
+      const error = new Error("账号不存在");
+      error.code = "ACCOUNT_NOT_FOUND";
+      throw error;
+    }
     const deletedCollectorOzonEnrichmentJobs = await client.query(
       "DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=$1",
       [accountId],
@@ -708,7 +713,26 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
     );
     await client.query("DELETE FROM accounts WHERE id=$1", [accountId]);
   }
-  return { persistedStateChanged };
+  return {
+    persistedStateChanged,
+    afterCommit() {
+      const current = Array.isArray(state.__deletedAccountScopes)
+        ? state.__deletedAccountScopes
+        : [];
+      const processed = new Set(scopes);
+      const remaining = current.filter((scope) => !processed.has(scope));
+      if (!remaining.length) {
+        delete state.__deletedAccountScopes;
+        return;
+      }
+      Object.defineProperty(state, "__deletedAccountScopes", {
+        value: remaining,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+    },
+  };
 }
 
 async function mirrorAccounts(client, state = {}) {
@@ -1589,15 +1613,20 @@ export async function mirrorStateToRelationalTablesInTransaction(client, state =
 export async function mirrorStateToRelationalTables(pool, state = {}) {
   await ensureFormalSchema(pool);
   const client = await pool.connect();
+  let committed = false;
   try {
     await client.query("BEGIN");
-    await mirrorStateToRelationalTablesInTransaction(client, state);
+    const mirrorResult = await mirrorStateToRelationalTablesInTransaction(client, state);
     await client.query("COMMIT");
+    committed = true;
+    mirrorResult?.afterCommit?.();
   } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Preserve the original mirror failure.
+    if (!committed) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the original mirror failure.
+      }
     }
     throw error;
   } finally {

@@ -2648,6 +2648,10 @@ async function handle(req, res) {
         legacyArchivePurgedCount: deletion.legacyArchivePurgedCount,
         deletedCollectorAuthTicketCount: deletion.deletedCollectorAuthTicketCount,
         deletedCollectorSessionCount: deletion.deletedCollectorSessionCount,
+        deletedCollectorOzonEnrichmentCacheCount:
+          deletion.deletedCollectorOzonEnrichmentCacheCount,
+        deletedCollectorOzonEnrichmentJobCount:
+          deletion.deletedCollectorOzonEnrichmentJobCount,
       },
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);

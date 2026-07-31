@@ -92,6 +92,28 @@ await writeFile(dataFile, JSON.stringify({
     createdAt: "2026-07-30T08:00:00.000Z",
     lastSeenAt: "2026-07-30T08:00:00.000Z",
   }],
+  collectorOzonEnrichmentCache: [{
+    accountId: "account-a",
+    source: "ozon",
+    sku: "shared-sku",
+    contractVersion: "ozon-enrichment-v1",
+  }, {
+    accountId: "account-b",
+    source: "ozon",
+    sku: "shared-sku",
+    contractVersion: "ozon-enrichment-v1",
+  }],
+  collectorOzonEnrichmentJobs: [{
+    id: "enrichment-job-a",
+    accountId: "account-a",
+    requestId: "request-a",
+    sku: "shared-sku",
+  }, {
+    id: "enrichment-job-b",
+    accountId: "account-b",
+    requestId: "request-b",
+    sku: "shared-sku",
+  }],
   accounts: [{
     id: "account-admin",
     username: "admin",
@@ -203,6 +225,14 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
     saved.collectorSessions.map((session) => session.id),
     ["account-b-collector-session"],
   );
+  assert.deepEqual(
+    saved.collectorOzonEnrichmentCache.map((record) => record.accountId),
+    ["account-b"],
+  );
+  assert.deepEqual(
+    saved.collectorOzonEnrichmentJobs.map((job) => job.id),
+    ["enrichment-job-b"],
+  );
   assert.doesNotMatch(
     JSON.stringify({
       tickets: saved.collectorAuthTickets,
@@ -222,6 +252,8 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
   assert.equal(deletionAudit?.metadata?.legacyArchivePurgedCount, 1);
   assert.equal(deletionAudit?.metadata?.deletedCollectorAuthTicketCount, 1);
   assert.equal(deletionAudit?.metadata?.deletedCollectorSessionCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectorOzonEnrichmentCacheCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectorOzonEnrichmentJobCount, 1);
 
   const reloaded = testExports.ensureAccountState(structuredClone(saved));
   assert.deepEqual(

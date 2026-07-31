@@ -20,6 +20,7 @@ export async function persistPostgresStateAtomically({
 
   const currentVersion = Number(state?.__storageVersion || 0);
   let nextVersion = currentVersion + 1;
+  let committed = false;
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["sonli-local-state"]);
@@ -79,18 +80,22 @@ export async function persistPostgresStateAtomically({
       }
     }
     await client.query("COMMIT");
+    committed = true;
     Object.defineProperty(state, "__storageVersion", {
       value: nextVersion,
       enumerable: false,
       configurable: true,
       writable: true,
     });
+    mirrorResult?.afterCommit?.();
     return { version: nextVersion };
   } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Preserve the original persistence failure.
+    if (!committed) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the original persistence failure.
+      }
     }
     throw error;
   }

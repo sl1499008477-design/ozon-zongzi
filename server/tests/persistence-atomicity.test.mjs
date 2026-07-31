@@ -24,6 +24,7 @@ test("formal mirror succeeds before the local state transaction commits", async 
   Object.defineProperty(state, "__storageVersion", { value: 7, writable: true, configurable: true });
   const client = fakeClient();
   let mirrored = false;
+  let afterCommitCalls = 0;
   await persistPostgresStateAtomically({
     client,
     table: "local_state",
@@ -32,9 +33,16 @@ test("formal mirror succeeds before the local state transaction commits", async 
     mirror: async () => {
       mirrored = true;
       assert.equal(client.queries.includes("COMMIT"), false);
+      return {
+        afterCommit: () => {
+          assert.equal(client.queries.at(-1), "COMMIT");
+          afterCommitCalls += 1;
+        },
+      };
     },
   });
   assert.equal(mirrored, true);
+  assert.equal(afterCommitCalls, 1);
   assert.equal(client.queries.at(-1), "COMMIT");
   assert.equal(state.__storageVersion, 8);
 });
