@@ -500,7 +500,21 @@
   }
 
   function collectVariantItems(response) {
-    return response?.items || response?.data?.items || [];
+    const items = response?.items || response?.data?.items;
+    return Array.isArray(items) ? items : [];
+  }
+
+  function matchingPanelVariant(response, productId) {
+    return collectVariantItems(response).find((item) =>
+      window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+  }
+
+  function invalidPanelVariantResponseError() {
+    return Object.assign(new Error("Ozon 商品变体数据无效"), {
+      code: "OZON_ENRICH_CONTRACT_MISMATCH",
+      status: 422,
+      retryable: true,
+    });
   }
 
   async function panelDataForCollect(productId) {
@@ -546,6 +560,9 @@
     const retryPromise = Promise.resolve()
       .then(() => window.sendMessage("searchVariants", { sku: productId }))
       .then((response) => {
+        if (!matchingPanelVariant(response, productId)) {
+          throw invalidPanelVariantResponseError();
+        }
         state.status = "fulfilled";
         state.value = response;
         state.error = null;
@@ -569,8 +586,7 @@
     const sharedState = panelVariantRetryStates.get(productId);
     if (sharedState) {
       if (sharedState.status === "fulfilled") {
-        const variant = collectVariantItems(sharedState.value).find((item) =>
-          window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+        const variant = matchingPanelVariant(sharedState.value, productId);
         projectSharedPanelVariantState(productId, cachedPanelData);
         return { attempted: true, rejected: false, variant };
       }
@@ -582,8 +598,7 @@
         } catch {
           rejected = true;
         }
-        const variant = collectVariantItems(response).find((item) =>
-          window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+        const variant = matchingPanelVariant(response, productId);
         return { attempted: true, rejected, variant };
       }
       if (sharedState.status === "rejected") {
@@ -595,8 +610,7 @@
         } catch {
           rejected = true;
         }
-        const variant = collectVariantItems(response).find((item) =>
-          window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+        const variant = matchingPanelVariant(response, productId);
         return { attempted: true, rejected, variant };
       }
     }
@@ -622,8 +636,7 @@
         rejected = true;
       }
     }
-    const variant = collectVariantItems(response).find((item) =>
-      window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+    const variant = matchingPanelVariant(response, productId);
     return { attempted: Boolean(slot), rejected, variant };
   }
 
@@ -632,8 +645,7 @@
     let variantMatch = currentVariant.variant;
     if (!variantMatch && !currentVariant.attempted) {
       const variantResponse = await window.sendMessage("searchVariants", { sku: productId });
-      variantMatch = collectVariantItems(variantResponse).find((item) =>
-        window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+      variantMatch = matchingPanelVariant(variantResponse, productId);
     }
     const catalog = window.jzExtractCatalogFromSv?.(variantMatch) || {};
     const persistedDimensions = await (window

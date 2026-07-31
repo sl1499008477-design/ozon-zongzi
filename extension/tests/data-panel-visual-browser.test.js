@@ -198,6 +198,8 @@ async function runBrowserFixture({
 
     const openCollectFixture = async (mode) => {
       const fixturePage = await context.newPage();
+      const fixturePageErrors = [];
+      fixturePage.on("pageerror", (error) => fixturePageErrors.push(error.stack || error.message));
       extraPages.push(fixturePage);
       await fixturePage.goto(
         `http://127.0.0.1:${address.port}${fixturePath}?collect=${encodeURIComponent(mode)}`,
@@ -207,7 +209,7 @@ async function runBrowserFixture({
       await fixturePage.waitForFunction(() =>
         document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
       );
-      return { fixturePage, fixturePanel };
+      return { fixturePage, fixturePanel, fixturePageErrors };
     };
 
     const { fixturePage: collectPage, fixturePanel: collectPanel } =
@@ -366,6 +368,79 @@ async function runBrowserFixture({
         .filter(({ action }) => action === "searchVariants").length),
       3,
       "the next explicit click may retry again after the previous retry rejected",
+    );
+
+    for (const [mode, invalidLabel] of [
+      ["variant-retry-wrong-sku", "wrong-SKU"],
+      ["variant-retry-empty", "empty-items"],
+      ["variant-retry-malformed", "malformed-items"],
+    ]) {
+      const { fixturePage, fixturePanel, fixturePageErrors } = await openCollectFixture(mode);
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "searchVariants").length),
+        1,
+        `${invalidLabel}: the rejected initial request must remain settled until an explicit action`,
+      );
+      await fixturePage.evaluate(() => {
+        document.querySelector('[data-action="collect-one"]').click();
+        document.querySelector('[data-action="edit-list"]').click();
+      });
+      await fixturePage.waitForFunction(() => {
+        const messages = window.__getCollectFixtureMessages();
+        const collectText = document.querySelector('[data-action="collect-one"]')?.textContent || "";
+        const editText = document.querySelector('[data-action="edit-list"]')?.textContent || "";
+        return messages.filter(({ action }) => action === "searchVariants").length === 2
+          && /失败|暂时无法读取|缺少：/.test(collectText)
+          && /失败|暂时无法读取|缺少：/.test(editText);
+      });
+      await fixturePage.waitForTimeout(50);
+      const failedWaveMessages = await fixturePage.evaluate(() => window.__getCollectFixtureMessages());
+      assert.equal(
+        failedWaveMessages.filter(({ action }) => action === "searchVariants").length - 1,
+        1,
+        `${invalidLabel}: concurrent actions must share exactly one unusable retry`,
+      );
+      assert.equal(
+        failedWaveMessages.filter(({ action }) => action === "pushSourceCollect").length,
+        0,
+        `${invalidLabel}: an unusable resolved retry must not upload`,
+      );
+      assert.deepEqual(
+        fixturePageErrors,
+        [],
+        `${invalidLabel}: shared unusable responses must not produce an unhandled rejection`,
+      );
+
+      await fixturePanel.locator('[data-action="collect-one"]').click();
+      await fixturePage.waitForFunction(() =>
+        window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+      );
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "searchVariants").length - 1),
+        2,
+        `${invalidLabel}: the next explicit click must issue a fresh retry`,
+      );
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "pushSourceCollect").length),
+        1,
+        `${invalidLabel}: the matching follow-up retry must complete exactly one upload`,
+      );
+    }
+
+    const { fixturePage: backendSuccessPage, fixturePanel: backendSuccessPanel } =
+      await openCollectFixture("variant-retry-backend-success");
+    await backendSuccessPanel.locator('[data-action="collect-one"]').click();
+    await backendSuccessPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    assert.equal(
+      await backendSuccessPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      2,
+      "backend-complete collection must not depend on a usable local variant retry",
     );
 
     const { fixturePage: cacheSwapPage, fixturePanel: cacheSwapPanel } =

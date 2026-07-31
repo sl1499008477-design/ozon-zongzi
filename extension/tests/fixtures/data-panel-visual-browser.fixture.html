@@ -157,6 +157,9 @@
             "variant-retry",
             "variant-retry-again",
             "variant-retry-cache-swap",
+            "variant-retry-wrong-sku",
+            "variant-retry-empty",
+            "variant-retry-malformed",
           ].includes(collectFixtureMode)) {
             throwFixtureError("OZON_ENRICH_UPSTREAM_FAILED", "backend unavailable", {
               status: 502,
@@ -198,6 +201,10 @@
             collectFixtureMode === "variant-retry"
             || collectFixtureMode === "variant-retry-again"
             || collectFixtureMode === "variant-retry-cache-swap"
+            || collectFixtureMode === "variant-retry-wrong-sku"
+            || collectFixtureMode === "variant-retry-empty"
+            || collectFixtureMode === "variant-retry-malformed"
+            || collectFixtureMode === "variant-retry-backend-success"
           ) {
             if (collectFixtureMode === "variant-retry-cache-swap") {
               if (collectFixtureVariantCalls === 1) {
@@ -207,6 +214,32 @@
                 });
               }
               await new Promise((resolve) => setTimeout(resolve, 100));
+              return { items: [collectFixtureSourceVariant] };
+            }
+            if (
+              collectFixtureMode === "variant-retry-wrong-sku"
+              || collectFixtureMode === "variant-retry-empty"
+              || collectFixtureMode === "variant-retry-malformed"
+              || collectFixtureMode === "variant-retry-backend-success"
+            ) {
+              if (collectFixtureVariantCalls === 1) {
+                throwFixtureError("SELLER_CAPTURE_FAILED", "fixture initial variant capture failed", {
+                  retryable: true,
+                });
+              }
+              if (collectFixtureVariantCalls === 2) {
+                if (collectFixtureMode === "variant-retry-empty") return { items: [] };
+                if (collectFixtureMode === "variant-retry-malformed") {
+                  return { items: { unexpected: collectFixtureSourceVariant } };
+                }
+                return {
+                  items: [{
+                    ...collectFixtureSourceVariant,
+                    sku: "987654321",
+                    _searchMeta: { skus: [{ sku: "987654321" }] },
+                  }],
+                };
+              }
               return { items: [collectFixtureSourceVariant] };
             }
             const mustReject = collectFixtureVariantCalls === 1
