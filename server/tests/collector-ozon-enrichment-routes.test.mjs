@@ -351,6 +351,31 @@ test("all fixed routes reject query-controlled actions and URLs", async () => {
   }
 });
 
+test("next route reads its body and accepts only an empty plain object", async () => {
+  for (const body of [undefined, {}]) {
+    const h = harness();
+    const response = await request(h, "GET", "/collector/ozon/enrichment-jobs/next", body);
+    assert.equal(response.status, 200);
+    assert.equal(h.calls.claimNext.length, 1);
+  }
+
+  for (const body of [
+    { action: "sync" },
+    { nested: { url: "https://attacker.invalid" } },
+    { Authorization: "Collector cst_secret-secret-secret-secret" },
+    { headers: { Cookie: "secret=1" } },
+    { cookie: "secret=1" },
+    { store_id: "retired-store" },
+    { unknown: true },
+    [],
+  ]) {
+    const h = harness();
+    const response = await request(h, "GET", "/collector/ozon/enrichment-jobs/next", body);
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.equal(h.calls.claimNext.length, 0, JSON.stringify(body));
+  }
+});
+
 test("repository-prefixed failures are not exposed through the public route", async () => {
   const h = harness({
     service: {

@@ -229,6 +229,9 @@ export function createCollectorOzonEnrichmentHttpHandler({
         return true;
       }
       if (next) {
+        const body = await readJson(req);
+        assertNoClientControl(body);
+        assertExactKeys(body, []);
         sendJson(res, 200, { ok: true, job: await service.claimNext({ session }) });
         return true;
       }

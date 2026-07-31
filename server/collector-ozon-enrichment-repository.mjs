@@ -734,7 +734,10 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
                 COALESCE(BOOL_OR(
                   source=$2 AND sku=$3 AND contract_version=$4
                   AND lease_owner=$5 AND lease_expires_at>$7
-                ), FALSE) AS key_held_by_owner
+                ), FALSE) AS key_held_by_owner,
+                COALESCE(BOOL_OR(
+                  lease_owner=$5 AND lease_expires_at>$7
+                ), FALSE) AS owner_has_live_lease
            FROM account_lock
            LEFT JOIN collector_ozon_enrichment_cache ON account_id=$1
        ), acquired AS (
@@ -743,7 +746,8 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
          )
          SELECT $1,$2,$3,$4,$5,$6,$7
            FROM lease_state
-          WHERE key_held_by_other OR key_held_by_owner OR active_lease_count<$8
+          WHERE key_held_by_other OR key_held_by_owner
+             OR owner_has_live_lease OR active_lease_count<$8
          ON CONFLICT (account_id, source, sku, contract_version) DO UPDATE
          SET lease_owner = EXCLUDED.lease_owner,
              lease_expires_at = EXCLUDED.lease_expires_at,
@@ -757,7 +761,7 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
        SELECT NULL::jsonb AS lease, TRUE AS busy
          FROM lease_state
         WHERE NOT EXISTS (SELECT 1 FROM acquired)
-          AND NOT key_held_by_other AND NOT key_held_by_owner
+          AND NOT key_held_by_other AND NOT key_held_by_owner AND NOT owner_has_live_lease
           AND active_lease_count>=$8`,
       [key.accountId, key.source, key.sku, key.contractVersion, owner, expires, at, capacity],
     );

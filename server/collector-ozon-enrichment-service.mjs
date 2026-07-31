@@ -114,7 +114,34 @@ function stableMissingFields(value) {
 }
 
 function responseSha256(value) {
-  return crypto.createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex");
+  function canonicalJsonValue(input) {
+    if (input === null || typeof input === "string" || typeof input === "boolean") return input;
+    if (typeof input === "number") return Number.isFinite(input) ? input : null;
+    if (Array.isArray(input)) {
+      return input.map((item) => {
+        const normalized = canonicalJsonValue(item);
+        return normalized === undefined ? null : normalized;
+      });
+    }
+    if (input && typeof input === "object") {
+      if (typeof input.toJSON === "function") return canonicalJsonValue(input.toJSON());
+      const normalized = {};
+      for (const key of Object.keys(input).sort()) {
+        const child = canonicalJsonValue(input[key]);
+        if (child !== undefined) normalized[key] = child;
+      }
+      return normalized;
+    }
+    if (typeof input === "bigint") {
+      throw new TypeError("Ozon enrichment response hash requires JSON-representable values");
+    }
+    return undefined;
+  }
+
+  const canonical = canonicalJsonValue(value);
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(canonical === undefined ? null : canonical))
+    .digest("hex");
 }
 
 function cacheKey(accountId, sku) {
@@ -348,6 +375,16 @@ export function createCollectorOzonEnrichmentService({
         result = leaseOutcome.result;
         return result;
       }
+      const acquiredAt = instant(now());
+      if (acquiredAt.getTime() >= deadlineAt.getTime()) {
+        await repository.releaseCacheLease({ key, leaseOwner });
+        throw enrichmentError(
+          504,
+          "OZON_ENRICH_UPSTREAM_FAILED",
+          "Ozon 商品资料读取超时",
+          { retryable: true },
+        );
+      }
 
       let job;
       try {
@@ -361,7 +398,7 @@ export function createCollectorOzonEnrichmentService({
             : null,
           refreshBundle: true,
           deadlineAt,
-          createdAt: startedAt,
+          createdAt: acquiredAt,
         });
       } catch (error) {
         await repository.releaseCacheLease({ key, leaseOwner });
@@ -644,6 +681,7 @@ export function createCollectorOzonEnrichmentService({
         scoped,
         job,
         at: failedAt,
+        // The fixed executor failure contract has no retryAfter input; failClaim is always 60s.
         error: { code: String(code || "") },
       });
       await writeAudit({

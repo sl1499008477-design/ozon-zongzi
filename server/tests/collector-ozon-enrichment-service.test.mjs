@@ -43,6 +43,12 @@ function completeResult(sku, descriptionCategoryId = 123) {
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 class FakeRepository {
   constructor({ clock, sessions = [] } = {}) {
     this.clock = clock;
@@ -479,6 +485,177 @@ test("same request id recovers its expired nonterminal job after a twenty-second
   assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
 });
 
+test("late lease acquisition requeues an expired stable job from acquiredAt within the original deadline", async () => {
+  let clock = START;
+  const state = {
+    collectorSessions: [
+      {
+        id: "collector-late-request",
+        accountId: "account-a",
+        expiresAt: new Date(START + 60_000).toISOString(),
+        revokedAt: null,
+      },
+      {
+        id: "collector-late-executor",
+        accountId: "account-a",
+        expiresAt: new Date(START + 60_000).toISOString(),
+        revokedAt: null,
+      },
+    ],
+    collectorOzonEnrichmentCache: [{
+      ...key("account-a", "sku-late-requeue"),
+      leaseOwner: "old-lease-owner",
+      leaseExpiresAt: new Date(START + 1_500).toISOString(),
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-late-stable",
+    accountId: "account-a",
+    requestId: "request-late-stable",
+    sku: "sku-late-requeue",
+    preferredSessionId: null,
+    refreshBundle: true,
+    deadlineAt: new Date(START + 1_000),
+    createdAt: new Date(START - 1_000),
+  });
+  const originalCreate = repository.createOrGetJob.bind(repository);
+  const created = deferred();
+  const releaseCreate = deferred();
+  let createInput;
+  const serviceRepository = {
+    ...repository,
+    async createOrGetJob(input) {
+      createInput = input;
+      const job = await originalCreate(input);
+      created.resolve(job);
+      await releaseCreate.promise;
+      return job;
+    },
+  };
+  const service = createCollectorOzonEnrichmentService({
+    repository: serviceRepository,
+    now: () => new Date(clock),
+    randomUUID: () => "new-late-owner",
+    sleep: async (milliseconds) => {
+      clock += milliseconds;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  });
+  const pending = service.enrichOne({
+    session: session("collector-late-request"),
+    requestId: "request-late-stable",
+    sku: "sku-late-requeue",
+  });
+  const requeued = await created.promise;
+  try {
+    assert.equal(createInput.createdAt.toISOString(), new Date(START + 1_500).toISOString());
+    assert.equal(createInput.deadlineAt.toISOString(), new Date(START + 20_000).toISOString());
+    assert.equal(requeued.id, "job-late-stable");
+    assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
+    assert.equal(requeued.createdAt, new Date(START + 1_500).toISOString());
+    const claim = await service.claimNext({ session: session("collector-late-executor") });
+    assert.equal(claim.id, "job-late-stable");
+    await service.completeClaim({
+      session: session("collector-late-executor"),
+      jobId: claim.id,
+      variantData: variantData(798),
+    });
+  } finally {
+    releaseCreate.resolve();
+  }
+  assert.equal((await pending).descriptionCategoryId, 798);
+});
+
+test("a different request starts its preferred-executor second at late acquiredAt", async () => {
+  let clock = START;
+  const state = {
+    collectorSessions: [
+      {
+        id: "collector-preference-request",
+        accountId: "account-a",
+        expiresAt: new Date(START + 60_000).toISOString(),
+        revokedAt: null,
+      },
+      {
+        id: "collector-preference-owner",
+        accountId: "account-a",
+        expiresAt: new Date(START + 60_000).toISOString(),
+        revokedAt: null,
+      },
+      {
+        id: "collector-preference-fallback",
+        accountId: "account-a",
+        expiresAt: new Date(START + 60_000).toISOString(),
+        revokedAt: null,
+      },
+    ],
+    collectorOzonEnrichmentCache: [{
+      ...key("account-a", "sku-late-preference"),
+      status: "COMPLETE",
+      result: completeResult("sku-late-preference", 100),
+      executorSessionId: "collector-preference-owner",
+      capturedAt: new Date(START - 6 * 60 * 60 * 1000).toISOString(),
+      expiresAt: new Date(START).toISOString(),
+      leaseOwner: "old-preference-lease",
+      leaseExpiresAt: new Date(START + 1_500).toISOString(),
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const originalCreate = repository.createOrGetJob.bind(repository);
+  const created = deferred();
+  const releaseCreate = deferred();
+  const serviceRepository = {
+    ...repository,
+    async createOrGetJob(input) {
+      const job = await originalCreate(input);
+      created.resolve(job);
+      await releaseCreate.promise;
+      return job;
+    },
+  };
+  const service = createCollectorOzonEnrichmentService({
+    repository: serviceRepository,
+    now: () => new Date(clock),
+    randomUUID: () => "job-late-preference",
+    sleep: async (milliseconds) => {
+      clock += milliseconds;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  });
+  const pending = service.enrichOne({
+    session: session("collector-preference-request"),
+    requestId: "request-late-preference",
+    sku: "sku-late-preference",
+  });
+  const job = await created.promise;
+  let earlyClaim;
+  try {
+    assert.equal(job.createdAt, new Date(START + 1_500).toISOString());
+    clock = START + 2_499;
+    earlyClaim = await service.claimNext({ session: session("collector-preference-fallback") });
+    if (!earlyClaim) {
+      clock = START + 2_500;
+      const fallback = await service.claimNext({ session: session("collector-preference-fallback") });
+      await service.completeClaim({
+        session: session("collector-preference-fallback"),
+        jobId: fallback.id,
+        variantData: variantData(797),
+      });
+    } else {
+      await service.completeClaim({
+        session: session("collector-preference-fallback"),
+        jobId: earlyClaim.id,
+        variantData: variantData(797),
+      });
+    }
+  } finally {
+    releaseCreate.resolve();
+  }
+  await pending;
+  assert.equal(earlyClaim, null);
+});
+
 test("recovers an expired processing claim with another valid same-account session", async () => {
   const h = harness();
   const pending = h.service.enrichOne({
@@ -500,7 +677,7 @@ test("recovers an expired processing claim with another valid same-account sessi
   assert.equal((await pending).descriptionCategoryId, 704);
 });
 
-test("negative-caches stable executor failures for no more than sixty seconds", async () => {
+test("failClaim uses the server-fixed sixty-second negative TTL", async () => {
   const h = harness();
   const pending = h.service.enrichOne({
     session: session("collector-request"),
@@ -522,7 +699,7 @@ test("negative-caches stable executor failures for no more than sixty seconds", 
       && error?.code === "OZON_ENRICH_NOT_FOUND"
       && !String(error?.message).includes("cst_should-never-leak"));
   const cached = h.repository.cache.get(h.repository.cacheKey(key("account-a", "sku-negative")));
-  assert.ok(new Date(cached.expiresAt).getTime() - failedAt <= 60_000);
+  assert.equal(new Date(cached.expiresAt).getTime() - failedAt, 60_000);
   assert.equal(h.repository.atomicFailCount, 1);
   const jobsBefore = h.repository.createdJobCount;
   await assert.rejects(h.service.enrichOne({
@@ -911,6 +1088,65 @@ test("a rejected fail attempt is audited with stable ownership semantics", async
     variantData: variantData(904),
   });
   await pending;
+});
+
+test("canonical response hashes ignore object key order while preserving JSON semantics", async () => {
+  async function completeAndHash(inputVariantData) {
+    const h = harness();
+    const pending = h.service.enrichOne({
+      session: session("collector-request"),
+      requestId: "request-canonical-hash",
+      sku: "sku-canonical-hash",
+    });
+    await waitFor(() => h.repository.jobs[0], "canonical hash job");
+    const claim = await h.service.claimNext({ session: session("collector-fallback") });
+    await h.service.completeClaim({
+      session: session("collector-fallback"),
+      jobId: claim.id,
+      variantData: inputVariantData,
+    });
+    await pending;
+    return h.audits.find((event) => event.action === "collector.ozon.enrichment.complete")
+      ?.responseHash;
+  }
+
+  const left = await completeAndHash({
+    description_category_id: 123,
+    type_id: 456,
+    presentation: { zeta: { right: 2, left: 1 }, alpha: true },
+    attributes: [
+      { key: "4497", value: "500" },
+      { key: "9454", value: "300" },
+      { key: "9455", value: "200" },
+      { key: "9456", value: "100" },
+    ],
+  });
+  const right = await completeAndHash(JSON.parse(`{
+    "attributes":[
+      {"value":"500","key":"4497"},
+      {"value":"300","key":"9454"},
+      {"value":"200","key":"9455"},
+      {"value":"100","key":"9456"}
+    ],
+    "presentation":{"alpha":true,"zeta":{"left":1,"right":2}},
+    "type_id":456,
+    "description_category_id":123
+  }`));
+  const reorderedArray = await completeAndHash({
+    description_category_id: 123,
+    type_id: 456,
+    presentation: { alpha: true, zeta: { left: 1, right: 2 } },
+    attributes: [
+      { key: "9456", value: "100" },
+      { key: "9455", value: "200" },
+      { key: "9454", value: "300" },
+      { key: "4497", value: "500" },
+    ],
+  });
+
+  assert.match(left, /^[a-f0-9]{64}$/);
+  assert.equal(right, left);
+  assert.notEqual(reorderedArray, left);
 });
 
 test("audit sink failure emits a safe operational signal without failing a cache hit", async () => {

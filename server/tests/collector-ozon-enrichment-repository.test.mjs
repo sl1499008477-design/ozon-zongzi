@@ -985,6 +985,9 @@ test("PostgreSQL cache lease acquisition is one atomic account-scoped upsert", a
   assert.equal(calls.length, 1);
   assert.match(calls[0].sql, /pg_advisory_xact_lock/);
   assert.match(calls[0].sql, /COUNT\(DISTINCT lease_owner\)/);
+  assert.match(calls[0].sql, /AS owner_has_live_lease/);
+  assert.match(calls[0].sql, /key_held_by_other OR key_held_by_owner OR owner_has_live_lease OR active_lease_count<\$8/);
+  assert.match(calls[0].sql, /NOT owner_has_live_lease/);
   assert.match(calls[0].sql, /INSERT INTO collector_ozon_enrichment_cache/);
   assert.match(calls[0].sql, /ON CONFLICT \(account_id, source, sku, contract_version\) DO UPDATE/);
   assert.match(calls[0].sql, /lease_expires_at <= EXCLUDED\.updated_at OR collector_ozon_enrichment_cache\.lease_owner = EXCLUDED\.lease_owner/);
@@ -993,6 +996,42 @@ test("PostgreSQL cache lease acquisition is one atomic account-scoped upsert", a
     "account-a", "ozon", "4862904234", "ozon-enrichment-v1",
   ]);
   assert.equal(acquired.leaseOwner, "owner-a");
+});
+
+test("PostgreSQL lease admission lets one live account owner acquire another key at capacity", async () => {
+  const calls = [];
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: {
+      async query(sql, params) {
+        calls.push({ sql: String(sql).replace(/\s+/g, " ").trim(), params });
+        return { rows: [{
+          account_id: "account-a",
+          source: "ozon",
+          sku: "owner-second-key",
+          contract_version: "ozon-enrichment-v1",
+          lease_owner: "owner-already-live",
+          lease_expires_at: "2026-07-31T00:01:00.000Z",
+        }] };
+      },
+    },
+  });
+  const acquired = await repository.tryAcquireCacheLease({
+    key: { ...ACCOUNT_A_KEY, sku: "owner-second-key" },
+    leaseOwner: "owner-already-live",
+    leaseExpiresAt: new Date("2026-07-31T00:01:00.000Z"),
+    now: new Date("2026-07-31T00:00:00.000Z"),
+    maxActiveLeases: 4,
+  });
+
+  assert.equal(acquired.leaseOwner, "owner-already-live");
+  assert.match(calls[0].sql, /lease_owner=\$5 AND lease_expires_at>\$7/);
+  assert.match(calls[0].sql, /owner_has_live_lease OR active_lease_count<\$8/);
+  assert.deepEqual(calls[0].params.slice(4), [
+    "owner-already-live",
+    new Date("2026-07-31T00:01:00.000Z"),
+    new Date("2026-07-31T00:00:00.000Z"),
+    4,
+  ]);
 });
 
 test("PostgreSQL cache lease admission reports account capacity without exposing SQL", async () => {

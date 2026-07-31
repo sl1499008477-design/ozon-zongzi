@@ -6,6 +6,9 @@ import {
 import { createCollectorOzonEnrichmentHttpHandler } from "./collector-ozon-enrichment-routes.mjs";
 import { createCollectorOzonEnrichmentService } from "./collector-ozon-enrichment-service.mjs";
 import { getPostgresPool } from "./db/connection.mjs";
+import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
+
+const AUDIT_SAVE_MAX_ATTEMPTS = 4;
 
 export function createCollectorOzonEnrichmentRuntime({
   loadState,
@@ -34,6 +37,7 @@ export function createCollectorOzonEnrichmentRuntime({
   }
 
   let postgresRepositoryPromise = null;
+  const auditTransaction = createJsonStateTransactionBoundary({ enabled: () => true });
 
   const initializeRepository = initializePostgresRepository || (async () => {
     await loadState();
@@ -74,33 +78,43 @@ export function createCollectorOzonEnrichmentRuntime({
   });
 
   async function audit(event = {}) {
-    await stateTransaction.run(async () => {
-      const state = await loadState();
-      appendAuditEvent(state, {
-        correlationId: String(event.requestId || ""),
-        action: String(event.action || "COLLECTOR_OZON_ENRICHMENT"),
-        status: String(event.status || "UNKNOWN"),
-        accountId: String(event.accountId || ""),
-        deviceId: String(event.collectorSessionId || ""),
-        source: "collector-ozon-enrichment",
-        actorType: "collector_session",
-        actorId: String(event.collectorSessionId || ""),
-        entityType: "ozon_enrichment_job",
-        entityId: String(event.jobId || event.sku || ""),
-        metadata: {
-          requestId: String(event.requestId || ""),
-          sku: String(event.sku || ""),
-          jobId: String(event.jobId || ""),
-          collectorSessionId: String(event.collectorSessionId || ""),
-          cacheHit: event.cacheHit === true,
-          durationMs: Math.max(0, Number(event.durationMs) || 0),
-          code: String(event.code || ""),
-          missingFields: Array.isArray(event.missingFields) ? event.missingFields : [],
-          responseSha256: String(event.responseHash || ""),
-        },
-      });
-      await saveState(state);
-    });
+    await auditTransaction.run(() => stateTransaction.run(async () => {
+      let lastConflict = null;
+      for (let attempt = 0; attempt < AUDIT_SAVE_MAX_ATTEMPTS; attempt += 1) {
+        const state = await loadState();
+        appendAuditEvent(state, {
+          correlationId: String(event.requestId || ""),
+          action: String(event.action || "COLLECTOR_OZON_ENRICHMENT"),
+          status: String(event.status || "UNKNOWN"),
+          accountId: String(event.accountId || ""),
+          deviceId: String(event.collectorSessionId || ""),
+          source: "collector-ozon-enrichment",
+          actorType: "collector_session",
+          actorId: String(event.collectorSessionId || ""),
+          entityType: "ozon_enrichment_job",
+          entityId: String(event.jobId || event.sku || ""),
+          metadata: {
+            requestId: String(event.requestId || ""),
+            sku: String(event.sku || ""),
+            jobId: String(event.jobId || ""),
+            collectorSessionId: String(event.collectorSessionId || ""),
+            cacheHit: event.cacheHit === true,
+            durationMs: Math.max(0, Number(event.durationMs) || 0),
+            code: String(event.code || ""),
+            missingFields: Array.isArray(event.missingFields) ? event.missingFields : [],
+            responseSha256: String(event.responseHash || ""),
+          },
+        });
+        try {
+          await saveState(state);
+          return;
+        } catch (error) {
+          if (error?.code !== "LOCAL_STATE_VERSION_CONFLICT") throw error;
+          lastConflict = error;
+        }
+      }
+      throw lastConflict;
+    }));
   }
 
   const service = createCollectorOzonEnrichmentService({
