@@ -32,6 +32,7 @@
     'OZON_ENRICH_UPSTREAM_FAILED',
     'OZON_ENRICH_CONTRACT_MISMATCH',
     'OZON_COLLECT_INCOMPLETE',
+    'COLLECT_PAYLOAD_INVALID',
     'COLLECTOR_UPLOAD_FAILED',
     'NETWORK_ERROR',
   ]);
@@ -48,7 +49,17 @@
     Object.values(value).forEach((nested) => deepFreeze(nested, seen));
     return Object.freeze(value);
   };
-  const finalizedJsonPayload = (value) => deepFreeze(JSON.parse(JSON.stringify(value)));
+  const finalizedJsonPayload = (value) => {
+    try {
+      return deepFreeze(JSON.parse(JSON.stringify(value)));
+    } catch {
+      throw Object.assign(new Error('采集数据格式无效，请刷新页面后重试'), {
+        code: 'COLLECT_PAYLOAD_INVALID',
+        status: 422,
+        retryable: false,
+      });
+    }
+  };
   const exactKeys = (value, keys) => plainObject(value)
     && Object.keys(value).length === keys.length
     && keys.every((key) => Object.hasOwn(value, key));
@@ -191,6 +202,8 @@
         message = 'Ozon 商品资料暂时无法读取';
       } else if (code === 'OZON_COLLECT_INCOMPLETE') {
         message = '商品资料不完整，未写入采集箱';
+      } else if (code === 'COLLECT_PAYLOAD_INVALID') {
+        message = '采集数据格式无效，请刷新页面后重试';
       } else if (
         /NETWORK_ERROR|network|socket|网络|超时|timeout/i.test(`${code} ${sourceMessage}`)
       ) {

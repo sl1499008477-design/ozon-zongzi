@@ -556,6 +556,70 @@ test('network upload retry reuses the stable request ID and complete result', as
   assert.equal(coordinator.getState(SKU).status, 'SUCCESS');
 });
 
+test('non-JSON collection payloads fail with one stable error and never expose clone details', async () => {
+  const circular = { sku: SKU, label: 'cycle-root' };
+  circular.self = circular;
+  for (const raw of [
+    { sku: SKU, unsafeCount: 1n },
+    circular,
+  ]) {
+    const calls = [];
+    const coordinator = create({
+      sendMessage: async (action, payload) => {
+        calls.push({ action, payload });
+        if (action === 'enrichOzonCollect') return completeResult();
+        return { dedupeHit: false, result: { id: 'must-not-upload' } };
+      },
+    });
+
+    await assert.rejects(
+      coordinator.collect({ sku: SKU, raw }),
+      (error) => {
+        assert.equal(error?.code, 'COLLECT_PAYLOAD_INVALID');
+        assert.equal(error?.status, 422);
+        assert.equal(error?.retryable, false);
+        assert.equal(error?.message, '采集数据格式无效，请刷新页面后重试');
+        assert.doesNotMatch(
+          `${error?.code} ${error?.message}`,
+          /BigInt|circular|cyclic|constructor|property|JSON/i,
+        );
+        return true;
+      },
+    );
+    assert.equal(calls.some(({ action }) => action === 'pushSourceCollect'), false);
+    assert.equal(coordinator.getState(SKU).status, 'ERROR');
+    assert.equal(coordinator.getState(SKU).error.code, 'COLLECT_PAYLOAD_INVALID');
+  }
+});
+
+test('undefined payload values keep standard JSON omission and array-null semantics', async () => {
+  let uploaded;
+  const coordinator = create({
+    now: () => 7000,
+    sendMessage: async (action, payload) => {
+      if (action === 'enrichOzonCollect') return completeResult();
+      uploaded = payload;
+      return { dedupeHit: false, result: { id: 'undefined-json-ok' } };
+    },
+  });
+
+  assert.deepEqual(
+    await coordinator.collect({
+      sku: SKU,
+      raw: {
+        sku: SKU,
+        omitted: undefined,
+        nested: { kept: 'yes', omitted: undefined },
+        list: [1, undefined, 3],
+      },
+    }),
+    { dedupeHit: false, result: { id: 'undefined-json-ok' } },
+  );
+  assert.equal(Object.hasOwn(uploaded.raw, 'omitted'), false);
+  assert.deepEqual(uploaded.raw.nested, { kept: 'yes' });
+  assert.deepEqual(uploaded.raw.list, [1, null, 3]);
+});
+
 test('prefetchBatch preserves first-seen order and splits 21 new SKUs into 20 and 1', async () => {
   const input = Array.from({ length: 21 }, (_, index) => String(9000000000 + index));
   const calls = [];

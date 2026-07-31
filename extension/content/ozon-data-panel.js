@@ -34,6 +34,7 @@
   const panelState = { enabled: true };
   const panelDataCache = new Map();
   const panelFastDataPromises = new Map();
+  const panelVariantRetryStates = new Map();
   const collectCoordinator = window.JzOzonCollectCoordinator.getPageCoordinator({
     sendMessage: (action, payload) => window.sendMessage(action, payload),
     now: () => Date.now(),
@@ -386,6 +387,7 @@
         followCount: followSellResult,
       };
       panelDataCache.set(productId, data);
+      projectSharedPanelVariantState(productId, data);
       panelFastDataPromises.delete(productId);
       // V1 老渲染兜底(V2 已在首帧渲染过,不重复整卡重绘)
       if (typeof window.jzRenderProductPanelV2 !== 'function') {
@@ -514,17 +516,115 @@
     }
   }
 
-  async function panelVariantState(productId, cachedPanelData) {
-    const slot = cachedPanelData?.preFetched?.variant;
+  function sharedPanelVariantSlot(state) {
+    if (state?.status === "pending") return state.promise;
+    if (state?.status === "fulfilled") return { status: "fulfilled", value: state.value };
+    if (state?.status === "rejected") return { status: "rejected", reason: state.error };
+    return null;
+  }
+
+  function projectSharedPanelVariantState(productId, cachedPanelData) {
+    const slot = sharedPanelVariantSlot(panelVariantRetryStates.get(productId));
+    if (!slot) return;
+    const targets = new Set([cachedPanelData, panelDataCache.get(productId)]);
+    for (const target of targets) {
+      if (target?.preFetched) target.preFetched.variant = slot;
+    }
+  }
+
+  function startPanelVariantRetry(productId, cachedPanelData) {
+    const existing = panelVariantRetryStates.get(productId);
+    if (existing?.status === "pending") {
+      projectSharedPanelVariantState(productId, cachedPanelData);
+      return existing.promise;
+    }
+    if (existing?.status === "fulfilled") {
+      projectSharedPanelVariantState(productId, cachedPanelData);
+      return Promise.resolve(existing.value);
+    }
+    const state = { status: "pending", promise: null, value: null, error: null };
+    const retryPromise = Promise.resolve()
+      .then(() => window.sendMessage("searchVariants", { sku: productId }))
+      .then((response) => {
+        state.status = "fulfilled";
+        state.value = response;
+        state.error = null;
+        projectSharedPanelVariantState(productId, cachedPanelData);
+        return response;
+      })
+      .catch((error) => {
+        state.status = "rejected";
+        state.value = null;
+        state.error = error;
+        projectSharedPanelVariantState(productId, cachedPanelData);
+        throw error;
+      });
+    state.promise = retryPromise;
+    panelVariantRetryStates.set(productId, state);
+    projectSharedPanelVariantState(productId, cachedPanelData);
+    return retryPromise;
+  }
+
+  async function panelVariantState(productId, cachedPanelData, { retryRejected = false } = {}) {
+    const sharedState = panelVariantRetryStates.get(productId);
+    if (sharedState) {
+      if (sharedState.status === "fulfilled") {
+        const variant = collectVariantItems(sharedState.value).find((item) =>
+          window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+        projectSharedPanelVariantState(productId, cachedPanelData);
+        return { attempted: true, rejected: false, variant };
+      }
+      if (sharedState.status === "pending") {
+        let response = null;
+        let rejected = false;
+        try {
+          response = await sharedState.promise;
+        } catch {
+          rejected = true;
+        }
+        const variant = collectVariantItems(response).find((item) =>
+          window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+        return { attempted: true, rejected, variant };
+      }
+      if (sharedState.status === "rejected") {
+        if (!retryRejected) return { attempted: true, rejected: true, variant: null };
+        let response = null;
+        let rejected = false;
+        try {
+          response = await startPanelVariantRetry(productId, cachedPanelData);
+        } catch {
+          rejected = true;
+        }
+        const variant = collectVariantItems(response).find((item) =>
+          window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
+        return { attempted: true, rejected, variant };
+      }
+    }
+    let slot = cachedPanelData?.preFetched?.variant;
     let response = null;
+    let rejected = slot?.status === "rejected";
     if (slot?.status === "fulfilled") {
       response = slot.value;
     } else if (slot && typeof slot.then === "function") {
-      try { response = await slot; } catch {}
+      try {
+        response = await slot;
+      } catch {
+        rejected = true;
+      }
+    }
+    if (retryRejected && rejected) {
+      slot = startPanelVariantRetry(productId, cachedPanelData);
+      try {
+        response = await slot;
+        rejected = false;
+      } catch {
+        response = null;
+        rejected = true;
+      }
     }
     const variant = collectVariantItems(response).find((item) =>
       window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
-    return { attempted: Boolean(slot), variant };
+    return { attempted: Boolean(slot), rejected, variant };
   }
 
   async function collectSourceFields(productId, cachedPanelData) {
@@ -706,7 +806,9 @@
         enrichInfoWithDetailMarketingPrice(info),
       ]);
       info = enrichedInfo;
-      const sourceVariant = (await panelVariantState(productId, data)).variant;
+      const sourceVariant = (await panelVariantState(productId, data, {
+        retryRejected: true,
+      })).variant;
       const variant = sourceVariant ? { ...sourceVariant } : null;
       mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
@@ -769,7 +871,9 @@
         enrichInfoWithDetailMarketingPrice(info),
       ]);
       info = enrichedInfo;
-      const sourceVariant = (await panelVariantState(sku, data)).variant;
+      const sourceVariant = (await panelVariantState(sku, data, {
+        retryRejected: true,
+      })).variant;
       const variant = sourceVariant ? { ...sourceVariant } : null;
       mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({

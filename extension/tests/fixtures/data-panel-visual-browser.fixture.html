@@ -149,7 +149,15 @@
           if (collectFixtureMode === "collector-auth") {
             throwFixtureError("COLLECTOR_AUTH_REQUIRED", "Collector auth required", { status: 401 });
           }
-          if (["backend-failure", "local-failure", "seller-auth", "fast-lane"].includes(collectFixtureMode)) {
+          if ([
+            "backend-failure",
+            "local-failure",
+            "seller-auth",
+            "fast-lane",
+            "variant-retry",
+            "variant-retry-again",
+            "variant-retry-cache-swap",
+          ].includes(collectFixtureMode)) {
             throwFixtureError("OZON_ENRICH_UPSTREAM_FAILED", "backend unavailable", {
               status: 502,
               retryable: true,
@@ -186,6 +194,31 @@
         }
         if (action === "searchVariants") {
           collectFixtureVariantCalls += 1;
+          if (
+            collectFixtureMode === "variant-retry"
+            || collectFixtureMode === "variant-retry-again"
+            || collectFixtureMode === "variant-retry-cache-swap"
+          ) {
+            if (collectFixtureMode === "variant-retry-cache-swap") {
+              if (collectFixtureVariantCalls === 1) {
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                throwFixtureError("SELLER_CAPTURE_FAILED", "delayed initial variant failure", {
+                  retryable: true,
+                });
+              }
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              return { items: [collectFixtureSourceVariant] };
+            }
+            const mustReject = collectFixtureVariantCalls === 1
+              || (collectFixtureMode === "variant-retry-again" && collectFixtureVariantCalls === 2);
+            if (mustReject) {
+              throwFixtureError("SELLER_CAPTURE_FAILED", "fixture variant capture failed", {
+                retryable: true,
+              });
+            }
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            return { items: [collectFixtureSourceVariant] };
+          }
           if (
             collectFixtureMode === "missing"
             || collectFixtureMode.startsWith("missing-")

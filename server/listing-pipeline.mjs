@@ -206,7 +206,7 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
           id, collect_item_id, account_id, store_id, data_collection_store_id,
           source_sku, source_url, payload_hash, content_hash, request_id,
           collector_version, payload, collected_at
-       ) VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
+       ) VALUES ($1,$2,$3,NULL,NULL,$4,$5,$6,$7,$8,$9,$10::jsonb,NOW())
        ON CONFLICT (collect_item_id, payload_hash) DO NOTHING`,
       [
         rawId,
@@ -219,14 +219,13 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         clean(context.requestId, 240),
         clean(item.collectorVersion || item.extensionVersion, 120),
         json(rawPayload),
-        item.capturedAt || item.collectedAt || item.createdAt || new Date().toISOString(),
       ],
     );
     const persistedItem = await client.query(
       `INSERT INTO collect_items (
          id, account_id, store_id, data_collection_store_id, source_sku, source_url,
          source, identity_key, status, created_at, updated_at, summary
-       ) VALUES ($1,$2,NULL,NULL,$3,$4,$5,$6,$7,COALESCE($8::timestamptz,NOW()),NOW(),$9::jsonb)
+       ) VALUES ($1,$2,NULL,NULL,$3,$4,$5,$6,$7,NOW(),NOW(),$8::jsonb)
        ON CONFLICT (id) DO UPDATE SET
          source_sku = EXCLUDED.source_sku,
          source_url = EXCLUDED.source_url,
@@ -244,7 +243,6 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         clean(context.source || item.source || "ozon", 80),
         clean(context.identityKey, 128),
         clean(item.status || "COLLECTED", 80),
-        item.createdAt || item.collectedAt || null,
         json({ name: item.name || item.title || "", image: item.image || item.primaryImage || "", source: context.source || item.source || "" }),
       ],
     );

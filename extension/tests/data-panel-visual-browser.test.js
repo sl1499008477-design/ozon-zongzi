@@ -306,6 +306,89 @@ async function runBrowserFixture({
       "early collect must preserve the fast-lane statistics already shown by the panel",
     );
 
+    const { fixturePage: sharedRetryPage, fixturePanel: sharedRetryPanel } =
+      await openCollectFixture("variant-retry");
+    assert.equal(
+      await sharedRetryPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      1,
+      "a rejected background variant request must remain settled until an explicit action",
+    );
+    await sharedRetryPage.evaluate(() => {
+      document.querySelector('[data-action="collect-one"]').click();
+      document.querySelector('[data-action="edit-list"]').click();
+    });
+    await sharedRetryPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    const sharedRetryMessages = await sharedRetryPage.evaluate(() =>
+      window.__getCollectFixtureMessages());
+    assert.equal(
+      sharedRetryMessages.filter(({ action }) => action === "searchVariants").length,
+      2,
+      "two concurrent explicit actions must share one variant retry",
+    );
+    assert.equal(
+      sharedRetryMessages.filter(({ action }) => action === "pushSourceCollect").length,
+      1,
+      "shared local recovery must still produce one upload",
+    );
+    assert.equal(
+      sharedRetryMessages.find(({ action }) => action === "pushSourceCollect")
+        .payload.raw.variantData.description_category_id,
+      17012345,
+      "a successful explicit variant retry must feed the local complete fallback",
+    );
+
+    const { fixturePage: retryAgainPage, fixturePanel: retryAgainPanel } =
+      await openCollectFixture("variant-retry-again");
+    const retryAgainButton = retryAgainPanel.locator('[data-action="collect-one"]');
+    await retryAgainButton.click();
+    await retryAgainPage.waitForFunction(() => {
+      const messages = window.__getCollectFixtureMessages();
+      const text = document.querySelector('[data-action="collect-one"]')?.textContent || "";
+      return messages.filter(({ action }) => action === "searchVariants").length === 2
+        && /失败|暂时无法读取|缺少：/.test(text);
+    });
+    assert.equal(
+      await retryAgainPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      0,
+      "a failed explicit variant retry must not upload",
+    );
+    await retryAgainPage.evaluate(() =>
+      document.querySelector('[data-action="collect-one"]').click());
+    await retryAgainPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    assert.equal(
+      await retryAgainPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      3,
+      "the next explicit click may retry again after the previous retry rejected",
+    );
+
+    const { fixturePage: cacheSwapPage, fixturePanel: cacheSwapPanel } =
+      await openCollectFixture("variant-retry-cache-swap");
+    assert.equal(
+      await cacheSwapPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      1,
+      "the early action must begin while the first slow variant request is still pending",
+    );
+    await cacheSwapPanel.locator('[data-action="collect-one"]').click();
+    await cacheSwapPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    await cacheSwapPanel.locator('[data-action="edit-list"]').click();
+    await cacheSwapPage.waitForFunction(() => window.__getCollectFixtureOpenedUrls().length === 1);
+    assert.equal(
+      await cacheSwapPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      2,
+      "a retry that succeeded on firstData must remain fulfilled after terminal data replaces the cache",
+    );
+
     for (const [mode, expected] of [
       ["missing", "缺少：类目、重量、长、宽、高"],
       ["missing-category", "缺少：类目"],
