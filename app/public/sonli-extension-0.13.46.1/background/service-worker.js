@@ -3623,6 +3623,7 @@ try {
             raw: message.raw,
             requestId: message.requestId,
             sourceUrl: message.url,
+            capturedAt: message.capturedAt,
             collectorOperation,
           });
         }

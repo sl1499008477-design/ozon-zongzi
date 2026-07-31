@@ -988,8 +988,12 @@ if (!globalThis.__JZ_BRAND__) {
                 : ''),
           );
           const error = new Error(response?.message || response?.error || 'Unknown error');
-          error.code = String(response?.error || 'UNKNOWN_ERROR');
+          error.code = String(response?.code || response?.error || 'UNKNOWN_ERROR');
           error.status = Number(response?.status) || 0;
+          error.missingFields = Array.isArray(response?.missingFields)
+            ? response.missingFields.map((field) => String(field || '')).filter(Boolean)
+            : [];
+          error.retryable = response?.retryable === true;
           reject(error);
         }
       });

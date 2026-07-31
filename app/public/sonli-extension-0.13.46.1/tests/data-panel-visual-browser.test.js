@@ -196,17 +196,36 @@ async function runBrowserFixture({
       assert.ok(wide.actions.includes(action), `missing rendered action ${action}`);
     }
 
-    const collectPage = await context.newPage();
-    extraPages.push(collectPage);
-    await collectPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=1`,
+    const openCollectFixture = async (mode) => {
+      const fixturePage = await context.newPage();
+      const fixturePageErrors = [];
+      fixturePage.on("pageerror", (error) => fixturePageErrors.push(error.stack || error.message));
+      extraPages.push(fixturePage);
+      await fixturePage.goto(
+        `http://127.0.0.1:${address.port}${fixturePath}?collect=${encodeURIComponent(mode)}`,
+      );
+      const fixturePanel = fixturePage.locator(".ozon-helper-data-panel");
+      await fixturePanel.waitFor();
+      await fixturePage.waitForFunction(() =>
+        document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+      );
+      return { fixturePage, fixturePanel, fixturePageErrors };
+    };
+
+    const { fixturePage: collectPage, fixturePanel: collectPanel } =
+      await openCollectFixture("cache");
+    assert.deepEqual(
+      await collectPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => ["enrichOzonCollect", "pushSourceCollect"].includes(action))
+        .map(({ action }) => action)),
+      ["enrichOzonCollect"],
+      "panel load must prefetch complete enrichment without writing the collection box",
     );
-    const collectPanel = collectPage.locator(".ozon-helper-data-panel");
-    await collectPanel.waitFor();
-    await collectPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
-    );
-    await collectPanel.locator('[data-action="collect-one"]').click();
+    await collectPage.evaluate(() => {
+      const button = document.querySelector('[data-action="collect-one"]');
+      button.click();
+      button.click();
+    });
     await collectPage.waitForFunction(() =>
       window.__getCollectFixtureMessages()
         .some((message) => message.action === "pushSourceCollect"),
@@ -239,70 +258,314 @@ async function runBrowserFixture({
       },
       "collect must persist category and package dimensions as explicit fields for Web draft hydration",
     );
+    assert.equal(
+      await collectPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      1,
+      "repeated clicks must share one upload",
+    );
 
-    const incompleteCollectPage = await context.newPage();
-    extraPages.push(incompleteCollectPage);
-    await incompleteCollectPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=missing`,
+    const { fixturePage: coldPage, fixturePanel: coldPanel } =
+      await openCollectFixture("cold");
+    await coldPanel.locator('[data-action="collect-one"]').click();
+    await coldPage.waitForFunction(() =>
+      document.querySelector('[data-action="collect-one"]')?.textContent.includes("正在补全商品资料"),
     );
-    const incompleteCollectPanel = incompleteCollectPage.locator(".ozon-helper-data-panel");
-    await incompleteCollectPanel.waitFor();
-    await incompleteCollectPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    await coldPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
     );
-    const incompleteCollectButton = incompleteCollectPanel.locator('[data-action="collect-one"]');
-    await incompleteCollectButton.click();
-    await incompleteCollectPage.waitForFunction(() =>
-      document.querySelector('[data-action="collect-one"]')?.textContent.includes("缺少：类目、重量、长、宽、高"),
+
+    const { fixturePage: fastLanePage, fixturePanel: fastLanePanel } =
+      await openCollectFixture("fast-lane");
+    await fastLanePanel.locator('[data-action="collect-one"]').click();
+    await fastLanePage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    const fastLaneMessages = await fastLanePage.evaluate(() => window.__getCollectFixtureMessages());
+    assert.equal(
+      fastLaneMessages.filter(({ action }) => action === "searchVariants").length,
+      1,
+      "early collect must await the panel's in-flight searchVariants instead of issuing another request",
+    );
+    const fastLaneRaw = fastLaneMessages.find(({ action }) => action === "pushSourceCollect").payload.raw;
+    assert.deepEqual(
+      {
+        soldCount: fastLaneRaw.soldCount,
+        soldSum: fastLaneRaw.soldSum,
+        views: fastLaneRaw.views,
+        convViewToOrder: fastLaneRaw.convViewToOrder,
+        discount: fastLaneRaw.discount,
+        gmvSum: fastLaneRaw.gmvSum,
+      },
+      {
+        soldCount: 72,
+        soldSum: "7000",
+        views: 900,
+        convViewToOrder: "8",
+        discount: "10",
+        gmvSum: "7000",
+      },
+      "early collect must preserve the fast-lane statistics already shown by the panel",
+    );
+
+    const { fixturePage: sharedRetryPage, fixturePanel: sharedRetryPanel } =
+      await openCollectFixture("variant-retry");
+    assert.equal(
+      await sharedRetryPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      1,
+      "a rejected background variant request must remain settled until an explicit action",
+    );
+    await sharedRetryPage.evaluate(() => {
+      document.querySelector('[data-action="collect-one"]').click();
+      document.querySelector('[data-action="edit-list"]').click();
+    });
+    await sharedRetryPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    const sharedRetryMessages = await sharedRetryPage.evaluate(() =>
+      window.__getCollectFixtureMessages());
+    assert.equal(
+      sharedRetryMessages.filter(({ action }) => action === "searchVariants").length,
+      2,
+      "two concurrent explicit actions must share one variant retry",
     );
     assert.equal(
-      await incompleteCollectPage.evaluate(() =>
-        window.__getCollectFixtureMessages()
-          .filter((message) => message.action === "pushSourceCollect").length,
-      ),
-      0,
-      "collect must not report success or persist a partial record when category and logistics capture failed",
+      sharedRetryMessages.filter(({ action }) => action === "pushSourceCollect").length,
+      1,
+      "shared local recovery must still produce one upload",
+    );
+    assert.equal(
+      sharedRetryMessages.find(({ action }) => action === "pushSourceCollect")
+        .payload.raw.variantData.description_category_id,
+      17012345,
+      "a successful explicit variant retry must feed the local complete fallback",
     );
 
-    const sellerContextPage = await context.newPage();
-    extraPages.push(sellerContextPage);
-    await sellerContextPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=seller-auth`,
+    const { fixturePage: retryAgainPage, fixturePanel: retryAgainPanel } =
+      await openCollectFixture("variant-retry-again");
+    const retryAgainButton = retryAgainPanel.locator('[data-action="collect-one"]');
+    await retryAgainButton.click();
+    await retryAgainPage.waitForFunction(() => {
+      const messages = window.__getCollectFixtureMessages();
+      const text = document.querySelector('[data-action="collect-one"]')?.textContent || "";
+      return messages.filter(({ action }) => action === "searchVariants").length === 2
+        && /失败|暂时无法读取|缺少：/.test(text);
+    });
+    assert.equal(
+      await retryAgainPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      0,
+      "a failed explicit variant retry must not upload",
     );
-    const sellerContextPanel = sellerContextPage.locator(".ozon-helper-data-panel");
-    await sellerContextPanel.waitFor();
-    await sellerContextPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
+    await retryAgainPage.evaluate(() =>
+      document.querySelector('[data-action="collect-one"]').click());
+    await retryAgainPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
     );
-    const sellerContextButton = sellerContextPanel.locator('[data-action="collect-one"]');
-    await sellerContextButton.click();
-    await sellerContextPage.waitForFunction(() =>
-      document.querySelector('[data-action="collect-one"]')?.textContent.includes("Seller 未就绪"),
+    assert.equal(
+      await retryAgainPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      3,
+      "the next explicit click may retry again after the previous retry rejected",
     );
+
+    for (const [mode, invalidLabel] of [
+      ["variant-retry-wrong-sku", "wrong-SKU"],
+      ["variant-retry-empty", "empty-items"],
+      ["variant-retry-malformed", "malformed-items"],
+    ]) {
+      const { fixturePage, fixturePanel, fixturePageErrors } = await openCollectFixture(mode);
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "searchVariants").length),
+        1,
+        `${invalidLabel}: the rejected initial request must remain settled until an explicit action`,
+      );
+      await fixturePage.evaluate(() => {
+        document.querySelector('[data-action="collect-one"]').click();
+        document.querySelector('[data-action="edit-list"]').click();
+      });
+      await fixturePage.waitForFunction(() => {
+        const messages = window.__getCollectFixtureMessages();
+        const collectText = document.querySelector('[data-action="collect-one"]')?.textContent || "";
+        const editText = document.querySelector('[data-action="edit-list"]')?.textContent || "";
+        return messages.filter(({ action }) => action === "searchVariants").length === 2
+          && /失败|暂时无法读取|缺少：/.test(collectText)
+          && /失败|暂时无法读取|缺少：/.test(editText);
+      });
+      await fixturePage.waitForTimeout(50);
+      const failedWaveMessages = await fixturePage.evaluate(() => window.__getCollectFixtureMessages());
+      assert.equal(
+        failedWaveMessages.filter(({ action }) => action === "searchVariants").length - 1,
+        1,
+        `${invalidLabel}: concurrent actions must share exactly one unusable retry`,
+      );
+      assert.equal(
+        failedWaveMessages.filter(({ action }) => action === "pushSourceCollect").length,
+        0,
+        `${invalidLabel}: an unusable resolved retry must not upload`,
+      );
+      assert.deepEqual(
+        fixturePageErrors,
+        [],
+        `${invalidLabel}: shared unusable responses must not produce an unhandled rejection`,
+      );
+
+      await fixturePanel.locator('[data-action="collect-one"]').click();
+      await fixturePage.waitForFunction(() =>
+        window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+      );
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "searchVariants").length - 1),
+        2,
+        `${invalidLabel}: the next explicit click must issue a fresh retry`,
+      );
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "pushSourceCollect").length),
+        1,
+        `${invalidLabel}: the matching follow-up retry must complete exactly one upload`,
+      );
+    }
+
+    const { fixturePage: backendSuccessPage, fixturePanel: backendSuccessPanel } =
+      await openCollectFixture("variant-retry-backend-success");
+    await backendSuccessPanel.locator('[data-action="collect-one"]').click();
+    await backendSuccessPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    assert.equal(
+      await backendSuccessPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      2,
+      "backend-complete collection must not depend on a usable local variant retry",
+    );
+
+    const { fixturePage: cacheSwapPage, fixturePanel: cacheSwapPanel } =
+      await openCollectFixture("variant-retry-cache-swap");
+    assert.equal(
+      await cacheSwapPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      1,
+      "the early action must begin while the first slow variant request is still pending",
+    );
+    await cacheSwapPanel.locator('[data-action="collect-one"]').click();
+    await cacheSwapPage.waitForFunction(() =>
+      window.__getCollectFixtureMessages().some(({ action }) => action === "pushSourceCollect"),
+    );
+    await cacheSwapPanel.locator('[data-action="edit-list"]').click();
+    await cacheSwapPage.waitForFunction(() => window.__getCollectFixtureOpenedUrls().length === 1);
+    assert.equal(
+      await cacheSwapPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "searchVariants").length),
+      2,
+      "a retry that succeeded on firstData must remain fulfilled after terminal data replaces the cache",
+    );
+
+    for (const [mode, expected] of [
+      ["missing", "缺少：类目、重量、长、宽、高"],
+      ["missing-category", "缺少：类目"],
+      ["missing-weight", "缺少：重量"],
+      ["missing-length", "缺少：长"],
+      ["missing-width", "缺少：宽"],
+      ["missing-height", "缺少：高"],
+    ]) {
+      const { fixturePage, fixturePanel } = await openCollectFixture(mode);
+      await fixturePanel.locator('[data-action="collect-one"]').click();
+      try {
+        await fixturePage.waitForFunction((message) =>
+          document.querySelector('[data-action="collect-one"]')?.textContent.includes(message),
+        expected, { timeout: 5_000 });
+      } catch (error) {
+        const diagnostics = await fixturePage.evaluate(() => ({
+          button: document.querySelector('[data-action="collect-one"]')?.textContent || "",
+          messages: window.__getCollectFixtureMessages(),
+        }));
+        throw new Error(`${mode} did not render ${expected}: ${JSON.stringify(diagnostics)}`, { cause: error });
+      }
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "pushSourceCollect").length),
+        0,
+        `${mode} must not upload an incomplete record`,
+      );
+    }
+
+    const { fixturePage: collectorAuthPage, fixturePanel: collectorAuthPanel } =
+      await openCollectFixture("collector-auth");
+    await collectorAuthPanel.locator('[data-action="collect-one"]').click();
+    await collectorAuthPanel.locator('[data-action="datacard-login"]').waitFor();
+    assert.match(await collectorAuthPanel.innerText(), /请先登录.*Web/);
+    assert.equal(
+      await collectorAuthPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      0,
+    );
+
+    for (const mode of ["upload-auth-401", "upload-auth-403"]) {
+      const { fixturePage, fixturePanel } = await openCollectFixture(mode);
+      await fixturePanel.locator('[data-action="collect-one"]').click();
+      await fixturePanel.locator('[data-action="datacard-login"]').waitFor();
+      assert.match(await fixturePanel.innerText(), /请先登录.*Web/);
+      assert.equal(
+        await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+          .filter(({ action }) => action === "pushSourceCollect").length),
+        1,
+        `${mode} must block after the completed enrichment reaches upload`,
+      );
+    }
+
+    for (const mode of ["backend-failure", "local-failure", "upload-failure"]) {
+      const { fixturePage, fixturePanel } = await openCollectFixture(mode);
+      const button = fixturePanel.locator('[data-action="collect-one"]');
+      await button.click();
+      try {
+        await fixturePage.waitForFunction(() => {
+          const text = document.querySelector('[data-action="collect-one"]')?.textContent || "";
+          return /失败|暂时无法读取|缺少：/.test(text);
+        }, null, { timeout: 5_000 });
+      } catch (error) {
+        const diagnostics = await fixturePage.evaluate(() => ({
+          button: document.querySelector('[data-action="collect-one"]')?.textContent || "",
+          messages: window.__getCollectFixtureMessages(),
+        }));
+        throw new Error(`${mode} did not render a terminal error: ${JSON.stringify(diagnostics)}`, { cause: error });
+      }
+      assert.doesNotMatch(await button.innerText(), /已采集|采集成功/);
+      if (mode !== "upload-failure") {
+        assert.equal(
+          await fixturePage.evaluate(() => window.__getCollectFixtureMessages()
+            .filter(({ action }) => action === "pushSourceCollect").length),
+          0,
+        );
+      }
+    }
+
+    const { fixturePage: failedEditPage, fixturePanel: failedEditPanel } =
+      await openCollectFixture("upload-failure");
+    await failedEditPanel.locator('[data-action="edit-list"]').click();
+    await failedEditPage.waitForFunction(() =>
+      document.querySelector('[data-action="edit-list"]')?.textContent.includes("失败"),
+    );
+    assert.deepEqual(
+      await failedEditPage.evaluate(() => window.__getCollectFixtureOpenedUrls()),
+      [],
+      "Web edit must not open before a successful upload",
+    );
+
+    const { fixturePage: successfulEditPage, fixturePanel: successfulEditPanel } =
+      await openCollectFixture("cache");
+    await successfulEditPanel.locator('[data-action="edit-list"]').click();
+    await successfulEditPage.waitForFunction(() => window.__getCollectFixtureOpenedUrls().length === 1);
     assert.match(
-      await sellerContextButton.getAttribute("title"),
-      /公司上下文尚未就绪/,
-      "Seller context failure should preserve the safe diagnostic message",
-    );
-    assert.equal(
-      await sellerContextPage.evaluate(() =>
-        window.__getCollectFixtureMessages()
-          .filter((message) => message.action === "pushSourceCollect").length,
-      ),
-      0,
-      "Seller context failure must not upload a partial record",
+      (await successfulEditPage.evaluate(() => window.__getCollectFixtureOpenedUrls()[0].url)),
+      /\/ozon\/products\/collect\/edit\?id=collect-fixture$/,
     );
 
-    const anonymousCollectPage = await context.newPage();
-    extraPages.push(anonymousCollectPage);
-    await anonymousCollectPage.goto(
-      `http://127.0.0.1:${address.port}${fixturePath}?collect=auth-missing`,
-    );
-    const anonymousCollectPanel = anonymousCollectPage.locator(".ozon-helper-data-panel");
-    await anonymousCollectPanel.waitFor();
-    await anonymousCollectPage.waitForFunction(() =>
-      document.querySelector(".ozon-helper-data-panel")?.dataset.jzLoadStatus === "ready",
-    );
+    const { fixturePage: anonymousCollectPage, fixturePanel: anonymousCollectPanel } =
+      await openCollectFixture("auth-missing");
     assert.match(
       await anonymousCollectPanel.innerText(),
       /请先登录.*Web/,
@@ -316,7 +579,7 @@ async function runBrowserFixture({
     assert.deepEqual(
       await anonymousCollectPage.evaluate(() =>
         window.__getCollectFixtureMessages()
-          .filter((message) => ["searchVariants", "pushSourceCollect"].includes(message.action))
+          .filter((message) => ["enrichOzonCollect", "searchVariants", "pushSourceCollect"].includes(message.action))
           .map((message) => message.action),
       ),
       [],

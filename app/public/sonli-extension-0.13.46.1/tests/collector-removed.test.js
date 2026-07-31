@@ -44,7 +44,8 @@ assert.equal(worker.includes("getOzonSellerLoginState"), false);
 
 assert.match(product, /一键采集/);
 assert.match(product, /collectAllVariants/);
-assert.match(product, /pushSourceCollect/);
+assert.doesNotMatch(product, /sendMessage\(['"]pushSourceCollect['"]/);
+assert.match(product, /collectCoordinator\.collect/);
 assert.equal(product.includes("JZCollectorDB"), false);
 
 const retiredCollectorGlobals = [

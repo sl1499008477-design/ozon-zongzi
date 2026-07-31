@@ -16,16 +16,32 @@ assert.deepEqual(manifest.permissions, [
   'notifications',
   'unlimitedStorage',
 ]);
-for (const target of ['content/ozon-product.js', 'content/ozon-data-panel.js']) {
+for (const target of ['content/ozon-search.js', 'content/ozon-data-panel.js']) {
   const scripts = manifest.content_scripts.find((entry) => entry.js?.includes(target))?.js || [];
   const targetIndex = scripts.indexOf(target);
   assert.ok(targetIndex > 0, `${target} content script entry missing`);
   assert.equal(
     scripts[targetIndex - 1],
+    'lib/ozon-collect-coordinator.js',
+    `shared Ozon coordinator must load immediately before ${target}`,
+  );
+  assert.equal(
+    scripts[targetIndex - 2],
     'lib/ozon-enrichment-contract.js',
-    `shared Ozon enrichment contract must load immediately before ${target}`,
+    `shared Ozon enrichment contract must load before the coordinator for ${target}`,
   );
 }
+const productScripts = manifest.content_scripts
+  .find((entry) => entry.js?.includes('content/ozon-product.js'))?.js || [];
+const productIndex = productScripts.indexOf('content/ozon-product.js');
+assert.equal(productScripts[productIndex - 1], 'lib/ozon-collect-coordinator.js');
+assert.equal(productScripts[productIndex - 2], 'lib/ozon-enrichment-contract.js');
+assert.equal(
+  manifest.content_scripts.filter((entry) =>
+    entry.js?.includes('lib/ozon-collect-coordinator.js')).length,
+  3,
+  'all three Ozon collection surfaces must inject the singleton coordinator',
+);
 assert.equal(manifest.host_permissions.includes('https://open.er-api.com/*'), false);
 for (const sellerApiUrl of [
   'https://api-seller.ozon.ru/v3/product/info/list',

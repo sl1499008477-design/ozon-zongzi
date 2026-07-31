@@ -19,6 +19,56 @@
     'wb',
     'yandex',
   ]);
+  const PUBLIC_UPLOAD_CODES = new Set([
+    'COLLECTOR_AUTH_REQUIRED',
+    'COLLECTOR_PERMISSION_DENIED',
+    'COLLECTOR_SESSION_CHANGED',
+    'COLLECTOR_UPLOAD_FAILED',
+    'COLLECT_REQUEST_FAILED',
+    'OZON_COLLECT_INCOMPLETE',
+  ]);
+  const PUBLIC_MISSING_FIELDS = new Set([
+    'descriptionCategoryId',
+    'weightG',
+    'lengthMm',
+    'widthMm',
+    'heightMm',
+  ]);
+
+  function stableUploadCode(status, value) {
+    if (status === 401) return 'COLLECTOR_AUTH_REQUIRED';
+    if (status === 403) return 'COLLECTOR_PERMISSION_DENIED';
+    const sanitized = globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
+      value,
+      'COLLECTOR_UPLOAD_FAILED',
+    );
+    return PUBLIC_UPLOAD_CODES.has(sanitized) ? sanitized : 'COLLECTOR_UPLOAD_FAILED';
+  }
+
+  function stableMissingFields(value) {
+    return [...new Set(
+      (Array.isArray(value) ? value : [])
+        .map((field) => String(field || ''))
+        .filter((field) => PUBLIC_MISSING_FIELDS.has(field)),
+    )];
+  }
+
+  function stableUploadMessage(code) {
+    if (code === 'COLLECTOR_AUTH_REQUIRED') return '请先登录 Web';
+    if (code === 'COLLECTOR_PERMISSION_DENIED' || code === 'COLLECTOR_SESSION_CHANGED') {
+      return '请重新连接 Web 采集授权';
+    }
+    if (code === 'OZON_COLLECT_INCOMPLETE') return '商品资料不完整，未写入采集箱';
+    return '采集上传失败，请稍后重试';
+  }
+
+  function stableCapturedAt(value) {
+    if (typeof value === 'string') {
+      const timestamp = Date.parse(value);
+      if (Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value) return value;
+    }
+    return new Date().toISOString();
+  }
 
   function setContext(next) {
     if (!next?.sessionManager || typeof next.getDeviceFingerprint !== 'function') {
@@ -71,6 +121,7 @@
     raw,
     requestId,
     sourceUrl,
+    capturedAt,
     collectorOperation,
   }) {
     const { sessionManager, getDeviceFingerprint } = requireContext();
@@ -101,15 +152,15 @@
         sourceUrl: String(safeRaw.url || safeRaw.sourceUrl || sourceUrl || ''),
         requestId: normalizedRequestId,
         deviceFingerprint: await getDeviceFingerprint(),
-        capturedAt: new Date().toISOString(),
+        capturedAt: stableCapturedAt(capturedAt),
         payload: globalThis.JzCollectorSession.withoutCollectorScope(safeRaw),
       },
     };
     const uploadEntry = (entry, operation = collectorOperation) =>
       sendUpload(entry, operation);
 
-    await sessionManager.flushPendingUploads(uploadEntry, collectorOperation);
     try {
+      await sessionManager.flushPendingUploads(uploadEntry, collectorOperation);
       const response = await uploadEntry(pendingUpload);
       const text = await response.text().catch(() => '');
       let responseBody = null;
@@ -117,47 +168,63 @@
         responseBody = text ? JSON.parse(text) : null;
       } catch {}
       if (!response.ok) {
-        const queued = await sessionManager.enqueueRetryablePendingUpload(
-          pendingUpload,
-          response.status,
-          collectorOperation,
-        );
+        const status = Number(response.status) || 0;
+        const code = stableUploadCode(status, responseBody?.code);
+        const retryable = typeof responseBody?.retryable === 'boolean'
+          ? responseBody.retryable
+          : globalThis.JzCollectorSession.isRetryableCollectorUploadStatus(status);
+        let queued = false;
+        let queueWriteFailed = false;
+        try {
+          queued = await sessionManager.enqueueRetryablePendingUpload(
+            pendingUpload,
+            status,
+            collectorOperation,
+          );
+        } catch {
+          queueWriteFailed = true;
+        }
         return {
           ok: false,
-          status: response.status,
-          error: globalThis.JzCollectorSession.redactCollectorSecrets(
-            responseBody?.message || `采集上传失败 (${response.status})`,
-          ),
+          status,
+          code,
+          error: stableUploadMessage(code),
+          missingFields: stableMissingFields(responseBody?.missingFields),
+          retryable,
           queued,
+          queueWriteFailed,
         };
       }
       return {
         ok: true,
         data: {
           dedupeHit: Boolean(responseBody?.duplicate),
-          lastAt: null,
           result: responseBody?.data ?? responseBody,
         },
       };
     } catch (error) {
       let queued = false;
+      let queueWriteFailed = false;
       try {
         queued = await sessionManager.enqueueRetryablePendingUpload(
           pendingUpload,
           0,
           collectorOperation,
         );
-      } catch {}
+      } catch {
+        queueWriteFailed = true;
+      }
+      const status = Number(error?.status) || 0;
+      const code = stableUploadCode(status, error?.code);
       return {
         ok: false,
+        status,
         queued,
-        code: globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
-          error?.code,
-          'COLLECTOR_UPLOAD_FAILED',
-        ),
-        error: globalThis.JzCollectorSession.redactCollectorSecrets(
-          error?.message || '采集结果已保留，登录 Web 后可重新上传',
-        ),
+        queueWriteFailed,
+        code,
+        error: stableUploadMessage(code),
+        missingFields: [],
+        retryable: globalThis.JzCollectorSession.isRetryableCollectorUploadStatus(status),
       };
     }
   }

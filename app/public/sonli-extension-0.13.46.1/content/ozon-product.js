@@ -89,6 +89,64 @@
     return;
   }
 
+  const collectCoordinator = _JZ_IS_PRODUCT_PAGE
+    ? window.JzOzonCollectCoordinator.getPageCoordinator({
+        sendMessage: (action, payload) => window.sendMessage(action, payload),
+        now: () => Date.now(),
+        timeoutMs: 20_000,
+      })
+    : null;
+
+  function collectVariantItems(response) {
+    const items = response?.items || response?.data?.items;
+    return Array.isArray(items) ? items : [];
+  }
+
+  function matchingProductVariant(response, sku) {
+    const normalizedSku = String(sku || '').trim();
+    if (!normalizedSku) return null;
+    return collectVariantItems(response).find((item) =>
+      window.JzOzonCollectCoordinator.matchesSku(item, normalizedSku)) || null;
+  }
+
+  function invalidProductVariantError(cause) {
+    return Object.assign(new Error('Ozon 商品变体数据无效'), {
+      code: 'OZON_ENRICH_CONTRACT_MISMATCH',
+      status: 422,
+      retryable: true,
+      ...(cause ? { cause } : {}),
+    });
+  }
+
+  // 与 ozon-data-panel.js 的采集状态文案保持一致。coordinator 负责稳定错误码，
+  // 商品页只做用户可见的简短呈现，不再自己判断是否可以上传。
+  function productCollectFailurePresentation(error) {
+    const code = String(error?.code || '');
+    const message = String(error?.message || '');
+    if (/COLLECTOR_AUTH_REQUIRED|WEB_AUTH_REQUIRED/.test(code + message)) {
+      return '请先登录 Web';
+    }
+    if (/COLLECT_CAPTURE_INCOMPLETE/.test(code + message)) {
+      const rawMissing = Array.isArray(error?.missing)
+        ? error.missing.join('、')
+        : message.split(':').slice(1).join(':');
+      const compactMissing = rawMissing
+        .replaceAll('长度', '长')
+        .replaceAll('宽度', '宽')
+        .replaceAll('高度', '高');
+      return `缺少：${compactMissing || '必要商品数据'}`;
+    }
+    if (/OZON_ENRICH_INCOMPLETE|OZON_ENRICH_CONTRACT_MISMATCH/.test(code)
+      || message.startsWith('缺少：')) {
+      return message || '商品资料不完整，未写入采集箱';
+    }
+    if (/OZON_ENRICH_BUSY/.test(code)) return '商品资料正在排队，请稍后重试';
+    if (/OZON_ENRICH_NOT_FOUND/.test(code)) return '未找到该商品的完整资料';
+    if (/OZON_ENRICH_UPSTREAM_FAILED/.test(code)) return 'Ozon 商品资料暂时无法读取';
+    if (/NETWORK_ERROR|超时|timeout|网络/i.test(code + message)) return '网络错误';
+    return '采集失败';
+  }
+
   // ── 跟卖面板 RUB→CNY 汇率缓存 ──────────────────────────────────
   // Ozon 页面所有价格(extractProductData.price / extractAspectVariants 的 d.price)
   // 都是 RUB ₽,但跟卖面板的"原售价 / 实际售价 / 划线价"输入框语义是 CNY ¥
@@ -1566,7 +1624,10 @@
 
     // 单/无变体 → 走现有单采(sv 优先已在其中),保持原行为
     if (variants.length <= 1) {
-      return await performProductCollect({ forceResubmit: forceSingleResubmit });
+      return await performProductCollect({
+        forceResubmit: forceSingleResubmit,
+        onStatus: setBtn,
+      });
     }
 
     // ── Phase B:逐变体抓 sv(search+bundle)──
@@ -1640,8 +1701,9 @@
     };
 
     const rows = variants.map(toVariantRow).filter((r) => r.sku);
-    // 母体:优先当前页 SKU 那条,取不到用第一条兜底。
-    const anchorRow = rows.find((r) => r.sku === anchorSku) || rows[0];
+    // 母体必须精确匹配当前页 SKU，禁止把第一个兄弟变体当作锚点。
+    const anchorRow = rows.find((r) => r.sku === anchorSku);
+    if (!anchorRow) throw invalidProductVariantError();
     const anchorSv = anchorRow?.sv || null;
 
     // 每个变体必须保留自己的完整 seller 源快照。除合并变体型号外，类目、属性、
@@ -1725,25 +1787,50 @@
       hashtags: collectAllHashtags,
     });
 
-    // ── 单次推送(母体一行,dedup 按母体 SKU)──
-    setBtn('推送中…');
-    let created = 0, updated = 0, failed = 0, dedupeHit = false;
-    try {
-      // forceResubmit:跳过 SW 的 24h SKU dedup。这是用户主动「采集全部变体」,即便母体
-      // SKU 此前已被单品采集过(命中 dedup 会早返 result:null、不调后端 upsert),也必须
-      // 强制重推,否则 variantData.variants 永远落不进库,合并采集静默失败(P1)。
-      const resp = await window.sendMessage('pushSourceCollect', { sourceId: 'ozon', raw: payload, forceResubmit: true });
-      dedupeHit = !!resp?.dedupeHit;
-      const itemId = resp?.result?.id || resp?.result?.data?.id || null;
-      // SW envelope 现不返 created/updated 区分,统一记一次成功。
-      created = 1;
-      return { ok: true, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, itemId, bucketRecord };
-    } catch (e) {
-      console.error('[ozon-helper] collectAll push failed:', e?.message || e);
-      failed = 1;
-      return { ok: false, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, itemId: null, bucketRecord, error: e?.message || String(e) };
+    // 每个变体都先走服务器完整性门禁。prefetchBatch 不上传；任意一行失败
+    // 都会阻断母体写入，不保留一个不完整的 anchor 充当成功。
+    setBtn('正在补全商品资料');
+    const gatedRows = await collectCoordinator.prefetchBatch({
+      skus: variantRows.map((row) => row.sku),
+      retryFailed: true,
+    });
+    if (!Array.isArray(gatedRows) || gatedRows.length !== variantRows.length) {
+      throw invalidProductVariantError();
     }
-    return { ok: false, multiVariant: true, total: variantRows.length, created, updated, failed, dedupeHit, itemId: null, bucketRecord, error: '多变体采集失败' };
+    gatedRows.forEach((result, index) => {
+      if (result?.status === 'ERROR') throw result.error || invalidProductVariantError();
+      if (String(result?.sku || '') !== variantRows[index].sku) {
+        throw invalidProductVariantError();
+      }
+      window.JzOzonEnrichmentContract.assertComplete(result);
+      const row = variantRows[index];
+      row.weight = result.logistics.weightG;
+      row.depth = result.logistics.lengthMm;
+      row.width = result.logistics.widthMm;
+      row.height = result.logistics.heightMm;
+      row.sourceVariant = {
+        ...(row.sourceVariant && typeof row.sourceVariant === 'object'
+          ? row.sourceVariant
+          : {}),
+        ...result.variantData,
+      };
+    });
+
+    // 最终写入决策只属于 Task 7 coordinator。
+    const resp = await collectCoordinator.collect({ sku: anchorSku, raw: payload });
+    const dedupeHit = !!resp?.dedupeHit;
+    const itemId = resp?.result?.id || resp?.result?.data?.id || null;
+    return {
+      ok: true,
+      multiVariant: true,
+      total: variantRows.length,
+      created: 1,
+      updated: 0,
+      failed: 0,
+      dedupeHit,
+      itemId,
+      bucketRecord,
+    };
   }
 
   // 抓当前 PDP gallery 的 .mp4 并经 SW 转存成卖家自有 Ozon 视频(ir.ozone.ru/s3),返回自有 URL。
@@ -1818,7 +1905,6 @@
 
   // 抽自原 collectBtn click handler，便于 popup 远程触发同一逻辑
   async function performProductCollect(options = {}) {
-    const forceResubmit = Boolean(options.forceResubmit);
     // 采集流程对 SW composer-api 缓存的依赖现在是**软依赖**:DOM + JSON-LD + og:meta
     // 一般能独立拿全(7 层 fallback)。所以策略改:
     //   1. 先 sync 跑 extractProductData
@@ -1852,11 +1938,12 @@
     // 抛清晰错误,避免下游送给 backend 一个 sku/name 都空的 payload(backend 收
     // 到这种 payload 也会 reject,但报"采集请求失败"对用户没意义)。
     if (!hasTitle || !hasImages || !hasSku) {
-      const missing = [
+      const missingFields = [
         !hasTitle ? '标题' : null,
         !hasImages ? '图片' : null,
         !hasSku ? 'SKU' : null,
-      ].filter(Boolean).join(' / ');
+      ].filter(Boolean);
+      const missing = missingFields.join(' / ');
       // 详细诊断:打出 product 对象关键字段,便于 devtools console 看根因。
       // 用 warn 在 production build.js 里会被 DCE,只有 dev 模式才打。
       console.warn('[ozon-helper] 采集 validation 失败 — product 字段诊断:', {
@@ -1868,7 +1955,14 @@
         productId: product?.productId || '(empty)',
         url: window.location.href,
       });
-      throw new Error(`采集失败:页面解析缺 ${missing}(Ozon 改版?刷新重试)`);
+      throw Object.assign(
+        new Error(`采集数据不完整:${missingFields.join('、')}`),
+        {
+          code: 'COLLECT_CAPTURE_INCOMPLETE',
+          missing: missingFields,
+          retryable: true,
+        },
+      );
     }
     try {
       logProductSummary(product, extractBreadcrumbs(), extractCharacteristics(), '');
@@ -1877,14 +1971,16 @@
       throw e;
     }
 
+    let localVariantError = null;
     const variantPromise = product.sku
-      ? window.sendMessage('searchVariants', { sku: product.sku }).catch(() => null)
+      ? window.sendMessage('searchVariants', { sku: product.sku }).catch((error) => {
+          localVariantError = error;
+          return null;
+        })
       : Promise.resolve(null);
 
     const variantResp = await variantPromise;
-    const variantItems = variantResp?.items || variantResp?.data?.items || [];
-    const variantMatch = variantItems.find(it => String(it.variant_id) === product.sku)
-      || variantItems[0] || null;
+    const variantMatch = matchingProductVariant(variantResp, product.sku);
 
     if (variantMatch) {
       console.log(`[ozon-helper] collectProduct: searchVariants found variant_id=${variantMatch.variant_id}, images=${variantMatch.images?.length || 0}, attrs=${variantMatch.attributes?.length || 0}`);
@@ -1930,16 +2026,6 @@
     mergeMarketingPriceIntoVariantData(collectVariantData, product);
     const collectHashtags = extractKeywords();
     contentCopy?.mergeSourceHashtagsIntoVariant?.(collectVariantData, collectHashtags);
-    const collectForceResubmit = contentCopy?.shouldForceCollectRefresh
-      ? contentCopy.shouldForceCollectRefresh({
-          videoUrl: collectVideoUrl,
-          videoCover: collectVideoCover,
-          description: collectDescription,
-          richContent: collectRichContent,
-          hashtags: collectHashtags,
-        })
-      : !!(collectVideoUrl || collectVideoCover);
-
     const collectPayload = {
       sku: product.sku,
       url: product.url,
@@ -1964,14 +2050,25 @@
       discount: product.statistics?.discount != null ? String(product.statistics.discount) : undefined,
       gmvSum: product.statistics?.gmv_sum != null ? String(product.statistics.gmv_sum) : undefined,
     };
-    // Push via the multi-source endpoint so the row is tagged sourceId='ozon'.
-    // SW 在 ok:false 时让 sendMessage 直接 reject(被外层 catch);ok:true 时
-    // sendMessage wrapper resolve(response.data),所以这里 resp = SW envelope 的 data
-    // 字段,SW 已统一为 { dedupeHit, lastAt, result }(c55083b ENVELOPE_FIX)。
-    // 不要再检查 resp.ok — 那是 envelope fix 之前 SW 平铺返回的残留,resp 现在不再有 ok。
-    // forceResubmit:视频/简介/富内容/标签任一存在时强制重推 —— 否则 24h dedupe
-    // 命中会早返不调后端 upsert,旧采集记录里的空简介不会被新提取结果覆盖。
-    const resp = await window.sendMessage('pushSourceCollect', { sourceId: 'ozon', raw: collectPayload, forceResubmit: forceResubmit || collectForceResubmit });
+    const collectPromise = collectCoordinator.collect({
+      sku: product.sku,
+      raw: collectPayload,
+      localFallback: () => {
+        if (!variantMatch || !collectVariantData) {
+          throw invalidProductVariantError(localVariantError);
+        }
+        return window.JzOzonEnrichmentContract.normalizeVariantData({
+          sku: product.sku,
+          variantData: collectVariantData,
+          source: 'LOCAL_SELLER',
+          capturedAt: new Date().toISOString(),
+        });
+      },
+    });
+    if (collectCoordinator.getState(product.sku).status === 'PREFETCHING') {
+      options.onStatus?.('正在补全商品资料');
+    }
+    const resp = await collectPromise;
     const bucketRecord = buildPdpBucketRecord(product, {
       name: collectName || product.title,
       image: collectMainImage,
@@ -1980,7 +2077,7 @@
     return {
       ok: true,
       dedupeHit: !!resp?.dedupeHit,
-      lastAt: resp?.lastAt || null,
+      lastAt: null,
       itemId: resp?.result?.id || resp?.result?.data?.id || null,
       bucketRecord,
     };
@@ -2018,15 +2115,7 @@
         const result = await collectAllVariants(collectBtn);
         collectBtn.disabled = false;
         collectBtn.innerHTML = original;
-        if (result?.multiVariant) {
-          if (result.failed) {
-            showButtonFeedback(collectBtn, 'error', '采集失败,请重试', 3500);
-          } else if (result.dedupeHit) {
-            showButtonFeedback(collectBtn, 'success', `近期已采集(${result.total} 变体)`, 2800);
-          } else {
-            showButtonFeedback(collectBtn, 'success', `已采集 ${result.total} 变体(1 个商品)`, 2800);
-          }
-        } else if (result?.dedupeHit) {
+        if (result?.dedupeHit) {
           // 24h 内已采集过同 SKU,SW 直接走 cache 没发请求
           showButtonFeedback(collectBtn, 'success', '近期已采集', 2500);
         } else {
@@ -2042,9 +2131,7 @@
         // 用 console.error 而非 warn,production build.js pure=['console.warn']
         // 会被 DCE 掉 — 改用 error 保证 prod 也能看到。
         console.error('[ozon-helper] 一键采集失败:', msg, err, err?.stack);
-        // 网络层失败时给更明确文案,跟业务错误区分
-        const friendly = /NETWORK_ERROR|超时|timeout|网络/i.test(msg) ? '网络错误,请重试' : '采集失败';
-        showButtonFeedback(collectBtn, 'error', friendly, 3000);
+        showButtonFeedback(collectBtn, 'error', productCollectFailurePresentation(err), 7000);
       }
     });
 
@@ -3114,11 +3201,7 @@
         // 该按钮上;单/无变体页内部自动委托单采。
         const result = await collectAllVariants(btn);
         btn.classList.add('is-collected');
-        const label = result?.multiVariant
-          ? (result.failed
-              ? '采集失败'
-              : `已采集 ${result.total} 变体`)
-          : (result?.dedupeHit ? '近期已采集' : '已采集');
+        const label = result?.dedupeHit ? '近期已采集' : '已采集';
         btn.innerHTML = `<span class="oh-btn-icon">✓</span>${label}`;
         setTimeout(() => {
           btn.classList.remove('is-collected');
@@ -3127,10 +3210,7 @@
         }, result?.multiVariant ? 2800 : 1800);
       } catch (err) {
         console.warn('[ozon-helper] sidebar collect-one failed:', err);
-        const msg = err?.message || '';
-        const friendly = /NETWORK_ERROR|超时|timeout|网络/i.test(msg)
-          ? '网络错误'
-          : '失败';
+        const friendly = productCollectFailurePresentation(err);
         btn.innerHTML = `<span class="oh-btn-icon">${_lucideSvg('alert-triangle')}</span>${friendly}`;
         setTimeout(() => {
           btn.innerHTML = originalHtml;
@@ -10519,6 +10599,11 @@
   }
 
   async function init() {
+    if (_JZ_IS_PRODUCT_PAGE) {
+      const stableSku = window.location.pathname.match(/\/product\/.*-(\d+)/)?.[1]
+        || String(extractProductData()?.sku || '');
+      if (stableSku) collectCoordinator.prefetch({ sku: stableSku }).catch(() => {});
+    }
     const auth = await window.checkAuth();
     if (!auth.loggedIn) {
       window.createLoginPrompt();
