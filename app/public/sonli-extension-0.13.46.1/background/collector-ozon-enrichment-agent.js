@@ -181,18 +181,37 @@
       throw new TypeError('collector Ozon agent dependencies are required');
     }
     const drains = new Map();
+    const leaseRecords = new WeakMap();
     let nextGeneration = 1;
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
     const deactivate = (entry) => {
       if (!entry?.active) return;
       entry.active = false;
-      entry.refs = 0;
       const controller = entry.currentController;
       entry.currentController = null;
       controller?.abort();
       entry.resolveCancelled();
       if (drains.get(entry.requestId) === entry) drains.delete(entry.requestId);
+    };
+    const leaseHandle = (entry, acquire = true) => {
+      const releaseToken = Object.freeze(Object.create(null));
+      if (acquire) entry.refs += 1;
+      const leaseRecord = { entry, claimed: false };
+      leaseRecords.set(releaseToken, leaseRecord);
+      const handle = entry.running.then((value) => value);
+      Object.defineProperty(handle, 'releaseToken', {
+        get() {
+          if (!leaseRecord.claimed) {
+            leaseRecord.claimed = true;
+            entry.tokenRefs += 1;
+          }
+          return releaseToken;
+        },
+        enumerable: false,
+        configurable: false,
+      });
+      return handle;
     };
     const isCurrent = (entry, generation) => {
       if (entry?.active && now() >= entry.deadlineAt) deactivate(entry);
@@ -411,9 +430,8 @@
       const deadlineAt = Math.min(requestedDeadline, now() + MAX_DRAIN_MS);
       const existing = drains.get(requestId);
       if (existing?.active) {
-        existing.refs += 1;
         existing.deadlineAt = Math.max(existing.deadlineAt, deadlineAt);
-        return existing.running;
+        return leaseHandle(existing);
       }
       let resolveCancelled;
       const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
@@ -421,6 +439,7 @@
         requestId,
         generation: nextGeneration,
         refs: 1,
+        tokenRefs: 0,
         deadlineAt,
         active: true,
         currentController: null,
@@ -432,14 +451,27 @@
       drains.set(requestId, entry);
       entry.running = runDrain(entry, entry.generation)
         .finally(() => deactivate(entry));
-      return entry.running;
+      return leaseHandle(entry, false);
     };
 
-    const stop = (requestId) => {
-      const entry = drains.get(cleanText(requestId));
-      if (!entry?.active || entry.refs <= 0) return false;
-      entry.refs -= 1;
-      if (entry.refs === 0) deactivate(entry);
+    const stop = function stop(requestId, releaseToken) {
+      const normalizedRequestId = cleanText(requestId);
+      if (arguments.length >= 2) {
+        if (!releaseToken || typeof releaseToken !== 'object') return false;
+        const leaseRecord = leaseRecords.get(releaseToken);
+        const entry = leaseRecord?.entry;
+        if (!entry || entry.requestId !== normalizedRequestId || entry.refs <= 0) return false;
+        leaseRecords.delete(releaseToken);
+        entry.refs -= 1;
+        if (leaseRecord.claimed) entry.tokenRefs -= 1;
+        if (entry.refs === 0 && entry.active) deactivate(entry);
+        return true;
+      }
+
+      // Compatibility only: token-aware production callers never use this force-stop path.
+      const entry = drains.get(normalizedRequestId);
+      if (!entry?.active || entry.refs !== 1 || entry.tokenRefs !== 0) return false;
+      deactivate(entry);
       return true;
     };
 

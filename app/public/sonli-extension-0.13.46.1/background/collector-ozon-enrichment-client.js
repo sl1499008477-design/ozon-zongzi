@@ -160,6 +160,7 @@
       let deadlineTimer;
       let responsePromise;
       let drainPromise;
+      let releaseToken;
       try {
         responsePromise = Promise.resolve(sessionManager.collectorFetch(path, {
           collectorOperation,
@@ -173,7 +174,9 @@
         responsePromise = Promise.reject(error);
       }
       try {
-        drainPromise = Promise.resolve(agent.drainUntil({ requestId, deadlineAt }));
+        const drainHandle = agent.drainUntil({ requestId, deadlineAt });
+        releaseToken = drainHandle?.releaseToken;
+        drainPromise = Promise.resolve(drainHandle);
       } catch (error) {
         drainPromise = Promise.reject(error);
       }
@@ -193,7 +196,7 @@
         };
         return await Promise.race([readResponse(), deadlinePromise]);
       } finally {
-        agent.stop(requestId);
+        agent.stop(requestId, releaseToken);
         abortController.abort();
         void settledDrainPromise;
         clearTimer(deadlineTimer);

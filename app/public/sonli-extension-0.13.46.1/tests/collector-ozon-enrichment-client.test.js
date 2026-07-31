@@ -56,6 +56,17 @@ function deferred() {
   return { promise, resolve };
 }
 
+function leaseHandle(promise, releaseToken = Object.freeze({})) {
+  const handle = Promise.resolve(promise).then((value) => value);
+  Object.defineProperty(handle, 'releaseToken', {
+    value: releaseToken,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return handle;
+}
+
 function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -71,13 +82,14 @@ test('single client request requires read permission and drains concurrently on 
   const publicResponse = deferred();
   const calls = [];
   const drain = deferred();
+  const releaseToken = Object.freeze({ client: 'request-one' });
   const agent = {
     drainUntil(input) {
       calls.push(['drain', input]);
-      return drain.promise;
+      return leaseHandle(drain.promise, releaseToken);
     },
-    stop(requestId) {
-      calls.push(['stop', requestId]);
+    stop(requestId, token) {
+      calls.push(['stop', requestId, token]);
       drain.resolve();
     },
   };
@@ -118,13 +130,18 @@ test('single client request requires read permission and drains concurrently on 
   publicResponse.resolve(jsonResponse(200, { ok: true, data: completeResult('4862904234') }));
   const result = await pending;
   assert.equal(result.sku, '4862904234');
-  assert.deepEqual(calls.find(([kind]) => kind === 'stop'), ['stop', 'request-one']);
+  assert.deepEqual(
+    calls.find(([kind]) => kind === 'stop'),
+    ['stop', 'request-one', releaseToken],
+  );
 });
 
 test('client aborts a held public request at twenty seconds with a stable retryable error', async () => {
   const never = new Promise(() => {});
   const timers = [];
   let aborted = false;
+  const releaseToken = Object.freeze({ client: 'request-deadline' });
+  const releases = [];
   const client = createClient({
     sessionManager: {
       async beginCollectorOperation() { return operation(); },
@@ -133,7 +150,10 @@ test('client aborts a held public request at twenty seconds with a stable retrya
         return never;
       },
     },
-    agent: { async drainUntil() {}, stop() {} },
+    agent: {
+      drainUntil() { return leaseHandle(never, releaseToken); },
+      stop(requestId, token) { releases.push([requestId, token]); },
+    },
     getBackendUrl: async () => '',
     now: () => 1_000,
     setTimer(callback, milliseconds) {
@@ -156,6 +176,57 @@ test('client aborts a held public request at twenty seconds with a stable retrya
   assert.equal(outcome, 'settled');
   assert.deepEqual(timers, [20_000]);
   assert.equal(aborted, true);
+  assert.deepEqual(releases, [['request-deadline', releaseToken]]);
+});
+
+test('client releases its opaque lease when drain startup or the public response rejects', async (t) => {
+  await t.test('rejected drain handle', async () => {
+    const releaseToken = Object.freeze({ client: 'drain-reject' });
+    const releases = [];
+    const client = createClient({
+      sessionManager: {
+        async beginCollectorOperation() { return operation(); },
+        async collectorFetch() {
+          return jsonResponse(200, { ok: true, data: completeResult('4862904234') });
+        },
+      },
+      agent: {
+        drainUntil() { return leaseHandle(Promise.reject(new Error('drain failed')), releaseToken); },
+        stop(requestId, token) { releases.push([requestId, token]); },
+      },
+      getBackendUrl: async () => '',
+    });
+
+    const result = await client.enrich({ requestId: 'request-drain-reject', sku: '4862904234' });
+    assert.equal(result.sku, '4862904234');
+    assert.deepEqual(releases, [['request-drain-reject', releaseToken]]);
+  });
+
+  await t.test('rejected public response', async () => {
+    const releaseToken = Object.freeze({ client: 'response-reject' });
+    const releases = [];
+    const drain = deferred();
+    const client = createClient({
+      sessionManager: {
+        async beginCollectorOperation() { return operation(); },
+        async collectorFetch() { throw new Error('network failed'); },
+      },
+      agent: {
+        drainUntil() { return leaseHandle(drain.promise, releaseToken); },
+        stop(requestId, token) {
+          releases.push([requestId, token]);
+          drain.resolve();
+        },
+      },
+      getBackendUrl: async () => '',
+    });
+
+    await assert.rejects(
+      client.enrich({ requestId: 'request-response-reject', sku: '4862904234' }),
+      /network failed/,
+    );
+    assert.deepEqual(releases, [['request-response-reject', releaseToken]]);
+  });
 });
 
 test('client rejects missing permission and arbitrary single-request fields before any fetch or claim', async () => {
@@ -612,6 +683,193 @@ test('same request ID keeps one drain lease active when the first client complet
   assert.equal(abortedAfterFirst, false);
   assert.equal(secondOutcome, 'settled');
   assert.equal(abortedAfterSecond, true);
+});
+
+test('same-generation lease tokens are unique and idempotent so only the last valid token aborts', async () => {
+  const claim = deferred();
+  let claimStarted = false;
+  let claimAborted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      collectorFetch(path, options) {
+        if (!path.endsWith('/next')) return jsonResponse(200, { ok: true });
+        claimStarted = true;
+        options.signal?.addEventListener('abort', () => { claimAborted = true; });
+        return claim.promise;
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture must not run'); },
+    async sleep() {},
+  });
+
+  const first = agent.drainUntil({
+    requestId: 'request-token-idempotent',
+    deadlineAt: Date.now() + 2_000,
+  });
+  const second = agent.drainUntil({
+    requestId: 'request-token-idempotent',
+    deadlineAt: Date.now() + 2_000,
+  });
+  while (!claimStarted) await nextTurn();
+
+  assert.notEqual(first, second);
+  assert.ok(first.releaseToken);
+  assert.ok(second.releaseToken);
+  assert.notEqual(first.releaseToken, second.releaseToken);
+  assert.equal(Object.keys(first).includes('releaseToken'), false);
+  assert.equal(agent.stop('request-token-idempotent', first.releaseToken), true);
+  assert.equal(agent.stop('request-token-idempotent', first.releaseToken), false);
+  assert.equal(claimAborted, false);
+  assert.equal(agent.stop('request-token-idempotent', second.releaseToken), true);
+  assert.equal(claimAborted, true);
+
+  claim.resolve(jsonResponse(200, { ok: true, job: null }));
+  assert.equal(await settleWithin(Promise.all([first, second])), 'settled');
+});
+
+test('legacy force-stop cannot release a token-aware production lease', async () => {
+  const claim = deferred();
+  let claimStarted = false;
+  let claimAborted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      collectorFetch(path, options) {
+        if (!path.endsWith('/next')) return jsonResponse(200, { ok: true });
+        claimStarted = true;
+        options.signal?.addEventListener('abort', () => { claimAborted = true; });
+        return claim.promise;
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture must not run'); },
+    async sleep() {},
+  });
+
+  const handle = agent.drainUntil({
+    requestId: 'request-token-aware',
+    deadlineAt: Date.now() + 2_000,
+  });
+  const releaseToken = handle.releaseToken;
+  while (!claimStarted) await nextTurn();
+
+  assert.equal(agent.stop('request-token-aware'), false);
+  assert.equal(claimAborted, false);
+  assert.equal(agent.stop('request-token-aware', releaseToken), true);
+  assert.equal(claimAborted, true);
+  claim.resolve(jsonResponse(200, { ok: true, job: null }));
+  assert.equal(await settleWithin(handle), 'settled');
+});
+
+test('stale early-exit generation tokens cannot stop a newer pending claim', async (t) => {
+  const cases = [
+    {
+      name: 'require operation rejection',
+      firstDeadline: () => Date.now() + 2_000,
+      firstOperation: async () => { throw new Error('session unavailable'); },
+    },
+    {
+      name: 'permission rejection',
+      firstDeadline: () => Date.now() + 2_000,
+      firstOperation: async () => operation([]),
+    },
+    {
+      name: 'deadline rejection',
+      firstDeadline: () => Date.now() - 1,
+      firstOperation: async () => operation(),
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const claim = deferred();
+      let operations = 0;
+      let claimStarted = false;
+      let claimAborted = false;
+      const agent = createAgent({
+        sessionManager: {
+          async beginCollectorOperation() {
+            operations += 1;
+            if (operations === 1) return scenario.firstOperation();
+            return operation();
+          },
+          collectorFetch(path, options) {
+            if (!path.endsWith('/next')) return jsonResponse(200, { ok: true });
+            claimStarted = true;
+            options.signal?.addEventListener('abort', () => { claimAborted = true; });
+            return claim.promise;
+          },
+        },
+        async canCapture() { return true; },
+        async captureVariant() { throw new Error('capture must not run'); },
+        async sleep() {},
+      });
+
+      const first = agent.drainUntil({
+        requestId: `request-stale-${scenario.name}`,
+        deadlineAt: scenario.firstDeadline(),
+      });
+      assert.equal(await settleWithin(first), 'settled');
+      const second = agent.drainUntil({
+        requestId: `request-stale-${scenario.name}`,
+        deadlineAt: Date.now() + 2_000,
+      });
+      while (!claimStarted) await nextTurn();
+
+      assert.equal(agent.stop(`request-stale-${scenario.name}`, first.releaseToken), true);
+      assert.equal(claimAborted, false);
+      assert.equal(agent.stop(`request-stale-${scenario.name}`, second.releaseToken), true);
+      assert.equal(claimAborted, true);
+      claim.resolve(jsonResponse(200, { ok: true, job: null }));
+      assert.equal(await settleWithin(second), 'settled');
+    });
+  }
+});
+
+test('a released old-generation token remains a no-op while a newer generation is active', async () => {
+  const claim = deferred();
+  let operations = 0;
+  let claimStarted = false;
+  let claimAborted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() {
+        operations += 1;
+        return operations === 1 ? operation([]) : operation();
+      },
+      collectorFetch(path, options) {
+        if (!path.endsWith('/next')) return jsonResponse(200, { ok: true });
+        claimStarted = true;
+        options.signal?.addEventListener('abort', () => { claimAborted = true; });
+        return claim.promise;
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture must not run'); },
+    async sleep() {},
+  });
+
+  const first = agent.drainUntil({
+    requestId: 'request-stale-repeat',
+    deadlineAt: Date.now() + 2_000,
+  });
+  assert.equal(await settleWithin(first), 'settled');
+  assert.equal(agent.stop('request-stale-repeat', first.releaseToken), true);
+
+  const second = agent.drainUntil({
+    requestId: 'request-stale-repeat',
+    deadlineAt: Date.now() + 2_000,
+  });
+  while (!claimStarted) await nextTurn();
+  assert.equal(agent.stop('request-stale-repeat', first.releaseToken), false);
+  assert.equal(claimAborted, false);
+  assert.equal(agent.stop('request-stale-repeat', second.releaseToken), true);
+  assert.equal(claimAborted, true);
+
+  claim.resolve(jsonResponse(200, { ok: true, job: null }));
+  assert.equal(await settleWithin(second), 'settled');
 });
 
 test('agent rejects arbitrary job data without capture and reports only a fixed safe failure', async () => {
