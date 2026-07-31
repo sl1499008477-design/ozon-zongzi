@@ -166,6 +166,37 @@ test('fails closed on version mismatch, incomplete fields, and invalid server sh
   );
 });
 
+test('exact server v1 results reject coercible non-native strings and numbers', () => {
+  const invalidFields = [
+    ['numeric sku', { sku: 4862904234 }],
+    ['numeric source', { source: 123 }],
+    ['numeric capturedAt', { capturedAt: 123 }],
+    ['numeric cache expiry', { cache: { hit: false, expiresAt: 123 } }],
+    ['string description category', { descriptionCategoryId: '123' }],
+    ['string type', { typeId: '456' }],
+    ['string weight', {
+      logistics: { weightG: '500', lengthMm: 300, widthMm: 200, heightMm: 100 },
+    }],
+    ['string length', {
+      logistics: { weightG: 500, lengthMm: '300', widthMm: 200, heightMm: 100 },
+    }],
+    ['string width', {
+      logistics: { weightG: 500, lengthMm: 300, widthMm: '200', heightMm: 100 },
+    }],
+    ['string height', {
+      logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: '100' },
+    }],
+  ];
+
+  for (const [label, overrides] of invalidFields) {
+    assert.throws(
+      () => normalizeResult(serverResult(overrides)),
+      (error) => error?.status === 422 && error?.code === 'OZON_ENRICH_CONTRACT_MISMATCH',
+      label,
+    );
+  }
+});
+
 test('reports stable ordered missing fields and assertComplete rejects partial results', () => {
   const partial = {
     descriptionCategoryId: 0,

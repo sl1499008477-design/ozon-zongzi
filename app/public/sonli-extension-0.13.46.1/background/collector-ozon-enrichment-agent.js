@@ -10,6 +10,27 @@
     OZON_ENRICH_NOT_FOUND: '未找到 Ozon 商品资料',
     OZON_ENRICH_UPSTREAM_FAILED: 'Ozon 商品资料暂时无法读取',
   });
+  const RETIRED_SCOPE_KEYS = new Set([
+    'accountid',
+    'createdby',
+    'clientid',
+    'storeid',
+    'localstoreid',
+    'operatingstoreid',
+    'datacollectionstoreid',
+    'datacollectionstore',
+    'datacollectionstores',
+    'datacollectionstoreids',
+    'currentdatacollectionstoreid',
+    'currentdatacollectionstoreidsbyaccount',
+    'sellercompanyid',
+    'sellercompany',
+    'legacyscope',
+  ]);
+  const SENSITIVE_KEY_FRAGMENT =
+    /(?:authorization|cookie|credential|password|passphrase|secret|token|apikey|privatekey)/;
+  const SECRET_VALUE =
+    /(?:\bCollector\s+(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,}|\bBearer\s+[A-Za-z0-9._~+\/-]{20,}={0,2}|\b(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,})/i;
 
   const isPlainObject = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -44,6 +65,46 @@
     return Object.assign(new Error(FAILURE_MESSAGES[stableCode]), {
       code: stableCode,
     });
+  };
+
+  const canonicalKey = (value) => String(value || '').replace(/[_-]/g, '').toLowerCase();
+  const forbiddenNestedKey = (value) => {
+    const key = canonicalKey(value);
+    return RETIRED_SCOPE_KEYS.has(key)
+      || SENSITIVE_KEY_FRAGMENT.test(key)
+      || key.includes('header')
+      || key === 'action'
+      || key.endsWith('action')
+      || key === 'script'
+      || key.startsWith('script')
+      || key.endsWith('script')
+      || key === 'url'
+      || key.endsWith('url')
+      || key === 'uri'
+      || key.endsWith('uri');
+  };
+
+  const assertSafeVariantData = (value) => {
+    const seen = new WeakSet();
+    const visit = (nested) => {
+      if (typeof nested === 'string' && SECRET_VALUE.test(nested)) {
+        throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      }
+      if (!nested || typeof nested !== 'object') return;
+      if (seen.has(nested)) return;
+      seen.add(nested);
+      if (Array.isArray(nested)) {
+        nested.forEach(visit);
+        return;
+      }
+      if (!isPlainObject(nested)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      for (const [key, child] of Object.entries(nested)) {
+        if (forbiddenNestedKey(key)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        visit(child);
+      }
+    };
+    visit(value);
+    return value;
   };
 
   const normalizeJob = (value) => {
@@ -115,31 +176,86 @@
       || typeof now !== 'function'
       || typeof setTimer !== 'function'
       || typeof clearTimer !== 'function'
+      || typeof root.AbortController !== 'function'
     ) {
       throw new TypeError('collector Ozon agent dependencies are required');
     }
-    const active = new Set();
     const drains = new Map();
+    let nextGeneration = 1;
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
-    const withDeadline = (promise, deadlineAt) => new Promise((resolve, reject) => {
-      const remaining = deadlineAt - now();
-      if (remaining <= 0) {
-        reject(deadlineFailure());
-        return;
-      }
-      const timer = setTimer(() => reject(deadlineFailure()), remaining);
-      Promise.resolve(promise).then(
-        (value) => {
-          clearTimer(timer);
-          resolve(value);
-        },
-        (error) => {
-          clearTimer(timer);
-          reject(error);
-        },
+    const deactivate = (entry) => {
+      if (!entry?.active) return;
+      entry.active = false;
+      entry.refs = 0;
+      const controller = entry.currentController;
+      entry.currentController = null;
+      controller?.abort();
+      entry.resolveCancelled();
+      if (drains.get(entry.requestId) === entry) drains.delete(entry.requestId);
+    };
+    const isCurrent = (entry, generation) => {
+      if (entry?.active && now() >= entry.deadlineAt) deactivate(entry);
+      return Boolean(
+        entry?.active
+        && entry.refs > 0
+        && entry.generation === generation
+        && drains.get(entry.requestId) === entry,
       );
-    });
+    };
+    const ensureCurrent = (entry, generation) => {
+      if (!isCurrent(entry, generation)) throw deadlineFailure();
+    };
+    const withLifecycle = async (promise, entry, generation) => {
+      ensureCurrent(entry, generation);
+      let timer;
+      const deadlineSignal = new Promise((resolve) => {
+        const schedule = () => {
+          const remaining = entry.deadlineAt - now();
+          if (remaining <= 0) {
+            deactivate(entry);
+            resolve();
+            return;
+          }
+          timer = setTimer(() => {
+            if (now() >= entry.deadlineAt) {
+              deactivate(entry);
+              resolve();
+            } else {
+              schedule();
+            }
+          }, remaining);
+        };
+        schedule();
+      });
+      try {
+        const value = await Promise.race([
+          Promise.resolve(promise),
+          entry.cancelled.then(() => { throw deadlineFailure(); }),
+          deadlineSignal.then(() => { throw deadlineFailure(); }),
+        ]);
+        ensureCurrent(entry, generation);
+        return value;
+      } finally {
+        clearTimer(timer);
+      }
+    };
+
+    const withCollectorStage = async (entry, generation, request) => {
+      ensureCurrent(entry, generation);
+      const controller = new root.AbortController();
+      entry.currentController = controller;
+      const pending = (async () => {
+        ensureCurrent(entry, generation);
+        return request(controller.signal);
+      })();
+      try {
+        return await withLifecycle(pending, entry, generation);
+      } finally {
+        if (entry.currentController === controller) entry.currentController = null;
+        controller.abort();
+      }
+    };
 
     const requireOperation = async () => {
       const collectorOperation = await sessionManager.beginCollectorOperation();
@@ -147,19 +263,23 @@
       return collectorOperation;
     };
 
-    const collectorRequest = (collectorOperation, path, options = {}) =>
-      sessionManager.collectorFetch(path, {
+    const collectorRequest = (entry, generation, collectorOperation, path, options = {}) =>
+      withCollectorStage(entry, generation, (signal) => sessionManager.collectorFetch(path, {
         collectorOperation,
         permission: READ_PERMISSION,
         ...options,
-      });
+        signal,
+      }));
 
-    const reportFailure = async (collectorOperation, rawJob, error, deadlineAt) => {
+    const reportFailure = async (entry, generation, collectorOperation, rawJob, error) => {
       const id = safeJobId(rawJob?.id);
-      if (!id || now() >= deadlineAt) return false;
+      if (!id || !isCurrent(entry, generation)) return false;
       const failure = fixedFailure(error?.code);
       try {
-        const response = await withDeadline(collectorRequest(
+        ensureCurrent(entry, generation);
+        const response = await collectorRequest(
+          entry,
+          generation,
           collectorOperation,
           `/collector/ozon/enrichment-jobs/${encodeURIComponent(id)}/fail`,
           {
@@ -167,24 +287,31 @@
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ code: failure.code, message: failure.message }),
           },
-        ), deadlineAt);
+        );
+        ensureCurrent(entry, generation);
         return Boolean(response?.ok);
       } catch {
         return false;
       }
     };
 
-    const executeClaim = async (collectorOperation, rawJob, deadlineAt) => {
+    const executeClaim = async (entry, generation, collectorOperation, rawJob) => {
       let job;
       try {
         job = normalizeJob(rawJob);
-        const capture = await withDeadline(captureVariant({
+        ensureCurrent(entry, generation);
+        const capture = await withLifecycle(captureVariant({
           sku: job.sku,
           noProxy: true,
           forceRefresh: job.refreshBundle === true,
-        }), deadlineAt);
+        }), entry, generation);
+        ensureCurrent(entry, generation);
         const variantData = matchedVariantData(capture, job.sku);
-        const response = await withDeadline(collectorRequest(
+        assertSafeVariantData(variantData);
+        ensureCurrent(entry, generation);
+        const response = await collectorRequest(
+          entry,
+          generation,
           collectorOperation,
           `/collector/ozon/enrichment-jobs/${encodeURIComponent(job.id)}/result`,
           {
@@ -192,59 +319,82 @@
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ variantData }),
           },
-        ), deadlineAt);
+        );
+        ensureCurrent(entry, generation);
         if (!response?.ok) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
         return true;
       } catch (error) {
-        if (now() < deadlineAt) {
-          await reportFailure(collectorOperation, job || rawJob, error, deadlineAt);
+        if (isCurrent(entry, generation)) {
+          await reportFailure(entry, generation, collectorOperation, job || rawJob, error);
         }
         return false;
       }
     };
 
-    const claimNext = async (collectorOperation) => {
-      const response = await collectorRequest(collectorOperation, NEXT_PATH, { method: 'GET' });
-      if (!response?.ok) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
-      const body = await jsonBody(response);
-      if (!exactKeys(body, ['ok', 'job']) || body.ok !== true) {
-        throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
-      }
-      return body.job;
-    };
+    const claimNext = (entry, generation, collectorOperation) =>
+      withCollectorStage(entry, generation, async (signal) => {
+        const response = await sessionManager.collectorFetch(NEXT_PATH, {
+          collectorOperation,
+          permission: READ_PERMISSION,
+          method: 'GET',
+          signal,
+        });
+        ensureCurrent(entry, generation);
+        if (!response?.ok) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        const body = await jsonBody(response);
+        ensureCurrent(entry, generation);
+        if (!exactKeys(body, ['ok', 'job']) || body.ok !== true) {
+          throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        }
+        return body.job;
+      });
 
-    const runDrain = async ({ requestId, deadlineAt }) => {
+    const runDrain = async (entry, generation) => {
       let collectorOperation;
       try {
-        collectorOperation = await withDeadline(requireOperation(), deadlineAt);
+        collectorOperation = await withLifecycle(requireOperation(), entry, generation);
+        ensureCurrent(entry, generation);
       } catch {
         return;
       }
       if (!collectorOperation) return;
-      while (active.has(requestId) && now() < deadlineAt) {
+      while (isCurrent(entry, generation)) {
         let trusted = false;
         try {
-          trusted = await withDeadline(canCapture(), deadlineAt) === true;
+          ensureCurrent(entry, generation);
+          trusted = await withLifecycle(canCapture(), entry, generation) === true;
+          ensureCurrent(entry, generation);
         } catch {
           trusted = false;
         }
+        if (!isCurrent(entry, generation)) break;
         if (!trusted) {
           try {
-            await withDeadline(sleep(Math.min(POLL_MS, Math.max(0, deadlineAt - now()))), deadlineAt);
+            await withLifecycle(
+              sleep(Math.min(POLL_MS, Math.max(0, entry.deadlineAt - now()))),
+              entry,
+              generation,
+            );
           } catch {}
           continue;
         }
         try {
-          const job = await withDeadline(claimNext(collectorOperation), deadlineAt);
+          const job = await claimNext(entry, generation, collectorOperation);
+          ensureCurrent(entry, generation);
           if (job) {
-            await executeClaim(collectorOperation, job, deadlineAt);
+            await executeClaim(entry, generation, collectorOperation, job);
             continue;
           }
         } catch {
           // The held public request owns the user-facing error. Polling stays fail-closed.
         }
+        if (!isCurrent(entry, generation)) break;
         try {
-          await withDeadline(sleep(Math.min(POLL_MS, Math.max(0, deadlineAt - now()))), deadlineAt);
+          await withLifecycle(
+            sleep(Math.min(POLL_MS, Math.max(0, entry.deadlineAt - now()))),
+            entry,
+            generation,
+          );
         } catch {}
       }
     };
@@ -259,18 +409,39 @@
         return Promise.reject(new TypeError('collector Ozon drain input is invalid'));
       }
       const deadlineAt = Math.min(requestedDeadline, now() + MAX_DRAIN_MS);
-      if (drains.has(requestId)) return drains.get(requestId);
-      active.add(requestId);
-      const running = runDrain({ requestId, deadlineAt })
-        .finally(() => {
-          active.delete(requestId);
-          drains.delete(requestId);
-        });
-      drains.set(requestId, running);
-      return running;
+      const existing = drains.get(requestId);
+      if (existing?.active) {
+        existing.refs += 1;
+        existing.deadlineAt = Math.max(existing.deadlineAt, deadlineAt);
+        return existing.running;
+      }
+      let resolveCancelled;
+      const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
+      const entry = {
+        requestId,
+        generation: nextGeneration,
+        refs: 1,
+        deadlineAt,
+        active: true,
+        currentController: null,
+        cancelled,
+        resolveCancelled,
+        running: null,
+      };
+      nextGeneration += 1;
+      drains.set(requestId, entry);
+      entry.running = runDrain(entry, entry.generation)
+        .finally(() => deactivate(entry));
+      return entry.running;
     };
 
-    const stop = (requestId) => active.delete(cleanText(requestId));
+    const stop = (requestId) => {
+      const entry = drains.get(cleanText(requestId));
+      if (!entry?.active || entry.refs <= 0) return false;
+      entry.refs -= 1;
+      if (entry.refs === 0) deactivate(entry);
+      return true;
+    };
 
     return Object.freeze({ drainUntil, stop });
   }

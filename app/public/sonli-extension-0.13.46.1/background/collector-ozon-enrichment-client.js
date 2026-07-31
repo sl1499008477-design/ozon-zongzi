@@ -195,10 +195,7 @@
       } finally {
         agent.stop(requestId);
         abortController.abort();
-        await Promise.race([
-          settledDrainPromise,
-          deadlinePromise.catch(() => undefined),
-        ]);
+        void settledDrainPromise;
         clearTimer(deadlineTimer);
       }
     };
@@ -301,7 +298,11 @@
             );
           }
           return payload.data.map((item, index) => {
-            if (!isPlainObject(item) || cleanText(item.sku) !== skus[index]) {
+            if (
+              !isPlainObject(item)
+              || typeof item.sku !== 'string'
+              || cleanText(item.sku) !== skus[index]
+            ) {
               throw clientError(
                 502,
                 'OZON_ENRICH_UPSTREAM_FAILED',

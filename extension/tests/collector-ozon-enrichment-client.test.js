@@ -60,6 +60,13 @@ function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function settleWithin(promise, milliseconds = 150) {
+  return Promise.race([
+    promise.then(() => 'settled'),
+    new Promise((resolve) => setTimeout(() => resolve('timed-out'), milliseconds)),
+  ]);
+}
+
 test('single client request requires read permission and drains concurrently on fixed routes', async () => {
   const publicResponse = deferred();
   const calls = [];
@@ -336,6 +343,277 @@ test('agent settles at its deadline and never posts a late capture result', asyn
   ]);
 });
 
+test('stopping a drain while canCapture is pending prevents every later side effect', async () => {
+  const gate = deferred();
+  const requests = [];
+  let captures = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        requests.push(path);
+        return jsonResponse(200, { ok: true, job: null });
+      },
+    },
+    canCapture() { return gate.promise; },
+    async captureVariant() { captures += 1; },
+    async sleep() {},
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-stop-can-capture',
+    deadlineAt: Date.now() + 2_000,
+  });
+  await nextTurn();
+  agent.stop('request-stop-can-capture');
+  gate.resolve(true);
+
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.deepEqual(requests, []);
+  assert.equal(captures, 0);
+});
+
+test('last stop aborts a pending claim and a late claimed job cannot capture or report', async () => {
+  const claim = deferred();
+  const requests = [];
+  let claimAborted = false;
+  let captures = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      collectorFetch(path, options) {
+        requests.push(path);
+        if (path.endsWith('/next')) {
+          options.signal?.addEventListener('abort', () => { claimAborted = true; });
+          return claim.promise;
+        }
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { captures += 1; },
+    async sleep() {},
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-stop-claim',
+    deadlineAt: Date.now() + 2_000,
+  });
+  await nextTurn();
+  agent.stop('request-stop-claim');
+  assert.equal(claimAborted, true);
+  claim.resolve(jsonResponse(200, {
+    ok: true,
+    job: {
+      id: 'job-late-claim',
+      requestId: 'request-stop-claim',
+      sku: '4862904234',
+      refreshBundle: false,
+    },
+  }));
+
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.equal(captures, 0);
+  assert.deepEqual(requests, ['/collector/ozon/enrichment-jobs/next']);
+});
+
+test('stopping a drain while capture is pending prevents late result and failure posts', async () => {
+  const capture = deferred();
+  const requests = [];
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        requests.push(path);
+        return jsonResponse(200, {
+          ok: true,
+          job: {
+            id: 'job-late-capture',
+            requestId: 'request-stop-capture',
+            sku: '4862904234',
+            refreshBundle: false,
+          },
+        });
+      },
+    },
+    async canCapture() { return true; },
+    captureVariant() { return capture.promise; },
+    async sleep() {},
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-stop-capture',
+    deadlineAt: Date.now() + 2_000,
+  });
+  while (!requests.length) await nextTurn();
+  await nextTurn();
+  agent.stop('request-stop-capture');
+  capture.resolve({
+    ok: true,
+    data: { items: [completeVariantData('4862904234')] },
+  });
+
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.deepEqual(requests, ['/collector/ozon/enrichment-jobs/next']);
+});
+
+test('last stop immediately aborts a pending result Collector request without a fail post', async () => {
+  const resultResponse = deferred();
+  const requests = [];
+  let resultStarted = false;
+  let resultAborted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      collectorFetch(path, options) {
+        requests.push(path);
+        if (path.endsWith('/next')) {
+          return jsonResponse(200, {
+            ok: true,
+            job: {
+              id: 'job-stop-result',
+              requestId: 'request-stop-result',
+              sku: '4862904234',
+              refreshBundle: false,
+            },
+          });
+        }
+        if (path.endsWith('/result')) {
+          resultStarted = true;
+          options.signal?.addEventListener('abort', () => { resultAborted = true; });
+          return resultResponse.promise;
+        }
+        throw new Error(`unexpected path: ${path}`);
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      return { ok: true, data: { items: [completeVariantData('4862904234')] } };
+    },
+    async sleep() {},
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-stop-result',
+    deadlineAt: Date.now() + 2_000,
+  });
+  while (!resultStarted) await nextTurn();
+  agent.stop('request-stop-result');
+
+  assert.equal(resultAborted, true);
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.deepEqual(requests, [
+    '/collector/ozon/enrichment-jobs/next',
+    '/collector/ozon/enrichment-jobs/job-stop-result/result',
+  ]);
+  resultResponse.resolve(jsonResponse(200, { ok: true }));
+});
+
+test('last stop immediately aborts a pending fixed failure Collector request', async () => {
+  const failResponse = deferred();
+  const requests = [];
+  let failStarted = false;
+  let failAborted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      collectorFetch(path, options) {
+        requests.push(path);
+        if (path.endsWith('/next')) {
+          return jsonResponse(200, {
+            ok: true,
+            job: {
+              id: 'job-stop-fail',
+              requestId: 'request-stop-fail',
+              sku: '4862904234',
+              refreshBundle: false,
+            },
+          });
+        }
+        if (path.endsWith('/fail')) {
+          failStarted = true;
+          options.signal?.addEventListener('abort', () => { failAborted = true; });
+          return failResponse.promise;
+        }
+        throw new Error(`unexpected path: ${path}`);
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture failed'); },
+    async sleep() {},
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-stop-fail',
+    deadlineAt: Date.now() + 2_000,
+  });
+  while (!failStarted) await nextTurn();
+  agent.stop('request-stop-fail');
+
+  assert.equal(failAborted, true);
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.deepEqual(requests, [
+    '/collector/ozon/enrichment-jobs/next',
+    '/collector/ozon/enrichment-jobs/job-stop-fail/fail',
+  ]);
+  failResponse.resolve(jsonResponse(200, { ok: true }));
+});
+
+test('same request ID keeps one drain lease active when the first client completes', async () => {
+  const publicResponses = [deferred(), deferred()];
+  const claim = deferred();
+  let publicCalls = 0;
+  let claimStarted = false;
+  let claimAborted = false;
+  const sessionManager = {
+    async beginCollectorOperation() { return operation(); },
+    collectorFetch(path, options) {
+      if (path === '/collector/ozon/enrich') {
+        const response = publicResponses[publicCalls];
+        publicCalls += 1;
+        return response.promise;
+      }
+      if (path.endsWith('/next')) {
+        claimStarted = true;
+        options.signal?.addEventListener('abort', () => { claimAborted = true; });
+        return claim.promise;
+      }
+      return jsonResponse(200, { ok: true });
+    },
+  };
+  const agent = createAgent({
+    sessionManager,
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture must not run'); },
+    async sleep() {},
+  });
+  const client = createClient({ sessionManager, agent, getBackendUrl: async () => '' });
+
+  const first = client.enrich({ requestId: 'request-shared', sku: '4862904234' });
+  const second = client.enrich({ requestId: 'request-shared', sku: '4862904234' });
+  while (!claimStarted || publicCalls < 2) await nextTurn();
+
+  publicResponses[0].resolve(jsonResponse(200, {
+    ok: true,
+    data: completeResult('4862904234'),
+  }));
+  const firstOutcome = await settleWithin(first);
+  const abortedAfterFirst = claimAborted;
+
+  publicResponses[1].resolve(jsonResponse(200, {
+    ok: true,
+    data: completeResult('4862904234'),
+  }));
+  const secondOutcome = await settleWithin(second);
+  const abortedAfterSecond = claimAborted;
+  claim.resolve(jsonResponse(200, { ok: true, job: null }));
+
+  assert.equal(firstOutcome, 'settled');
+  assert.equal(abortedAfterFirst, false);
+  assert.equal(secondOutcome, 'settled');
+  assert.equal(abortedAfterSecond, true);
+});
+
 test('agent rejects arbitrary job data without capture and reports only a fixed safe failure', async () => {
   const requests = [];
   let captures = 0;
@@ -435,6 +713,67 @@ test('capture failures never forward raw secrets and cannot select sync or arbit
   });
 });
 
+test('captured variantData rejects nested client control and secret values before result upload', async () => {
+  const forbiddenVariants = [
+    completeVariantData('4862904234', { nested: [{ store_id: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ sellerCompanyId: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ account_id: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ Authorization: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ requestHeaders: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ action: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ script: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ sourceUrl: 'https://attacker.invalid' }] }),
+    completeVariantData('4862904234', { note: 'Collector cst_secret-secret-secret-secret' }),
+    completeVariantData('4862904234', { note: 'Bearer abcdefghijklmnopqrstuvwxyz123456' }),
+  ];
+
+  for (const [index, variantData] of forbiddenVariants.entries()) {
+    const requests = [];
+    let nextCalls = 0;
+    let agent;
+    agent = createAgent({
+      sessionManager: {
+        async beginCollectorOperation() { return operation(); },
+        async collectorFetch(path, options) {
+          requests.push({ path, options });
+          if (path.endsWith('/next')) {
+            nextCalls += 1;
+            return jsonResponse(200, nextCalls === 1
+              ? {
+                  ok: true,
+                  job: {
+                    id: `job-sensitive-${index}`,
+                    requestId: `request-sensitive-${index}`,
+                    sku: '4862904234',
+                    refreshBundle: false,
+                  },
+                }
+              : { ok: true, job: null });
+          }
+          return jsonResponse(200, { ok: true });
+        },
+      },
+      async canCapture() { return true; },
+      async captureVariant() { return { ok: true, data: { items: [variantData] } }; },
+      async sleep() { agent.stop(`request-sensitive-${index}`); },
+    });
+
+    await agent.drainUntil({
+      requestId: `request-sensitive-${index}`,
+      deadlineAt: Date.now() + 2_000,
+    });
+
+    assert.equal(requests.some(({ path }) => path.endsWith('/result')), false, `case ${index}`);
+    const failure = requests.find(({ path }) => path.endsWith('/fail'));
+    assert.ok(failure, `case ${index}`);
+    assert.deepEqual(JSON.parse(failure.options.body), {
+      code: 'OZON_ENRICH_UPSTREAM_FAILED',
+      message: 'Ozon 商品资料暂时无法读取',
+    });
+    assert.doesNotMatch(JSON.stringify(requests), /attacker-controlled|attacker\.invalid|secret-secret|abcdefghijklmnopqrstuvwxyz/);
+  }
+});
+
 test('batch client preserves first-seen order, caps twenty unique SKUs, and uses one fixed request body', async () => {
   const requests = [];
   const agent = {
@@ -501,6 +840,31 @@ test('client rejects complete responses whose nested result SKU differs from the
   };
   await assert.rejects(
     client.enrichBatch({ requestId: 'wrong-batch-request', skus: ['expected-batch'] }),
+    (error) => error?.status === 502 && error?.code === 'OZON_ENRICH_UPSTREAM_FAILED',
+  );
+});
+
+test('batch client rejects a numeric wrapper SKU even when it coerces to the request SKU', async () => {
+  const client = createClient({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch() {
+        return jsonResponse(200, {
+          ok: true,
+          data: [{
+            sku: 4862904234,
+            status: 'COMPLETE',
+            result: completeResult('4862904234'),
+          }],
+        });
+      },
+    },
+    agent: { async drainUntil() {}, stop() {} },
+    getBackendUrl: async () => '',
+  });
+
+  await assert.rejects(
+    client.enrichBatch({ requestId: 'batch-numeric-wrapper', skus: ['4862904234'] }),
     (error) => error?.status === 502 && error?.code === 'OZON_ENRICH_UPSTREAM_FAILED',
   );
 });

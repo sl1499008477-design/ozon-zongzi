@@ -44,6 +44,11 @@
     }
   };
 
+  const nativePositiveNumber = (value) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0;
+  const nativeFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+  const nativeText = (value) => typeof value === 'string' && value.trim().length > 0;
+
   const cleanText = (value) => String(value == null ? '' : value).trim();
 
   const contractError = (
@@ -150,9 +155,10 @@
       !exactKeys(value, RESULT_KEYS, requiredKeys)
       || value.status !== 'COMPLETE'
       || value.contractVersion !== CONTRACT_VERSION
-      || !cleanText(value.sku)
-      || !cleanText(value.source)
-      || !cleanText(value.capturedAt)
+      || !nativeText(value.sku)
+      || !nativeText(value.source)
+      || !nativeText(value.capturedAt)
+      || !nativeFiniteNumber(value.descriptionCategoryId)
       || !isPlainObject(value.variantData)
       || !exactKeys(
         value.logistics,
@@ -160,8 +166,12 @@
       )
       || !exactKeys(value.cache, ['hit', 'expiresAt'])
       || typeof value.cache.hit !== 'boolean'
-      || !cleanText(value.cache.expiresAt)
-      || (Object.hasOwn(value, 'typeId') && !positiveNumber(value.typeId))
+      || !nativeText(value.cache.expiresAt)
+      || !nativeFiniteNumber(value.logistics.weightG)
+      || !nativeFiniteNumber(value.logistics.lengthMm)
+      || !nativeFiniteNumber(value.logistics.widthMm)
+      || !nativeFiniteNumber(value.logistics.heightMm)
+      || (Object.hasOwn(value, 'typeId') && !nativePositiveNumber(value.typeId))
     ) {
       throw contractError('Ozon 商品补全响应 contract 不匹配');
     }
@@ -170,13 +180,13 @@
       status: 'COMPLETE',
       contractVersion: CONTRACT_VERSION,
       sku: cleanText(value.sku),
-      descriptionCategoryId: positiveNumber(value.descriptionCategoryId),
-      ...(Object.hasOwn(value, 'typeId') ? { typeId: positiveNumber(value.typeId) } : {}),
+      descriptionCategoryId: value.descriptionCategoryId,
+      ...(Object.hasOwn(value, 'typeId') ? { typeId: value.typeId } : {}),
       logistics: {
-        weightG: positiveNumber(value.logistics.weightG),
-        lengthMm: positiveNumber(value.logistics.lengthMm),
-        widthMm: positiveNumber(value.logistics.widthMm),
-        heightMm: positiveNumber(value.logistics.heightMm),
+        weightG: value.logistics.weightG,
+        lengthMm: value.logistics.lengthMm,
+        widthMm: value.logistics.widthMm,
+        heightMm: value.logistics.heightMm,
       },
       variantData: value.variantData,
       source: cleanText(value.source),
