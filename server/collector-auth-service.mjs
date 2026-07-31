@@ -9,6 +9,7 @@ export const COLLECTOR_PERMISSIONS = Object.freeze([
   "collector.upload",
   "collector.job.read",
   "collector.config.read",
+  "collector.ozon.read",
 ]);
 
 export const COLLECTOR_REVOKE_REASONS = Object.freeze([

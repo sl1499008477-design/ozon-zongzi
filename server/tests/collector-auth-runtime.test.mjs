@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { createCollectorAuthRuntime } from "../collector-auth-runtime.mjs";
+import { hashCollectorSecret } from "../collector-auth-service.mjs";
 import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
 import { createObjectCleanupWorker } from "../object-cleanup-worker.mjs";
 
@@ -67,6 +68,89 @@ async function request(runtime, method, pathname, {
   );
   return { handled, status: res.status, body: res.body };
 }
+
+function collectorRequest(token) {
+  const req = Readable.from([]);
+  req.headers = { authorization: `Collector ${token}` };
+  return req;
+}
+
+function jsonRuntime(state) {
+  return createCollectorAuthRuntime({
+    loadState: async () => structuredClone(state),
+    saveState: async (nextState) => Object.assign(state, structuredClone(nextState)),
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    readJson,
+    sendJson,
+  });
+}
+
+test("authenticateSessionRequest returns the safe full session for Ozon reads without Collector or Web secrets", async () => {
+  const state = initialState();
+  const runtime = jsonRuntime(state);
+  const issued = await request(runtime, "POST", "/extension/collector-auth/ticket", {
+    authorization: `Bearer ${WEB_TOKEN}`,
+  });
+  const exchanged = await request(runtime, "POST", "/extension/collector-auth/exchange", {
+    body: {
+      ticket: issued.body.ticket,
+      deviceFingerprint: "runtime-device",
+      extensionVersion: "3.0.0-test",
+    },
+  });
+
+  const session = await runtime.authenticateSessionRequest(
+    collectorRequest(exchanged.body.collectorToken),
+    "collector.ozon.read",
+  );
+
+  assert.deepEqual(session, {
+    collectorSessionId: state.collectorSessions[0].id,
+    accountId: ACCOUNT.id,
+    deviceFingerprint: "runtime-device",
+    extensionVersion: "3.0.0-test",
+    permissions: [
+      "collector.upload",
+      "collector.job.read",
+      "collector.config.read",
+      "collector.ozon.read",
+    ],
+    expiresAt: state.collectorSessions[0].expiresAt,
+    account: { id: ACCOUNT.id, displayName: ACCOUNT.displayName },
+  });
+  const serialized = JSON.stringify(session);
+  assert.equal(serialized.includes(exchanged.body.collectorToken), false);
+  assert.equal(serialized.includes(WEB_TOKEN), false);
+  assert.equal(serialized.includes(state.collectorSessions[0].tokenHash), false);
+});
+
+test("authenticateSessionRequest rejects legacy sessions without Ozon read permission", async () => {
+  const state = initialState();
+  const legacyToken = "cst_legacy-collector-session";
+  state.collectorSessions.push({
+    id: "csess_legacy",
+    tokenHash: hashCollectorSecret(legacyToken),
+    accountId: ACCOUNT.id,
+    parentSessionToken: WEB_TOKEN,
+    deviceFingerprint: "legacy-device",
+    extensionVersion: "3.0.0",
+    permissions: ["collector.upload", "collector.job.read", "collector.config.read"],
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    revokedAt: null,
+    revokedReason: "",
+    lastSeenAt: "2026-07-29T00:00:00.000Z",
+    createdAt: "2026-07-29T00:00:00.000Z",
+  });
+
+  await assert.rejects(
+    jsonRuntime(state).authenticateSessionRequest(
+      collectorRequest(legacyToken),
+      "collector.ozon.read",
+    ),
+    (error) => error?.status === 403 && error?.code === "COLLECTOR_PERMISSION_DENIED",
+  );
+});
 
 test("shared JSON transaction preserves collector writes and a concurrent normal business mutation", async () => {
   let persisted = initialState();

@@ -227,7 +227,7 @@ test("exchange strips collector secrets embedded in persisted device metadata", 
   assert.equal(persisted.extensionVersion.includes(PARENT_TOKEN), false);
 });
 
-test("issued collector sessions receive exactly the three collector permissions", async () => {
+test("new collector tickets and sessions receive exactly the four least-privilege permissions", async () => {
   const harness = createHarness();
   const { issued, exchanged } = await issueAndExchange(harness);
 
@@ -235,13 +235,40 @@ test("issued collector sessions receive exactly the three collector permissions"
     "collector.upload",
     "collector.job.read",
     "collector.config.read",
+    "collector.ozon.read",
   ]);
   assert.deepEqual(exchanged.permissions, [
     "collector.upload",
     "collector.job.read",
     "collector.config.read",
+    "collector.ozon.read",
   ]);
   assert.deepEqual([...COLLECTOR_PERMISSIONS], issued.permissions);
+});
+
+test("a legacy collector session without Ozon read permission receives COLLECTOR_PERMISSION_DENIED", async () => {
+  const harness = createHarness();
+  const { exchanged } = await issueAndExchange(harness);
+
+  const currentSession = await harness.service.authenticate({
+    collectorToken: exchanged.collectorToken,
+    requiredPermission: "collector.ozon.read",
+  });
+  assert.equal(currentSession.collectorSessionId, exchanged.collectorSessionId);
+
+  const [legacySession] = harness.repository.sessions.values();
+  legacySession.permissions = [
+    "collector.upload",
+    "collector.job.read",
+    "collector.config.read",
+  ];
+  await assert.rejects(
+    harness.service.authenticate({
+      collectorToken: exchanged.collectorToken,
+      requiredPermission: "collector.ozon.read",
+    }),
+    (error) => error?.status === 403 && error?.code === "COLLECTOR_PERMISSION_DENIED",
+  );
 });
 
 test("authentication rejects a permission outside the collector session scope with 403", async () => {

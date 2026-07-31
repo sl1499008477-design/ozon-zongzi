@@ -187,7 +187,7 @@ export function createCollectorAuthRuntime({
     sendJson,
   });
 
-  async function authenticateRequest(req, requiredPermission) {
+  async function authenticateSessionRequest(req, requiredPermission) {
     const authorization = String(req?.headers?.authorization || "");
     const match = authorization.match(/^Collector\s+(\S+)\s*$/i);
     if (!match?.[1]) {
@@ -200,9 +200,14 @@ export function createCollectorAuthRuntime({
       collectorToken: match[1],
       requiredPermission,
     });
+    return authenticated;
+  }
+
+  async function authenticateRequest(req, requiredPermission) {
+    const authenticated = await authenticateSessionRequest(req, requiredPermission);
     return authenticated.account || {
       id: authenticated.accountId,
-      displayName: authenticated.displayName || "",
+      displayName: "",
     };
   }
 
@@ -275,6 +280,7 @@ export function createCollectorAuthRuntime({
 
   return Object.freeze({
     authenticateRequest,
+    authenticateSessionRequest,
     handleHttpRoute,
     revokeAccountSessions,
     revokeParentSession,

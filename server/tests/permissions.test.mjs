@@ -6,6 +6,7 @@ import {
   hasPermission,
   permissionMatrix,
 } from "../permissions.mjs";
+import { COLLECTOR_PERMISSIONS } from "../collector-auth-service.mjs";
 
 const admin = { id: "admin", role: "admin" };
 const user = { id: "user", role: "user" };
@@ -30,4 +31,15 @@ test("unknown permissions fail closed with a stable error contract", () => {
       && error?.code === "PERMISSION_FORBIDDEN"
       && error?.permission === PERMISSIONS.PRICING_MANAGE,
   );
+});
+
+test("Collector Ozon reads are scoped to the explicit four-permission collector contract", () => {
+  assert.deepEqual(COLLECTOR_PERMISSIONS, [
+    "collector.upload",
+    "collector.job.read",
+    "collector.config.read",
+    "collector.ozon.read",
+  ]);
+  assert.equal(hasPermission(admin, "collector.ozon.read"), false);
+  assert.equal(hasPermission(user, "collector.ozon.read"), false);
 });
