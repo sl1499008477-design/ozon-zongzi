@@ -78,8 +78,18 @@ export function categoryResolutionForStore(resolution, targetStoreId) {
   if (String(resolutionStoreId || "") !== String(targetStoreId || "")) return null;
   if (resolution.status === "PENDING") return structuredClone(resolution);
   if (resolution.status !== "MATCHED") return null;
+  if (!cleanText(resolution.method)) return null;
   if (!positiveNumber(resolution.target?.descriptionCategoryId) || !positiveNumber(resolution.target?.typeId)) return null;
   return structuredClone(resolution);
+}
+
+export function listingTargetCategoryFieldsForStore(resolution, targetStoreId) {
+  const matched = categoryResolutionForStore(resolution, targetStoreId);
+  if (!matched || matched.status !== "MATCHED") return {};
+  return {
+    descriptionCategoryId: positiveNumber(matched.target?.descriptionCategoryId),
+    typeId: positiveNumber(matched.target?.typeId),
+  };
 }
 
 export function manualCategoryResolution({

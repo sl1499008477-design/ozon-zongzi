@@ -48,6 +48,7 @@ function repository(job, order) {
     async tryAcquireCacheLease() { return null; },
     async releaseCacheLease() { return false; },
     async createOrGetJob() { return job; },
+    async advanceSellerContext() { throw new Error("unused"); },
     async claimNextJob() { return null; },
     async deferClaim() { throw new Error("unused"); },
     async completeJobAndCache(input) {
@@ -329,6 +330,12 @@ test("PostgreSQL success transaction samples the terminal clock after connection
           if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
             assert.equal(params[3].getTime(), claimExpiresAt.getTime());
             return { rows: [], rowCount: 0 };
+          }
+          if (normalized.startsWith("SELECT pg_advisory_xact_lock")) {
+            return { rows: [{ pg_advisory_xact_lock: null }], rowCount: 1 };
+          }
+          if (normalized.startsWith("SELECT id,seller_context_json FROM collector_sessions")) {
+            return { rows: [{ id: "collector-a", seller_context_json: null }], rowCount: 1 };
           }
           if (normalized.startsWith("SELECT id FROM collector_sessions")) {
             return { rows: [{ id: "collector-a" }], rowCount: 1 };

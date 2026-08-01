@@ -134,6 +134,8 @@ import { collectorAccountChangeReason, collectorParentSessionTokens, createColle
 import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
 import {
   assertOzonListingReady,
+  explicitOzonListingTarget,
+  normalizeOzonCollectedSourceEvidence,
   preserveOzonSourceCategoryEvidence,
 } from "./collect-enrichment-policy.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
@@ -791,20 +793,53 @@ async function updateCollectBoxItemAtomic(id, patch, { account }) {
   if (index < 0) return null;
   const current = latest.caches.collectBox[index];
   const safePatch = withoutCollectorScope(patch);
+  const restoreTarget = (safeResolution, sourceResolution) => {
+    const target = explicitOzonListingTarget(sourceResolution);
+    if (!target || !safeResolution) return;
+    if (!activeStore(latest, target.storeId, account.id)) {
+      throw Object.assign(new Error("目标经营店铺不存在或不可用"), {
+        status: 404,
+        code: "TARGET_STORE_NOT_FOUND",
+      });
+    }
+    safeResolution.target = { ...(safeResolution.target || {}), ...target };
+  };
+  restoreTarget(
+    safePatch.listingDraft?.categoryResolution,
+    patch?.listingDraft?.categoryResolution,
+  );
+  const safeVariants = Array.isArray(safePatch.listingDraft?.variants)
+    ? safePatch.listingDraft.variants
+    : [];
+  const sourceVariants = Array.isArray(patch?.listingDraft?.variants)
+    ? patch.listingDraft.variants
+    : [];
+  safeVariants.forEach((variant, variantIndex) => restoreTarget(
+    variant?.categoryResolution,
+    sourceVariants[variantIndex]?.categoryResolution,
+  ));
   if (safePatch.listingDraft && typeof safePatch.listingDraft === "object") {
     safePatch.listingDraft = preserveOzonSourceCategoryEvidence(
       current.listingDraft,
       safePatch.listingDraft,
     );
   }
-  latest.caches.collectBox[index] = {
+  for (const key of [
+    "description_category_id",
+    "descriptionCategoryId",
+    "type_id_candidate",
+    "typeIdCandidate",
+    "type_id",
+    "typeId",
+  ]) delete safePatch[key];
+  latest.caches.collectBox[index] = normalizeOzonCollectedSourceEvidence({
     ...current,
     ...safePatch,
     id,
     accountId: account.id,
     createdBy: current.createdBy || account.id,
     updatedAt: new Date().toISOString(),
-  };
+  });
   await saveState(latest);
   await mirrorCollectItemV3(latest.caches.collectBox[index], {
     accountId: account.id,
@@ -2064,7 +2099,7 @@ function listingStockRowsFromDraft(draft = {}, item = {}, listingItems = []) {
   });
 }
 
-function buildCollectBoxListingItems(item = {}) {
+function buildCollectBoxListingItems(item = {}, targetStoreId = "") {
   const draft = item.listingDraft && typeof item.listingDraft === "object" ? item.listingDraft : {};
   const draftSourceCategory = listingSourceCategoryEvidence(
     draft.sourceCategory,
@@ -2081,13 +2116,10 @@ function buildCollectBoxListingItems(item = {}) {
   const currencyCode = normalizeCurrencyCode(listingFirstText(draft.currencyCode, draft.currency_code, item.currency_code, item.currencyCode)) || "CNY";
   const offerPrefix = listingFirstText(draft.offerPrefix, item.offerPrefix, "jz-") || "jz-";
   const sharedImages = listingImageList(draft.images, draft.image, item.images, item.image);
-  const anchorDescriptionCategoryId = Number(listingFirstText(
-    draft.descriptionCategoryId,
-    draft.description_category_id,
-    item.description_category_id,
-    item.descriptionCategoryId,
-  )) || 0;
-  const anchorTypeId = Number(listingFirstText(draft.typeId, draft.type_id, item.type_id, item.typeId)) || 0;
+  const anchorTarget = explicitOzonListingTarget(
+    draft.categoryResolution || item.categoryResolution,
+    { targetStoreId },
+  ) || {};
   const anchorAttributes = listingDraftAttributes(draft, item);
   const sharedModelName = listingFirstText(draft.modelName, item.modelName, item.model_name, sku);
   const variants = Array.isArray(draft.variants) && draft.variants.length ? draft.variants : [];
@@ -2118,16 +2150,14 @@ function buildCollectBoxListingItems(item = {}) {
     const ownImages = listingImageList(variant.image, variant.images, variant.picture, listingSourceImages(sourceVariant));
     const variantImages = ownImages.length ? ownImages : sharedImages;
     const variantAttributes = listingVariantDraftAttributes(variant, isAnchor ? anchorAttributes : []);
-    const descriptionCategoryId = Number(listingFirstText(
-      variant.descriptionCategoryId,
-      variant.description_category_id,
-      isAnchor ? anchorDescriptionCategoryId : "",
-    )) || 0;
-    const typeId = Number(listingFirstText(
-      variant.typeId,
-      variant.type_id,
-      isAnchor ? anchorTypeId : "",
-    )) || 0;
+    const variantTarget = explicitOzonListingTarget(
+      variant.categoryResolution,
+      { targetStoreId },
+    ) || {};
+    const descriptionCategoryId = variantTarget.descriptionCategoryId
+      || anchorTarget.descriptionCategoryId
+      || 0;
+    const typeId = variantTarget.typeId || anchorTarget.typeId || 0;
     const description = listingFirstText(
       variant.description,
       variant.scraped_description,
@@ -2234,6 +2264,20 @@ function validateCollectBoxListingDraft(item = {}, items = [], stocks = []) {
   return errors;
 }
 
+function assertCollectListingTargets(items = []) {
+  const missingIndex = items.findIndex((row) =>
+    listingNumber(row?.description_category_id) <= 0 || listingNumber(row?.type_id) <= 0);
+  if (missingIndex < 0) return;
+  throw Object.assign(
+    new Error(`第 ${missingIndex + 1} 个变体缺少目标店铺类目，请先完成类目匹配`),
+    {
+      status: 422,
+      code: "COLLECT_TARGET_CATEGORY_REQUIRED",
+      body: { variantIndex: missingIndex },
+    },
+  );
+}
+
 async function collectBoxListingRequest(state, req, id, body = {}, { account, dryRun = false } = {}) {
   const requestedTargetStoreId = cleanText(body.targetStoreId || body.storeId);
   const replayInput = !dryRun && listingPipelineEnabled()
@@ -2259,7 +2303,8 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
           replayItems = buildCollectBoxListingItems({
             ...item,
             listingDraft: currentItem.listingDraft,
-          });
+          }, requestedTargetStoreId);
+          assertCollectListingTargets(replayItems);
           replayItems.forEach(assertOzonListingReady);
         },
       })
@@ -2273,8 +2318,11 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
       findStore: (storeId) => activeStore(state, storeId, account.id),
     });
   }
-  const items = replayItems || buildCollectBoxListingItems(item);
-  if (!frozenReplay) items.forEach(assertOzonListingReady);
+  const items = replayItems || buildCollectBoxListingItems(item, requestedTargetStoreId);
+  if (!frozenReplay) {
+    assertCollectListingTargets(items);
+    items.forEach(assertOzonListingReady);
+  }
   if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);
   const errors = validateCollectBoxListingDraft(item, items, stocks);

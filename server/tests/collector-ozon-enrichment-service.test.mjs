@@ -84,6 +84,7 @@ class FakeRepository {
     this.atomicCompleteCount = 0;
     this.atomicFailCount = 0;
     this.deferCount = 0;
+    this.lastSellerContextAdvance = null;
     this.lastCompleteInput = null;
     this.leaseAttempts = [];
   }
@@ -252,6 +253,12 @@ class FakeRepository {
     return clone(candidate);
   }
 
+  async advanceSellerContext(input) {
+    this.requireSession(input.accountId, input.collectorSessionId);
+    this.lastSellerContextAdvance = clone(input);
+    return clone(input.captureContext);
+  }
+
   async finish({ accountId, collectorSessionId, jobId, now, result, error, status }) {
     this.requireSession(accountId, collectorSessionId);
     const job = this.jobs.find((value) => value.accountId === accountId && value.id === jobId);
@@ -282,14 +289,6 @@ class FakeRepository {
     }
     Object.assign(job, { status, result: clone(result ?? null), error: clone(error ?? null) });
     return clone(job);
-  }
-
-  completeJob(input) {
-    return this.finish({ ...input, status: "SUCCESS", error: null });
-  }
-
-  failJob(input) {
-    return this.finish({ ...input, status: "FAILED", result: null });
   }
 
   async completeJobAndCache(input) {
@@ -399,6 +398,24 @@ async function waitFor(check, message = "condition") {
 function key(accountId, sku) {
   return { accountId, source: "ozon", sku, contractVersion: CONTRACT_VERSION };
 }
+
+test("observing Seller context advances only the authenticated account and Collector session watermark", async () => {
+  const h = harness();
+  const context = captureContext();
+
+  const output = await h.service.observeSellerContext({
+    session: session("collector-request"),
+    captureContext: context,
+  });
+
+  assert.equal(output, undefined);
+  assert.deepEqual(h.repository.lastSellerContextAdvance, {
+    accountId: "account-a",
+    collectorSessionId: "collector-request",
+    captureContext: context,
+    now: new Date(START),
+  });
+});
 
 test("returns a live six-hour cache hit without creating a job", async () => {
   const h = harness();

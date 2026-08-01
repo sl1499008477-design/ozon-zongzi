@@ -15,6 +15,7 @@
     recoveryTab = root.JzSellerRecoveryTab,
     now = () => Date.now(),
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    onContextAdvance,
     ttlMs = DEFAULT_TTL_MS,
     stabilizationWindowMs = DEFAULT_STABILIZATION_WINDOW_MS,
   } = {}) => {
@@ -24,6 +25,7 @@
       || !policy?.isTrustedSellerTab
       || !policy?.normalizeCompanyId
       || !recoveryTab?.createSellerRecoveryTabManager
+      || (onContextAdvance != null && typeof onContextAdvance !== 'function')
     ) {
       throw new TypeError('seller company context runtime dependencies are required');
     }
@@ -35,6 +37,8 @@
       Number(stabilizationWindowMs) || 0,
     );
     let observationWrites = Promise.resolve();
+    let observationEpoch = 0;
+    let synchronizedEpoch = 0;
 
     const normalizeStored = (value) => {
       const companyId = policy.normalizeCompanyId(value?.companyId);
@@ -53,14 +57,18 @@
     };
 
     const rememberFromSender = (sender, rawCompanyId) => {
-      const write = observationWrites.catch(() => {}).then(async () => {
-        const tab = sender?.tab;
-        if (!policy.isTrustedSellerTab(tab) || Number(sender?.frameId) !== 0) {
-          throw contextError('SELLER_CONTEXT_REQUIRED');
-        }
-        const companyId = policy.normalizeCompanyId(rawCompanyId);
-        if (!companyId) throw contextError('SELLER_COMPANY_CONTEXT_INVALID');
+      const tab = sender?.tab;
+      if (!policy.isTrustedSellerTab(tab) || Number(sender?.frameId) !== 0) {
+        return Promise.reject(contextError('SELLER_CONTEXT_REQUIRED'));
+      }
+      const companyId = policy.normalizeCompanyId(rawCompanyId);
+      if (!companyId) return Promise.reject(contextError('SELLER_COMPANY_CONTEXT_INVALID'));
 
+      // Advance before the first await. A result submission in the same event-loop
+      // turn must see the observation intent even while storage or server sync is pending.
+      observationEpoch += 1;
+      const intentEpoch = observationEpoch;
+      const write = observationWrites.catch(() => {}).then(async () => {
         const stored = await chromeApi.storage.session.get(CURRENT_STORAGE_KEY);
         const current = normalizeStored(stored?.[CURRENT_STORAGE_KEY]);
         const observation = {
@@ -79,12 +87,15 @@
           values[PREVIOUS_STORAGE_KEY] = current;
         }
         await chromeApi.storage.session.set(values);
-        return {
+        const snapshot = Object.freeze({
           companyId: observation.companyId,
           revision: observation.revision,
           observedAt: observation.observedAt,
           sellerTabId: observation.tabId,
-        };
+        });
+        await onContextAdvance?.(snapshot);
+        synchronizedEpoch = intentEpoch;
+        return snapshot;
       });
       observationWrites = write.catch(() => {});
       return write;
@@ -164,6 +175,26 @@
       }
     };
 
+    const submitIfCurrent = async (snapshot, submit) => {
+      if (typeof submit !== 'function') {
+        throw new TypeError('Seller context submission callback is required');
+      }
+      while (true) {
+        const epoch = observationEpoch;
+        const writes = observationWrites;
+        await writes;
+        if (epoch !== observationEpoch || writes !== observationWrites) continue;
+        if (synchronizedEpoch !== epoch) return false;
+        if (!(await isSnapshotCurrent(snapshot))) return false;
+        if (epoch !== observationEpoch || writes !== observationWrites) continue;
+
+        // There is no await between the final epoch check and invoking submit.
+        // A later switch races only with the in-flight server request, where the
+        // server watermark/CAS defines the authoritative order.
+        return submit();
+      }
+    };
+
     return Object.freeze({
       acquireCurrentWithRecovery,
       focusLoginHelper: recovery.focusLoginHelper,
@@ -174,6 +205,7 @@
       resolveCurrent,
       resolveCurrentWithRecovery,
       snapshotCurrent,
+      submitIfCurrent,
     });
   };
 

@@ -1,4 +1,8 @@
 import { isRetiredCollectorScopeKey } from "./collector-scope-sanitizer.mjs";
+import {
+  explicitOzonListingTarget,
+  normalizeOzonCollectedSourceEvidence,
+} from "./collect-enrichment-policy.mjs";
 
 function canonicalPathKey(key) {
   return String(key || "").replace(/[_-]/g, "").toLowerCase();
@@ -26,13 +30,46 @@ function withoutPublicCollectionScope(value, path = []) {
   return result;
 }
 
+function restoreListingTargetBusinessMetadata(result, source) {
+  const restoreResolution = (resultResolution, sourceResolution) => {
+    const target = explicitOzonListingTarget(sourceResolution);
+    if (!target || !resultResolution) return;
+    resultResolution.target = {
+      ...(resultResolution.target || {}),
+      ...target,
+    };
+  };
+  restoreResolution(
+    result?.listingDraft?.categoryResolution,
+    source?.listingDraft?.categoryResolution,
+  );
+  const resultVariants = Array.isArray(result?.listingDraft?.variants)
+    ? result.listingDraft.variants
+    : [];
+  const sourceVariants = Array.isArray(source?.listingDraft?.variants)
+    ? source.listingDraft.variants
+    : [];
+  resultVariants.forEach((variant, index) => restoreResolution(
+    variant?.categoryResolution,
+    sourceVariants[index]?.categoryResolution,
+  ));
+  return result;
+}
+
 function cleanScopeValue(value) {
   return String(value ?? "").trim();
 }
 
 export function publicCollectionItem(item = {}, { trustedLegacyScope = {} } = {}) {
-  const result = item && typeof item === "object" && !Array.isArray(item)
-    ? withoutPublicCollectionScope(item)
+  const sourceId = cleanScopeValue(item?.source || item?.sourceId).toLowerCase();
+  const businessItem = sourceId === "ozon"
+    ? normalizeOzonCollectedSourceEvidence(item)
+    : item;
+  const result = businessItem && typeof businessItem === "object" && !Array.isArray(businessItem)
+    ? restoreListingTargetBusinessMetadata(
+        withoutPublicCollectionScope(businessItem),
+        businessItem,
+      )
     : {};
   const operatingStoreId = cleanScopeValue(
     trustedLegacyScope.operatingStoreId,

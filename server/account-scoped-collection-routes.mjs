@@ -5,6 +5,7 @@ import {
 import {
   buildOzonEnrichmentSummary,
   mergeOzonEnrichmentResult,
+  normalizeOzonCollectedSourceEvidence,
   reconcileOzonEnrichmentSummary,
 } from "./collect-enrichment-policy.mjs";
 import { mergeCollectedItemPublicEvidence } from "./collect-item-identity-policy.mjs";
@@ -102,7 +103,10 @@ export function createJsonAccountScopedCollectionHandler({
             );
           }
           if (existing?.status === "SUCCEEDED") {
-            const existingItem = existing.response?.item || {};
+            const storedItem = existing.response?.item || {};
+            const existingItem = prepared.identity.source === "ozon"
+              ? normalizeOzonCollectedSourceEvidence(storedItem)
+              : storedItem;
             const existingEnrichment = prepared.identity.source === "ozon"
               ? existing.response?.enrichment
                 || existingItem.enrichment
@@ -159,9 +163,12 @@ export function createJsonAccountScopedCollectionHandler({
           const canonicalItem = collectBox.find((row) =>
             String(row.id || "") === prepared.collectId
             && String(row.accountId || "") === account.id);
-          const item = canonicalItem
+          const mergedItem = canonicalItem
             ? mergeCollectedItemPublicEvidence(canonicalItem, incomingItem)
             : incomingItem;
+          const item = prepared.identity.source === "ozon"
+            ? normalizeOzonCollectedSourceEvidence(mergedItem)
+            : mergedItem;
           const effectiveEnrichment = enrichment
             ? reconcileOzonEnrichmentSummary(item, canonicalItem?.enrichment)
             : null;

@@ -275,6 +275,54 @@ try {
     return detectBackendUrl();
   };
 
+  const createCollectorSellerContextSynchronizer = ({
+    sessionManager,
+  } = {}) => {
+    if (
+      typeof sessionManager?.beginCollectorOperation !== 'function'
+      || typeof sessionManager?.collectorFetch !== 'function'
+    ) {
+      throw new TypeError('Collector Seller context synchronizer dependencies are required');
+    }
+    const syncFailure = () => Object.assign(new Error('SELLER_CONTEXT_SYNC_FAILED'), {
+      code: 'SELLER_CONTEXT_SYNC_FAILED',
+    });
+    return async (snapshot) => {
+      const sellerCompanyId = String(snapshot?.companyId || '').trim();
+      const revision = Number(snapshot?.revision);
+      const observedAt = new Date(snapshot?.observedAt);
+      if (
+        !/^\d{4,15}$/.test(sellerCompanyId)
+        || !Number.isSafeInteger(revision)
+        || revision <= 0
+        || Number.isNaN(observedAt.getTime())
+      ) throw syncFailure();
+
+      const collectorOperation = await sessionManager.beginCollectorOperation();
+      if (!collectorOperation?.permissions?.includes('collector.ozon.read')) {
+        throw syncFailure();
+      }
+      const response = await sessionManager.collectorFetch(
+        '/collector/ozon/seller-context/observe',
+        {
+          collectorOperation,
+          permission: 'collector.ozon.read',
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            captureContext: {
+              sellerCompanyId,
+              revision,
+              observedAt: observedAt.toISOString(),
+            },
+          }),
+        },
+      );
+      if (!response?.ok) throw syncFailure();
+      return true;
+    };
+  };
+
   const createCollectorSellerContextLeaseBridge = ({
     runtime,
     readyStatus,
@@ -282,6 +330,7 @@ try {
     if (
       typeof runtime?.acquireCurrentWithRecovery !== 'function'
       || typeof runtime?.isSnapshotCurrent !== 'function'
+      || typeof runtime?.submitIfCurrent !== 'function'
     ) {
       throw new TypeError('collector Seller context lease dependencies are required');
     }
@@ -326,6 +375,7 @@ try {
     const canCapture = async () => true;
     const sellerContextRuntime = Object.freeze({
       isSnapshotCurrent: (snapshot) => runtime.isSnapshotCurrent(snapshot),
+      submitIfCurrent: (snapshot, submit) => runtime.submitIfCurrent(snapshot, submit),
       resolveCurrentWithRecovery: async (options) => {
         const lease = await acquireLease(options);
         if (lease.snapshot.status !== readyStatus) {
@@ -364,6 +414,9 @@ try {
       chromeApi: chrome,
       policy: globalThis.JzSellerIdentityPolicy,
       recoveryTab: globalThis.JzSellerRecoveryTab,
+      onContextAdvance: createCollectorSellerContextSynchronizer({
+        sessionManager: collectorSessionManager,
+      }),
     });
   const collectorSellerContextLeaseBridge = createCollectorSellerContextLeaseBridge({
     runtime: sellerCompanyContextRuntime,
@@ -3831,6 +3884,15 @@ try {
     createTab: (options) => chrome.tabs.create(options),
   });
 
+    // Record the intent synchronously at message arrival. The runtime advances
+    // its epoch before its first await, closing terminal dispatch immediately.
+    const sellerContextObservation = message?.action === 'sellerCompanyContextObserved'
+      ? sellerCompanyContextRuntime.rememberFromSender(sender, message.companyId).then(
+          () => ({ ok: true }),
+          (error) => ({ ok: false, error }),
+        )
+      : null;
+
     const handle = async () => {
       const collectorOperation = await collectorSessionManager.beginCollectorOperation();
       const collectorSession = collectorOperation;
@@ -3842,18 +3904,14 @@ try {
 
       switch (message?.action) {
         case 'sellerCompanyContextObserved': {
-          try {
-            await sellerCompanyContextRuntime.rememberFromSender(
-              sender,
-              message.companyId,
-            );
+          const observation = await sellerContextObservation;
+          if (observation.ok) {
             return { ok: true, data: { captured: true } };
-          } catch (error) {
-            return {
-              ok: false,
-              error: error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
-            };
           }
+          return {
+            ok: false,
+            error: observation.error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
+          };
         }
         case 'getSellerContextStatus': {
           if (!globalThis.JzSellerContextUiMessagePolicy.isAllowedSellerContextUiMessage(

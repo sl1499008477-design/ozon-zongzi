@@ -38,6 +38,12 @@ function requiredContext() {
   });
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 test('trusted top-frame observations advance one global revision in arrival order', async () => {
   const session = createStorageArea();
   const clock = { now: NOW };
@@ -121,6 +127,143 @@ test('trusted top-frame observations advance one global revision in arrival orde
     observedAt: NOW + 200,
     sellerTabId: 7,
   });
+});
+
+test('a trusted switch intent fences the old snapshot before its async observation write can dispatch', async () => {
+  const session = createStorageArea();
+  const tab = { id: 7, url: 'https://seller.ozon.ru/app/products', active: true };
+  const switchedSync = deferred();
+  const synchronized = [];
+  const runtime = createSellerCompanyContextRuntime({
+    chromeApi: {
+      storage: { session },
+      tabs: {
+        async get(tabId) { return tab.id === tabId ? tab : null; },
+        query: async () => [tab],
+      },
+    },
+    now: () => NOW,
+    policy,
+    recoveryTab,
+    stabilizationWindowMs: 0,
+    async onContextAdvance(snapshot) {
+      synchronized.push(snapshot);
+      if (snapshot.companyId === '7311458') await switchedSync.promise;
+    },
+  });
+  await runtime.rememberFromSender({ frameId: 0, tab }, '2681910');
+  const oldSnapshot = await runtime.snapshotCurrent();
+
+  const switching = runtime.rememberFromSender({ frameId: 0, tab }, '7311458');
+  let posts = 0;
+  const submission = runtime.submitIfCurrent(oldSnapshot, async () => {
+    posts += 1;
+    return { ok: true };
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(posts, 0, 'a synchronous switch intent must close dispatch before storage/network awaits');
+  switchedSync.resolve();
+  await switching;
+  assert.equal(await submission, false);
+  assert.equal(posts, 0);
+  assert.deepEqual(synchronized.map(({ companyId, revision }) => ({ companyId, revision })), [
+    { companyId: '2681910', revision: 1 },
+    { companyId: '7311458', revision: 2 },
+  ]);
+});
+
+test('a failed Seller-context watermark sync fails closed until a later observation synchronizes', async () => {
+  const session = createStorageArea();
+  const tab = { id: 7, url: 'https://seller.ozon.ru/app/products', active: true };
+  let syncFails = true;
+  const runtime = createSellerCompanyContextRuntime({
+    chromeApi: {
+      storage: { session },
+      tabs: {
+        async get(tabId) { return tab.id === tabId ? tab : null; },
+        query: async () => [tab],
+      },
+    },
+    now: () => NOW,
+    policy,
+    recoveryTab,
+    stabilizationWindowMs: 0,
+    async onContextAdvance() {
+      if (syncFails) throw Object.assign(new Error('watermark unavailable'), {
+        code: 'SELLER_CONTEXT_SYNC_FAILED',
+      });
+    },
+  });
+
+  await assert.rejects(
+    () => runtime.rememberFromSender({ frameId: 0, tab }, '2681910'),
+    (error) => error?.code === 'SELLER_CONTEXT_SYNC_FAILED',
+  );
+  const unsynchronized = await runtime.snapshotCurrent();
+  let posts = 0;
+  assert.equal(await runtime.submitIfCurrent(unsynchronized, async () => {
+    posts += 1;
+    return { ok: true };
+  }), false);
+  assert.equal(posts, 0);
+
+  syncFails = false;
+  const synchronized = await runtime.rememberFromSender({ frameId: 0, tab }, '2681910');
+  const accepted = Object.freeze({ ok: true, status: 200 });
+  assert.strictEqual(await runtime.submitIfCurrent(synchronized, async () => {
+    posts += 1;
+    return accepted;
+  }), accepted);
+  assert.equal(posts, 1);
+});
+
+test('concurrent trusted observations synchronize in arrival order and only the latest revision submits', async () => {
+  const session = createStorageArea();
+  const tab = { id: 7, url: 'https://seller.ozon.ru/app/products', active: true };
+  const firstSync = deferred();
+  const syncOrder = [];
+  const runtime = createSellerCompanyContextRuntime({
+    chromeApi: {
+      storage: { session },
+      tabs: {
+        async get(tabId) { return tab.id === tabId ? tab : null; },
+        query: async () => [tab],
+      },
+    },
+    now: () => NOW,
+    policy,
+    recoveryTab,
+    stabilizationWindowMs: 0,
+    async onContextAdvance(snapshot) {
+      syncOrder.push(`${snapshot.companyId}:${snapshot.revision}`);
+      if (snapshot.revision === 1) await firstSync.promise;
+    },
+  });
+
+  const first = runtime.rememberFromSender({ frameId: 0, tab }, '2681910');
+  const second = runtime.rememberFromSender({ frameId: 0, tab }, '7311458');
+  const third = runtime.rememberFromSender({ frameId: 0, tab }, '2681910');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(syncOrder, ['2681910:1']);
+  firstSync.resolve();
+  const snapshots = await Promise.all([first, second, third]);
+
+  assert.deepEqual(syncOrder, ['2681910:1', '7311458:2', '2681910:3']);
+  let posts = 0;
+  assert.equal(await runtime.submitIfCurrent(snapshots[0], async () => {
+    posts += 1;
+    return { ok: true };
+  }), false);
+  assert.equal(await runtime.submitIfCurrent(snapshots[1], async () => {
+    posts += 1;
+    return { ok: true };
+  }), false);
+  assert.deepEqual(await runtime.submitIfCurrent(snapshots[2], async () => {
+    posts += 1;
+    return { ok: true, revision: 3 };
+  }), { ok: true, revision: 3 });
+  assert.equal(posts, 1);
 });
 
 test('one tab switching Company IDs remains RECOVERING during stabilization', async () => {
@@ -643,7 +786,23 @@ test('service worker routes recovery through the revisioned runtime', () => {
   assert.match(source, /createCollectorSellerContextLeaseBridge\(\{[\s\S]*?runtime: sellerCompanyContextRuntime/);
   assert.match(source, /sellerContextRuntime: collectorSellerContextLeaseBridge\.sellerContextRuntime/);
   assert.match(source, /canCapture: collectorSellerContextLeaseBridge\.canCapture/);
+  assert.match(source, /onContextAdvance: createCollectorSellerContextSynchronizer\(\{[\s\S]*?sessionManager: collectorSessionManager/);
   assert.match(source, /getSellerCompanyIdCandidates[\s\S]*?resolveCurrentWithRecovery\(\)/);
+});
+
+test('service worker records a Seller observation intent before any Collector or backend await', () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const intent = source.indexOf('const sellerContextObservation = message?.action === \'sellerCompanyContextObserved\'');
+  const handler = source.indexOf('const handle = async () => {', intent);
+  const collectorAwait = source.indexOf('await collectorSessionManager.beginCollectorOperation()', handler);
+  assert.notEqual(intent, -1);
+  assert.notEqual(handler, -1);
+  assert.ok(intent < handler);
+  assert.ok(intent < collectorAwait);
+  assert.match(source, /case 'sellerCompanyContextObserved':[\s\S]*?await sellerContextObservation/);
 });
 
 function extractWorkerHelper(source, startToken, endToken, name) {
@@ -653,6 +812,99 @@ function extractWorkerHelper(source, startToken, endToken, name) {
   assert.notEqual(end, -1, `${name} end must exist`);
   return new Function(`${source.slice(start, end)}\nreturn ${name};`)();
 }
+
+test('Collector Seller-context synchronizer posts only the fixed scoped watermark contract', async () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const createCollectorSellerContextSynchronizer = extractWorkerHelper(
+    source,
+    'const createCollectorSellerContextSynchronizer = ({',
+    '\n\n  const createCollectorSellerContextLeaseBridge',
+    'createCollectorSellerContextSynchronizer',
+  );
+  const collectorOperation = Object.freeze({
+    permissions: Object.freeze(['collector.ozon.read']),
+  });
+  const requests = [];
+  const synchronize = createCollectorSellerContextSynchronizer({
+    sessionManager: {
+      async beginCollectorOperation() { return collectorOperation; },
+      async collectorFetch(route, options) {
+        requests.push({ route, options });
+        return { ok: true, status: 200 };
+      },
+    },
+  });
+
+  assert.equal(await synchronize({
+    status: 'READY',
+    companyId: '2681910',
+    revision: 4,
+    observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+    sellerTabId: 9,
+  }), true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].route, '/collector/ozon/seller-context/observe');
+  assert.equal(requests[0].options.collectorOperation, collectorOperation);
+  assert.equal(requests[0].options.permission, 'collector.ozon.read');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.deepEqual(requests[0].options.headers, { 'content-type': 'application/json' });
+  assert.equal(Object.hasOwn(requests[0].options, 'credentials'), false);
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    captureContext: {
+      sellerCompanyId: '2681910',
+      revision: 4,
+      observedAt: '2026-08-01T08:00:00.000Z',
+    },
+  });
+});
+
+test('Collector Seller-context synchronizer fails closed without auth or server acceptance', async () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const createCollectorSellerContextSynchronizer = extractWorkerHelper(
+    source,
+    'const createCollectorSellerContextSynchronizer = ({',
+    '\n\n  const createCollectorSellerContextLeaseBridge',
+    'createCollectorSellerContextSynchronizer',
+  );
+  const snapshot = {
+    companyId: '2681910',
+    revision: 4,
+    observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+    sellerTabId: 9,
+  };
+  let fetches = 0;
+  const withoutAuth = createCollectorSellerContextSynchronizer({
+    sessionManager: {
+      async beginCollectorOperation() { return null; },
+      async collectorFetch() { fetches += 1; return { ok: true }; },
+    },
+  });
+  await assert.rejects(
+    () => withoutAuth(snapshot),
+    (error) => error?.code === 'SELLER_CONTEXT_SYNC_FAILED',
+  );
+  assert.equal(fetches, 0);
+
+  const rejected = createCollectorSellerContextSynchronizer({
+    sessionManager: {
+      async beginCollectorOperation() {
+        return { permissions: ['collector.ozon.read'] };
+      },
+      async collectorFetch() { fetches += 1; return { ok: false, status: 409 }; },
+    },
+  });
+  await assert.rejects(
+    () => rejected(snapshot),
+    (error) => error?.code === 'SELLER_CONTEXT_SYNC_FAILED',
+  );
+  assert.equal(fetches, 1);
+});
 
 test('Collector lease bridge acquires only while resolving so cancellation cannot orphan a helper', async () => {
   const source = readFileSync(
@@ -696,6 +948,10 @@ test('Collector lease bridge acquires only while resolving so cancellation canno
     async isSnapshotCurrent(snapshot) {
       return snapshot === retainedSnapshot;
     },
+    async submitIfCurrent(snapshot, submit) {
+      if (snapshot !== retainedSnapshot) return false;
+      return submit();
+    },
   };
   const bridge = createCollectorSellerContextLeaseBridge({
     runtime,
@@ -709,6 +965,10 @@ test('Collector lease bridge acquires only while resolving so cancellation canno
   assert.equal(acquisitions, 1);
   assert.equal(directRecoveries, 0);
   assert.equal(await bridge.sellerContextRuntime.isSnapshotCurrent(resolved), true);
+  assert.deepEqual(
+    await bridge.sellerContextRuntime.submitIfCurrent(resolved, async () => ({ ok: true })),
+    { ok: true },
+  );
   assert.equal(await bridge.sellerContextRuntime.releaseSnapshot({ ...resolved }), true,
     'the agent normalizes the snapshot into a new object before release');
   assert.equal(releases, 1);

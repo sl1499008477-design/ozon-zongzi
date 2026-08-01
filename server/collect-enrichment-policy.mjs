@@ -29,6 +29,24 @@ function cleanText(value) {
   return String(value ?? "").trim();
 }
 
+export function explicitOzonListingTarget(resolution, { targetStoreId = "" } = {}) {
+  if (!plainObject(resolution) || resolution.status !== "MATCHED") return null;
+  const method = cleanText(resolution.method);
+  const target = plainObject(resolution.target) ? resolution.target : {};
+  const storeId = cleanText(target.storeId);
+  const expectedStoreId = cleanText(targetStoreId);
+  const descriptionCategoryId = positiveNumber(target.descriptionCategoryId);
+  const typeId = positiveNumber(target.typeId);
+  if (
+    !method
+    || !storeId
+    || (expectedStoreId && storeId !== expectedStoreId)
+    || !descriptionCategoryId
+    || !typeId
+  ) return null;
+  return { storeId, descriptionCategoryId, typeId };
+}
+
 function enrichmentFieldValues(value = {}) {
   const logistics = value?.logistics && typeof value.logistics === "object" ? value.logistics : {};
   const draft = plainObject(value?.listingDraft) ? value.listingDraft : {};
@@ -154,9 +172,64 @@ export function normalizeOzonCollectedSourceEvidence(payload = {}) {
         payload.description_category_id,
         payload.descriptionCategoryId,
       ),
+      typeIdCandidate: firstPositive(
+        payload.type_id_candidate,
+        payload.typeIdCandidate,
+        payload.type_id,
+        payload.typeId,
+      ),
     },
   );
   if (Object.keys(ingressEvidence).length) normalized.sourceCategory = ingressEvidence;
+  for (const key of [
+    "description_category_id",
+    "descriptionCategoryId",
+    "type_id_candidate",
+    "typeIdCandidate",
+    "type_id",
+    "typeId",
+  ]) delete normalized[key];
+  if (plainObject(normalized.listingDraft)) {
+    const normalizeTargetRoots = (draftValue) => {
+      if (!plainObject(draftValue)) return draftValue;
+      const draft = structuredClone(draftValue);
+      const target = explicitOzonListingTarget(draft.categoryResolution);
+      const sourceEvidence = mergeEvidenceOnlyIntoBlanks(
+        sourceCategoryEvidence(draftValue),
+        target ? {} : {
+          descriptionCategoryId: firstPositive(
+            draftValue.description_category_id,
+            draftValue.descriptionCategoryId,
+          ),
+          typeIdCandidate: firstPositive(
+            draftValue.type_id_candidate,
+            draftValue.typeIdCandidate,
+            draftValue.type_id,
+            draftValue.typeId,
+          ),
+        },
+      );
+      for (const key of [
+        "description_category_id",
+        "descriptionCategoryId",
+        "type_id_candidate",
+        "typeIdCandidate",
+        "type_id",
+        "typeId",
+      ]) delete draft[key];
+      if (Object.keys(sourceEvidence).length) draft.sourceCategory = sourceEvidence;
+      if (target) {
+        draft.descriptionCategoryId = target.descriptionCategoryId;
+        draft.typeId = target.typeId;
+      }
+      return draft;
+    };
+    const listingDraft = normalizeTargetRoots(normalized.listingDraft);
+    if (Array.isArray(listingDraft.variants)) {
+      listingDraft.variants = listingDraft.variants.map(normalizeTargetRoots);
+    }
+    normalized.listingDraft = listingDraft;
+  }
   return normalized;
 }
 

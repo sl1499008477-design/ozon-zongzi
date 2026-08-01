@@ -90,8 +90,8 @@ requirePattern(
 );
 
 requirePattern(
-  /const draftVariants = variantRows\.map[\s\S]*if \(index !== anchorIndex\) return row;[\s\S]*categoryAttributes: editedCategoryAttributes/,
-  "collect edit must persist anchor edits on the anchor variant only",
+  /const draftVariants = variantRows\.map[\s\S]*const normalizedRow = \{[\s\S]*sourceCategory: sourceCategoryEvidenceOf[\s\S]*descriptionCategoryId: rowTarget\.descriptionCategoryId \|\| ""[\s\S]*if \(index !== anchorIndex\) return normalizedRow;[\s\S]*categoryAttributes: editedCategoryAttributes/,
+  "collect edit must normalize every variant's category provenance while persisting content edits on the anchor only",
 );
 
 console.log("collect edit listing contract ok");

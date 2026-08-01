@@ -312,6 +312,7 @@ export function createCollectorOzonEnrichmentService({
     "tryAcquireCacheLease",
     "releaseCacheLease",
     "createOrGetJob",
+    "advanceSellerContext",
     "claimNextJob",
     "deferClaim",
     "completeJobAndCache",
@@ -561,6 +562,20 @@ export function createCollectorOzonEnrichmentService({
       Array.from({ length: Math.min(BATCH_CONCURRENCY, normalizedSkus.length) }, () => worker()),
     );
     return output;
+  }
+
+  async function observeSellerContext({ session, captureContext } = {}) {
+    const scoped = sessionScope(session);
+    try {
+      await repository.advanceSellerContext({
+        accountId: scoped.accountId,
+        collectorSessionId: scoped.collectorSessionId,
+        captureContext,
+        now: instant(now()),
+      });
+    } catch (error) {
+      throw publicServiceError(error);
+    }
   }
 
   async function claimNext({ session, captureContext = null } = {}) {
@@ -1082,6 +1097,7 @@ export function createCollectorOzonEnrichmentService({
   return Object.freeze({
     enrichOne,
     enrichBatch,
+    observeSellerContext,
     claimNext,
     completeClaim,
     failClaim,

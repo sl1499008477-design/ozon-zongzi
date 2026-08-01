@@ -59,6 +59,55 @@ function changingRefreshBundleInput(base) {
   return { input, readCount: () => readCount };
 }
 
+async function completeTerminalJob(repository, input) {
+  const job = await repository.readJob({ accountId: input.accountId, jobId: input.jobId });
+  return repository.completeJobAndCache({
+    ...input,
+    key: {
+      accountId: input.accountId,
+      source: "ozon",
+      sku: job.sku,
+      contractVersion: ACCOUNT_A_KEY.contractVersion,
+    },
+    responseHash: `complete-${input.jobId}`,
+    capturedAt: input.now,
+    expiresAt: new Date(input.now.getTime() + 21_600_000),
+    captureContext: job.captureContext ?? null,
+    claimFence: job.claimFence ?? null,
+  });
+}
+
+async function failTerminalJob(repository, input) {
+  const job = await repository.readJob({ accountId: input.accountId, jobId: input.jobId });
+  return repository.failJobAndCache({
+    ...input,
+    key: {
+      accountId: input.accountId,
+      source: "ozon",
+      sku: job.sku,
+      contractVersion: ACCOUNT_A_KEY.contractVersion,
+    },
+    responseHash: `failure-${input.jobId}`,
+    capturedAt: input.now,
+    expiresAt: new Date(input.now.getTime() + 60_000),
+    captureContext: job.captureContext ?? null,
+    claimFence: job.claimFence ?? null,
+  });
+}
+
+test("repository terminal contract exposes only watermark-fenced atomic writes", () => {
+  const jsonRepository = createJsonCollectorOzonEnrichmentRepository({ state: {} });
+  const postgresRepository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async query() { return { rows: [], rowCount: 0 }; } },
+  });
+  for (const repository of [jsonRepository, postgresRepository]) {
+    assert.equal(Object.hasOwn(repository, "completeJob"), false);
+    assert.equal(Object.hasOwn(repository, "failJob"), false);
+    assert.equal(typeof repository.completeJobAndCache, "function");
+    assert.equal(typeof repository.failJobAndCache, "function");
+  }
+});
+
 test("JSON cache keeps equal SKUs isolated by account and honors complete and negative TTLs", async () => {
   const state = {
     collectorSessions: [
@@ -595,7 +644,7 @@ test("JSON create-or-get atomically requeues only an expired nonterminal stable 
     now: new Date("2026-07-31T00:00:21.000Z"),
     claimExpiresAt: new Date("2026-07-31T00:00:26.000Z"),
   });
-  const succeeded = await repository.completeJob({
+  const succeeded = await completeTerminalJob(repository, {
     accountId: "account-a",
     collectorSessionId: "collector-retry",
     jobId: claimed.id,
@@ -666,7 +715,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
   });
 
   await assert.rejects(
-    repository.completeJob({
+    completeTerminalJob(repository, {
       accountId: "account-a",
       collectorSessionId: "collector-attacker",
       jobId: "job-success",
@@ -676,7 +725,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
     (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP",
   );
   await assert.rejects(
-    repository.failJob({
+    failTerminalJob(repository, {
       accountId: "account-a",
       collectorSessionId: "collector-attacker",
       jobId: "job-success",
@@ -685,7 +734,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
     }),
     (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP",
   );
-  const succeeded = await repository.completeJob({
+  const succeeded = await completeTerminalJob(repository, {
     accountId: "account-a",
     collectorSessionId: "collector-owner",
     jobId: "job-success",
@@ -696,7 +745,7 @@ test("JSON job results require the owning session and terminal jobs are immutabl
   assert.equal(succeeded.result.descriptionCategoryId, 303);
 
   await assert.rejects(
-    repository.failJob({
+    failTerminalJob(repository, {
       accountId: "account-a",
       collectorSessionId: "collector-owner",
       jobId: "job-success",
@@ -925,7 +974,7 @@ test("JSON claim and finish recheck session after waiting for the serialized mut
         now: new Date("2026-07-31T00:10:00.000Z"),
         claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
       })
-      : repository.completeJob({
+      : completeTerminalJob(repository, {
         accountId: "account-a",
         collectorSessionId: "collector-a",
         jobId: "job-race",
@@ -983,18 +1032,26 @@ test("repository rejects absent dates and null terminal payloads before mutation
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T00:01:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
-  await assert.rejects(jsonRepository.completeJob({
+  await assert.rejects(jsonRepository.completeJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
     jobId: "job-null-payload",
+    key: ACCOUNT_A_KEY,
     result: null,
+    responseHash: "null-job-result",
+    capturedAt: new Date("2026-07-31T00:10:00.000Z"),
+    expiresAt: new Date("2026-07-31T06:10:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
-  await assert.rejects(jsonRepository.failJob({
+  await assert.rejects(jsonRepository.failJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
     jobId: "job-null-payload",
+    key: ACCOUNT_A_KEY,
     error: null,
+    responseHash: "null-job-error",
+    capturedAt: new Date("2026-07-31T00:10:00.000Z"),
+    expiresAt: new Date("2026-07-31T00:11:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
 
@@ -1017,18 +1074,26 @@ test("repository rejects absent dates and null terminal payloads before mutation
     capturedAt: new Date("2026-07-31T00:00:00.000Z"),
     expiresAt: new Date("2026-07-31T00:01:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
-  await assert.rejects(pgRepository.completeJob({
+  await assert.rejects(pgRepository.completeJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
     jobId: "job-null-payload",
+    key: ACCOUNT_A_KEY,
     result: null,
+    responseHash: "null-job-result",
+    capturedAt: new Date("2026-07-31T00:10:00.000Z"),
+    expiresAt: new Date("2026-07-31T06:10:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
-  await assert.rejects(pgRepository.failJob({
+  await assert.rejects(pgRepository.failJobAndCache({
     accountId: "account-a",
     collectorSessionId: "collector-a",
     jobId: "job-null-payload",
+    key: ACCOUNT_A_KEY,
     error: null,
+    responseHash: "null-job-error",
+    capturedAt: new Date("2026-07-31T00:10:00.000Z"),
+    expiresAt: new Date("2026-07-31T00:11:00.000Z"),
     now: new Date("2026-07-31T00:10:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_PAYLOAD_REQUIRED");
   assert.equal(queryCalls, 0);
@@ -1206,8 +1271,9 @@ test("PostgreSQL atomic terminal write rolls back the job when cache persistence
     expiresAt: new Date("2026-07-31T06:00:01.000Z"),
     now: new Date("2026-07-31T00:00:01.000Z"),
   }));
-  assert.equal(calls[0], "BEGIN");
-  assert.match(calls[1], /deadline_at>\$4/);
+  assert.equal(calls[0], "BEGIN ISOLATION LEVEL READ COMMITTED");
+  assert.match(calls[1], /pg_advisory_xact_lock/);
+  assert.match(calls[2], /deadline_at>\$4/);
   assert.equal(calls.at(-1), "ROLLBACK");
   assert.equal(calls.includes("COMMIT"), false);
 });
@@ -1222,7 +1288,7 @@ for (const terminalStatus of ["success", "failure"]) {
         if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
           return { rows: [], rowCount: 0 };
         }
-        if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+        if (normalized.startsWith("SELECT id")) {
           return { rows: [{ id: "collector-owner" }], rowCount: 1 };
         }
         if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
@@ -1296,7 +1362,7 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
     async query(sql, params = []) {
       const normalized = String(sql).replace(/\s+/g, " ").trim();
       calls.push({ sql: normalized, params });
-      if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+      if (normalized.startsWith("SELECT id")) {
         return { rows: [{ id: params[1] }], rowCount: 1 };
       }
       if (normalized.startsWith("SELECT COUNT(*)")) return { rows: [{ count: processingCount }] };
@@ -1329,19 +1395,21 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
     claimExpiresAt: new Date("2026-07-31T00:20:00.000Z"),
   });
   assert.equal(claimed.id, "job-a");
-  assert.equal(calls[0].sql, "BEGIN");
+  assert.equal(calls[0].sql, "BEGIN ISOLATION LEVEL READ COMMITTED");
   assert.match(calls[1].sql, /pg_advisory_xact_lock/);
   assert.deepEqual(calls[1].params, ["account-a"]);
-  assert.match(calls[2].sql, /SELECT id FROM collector_sessions/);
-  assert.match(calls[2].sql, /revoked_at IS NULL/);
-  assert.match(calls[2].sql, /expires_at>\$3/);
-  assert.match(calls[3].sql, /status='PROCESSING'/);
-  assert.match(calls[3].sql, /claim_expires_at>/);
-  assert.match(calls[4].sql, /FOR UPDATE SKIP LOCKED/);
-  assert.match(calls[4].sql, /account_id=\$1/);
-  assert.match(calls[4].sql, /claimed_session_id=\$2/);
-  assert.match(calls[4].sql, /job\.created_at \+ INTERVAL '1 second'<=\$3/);
-  assert.match(calls[4].sql, /claim_expires_at=LEAST\(\$4, job\.deadline_at\)/);
+  assert.match(calls[2].sql, /pg_advisory_xact_lock/);
+  assert.deepEqual(calls[2].params, ["collector-ozon-seller:account-a:collector-a"]);
+  assert.match(calls[3].sql, /SELECT id,seller_context_json FROM collector_sessions/);
+  assert.match(calls[3].sql, /revoked_at IS NULL/);
+  assert.match(calls[3].sql, /expires_at>\$3/);
+  assert.match(calls[4].sql, /status='PROCESSING'/);
+  assert.match(calls[4].sql, /claim_expires_at>/);
+  assert.match(calls[5].sql, /FOR UPDATE SKIP LOCKED/);
+  assert.match(calls[5].sql, /account_id=\$1/);
+  assert.match(calls[5].sql, /claimed_session_id=\$2/);
+  assert.match(calls[5].sql, /job\.created_at \+ INTERVAL '1 second'<=\$3/);
+  assert.match(calls[5].sql, /claim_expires_at=LEAST\(\$4, job\.deadline_at\)/);
   assert.equal(calls.at(-1).sql, "COMMIT");
 
   calls.length = 0;
@@ -1356,13 +1424,79 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   assert.equal(calls.at(-1).sql, "COMMIT");
 });
 
+test("PostgreSQL Seller-context observation uses the account-session transaction fence and rejects stale watermarks", async () => {
+  const newer = {
+    sellerCompanyId: "7311458",
+    revision: 5,
+    observedAt: "2026-08-01T08:00:05.000Z",
+  };
+  const older = {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: "2026-08-01T08:00:04.000Z",
+  };
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("SELECT id,seller_context_json")) {
+        return { rows: [{ id: "collector-a", seller_context_json: older }], rowCount: 1 };
+      }
+      if (normalized.startsWith("UPDATE collector_sessions")) {
+        return { rows: [{ seller_context_json: JSON.parse(params[2]) }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async connect() { return client; }, async query() { return { rows: [] }; } },
+  });
+  assert.deepEqual(await repository.advanceSellerContext({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    captureContext: newer,
+    now: new Date("2026-08-01T08:00:05.000Z"),
+  }), newer);
+  assert.equal(calls[0].sql, "BEGIN ISOLATION LEVEL READ COMMITTED");
+  assert.match(calls[1].sql, /pg_advisory_xact_lock/);
+  assert.deepEqual(calls[1].params, ["collector-ozon-seller:account-a:collector-a"]);
+  assert.match(calls[2].sql, /FOR UPDATE/);
+  assert.equal(calls.at(-1).sql, "COMMIT");
+
+  const staleCalls = [];
+  const staleClient = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      staleCalls.push({ sql: normalized, params });
+      if (normalized.startsWith("SELECT id,seller_context_json")) {
+        return { rows: [{ id: "collector-a", seller_context_json: newer }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  const staleRepository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async connect() { return staleClient; }, async query() { return { rows: [] }; } },
+  });
+  await assert.rejects(staleRepository.advanceSellerContext({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    captureContext: older,
+    now: new Date("2026-08-01T08:00:06.000Z"),
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+  assert.equal(staleCalls.some(({ sql }) => sql.startsWith("UPDATE collector_sessions")), false);
+  assert.equal(staleCalls.at(-1).sql, "ROLLBACK");
+});
+
 test("PostgreSQL claim rejects an invalid session before checking account capacity", async () => {
   const calls = [];
   const client = {
     async query(sql, params = []) {
       const normalized = String(sql).replace(/\s+/g, " ").trim();
       calls.push({ sql: normalized, params });
-      if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+      if (normalized.startsWith("SELECT id")) {
         return { rows: [], rowCount: 0 };
       }
       if (normalized.startsWith("SELECT COUNT(*)")) {
@@ -1556,126 +1690,6 @@ test("PostgreSQL create-or-get reports an explicit id conflict after atomic inse
     deadlineAt: new Date("2026-07-31T01:00:00.000Z"),
     createdAt: new Date("2026-07-31T00:00:00.000Z"),
   }), (error) => error?.code === "OZON_ENRICHMENT_JOB_ID_CONFLICT");
-});
-
-test("PostgreSQL terminal writes include account, owning session, processing state, and live claim", async () => {
-  const calls = [];
-  const pool = {
-    async query(sql, params = []) {
-      const normalized = String(sql).replace(/\s+/g, " ").trim();
-      calls.push({ sql: normalized, params });
-      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
-        return { rows: [{
-          id: "job-a",
-          account_id: "account-a",
-          request_id: "request-a",
-          sku: "sku-a",
-          status: normalized.includes("status='SUCCESS'") ? "SUCCESS" : "FAILED",
-          refresh_bundle: {},
-          claimed_session_id: "collector-owner",
-          result_json: normalized.includes("status='SUCCESS'") ? completeResult(404) : null,
-          error_json: normalized.includes("status='FAILED'") ? { code: "FAILED" } : null,
-          deadline_at: "2026-07-31T01:00:00.000Z",
-          created_at: "2026-07-31T00:00:00.000Z",
-          updated_at: "2026-07-31T00:11:00.000Z",
-          completed_at: "2026-07-31T00:11:00.000Z",
-        }] };
-      }
-      return { rows: [] };
-    },
-  };
-  const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
-  await repository.completeJob({
-    accountId: "account-a",
-    collectorSessionId: "collector-owner",
-    jobId: "job-a",
-    result: completeResult(404),
-    now: new Date("2026-07-31T00:11:00.000Z"),
-  });
-  await repository.failJob({
-    accountId: "account-a",
-    collectorSessionId: "collector-owner",
-    jobId: "job-b",
-    error: { code: "FAILED" },
-    now: new Date("2026-07-31T00:11:00.000Z"),
-  });
-
-  assert.equal(calls.length, 2);
-  for (const [index, call] of calls.entries()) {
-    assert.match(call.sql, /account_id=\$1/);
-    assert.match(call.sql, /claimed_session_id=\$2/);
-    assert.match(call.sql, /id=\$3/);
-    assert.match(call.sql, /status='PROCESSING'/);
-    assert.match(call.sql, /claim_expires_at>\$4/);
-    assert.match(call.sql, /deadline_at>\$4/);
-    assert.match(call.sql, /EXISTS \(SELECT 1 FROM collector_sessions AS session/);
-    assert.match(call.sql, /session\.revoked_at IS NULL/);
-    assert.match(call.sql, /session\.expires_at>\$4/);
-    assert.deepEqual(call.params.slice(0, 4), [
-      "account-a",
-      "collector-owner",
-      index === 0 ? "job-a" : "job-b",
-      new Date("2026-07-31T00:11:00.000Z"),
-    ]);
-  }
-});
-
-test("PostgreSQL terminal fallback distinguishes session, ownership, terminal, missing, and update races", async (t) => {
-  const processingOwned = {
-    id: "job-a",
-    account_id: "account-a",
-    request_id: "request-a",
-    sku: "sku-a",
-    status: "PROCESSING",
-    refresh_bundle: {},
-    claimed_session_id: "collector-owner",
-    claim_expires_at: "2026-07-31T00:20:00.000Z",
-    deadline_at: "2026-07-31T01:00:00.000Z",
-    created_at: "2026-07-31T00:00:00.000Z",
-    updated_at: "2026-07-31T00:10:00.000Z",
-  };
-  const cases = [
-    ["invalid session", false, processingOwned, "OZON_ENRICHMENT_SESSION_SCOPE"],
-    ["wrong owner", true, { ...processingOwned, claimed_session_id: "collector-other" }, "OZON_ENRICHMENT_JOB_OWNERSHIP"],
-    ["terminal", true, { ...processingOwned, status: "SUCCESS" }, "OZON_ENRICHMENT_JOB_TERMINAL"],
-    ["missing", true, null, "OZON_ENRICHMENT_JOB_NOT_FOUND"],
-    ["concurrent update race", true, processingOwned, "OZON_ENRICHMENT_JOB_OWNERSHIP"],
-  ];
-  for (const [name, sessionValid, job, expectedCode] of cases) {
-    await t.test(name, async () => {
-      const calls = [];
-      const pool = {
-        async query(sql, params = []) {
-          const normalized = String(sql).replace(/\s+/g, " ").trim();
-          calls.push({ sql: normalized, params });
-          if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
-            return { rows: [], rowCount: 0 };
-          }
-          if (normalized.startsWith("SELECT id FROM collector_sessions")) {
-            return { rows: sessionValid ? [{ id: "collector-owner" }] : [], rowCount: sessionValid ? 1 : 0 };
-          }
-          if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
-            return { rows: job ? [job] : [], rowCount: job ? 1 : 0 };
-          }
-          return { rows: [], rowCount: 0 };
-        },
-      };
-      const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
-      await assert.rejects(repository.completeJob({
-        accountId: "account-a",
-        collectorSessionId: "collector-owner",
-        jobId: "job-a",
-        result: completeResult(1001),
-        now: new Date("2026-07-31T00:11:00.000Z"),
-      }), (error) => error?.code === expectedCode);
-      assert.match(calls[1].sql, /SELECT id FROM collector_sessions/);
-      if (!sessionValid) {
-        assert.equal(calls.length, 2);
-      } else {
-        assert.match(calls[2].sql, /SELECT \* FROM collector_ozon_enrichment_jobs/);
-      }
-    });
-  }
 });
 
 test("create-or-get snapshots caller input once before validation and persistence", async () => {
@@ -2997,6 +3011,158 @@ test("JSON completion stores allowlisted capture evidence and rejects extra keys
   }), (error) => error?.code === "OZON_ENRICHMENT_CAPTURE_CONTEXT_INVALID");
 });
 
+test("JSON Seller-context watermark linearizes switch-before-result and result-before-switch", async () => {
+  const makeState = () => ({
+    collectorSessions: [activeSession("collector-a", "account-a", {
+      expiresAt: "2026-08-02T00:00:00.000Z",
+    })],
+  });
+  const oldContext = {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: "2026-08-01T08:00:00.000Z",
+  };
+  const newContext = {
+    sellerCompanyId: "7311458",
+    revision: 5,
+    observedAt: "2026-08-01T08:00:02.000Z",
+  };
+  const prepare = async (state, suffix) => {
+    const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+    await repository.createOrGetJob({
+      id: `job-watermark-${suffix}`,
+      accountId: "account-a",
+      requestId: `request-watermark-${suffix}`,
+      sku: ACCOUNT_A_KEY.sku,
+      preferredSessionId: null,
+      refreshBundle: true,
+      deadlineAt: new Date("2026-08-01T09:00:00.000Z"),
+      createdAt: new Date("2026-08-01T08:00:00.000Z"),
+    });
+    await repository.advanceSellerContext({
+      accountId: "account-a",
+      collectorSessionId: "collector-a",
+      captureContext: oldContext,
+      now: new Date("2026-08-01T08:00:00.000Z"),
+    });
+    const job = await repository.claimNextJob({
+      accountId: "account-a",
+      collectorSessionId: "collector-a",
+      captureContext: oldContext,
+      claimFence: `fence-watermark-${suffix}`,
+      now: new Date("2026-08-01T08:00:00.000Z"),
+      claimExpiresAt: new Date("2026-08-01T08:01:00.000Z"),
+    });
+    return { repository, job };
+  };
+
+  const switchedState = makeState();
+  const switched = await prepare(switchedState, "switched");
+  await switched.repository.advanceSellerContext({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    captureContext: newContext,
+    now: new Date("2026-08-01T08:00:02.000Z"),
+  });
+  await assert.rejects(switched.repository.completeJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: switched.job.id,
+    key: ACCOUNT_A_KEY,
+    result: completeResult(268),
+    responseHash: "watermark-stale-result",
+    captureContext: oldContext,
+    claimFence: "fence-watermark-switched",
+    capturedAt: new Date("2026-08-01T08:00:03.000Z"),
+    expiresAt: new Date("2026-08-01T14:00:03.000Z"),
+    now: new Date("2026-08-01T08:00:03.000Z"),
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+  assert.notEqual(switchedState.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.deepEqual(switchedState.collectorOzonEnrichmentCache || [], []);
+
+  const failedAfterSwitchState = makeState();
+  const failedAfterSwitch = await prepare(failedAfterSwitchState, "failed-after-switch");
+  await failedAfterSwitch.repository.advanceSellerContext({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    captureContext: newContext,
+    now: new Date("2026-08-01T08:00:02.000Z"),
+  });
+  await assert.rejects(failedAfterSwitch.repository.failJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: failedAfterSwitch.job.id,
+    key: ACCOUNT_A_KEY,
+    error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+    responseHash: "watermark-stale-failure",
+    captureContext: oldContext,
+    claimFence: "fence-watermark-failed-after-switch",
+    capturedAt: new Date("2026-08-01T08:00:03.000Z"),
+    expiresAt: new Date("2026-08-01T08:01:03.000Z"),
+    now: new Date("2026-08-01T08:00:03.000Z"),
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+  assert.equal(failedAfterSwitchState.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.deepEqual(failedAfterSwitchState.collectorOzonEnrichmentCache || [], []);
+
+  const committedState = makeState();
+  const committed = await prepare(committedState, "committed");
+  await committed.repository.completeJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: committed.job.id,
+    key: ACCOUNT_A_KEY,
+    result: completeResult(269),
+    responseHash: "watermark-current-result",
+    captureContext: oldContext,
+    claimFence: "fence-watermark-committed",
+    capturedAt: new Date("2026-08-01T08:00:01.000Z"),
+    expiresAt: new Date("2026-08-01T14:00:01.000Z"),
+    now: new Date("2026-08-01T08:00:01.000Z"),
+  });
+  await committed.repository.advanceSellerContext({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    captureContext: newContext,
+    now: new Date("2026-08-01T08:00:02.000Z"),
+  });
+  assert.equal(committedState.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.equal(committedState.collectorOzonEnrichmentCache[0].status, "COMPLETE");
+});
+
+test("JSON Seller-context watermark rejects stale observations and deterministically keeps the newest concurrent observation", async () => {
+  const state = {
+    collectorSessions: [
+      activeSession("collector-a", "account-a", { expiresAt: "2026-08-02T00:00:00.000Z" }),
+      activeSession("collector-b", "account-b", { expiresAt: "2026-08-02T00:00:00.000Z" }),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const older = {
+    sellerCompanyId: "2681910",
+    revision: 8,
+    observedAt: "2026-08-01T08:00:01.000Z",
+  };
+  const newer = {
+    sellerCompanyId: "7311458",
+    revision: 9,
+    observedAt: "2026-08-01T08:00:02.000Z",
+  };
+  const concurrent = await Promise.allSettled([
+    repository.advanceSellerContext({ accountId: "account-a", collectorSessionId: "collector-a", captureContext: newer, now: new Date(newer.observedAt) }),
+    repository.advanceSellerContext({ accountId: "account-a", collectorSessionId: "collector-a", captureContext: older, now: new Date(older.observedAt) }),
+  ]);
+  assert.equal(concurrent.filter(({ status }) => status === "fulfilled").length, 1);
+  assert.equal(concurrent.filter(({ status }) => status === "rejected").length, 1);
+  assert.deepEqual(state.collectorSessions[0].sellerContext, newer);
+  assert.equal(state.collectorSessions[1].sellerContext, undefined);
+  await assert.rejects(repository.advanceSellerContext({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    captureContext: older,
+    now: new Date("2026-08-01T08:00:03.000Z"),
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED");
+});
+
 test("JSON terminal failure increments and returns the persisted attemptCount", async () => {
   const state = {
     collectorSessions: [activeSession("collector-a", "account-a", {
@@ -3119,6 +3285,7 @@ test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay acc
       return { rows: [], rowCount: 0 };
     },
   };
+  pool.connect = async () => ({ query: pool.query.bind(pool), release() {} });
   const repository = createPostgresCollectorOzonEnrichmentRepository({ pool });
   await repository.enqueueForCollect({
     accountId: "account-a",
@@ -3169,7 +3336,7 @@ test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay acc
     async query(sql, params = []) {
       const normalized = String(sql).replace(/\s+/g, " ").trim();
       claimClientCalls.push({ sql: normalized, params });
-      if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+      if (normalized.startsWith("SELECT id")) {
         return { rows: [{ id: "collector-a" }], rowCount: 1 };
       }
       if (normalized.startsWith("SELECT COUNT(*)")) return { rows: [{ count: "0" }] };
@@ -3248,40 +3415,42 @@ test("PostgreSQL linked enqueue replays only the same collect item", async () =>
 
 test("PostgreSQL defer classifies a same-session rotated fence as Seller context changed", async () => {
   const calls = [];
-  const repository = createPostgresCollectorOzonEnrichmentRepository({
-    pool: {
-      async query(sql, params = []) {
-        const normalized = String(sql).replace(/\s+/g, " ").trim();
-        calls.push({ sql: normalized, params });
-        if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
-          return { rows: [], rowCount: 0 };
-        }
-        if (normalized.startsWith("SELECT id FROM collector_sessions")) {
-          return { rows: [{ id: "collector-a" }], rowCount: 1 };
-        }
-        if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
-          return { rows: [{
-            id: "job-fence-rotated-pg",
-            account_id: "account-a",
-            request_id: "request-fence-rotated-pg",
-            sku: ACCOUNT_A_KEY.sku,
-            status: "PROCESSING",
-            claimed_session_id: "collector-a",
-            claim_expires_at: "2026-08-01T08:01:00.000Z",
-            deadline_at: "9999-12-31T23:59:59.999Z",
-            claim_fence: "claim-new",
-            capture_context_json: {
-              sellerCompanyId: "7311458",
-              revision: 2,
-              observedAt: "2026-08-01T08:00:05.000Z",
-            },
-            created_at: "2026-08-01T08:00:00.000Z",
-            updated_at: "2026-08-01T08:00:05.000Z",
-          }], rowCount: 1 };
-        }
+  const pool = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
         return { rows: [], rowCount: 0 };
-      },
+      }
+      if (normalized.startsWith("SELECT id")) {
+        return { rows: [{ id: "collector-a" }], rowCount: 1 };
+      }
+      if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
+        return { rows: [{
+          id: "job-fence-rotated-pg",
+          account_id: "account-a",
+          request_id: "request-fence-rotated-pg",
+          sku: ACCOUNT_A_KEY.sku,
+          status: "PROCESSING",
+          claimed_session_id: "collector-a",
+          claim_expires_at: "2026-08-01T08:01:00.000Z",
+          deadline_at: "9999-12-31T23:59:59.999Z",
+          claim_fence: "claim-new",
+          capture_context_json: {
+            sellerCompanyId: "7311458",
+            revision: 2,
+            observedAt: "2026-08-01T08:00:05.000Z",
+          },
+          created_at: "2026-08-01T08:00:00.000Z",
+          updated_at: "2026-08-01T08:00:05.000Z",
+        }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
     },
+  };
+  pool.connect = async () => ({ query: pool.query.bind(pool), release() {} });
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool,
   });
 
   await assert.rejects(repository.deferClaim({

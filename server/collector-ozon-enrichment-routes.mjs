@@ -8,6 +8,7 @@ import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
 const PERMISSION = "collector.ozon.read";
 const SINGLE_PATH = "/collector/ozon/enrich";
 const BATCH_PATH = "/collector/ozon/enrich/batch";
+const OBSERVE_PATH = "/collector/ozon/seller-context/observe";
 const NEXT_PATH = "/collector/ozon/enrichment-jobs/next";
 const RESULT_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/result\/?$/;
 const FAIL_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/fail\/?$/;
@@ -262,6 +263,14 @@ function parseClaimEnvelope(body, at) {
   return { captureContext: parseCaptureContext(body.captureContext, at) };
 }
 
+function parseObserveEnvelope(body, at) {
+  assertRequiredExactKeys(body, ["captureContext"], "Ozon Seller 观察快照格式无效");
+  const scopeChecked = structuredClone(body);
+  delete scopeChecked.captureContext?.sellerCompanyId;
+  assertNoClientControl(scopeChecked);
+  return { captureContext: parseCaptureContext(body.captureContext, at) };
+}
+
 function parseResultEnvelope(body, at) {
   assertRequiredExactKeys(
     body,
@@ -379,6 +388,7 @@ function errorResponse(error) {
 function isNamespacePath(pathname) {
   return pathname === SINGLE_PATH
     || pathname === BATCH_PATH
+    || pathname === OBSERVE_PATH
     || pathname === NEXT_PATH
     || pathname.startsWith(JOB_NAMESPACE)
     || RETRY_PATTERN.test(pathname);
@@ -396,7 +406,15 @@ export function createCollectorOzonEnrichmentHttpHandler({
     typeof authenticate !== "function"
     || typeof authenticateAccount !== "function"
     || !service
-    || ["enrichOne", "enrichBatch", "claimNext", "completeClaim", "failClaim", "retryCollectItem"]
+    || [
+      "enrichOne",
+      "enrichBatch",
+      "observeSellerContext",
+      "claimNext",
+      "completeClaim",
+      "failClaim",
+      "retryCollectItem",
+    ]
       .some((method) => typeof service[method] !== "function")
     || typeof readJson !== "function"
     || typeof sendJson !== "function"
@@ -412,11 +430,12 @@ export function createCollectorOzonEnrichmentHttpHandler({
     const retryMatch = pathname.match(RETRY_PATTERN);
     const single = req.method === "POST" && pathname === SINGLE_PATH;
     const batch = req.method === "POST" && pathname === BATCH_PATH;
+    const observe = req.method === "POST" && pathname === OBSERVE_PATH;
     const next = req.method === "POST" && pathname === NEXT_PATH;
     const result = req.method === "POST" && resultMatch;
     const fail = req.method === "POST" && failMatch;
     const retry = req.method === "POST" && retryMatch;
-    if (!single && !batch && !next && !result && !fail && !retry) {
+    if (!single && !batch && !observe && !next && !result && !fail && !retry) {
       if (!isNamespacePath(pathname)) return false;
       sendJson(res, 405, errorResponse(routeError(
         "该 Ozon 商品补全接口不支持当前方法",
@@ -433,6 +452,9 @@ export function createCollectorOzonEnrichmentHttpHandler({
       if ([...url.searchParams.keys()].length) {
         throw routeError("Ozon 商品补全接口不接受查询控制参数");
       }
+      if (observe && String(req?.headers?.cookie || "").trim()) {
+        throw routeError("Ozon Seller 观察接口不接受 Cookie 控制");
+      }
       if (single) {
         const body = await readJson(req);
         assertNoClientControl(body);
@@ -445,6 +467,13 @@ export function createCollectorOzonEnrichmentHttpHandler({
         assertNoClientControl(body);
         const input = parseOzonBatchEnrichmentRequest(body);
         sendJson(res, 200, { ok: true, data: await service.enrichBatch({ session, ...input }) });
+        return true;
+      }
+      if (observe) {
+        const body = await readJson(req);
+        const input = parseObserveEnvelope(body, new Date(now()));
+        await service.observeSellerContext({ session, ...input });
+        sendJson(res, 200, { ok: true });
         return true;
       }
       if (next) {

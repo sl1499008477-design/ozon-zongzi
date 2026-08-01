@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
-async function requestJson(handle, pathname, body, token, storeId) {
+async function requestJson(handle, pathname, body, token, storeId, method = "POST") {
   const payload = JSON.stringify(body || {});
   const req = Readable.from([Buffer.from(payload)]);
-  req.method = "POST";
+  req.method = method;
   req.url = pathname;
   req.headers = {
     "content-type": "application/json",
@@ -37,6 +37,7 @@ const storeId = "local_submit_store";
 const collectId = "collect-submit-failure";
 const completeCollectId = "collect-preview-complete";
 const enrichedCollectId = "collect-preview-enriched-logistics";
+const sourceOnlyCollectId = "collect-source-only-category";
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
@@ -86,6 +87,11 @@ await writeFile(dataFile, `${JSON.stringify({
         currencyCode: "CNY",
         descriptionCategoryId: 17028941,
         typeId: 91670,
+        categoryResolution: {
+          status: "MATCHED",
+          method: "MANUAL",
+          target: { storeId, descriptionCategoryId: 17028941, typeId: 91670 },
+        },
         packageWeight: "799",
         packageLength: "350",
         packageWidth: "85",
@@ -116,6 +122,12 @@ await writeFile(dataFile, `${JSON.stringify({
         currencyCode: "CNY",
         descriptionCategoryId: 17028941,
         typeId: 91670,
+        categoryResolution: {
+          status: "MATCHED",
+          method: "MANUAL",
+          source: { descriptionCategoryId: 17000001 },
+          target: { storeId, descriptionCategoryId: 17028941, typeId: 91670 },
+        },
         packageWeight: "799",
         packageLength: "350",
         packageWidth: "85",
@@ -123,6 +135,28 @@ await writeFile(dataFile, `${JSON.stringify({
         listingWarehouseId: "1020003087687000",
         listingStock: "5",
         images: ["https://cdn.example.test/complete.jpg"],
+      },
+    }, {
+      id: sourceOnlyCollectId,
+      accountId: "acct_submit_test",
+      sku: "4260049341",
+      status: "COMPLETE",
+      sourceCategory: { descriptionCategoryId: 123, typeIdCandidate: 456 },
+      listingDraft: {
+        sku: "4260049341",
+        title: "Source category must never become listing target",
+        price: "100",
+        currencyCode: "CNY",
+        descriptionCategoryId: 123,
+        typeId: 456,
+        sourceCategory: { descriptionCategoryId: 123, typeIdCandidate: 456 },
+        packageWeight: "800",
+        packageLength: "350",
+        packageWidth: "85",
+        packageHeight: "50",
+        listingWarehouseId: "1020003087687000",
+        listingStock: "5",
+        images: ["https://cdn.example.test/source-only.jpg"],
       },
     }, {
       id: enrichedCollectId,
@@ -137,14 +171,25 @@ await writeFile(dataFile, `${JSON.stringify({
         title: "Seller-enriched logistics preview item",
         price: "100",
         currencyCode: "CNY",
-        descriptionCategoryId: 17028941,
-        typeId: 91670,
+        descriptionCategoryId: 17000001,
+        typeId: 97000001,
+        categoryResolution: {
+          status: "MATCHED",
+          method: "MANUAL",
+          source: { descriptionCategoryId: 17000001, typeIdCandidate: 97000001 },
+          target: { storeId, descriptionCategoryId: 17028941, typeId: 91670 },
+        },
         sourceCategory: {
           descriptionCategoryId: 17000001,
           typeIdCandidate: 97000001,
           path: ["Seller source category"],
         },
-        variants: [{ sku: "4260049340", sourceCategory: {} }],
+        variants: [{
+          sku: "4260049340",
+          description_category_id: 17000001,
+          type_id: 97000001,
+          sourceCategory: {},
+        }],
         logistics: { weightG: 801, lengthMm: 351, widthMm: 86, heightMm: 51 },
         listingWarehouseId: "1020003087687000",
         listingStock: "5",
@@ -256,6 +301,55 @@ try {
   assert.equal(externalWriteCalls, 0);
   assert.deepEqual(fetchRequests, [], "fail-closed route must not make any external request");
 
+  for (const action of ["preview", "submit"]) {
+    const sourceOnly = await requestJson(
+      handle,
+      `/ozon/collect-box/${sourceOnlyCollectId}/listing/${action}`,
+      { targetStoreId: storeId, idempotencyKey: `source-only-${action}` },
+      token,
+      storeId,
+    );
+    assert.equal(sourceOnly.status, 422);
+    assert.equal(sourceOnly.body.code, "COLLECT_TARGET_CATEGORY_REQUIRED");
+    assert.equal(externalWriteCalls, 0);
+    assert.deepEqual(fetchRequests, [], "source aliases must fail before category normalization or Ozon calls");
+  }
+
+  const sourceOnlyState = JSON.parse(await readFile(dataFile, "utf8"));
+  const sourceOnlyDraft = sourceOnlyState.caches.collectBox
+    .find((row) => row.id === sourceOnlyCollectId).listingDraft;
+  const patchedTarget = await requestJson(
+    handle,
+    `/ozon/collect-box/${sourceOnlyCollectId}`,
+    {
+      description_category_id: 17028941,
+      type_id: 91670,
+      listingDraft: {
+        ...sourceOnlyDraft,
+        categoryResolution: {
+          status: "MATCHED",
+          method: "MANUAL",
+          source: { descriptionCategoryId: 123, typeIdCandidate: 456 },
+          target: { storeId, descriptionCategoryId: 17028941, typeId: 91670 },
+        },
+      },
+    },
+    token,
+    storeId,
+    "PATCH",
+  );
+  assert.equal(patchedTarget.status, 200, JSON.stringify(patchedTarget.body));
+  assert.equal(patchedTarget.body.listingDraft.categoryResolution.target.storeId, storeId);
+  assert.equal(patchedTarget.body.listingDraft.categoryResolution.method, "MANUAL");
+  assert.equal(patchedTarget.body.listingDraft.categoryResolution.target.descriptionCategoryId, 17028941);
+  assert.equal(patchedTarget.body.description_category_id, undefined);
+  assert.equal(patchedTarget.body.type_id, undefined);
+  assert.equal(patchedTarget.body.sourceCategory.descriptionCategoryId, 123);
+  assert.equal(patchedTarget.body.sourceCategory.typeIdCandidate, 456);
+  const persistedTarget = JSON.parse(await readFile(dataFile, "utf8")).caches.collectBox
+    .find((row) => row.id === sourceOnlyCollectId).listingDraft.categoryResolution;
+  assert.equal(persistedTarget.target.storeId, storeId);
+
   const completePreview = await requestJson(
     handle,
     `/ozon/collect-box/${completeCollectId}/listing/preview`,
@@ -280,6 +374,8 @@ try {
   assert.equal(enrichedPreview.body.items?.[0]?.depth, 351);
   assert.equal(enrichedPreview.body.items?.[0]?.description_category_id, 17028941);
   assert.notEqual(enrichedPreview.body.items?.[0]?.description_category_id, 17000001);
+  assert.equal(enrichedPreview.body.items?.[0]?.type_id, 91670);
+  assert.notEqual(enrichedPreview.body.items?.[0]?.type_id, 97000001);
   assert.equal(externalWriteCalls, 0);
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));

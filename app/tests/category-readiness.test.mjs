@@ -14,6 +14,7 @@ import {
   requireCategoryReadiness,
   sourceCategoryEvidenceOf,
   categoryResolutionForStore,
+  listingTargetCategoryFieldsForStore,
   manualCategoryResolution,
 } from "../src/category-readiness.js";
 
@@ -280,6 +281,17 @@ test("uses a matched resolution only for the currently selected target store", (
   };
   assert.deepEqual(categoryResolutionForStore(resolution, "store-a"), resolution);
   assert.equal(categoryResolutionForStore(resolution, "store-b"), null);
+  assert.deepEqual(listingTargetCategoryFieldsForStore(resolution, "store-a"), {
+    descriptionCategoryId: 30,
+    typeId: 40,
+  });
+  assert.deepEqual(listingTargetCategoryFieldsForStore(resolution, "store-b"), {});
+  assert.deepEqual(listingTargetCategoryFieldsForStore({
+    status: "MATCHED",
+    method: "",
+    source: { descriptionCategoryId: 123, typeIdCandidate: 456 },
+    target: { storeId: "store-a", descriptionCategoryId: 999, typeId: 1000 },
+  }, "store-a"), {}, "an incomplete marker cannot turn source or historical roots into a target");
 });
 
 test("records a manual target-store category selection with its source evidence", () => {

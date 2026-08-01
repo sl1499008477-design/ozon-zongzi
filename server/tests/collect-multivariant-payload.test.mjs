@@ -54,6 +54,16 @@ const collected = {
     modelName: "shared-model-name",
     listingWarehouseId: "1020000000001",
     listingStock: "5",
+    categoryResolution: {
+      status: "MATCHED",
+      method: "MANUAL",
+      source: { descriptionCategoryId: 17000001, typeIdCandidate: 910001 },
+      target: {
+        storeId: "target-store",
+        descriptionCategoryId: 17999999,
+        typeId: 919999,
+      },
+    },
     variants: [
       {
         sku: "sku-red",
@@ -82,14 +92,18 @@ const collected = {
   },
 };
 
-const rawItems = testExports.buildCollectBoxListingItems(collected);
+const rawItems = testExports.buildCollectBoxListingItems(collected, "target-store");
 assert.equal(rawItems.length, 2);
 assert.equal(rawItems[0]._sourceVariant, firstSource);
 assert.equal(rawItems[1]._sourceVariant, secondSource);
 assert.equal(rawItems[0].scraped_model_name, "shared-model-name");
 assert.equal(rawItems[1].scraped_model_name, "shared-model-name");
-assert.equal(rawItems[0].description_category_id, 17000001);
-assert.equal(rawItems[1].description_category_id, undefined, "sibling category must come from its own source snapshot");
+assert.equal(rawItems[0].description_category_id, 17999999);
+assert.equal(rawItems[1].description_category_id, 17999999, "siblings inherit only the explicit target marker");
+assert.equal(rawItems[0].type_id, 919999);
+assert.equal(rawItems[1].type_id, 919999);
+assert.notEqual(rawItems[0].description_category_id, firstSource.description_category_id);
+assert.notEqual(rawItems[1].type_id, secondSource.type_id);
 assert.equal(rawItems[0].attributes[0].values[0].value, "Красный вручную");
 assert.deepEqual(rawItems[1].attributes, [], "anchor edits must not be copied to sibling variants");
 
@@ -106,10 +120,10 @@ const [red, blue] = normalized.items;
 const redAttrs = new Map(red.attributes.map((attr) => [attr.id, attr]));
 const blueAttrs = new Map(blue.attributes.map((attr) => [attr.id, attr]));
 
-assert.equal(red.description_category_id, 17000001);
-assert.equal(red.type_id, 910001);
-assert.equal(blue.description_category_id, 17000002);
-assert.equal(blue.type_id, 910002);
+assert.equal(red.description_category_id, 17999999);
+assert.equal(red.type_id, 919999);
+assert.equal(blue.description_category_id, 17999999);
+assert.equal(blue.type_id, 919999);
 assert.equal(redAttrs.get(500).values[0].value, "Красный вручную");
 assert.equal(blueAttrs.get(500).values[0].value, "Синий");
 assert.equal(redAttrs.get(4191).values[0].value, "Описание красного варианта");

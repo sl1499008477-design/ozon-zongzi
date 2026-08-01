@@ -338,9 +338,12 @@ export async function ingestCollectRequestV4(options = {}) {
           const storedResponse = row.response && typeof row.response === "object"
             ? row.response
             : { item: incomingNormalizedItem, collectItemId: row.collect_item_id };
-          const storedItem = storedResponse.item && typeof storedResponse.item === "object"
+          const historicalItem = storedResponse.item && typeof storedResponse.item === "object"
             ? storedResponse.item
             : incomingNormalizedItem;
+          const storedItem = sourceId === "ozon"
+            ? normalizeOzonCollectedSourceEvidence(historicalItem)
+            : historicalItem;
           const replayEnrichment = sourceId === "ozon"
             ? storedResponse.enrichment
               || storedItem.enrichment
@@ -401,9 +404,12 @@ export async function ingestCollectRequestV4(options = {}) {
             ...(canonicalEnrichment ? { enrichment: canonicalEnrichment } : {}),
           }
         : null;
-      const normalizedItem = canonicalItem
+      let normalizedItem = canonicalItem
         ? mergeCollectedItemPublicEvidence(canonicalItem, incomingNormalizedItem)
         : incomingNormalizedItem;
+      if (sourceId === "ozon") {
+        normalizedItem = normalizeOzonCollectedSourceEvidence(normalizedItem);
+      }
       const effectiveEnrichment = sourceId === "ozon"
         ? reconcileOzonEnrichmentSummary(normalizedItem, canonicalEnrichment)
         : null;

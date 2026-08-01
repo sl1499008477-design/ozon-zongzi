@@ -71,7 +71,7 @@ function operation(permissions = [READ_PERMISSION]) {
 }
 
 function createAgent(options = {}) {
-  const sellerContextRuntime = options.sellerContextRuntime || {
+  const sellerContextRuntime = {
     async resolveCurrentWithRecovery() {
       return {
         status: 'READY',
@@ -82,7 +82,14 @@ function createAgent(options = {}) {
       };
     },
     async isSnapshotCurrent() { return true; },
+    ...(options.sellerContextRuntime || {}),
   };
+  if (typeof sellerContextRuntime.submitIfCurrent !== 'function') {
+    sellerContextRuntime.submitIfCurrent = async (snapshot, submit) => {
+      if (!(await sellerContextRuntime.isSnapshotCurrent(snapshot))) return false;
+      return submit();
+    };
+  }
   return createAgentFactory({ ...options, sellerContextRuntime });
 }
 
@@ -425,7 +432,7 @@ test('agent releases a Seller lease that resolves after its drain is cancelled',
   assert.deepEqual(released, [snapshot]);
 });
 
-test('autonomous drain discards a result after Seller revision changes and reports the stable retryable failure', async () => {
+test('autonomous drain discards a result after Seller revision changes and fences old-context terminal posts', async () => {
   const requests = [];
   const captures = [];
   let nextCalls = 0;
@@ -476,18 +483,7 @@ test('autonomous drain discards a result after Seller revision changes and repor
   assert.equal(captures[0].sellerContext.companyId, '2681910');
   assert.equal(captures[0].sellerContext.revision, 4);
   assert.equal(requests.some(({ path }) => path.endsWith('/result')), false);
-  const failure = requests.find(({ path }) => path.endsWith('/fail'));
-  assert.ok(failure);
-  assert.deepEqual(JSON.parse(failure.options.body), {
-    code: 'SELLER_CONTEXT_CHANGED',
-    message: 'Seller 店铺上下文已变化',
-    captureContext: {
-      sellerCompanyId: '2681910',
-      revision: 4,
-      observedAt: '2026-08-01T08:00:00.000Z',
-    },
-    claimFence: 'claim-context-switch',
-  });
+  assert.equal(requests.some(({ path }) => path.endsWith('/fail')), false);
 });
 
 test('agent preserves a server Seller-context rejection and reports CHANGED without retrying result', async () => {
@@ -542,7 +538,7 @@ test('agent preserves a server Seller-context rejection and reports CHANGED with
 
   await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
 
-  assert.deepEqual(events.slice(0, 4), ['capture', 'check', 'result', 'fail']);
+  assert.deepEqual(events.slice(0, 5), ['capture', 'check', 'result', 'check', 'fail']);
   assert.equal(requests.filter(({ path }) => path.endsWith('/result')).length, 1);
   const failure = requests.find(({ path }) => path.endsWith('/fail'));
   assert.deepEqual(JSON.parse(failure.options.body), {
@@ -555,6 +551,237 @@ test('agent preserves a server Seller-context rejection and reports CHANGED with
     },
     claimFence: 'claim-server-context-change',
   });
+});
+
+test('a Seller switch before terminal dispatch fences both result and follow-up failure posts', async () => {
+  const terminalPaths = [];
+  let nextCalls = 0;
+  let fenceCalls = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1 ? {
+            ok: true,
+            job: {
+              id: 'job-switch-before-terminal',
+              requestId: 'request-switch-before-terminal',
+              sku: '4862904234',
+              refreshBundle: false,
+              claimFence: 'claim-switch-before-terminal',
+            },
+          } : { ok: true, job: null });
+        }
+        terminalPaths.push(path);
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() {
+        return {
+          status: 'READY',
+          companyId: '2681910',
+          revision: 4,
+          observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+          sellerTabId: 9,
+        };
+      },
+      async isSnapshotCurrent() { return true; },
+      async submitIfCurrent() {
+        fenceCalls += 1;
+        return false;
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      return { ok: true, data: { items: [completeVariantData('4862904234')] } };
+    },
+    async sleep() {},
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.equal(fenceCalls, 2, 'the blocked result and its failure path must both cross the fence');
+  assert.deepEqual(terminalPaths, []);
+});
+
+test('an in-flight result rejected by the server watermark is not accepted and its old-context fail is fenced', async () => {
+  const terminalPaths = [];
+  let nextCalls = 0;
+  let switched = false;
+  let fenceCalls = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1 ? {
+            ok: true,
+            job: {
+              id: 'job-switch-in-flight',
+              requestId: 'request-switch-in-flight',
+              sku: '4862904234',
+              refreshBundle: false,
+              claimFence: 'claim-switch-in-flight',
+            },
+          } : { ok: true, job: null });
+        }
+        terminalPaths.push(path);
+        if (path.endsWith('/result')) {
+          switched = true;
+          return jsonResponse(409, { ok: false, code: 'SELLER_CONTEXT_CHANGED' });
+        }
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() {
+        return {
+          status: 'READY',
+          companyId: '2681910',
+          revision: 4,
+          observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+          sellerTabId: 9,
+        };
+      },
+      async isSnapshotCurrent() { return true; },
+      async submitIfCurrent(_snapshot, submit) {
+        fenceCalls += 1;
+        if (switched) return false;
+        return submit();
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      return { ok: true, data: { items: [completeVariantData('4862904234')] } };
+    },
+    async sleep() {},
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.equal(fenceCalls, 2);
+  assert.deepEqual(terminalPaths.filter((path) => path.endsWith('/result')).length, 1);
+  assert.deepEqual(terminalPaths.filter((path) => path.endsWith('/fail')).length, 0);
+});
+
+test('unchanged Seller context accepts a result only while the submit fence is held', async () => {
+  let nextCalls = 0;
+  let fenceOpen = false;
+  let resultAccepted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1 ? {
+            ok: true,
+            job: {
+              id: 'job-no-switch',
+              requestId: 'request-no-switch',
+              sku: '4862904234',
+              refreshBundle: false,
+              claimFence: 'claim-no-switch',
+            },
+          } : { ok: true, job: null });
+        }
+        if (path.endsWith('/result')) resultAccepted = fenceOpen;
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() {
+        return {
+          status: 'READY',
+          companyId: '2681910',
+          revision: 4,
+          observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+          sellerTabId: 9,
+        };
+      },
+      async isSnapshotCurrent() { return true; },
+      async submitIfCurrent(_snapshot, submit) {
+        fenceOpen = true;
+        try {
+          return await submit();
+        } finally {
+          fenceOpen = false;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      return { ok: true, data: { items: [completeVariantData('4862904234')] } };
+    },
+    async sleep() {},
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.equal(resultAccepted, true);
+});
+
+test('unchanged Seller context reports a capture failure only while the submit fence is held', async () => {
+  let nextCalls = 0;
+  let fenceOpen = false;
+  let failureAccepted = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1 ? {
+            ok: true,
+            job: {
+              id: 'job-failure-fence',
+              requestId: 'request-failure-fence',
+              sku: '4862904234',
+              refreshBundle: false,
+              claimFence: 'claim-failure-fence',
+            },
+          } : { ok: true, job: null });
+        }
+        if (path.endsWith('/fail')) failureAccepted = fenceOpen;
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() {
+        return {
+          status: 'READY',
+          companyId: '2681910',
+          revision: 4,
+          observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+          sellerTabId: 9,
+        };
+      },
+      async isSnapshotCurrent() { return true; },
+      async submitIfCurrent(_snapshot, submit) {
+        fenceOpen = true;
+        try {
+          return await submit();
+        } finally {
+          fenceOpen = false;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      throw Object.assign(new Error('temporary capture failure'), {
+        code: 'OZON_ENRICH_UPSTREAM_FAILED',
+      });
+    },
+    async sleep() {},
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.equal(failureAccepted, true);
 });
 
 test('autonomous drain queues one empty-stop rerun when a kick arrives during an active claim', async () => {

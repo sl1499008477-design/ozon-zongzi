@@ -70,6 +70,7 @@ import "antd/dist/reset.css";
 import {
   CATEGORY_DATA_ERROR_MESSAGE,
   categoryResolutionForStore,
+  listingTargetCategoryFieldsForStore,
   categoryItemScopeIsCurrent,
   categoryReadiness,
   manualCategoryResolution,
@@ -4093,6 +4094,7 @@ const collectEditPreviewPayload = ({
   packageHeight = "",
   warehouseId = "",
   stock = "",
+  targetStoreId = "",
 }) => {
   const sourceVariant = collectEditSourceVariant(item, sku);
   const attributes = collectEditRawAttributeList(sourceVariant, item);
@@ -4100,6 +4102,12 @@ const collectEditPreviewPayload = ({
   const numericPrice = numberFromMoney(price);
   const firstVariant = variantRows[0] || {};
   const offerId = collectEditFirst(firstVariant.offerId, firstVariant.offer_id) || `${offerPrefix || "jz-"}${sku || item.sku || Date.now()}`;
+  const sourceCategory = collectEditSourceCategorySnapshot(item);
+  const targetResolution = categoryResolutionForStore(
+    item.listingDraft?.categoryResolution || item.categoryResolution,
+    targetStoreId,
+  );
+  const targetFields = listingTargetCategoryFieldsForStore(targetResolution, targetStoreId);
   const payload = {
     offer_id: offerId,
     name: title || collectEditFirst(item.name, item.title, sku) || `Ozon SKU ${sku}`,
@@ -4115,12 +4123,15 @@ const collectEditPreviewPayload = ({
     _aiHashtags: Array.isArray(tags) ? tags : [],
     richContent,
     _sourceVariant: sourceVariant,
+    sourceCategory,
     attributes,
     complex_attributes: complexAttributes,
     bundleComplexAttrs: sourceVariant._bundleComplexAttrs || undefined,
     barcode: collectEditFirst(item.barcode, sourceVariant.barcode),
-    description_category_id: collectEditFirst(item.description_category_id, item.descriptionCategoryId, sourceVariant.description_category_id, sourceVariant.descriptionCategoryId),
-    type_id: collectEditFirst(item.type_id, item.typeId, sourceVariant.type_id, sourceVariant.typeId),
+    ...(targetFields.descriptionCategoryId
+      ? { description_category_id: targetFields.descriptionCategoryId }
+      : {}),
+    ...(targetFields.typeId ? { type_id: targetFields.typeId } : {}),
     dimension_unit: "mm",
     weight_unit: "g",
   };
@@ -4928,7 +4939,7 @@ const collectEditContentRating = ({
   };
 };
 
-const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", images = [], offerPrefix = "jz-" }) => {
+const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", images = [], offerPrefix = "jz-", targetStoreId = "" }) => {
   const sourceRows = collectEditVariantSourceRows(item);
   const rows = sourceRows.length ? sourceRows : [item];
   return rows.map((variant, index) => {
@@ -4939,6 +4950,14 @@ const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", i
     const numericSellPrice = numberFromMoney(sellPrice);
     const aspectName = collectEditAspectName(variant);
     const variantName = collectEditFirst(variant.name, variant.title, variant.productName, variant.product_name, title);
+    const targetResolution = categoryResolutionForStore(
+      variant.categoryResolution || item.listingDraft?.categoryResolution || item.categoryResolution,
+      targetStoreId,
+    );
+    const targetFields = listingTargetCategoryFieldsForStore(
+      targetResolution,
+      targetStoreId,
+    );
     return {
       key: `${rowSku || sku || "sku"}-${index}`,
       index: index + 1,
@@ -4957,8 +4976,10 @@ const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", i
       description: collectEditFirst(variant.description, sourceVariant.description, sourceVariantText(sourceVariant, 4191)),
       richContent: collectEditFirst(variant.richContent, variant.rich_content, sourceVariant.richContent, sourceVariantText(sourceVariant, 11254)),
       barcode: collectEditFirst(variant.barcode, sourceVariant.barcode, sourceVariantText(sourceVariant, 7822)),
-      descriptionCategoryId: collectEditFirst(variant.descriptionCategoryId, variant.description_category_id),
-      typeId: collectEditFirst(variant.typeId, variant.type_id),
+      sourceCategory: sourceCategoryEvidenceOf({ _sourceVariant: sourceVariant }),
+      ...(targetResolution ? { categoryResolution: targetResolution } : {}),
+      descriptionCategoryId: targetFields.descriptionCategoryId || "",
+      typeId: targetFields.typeId || "",
       categoryAttributes: Array.isArray(variant.categoryAttributes) ? variant.categoryAttributes : undefined,
       packageWeight: collectEditFirst(variant.packageWeight, variant.weight, sourceVariantText(sourceVariant, 4497)),
       packageLength: collectEditFirst(variant.packageLength, variant.depth, sourceVariantText(sourceVariant, 9454)),
@@ -5217,7 +5238,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setListingStock(collectEditFirst(draft.listingStock, draft.stock, item.listingStock, item.listing_stock, "5"));
       setSourceLink(collectEditFirst(draft.sourceLink) || collectEditSourceUrl(item, nextSku));
       setNote(collectEditFirst(draft.note, item.note, item.remark));
-      setVariantRows(draftVariants.length ? draftVariants : collectEditVariantRows({ item, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix }));
+      setVariantRows(draftVariants.length ? draftVariants : collectEditVariantRows({ item, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix, targetStoreId: categoryStoreId }));
       setSelectedVariantKeys([]);
     } else {
       setPreviewItem(null);
@@ -5442,6 +5463,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         packageHeight,
         warehouseId: listingWarehouseId,
         stock: listingStock,
+        targetStoreId: categoryStoreId,
       });
       const result = await apiRequest("/ozon/products/import/preview", {
         method: "POST",
@@ -5527,9 +5549,31 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     const anchorSku = String(sku || "");
     const anchorIndex = Math.max(0, variantRows.findIndex((row) => String(row.sku || "") === anchorSku));
     const draftVariants = variantRows.map((row, index) => {
-      if (index !== anchorIndex) return row;
+      const {
+        descriptionCategoryId: _historicalDescriptionCategoryId,
+        description_category_id: _historicalDescriptionCategoryIdSnake,
+        typeId: _historicalTypeId,
+        type_id: _historicalTypeIdSnake,
+        ...rowWithoutCategoryRoots
+      } = row;
+      const rowResolution = categoryResolutionForStore(
+        row.categoryResolution,
+        categoryStoreId,
+      ) || categoryResolution;
+      const rowTarget = listingTargetCategoryFieldsForStore(rowResolution, categoryStoreId);
+      const normalizedRow = {
+        ...rowWithoutCategoryRoots,
+        sourceCategory: sourceCategoryEvidenceOf({
+          sourceCategory: row.sourceCategory,
+          _sourceVariant: row.sourceVariant,
+        }),
+        ...(rowResolution ? { categoryResolution: rowResolution } : {}),
+        descriptionCategoryId: rowTarget.descriptionCategoryId || "",
+        typeId: rowTarget.typeId || "",
+      };
+      if (index !== anchorIndex) return normalizedRow;
       return {
-        ...row,
+        ...normalizedRow,
         description,
         richContent,
         brand,
@@ -5538,8 +5582,8 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         packageLength,
         packageWidth,
         packageHeight,
-        descriptionCategoryId: categoryDescriptionId || row.descriptionCategoryId || "",
-        typeId: categoryTypeId || row.typeId || "",
+        descriptionCategoryId: rowTarget.descriptionCategoryId || "",
+        typeId: rowTarget.typeId || "",
         categoryPath: categoryLabel,
         categoryPathZh: categoryLabel,
         categoryPathRu: categoryRussianLabel,
@@ -5613,8 +5657,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
           image: productImageList[0] || image,
           images: productImageList,
           brand,
-          description_category_id: categoryDescriptionId || undefined,
-          type_id: categoryTypeId || undefined,
           attributes: draft.categoryAttributes
             .filter((row) => row.id && (Array.isArray(row.values) ? row.values.length : row.value))
             .map((row) => ({
@@ -6471,7 +6513,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 <p>{variantRows.length || 1} 个变体</p>
               </div>
               <Space>
-                <Button size="small" icon={<PlusOutlined />} onClick={() => duplicateVariantRow(variantRows[0] || collectEditVariantRows({ item, sku, title, price, images: productImageList, offerPrefix })[0])}>添加变体</Button>
+                <Button size="small" icon={<PlusOutlined />} onClick={() => duplicateVariantRow(variantRows[0] || collectEditVariantRows({ item, sku, title, price, images: productImageList, offerPrefix, targetStoreId: categoryStoreId })[0])}>添加变体</Button>
                 <Button size="small" danger disabled={!selectedVariantKeys.length} onClick={deleteSelectedVariants}>批量删除变体</Button>
               </Space>
             </div>

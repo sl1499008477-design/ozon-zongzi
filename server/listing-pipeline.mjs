@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import {
   assertOzonListingReady,
   buildOzonEnrichmentSummary,
+  explicitOzonListingTarget,
   mergeOzonEnrichmentResult,
   preserveOzonSourceCategoryEvidence,
 } from "./collect-enrichment-policy.mjs";
@@ -188,7 +189,7 @@ async function transaction(callback) {
   const pool = await poolReady();
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
     const result = await callback(client);
     await client.query("COMMIT");
     return result;
@@ -227,17 +228,28 @@ function collectRawPayload(item = {}, sourceOverride) {
 }
 
 export function buildCollectItemDraftV4(item = {}) {
+  const target = explicitOzonListingTarget(item?.listingDraft?.categoryResolution)
+    || explicitOzonListingTarget(item?.categoryResolution);
+  const applyExplicitTarget = (draft = {}) => {
+    const normalized = structuredClone(draft);
+    for (const key of ["descriptionCategoryId", "description_category_id", "typeId", "type_id"]) {
+      delete normalized[key];
+    }
+    normalized.descriptionCategoryId = target?.descriptionCategoryId || "";
+    normalized.typeId = target?.typeId || "";
+    return normalized;
+  };
   if (item.listingDraft && typeof item.listingDraft === "object") {
-    return preserveOzonSourceCategoryEvidence(
+    return applyExplicitTarget(preserveOzonSourceCategoryEvidence(
       item,
       mergeOzonEnrichmentResult(item.listingDraft, item),
-    );
+    ));
   }
   const logistics = item.logistics && typeof item.logistics === "object"
     && !Array.isArray(item.logistics)
     ? item.logistics
     : {};
-  return preserveOzonSourceCategoryEvidence(item, {
+  return applyExplicitTarget(preserveOzonSourceCategoryEvidence(item, {
     sku: item.sku || item.sourceExternalId || item.id || "",
     title: item.name || item.title || "",
     price: item.price?.price || item.price || item.priceText || "",
@@ -254,11 +266,12 @@ export function buildCollectItemDraftV4(item = {}) {
     packageWidth: item.packageWidth || item.width || logistics.widthMm || "",
     packageHeight: item.packageHeight || item.height || logistics.heightMm || "",
     ...(Object.keys(logistics).length ? { logistics: structuredClone(logistics) } : {}),
-    descriptionCategoryId: item.description_category_id || item.descriptionCategoryId || "",
-    typeId: item.type_id || item.typeId || "",
+    ...(item.categoryResolution && typeof item.categoryResolution === "object"
+      ? { categoryResolution: structuredClone(item.categoryResolution) }
+      : {}),
     sourceLink: item.productUrl || item.url || "",
     variants: Array.isArray(item.variants) ? item.variants : (item.variantData?.variants || []),
-  });
+  }));
 }
 
 function draftHashValue(draft = {}) {
@@ -576,6 +589,7 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
       ...withoutCollectionScope(normalized),
       ...(enrichment ? { enrichment } : {}),
       id: row.id,
+      source: row.source || normalized.source || normalized.sourceId || "",
       sku: row.source_sku || normalized.sku || "",
       productUrl: row.source_url || normalized.productUrl || "",
       storeId: row.store_id || "",

@@ -55,3 +55,14 @@ test("migration 022 fences claims and deterministically supersedes legacy duplic
   assert.match(sql, /collect_item_id IS NOT NULL[\s\S]*status IN \('PENDING', 'PROCESSING'\)/);
   assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE/);
 });
+
+test("migration 023 adds an account-session Seller context watermark without destructive rewrites", async () => {
+  const sql = await readFile(
+    new URL("../db/migrations/023_collector_seller_context_watermark.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(sql, /ALTER TABLE collector_sessions/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS seller_context_json JSONB/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS seller_context_updated_at TIMESTAMPTZ/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
+});

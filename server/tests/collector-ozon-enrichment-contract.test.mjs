@@ -100,6 +100,31 @@ test("target category fields cannot satisfy source-category enrichment readiness
   );
 });
 
+test("Ozon ingress promotes legacy root category aliases into source evidence and removes target-shaped roots", async (t) => {
+  for (const [name, payload] of [
+    ["snake case", { description_category_id: 123, type_id: 456 }],
+    ["camel case", { descriptionCategoryId: 123, typeId: 456 }],
+  ]) {
+    await t.test(name, () => {
+      const normalized = normalizeOzonCollectedSourceEvidence({
+        sku: "4862904234",
+        ...payload,
+      });
+
+      assert.deepEqual(normalized.sourceCategory, {
+        descriptionCategoryId: 123,
+        typeIdCandidate: 456,
+      });
+      for (const field of [
+        "description_category_id",
+        "descriptionCategoryId",
+        "type_id",
+        "typeId",
+      ]) assert.equal(Object.hasOwn(normalized, field), false, field);
+    });
+  }
+});
+
 test("source-category merge replaces invalid IDs and deterministically extends partial evidence arrays", () => {
   const merged = mergeOzonEnrichmentResult({
     descriptionCategoryId: 700,

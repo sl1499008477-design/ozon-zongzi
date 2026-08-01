@@ -40,6 +40,13 @@ function claimBody(overrides = {}) {
   };
 }
 
+function observeBody(overrides = {}) {
+  return {
+    captureContext: resultBody().captureContext,
+    ...overrides,
+  };
+}
+
 function failBody(overrides = {}) {
   return {
     code: "OZON_ENRICH_NOT_FOUND",
@@ -104,6 +111,7 @@ function harness(overrides = {}) {
     authenticateAccount: [],
     enrichOne: [],
     enrichBatch: [],
+    observeSellerContext: [],
     claimNext: [],
     completeClaim: [],
     failClaim: [],
@@ -136,6 +144,7 @@ function harness(overrides = {}) {
         claimFence: "claim-fence-route",
       };
     },
+    async observeSellerContext(input) { calls.observeSellerContext.push(input); },
     async completeClaim(input) { calls.completeClaim.push(input); return result("4862904234"); },
     async failClaim(input) { calls.failClaim.push(input); return { id: input.jobId, status: "FAILED" }; },
     async retryCollectItem(input) {
@@ -176,12 +185,13 @@ async function request(h, method, pathname, body) {
 const ROUTES = [
   ["POST", "/collector/ozon/enrich", { requestId: "request-one", sku: "4862904234" }],
   ["POST", "/collector/ozon/enrich/batch", { requestId: "request-batch", skus: ["4862904234"] }],
+  ["POST", "/collector/ozon/seller-context/observe", observeBody()],
   ["POST", "/collector/ozon/enrichment-jobs/next", claimBody()],
   ["POST", "/collector/ozon/enrichment-jobs/job-route/result", resultBody()],
   ["POST", "/collector/ozon/enrichment-jobs/job-route/fail", failBody()],
 ];
 
-test("all five fixed routes authenticate collector.ozon.read before invoking the service", async () => {
+test("all six fixed routes authenticate collector.ozon.read before invoking the service", async () => {
   for (const [method, pathname, body] of ROUTES) {
     const h = harness({
       authError: Object.assign(new Error("permission denied"), {
@@ -196,12 +206,74 @@ test("all five fixed routes authenticate collector.ozon.read before invoking the
     assert.equal(h.calls.authenticate.length, 1, pathname);
     assert.equal(h.calls.authenticate[0].permission, "collector.ozon.read", pathname);
     assert.equal(
-      h.calls.enrichOne.length + h.calls.enrichBatch.length + h.calls.claimNext.length
+      h.calls.enrichOne.length + h.calls.enrichBatch.length + h.calls.observeSellerContext.length
+        + h.calls.claimNext.length
         + h.calls.completeClaim.length + h.calls.failClaim.length,
       0,
       pathname,
     );
   }
+});
+
+test("Seller context observe route accepts only one fresh snapshot from the authenticated Collector scope", async () => {
+  const h = harness();
+  const response = await request(
+    h,
+    "POST",
+    "/collector/ozon/seller-context/observe",
+    observeBody(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { ok: true });
+  assert.deepEqual(h.calls.observeSellerContext, [{
+    session: SESSION,
+    captureContext: resultBody().captureContext,
+  }]);
+
+  for (const body of [
+    {},
+    { captureContext: resultBody().captureContext, unknown: true },
+    { captureContext: resultBody().captureContext, cookie: "sid=attacker" },
+    { captureContext: { ...resultBody().captureContext, storeId: "store-attacker" } },
+    {
+      captureContext: {
+        ...resultBody().captureContext,
+        observedAt: new Date(NOW.getTime() - 10 * 60 * 1000 - 1).toISOString(),
+      },
+    },
+  ]) {
+    const rejected = harness();
+    const invalid = await request(
+      rejected,
+      "POST",
+      "/collector/ozon/seller-context/observe",
+      body,
+    );
+    assert.equal(invalid.status, 400, JSON.stringify(body));
+    assert.equal(rejected.calls.observeSellerContext.length, 0, JSON.stringify(body));
+  }
+});
+
+test("Seller context observe route rejects Cookie headers instead of accepting cookie control", async () => {
+  const h = harness();
+  const req = createRequest(
+    "POST",
+    "/collector/ozon/seller-context/observe",
+    observeBody(),
+  );
+  req.headers.cookie = "session=attacker-controlled";
+  const res = createResponse();
+
+  const handled = await h.handler(
+    req,
+    res,
+    new URL(req.url, "http://127.0.0.1"),
+  );
+
+  assert.equal(handled, true);
+  assert.equal(res.status, 400);
+  assert.equal(h.calls.observeSellerContext.length, 0);
 });
 
 test("single route returns the exact v1 success envelope from authenticated session scope", async () => {
@@ -673,7 +745,8 @@ test("all fixed routes reject query-controlled actions and URLs", async () => {
       const response = await request(h, method, `${pathname}${query}`, body);
       assert.equal(response.status, 400, `${pathname}${query}`);
       assert.equal(
-        h.calls.enrichOne.length + h.calls.enrichBatch.length + h.calls.claimNext.length
+        h.calls.enrichOne.length + h.calls.enrichBatch.length + h.calls.observeSellerContext.length
+          + h.calls.claimNext.length
           + h.calls.completeClaim.length + h.calls.failClaim.length,
         0,
         pathname,

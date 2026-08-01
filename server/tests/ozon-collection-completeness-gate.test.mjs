@@ -18,6 +18,7 @@ import {
 import { buildOzonEnrichmentSummary } from "../collect-enrichment-policy.mjs";
 import { createJsonCollectorOzonEnrichmentRepository } from "../collector-ozon-enrichment-repository.mjs";
 import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
+import { buildCollectItemDraftV4 } from "../listing-pipeline.mjs";
 
 const requiredFields = Object.freeze([
   "descriptionCategoryId",
@@ -209,6 +210,94 @@ test("shared JSON and PostgreSQL preparation strips forged server draft state wh
   assert.deepEqual(harness.state.collectRequests[0].rawEvidence.payload, forgedPayload);
 });
 
+test("Ozon source roots stay audit-only while explicit target resolution alone seeds the listing draft", async () => {
+  const sourceOnlyPayload = {
+    sku: "source-only-category",
+    name: "Source category must not become target",
+    description_category_id: 123,
+    type_id: 456,
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+  };
+  const input = collectInput({
+    sourceSku: sourceOnlyPayload.sku,
+    requestId: "source-only-category-request",
+    payload: sourceOnlyPayload,
+  });
+  const prepared = prepareCollectRequestV4({
+    authenticatedAccount: { id: "prepare-account" },
+    input,
+  });
+
+  assert.deepEqual(prepared.normalizedItem.sourceCategory, {
+    descriptionCategoryId: 123,
+    typeIdCandidate: 456,
+  });
+  assert.equal(Object.hasOwn(prepared.normalizedItem, "description_category_id"), false);
+  assert.equal(Object.hasOwn(prepared.normalizedItem, "type_id"), false);
+  assert.deepEqual(buildCollectItemDraftV4(prepared.normalizedItem), {
+    sku: sourceOnlyPayload.sku,
+    title: sourceOnlyPayload.name,
+    price: "",
+    currencyCode: "",
+    image: "",
+    images: [],
+    brand: "",
+    modelName: sourceOnlyPayload.sku,
+    description: "",
+    tags: [],
+    richContent: "",
+    packageWeight: 500,
+    packageLength: 300,
+    packageWidth: 200,
+    packageHeight: 100,
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    descriptionCategoryId: "",
+    typeId: "",
+    sourceLink: "",
+    variants: [],
+    sourceCategory: { descriptionCategoryId: 123, typeIdCandidate: 456 },
+  });
+
+  const explicitTargetDraft = buildCollectItemDraftV4({
+    ...prepared.normalizedItem,
+    categoryResolution: {
+      status: "MATCHED",
+      method: "MANUAL",
+      source: prepared.normalizedItem.sourceCategory,
+      target: { storeId: "store-a", descriptionCategoryId: 999, typeId: 1000 },
+    },
+  });
+  assert.equal(explicitTargetDraft.descriptionCategoryId, 999);
+  assert.equal(explicitTargetDraft.typeId, 1000);
+  assert.equal(explicitTargetDraft.sourceCategory.descriptionCategoryId, 123);
+  assert.deepEqual(explicitTargetDraft.categoryResolution.target, {
+    storeId: "store-a",
+    descriptionCategoryId: 999,
+    typeId: 1000,
+  });
+
+  const unmarkedHistoricalDraft = buildCollectItemDraftV4({
+    ...prepared.normalizedItem,
+    listingDraft: { descriptionCategoryId: 777, typeId: 778 },
+  });
+  assert.equal(unmarkedHistoricalDraft.descriptionCategoryId, "");
+  assert.equal(unmarkedHistoricalDraft.typeId, "");
+
+  const harness = jsonHarness(input);
+  await harness.invoke();
+  const persisted = harness.state.caches.collectBox[0];
+  assert.equal(persisted.description_category_id, undefined);
+  assert.equal(persisted.type_id, undefined);
+  assert.equal(persisted.listingDraft.descriptionCategoryId, undefined);
+  assert.equal(persisted.listingDraft.typeId, undefined);
+  assert.deepEqual(persisted.listingDraft.sourceCategory, {
+    descriptionCategoryId: 123,
+    typeIdCandidate: 456,
+  });
+  assert.deepEqual(persisted.raw, sourceOnlyPayload);
+  assert.deepEqual(harness.state.collectRequests[0].rawEvidence.payload, sourceOnlyPayload);
+});
+
 test("JSON collection stores public Ozon data with enrichment and one linked pending job", async () => {
   const harness = jsonHarness(collectInput({
     sourceSku: "4862904234",
@@ -311,6 +400,8 @@ test("JSON same account/source/SKU with a new request keeps the canonical comple
   const originalId = harness.state.caches.collectBox[0].id;
   harness.state.caches.collectBox[0] = {
     ...harness.state.caches.collectBox[0],
+    description_category_id: 123,
+    type_id: 456,
     name: "Manually curated title",
     status: "COMPLETE",
     draftVersion: 9,
@@ -319,6 +410,16 @@ test("JSON same account/source/SKU with a new request keeps the canonical comple
       descriptionCategoryId: 880001,
       typeId: 990001,
       sourceCategory: { descriptionCategoryId: 17_000_001 },
+      categoryResolution: {
+        status: "MATCHED",
+        method: "MANUAL",
+        source: { descriptionCategoryId: 17_000_001 },
+        target: {
+          storeId: "manual-target-store",
+          descriptionCategoryId: 880001,
+          typeId: 990001,
+        },
+      },
       logistics: { weightG: 610, lengthMm: 310, widthMm: 210, heightMm: 110 },
     },
     enrichment: {
@@ -346,15 +447,29 @@ test("JSON same account/source/SKU with a new request keeps the canonical comple
   assert.equal(harness.state.caches.collectBox.length, 1);
   const item = harness.state.caches.collectBox[0];
   assert.equal(item.id, originalId);
+  assert.equal(item.description_category_id, undefined);
+  assert.equal(item.type_id, undefined);
+  assert.equal(item.sourceCategory.descriptionCategoryId, 123);
+  assert.equal(item.sourceCategory.typeIdCandidate, 456);
   assert.equal(item.name, "Manually curated title");
   assert.equal(item.publicEvidenceAddedLater, "safe-new-evidence");
   assert.equal(item.status, "COMPLETE");
-  assert.equal(item.draftVersion, 9);
+  assert.equal(item.draftVersion, 10);
   assert.deepEqual(item.listingDraft, {
     title: "Manual listing title",
     descriptionCategoryId: 880001,
     typeId: 990001,
-    sourceCategory: { descriptionCategoryId: 17_000_001 },
+    sourceCategory: { descriptionCategoryId: 17_000_001, typeIdCandidate: 456 },
+    categoryResolution: {
+      status: "MATCHED",
+      method: "MANUAL",
+      source: { descriptionCategoryId: 17_000_001 },
+      target: {
+        storeId: "manual-target-store",
+        descriptionCategoryId: 880001,
+        typeId: 990001,
+      },
+    },
     logistics: { weightG: 610, lengthMm: 310, widthMm: 210, heightMm: 110 },
   });
   assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 1);
@@ -595,6 +710,32 @@ test("JSON historical success replay derives complete and pending enrichment wit
   }
 });
 
+test("JSON historical replay promotes legacy source aliases without exposing them as listing targets", async () => {
+  const input = collectInput({
+    sourceSku: "json-history-source-aliases",
+    requestId: "json-history-source-aliases-request",
+    payload: { sku: "json-history-source-aliases", name: "Historical source aliases" },
+  });
+  const harness = jsonHarness(input);
+  await harness.invoke();
+  const storedItem = harness.state.collectRequests[0].response.item;
+  storedItem.description_category_id = 123;
+  storedItem.type_id = 456;
+
+  await harness.invoke();
+
+  assert.equal(harness.response.status, 200);
+  assert.equal(harness.response.body.data.duplicate, true);
+  assert.deepEqual(harness.response.body.data.sourceCategory, {
+    descriptionCategoryId: 123,
+    typeIdCandidate: 456,
+  });
+  assert.equal(Object.hasOwn(harness.response.body.data, "description_category_id"), false);
+  assert.equal(Object.hasOwn(harness.response.body.data, "type_id"), false);
+  assert.equal(storedItem.description_category_id, 123, "idempotency history remains immutable");
+  assert.equal(storedItem.type_id, 456, "idempotency history remains immutable");
+});
+
 test("JSON mixed batch preflights every payload shape before writing", async () => {
   const harness = jsonHarness({
     items: [
@@ -800,6 +941,20 @@ if (!postgresEnabled()) {
       assert.equal(concurrent.collectItemId, first.collectItemId);
       assert.deepEqual(concurrent.enrichment, first.enrichment);
 
+      await pool.query(
+        `UPDATE collect_requests
+            SET response=jsonb_set(
+              response,
+              '{item}',
+              (response->'item') || jsonb_build_object(
+                'description_category_id',123,
+                'type_id',456
+              )
+            )
+          WHERE id=$1 AND account_id=$2`,
+        [first.requestId, accountId],
+      );
+
       const replay = await ingestCollectRequestV4({
         authenticatedAccount: { id: accountId },
         input: structuredClone(input),
@@ -807,6 +962,12 @@ if (!postgresEnabled()) {
       assert.equal(replay.duplicate, true);
       assert.equal(replay.collectItemId, first.collectItemId);
       assert.deepEqual(replay.enrichment, first.enrichment);
+      assert.deepEqual(replay.item.sourceCategory, {
+        descriptionCategoryId: 123,
+        typeIdCandidate: 456,
+      });
+      assert.equal(Object.hasOwn(replay.item, "description_category_id"), false);
+      assert.equal(Object.hasOwn(replay.item, "type_id"), false);
 
       await assert.rejects(
         ingestCollectRequestV4({

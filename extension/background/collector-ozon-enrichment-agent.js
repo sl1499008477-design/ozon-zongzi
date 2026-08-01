@@ -304,7 +304,7 @@
       || typeof captureVariant !== 'function'
       || typeof canCapture !== 'function'
       || typeof sellerContextRuntime?.resolveCurrentWithRecovery !== 'function'
-      || typeof sellerContextRuntime?.isSnapshotCurrent !== 'function'
+      || typeof sellerContextRuntime?.submitIfCurrent !== 'function'
       || typeof sleep !== 'function'
       || typeof now !== 'function'
       || typeof setTimer !== 'function'
@@ -440,24 +440,28 @@
       const failure = fixedFailure(error?.code);
       try {
         ensureCurrent(entry, generation);
-        const response = await collectorRequest(
+        const response = await withLifecycle(
+          sellerContextRuntime.submitIfCurrent(sellerContext, () => collectorRequest(
+            entry,
+            generation,
+            collectorOperation,
+            `/collector/ozon/enrichment-jobs/${encodeURIComponent(id)}/fail`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                code: failure.code,
+                message: failure.message,
+                captureContext: captureContextFor(sellerContext),
+                claimFence,
+              }),
+            },
+          )),
           entry,
           generation,
-          collectorOperation,
-          `/collector/ozon/enrichment-jobs/${encodeURIComponent(id)}/fail`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              code: failure.code,
-              message: failure.message,
-              captureContext: captureContextFor(sellerContext),
-              claimFence,
-            }),
-          },
         );
         ensureCurrent(entry, generation);
-        return Boolean(response?.ok);
+        return response !== false && Boolean(response?.ok);
       } catch {
         return false;
       }
@@ -498,29 +502,27 @@
         const variantData = projectVariantData(rawVariantData);
         assertSafeVariantData(variantData);
         ensureCurrent(entry, generation);
-        const contextIsCurrent = await withLifecycle(
-          sellerContextRuntime.isSnapshotCurrent(sellerContext),
+        const response = await withLifecycle(
+          sellerContextRuntime.submitIfCurrent(sellerContext, () => collectorRequest(
+            entry,
+            generation,
+            collectorOperation,
+            `/collector/ozon/enrichment-jobs/${encodeURIComponent(job.id)}/result`,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                variantData,
+                captureContext: captureContextFor(sellerContext),
+                claimFence: job.claimFence,
+              }),
+            },
+          )),
           entry,
           generation,
         );
-        if (contextIsCurrent !== true) throw fixedFailure('SELLER_CONTEXT_CHANGED');
         ensureCurrent(entry, generation);
-        const response = await collectorRequest(
-          entry,
-          generation,
-          collectorOperation,
-          `/collector/ozon/enrichment-jobs/${encodeURIComponent(job.id)}/result`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              variantData,
-              captureContext: captureContextFor(sellerContext),
-              claimFence: job.claimFence,
-            }),
-          },
-        );
-        ensureCurrent(entry, generation);
+        if (response === false) throw fixedFailure('SELLER_CONTEXT_CHANGED');
         if (!response?.ok) {
           const failure = await jsonBody(response);
           throw fixedFailure(failure?.code === 'SELLER_CONTEXT_CHANGED'

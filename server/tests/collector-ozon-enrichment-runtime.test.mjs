@@ -40,12 +40,182 @@ function cacheOnlyRepository() {
     async tryAcquireCacheLease() { throw new Error("cache hit must not lease"); },
     async releaseCacheLease() { return false; },
     async createOrGetJob() { throw new Error("cache hit must not create"); },
+    async advanceSellerContext() { throw new Error("unused"); },
     async claimNextJob() { return null; },
+    async deferClaim() { throw new Error("unused"); },
     async completeJobAndCache() { throw new Error("unused"); },
     async failJobAndCache() { throw new Error("unused"); },
     async readJob() { return null; },
   };
 }
+
+const FENCED_SELLER_CONTEXT = Object.freeze({
+  sellerCompanyId: "2681910",
+  revision: 4,
+  observedAt: "2026-08-01T08:00:00.000Z",
+});
+
+const SWITCHED_SELLER_CONTEXT = Object.freeze({
+  sellerCompanyId: "7311458",
+  revision: 5,
+  observedAt: "2026-08-01T08:00:02.000Z",
+});
+
+function linkedSellerFenceRuntime(suffix) {
+  const completedAt = new Date("2026-08-01T08:00:03.000Z");
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: `collect-runtime-fence-${suffix}`,
+        accountId: "account-runtime",
+        sku: `sku-runtime-fence-${suffix}`,
+        status: "PENDING_ENRICHMENT",
+        draftVersion: 3,
+        listingDraft: {
+          logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
+          categoryResolution: {
+            status: "MATCHED",
+            method: "MANUAL",
+            target: {
+              storeId: "store-runtime",
+              descriptionCategoryId: 88_000_001,
+              typeId: 99_000_001,
+            },
+          },
+        },
+        enrichment: { status: "PENDING_ENRICHMENT" },
+      }],
+    },
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      revokedAt: null,
+      sellerContext: structuredClone(FENCED_SELLER_CONTEXT),
+      sellerContextUpdatedAt: FENCED_SELLER_CONTEXT.observedAt,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: `job-runtime-fence-${suffix}`,
+      accountId: "account-runtime",
+      collectItemId: `collect-runtime-fence-${suffix}`,
+      requestId: `request-runtime-fence-${suffix}`,
+      sku: `sku-runtime-fence-${suffix}`,
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-runtime",
+      claimExpiresAt: "2026-08-01T08:01:00.000Z",
+      claimFence: `claim-runtime-fence-${suffix}`,
+      refreshBundle: {},
+      attemptCount: 2,
+      nextAttemptAt: "2026-08-01T08:00:00.000Z",
+      lastError: null,
+      captureContext: structuredClone(FENCED_SELLER_CONTEXT),
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T08:00:00.000Z",
+      updatedAt: "2026-08-01T08:00:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(completedAt),
+  });
+  return {
+    runtime,
+    state: () => persisted,
+    complete: () => runtime.service.completeClaim({
+      session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+      jobId: `job-runtime-fence-${suffix}`,
+      claimFence: `claim-runtime-fence-${suffix}`,
+      captureContext: structuredClone(FENCED_SELLER_CONTEXT),
+      variantData: {
+        description_category_id: 17_000_001,
+        type_id: 97_000_001,
+        weight: 500,
+        depth: 300,
+        width: 200,
+        height: 100,
+        attributes: [],
+      },
+    }),
+    observeSwitch: () => runtime.service.observeSellerContext({
+      session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+      captureContext: structuredClone(SWITCHED_SELLER_CONTEXT),
+    }),
+  };
+}
+
+test("JSON runtime exposes Seller context observation through the serialized repository adapter", async () => {
+  let persisted = {
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: new Date(NOW.getTime() + 60_000).toISOString(),
+      revokedAt: null,
+    }],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({
+      collectorSessionId: "collector-runtime",
+      accountId: "account-runtime",
+    }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(NOW),
+  });
+  const captureContext = {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: NOW.toISOString(),
+  };
+
+  await runtime.service.observeSellerContext({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+    captureContext,
+  });
+
+  assert.deepEqual(persisted.collectorSessions[0].sellerContext, captureContext);
+  assert.equal(persisted.collectorSessions[0].sellerContextUpdatedAt, NOW.toISOString());
+});
+
+test("JSON linked item commit is atomic with the Seller-context watermark ordering", async () => {
+  const switchedFirst = linkedSellerFenceRuntime("switched-first");
+  const itemBeforeSwitch = structuredClone(switchedFirst.state().caches.collectBox[0]);
+  await switchedFirst.observeSwitch();
+  await assert.rejects(
+    switchedFirst.complete(),
+    (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409,
+  );
+  assert.deepEqual(switchedFirst.state().caches.collectBox[0], itemBeforeSwitch);
+  assert.equal(switchedFirst.state().collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.deepEqual(switchedFirst.state().collectorOzonEnrichmentCache || [], []);
+
+  const committedFirst = linkedSellerFenceRuntime("committed-first");
+  await committedFirst.complete();
+  await committedFirst.observeSwitch();
+  assert.equal(committedFirst.state().caches.collectBox[0].status, "COMPLETE");
+  assert.equal(committedFirst.state().caches.collectBox[0].draftVersion, 4);
+  assert.equal(committedFirst.state().collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.equal(committedFirst.state().collectorOzonEnrichmentCache[0].status, "COMPLETE");
+  assert.deepEqual(
+    committedFirst.state().collectorSessions[0].sellerContext,
+    SWITCHED_SELLER_CONTEXT,
+  );
+});
 
 test("PostgreSQL-mode enrichment writes dedicated audit rows without rewriting legacy state", async () => {
   const persistedAudits = [];
