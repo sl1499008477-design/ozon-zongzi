@@ -499,6 +499,122 @@ test('autonomous drain consumes a kick from the promise ownership cleanup window
   assert.equal(maxActiveClaims, 1, 'cleanup recovery must remain single-concurrency');
 });
 
+test('autonomous drain starts a successor for a live kick beyond the active owner deadline', async () => {
+  const firstClaim = deferred();
+  const claims = [];
+  let clock = 1_000;
+  let activeClaims = 0;
+  let maxActiveClaims = 0;
+  const timerDelays = [];
+  const agent = createAgent({
+    now: () => clock,
+    setTimer(_callback, delay) {
+      timerDelays.push(delay);
+      return timerDelays.length;
+    },
+    clearTimer() {},
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path, options) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        const claim = { at: clock, signal: options.signal };
+        claims.push(claim);
+        activeClaims += 1;
+        maxActiveClaims = Math.max(maxActiveClaims, activeClaims);
+        try {
+          if (claims.length === 1) await firstClaim.promise;
+          return jsonResponse(200, { ok: true, job: null });
+        } finally {
+          activeClaims -= 1;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const firstKick = agent.drainAvailable({ deadlineAt: 1_100 });
+  await nextTurn();
+  assert.equal(claims.length, 1);
+  const expiredKick = agent.drainAvailable({ deadlineAt: 1_050 });
+  const shorterLiveKick = agent.drainAvailable({ deadlineAt: 1_800 });
+  const lateKick = agent.drainAvailable({ deadlineAt: 2_000 });
+
+  clock = 1_100;
+  firstClaim.resolve();
+  await Promise.all([firstKick, expiredKick, shorterLiveKick, lateKick]);
+
+  assert.equal(claims.length, 2, 'the live late kick must run under a successor owner');
+  assert.equal(maxActiveClaims, 1, 'the successor must wait for the old owner to release');
+  assert.deepEqual(claims.map(({ at }) => at), [1_000, 1_100]);
+  assert.equal(
+    timerDelays.includes(900),
+    true,
+    'the successor must merge live pending kicks using their latest deadline',
+  );
+  assert.notStrictEqual(claims[1].signal, claims[0].signal, 'the successor needs its own lifecycle');
+  assert.equal(claims[0].signal.aborted, true, 'the old lifecycle must end at its own deadline');
+});
+
+test('autonomous drain preserves a live late-deadline kick injected at owner cleanup', async () => {
+  const claims = [];
+  let clock = 1_000;
+  let activeClaims = 0;
+  let maxActiveClaims = 0;
+  const agent = createAgent({
+    now: () => clock,
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path, options) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        claims.push({ at: clock, signal: options.signal });
+        activeClaims += 1;
+        maxActiveClaims = Math.max(maxActiveClaims, activeClaims);
+        try {
+          return jsonResponse(200, { ok: true, job: null });
+        } finally {
+          activeClaims -= 1;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const nativeFinally = Promise.prototype.finally;
+  let finallyCalls = 0;
+  let injected = false;
+  let cleanupKick;
+  Promise.prototype.finally = function interceptAvailableCleanup(onFinally) {
+    finallyCalls += 1;
+    if (finallyCalls !== 2) return nativeFinally.call(this, onFinally);
+    return nativeFinally.call(this, () => {
+      clock = 1_100;
+      injected = true;
+      cleanupKick = agent.drainAvailable({ deadlineAt: 2_000 });
+      return onFinally();
+    });
+  };
+
+  let firstKick;
+  try {
+    firstKick = agent.drainAvailable({ deadlineAt: 1_100 });
+  } finally {
+    Promise.prototype.finally = nativeFinally;
+  }
+  await firstKick;
+  await cleanupKick;
+
+  assert.equal(injected, true, 'test must inject the kick at the old owner deadline');
+  assert.equal(claims.length, 2, 'cleanup must launch a successor using the late kick deadline');
+  assert.equal(maxActiveClaims, 1, 'cleanup recovery must remain single-concurrency');
+  assert.deepEqual(claims.map(({ at }) => at), [1_000, 1_100]);
+  assert.notStrictEqual(claims[1].signal, claims[0].signal, 'cleanup must create a new owner');
+  assert.equal(claims[0].signal.aborted, true, 'the old lifecycle must be released before successor work');
+});
+
 test('autonomous drain maps real non-ready Seller recovery results to SELLER_CONTEXT_REQUIRED', async () => {
   for (const status of ['LOGIN_REQUIRED', 'RECOVERING']) {
     const requests = [];

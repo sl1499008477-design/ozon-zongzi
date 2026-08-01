@@ -285,7 +285,7 @@
     let availablePromise = null;
     let availableRequestedGeneration = 0;
     let availableProcessedGeneration = 0;
-    let availableDeadlineAt = 0;
+    let pendingAvailableKicks = [];
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
     const deactivate = (entry) => {
@@ -591,33 +591,68 @@
       return leaseHandle(entry, false);
     };
 
-    const runAvailableGenerations = async () => {
-      while (availableProcessedGeneration < availableRequestedGeneration) {
-        if (now() >= availableDeadlineAt) {
-          availableProcessedGeneration = availableRequestedGeneration;
-          return;
+    const pruneAvailableKicks = (observedAt = now()) => {
+      const live = [];
+      for (const kick of pendingAvailableKicks) {
+        if (kick.deadlineAt <= observedAt) {
+          availableProcessedGeneration = Math.max(
+            availableProcessedGeneration,
+            kick.generation,
+          );
+        } else {
+          live.push(kick);
         }
-        const roundGeneration = availableRequestedGeneration;
-        let resolveCancelled;
-        const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
-        const entry = {
-          requestId: AVAILABLE_DRAIN_ID,
-          generation: nextGeneration,
-          refs: 1,
-          tokenRefs: 0,
-          deadlineAt: availableDeadlineAt,
-          active: true,
-          currentController: null,
-          cancelled,
-          resolveCancelled,
-          running: null,
-        };
-        nextGeneration += 1;
-        drains.set(entry.requestId, entry);
-        entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
-          .finally(() => deactivate(entry));
-        await entry.running;
-        availableProcessedGeneration = roundGeneration;
+      }
+      pendingAvailableKicks = live;
+      return live;
+    };
+
+    const runAvailableRound = async (deadlineAt) => {
+      let resolveCancelled;
+      const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
+      const entry = {
+        requestId: AVAILABLE_DRAIN_ID,
+        generation: nextGeneration,
+        refs: 1,
+        tokenRefs: 0,
+        deadlineAt,
+        active: true,
+        currentController: null,
+        cancelled,
+        resolveCancelled,
+        running: null,
+      };
+      nextGeneration += 1;
+      drains.set(entry.requestId, entry);
+      entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
+        .finally(() => deactivate(entry));
+      await entry.running;
+    };
+
+    const runAvailableOwner = async (ownerDeadlineAt) => {
+      while (true) {
+        const observedAt = now();
+        if (observedAt >= ownerDeadlineAt) return;
+        const live = pruneAvailableKicks(observedAt);
+        if (live.length === 0) return;
+
+        pendingAvailableKicks = [];
+        const roundGeneration = live[live.length - 1].generation;
+        await runAvailableRound(ownerDeadlineAt);
+        availableProcessedGeneration = Math.max(
+          availableProcessedGeneration,
+          roundGeneration,
+        );
+      }
+    };
+
+    const runAvailableOwners = async () => {
+      while (true) {
+        const live = pruneAvailableKicks();
+        if (live.length === 0) return;
+        // A successor coalesces the current live queue, but never changes an active owner's deadline.
+        const ownerDeadlineAt = Math.max(...live.map(({ deadlineAt }) => deadlineAt));
+        await runAvailableOwner(ownerDeadlineAt);
       }
     };
 
@@ -627,22 +662,18 @@
       }
       const deadlineAt = Math.min(Number(input.deadlineAt), now() + MAX_DRAIN_MS);
       availableRequestedGeneration += 1;
+      pendingAvailableKicks.push({
+        generation: availableRequestedGeneration,
+        deadlineAt,
+      });
       if (availablePromise) return availablePromise;
-      availableDeadlineAt = deadlineAt;
       let exposed;
-      exposed = runAvailableGenerations().finally(async () => {
-        while (
-          availableProcessedGeneration < availableRequestedGeneration
-          && now() < availableDeadlineAt
-        ) {
-          await runAvailableGenerations();
-        }
-        if (now() >= availableDeadlineAt) {
-          availableProcessedGeneration = availableRequestedGeneration;
+      exposed = runAvailableOwners().finally(async () => {
+        while (availablePromise === exposed && pruneAvailableKicks().length > 0) {
+          await runAvailableOwners();
         }
         if (availablePromise === exposed) {
           availablePromise = null;
-          availableDeadlineAt = 0;
         }
       });
       availablePromise = exposed;
