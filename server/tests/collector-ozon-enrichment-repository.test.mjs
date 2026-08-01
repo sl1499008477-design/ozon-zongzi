@@ -2748,6 +2748,7 @@ test("PostgreSQL completion stores only allowlisted capture evidence in job and 
 test("PostgreSQL terminal completion joins a caller-owned collect-item transaction", async () => {
   const calls = [];
   const transactionClient = {
+    async connect() { throw new Error("an already-connected pg.Client must not reconnect"); },
     async query(sql, params = []) {
       const normalized = String(sql).replace(/\s+/g, " ").trim();
       calls.push({ sql: normalized, params });
@@ -2769,8 +2770,12 @@ test("PostgreSQL terminal completion joins a caller-owned collect-item transacti
       }
       return { rows: [], rowCount: 0 };
     },
+    release() { throw new Error("a caller-owned pg.Client must not be released"); },
   };
-  const repository = createPostgresCollectorOzonEnrichmentRepository({ pool: transactionClient });
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: transactionClient,
+    transactionOwner: "caller",
+  });
 
   const completed = await repository.completeJobAndCache({
     accountId: "account-a",

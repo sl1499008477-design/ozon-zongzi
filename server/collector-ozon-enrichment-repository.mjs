@@ -907,8 +907,14 @@ export function createJsonCollectorOzonEnrichmentRepository({
   });
 }
 
-export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
+export function createPostgresCollectorOzonEnrichmentRepository({
+  pool,
+  transactionOwner = "repository",
+} = {}) {
   if (!pool?.query) throw new TypeError("Ozon enrichment PostgreSQL pool required");
+  if (!["repository", "caller"].includes(transactionOwner)) {
+    throw new TypeError("Ozon enrichment PostgreSQL transaction owner invalid");
+  }
 
   async function query(sql, params) {
     try {
@@ -1521,7 +1527,10 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
         403,
       );
     }
-    const ownsTransaction = typeof pool.connect === "function";
+    const ownsTransaction = transactionOwner === "repository";
+    if (ownsTransaction && typeof pool.connect !== "function") {
+      throw new TypeError("Ozon enrichment PostgreSQL pool.connect required");
+    }
     const client = ownsTransaction ? await pool.connect() : pool;
     let began = false;
     try {

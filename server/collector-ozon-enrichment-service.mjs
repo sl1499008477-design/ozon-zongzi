@@ -311,11 +311,12 @@ export function createCollectorOzonEnrichmentService({
     read: async () => null,
     save: async () => null,
     complete: async () => null,
+    fail: async () => null,
     retry: async () => null,
   });
   if (
     !collectItemPort
-    || ["read", "save", "complete", "retry"]
+    || ["read", "save", "complete", "fail", "retry"]
       .some((method) => typeof collectItemPort[method] !== "function")
   ) {
     throw new TypeError("Ozon enrichment collect item contract required");
@@ -617,7 +618,7 @@ export function createCollectorOzonEnrichmentService({
     }
   }
 
-  async function persistFailure({ scoped, job, at, error }) {
+  function failurePersistence({ scoped, job, at, error }) {
     const stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
     const persistedError = { status: stable.status, code: stable.code };
     const requestedTtl = Number(error?.retryAfterMs);
@@ -626,18 +627,26 @@ export function createCollectorOzonEnrichmentService({
       : NEGATIVE_TTL_MS;
     const expiresAt = new Date(at.getTime() + negativeTtl);
     const key = cacheKey(scoped.accountId, job.sku);
-    const persistedJob = await repository.failJobAndCache({
-      accountId: scoped.accountId,
-      collectorSessionId: scoped.collectorSessionId,
-      jobId: job.id,
-      key,
-      error: persistedError,
-      responseHash: responseSha256(persistedError),
-      capturedAt: at,
-      expiresAt,
-      now: at,
-    });
-    return { stable, job: persistedJob };
+    return {
+      stable,
+      failure: {
+        accountId: scoped.accountId,
+        collectorSessionId: scoped.collectorSessionId,
+        jobId: job.id,
+        key,
+        error: persistedError,
+        responseHash: responseSha256(persistedError),
+        capturedAt: at,
+        expiresAt,
+        now: at,
+      },
+    };
+  }
+
+  async function persistFailure(input) {
+    const planned = failurePersistence(input);
+    const persistedJob = await repository.failJobAndCache(planned.failure);
+    return { stable: planned.stable, job: persistedJob };
   }
 
   function collectItemMissing() {
@@ -692,9 +701,23 @@ export function createCollectorOzonEnrichmentService({
       await saveLinkedFailure({ job, stable, persistedJob: deferredJob });
       return { stable, job: deferredJob };
     }
-    const persisted = await persistFailure({ scoped, job, at, error: stable });
-    await saveLinkedFailure({ job, stable: persisted.stable, persistedJob: persisted.job });
-    return persisted;
+    if (job.collectItemId) {
+      const planned = failurePersistence({ scoped, job, at, error: stable });
+      const persisted = await collectItemPort.fail({
+        accountId: job.accountId,
+        collectItemId: job.collectItemId,
+        status: planned.stable.disposition,
+        enrichment: linkedSummary({
+          status: planned.stable.disposition,
+          job,
+          error: planned.stable,
+        }),
+        failure: planned.failure,
+      });
+      if (!persisted?.item || !persisted?.job) throw collectItemMissing();
+      return { stable: planned.stable, job: persisted.job };
+    }
+    return persistFailure({ scoped, job, at, error: stable });
   }
 
   async function mergeLinkedCollectItem({ job, result, completedAt, completion }) {
@@ -708,6 +731,7 @@ export function createCollectorOzonEnrichmentService({
       if (!current) throw collectItemMissing();
       const listingDraft = mergeOzonEnrichmentResult(current.listingDraft || {}, result);
       try {
+        const terminalAt = instant(now());
         const saved = await collectItemPort.complete({
           accountId: job.accountId,
           collectItemId: job.collectItemId,
@@ -719,7 +743,7 @@ export function createCollectorOzonEnrichmentService({
             job,
             capturedAt: completedAt.toISOString(),
           }),
-          completion,
+          completion: { ...completion, now: terminalAt },
         });
         if (!saved) throw collectItemMissing();
         return saved;
@@ -781,12 +805,11 @@ export function createCollectorOzonEnrichmentService({
         capturedAt: completedAt,
         expiresAt,
         captureContext,
-        now: completedAt,
       };
       if (job.collectItemId) {
         await mergeLinkedCollectItem({ job, result, completedAt, completion });
       } else {
-        await repository.completeJobAndCache(completion);
+        await repository.completeJobAndCache({ ...completion, now: instant(now()) });
       }
       await writeAudit({
         action: "collector.ozon.enrichment.complete",

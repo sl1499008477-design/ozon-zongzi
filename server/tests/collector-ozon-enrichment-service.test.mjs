@@ -1392,6 +1392,7 @@ test("linked completion fills only blank draft fields before publishing success 
       await terminalRepository.completeJobAndCache(input.completion);
       return saved;
     },
+    async fail() { throw new Error("unused"); },
     async retry() { throw new Error("unused"); },
   };
   const h = harness({ collectItems, start: Date.parse("2026-08-01T08:00:01.000Z") });
@@ -1459,6 +1460,7 @@ test("retryable failures defer linked jobs and expose the correct recoverable it
         async read() { throw new Error("failure status must not rewrite the draft"); },
         async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
         async complete() { throw new Error("failure status must not complete the draft"); },
+        async fail() { throw new Error("unused"); },
         async retry() { throw new Error("unused"); },
       },
       start: Date.parse("2026-08-01T08:00:01.000Z"),
@@ -1503,15 +1505,31 @@ test("retryable failures defer linked jobs and expose the correct recoverable it
 
 test("not found permanently needs attention without deleting the linked item", async () => {
   const saved = [];
+  let terminalRepository = null;
   const h = harness({
     collectItems: {
       async read() { throw new Error("permanent failure must not rewrite the draft"); },
       async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
       async complete() { throw new Error("permanent failure must not complete the draft"); },
+      async fail(input) {
+        const job = await terminalRepository.failJobAndCache(input.failure);
+        const savedInput = {
+          accountId: input.accountId,
+          collectItemId: input.collectItemId,
+          status: input.status,
+          enrichment: {
+            ...clone(input.enrichment),
+            attemptCount: job.attemptCount,
+          },
+        };
+        saved.push(savedInput);
+        return { item: { id: input.collectItemId, enrichment: savedInput.enrichment }, job };
+      },
       async retry() { throw new Error("unused"); },
     },
     start: Date.parse("2026-08-01T08:00:01.000Z"),
   });
+  terminalRepository = h.repository;
   h.repository.jobs.push({
     id: "job-not-found-linked",
     accountId: "account-a",
@@ -1569,6 +1587,7 @@ test("manual retry is account scoped and preserves the linked job identity on re
       async read() { throw new Error("unused"); },
       async save() { throw new Error("unused"); },
       async complete() { throw new Error("unused"); },
+      async fail() { throw new Error("unused"); },
       async retry(input) {
         calls.push(clone(input));
         if (input.accountId !== "account-a") return null;

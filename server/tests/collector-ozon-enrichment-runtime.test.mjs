@@ -461,3 +461,159 @@ test("JSON NOT_FOUND failure and manual retry keep item attemptCount equal to th
   assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 4);
   assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 4);
 });
+
+test("JSON permanent failure rolls back job and cache when the item state cannot be saved", async () => {
+  const failedAt = new Date("2026-08-01T10:00:00.000Z");
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-failure-atomic",
+        accountId: "account-runtime",
+        sku: "sku-runtime-failure-atomic",
+        status: "RETRYING",
+        draftVersion: 2,
+        listingDraft: { title: "keep" },
+        enrichment: { status: "RETRYING", attemptCount: 3 },
+      }],
+    },
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      revokedAt: null,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-failure-atomic",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-failure-atomic",
+      requestId: "request-runtime-failure-atomic",
+      sku: "sku-runtime-failure-atomic",
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-runtime",
+      claimExpiresAt: "2026-08-01T10:01:00.000Z",
+      refreshBundle: {},
+      attemptCount: 3,
+      nextAttemptAt: "2026-08-01T09:59:00.000Z",
+      lastError: null,
+      captureContext: null,
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T09:00:00.000Z",
+      updatedAt: "2026-08-01T09:59:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => {
+      const jobFailed = state.collectorOzonEnrichmentJobs?.[0]?.status === "FAILED";
+      const itemFailed = state.caches?.collectBox?.[0]?.status === "NEEDS_ATTENTION";
+      if (jobFailed && itemFailed) {
+        throw Object.assign(new Error("item persistence unavailable"), {
+          code: "LOCAL_STATE_VERSION_CONFLICT",
+          status: 409,
+        });
+      }
+      persisted = structuredClone(state);
+    },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(failedAt),
+  });
+
+  await assert.rejects(runtime.service.failClaim({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+    jobId: "job-runtime-failure-atomic",
+    code: "OZON_ENRICH_NOT_FOUND",
+  }), (error) => error?.code === "OZON_ENRICH_UPSTREAM_FAILED");
+
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 3);
+  assert.equal(persisted.caches.collectBox[0].status, "RETRYING");
+  assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 3);
+  assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
+});
+
+test("JSON permanent failure leaves the linked item unchanged when the claim expires at terminal commit", async () => {
+  const failedAt = new Date("2026-08-01T10:00:00.000Z");
+  let loadCount = 0;
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-failure-expired",
+        accountId: "account-runtime",
+        sku: "sku-runtime-failure-expired",
+        status: "RETRYING",
+        draftVersion: 2,
+        listingDraft: { title: "keep" },
+        enrichment: { status: "RETRYING", attemptCount: 3 },
+      }],
+    },
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      revokedAt: null,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-failure-expired",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-failure-expired",
+      requestId: "request-runtime-failure-expired",
+      sku: "sku-runtime-failure-expired",
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-runtime",
+      claimExpiresAt: "2026-08-01T10:01:00.000Z",
+      refreshBundle: {},
+      attemptCount: 3,
+      nextAttemptAt: "2026-08-01T09:59:00.000Z",
+      lastError: null,
+      captureContext: null,
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T09:00:00.000Z",
+      updatedAt: "2026-08-01T09:59:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => {
+      loadCount += 1;
+      const state = structuredClone(persisted);
+      if (loadCount === 2) {
+        state.collectorOzonEnrichmentJobs[0].claimExpiresAt = failedAt.toISOString();
+      }
+      return state;
+    },
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(failedAt),
+  });
+
+  await assert.rejects(runtime.service.failClaim({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+    jobId: "job-runtime-failure-expired",
+    code: "OZON_ENRICH_NOT_FOUND",
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 3);
+  assert.equal(persisted.caches.collectBox[0].status, "RETRYING");
+  assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 3);
+  assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
+});

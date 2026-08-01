@@ -629,6 +629,58 @@ export async function completeCollectItemEnrichmentV4({ completeJobAndCache, ...
   return saveCollectItemEnrichmentTransaction(input, completeJobAndCache);
 }
 
+export async function failCollectItemEnrichmentWithClientV4(client, {
+  collectItemId,
+  accountId,
+  status,
+  enrichment,
+  failJobAndCache,
+} = {}) {
+  if (typeof client?.query !== "function" || typeof failJobAndCache !== "function") {
+    throw new TypeError("Ozon enrichment failure transaction dependencies required");
+  }
+  const result = await client.query(
+    `SELECT c.id,c.account_id,c.status,c.summary,d.data AS draft_data,d.version AS draft_version
+       FROM collect_items c
+       LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+      WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+      FOR UPDATE OF c`,
+    [clean(collectItemId, 240), clean(accountId, 240)],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const persistedJob = await failJobAndCache(client);
+  const currentSummary = row.summary && typeof row.summary === "object" ? row.summary : {};
+  const nextEnrichment = {
+    ...(enrichment && typeof enrichment === "object" ? structuredClone(enrichment) : {}),
+    attemptCount: Number(persistedJob?.attemptCount || 0),
+  };
+  const updated = await client.query(
+    `UPDATE collect_items
+        SET status=$4,summary=$3::jsonb,updated_at=NOW()
+      WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL
+      RETURNING id,account_id,status,summary`,
+    [
+      row.id,
+      row.account_id,
+      json({ ...currentSummary, enrichment: nextEnrichment }),
+      clean(status || row.status, 80),
+    ],
+  );
+  const item = collectItemEnrichmentRow({
+    ...updated.rows[0],
+    draft_data: row.draft_data,
+    draft_version: row.draft_version,
+  });
+  if (!item) throw new Error("Ozon enrichment collect item failure update lost");
+  return { item, job: persistedJob };
+}
+
+export async function failCollectItemEnrichmentV4(input = {}) {
+  if (!listingPipelineEnabled()) return null;
+  return transaction((client) => failCollectItemEnrichmentWithClientV4(client, input));
+}
+
 function retryJobFromRow(row = {}) {
   if (!row.id) return null;
   return {

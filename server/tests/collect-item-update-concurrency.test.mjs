@@ -130,6 +130,7 @@ function completionFailureHarness(error) {
         return structuredClone(visibleItem);
       },
       async complete() { throw error; },
+      async fail() { throw new Error("unused"); },
       async retry() { throw new Error("unused"); },
     },
   });
@@ -170,6 +171,117 @@ test("linked claim loss during final commit leaves no visible COMPLETE item", as
   assert.equal(h.visibleItem().status, "RETRYING");
   assert.deepEqual(h.visibleItem().listingDraft, { title: "visible draft", logistics: {} });
   assert.equal(h.job.status, "PROCESSING");
+});
+
+test("linked completion rechecks the clock after a slow merge crosses claim expiry", async () => {
+  const order = [];
+  const job = claimedJob();
+  let clock = NOW.getTime();
+  job.claimExpiresAt = new Date(clock + 1_000).toISOString();
+  let visibleItem = {
+    id: job.collectItemId,
+    accountId: job.accountId,
+    status: "RETRYING",
+    draftVersion: 1,
+    listingDraft: { title: "keep", logistics: {} },
+    enrichment: { status: "RETRYING", attemptCount: 1 },
+  };
+  const jobRepository = repository(job, order);
+  jobRepository.completeJobAndCache = async (input) => {
+    if (input.now.getTime() >= new Date(job.claimExpiresAt).getTime()) {
+      throw Object.assign(new Error("claim expired during merge"), {
+        code: "OZON_ENRICHMENT_JOB_OWNERSHIP",
+        status: 409,
+      });
+    }
+    job.status = "SUCCESS";
+    return structuredClone(job);
+  };
+  const service = createCollectorOzonEnrichmentService({
+    repository: jobRepository,
+    now: () => new Date(clock),
+    collectItems: {
+      async read() {
+        clock = new Date(job.claimExpiresAt).getTime();
+        return structuredClone(visibleItem);
+      },
+      async save() { throw new Error("unused"); },
+      async complete(input) {
+        await jobRepository.completeJobAndCache(input.completion);
+        visibleItem = {
+          ...visibleItem,
+          status: input.status,
+          listingDraft: structuredClone(input.listingDraft),
+          enrichment: structuredClone(input.enrichment),
+        };
+        return structuredClone(visibleItem);
+      },
+      async fail() { throw new Error("unused"); },
+      async retry() { throw new Error("unused"); },
+    },
+  });
+
+  await assert.rejects(service.completeClaim({
+    session: { accountId: "account-a", collectorSessionId: "collector-a" },
+    jobId: job.id,
+    variantData: sellerVariantData(),
+    captureContext: captureContext(),
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+
+  assert.equal(visibleItem.status, "RETRYING");
+  assert.equal(job.status, "PROCESSING");
+});
+
+test("PostgreSQL permanent failure helper commits job truth and item summary on one scoped client", async () => {
+  assert.equal(typeof listingPipeline.failCollectItemEnrichmentWithClientV4, "function");
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("SELECT c.id")) {
+        return { rows: [{
+          id: "collect-failure-pg",
+          account_id: "account-a",
+          status: "RETRYING",
+          summary: { enrichment: { status: "RETRYING", attemptCount: 3 } },
+          draft_data: { title: "keep" },
+          draft_version: 2,
+        }], rowCount: 1 };
+      }
+      if (normalized.startsWith("UPDATE collect_items")) {
+        return { rows: [{
+          id: "collect-failure-pg",
+          account_id: "account-a",
+          status: "NEEDS_ATTENTION",
+          summary: JSON.parse(params[2]),
+        }], rowCount: 1 };
+      }
+      throw new Error(`unexpected query: ${normalized}`);
+    },
+  };
+  const result = await listingPipeline.failCollectItemEnrichmentWithClientV4(client, {
+    collectItemId: "collect-failure-pg",
+    accountId: "account-a",
+    status: "NEEDS_ATTENTION",
+    enrichment: {
+      status: "NEEDS_ATTENTION",
+      missingFields: [],
+      attemptCount: 3,
+      nextAttemptAt: "",
+      lastErrorCode: "OZON_ENRICH_NOT_FOUND",
+    },
+    failJobAndCache: async (receivedClient) => {
+      assert.equal(receivedClient, client);
+      return { id: "job-failure-pg", accountId: "account-a", attemptCount: 4, status: "FAILED" };
+    },
+  });
+
+  assert.equal(result.job.attemptCount, 4);
+  assert.equal(result.item.enrichment.attemptCount, 4);
+  assert.equal(result.item.status, "NEEDS_ATTENTION");
+  assert.deepEqual(calls[0].params, ["collect-failure-pg", "account-a"]);
+  assert.deepEqual(calls[1].params.slice(0, 2), ["collect-failure-pg", "account-a"]);
 });
 
 test("completion reloads and fill-blank merges through three expected-version conflicts", async () => {
@@ -225,6 +337,7 @@ test("completion reloads and fill-blank merges through three expected-version co
         await jobRepository.completeJobAndCache(input.completion);
         return saved;
       },
+      async fail() { throw new Error("unused"); },
       async retry() { throw new Error("unused"); },
     },
   });
@@ -276,6 +389,7 @@ test("a fourth expected-version conflict leaves the job recoverable and never ca
         await jobRepository.completeJobAndCache(input.completion);
         return saved;
       },
+      async fail() { throw new Error("unused"); },
       async retry() { throw new Error("unused"); },
     },
   });

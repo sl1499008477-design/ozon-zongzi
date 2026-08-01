@@ -13,6 +13,7 @@ import { getPostgresPool } from "./db/connection.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import {
   completeCollectItemEnrichmentV4,
+  failCollectItemEnrichmentV4,
   readCollectItemEnrichmentV4,
   retryCollectItemEnrichmentV4,
   saveCollectItemEnrichmentV4,
@@ -166,7 +167,10 @@ export function createCollectorOzonEnrichmentRuntime({
       return completeCollectItemEnrichmentV4({
         ...input,
         completeJobAndCache: async (client) => {
-          const terminalRepository = createPostgresCollectorOzonEnrichmentRepository({ pool: client });
+          const terminalRepository = createPostgresCollectorOzonEnrichmentRepository({
+            pool: client,
+            transactionOwner: "caller",
+          });
           await terminalRepository.completeJobAndCache(completion);
         },
       });
@@ -193,6 +197,44 @@ export function createCollectorOzonEnrichmentRuntime({
       await terminalRepository.completeJobAndCache(completion);
       await saveState(state);
       return structuredClone(item);
+    });
+  }
+
+  async function failCollectItem({ failure, ...input } = {}) {
+    const terminalFailure = () => {
+      const failedAt = typeof now === "function" ? new Date(now()) : new Date();
+      if (Number.isNaN(failedAt.getTime())) throw new TypeError("Ozon enrichment failure time required");
+      return { ...failure, now: failedAt };
+    };
+    if (persistenceMode() === "postgres") {
+      return failCollectItemEnrichmentV4({
+        ...input,
+        failJobAndCache: async (client) => {
+          const terminalRepository = createPostgresCollectorOzonEnrichmentRepository({
+            pool: client,
+            transactionOwner: "caller",
+          });
+          return terminalRepository.failJobAndCache(terminalFailure());
+        },
+      });
+    }
+    return stateTransaction.run(async () => {
+      const state = await loadState();
+      const item = jsonCollectItem(state, input);
+      if (!item) return null;
+      const terminalRepository = createJsonCollectorOzonEnrichmentRepository({ state });
+      const persistedFailure = terminalFailure();
+      const persistedJob = await terminalRepository.failJobAndCache(persistedFailure);
+      item.status = String(input.status || item.status || "");
+      item.enrichment = {
+        ...(input.enrichment && typeof input.enrichment === "object"
+          ? structuredClone(input.enrichment)
+          : {}),
+        attemptCount: Number(persistedJob.attemptCount || 0),
+      };
+      item.updatedAt = persistedFailure.now.toISOString();
+      await saveState(state);
+      return { item: structuredClone(item), job: structuredClone(persistedJob) };
     });
   }
 
@@ -246,6 +288,7 @@ export function createCollectorOzonEnrichmentRuntime({
     read: readCollectItem,
     save: saveCollectItem,
     complete: completeCollectItem,
+    fail: failCollectItem,
     retry: retryCollectItem,
   });
 
