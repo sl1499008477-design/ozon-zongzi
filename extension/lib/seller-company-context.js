@@ -67,11 +67,11 @@
     if (!pageRoot || typeof onCompanyId !== 'function') {
       throw new TypeError('seller company observer requires a page root and callback');
     }
-    const emitted = new Set();
+    let lastEmittedCompanyId = '';
     const emit = (value) => {
       const companyId = normalizeCompanyId(value);
-      if (!companyId || emitted.has(companyId)) return;
-      emitted.add(companyId);
+      if (!companyId || companyId === lastEmittedCompanyId) return;
+      lastEmittedCompanyId = companyId;
       onCompanyId(companyId);
     };
 

@@ -75,6 +75,7 @@ const allowedLocalOnly = new Set([
   "lib/seller-identity-policy.js",
   "lib/seller-company-context.js",
   "lib/seller-company-context-runtime.js",
+  "lib/seller-recovery-tab.js",
   "lib/web-bridge-policy.js",
   "package.json",
   "popup/__tests__/popup-routing.smoke.test.js",

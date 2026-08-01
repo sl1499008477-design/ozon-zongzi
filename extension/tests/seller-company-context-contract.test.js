@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const policy = require('../lib/seller-identity-policy.js');
 const recoveryTab = require('../lib/seller-recovery-tab.js');
+const { installObserver } = require('../lib/seller-company-context.js');
 const {
   CURRENT_STORAGE_KEY,
   createSellerCompanyContextRuntime,
@@ -141,6 +142,64 @@ test('one tab switching Company IDs remains RECOVERING during stabilization', as
   const recovering = await runtime.resolveCurrentWithRecovery();
   assert.deepEqual(recovering, { status: 'RECOVERING' });
   assert.equal(Object.hasOwn(recovering, 'companyId'), false);
+});
+
+test('Seller request hook advances runtime through A to B to A and stabilizes on latest A', async () => {
+  const session = createStorageArea();
+  const clock = { now: NOW };
+  const tab = { id: 7, url: 'https://seller.ozon.ru/app/products', active: true };
+  const runtime = createSellerCompanyContextRuntime({
+    chromeApi: {
+      scripting: { executeScript: async () => [] },
+      storage: { session },
+      tabs: { query: async () => [tab] },
+    },
+    now: () => clock.now,
+    policy,
+    recoveryTab,
+    stabilizationWindowMs: 1_000,
+  });
+  const pageRoot = {
+    fetch: async () => ({ ok: true }),
+  };
+  const writes = [];
+  const uninstall = installObserver({
+    root: pageRoot,
+    onCompanyId(companyId) {
+      writes.push(runtime.rememberFromSender({ frameId: 0, tab }, companyId));
+    },
+  });
+  const observe = async (companyId) => {
+    await pageRoot.fetch('/api/v1/search', {
+      headers: { 'x-o3-company-id': companyId },
+    });
+    return writes.at(-1);
+  };
+
+  const firstSnapshot = await observe('2681910');
+  clock.now += 100;
+  const secondSnapshot = await observe('7311458');
+  assert.equal(await runtime.isSnapshotCurrent(firstSnapshot), false);
+  assert.deepEqual(await runtime.resolveCurrentWithRecovery(), { status: 'RECOVERING' });
+  clock.now += 100;
+  await observe('2681910');
+
+  assert.deepEqual((await Promise.all(writes)).map((entry) => entry.revision), [1, 2, 3]);
+  assert.deepEqual(session.state[CURRENT_STORAGE_KEY], {
+    companyId: '2681910', observedAt: NOW + 200, revision: 3, tabId: 7,
+  });
+  assert.equal(await runtime.isSnapshotCurrent(secondSnapshot), false);
+  assert.deepEqual(await runtime.resolveCurrentWithRecovery(), { status: 'RECOVERING' });
+
+  clock.now += 1_001;
+  assert.deepEqual(await runtime.resolveCurrentWithRecovery(), {
+    status: 'READY',
+    companyId: '2681910',
+    revision: 3,
+    observedAt: NOW + 200,
+    sellerTabId: 7,
+  });
+  uninstall();
 });
 
 function createRecoveryHarness({ userTabs = [], onSleep, helperUrl } = {}) {
