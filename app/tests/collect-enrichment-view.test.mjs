@@ -5,16 +5,85 @@ import {
   collectEnrichmentEffectiveSummary,
   collectEnrichmentErrorSummary,
   collectEnrichmentListNeedsPolling,
+  collectEditEnrichmentBackfill,
   collectEnrichmentNeedsPolling,
   collectEnrichmentRetryNotice,
   collectEnrichmentRetryOverride,
   collectEnrichmentRetryPath,
   collectEnrichmentSuccessMessage,
   collectEnrichmentView,
+  collectEditSourceCategorySnapshot,
+  collectEditSourceCategoryVariant,
   collectWorkflowStatus,
   runCollectEnrichmentRetry,
   startCollectEnrichmentPolling,
 } from "../src/collect-enrichment-view.js";
+
+test("Seller source category projection feeds preview without reusing target category roots", () => {
+  const item = {
+    listingDraft: {
+      descriptionCategoryId: 880001,
+      typeId: 990001,
+      categoryResolution: { source: {} },
+      sourceCategory: {
+        descriptionCategoryId: 17039736,
+        typeName: "Seller source",
+        typeIdCandidate: 123456,
+        path: ["Seller root", "Seller source"],
+        attributes: [{ key: "8229", value: "Seller source", dictionary_value_id: 123456 }],
+      },
+    },
+  };
+  assert.deepEqual(collectEditSourceCategorySnapshot(item), item.listingDraft.sourceCategory);
+  assert.deepEqual(collectEditSourceCategoryVariant(item), {
+    description_category_id: 17039736,
+    type_id: 123456,
+    attributes: [{ key: "8229", value: "Seller source", dictionary_value_id: 123456 }],
+  });
+});
+
+test("same-item COMPLETE polling fills only blank logistics fields and rejects stale scope generations", () => {
+  const current = {
+    packageWeight: "901",
+    packageLength: "",
+    packageWidth: "",
+    packageHeight: "",
+  };
+  const completeItem = {
+    id: "collect-edit-a",
+    enrichment: { status: "COMPLETE" },
+    listingDraft: {
+      logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    },
+  };
+  assert.deepEqual(collectEditEnrichmentBackfill({
+    current,
+    item: completeItem,
+    activeItemId: "collect-edit-a",
+    generation: 4,
+    latestGeneration: 4,
+    dirtyFields: ["packageWeight"],
+  }), {
+    packageWeight: "901",
+    packageLength: "300",
+    packageWidth: "200",
+    packageHeight: "100",
+  });
+  assert.equal(collectEditEnrichmentBackfill({
+    current,
+    item: completeItem,
+    activeItemId: "collect-edit-b",
+    generation: 4,
+    latestGeneration: 4,
+  }), current);
+  assert.equal(collectEditEnrichmentBackfill({
+    current,
+    item: completeItem,
+    activeItemId: "collect-edit-a",
+    generation: 3,
+    latestGeneration: 4,
+  }), current);
+});
 
 test("pending enrichment maps to a blocked Chinese collection status", () => {
   assert.deepEqual(collectEnrichmentView({

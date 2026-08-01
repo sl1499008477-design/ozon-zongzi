@@ -22,6 +22,134 @@ const pollingStatuses = new Set([
 
 const enrichmentStatus = (summary = {}) => String(summary?.status || "").trim().toUpperCase();
 
+const positiveCategoryId = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+};
+
+export function collectEditSourceCategorySnapshot(item = {}) {
+  const candidates = [
+    item?.listingDraft?.sourceCategory,
+    item?.sourceCategory,
+    item?.listingDraft?.categoryResolution?.source,
+    item?.categoryResolution?.source,
+  ].filter((value) => value && typeof value === "object" && !Array.isArray(value));
+  return candidates.reduce((snapshot, candidate) => ({
+    descriptionCategoryId: snapshot.descriptionCategoryId
+      || positiveCategoryId(candidate.descriptionCategoryId ?? candidate.description_category_id),
+    typeName: snapshot.typeName || String(candidate.typeName ?? candidate.type_name ?? "").trim(),
+    typeIdCandidate: snapshot.typeIdCandidate
+      || positiveCategoryId(candidate.typeIdCandidate ?? candidate.type_id_candidate),
+    path: snapshot.path.length
+      ? snapshot.path
+      : (Array.isArray(candidate.path)
+          ? candidate.path.map((value) => String(value ?? "").trim()).filter(Boolean)
+          : []),
+    attributes: snapshot.attributes.length
+      ? snapshot.attributes
+      : (Array.isArray(candidate.attributes)
+          ? structuredClone(candidate.attributes.slice(0, 100))
+          : []),
+  }), {
+    descriptionCategoryId: 0,
+    typeName: "",
+    typeIdCandidate: 0,
+    path: [],
+    attributes: [],
+  });
+}
+
+export function collectEditSourceCategoryVariant(item = {}) {
+  const source = collectEditSourceCategorySnapshot(item);
+  return {
+    ...(source.descriptionCategoryId
+      ? { description_category_id: source.descriptionCategoryId }
+      : {}),
+    ...(source.typeIdCandidate ? { type_id: source.typeIdCandidate } : {}),
+    ...(source.attributes.length ? { attributes: structuredClone(source.attributes) } : {}),
+  };
+}
+
+const positivePackageValue = (...values) => {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (!text) continue;
+    const number = Number(text);
+    if (Number.isFinite(number) && number > 0) return text;
+  }
+  return "";
+};
+
+const itemIdentity = (item = {}) => String(item?.id || item?.collectItemId || "").trim();
+
+export function collectEditEnrichmentBackfill({
+  current,
+  item,
+  activeItemId,
+  generation,
+  latestGeneration,
+  dirtyFields = [],
+} = {}) {
+  if (
+    !current
+    || typeof current !== "object"
+    || enrichmentStatus(item?.enrichment) !== "COMPLETE"
+    || itemIdentity(item) !== String(activeItemId || "").trim()
+    || Number(generation) !== Number(latestGeneration)
+  ) return current;
+  const draft = item?.listingDraft && typeof item.listingDraft === "object"
+    ? item.listingDraft
+    : {};
+  const logistics = draft.logistics && typeof draft.logistics === "object"
+    ? draft.logistics
+    : {};
+  const raw = item?.raw && typeof item.raw === "object" ? item.raw : {};
+  const dirty = new Set(Array.isArray(dirtyFields) ? dirtyFields : []);
+  const evidence = {
+    packageWeight: positivePackageValue(
+      draft.packageWeight,
+      logistics.weightG,
+      item?.packageWeight,
+      item?.weightG,
+      raw.packageWeight,
+      raw.weight,
+    ),
+    packageLength: positivePackageValue(
+      draft.packageLength,
+      logistics.lengthMm,
+      item?.packageLength,
+      item?.lengthMm,
+      raw.packageLength,
+      raw.depth,
+    ),
+    packageWidth: positivePackageValue(
+      draft.packageWidth,
+      logistics.widthMm,
+      item?.packageWidth,
+      item?.widthMm,
+      raw.packageWidth,
+      raw.width,
+    ),
+    packageHeight: positivePackageValue(
+      draft.packageHeight,
+      logistics.heightMm,
+      item?.packageHeight,
+      item?.heightMm,
+      raw.packageHeight,
+      raw.height,
+    ),
+  };
+  let changed = false;
+  const merged = { ...current };
+  for (const [field, value] of Object.entries(evidence)) {
+    if (!dirty.has(field) && !String(merged[field] ?? "").trim() && value) {
+      merged[field] = value;
+      changed = true;
+    }
+  }
+  return changed ? merged : current;
+}
+
 const missingFieldDetail = (missingFields = []) => {
   const labels = [];
   for (const field of Array.isArray(missingFields) ? missingFields : []) {

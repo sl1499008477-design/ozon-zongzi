@@ -223,6 +223,53 @@ test("reads source category evidence without treating it as a target category", 
   });
 });
 
+test("reads Seller source evidence from the enriched listing draft without using manual target fields", () => {
+  assert.deepEqual(sourceCategoryEvidenceOf({
+    listingDraft: {
+      descriptionCategoryId: 880001,
+      typeId: 990001,
+      sourceCategory: {
+        descriptionCategoryId: 17039736,
+        typeName: "Seller source",
+        typeIdCandidate: 123456,
+        path: ["Seller root", "Seller source"],
+      },
+    },
+  }), {
+    descriptionCategoryId: 17039736,
+    typeName: "Seller source",
+    typeIdCandidate: 123456,
+    path: ["Seller root", "Seller source"],
+  });
+});
+
+test("stale empty resolution source does not hide later Seller source evidence", () => {
+  assert.deepEqual(sourceCategoryEvidenceOf({
+    listingDraft: {
+      categoryResolution: {
+        source: {
+          descriptionCategoryId: 0,
+          typeName: "",
+          typeIdCandidate: 0,
+          path: [],
+        },
+        target: { descriptionCategoryId: 880001, typeId: 990001 },
+      },
+      sourceCategory: {
+        descriptionCategoryId: 17039736,
+        typeName: "Seller source",
+        typeIdCandidate: 123456,
+        path: ["Seller root", "Seller source"],
+      },
+    },
+  }), {
+    descriptionCategoryId: 17039736,
+    typeName: "Seller source",
+    typeIdCandidate: 123456,
+    path: ["Seller root", "Seller source"],
+  });
+});
+
 test("uses a matched resolution only for the currently selected target store", () => {
   const resolution = {
     status: "MATCHED",

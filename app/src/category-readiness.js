@@ -25,7 +25,19 @@ const normalizedSourceCategory = (source = {}) => ({
 });
 
 export function sourceCategoryEvidenceOf(item = {}) {
-  const direct = item?.categoryResolution?.source || item?.sourceCategory || {};
+  const direct = [
+    item?.categoryResolution?.source,
+    item?.sourceCategory,
+    item?.listingDraft?.categoryResolution?.source,
+    item?.listingDraft?.sourceCategory,
+  ].filter((value) => value && typeof value === "object")
+    .map(normalizedSourceCategory)
+    .reduce((merged, candidate) => ({
+      descriptionCategoryId: merged.descriptionCategoryId || candidate.descriptionCategoryId,
+      typeName: merged.typeName || candidate.typeName,
+      typeIdCandidate: merged.typeIdCandidate || candidate.typeIdCandidate,
+      path: merged.path.length ? merged.path : candidate.path,
+    }), normalizedSourceCategory());
   const variants = [
     item?.variantData,
     item?.variant_data,
@@ -48,14 +60,12 @@ export function sourceCategoryEvidenceOf(item = {}) {
     .filter((label, index, labels) => label && labels.indexOf(label) === index);
   return normalizedSourceCategory({
     descriptionCategoryId: direct.descriptionCategoryId
-      ?? direct.description_category_id
-      ?? variant.description_category_id
-      ?? variant.descriptionCategoryId,
-    typeName: direct.typeName ?? direct.type_name ?? typeAttribute.value,
+      || variant.description_category_id
+      || variant.descriptionCategoryId,
+    typeName: direct.typeName || typeAttribute.value,
     typeIdCandidate: direct.typeIdCandidate
-      ?? direct.type_id_candidate
-      ?? typeAttribute.dictionary_value_id
-      ?? typeAttribute.dictionaryValueId,
+      || typeAttribute.dictionary_value_id
+      || typeAttribute.dictionaryValueId,
     path: Array.isArray(direct.path) && direct.path.length ? direct.path : path,
   });
 }

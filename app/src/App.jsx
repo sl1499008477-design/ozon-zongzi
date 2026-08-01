@@ -110,6 +110,9 @@ import {
 } from "./dashboard-money.js";
 import { buildPrepareListingBody, collectAddReadiness, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
 import {
+  collectEditEnrichmentBackfill,
+  collectEditSourceCategorySnapshot,
+  collectEditSourceCategoryVariant,
   collectEnrichmentEffectiveSummary,
   collectEnrichmentErrorSummary,
   collectEnrichmentListNeedsPolling,
@@ -3807,6 +3810,8 @@ const collectEditSourceUrl = (item = {}, sku = "") =>
   (sku ? `https://www.ozon.ru/product/${sku}/` : "");
 
 const collectEditDimensionSources = (item = {}) => [
+  item.listingDraft,
+  item.listingDraft?.logistics,
   item,
   item.raw,
   item.variantData,
@@ -4048,10 +4053,21 @@ const collectEditSourceVariant = (item = {}, sku = "") => {
     selectedVariant,
   ].filter((source) => source && typeof source === "object");
   const merged = sources.reduce((acc, source) => ({ ...acc, ...source }), {});
-  const attributes = collectEditRawAttributeList(...sources);
+  const sourceCategoryVariant = collectEditSourceCategoryVariant(item);
+  const attributes = collectEditRawAttributeList(...sources, sourceCategoryVariant);
   const complexAttributes = collectEditRawComplexAttributes(...sources);
   return {
     ...merged,
+    description_category_id: collectEditFirst(
+      merged.description_category_id,
+      merged.descriptionCategoryId,
+      sourceCategoryVariant.description_category_id,
+    ),
+    type_id: collectEditFirst(
+      merged.type_id,
+      merged.typeId,
+      sourceCategoryVariant.type_id,
+    ),
     attributes: attributes.length ? attributes : (Array.isArray(merged.attributes) ? merged.attributes : []),
     complex_attributes: complexAttributes.length ? complexAttributes : (Array.isArray(merged.complex_attributes) ? merged.complex_attributes : []),
   };
@@ -4990,6 +5006,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const [enrichmentRetryOverride, setEnrichmentRetryOverride] = useState(null);
   const categoryAutoPreviewKeyRef = useRef("");
   const collectEditInitScopeRef = useRef("");
+  const collectEditDimensionDirtyRef = useRef(new Set());
+  const collectEditActiveItemIdRef = useRef("");
+  const collectEditEnrichmentGenerationRef = useRef(0);
   const listingSubmissionIntentRef = useRef(null);
   const params = new URLSearchParams(window.location.search);
   const itemId = params.get("id") || "";
@@ -5023,6 +5042,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     itemStoreId: candidateStoreId,
   });
   const item = itemScopeCurrent ? candidateItem : null;
+  collectEditActiveItemIdRef.current = itemScopeCurrent
+    ? collectEditFirst(candidateItem?.id, candidateItem?.collectItemId)
+    : "";
   const scopedPreviewItem = itemScopeCurrent ? previewItem : null;
   const effectiveEnrichment = collectEnrichmentEffectiveSummary(item, enrichmentRetryOverride);
   const enrichmentView = collectEnrichmentView(effectiveEnrichment);
@@ -5106,6 +5128,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       ].join("|");
       if (collectEditInitScopeRef.current === itemScope) return;
       collectEditInitScopeRef.current = itemScope;
+      collectEditDimensionDirtyRef.current = new Set();
       const storedCategoryResolution = categoryResolutionForStore(
         draft.categoryResolution || item.categoryResolution,
         categoryStoreId,
@@ -5163,28 +5186,28 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setPackageWeight(collectEditPackageDimension(
         draft.packageWeight,
         item,
-        ["weight", "package_weight", "weight_g", "scraped_weight"],
+        ["weightG", "weight", "package_weight", "weight_g", "scraped_weight"],
         ["4497", "4383"],
         "weight",
       ));
       setPackageLength(collectEditPackageDimension(
         draft.packageLength,
         item,
-        ["depth", "package_length", "length", "depth_mm", "scraped_depth"],
+        ["lengthMm", "depth", "package_length", "length", "depth_mm", "scraped_depth"],
         ["9454", "9802"],
         "dimension",
       ));
       setPackageWidth(collectEditPackageDimension(
         draft.packageWidth,
         item,
-        ["width", "package_width", "width_mm", "scraped_width"],
+        ["widthMm", "width", "package_width", "width_mm", "scraped_width"],
         ["9455", "6605"],
         "dimension",
       ));
       setPackageHeight(collectEditPackageDimension(
         draft.packageHeight,
         item,
-        ["height", "package_height", "height_mm", "scraped_height"],
+        ["heightMm", "height", "package_height", "height_mm", "scraped_height"],
         ["9456", "7703"],
         "dimension",
       ));
@@ -5205,6 +5228,27 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       categoryAutoPreviewKeyRef.current = "";
     }
   }, [itemId, item, itemScopeCurrent, storeCurrencyCode, categoryStoreId, listingWarehouseOptionKey]);
+
+  React.useEffect(function() {
+    if (!item || !itemScopeCurrent) return;
+    if (!collectEditFirst(item.id, item.collectItemId)) return;
+    const generation = collectEditEnrichmentGenerationRef.current + 1;
+    collectEditEnrichmentGenerationRef.current = generation;
+    const backfill = (field, setValue) => {
+      setValue((currentValue) => collectEditEnrichmentBackfill({
+        current: { [field]: currentValue },
+        item,
+        activeItemId: collectEditActiveItemIdRef.current,
+        generation,
+        latestGeneration: collectEditEnrichmentGenerationRef.current,
+        dirtyFields: [...collectEditDimensionDirtyRef.current],
+      })[field]);
+    };
+    backfill("packageWeight", setPackageWeight);
+    backfill("packageLength", setPackageLength);
+    backfill("packageWidth", setPackageWidth);
+    backfill("packageHeight", setPackageHeight);
+  }, [itemId, item, itemScopeCurrent]);
 
   React.useEffect(function() {
     if (!listingWarehouseId && listingWarehouseOptions.length) {
@@ -5457,6 +5501,14 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   };
 
   const buildListingDraft = function() {
+    const sourceCategory = collectEditSourceCategorySnapshot(item);
+    const hasSourceCategory = Boolean(
+      sourceCategory.descriptionCategoryId
+      || sourceCategory.typeName
+      || sourceCategory.typeIdCandidate
+      || sourceCategory.path.length
+      || sourceCategory.attributes.length
+    );
     const editedCategoryAttributes = categoryAttributeInputRows.map((row) => {
       const rawValue = categoryAttributeValues[row.key] ?? row.value ?? "";
       const value = row.controlType === "select"
@@ -5521,6 +5573,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       categoryPathZh: categoryLabel,
       categoryPathRu: categoryRussianLabel,
       categoryResolution,
+      ...(hasSourceCategory ? { sourceCategory } : {}),
       // Kept for compatibility with older drafts. The server applies this only
       // to the anchor SKU; sibling variants use their own categoryAttributes or
       // sourceVariant snapshot.
@@ -6299,16 +6352,28 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             </div>
             <Form layout="vertical" className="collect-edit-size-grid">
               <Form.Item label="包装重量">
-                <Input value={packageWeight} suffix="克" onChange={(event) => setPackageWeight(event.target.value)} />
+                <Input value={packageWeight} suffix="克" onChange={(event) => {
+                  collectEditDimensionDirtyRef.current.add("packageWeight");
+                  setPackageWeight(event.target.value);
+                }} />
               </Form.Item>
               <Form.Item label="包装长">
-                <Input value={packageLength} suffix="毫米" onChange={(event) => setPackageLength(event.target.value)} />
+                <Input value={packageLength} suffix="毫米" onChange={(event) => {
+                  collectEditDimensionDirtyRef.current.add("packageLength");
+                  setPackageLength(event.target.value);
+                }} />
               </Form.Item>
               <Form.Item label="包装宽">
-                <Input value={packageWidth} suffix="毫米" onChange={(event) => setPackageWidth(event.target.value)} />
+                <Input value={packageWidth} suffix="毫米" onChange={(event) => {
+                  collectEditDimensionDirtyRef.current.add("packageWidth");
+                  setPackageWidth(event.target.value);
+                }} />
               </Form.Item>
               <Form.Item label="包装高">
-                <Input value={packageHeight} suffix="毫米" onChange={(event) => setPackageHeight(event.target.value)} />
+                <Input value={packageHeight} suffix="毫米" onChange={(event) => {
+                  collectEditDimensionDirtyRef.current.add("packageHeight");
+                  setPackageHeight(event.target.value);
+                }} />
               </Form.Item>
             </Form>
           </section>
