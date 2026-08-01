@@ -132,7 +132,10 @@ import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
-import { assertOzonListingReady } from "./collect-enrichment-policy.mjs";
+import {
+  assertOzonListingReady,
+  preserveOzonSourceCategoryEvidence,
+} from "./collect-enrichment-policy.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
@@ -374,6 +377,8 @@ const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollection
   saveState,
   stateTransaction: jsonStateTransaction,
   enqueueForCollect: collectorOzonEnrichmentRuntime.enqueueForCollect,
+  completeLinkedJobsFromCollectEvidence:
+    collectorOzonEnrichmentRuntime.completeLinkedJobsFromCollectEvidence,
   sendJson,
   sendError,
   countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
@@ -785,9 +790,16 @@ async function updateCollectBoxItemAtomic(id, patch, { account }) {
   );
   if (index < 0) return null;
   const current = latest.caches.collectBox[index];
+  const safePatch = withoutCollectorScope(patch);
+  if (safePatch.listingDraft && typeof safePatch.listingDraft === "object") {
+    safePatch.listingDraft = preserveOzonSourceCategoryEvidence(
+      current.listingDraft,
+      safePatch.listingDraft,
+    );
+  }
   latest.caches.collectBox[index] = {
     ...current,
-    ...withoutCollectorScope(patch),
+    ...safePatch,
     id,
     accountId: account.id,
     createdBy: current.createdBy || account.id,
@@ -1901,6 +1913,18 @@ function listingNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function listingSourceCategoryEvidence(...candidates) {
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const descriptionCategoryId = Number(listingFirstText(
+      candidate.descriptionCategoryId,
+      candidate.description_category_id,
+    ));
+    if (Number.isFinite(descriptionCategoryId) && descriptionCategoryId > 0) return candidate;
+  }
+  return {};
+}
+
 function listingImageList(...values) {
   const out = [];
   const seen = new Set();
@@ -2042,6 +2066,15 @@ function listingStockRowsFromDraft(draft = {}, item = {}, listingItems = []) {
 
 function buildCollectBoxListingItems(item = {}) {
   const draft = item.listingDraft && typeof item.listingDraft === "object" ? item.listingDraft : {};
+  const draftSourceCategory = listingSourceCategoryEvidence(
+    draft.sourceCategory,
+    draft.categoryResolution?.source,
+    item.sourceCategory,
+    item.categoryResolution?.source,
+  );
+  const draftLogistics = draft.logistics && typeof draft.logistics === "object"
+    ? draft.logistics
+    : {};
   const sku = listingFirstText(draft.sku, item.sku, item.product_id, item.productId, item.id);
   const baseTitle = listingFirstText(draft.title, item.name, item.title, sku);
   const basePrice = listingNumber(listingFirstText(draft.price, item.price?.price, item.price, item.priceText));
@@ -2108,25 +2141,37 @@ function buildCollectBoxListingItems(item = {}) {
     const tags = Array.isArray(variant.tags)
       ? variant.tags
       : (isAnchor && Array.isArray(draft.tags) ? draft.tags : undefined);
+    const variantLogistics = variant.logistics && typeof variant.logistics === "object"
+      ? variant.logistics
+      : {};
+    const sourceCategory = listingSourceCategoryEvidence(
+      variant.sourceCategory,
+      variant.categoryResolution?.source,
+      draftSourceCategory,
+    );
     const weight = Math.round(listingNumber(listingFirstText(
       variant.packageWeight,
       variant.weight,
-      isAnchor ? draft.packageWeight : "",
+      variantLogistics.weightG,
+      isAnchor ? listingFirstText(draft.packageWeight, draftLogistics.weightG) : "",
     )));
     const depth = Math.round(listingNumber(listingFirstText(
       variant.packageLength,
       variant.depth,
-      isAnchor ? draft.packageLength : "",
+      variantLogistics.lengthMm,
+      isAnchor ? listingFirstText(draft.packageLength, draftLogistics.lengthMm) : "",
     )));
     const width = Math.round(listingNumber(listingFirstText(
       variant.packageWidth,
       variant.width,
-      isAnchor ? draft.packageWidth : "",
+      variantLogistics.widthMm,
+      isAnchor ? listingFirstText(draft.packageWidth, draftLogistics.widthMm) : "",
     )));
     const height = Math.round(listingNumber(listingFirstText(
       variant.packageHeight,
       variant.height,
-      isAnchor ? draft.packageHeight : "",
+      variantLogistics.heightMm,
+      isAnchor ? listingFirstText(draft.packageHeight, draftLogistics.heightMm) : "",
     )));
     return {
       offer_id: offerId,
@@ -2149,6 +2194,9 @@ function buildCollectBoxListingItems(item = {}) {
       attributes: variantAttributes,
       complex_attributes: Array.isArray(variant.complex_attributes) ? variant.complex_attributes : [],
       bundleComplexAttrs: variant.bundleComplexAttrs || sourceVariant._bundleComplexAttrs || undefined,
+      sourceCategory: Object.keys(sourceCategory).length
+        ? structuredClone(sourceCategory)
+        : undefined,
       barcode: listingFirstText(variant.barcode, isAnchor ? item.barcode : "") || undefined,
       description_category_id: descriptionCategoryId || undefined,
       type_id: typeId || undefined,

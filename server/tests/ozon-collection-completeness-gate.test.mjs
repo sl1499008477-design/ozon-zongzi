@@ -63,7 +63,7 @@ function jsonHarness(body, { failEnqueue = false, failSave = false } = {}) {
   const response = {};
   const handler = createJsonAccountScopedCollectionHandler({
     authenticate: async () => ({ id: "json-account" }),
-    readJson: async () => body,
+    readJson: async (request) => request?.bodyOverride ?? body,
     normalizeItem: (item) => {
       normalized += 1;
       return item;
@@ -81,6 +81,10 @@ function jsonHarness(body, { failEnqueue = false, failSave = false } = {}) {
       if (failEnqueue) throw new Error("enqueue failed");
       return createJsonCollectorOzonEnrichmentRepository({ state: nextState }).enqueueForCollect(input);
     },
+    completeLinkedJobsFromCollectEvidence: async ({ state: nextState, ...input }) => (
+      createJsonCollectorOzonEnrichmentRepository({ state: nextState })
+        .completeLinkedJobsFromCollectEvidence(input)
+    ),
     sendJson: (_res, status, data) => { response.status = status; response.body = data; },
     sendError: (_res, status, message, code, details = {}) => {
       response.status = status;
@@ -94,8 +98,8 @@ function jsonHarness(body, { failEnqueue = false, failSave = false } = {}) {
     response,
     get normalized() { return normalized; },
     get saved() { return saved; },
-    invoke: async (path = "/sources/ozon/collect") => handler(
-      { method: "POST" },
+    invoke: async (path = "/sources/ozon/collect", bodyOverride) => handler(
+      { method: "POST", bodyOverride },
       {},
       new URL(`http://localhost${path}`),
       state,
@@ -142,6 +146,69 @@ test("batch preflight accepts missing enrichment fields but rejects invalid payl
   );
 });
 
+test("shared JSON and PostgreSQL preparation strips forged server draft state while retaining exact raw audit evidence", async () => {
+  const sourceSku = "forged-server-draft";
+  const forgedPayload = {
+    sku: sourceSku,
+    name: "Public evidence only",
+    id: "forged-collect-id",
+    status: "COMPLETE",
+    draftVersion: 999,
+    listingDraft: {
+      descriptionCategoryId: 88_000_001,
+      sourceCategory: { descriptionCategoryId: 17_000_001 },
+      logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    },
+    listing_draft: { forgedAlias: "snake" },
+    "listing-draft": { forgedAlias: "kebab" },
+    enrichment: { status: "COMPLETE", missingFields: [] },
+    draft_version: 998,
+    "draft-version": 997,
+    raw: { forged: true },
+  };
+  const input = collectInput({
+    sourceSku,
+    requestId: "forged-server-draft-request",
+    payload: forgedPayload,
+  });
+  const prepared = prepareCollectRequestV4({
+    authenticatedAccount: { id: "prepare-account" },
+    input,
+  });
+
+  for (const field of [
+    "listingDraft",
+    "listing_draft",
+    "listing-draft",
+    "enrichment",
+    "draftVersion",
+    "draft_version",
+    "draft-version",
+    "raw",
+    "status",
+  ]) {
+    assert.equal(Object.hasOwn(prepared.normalizedItem, field), false, field);
+  }
+  assert.notEqual(prepared.normalizedItem.id, "forged-collect-id");
+  assert.deepEqual(buildOzonEnrichmentSummary(prepared.normalizedItem), {
+    status: "PENDING_ENRICHMENT",
+    missingFields: requiredFields,
+    attemptCount: 0,
+    nextAttemptAt: "",
+    lastErrorCode: "",
+  });
+
+  const harness = jsonHarness(input);
+  await harness.invoke();
+  const item = harness.state.caches.collectBox[0];
+  assert.equal(item.status === "COMPLETE", false);
+  assert.equal(item.listingDraft, undefined);
+  assert.equal(item.enrichment.status, "PENDING_ENRICHMENT");
+  assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 1);
+  assert.deepEqual(item.raw, forgedPayload);
+  assert.deepEqual(harness.state.collectRequests[0].rawEvidence.payload, forgedPayload);
+});
+
 test("JSON collection stores public Ozon data with enrichment and one linked pending job", async () => {
   const harness = jsonHarness(collectInput({
     sourceSku: "4862904234",
@@ -170,6 +237,302 @@ test("JSON collection stores public Ozon data with enrichment and one linked pen
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].sku, "4862904234");
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].status, "PENDING");
   assert.equal(harness.saved, 1);
+});
+
+test("JSON pending canonical item becomes complete and atomically supersedes its active linked job", async () => {
+  const sourceSku = "json-pending-to-complete";
+  const harness = jsonHarness(collectInput({
+    sourceSku,
+    requestId: "json-pending-to-complete-a",
+    payload: { sku: sourceSku, name: "Public evidence first" },
+  }));
+  await harness.invoke();
+  harness.state.collectorOzonEnrichmentJobs[0] = {
+    ...harness.state.collectorOzonEnrichmentJobs[0],
+    status: "PROCESSING",
+    claimedSessionId: "collector-stale-after-recollect",
+    claimExpiresAt: "2099-08-01T08:01:00.000Z",
+    claimFence: "claim-stale-after-recollect",
+    attemptCount: 2,
+  };
+  harness.state.caches.collectBox[0].listingDraft = {
+    title: "Manual title survives public completion",
+    logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
+  };
+  harness.state.caches.collectBox[0].draftVersion = 4;
+
+  await harness.invoke("/sources/ozon/collect", collectInput({
+    sourceSku,
+    requestId: "json-pending-to-complete-b",
+    payload: {
+      ...completeOzonPayload(),
+      sku: sourceSku,
+      name: "Complete public evidence",
+    },
+  }));
+
+  assert.equal(harness.response.status, 200);
+  assert.deepEqual(harness.response.body.enrichment, {
+    status: "COMPLETE",
+    missingFields: [],
+    attemptCount: 0,
+    nextAttemptAt: "",
+    lastErrorCode: "",
+  });
+  assert.deepEqual(harness.state.caches.collectBox[0].enrichment, harness.response.body.enrichment);
+  assert.equal(harness.state.caches.collectBox[0].status, "COMPLETE");
+  assert.deepEqual(harness.state.caches.collectBox[0].listingDraft, {
+    title: "Manual title survives public completion",
+    logistics: { weightG: 777, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    sourceCategory: { descriptionCategoryId: 17_000_001 },
+  });
+  assert.equal(harness.state.caches.collectBox[0].draftVersion, 5);
+  assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 1);
+  assert.equal(harness.state.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.deepEqual(harness.state.collectorOzonEnrichmentJobs[0].result, {
+    status: "COMPLETE",
+    source: "COLLECTED_PUBLIC_EVIDENCE",
+  });
+  assert.equal(harness.state.collectorOzonEnrichmentJobs[0].claimedSessionId, null);
+  assert.equal(harness.state.collectorOzonEnrichmentJobs[0].claimExpiresAt, null);
+  assert.equal(harness.state.collectorOzonEnrichmentJobs[0].claimFence, null);
+});
+
+test("JSON same account/source/SKU with a new request keeps the canonical completed item and request audit", async () => {
+  const sourceSku = "json-canonical-complete";
+  const firstInput = collectInput({
+    sourceSku,
+    requestId: "json-canonical-request-a",
+    payload: { sku: sourceSku, name: "First public title" },
+  });
+  const harness = jsonHarness(firstInput);
+  await harness.invoke();
+
+  const originalId = harness.state.caches.collectBox[0].id;
+  harness.state.caches.collectBox[0] = {
+    ...harness.state.caches.collectBox[0],
+    name: "Manually curated title",
+    status: "COMPLETE",
+    draftVersion: 9,
+    listingDraft: {
+      title: "Manual listing title",
+      descriptionCategoryId: 880001,
+      typeId: 990001,
+      sourceCategory: { descriptionCategoryId: 17_000_001 },
+      logistics: { weightG: 610, lengthMm: 310, widthMm: 210, heightMm: 110 },
+    },
+    enrichment: {
+      status: "COMPLETE",
+      missingFields: [],
+      attemptCount: 2,
+      nextAttemptAt: "",
+      lastErrorCode: "",
+    },
+  };
+  harness.state.collectorOzonEnrichmentJobs[0].status = "SUCCESS";
+  harness.state.collectorOzonEnrichmentJobs[0].result = { status: "COMPLETE" };
+
+  await harness.invoke("/sources/ozon/collect", collectInput({
+    sourceSku,
+    requestId: "json-canonical-request-b",
+    payload: {
+      sku: sourceSku,
+      name: "Replacement public title must not overwrite manual data",
+      publicEvidenceAddedLater: "safe-new-evidence",
+    },
+  }));
+
+  assert.equal(harness.response.status, 200);
+  assert.equal(harness.state.caches.collectBox.length, 1);
+  const item = harness.state.caches.collectBox[0];
+  assert.equal(item.id, originalId);
+  assert.equal(item.name, "Manually curated title");
+  assert.equal(item.publicEvidenceAddedLater, "safe-new-evidence");
+  assert.equal(item.status, "COMPLETE");
+  assert.equal(item.draftVersion, 9);
+  assert.deepEqual(item.listingDraft, {
+    title: "Manual listing title",
+    descriptionCategoryId: 880001,
+    typeId: 990001,
+    sourceCategory: { descriptionCategoryId: 17_000_001 },
+    logistics: { weightG: 610, lengthMm: 310, widthMm: 210, heightMm: 110 },
+  });
+  assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 1);
+  assert.equal(harness.state.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.equal(harness.state.collectRequests.length, 2);
+  assert.deepEqual(new Set(
+    harness.state.collectRequests.map((request) => request.sourceRequestId),
+  ), new Set(["json-canonical-request-a", "json-canonical-request-b"]));
+  assert.equal(harness.state.collectRequests.every(
+    (request) => request.response.item.id === originalId,
+  ), true);
+});
+
+test("JSON collection isolates server lifecycle fields while retaining request-scoped raw evidence", async () => {
+  const sourceSku = "json-server-owned-fields";
+  const firstPayload = {
+    sku: sourceSku,
+    name: "First public evidence",
+    status: "DELETED",
+    createdAt: "2000-01-01T00:00:00.000Z",
+    created_at: "2000-01-01T00:00:01.000Z",
+    "created-at": "2000-01-01T00:00:02.000Z",
+    updatedAt: "2000-01-02T00:00:00.000Z",
+    updated_at: "2000-01-02T00:00:01.000Z",
+    "updated-at": "2000-01-02T00:00:02.000Z",
+    deletedAt: "2026-08-01T00:00:00.000Z",
+    draftVersion: 999,
+    listingJobId: "forged-job",
+    listingResult: { forged: true },
+    pipelineVersion: "forged-pipeline",
+  };
+  const harness = jsonHarness(collectInput({
+    sourceSku,
+    requestId: "json-owned-a",
+    payload: firstPayload,
+  }));
+  await harness.invoke();
+
+  const first = harness.state.caches.collectBox[0];
+  for (const field of [
+    "deletedAt",
+    "createdAt",
+    "created_at",
+    "created-at",
+    "updatedAt",
+    "updated_at",
+    "updated-at",
+    "draftVersion",
+    "listingJobId",
+    "listingResult",
+    "pipelineVersion",
+  ]) assert.equal(Object.hasOwn(first, field), false, field);
+  assert.notEqual(first.status, "DELETED");
+  assert.deepEqual(first.raw, firstPayload);
+
+  first.status = "COMPLETE";
+  first.draftVersion = 4;
+  first.listingDraft = { title: "Manual draft" };
+  const secondPayload = {
+    sku: sourceSku,
+    name: "Second evidence cannot replace manual title",
+    publicEvidenceAddedLater: "traceable",
+    status: "FAILED",
+    deletedAt: "2026-08-02T00:00:00.000Z",
+    listingTaskId: "forged-task",
+  };
+  await harness.invoke("/sources/ozon/collect", collectInput({
+    sourceSku,
+    requestId: "json-owned-b",
+    payload: secondPayload,
+  }));
+
+  const canonical = harness.state.caches.collectBox[0];
+  assert.equal(canonical.status, "COMPLETE");
+  assert.equal(canonical.draftVersion, 4);
+  assert.deepEqual(canonical.listingDraft, { title: "Manual draft" });
+  assert.equal(canonical.publicEvidenceAddedLater, "traceable");
+  assert.equal(Object.hasOwn(canonical, "deletedAt"), false);
+  assert.equal(Object.hasOwn(canonical, "listingTaskId"), false);
+  assert.deepEqual(canonical.raw, firstPayload);
+  assert.deepEqual(
+    harness.state.collectRequests.map((request) => ({
+      requestId: request.sourceRequestId,
+      collectItemId: request.rawEvidence?.collectItemId,
+      payload: request.rawEvidence?.payload,
+    })),
+    [
+      { requestId: "json-owned-a", collectItemId: canonical.id, payload: firstPayload },
+      { requestId: "json-owned-b", collectItemId: canonical.id, payload: secondPayload },
+    ],
+  );
+});
+
+test("JSON identical replay ignores every spelling of volatile lifecycle fields and retains exact first raw evidence", async () => {
+  const sourceSku = "json-volatile-alias-replay";
+  const firstPayload = {
+    sku: sourceSku,
+    name: "Stable public evidence",
+    createdAt: "2000-01-01T00:00:00.000Z",
+    created_at: "2000-01-01T00:00:01.000Z",
+    "created-at": "2000-01-01T00:00:02.000Z",
+    updatedAt: "2000-01-02T00:00:00.000Z",
+    updated_at: "2000-01-02T00:00:01.000Z",
+    "updated-at": "2000-01-02T00:00:02.000Z",
+    scraped_at: "2000-01-03T00:00:00.000Z",
+    "saved-at": "2000-01-04T00:00:00.000Z",
+    listing_submitted_at: "2000-01-05T00:00:00.000Z",
+    "listing-completed-at": "2000-01-06T00:00:00.000Z",
+    listing_last_error_at: "2000-01-07T00:00:00.000Z",
+  };
+  const harness = jsonHarness(collectInput({
+    sourceSku,
+    requestId: "json-volatile-alias-request",
+    payload: firstPayload,
+  }));
+  await harness.invoke();
+
+  const replayPayload = {
+    ...firstPayload,
+    createdAt: "2099-01-01T00:00:00.000Z",
+    created_at: "2099-01-01T00:00:01.000Z",
+    "created-at": "2099-01-01T00:00:02.000Z",
+    updatedAt: "2099-01-02T00:00:00.000Z",
+    updated_at: "2099-01-02T00:00:01.000Z",
+    "updated-at": "2099-01-02T00:00:02.000Z",
+    scraped_at: "2099-01-03T00:00:00.000Z",
+    "saved-at": "2099-01-04T00:00:00.000Z",
+    listing_submitted_at: "2099-01-05T00:00:00.000Z",
+    "listing-completed-at": "2099-01-06T00:00:00.000Z",
+    listing_last_error_at: "2099-01-07T00:00:00.000Z",
+  };
+  await harness.invoke("/sources/ozon/collect", collectInput({
+    sourceSku,
+    requestId: "json-volatile-alias-request",
+    payload: replayPayload,
+  }));
+
+  assert.equal(harness.response.status, 200);
+  assert.equal(harness.response.body.data.duplicate, true);
+  assert.equal(harness.state.collectRequests.length, 1);
+  assert.deepEqual(harness.state.collectRequests[0].rawEvidence.payload, firstPayload);
+  assert.deepEqual(harness.state.caches.collectBox[0].raw, firstPayload);
+});
+
+test("JSON same SKU new requests reuse one active enrichment job instead of replacing its lease", async () => {
+  const sourceSku = "json-canonical-active";
+  const harness = jsonHarness(collectInput({
+    sourceSku,
+    requestId: "json-active-request-a",
+    payload: { sku: sourceSku, name: "First evidence" },
+  }));
+  await harness.invoke();
+  harness.state.collectorOzonEnrichmentJobs[0] = {
+    ...harness.state.collectorOzonEnrichmentJobs[0],
+    status: "PROCESSING",
+    claimedSessionId: "collector-live",
+    claimExpiresAt: "2099-08-01T08:01:00.000Z",
+    attemptCount: 2,
+  };
+  const originalJob = structuredClone(harness.state.collectorOzonEnrichmentJobs[0]);
+
+  await Promise.all([
+    harness.invoke("/sources/ozon/collect", collectInput({
+      sourceSku,
+      requestId: "json-active-request-b",
+      payload: { sku: sourceSku, name: "Second evidence" },
+    })),
+    harness.invoke("/sources/ozon/collect", collectInput({
+      sourceSku,
+      requestId: "json-active-request-c",
+      payload: { sku: sourceSku, name: "Third evidence" },
+    })),
+  ]);
+
+  assert.equal(harness.state.caches.collectBox.length, 1);
+  assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 1);
+  assert.deepEqual(harness.state.collectorOzonEnrichmentJobs[0], originalJob);
+  assert.equal(harness.state.collectRequests.length, 3);
 });
 
 test("JSON historical success replay derives complete and pending enrichment without rewriting history or creating jobs", async () => {
@@ -356,6 +719,12 @@ test("JSON collection preserves complete Ozon idempotency, conflicts, and incomp
   assert.equal(first.response.status, 200);
   assert.equal(first.response.body.data.duplicate, false);
   assert.equal(first.state.caches.collectBox.length, 1);
+  assert.deepEqual(first.state.caches.collectBox[0].listingDraft.logistics, {
+    weightG: 500,
+    lengthMm: 300,
+    widthMm: 200,
+    heightMm: 100,
+  });
   assert.equal(first.state.collectRequests[0].status, "SUCCEEDED");
 
   const repeated = jsonHarness(input);
@@ -412,14 +781,24 @@ if (!postgresEnabled()) {
         requestId,
         payload: { sku: sourceSku, name: "PostgreSQL public title" },
       });
-      const first = await ingestCollectRequestV4({
-        authenticatedAccount: { id: accountId },
-        input,
-      });
+      const concurrentRequestId = `${requestId}-concurrent`;
+      const [first, concurrent] = await Promise.all([
+        ingestCollectRequestV4({
+          authenticatedAccount: { id: accountId },
+          input,
+        }),
+        ingestCollectRequestV4({
+          authenticatedAccount: { id: accountId },
+          input: { ...input, requestId: concurrentRequestId },
+        }),
+      ]);
       assert.equal(first.item.name, "PostgreSQL public title");
       assert.equal(first.enrichment.status, "PENDING_ENRICHMENT");
       assert.deepEqual(first.enrichment.missingFields, requiredFields);
       assert.deepEqual(first.item.enrichment, first.enrichment);
+      assert.equal(concurrent.duplicate, false);
+      assert.equal(concurrent.collectItemId, first.collectItemId);
+      assert.deepEqual(concurrent.enrichment, first.enrichment);
 
       const replay = await ingestCollectRequestV4({
         authenticatedAccount: { id: accountId },
@@ -443,20 +822,115 @@ if (!postgresEnabled()) {
            (SELECT COUNT(*)::int FROM collector_ozon_enrichment_jobs WHERE account_id=$1) AS job_count`,
         [accountId],
       );
-      assert.deepEqual(persisted.rows[0], { item_count: 1, request_count: 1, job_count: 1 });
+      assert.deepEqual(persisted.rows[0], { item_count: 1, request_count: 2, job_count: 1 });
       const linked = await pool.query(
         `SELECT account_id,collect_item_id,request_id,sku,status,refresh_bundle
            FROM collector_ozon_enrichment_jobs WHERE account_id=$1`,
         [accountId],
       );
-      assert.deepEqual(linked.rows[0], {
-        account_id: accountId,
-        collect_item_id: first.collectItemId,
-        request_id: requestId,
-        sku: sourceSku,
-        status: "PENDING",
-        refresh_bundle: {},
+      assert.equal(linked.rows[0].account_id, accountId);
+      assert.equal(linked.rows[0].collect_item_id, first.collectItemId);
+      assert.equal(new Set([requestId, concurrentRequestId]).has(linked.rows[0].request_id), true);
+      assert.equal(linked.rows[0].sku, sourceSku);
+      assert.equal(linked.rows[0].status, "PENDING");
+      assert.deepEqual(linked.rows[0].refresh_bundle, {});
+
+      const completed = await ingestCollectRequestV4({
+        authenticatedAccount: { id: accountId },
+        input: collectInput({
+          sourceSku,
+          requestId: `${requestId}-complete`,
+          payload: {
+            ...completeOzonPayload(),
+            sku: sourceSku,
+            name: "PostgreSQL complete public evidence",
+          },
+        }),
       });
+      assert.equal(completed.collectItemId, first.collectItemId);
+      assert.deepEqual(completed.enrichment, {
+        status: "COMPLETE",
+        missingFields: [],
+        attemptCount: 0,
+        nextAttemptAt: "",
+        lastErrorCode: "",
+      });
+      assert.equal(completed.item.status, "COMPLETE");
+      assert.deepEqual(completed.item.listingDraft.logistics, {
+        weightG: 500,
+        lengthMm: 300,
+        widthMm: 200,
+        heightMm: 100,
+      });
+      assert.deepEqual(completed.item.listingDraft.sourceCategory, {
+        descriptionCategoryId: 17_000_001,
+      });
+      const completedItem = await pool.query(
+        `SELECT c.status,c.summary->'enrichment' AS enrichment,d.data AS draft_data
+           FROM collect_items c
+           LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+          WHERE c.id=$1 AND c.account_id=$2`,
+        [first.collectItemId, accountId],
+      );
+      assert.equal(completedItem.rows[0].status, "COMPLETE");
+      assert.equal(completedItem.rows[0].enrichment.status, "COMPLETE");
+      assert.deepEqual(completedItem.rows[0].draft_data.logistics, {
+        weightG: 500,
+        lengthMm: 300,
+        widthMm: 200,
+        heightMm: 100,
+      });
+      const completedJobs = await pool.query(
+        `SELECT status,result_json,claimed_session_id,claim_expires_at,claim_fence
+           FROM collector_ozon_enrichment_jobs
+          WHERE account_id=$1 AND collect_item_id=$2`,
+        [accountId, first.collectItemId],
+      );
+      assert.equal(completedJobs.rows.length, 1);
+      assert.equal(completedJobs.rows[0].status, "SUCCESS");
+      assert.deepEqual(completedJobs.rows[0].result_json, {
+        status: "COMPLETE",
+        source: "COLLECTED_PUBLIC_EVIDENCE",
+      });
+      assert.equal(completedJobs.rows[0].claimed_session_id, null);
+      assert.equal(completedJobs.rows[0].claim_expires_at, null);
+      assert.equal(completedJobs.rows[0].claim_fence, null);
+
+      const terminalHistorySku = `pg-terminal-history-${suffix}`;
+      const terminalFirst = await ingestCollectRequestV4({
+        authenticatedAccount: { id: accountId },
+        input: collectInput({
+          sourceSku: terminalHistorySku,
+          requestId: `${requestId}-terminal-a`,
+          payload: { sku: terminalHistorySku, name: "Terminal history first" },
+        }),
+      });
+      await pool.query(
+        `UPDATE collector_ozon_enrichment_jobs
+            SET status='FAILED',error_json='{"code":"OZON_TEST_TERMINAL"}'::jsonb,
+                completed_at=NOW(),updated_at=NOW()
+          WHERE account_id=$1 AND collect_item_id=$2 AND status='PENDING'`,
+        [accountId, terminalFirst.collectItemId],
+      );
+      const terminalSecond = await ingestCollectRequestV4({
+        authenticatedAccount: { id: accountId },
+        input: collectInput({
+          sourceSku: terminalHistorySku,
+          requestId: `${requestId}-terminal-b`,
+          payload: { sku: terminalHistorySku, name: "Terminal history second" },
+        }),
+      });
+      assert.equal(terminalSecond.enrichment.status, "PENDING_ENRICHMENT");
+      const terminalHistoryJobs = await pool.query(
+        `SELECT status FROM collector_ozon_enrichment_jobs
+          WHERE account_id=$1 AND collect_item_id=$2
+          ORDER BY created_at,id`,
+        [accountId, terminalFirst.collectItemId],
+      );
+      assert.deepEqual(
+        terminalHistoryJobs.rows.map((row) => row.status),
+        ["FAILED", "PENDING"],
+      );
     } finally {
       await pool.query("DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=$1", [accountId]);
       await pool.query("DELETE FROM collect_requests WHERE account_id=$1", [accountId]);

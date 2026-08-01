@@ -208,7 +208,14 @@ class FakeRepository {
     return clone(job);
   }
 
-  async claimNextJob({ accountId, collectorSessionId, now, claimExpiresAt }) {
+  async claimNextJob({
+    accountId,
+    collectorSessionId,
+    now,
+    claimExpiresAt,
+    claimFence,
+    captureContext: claimedContext = null,
+  }) {
     this.requireSession(accountId, collectorSessionId);
     const active = this.jobs.filter((job) =>
       job.accountId === accountId
@@ -234,6 +241,8 @@ class FakeRepository {
       status: "PROCESSING",
       claimedSessionId: collectorSessionId,
       claimExpiresAt: claimExpiresAt.toISOString(),
+      claimFence,
+      captureContext: clone(claimedContext),
     });
     const processing = this.jobs.filter((job) =>
       job.accountId === accountId
@@ -255,6 +264,20 @@ class FakeRepository {
       throw Object.assign(new Error("claim ownership rejected"), {
         status: 409,
         code: "OZON_ENRICHMENT_JOB_OWNERSHIP",
+      });
+    }
+    const completionInput = arguments[0];
+    if (
+      completionInput.claimFence !== undefined
+      && (
+        job.claimFence !== completionInput.claimFence
+        || JSON.stringify(job.captureContext ?? null)
+          !== JSON.stringify(completionInput.captureContext ?? null)
+      )
+    ) {
+      throw Object.assign(new Error("Seller context changed"), {
+        status: 409,
+        code: "SELLER_CONTEXT_CHANGED",
       });
     }
     Object.assign(job, { status, result: clone(result ?? null), error: clone(error ?? null) });
@@ -338,7 +361,7 @@ class FakeRepository {
   }
 }
 
-function harness({ repository, start = START, collectItems } = {}) {
+function harness({ repository, start = START, collectItems, assertListingReady } = {}) {
   const clock = { value: start };
   const sessions = [
     session("collector-request"),
@@ -359,6 +382,7 @@ function harness({ repository, start = START, collectItems } = {}) {
     },
     audit: async (event) => audits.push(event),
     ...(collectItems ? { collectItems } : {}),
+    ...(assertListingReady ? { assertListingReady } : {}),
   });
   return { audits, clock, repository: fake, service };
 }
@@ -405,12 +429,14 @@ test("concurrent cold callers share one cache lease and fixed job", async () => 
   await waitFor(() => h.repository.jobs[0], "cold job");
 
   const claimed = await h.service.claimNext({ session: session("collector-fallback") });
-  assert.deepEqual(claimed, {
+  assert.deepEqual({ ...claimed, claimFence: "<fence>" }, {
     id: h.repository.jobs[0].id,
     requestId: "request-cold",
     sku: "sku-cold",
     refreshBundle: true,
+    claimFence: "<fence>",
   });
+  assert.match(claimed.claimFence, /^job-\d+$/);
   await h.service.completeClaim({
     session: session("collector-fallback"),
     jobId: claimed.id,
@@ -476,6 +502,35 @@ test("normalizes a claimed variant before persisting success for exactly six hou
   assert.equal(new Date(result.cache.expiresAt).getTime(), completedAt + 6 * 60 * 60 * 1000);
   assert.equal(h.repository.jobs[0].status, "SUCCESS");
   assert.equal(h.repository.atomicCompleteCount, 1);
+});
+
+test("server rejects a result when the claim fence changes during send and applies nothing", async () => {
+  const h = harness();
+  const pending = h.service.enrichOne({
+    session: session("collector-request"),
+    requestId: "request-fenced-send",
+    sku: "sku-fenced-send",
+  });
+  await waitFor(() => h.repository.jobs[0], "fenced job");
+  const claimedContext = captureContext();
+  const claim = await h.service.claimNext({
+    session: session("collector-fallback"),
+    captureContext: claimedContext,
+  });
+  h.repository.jobs[0].claimFence = "server-rotated-fence";
+
+  await assert.rejects(h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: claim.id,
+    claimFence: claim.claimFence,
+    variantData: variantData(704),
+    captureContext: claimedContext,
+  }), (error) => error?.status === 409 && error?.code === "SELLER_CONTEXT_CHANGED");
+
+  assert.equal(h.repository.jobs[0].status, "PROCESSING");
+  assert.equal(h.repository.atomicCompleteCount, 0);
+  h.clock.value += 20_000;
+  await assert.rejects(pending, /Ozon 商品资料/);
 });
 
 test("fails a cold request at the shared twenty-second deadline without real sleeps", async () => {
@@ -1355,14 +1410,14 @@ test("batch preserves request-expired as a non-retryable public item error", asy
   });
 });
 
-test("linked completion fills only blank draft fields before publishing success and safe evidence", async () => {
+test("linked completion fills blank logistics without replacing target category", async () => {
   const savedItems = [];
   const collectItem = {
     id: "collect-linked-complete",
     accountId: "account-a",
     draftVersion: 7,
     listingDraft: {
-      descriptionCategoryId: "",
+      descriptionCategoryId: 700,
       logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
     },
     enrichment: { status: "PENDING_ENRICHMENT" },
@@ -1424,7 +1479,8 @@ test("linked completion fills only blank draft fields before publishing success 
   assert.equal(savedItems.length, 1);
   assert.equal(collectItem.listingDraft.logistics.weightG, 777);
   assert.equal(collectItem.listingDraft.logistics.lengthMm, 300);
-  assert.equal(collectItem.listingDraft.descriptionCategoryId, 17_000_001);
+  assert.equal(collectItem.listingDraft.descriptionCategoryId, 700);
+  assert.equal(collectItem.listingDraft.sourceCategory.descriptionCategoryId, 17_000_001);
   assert.deepEqual(collectItem.enrichment, {
     status: "COMPLETE",
     missingFields: [],
@@ -1448,6 +1504,71 @@ test("linked completion fills only blank draft fields before publishing success 
   assert.equal(JSON.stringify(h.audits.at(-1)).includes("cookie"), false);
 });
 
+test("linked completion validates the merged draft before any COMPLETE transition", async () => {
+  let completeCalls = 0;
+  let failCalls = 0;
+  let terminalRepository = null;
+  const collectItem = {
+    id: "collect-linked-invalid-after-merge",
+    accountId: "account-a",
+    draftVersion: 3,
+    listingDraft: {
+      descriptionCategoryId: 700,
+      logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    },
+    enrichment: { status: "PENDING_ENRICHMENT" },
+  };
+  const h = harness({
+    start: Date.parse("2026-08-01T08:00:01.000Z"),
+    assertListingReady() {
+      throw Object.assign(new Error("merged source evidence is incomplete"), {
+        status: 422,
+        code: "COLLECT_ENRICHMENT_INCOMPLETE",
+        missingFields: ["descriptionCategoryId"],
+      });
+    },
+    collectItems: {
+      async read() { return clone(collectItem); },
+      async save() { throw new Error("invalid completion must not save COMPLETE state"); },
+      async complete() { completeCalls += 1; throw new Error("must not complete"); },
+      async fail(input) {
+        failCalls += 1;
+        const job = await terminalRepository.failJobAndCache(input.failure);
+        return { item: { id: input.collectItemId, status: input.status }, job };
+      },
+      async retry() { throw new Error("unused"); },
+    },
+  });
+  terminalRepository = h.repository;
+  h.repository.jobs.push({
+    id: "job-linked-invalid-after-merge",
+    accountId: "account-a",
+    collectItemId: collectItem.id,
+    requestId: "request-linked-invalid-after-merge",
+    sku: "4862904234",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: "2026-08-01T08:01:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    attemptCount: 0,
+    createdAt: "2026-08-01T08:00:00.000Z",
+  });
+
+  await assert.rejects(h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: "job-linked-invalid-after-merge",
+    variantData: sellerVariantData(17_000_001),
+    captureContext: captureContext({ observedAt: "2026-08-01T08:00:00.000Z" }),
+  }), (error) => error?.code === "OZON_ENRICH_INCOMPLETE"
+    && error?.status === 422
+    && assert.deepEqual(error.missingFields, ["descriptionCategoryId"]) === undefined);
+  assert.equal(completeCalls, 0);
+  assert.equal(failCalls, 1);
+  assert.equal(h.repository.atomicCompleteCount, 0);
+  assert.equal(h.repository.atomicFailCount, 1);
+  assert.equal(h.repository.jobs[0].status, "FAILED");
+});
+
 test("retryable failures defer linked jobs and expose the correct recoverable item state", async () => {
   for (const [code, expectedStatus] of [
     ["SELLER_CONTEXT_REQUIRED", "WAITING_FOR_SELLER"],
@@ -1458,16 +1579,35 @@ test("retryable failures defer linked jobs and expose the correct recoverable it
     ["HTTP_503", "RETRYING"],
   ]) {
     const saved = [];
+    let terminalRepository = null;
     const h = harness({
       collectItems: {
         async read() { throw new Error("failure status must not rewrite the draft"); },
         async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
         async complete() { throw new Error("failure status must not complete the draft"); },
         async fail() { throw new Error("unused"); },
+        async defer(input) {
+          const job = await terminalRepository.deferClaim(input.deferClaim);
+          const savedInput = {
+            accountId: input.accountId,
+            collectItemId: input.collectItemId,
+            status: input.status,
+            enrichment: {
+              status: input.status,
+              missingFields: input.error.missingFields,
+              attemptCount: job.attemptCount,
+              nextAttemptAt: job.nextAttemptAt,
+              lastErrorCode: input.error.code,
+            },
+          };
+          saved.push(savedInput);
+          return { item: { id: input.collectItemId }, job };
+        },
         async retry() { throw new Error("unused"); },
       },
       start: Date.parse("2026-08-01T08:00:01.000Z"),
     });
+    terminalRepository = h.repository;
     h.repository.jobs.push({
       id: `job-${code}`,
       accountId: "account-a",
@@ -1504,6 +1644,63 @@ test("retryable failures defer linked jobs and expose the correct recoverable it
     }, code);
     assert.equal(JSON.stringify(h.repository.jobs[0]).includes("must-not-be-stored"), false, code);
   }
+});
+
+test("retryable linked failure uses one atomic port so a completed recollect cannot be overwritten", async () => {
+  let deferCalls = 0;
+  let h;
+  const collectItem = {
+    id: "collect-recollect-won",
+    accountId: "account-a",
+    status: "COMPLETE",
+    enrichment: { status: "COMPLETE", missingFields: [] },
+  };
+  h = harness({
+    start: Date.parse("2026-08-01T08:00:01.000Z"),
+    collectItems: {
+      async read() { return clone(collectItem); },
+      async save() { throw new Error("atomic defer must not perform a later item save"); },
+      async complete() { throw new Error("unused"); },
+      async fail() { throw new Error("unused"); },
+      async retry() { throw new Error("unused"); },
+      async defer(input) {
+        deferCalls += 1;
+        assert.equal(input.status, "RETRYING");
+        assert.equal(input.error.code, "OZON_ENRICH_UPSTREAM_FAILED");
+        const job = h.repository.jobs[0];
+        job.status = "SUCCESS";
+        job.claimedSessionId = null;
+        job.claimExpiresAt = null;
+        job.result = { status: "COMPLETE", source: "COLLECTED_PUBLIC_EVIDENCE" };
+        return { item: clone(collectItem), job: clone(job) };
+      },
+    },
+  });
+  h.repository.jobs.push({
+    id: "job-recollect-won",
+    accountId: "account-a",
+    collectItemId: collectItem.id,
+    requestId: "request-recollect-won",
+    sku: "sku-recollect-won",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: "2026-08-01T08:01:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    attemptCount: 1,
+    createdAt: "2026-08-01T08:00:00.000Z",
+  });
+
+  const result = await h.service.failClaim({
+    session: session("collector-fallback"),
+    jobId: "job-recollect-won",
+    code: "NETWORK_ERROR",
+  });
+
+  assert.equal(deferCalls, 1);
+  assert.equal(h.repository.deferCount, 0);
+  assert.equal(result.status, "SUCCESS");
+  assert.equal(collectItem.status, "COMPLETE");
+  assert.equal(collectItem.enrichment.status, "COMPLETE");
 });
 
 test("not found permanently needs attention without deleting the linked item", async () => {

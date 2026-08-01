@@ -12,6 +12,8 @@ import {
   assertOzonListingReady,
   buildOzonEnrichmentSummary,
   mergeOzonEnrichmentResult,
+  normalizeOzonCollectedSourceEvidence,
+  preserveOzonSourceCategoryEvidence,
   retryDelayMs,
 } from "../collect-enrichment-policy.mjs";
 
@@ -75,6 +77,59 @@ test("enrichment fills blanks without overwriting user values", () => {
   });
 });
 
+test("target category fields cannot satisfy source-category enrichment readiness", () => {
+  const targetOnly = {
+    descriptionCategoryId: 700,
+    description_category_id: 700,
+    categoryResolution: {
+      target: { descriptionCategoryId: 700, typeId: 701 },
+    },
+    weight: 500,
+    depth: 300,
+    width: 200,
+    height: 100,
+  };
+
+  assert.deepEqual(buildOzonEnrichmentSummary(targetOnly).missingFields, [
+    "descriptionCategoryId",
+  ]);
+  assert.throws(
+    () => assertOzonListingReady(targetOnly),
+    (error) => error?.code === "COLLECT_ENRICHMENT_INCOMPLETE"
+      && assert.deepEqual(error.missingFields, ["descriptionCategoryId"]) === undefined,
+  );
+});
+
+test("source-category merge replaces invalid IDs and deterministically extends partial evidence arrays", () => {
+  const merged = mergeOzonEnrichmentResult({
+    descriptionCategoryId: 700,
+    sourceCategory: {
+      descriptionCategoryId: 0,
+      path: ["Root"],
+      attributes: [{ key: "85", value: "Existing brand" }],
+    },
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+  }, completeResult({
+    sourceCategory: {
+      descriptionCategoryId: 123,
+      path: ["Root", "Leaf"],
+      attributes: [
+        { key: "85", value: "Incoming brand must not overwrite" },
+        { key: "8229", value: "Source type" },
+      ],
+    },
+  }));
+
+  assert.equal(merged.descriptionCategoryId, 700, "the target category remains user-owned");
+  assert.equal(merged.sourceCategory.descriptionCategoryId, 123);
+  assert.deepEqual(merged.sourceCategory.path, ["Root", "Leaf"]);
+  assert.deepEqual(merged.sourceCategory.attributes, [
+    { key: "85", value: "Existing brand" },
+    { key: "8229", value: "Source type" },
+  ]);
+  assert.deepEqual(buildOzonEnrichmentSummary(merged).missingFields, []);
+});
+
 test("empty top-level fields do not hide enriched logistics values", () => {
   const merged = mergeOzonEnrichmentResult({
     descriptionCategoryId: 0,
@@ -101,7 +156,8 @@ test("enrichment ignores non-numeric JSON values when checking and merging field
   ]);
 
   const merged = mergeOzonEnrichmentResult(invalid, completeResult());
-  assert.equal(merged.descriptionCategoryId, 123);
+  assert.equal(merged.descriptionCategoryId, true);
+  assert.equal(merged.sourceCategory.descriptionCategoryId, 123);
   assert.deepEqual(merged.logistics, {
     weightG: 500,
     lengthMm: 300,
@@ -112,7 +168,7 @@ test("enrichment ignores non-numeric JSON values when checking and merging field
 
 test("enrichment policy retains retry state without allowing it to change completeness", () => {
   assert.deepEqual(buildOzonEnrichmentSummary({
-    descriptionCategoryId: 123,
+    sourceCategory: { descriptionCategoryId: 123 },
     logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
   }, {
     attemptCount: 2,
@@ -133,7 +189,7 @@ test("enrichment retry delays and listing readiness use the stable field order",
   assert.deepEqual([0, 1, 2, 3, 4, 5, 99].map(retryDelayMs), [30_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000, 3_600_000]);
   assert.throws(
     () => assertOzonListingReady({
-      descriptionCategoryId: 123,
+      sourceCategory: { descriptionCategoryId: 123 },
       logistics: { weightG: 500, lengthMm: 0, widthMm: 0, heightMm: 100 },
     }),
     (error) => error?.status === 422
@@ -240,7 +296,59 @@ test("normalization exposes additive source category evidence", () => {
     typeName: "Заварочный чайник",
     typeIdCandidate: 123456,
     path: ["家用电器", "Заварочный чайник"],
+    attributes: [
+      { key: "8229", value: "Заварочный чайник", dictionary_value_id: 123456 },
+      { key: "4497", value: "500" },
+      { key: "9454", value: "300" },
+      { key: "9455", value: "200" },
+      { key: "9456", value: "100" },
+    ],
   });
+});
+
+test("normalization falls back to top-level Seller type evidence", () => {
+  const normalized = normalizeOzonAgentResult({
+    sku: "4862904234",
+    source: "LOCAL_SELLER",
+    capturedAt: "2026-08-01T00:00:00.000Z",
+    variantData: completeVariantData({
+      type_id: 7654321,
+    }),
+  });
+  assert.equal(normalized.sourceCategory.typeIdCandidate, 7654321);
+});
+
+test("user draft replacement preserves authoritative Seller source evidence", () => {
+  const current = {
+    sourceCategory: {
+      descriptionCategoryId: 17039736,
+      typeName: "Seller source",
+      typeIdCandidate: 123456,
+      attributes: [{ key: "8229", value: "Seller source" }],
+    },
+    categoryResolution: {
+      status: "MATCHED",
+      source: { descriptionCategoryId: 0 },
+      target: { descriptionCategoryId: 880001, typeId: 990001 },
+    },
+  };
+  const next = preserveOzonSourceCategoryEvidence(current, {
+    descriptionCategoryId: 880001,
+    typeId: 990001,
+    categoryResolution: {
+      status: "MATCHED",
+      source: {},
+      target: { descriptionCategoryId: 880002, typeId: 990002 },
+    },
+  });
+  assert.deepEqual(next.sourceCategory, current.sourceCategory);
+  assert.deepEqual(next.categoryResolution.source, current.sourceCategory);
+  assert.deepEqual(next.categoryResolution.target, {
+    descriptionCategoryId: 880002,
+    typeId: 990002,
+  });
+  assert.equal(next.descriptionCategoryId, 880001);
+  assert.equal(next.typeId, 990001);
 });
 
 test("normalization rejects zero, negative, and non-finite required values", async (t) => {
@@ -273,7 +381,7 @@ test("normalization rejects zero, negative, and non-finite required values", asy
 
 test("completeness gate uses stable missing-field keys and only applies to Ozon", () => {
   const incomplete = {
-    descriptionCategoryId: 123,
+    sourceCategory: { descriptionCategoryId: 123 },
     logistics: { weightG: 0, lengthMm: 300, widthMm: -1, heightMm: Number.NaN },
   };
   assert.deepEqual(missingOzonRequiredFields(incomplete), ["weightG", "widthMm", "heightMm"]);
@@ -288,7 +396,7 @@ test("completeness gate uses stable missing-field keys and only applies to Ozon"
 
 test("Ozon completeness gate recognizes fields merged into a collection payload", () => {
   assert.doesNotThrow(() => assertCompleteOzonCollectPayload("ozon", {
-    descriptionCategoryId: 123,
+    sourceCategory: { descriptionCategoryId: 123 },
     weight: 500,
     depth: 300,
     width: 200,
@@ -296,8 +404,8 @@ test("Ozon completeness gate recognizes fields merged into a collection payload"
   }));
 });
 
-test("Ozon completeness gate accepts the extension collection field contract", () => {
-  assert.doesNotThrow(() => assertCompleteOzonCollectPayload("ozon", {
+test("collection ingress promotes the extension source category before the strict completeness gate", () => {
+  const rawPayload = {
     description_category_id: 123,
     weight: 500,
     depth: 300,
@@ -305,31 +413,29 @@ test("Ozon completeness gate accepts the extension collection field contract", (
     height: 100,
     weight_unit: "g",
     dimension_unit: "mm",
-  }));
+  };
+  assert.throws(
+    () => assertCompleteOzonCollectPayload("ozon", rawPayload),
+    (error) => error?.code === "OZON_COLLECT_INCOMPLETE"
+      && assert.deepEqual(error.missingFields, ["descriptionCategoryId"]) === undefined,
+  );
+  assert.doesNotThrow(() => assertCompleteOzonCollectPayload(
+    "ozon",
+    normalizeOzonCollectedSourceEvidence(rawPayload),
+  ));
 });
 
-test("Ozon completeness gate does not accept retired logistics aliases", () => {
+test("Ozon completeness gate accepts canonical listing package fields", () => {
   const payload = {
-    descriptionCategoryId: 123,
+    sourceCategory: { descriptionCategoryId: 123 },
     packageWeight: 500,
     length: 300,
     packageLength: 300,
     packageWidth: 200,
     packageHeight: 100,
   };
-  assert.deepEqual(
-    missingOzonRequiredFields(payload),
-    ["weightG", "lengthMm", "widthMm", "heightMm"],
-  );
-  assert.throws(
-    () => assertCompleteOzonCollectPayload("ozon", payload),
-    (error) => error?.status === 422
-      && error?.code === "OZON_COLLECT_INCOMPLETE"
-      && assert.deepEqual(
-        error.missingFields,
-        ["weightG", "lengthMm", "widthMm", "heightMm"],
-      ) === undefined,
-  );
+  assert.deepEqual(missingOzonRequiredFields(payload), []);
+  assert.doesNotThrow(() => assertCompleteOzonCollectPayload("ozon", payload));
 });
 
 test("single enrichment requests accept only requestId and sku", () => {

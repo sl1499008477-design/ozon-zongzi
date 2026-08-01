@@ -100,6 +100,22 @@ test("PostgreSQL mirror summary preserves the latest enrichment during a later u
   });
 });
 
+test("first complete collection draft reads physicals from normalized logistics without an existing draft", () => {
+  assert.equal(typeof listingPipeline.buildCollectItemDraftV4, "function");
+  const draft = listingPipeline.buildCollectItemDraftV4({
+    sku: "sku-first-complete",
+    title: "First complete item",
+    sourceCategory: { descriptionCategoryId: 17_000_001 },
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+  });
+
+  assert.equal(draft.packageWeight, 500);
+  assert.equal(draft.packageLength, 300);
+  assert.equal(draft.packageWidth, 200);
+  assert.equal(draft.packageHeight, 100);
+  assert.deepEqual(draft.sourceCategory, { descriptionCategoryId: 17_000_001 });
+});
+
 function completionFailureHarness(error) {
   const order = [];
   const job = claimedJob();
@@ -429,6 +445,119 @@ test("PostgreSQL permanent failure helper commits job truth and item summary on 
   assert.equal(result.item.status, "NEEDS_ATTENTION");
   assert.deepEqual(calls[0].params, ["collect-failure-pg", "account-a"]);
   assert.deepEqual(calls[1].params.slice(0, 2), ["collect-failure-pg", "account-a"]);
+});
+
+test("PostgreSQL retryable defer locks the item and lets COMPLETE evidence close the job without an item downgrade", async () => {
+  assert.equal(typeof listingPipeline.deferCollectItemEnrichmentWithClientV4, "function");
+  const order = [];
+  const client = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("SELECT c.id")) {
+        order.push("lock-item");
+        assert.deepEqual(params, ["collect-defer-complete-pg", "account-a"]);
+        return { rows: [{
+          id: "collect-defer-complete-pg",
+          account_id: "account-a",
+          status: "COMPLETE",
+          summary: { enrichment: { status: "COMPLETE", missingFields: [] } },
+          draft_data: {
+            sourceCategory: { descriptionCategoryId: 17_000_001 },
+            logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+          },
+          draft_version: 4,
+        }], rowCount: 1 };
+      }
+      if (normalized.startsWith("UPDATE collect_items")) {
+        throw new Error("COMPLETE collect item must not be downgraded");
+      }
+      throw new Error(`unexpected query: ${normalized}`);
+    },
+  };
+
+  const result = await listingPipeline.deferCollectItemEnrichmentWithClientV4(client, {
+    collectItemId: "collect-defer-complete-pg",
+    accountId: "account-a",
+    status: "RETRYING",
+    error: { code: "OZON_ENRICH_UPSTREAM_FAILED" },
+    deferJob: async (receivedClient) => {
+      assert.equal(receivedClient, client);
+      order.push("defer-job");
+      return {
+        id: "job-defer-complete-pg",
+        sku: "sku-defer-complete-pg",
+        status: "PENDING",
+        attemptCount: 3,
+        nextAttemptAt: "2026-08-01T11:02:00.000Z",
+      };
+    },
+    completeLinkedJobs: async (receivedClient, deferredJob) => {
+      assert.equal(receivedClient, client);
+      assert.equal(deferredJob.status, "PENDING");
+      order.push("close-job");
+      return { ...deferredJob, status: "SUCCESS" };
+    },
+  });
+
+  assert.deepEqual(order, ["lock-item", "defer-job", "close-job"]);
+  assert.equal(result.item.status, "COMPLETE");
+  assert.equal(result.item.enrichment.status, "COMPLETE");
+  assert.equal(result.job.status, "SUCCESS");
+});
+
+test("PostgreSQL manual retry leaves a COMPLETE item and its terminal job history unchanged", async () => {
+  assert.equal(typeof listingPipeline.retryCollectItemEnrichmentWithClientV4, "function");
+  const order = [];
+  const client = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("SELECT c.id")) {
+        order.push("lock-item");
+        assert.deepEqual(params, ["collect-retry-complete-pg", "account-a"]);
+        return { rows: [{
+          id: "collect-retry-complete-pg",
+          account_id: "account-a",
+          status: "COMPLETE",
+          summary: { enrichment: { status: "COMPLETE", missingFields: [] } },
+          draft_data: {
+            sourceCategory: { descriptionCategoryId: 17_000_001 },
+            logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+          },
+          draft_version: 4,
+        }], rowCount: 1 };
+      }
+      if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
+        order.push("read-terminal-job");
+        assert.match(normalized, /status='SUCCESS'/);
+        return { rows: [{
+          id: "job-retry-complete-pg",
+          account_id: "account-a",
+          collect_item_id: "collect-retry-complete-pg",
+          request_id: "request-retry-complete-pg",
+          sku: "sku-retry-complete-pg",
+          status: "SUCCESS",
+          attempt_count: 2,
+          result_json: { status: "COMPLETE", source: "COLLECTED_PUBLIC_EVIDENCE" },
+          created_at: "2026-08-01T08:00:00.000Z",
+          updated_at: "2026-08-01T08:05:00.000Z",
+          completed_at: "2026-08-01T08:05:00.000Z",
+        }], rowCount: 1 };
+      }
+      if (normalized.startsWith("UPDATE ")) throw new Error("terminal retry must not update rows");
+      throw new Error(`unexpected query: ${normalized}`);
+    },
+  };
+
+  const result = await listingPipeline.retryCollectItemEnrichmentWithClientV4(client, {
+    collectItemId: "collect-retry-complete-pg",
+    accountId: "account-a",
+    now: new Date("2026-08-01T08:10:00.000Z"),
+  });
+
+  assert.deepEqual(order, ["lock-item", "read-terminal-job"]);
+  assert.equal(result.item.status, "COMPLETE");
+  assert.equal(result.item.enrichment.status, "COMPLETE");
+  assert.equal(result.job.status, "SUCCESS");
 });
 
 test("completion reloads and fill-blank merges through three expected-version conflicts", async () => {

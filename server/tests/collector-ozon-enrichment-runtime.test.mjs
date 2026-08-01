@@ -213,7 +213,8 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
         status: "PENDING_ENRICHMENT",
         draftVersion: 3,
         listingDraft: {
-          descriptionCategoryId: "",
+          descriptionCategoryId: 88_000_001,
+          typeId: 99_000_001,
           logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
         },
         enrichment: { status: "PENDING_ENRICHMENT" },
@@ -271,7 +272,11 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
       depth: 300,
       width: 200,
       height: 100,
-      attributes: [],
+      attributes: [{ key: "8229", value: "Seller type", dictionary_value_id: 97_000_002 }],
+      categories: [
+        { level: 2, title: "Leaf" },
+        { level: 1, title: "Root" },
+      ],
     },
     captureContext: {
       sellerCompanyId: "2681910",
@@ -281,8 +286,17 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
   });
 
   const item = persisted.caches.collectBox[0];
+  assert.equal(item.listingDraft.descriptionCategoryId, 88_000_001);
+  assert.equal(item.listingDraft.typeId, 99_000_001);
   assert.equal(item.listingDraft.logistics.weightG, 777);
   assert.equal(item.listingDraft.logistics.lengthMm, 300);
+  assert.deepEqual(item.listingDraft.sourceCategory, {
+    descriptionCategoryId: 17_000_001,
+    typeName: "Seller type",
+    typeIdCandidate: 97_000_002,
+    path: ["Root", "Leaf"],
+    attributes: [{ key: "8229", value: "Seller type", dictionary_value_id: 97_000_002 }],
+  });
   assert.equal(item.draftVersion, 4);
   assert.deepEqual(item.enrichment, {
     status: "COMPLETE",
@@ -474,6 +488,150 @@ test("JSON runtime manual retry preserves identity, clears stable errors, and hi
     accountId: "account-other",
     collectItemId: "collect-runtime-retry",
   }), (error) => error?.status === 404 && error?.code === "COLLECT_ITEM_NOT_FOUND");
+});
+
+test("JSON manual retry is a stable no-op while a PROCESSING lease is still valid", async () => {
+  const retriedAt = new Date("2026-08-01T08:10:00.000Z");
+  const liveClaimExpiresAt = "2026-08-01T08:11:00.000Z";
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-live-retry",
+        accountId: "account-runtime",
+        sku: "sku-runtime-live-retry",
+        status: "RETRYING",
+        draftVersion: 5,
+        listingDraft: { title: "keep" },
+        enrichment: { status: "RETRYING", missingFields: ["heightMm"], attemptCount: 2 },
+      }],
+    },
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-live-retry",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-live-retry",
+      requestId: "request-runtime-live-retry",
+      sku: "sku-runtime-live-retry",
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-live",
+      claimExpiresAt: liveClaimExpiresAt,
+      refreshBundle: {},
+      attemptCount: 2,
+      nextAttemptAt: "2026-08-01T08:09:00.000Z",
+      lastError: null,
+      captureContext: { sellerCompanyId: "2681910", revision: 7, observedAt: "2026-08-01T08:09:00.000Z" },
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T08:00:00.000Z",
+      updatedAt: "2026-08-01T08:09:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const before = structuredClone(persisted);
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(retriedAt),
+  });
+
+  const first = await runtime.service.retryCollectItem({
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-live-retry",
+  });
+  const second = await runtime.service.retryCollectItem({
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-live-retry",
+  });
+
+  assert.equal(first.job.status, "PROCESSING");
+  assert.equal(second.job.status, "PROCESSING");
+  assert.equal(first.job.id, second.job.id);
+  assert.deepEqual(persisted.collectorOzonEnrichmentJobs, before.collectorOzonEnrichmentJobs);
+  assert.deepEqual(persisted.caches.collectBox, before.caches.collectBox);
+});
+
+test("JSON manual retry cannot revive stale failed history after the item is COMPLETE", async () => {
+  const retriedAt = new Date("2026-08-01T08:10:00.000Z");
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-terminal-retry",
+        accountId: "account-runtime",
+        sku: "sku-runtime-terminal-retry",
+        status: "COMPLETE",
+        draftVersion: 4,
+        listingDraft: {
+          sourceCategory: { descriptionCategoryId: 17_000_001 },
+          logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+        },
+        enrichment: { status: "COMPLETE", missingFields: [] },
+      }],
+    },
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-terminal-success",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-terminal-retry",
+      requestId: "request-runtime-terminal-success",
+      sku: "sku-runtime-terminal-retry",
+      status: "SUCCESS",
+      attemptCount: 2,
+      nextAttemptAt: "",
+      result: { status: "COMPLETE", source: "COLLECTED_PUBLIC_EVIDENCE" },
+      error: null,
+      lastError: null,
+      createdAt: "2026-08-01T08:00:00.000Z",
+      updatedAt: "2026-08-01T08:05:00.000Z",
+      completedAt: "2026-08-01T08:05:00.000Z",
+    }, {
+      id: "job-runtime-terminal-superseded",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-terminal-retry",
+      requestId: "request-runtime-terminal-superseded",
+      sku: "sku-runtime-terminal-retry",
+      status: "FAILED",
+      attemptCount: 1,
+      nextAttemptAt: "",
+      result: null,
+      error: { code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED", status: 409 },
+      lastError: { code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED", status: 409 },
+      createdAt: "2026-08-01T08:01:00.000Z",
+      updatedAt: "2026-08-01T08:06:00.000Z",
+      completedAt: "2026-08-01T08:06:00.000Z",
+    }],
+    auditEvents: [],
+  };
+  const beforeItems = structuredClone(persisted.caches.collectBox);
+  const beforeJobs = structuredClone(persisted.collectorOzonEnrichmentJobs);
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(retriedAt),
+  });
+
+  const result = await runtime.service.retryCollectItem({
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-terminal-retry",
+  });
+
+  assert.equal(result.enrichment.status, "COMPLETE");
+  assert.equal(result.job.id, "job-runtime-terminal-success");
+  assert.equal(result.job.status, "SUCCESS");
+  assert.deepEqual(persisted.caches.collectBox, beforeItems);
+  assert.deepEqual(persisted.collectorOzonEnrichmentJobs, beforeJobs);
 });
 
 test("JSON NOT_FOUND failure and manual retry keep item attemptCount equal to the job truth", async () => {
@@ -704,4 +862,89 @@ test("JSON permanent failure leaves the linked item unchanged when the claim exp
   assert.equal(persisted.caches.collectBox[0].status, "RETRYING");
   assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 3);
   assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
+});
+
+test("JSON retryable defer cannot overwrite a collect item that already became COMPLETE", async () => {
+  const failedAt = new Date("2026-08-01T11:00:00.000Z");
+  let saveCount = 0;
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-complete-wins",
+        accountId: "account-runtime",
+        sku: "sku-runtime-complete-wins",
+        status: "COMPLETE",
+        draftVersion: 4,
+        listingDraft: {
+          sourceCategory: { descriptionCategoryId: 17_000_001 },
+          logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+        },
+        enrichment: {
+          status: "COMPLETE",
+          missingFields: [],
+          capturedAt: "2026-08-01T10:59:59.000Z",
+        },
+      }],
+    },
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      revokedAt: null,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-complete-wins",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-complete-wins",
+      requestId: "request-runtime-complete-wins",
+      sku: "sku-runtime-complete-wins",
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-runtime",
+      claimExpiresAt: "2026-08-01T11:01:00.000Z",
+      refreshBundle: {},
+      attemptCount: 2,
+      nextAttemptAt: "2026-08-01T10:59:00.000Z",
+      lastError: null,
+      captureContext: null,
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T10:00:00.000Z",
+      updatedAt: "2026-08-01T10:59:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => {
+      saveCount += 1;
+      persisted = structuredClone(state);
+    },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(failedAt),
+  });
+
+  const result = await runtime.service.failClaim({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+    jobId: "job-runtime-complete-wins",
+    code: "OZON_ENRICH_UPSTREAM_FAILED",
+  });
+
+  assert.deepEqual(result, { id: "job-runtime-complete-wins", status: "SUCCESS" });
+  assert.equal(persisted.caches.collectBox[0].status, "COMPLETE");
+  assert.equal(persisted.caches.collectBox[0].enrichment.status, "COMPLETE");
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.deepEqual(persisted.collectorOzonEnrichmentJobs[0].result, {
+    status: "COMPLETE",
+    source: "COLLECTED_PUBLIC_EVIDENCE",
+  });
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].claimedSessionId, null);
+  assert.equal(saveCount, 2, "one atomic state save plus the serialized audit save");
 });

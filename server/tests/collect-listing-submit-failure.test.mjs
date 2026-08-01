@@ -36,6 +36,7 @@ const token = "local-test-token";
 const storeId = "local_submit_store";
 const collectId = "collect-submit-failure";
 const completeCollectId = "collect-preview-complete";
+const enrichedCollectId = "collect-preview-enriched-logistics";
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
@@ -85,6 +86,10 @@ await writeFile(dataFile, `${JSON.stringify({
         currencyCode: "CNY",
         descriptionCategoryId: 17028941,
         typeId: 91670,
+        packageWeight: "799",
+        packageLength: "350",
+        packageWidth: "85",
+        packageHeight: "50",
         enrichment: {
           status: "COMPLETE",
           missingFields: [],
@@ -100,6 +105,10 @@ await writeFile(dataFile, `${JSON.stringify({
       localStoreId: storeId,
       sku: "4260049339",
       status: "待处理",
+      sourceCategory: {
+        descriptionCategoryId: 17000001,
+        path: ["Freshly collected source category"],
+      },
       listingDraft: {
         sku: "4260049339",
         title: "Complete collect listing preview item",
@@ -114,6 +123,32 @@ await writeFile(dataFile, `${JSON.stringify({
         listingWarehouseId: "1020003087687000",
         listingStock: "5",
         images: ["https://cdn.example.test/complete.jpg"],
+      },
+    }, {
+      id: enrichedCollectId,
+      accountId: "acct_submit_test",
+      storeId,
+      localStoreId: storeId,
+      sku: "4260049340",
+      status: "COMPLETE",
+      enrichment: { status: "COMPLETE", missingFields: [] },
+      listingDraft: {
+        sku: "4260049340",
+        title: "Seller-enriched logistics preview item",
+        price: "100",
+        currencyCode: "CNY",
+        descriptionCategoryId: 17028941,
+        typeId: 91670,
+        sourceCategory: {
+          descriptionCategoryId: 17000001,
+          typeIdCandidate: 97000001,
+          path: ["Seller source category"],
+        },
+        variants: [{ sku: "4260049340", sourceCategory: {} }],
+        logistics: { weightG: 801, lengthMm: 351, widthMm: 86, heightMm: 51 },
+        listingWarehouseId: "1020003087687000",
+        listingStock: "5",
+        images: ["https://cdn.example.test/enriched.jpg"],
       },
     }],
   },
@@ -184,7 +219,7 @@ try {
     );
     assert.equal(incomplete.status, 422);
     assert.equal(incomplete.body.code, "COLLECT_ENRICHMENT_INCOMPLETE");
-    assert.deepEqual(incomplete.body.missingFields, ["weightG", "lengthMm", "widthMm", "heightMm"]);
+    assert.deepEqual(incomplete.body.missingFields, ["descriptionCategoryId"]);
     const unchangedState = JSON.parse(await readFile(dataFile, "utf8"));
     const unchangedItem = unchangedState.caches.collectBox.find((row) => row.id === collectId);
     assert.equal(unchangedItem.status, "待处理");
@@ -230,6 +265,21 @@ try {
   );
   assert.equal(completePreview.status, 200, JSON.stringify(completePreview.body));
   assert.equal(completePreview.body.ok, true);
+  assert.equal(externalWriteCalls, 0);
+
+  const enrichedPreview = await requestJson(
+    handle,
+    `/ozon/collect-box/${enrichedCollectId}/listing/preview`,
+    { targetStoreId: storeId, idempotencyKey: "enriched-logistics-preview" },
+    token,
+    storeId,
+  );
+  assert.equal(enrichedPreview.status, 200, JSON.stringify(enrichedPreview.body));
+  assert.equal(enrichedPreview.body.ok, true);
+  assert.equal(enrichedPreview.body.items?.[0]?.weight, 801);
+  assert.equal(enrichedPreview.body.items?.[0]?.depth, 351);
+  assert.equal(enrichedPreview.body.items?.[0]?.description_category_id, 17028941);
+  assert.notEqual(enrichedPreview.body.items?.[0]?.description_category_id, 17000001);
   assert.equal(externalWriteCalls, 0);
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));

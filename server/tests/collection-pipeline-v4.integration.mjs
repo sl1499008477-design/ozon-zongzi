@@ -225,6 +225,32 @@ try {
   const rawCount = await pool.query("SELECT COUNT(*)::int count FROM collect_raw_payloads WHERE collect_item_id=$1", [first.collectItemId]);
   assert.equal(rawCount.rows[0].count, 1, "只改变采集时间不能新增原始内容版本");
 
+  await pool.query(
+    "UPDATE collect_items SET summary=summary-'enrichment' WHERE id=$1 AND account_id=$2",
+    [first.collectItemId, accountA],
+  );
+  await pool.query(
+    "UPDATE collect_raw_payloads SET payload=payload #- '{normalized,enrichment}' WHERE collect_item_id=$1 AND account_id=$2",
+    [first.collectItemId, accountA],
+  );
+  const legacyCanonical = await ingestCollectRequestV4({
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: sku,
+      requestId: `idem-legacy-no-summary-${suffix}`,
+      payload: { sku, name: "Legacy canonical must supply completeness" },
+    },
+  });
+  assert.equal(legacyCanonical.enrichment.status, "COMPLETE");
+  assert.deepEqual(legacyCanonical.enrichment.missingFields, []);
+  const legacyCanonicalJobs = await pool.query(
+    "SELECT COUNT(*)::int count FROM collector_ozon_enrichment_jobs WHERE account_id=$1 AND collect_item_id=$2",
+    [accountA, first.collectItemId],
+  );
+  assert.equal(legacyCanonicalJobs.rows[0].count, 0,
+    "legacy canonical evidence must not enqueue a spurious enrichment job");
+
   const edited = await updateCollectItemDraftV4({
     collectItemId: first.collectItemId,
     accountId: accountA,
@@ -232,6 +258,39 @@ try {
     patch: { listingDraft: { ...item.listingDraft, title: "用户修改标题" } },
   });
   assert.equal(edited.draftVersion, 2);
+  await pool.query(
+    `UPDATE collect_items
+        SET status='COMPLETE',summary=jsonb_set(summary,'{enrichment}',$3::jsonb,TRUE)
+      WHERE id=$1 AND account_id=$2`,
+    [first.collectItemId, accountA, JSON.stringify({ status: "COMPLETE", missingFields: [], attemptCount: 2 })],
+  );
+  const recollected = await ingestCollectRequestV4({
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: sku,
+      requestId: `idem-after-manual-${suffix}`,
+      payload: {
+        ...item,
+        name: "公共重采标题不能覆盖人工结果",
+        laterPublicEvidence: "new-evidence",
+      },
+    },
+  });
+  assert.equal(recollected.collectItemId, first.collectItemId);
+  assert.equal(recollected.item.status, "COMPLETE");
+  assert.equal(recollected.item.name, "V4 原始标题");
+  assert.equal(recollected.item.laterPublicEvidence, "new-evidence");
+  assert.equal(recollected.item.listingDraft.title, "用户修改标题");
+  assert.equal(recollected.draftVersion, 2);
+  const recollectCounts = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM collect_items WHERE account_id=$1 AND source_sku=$2) item_count,
+       (SELECT COUNT(*)::int FROM collect_requests WHERE account_id=$1 AND source_sku=$2 AND status='SUCCEEDED') request_count,
+       (SELECT COUNT(*)::int FROM collector_ozon_enrichment_jobs WHERE account_id=$1 AND collect_item_id=$3) job_count`,
+    [accountA, sku, first.collectItemId],
+  );
+  assert.deepEqual(recollectCounts.rows[0], { item_count: 1, request_count: 4, job_count: 0 });
   await assert.rejects(
     updateCollectItemDraftV4({
       collectItemId: first.collectItemId,

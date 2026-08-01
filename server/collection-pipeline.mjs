@@ -4,8 +4,17 @@ import { runMigrations } from "./db/migrate.mjs";
 import { mirrorCollectItemV3 } from "./listing-pipeline.mjs";
 import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
 import { assertCompleteOzonCollectPayload } from "./collector-ozon-enrichment-contract.mjs";
-import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
+import {
+  buildOzonEnrichmentSummary,
+  normalizeOzonCollectedSourceEvidence,
+  reconcileOzonEnrichmentSummary,
+} from "./collect-enrichment-policy.mjs";
 import { createPostgresCollectorOzonEnrichmentRepository } from "./collector-ozon-enrichment-repository.mjs";
+import {
+  assertCollectedPublicEvidenceSafe,
+  mergeCollectedItemPublicEvidence,
+  sanitizeCollectedPublicEvidence,
+} from "./collect-item-identity-policy.mjs";
 
 let ready = false;
 
@@ -30,12 +39,17 @@ function stableId(prefix, ...parts) {
   return `${prefix}_${sha256(parts.map((part) => String(part ?? "")).join("|" )).slice(0, 24)}`;
 }
 
+const VOLATILE_CANONICAL_KEYS = new Set([
+  "collectedat", "createdat", "updatedat", "scrapedat", "savedat", "timestamp",
+  "listingsubmittedat", "listingcompletedat", "listinglasterrorat",
+]);
+
+function canonicalContentKey(value) {
+  return String(value || "").replace(/[-_]/g, "").toLowerCase();
+}
+
 function canonicalValue(value, key = "") {
-  const volatile = new Set([
-    "collectedAt", "createdAt", "updatedAt", "scrapedAt", "savedAt", "timestamp",
-    "listingSubmittedAt", "listingCompletedAt", "listingLastErrorAt",
-  ]);
-  if (volatile.has(key)) return undefined;
+  if (VOLATILE_CANONICAL_KEYS.has(canonicalContentKey(key))) return undefined;
   if (Array.isArray(value)) {
     return value.map((item) => canonicalValue(item)).filter((item) => item !== undefined);
   }
@@ -98,6 +112,11 @@ export function prepareCollectRequestV4({
     throw collectorError("采集商品 payload 格式无效", 422, "COLLECT_PAYLOAD_INVALID");
   }
   const payload = input.payload;
+  assertCollectedPublicEvidenceSafe(payload);
+  const sanitizedPayload = sanitizeCollectedPublicEvidence(payload);
+  const publicPayload = sourceId === "ozon"
+    ? normalizeOzonCollectedSourceEvidence(sanitizedPayload)
+    : sanitizedPayload;
   const contentHash = sha256(canonicalJson(payload));
   const identity = {
     accountId,
@@ -121,7 +140,7 @@ export function prepareCollectRequestV4({
     collectId: stableId("collect", identityKey),
     persistedRequestId: stableId("collectreq", idempotencyKey),
     normalizedItem: {
-      ...payload,
+      ...publicPayload,
       id: stableId("collect", identityKey),
       accountId,
       createdBy: accountId,
@@ -278,12 +297,16 @@ export async function ingestCollectRequestV4(options = {}) {
   const enrichment = sourceId === "ozon"
     ? buildOzonEnrichmentSummary(preparedItem)
     : null;
-  const normalizedItem = enrichment
+  const incomingNormalizedItem = enrichment
     ? { ...preparedItem, enrichment }
     : preparedItem;
 
   try {
     return await transaction(async (client) => {
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+        [`collect-identity:${accountId}:${sourceId}:${sourceSku}`],
+      );
       const inserted = await client.query(
         `INSERT INTO collect_requests (
            id,idempotency_key,account_id,store_id,data_collection_store_id,
@@ -314,10 +337,10 @@ export async function ingestCollectRequestV4(options = {}) {
         if (row?.status === "SUCCEEDED") {
           const storedResponse = row.response && typeof row.response === "object"
             ? row.response
-            : { item: normalizedItem, collectItemId: row.collect_item_id };
+            : { item: incomingNormalizedItem, collectItemId: row.collect_item_id };
           const storedItem = storedResponse.item && typeof storedResponse.item === "object"
             ? storedResponse.item
-            : normalizedItem;
+            : incomingNormalizedItem;
           const replayEnrichment = sourceId === "ozon"
             ? storedResponse.enrichment
               || storedItem.enrichment
@@ -340,6 +363,52 @@ export async function ingestCollectRequestV4(options = {}) {
           [row.id, accountId],
         );
       }
+      const canonicalResult = await client.query(
+        `SELECT c.*,d.data AS draft_data,d.version AS draft_version,raw.payload AS raw_payload
+           FROM collect_items c
+           LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+           LEFT JOIN LATERAL (
+             SELECT payload FROM collect_raw_payloads r
+              WHERE r.collect_item_id=c.id AND r.account_id=c.account_id
+              ORDER BY r.created_at DESC,r.id DESC LIMIT 1
+           ) raw ON TRUE
+          WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+          FOR UPDATE OF c`,
+        [collectId, accountId],
+      );
+      const canonicalRow = canonicalResult.rows[0];
+      const canonicalRaw = canonicalRow?.raw_payload && typeof canonicalRow.raw_payload === "object"
+        ? canonicalRow.raw_payload
+        : {};
+      const canonicalNormalized = canonicalRaw.normalized && typeof canonicalRaw.normalized === "object"
+        ? canonicalRaw.normalized
+        : {};
+      const canonicalEnrichment = canonicalRow?.summary?.enrichment
+        && typeof canonicalRow.summary.enrichment === "object"
+        ? canonicalRow.summary.enrichment
+        : canonicalNormalized.enrichment;
+      const canonicalItem = canonicalRow
+        ? {
+            ...canonicalNormalized,
+            id: canonicalRow.id,
+            accountId: canonicalRow.account_id,
+            source: canonicalRow.source,
+            sourceSku: canonicalRow.source_sku,
+            sourceUrl: canonicalRow.source_url,
+            status: canonicalRow.status,
+            listingDraft: canonicalRow.draft_data || canonicalNormalized.listingDraft || {},
+            draftVersion: Number(canonicalRow.draft_version || 1),
+            ...(canonicalEnrichment ? { enrichment: canonicalEnrichment } : {}),
+          }
+        : null;
+      const normalizedItem = canonicalItem
+        ? mergeCollectedItemPublicEvidence(canonicalItem, incomingNormalizedItem)
+        : incomingNormalizedItem;
+      const effectiveEnrichment = sourceId === "ozon"
+        ? reconcileOzonEnrichmentSummary(normalizedItem, canonicalEnrichment)
+        : null;
+      if (effectiveEnrichment) normalizedItem.enrichment = structuredClone(effectiveEnrichment);
+      if (effectiveEnrichment?.status === "COMPLETE") normalizedItem.status = "COMPLETE";
       const mirrored = await mirrorCollectItemV3(normalizedItem, {
         client,
         collectId,
@@ -348,19 +417,29 @@ export async function ingestCollectRequestV4(options = {}) {
         identityKey,
         contentHash,
         requestId: sourceRequestId,
+        rawSource: input.payload,
         captureRaw: true,
         changeReason: "PREPROCESSED",
       });
-      if (enrichment?.status === "PENDING_ENRICHMENT") {
+      if (effectiveEnrichment) {
         const repository = createPostgresCollectorOzonEnrichmentRepository({ pool: client });
-        await repository.enqueueForCollect({
-          accountId,
-          collectItemId: collectId,
-          requestId: sourceRequestId,
-          sku: sourceSku,
-          refreshBundle: {},
-          now: new Date(),
-        });
+        if (effectiveEnrichment.status === "PENDING_ENRICHMENT") {
+          await repository.enqueueForCollect({
+            accountId,
+            collectItemId: collectId,
+            requestId: sourceRequestId,
+            sku: sourceSku,
+            refreshBundle: {},
+            now: new Date(),
+          });
+        } else if (effectiveEnrichment.status === "COMPLETE") {
+          await repository.completeLinkedJobsFromCollectEvidence({
+            accountId,
+            collectItemId: collectId,
+            sku: sourceSku,
+            now: new Date(),
+          });
+        }
       }
       const response = {
         item: { ...normalizedItem, draftVersion: mirrored?.version || 1, pipelineVersion: "v4" },
@@ -368,7 +447,7 @@ export async function ingestCollectRequestV4(options = {}) {
         draftId: mirrored?.draftId || "",
         draftVersion: mirrored?.version || 1,
         action: mirrored?.created ? "created" : "updated",
-        ...(enrichment ? { enrichment } : {}),
+        ...(effectiveEnrichment ? { enrichment: effectiveEnrichment } : {}),
       };
       await client.query(
         `UPDATE collect_requests SET status='SUCCEEDED',collect_item_id=$2,response=$3::jsonb,

@@ -412,6 +412,54 @@ test("JSON atomic terminal write rejects a lost claim without publishing cache",
   })).claimedSessionId, "collector-new");
 });
 
+test("JSON atomic terminal write rejects a rotated Seller claim fence without side effects", async () => {
+  const state = {
+    collectorSessions: [activeSession("collector-owner", "account-a")],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  await repository.createOrGetJob({
+    id: "job-context-fence",
+    accountId: "account-a",
+    requestId: "request-context-fence",
+    sku: ACCOUNT_A_KEY.sku,
+    preferredSessionId: null,
+    refreshBundle: true,
+    deadlineAt: new Date("2026-07-31T00:00:20.000Z"),
+    createdAt: new Date("2026-07-31T00:00:00.000Z"),
+  });
+  const claimedContext = {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: "2026-07-31T00:00:00.000Z",
+  };
+  await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-owner",
+    now: new Date("2026-07-31T00:00:00.000Z"),
+    claimExpiresAt: new Date("2026-07-31T00:00:10.000Z"),
+    claimFence: "claim-fence-original",
+    captureContext: claimedContext,
+  });
+  state.collectorOzonEnrichmentJobs[0].claimFence = "claim-fence-rotated";
+
+  await assert.rejects(repository.completeJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-owner",
+    jobId: "job-context-fence",
+    key: ACCOUNT_A_KEY,
+    result: completeResult(920),
+    responseHash: "context-fence-hash",
+    capturedAt: new Date("2026-07-31T00:00:01.000Z"),
+    expiresAt: new Date("2026-07-31T06:00:01.000Z"),
+    captureContext: claimedContext,
+    claimFence: "claim-fence-original",
+    now: new Date("2026-07-31T00:00:01.000Z"),
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+
+  assert.equal(state.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.equal(state.collectorOzonEnrichmentCache, undefined);
+});
+
 test("JSON atomic terminal persistence failure rolls back both job and cache", async () => {
   const state = {
     collectorSessions: [activeSession("collector-owner", "account-a")],
@@ -1164,6 +1212,83 @@ test("PostgreSQL atomic terminal write rolls back the job when cache persistence
   assert.equal(calls.includes("COMMIT"), false);
 });
 
+for (const terminalStatus of ["success", "failure"]) {
+  test(`PostgreSQL atomic terminal ${terminalStatus} preserves a rotated-fence 409 without cache mutation`, async () => {
+    const calls = [];
+    const client = {
+      async query(sql, params = []) {
+        const normalized = String(sql).replace(/\s+/g, " ").trim();
+        calls.push({ sql: normalized, params });
+        if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+          return { rows: [{ id: "collector-owner" }], rowCount: 1 };
+        }
+        if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
+          return { rows: [{
+            id: `job-pg-stale-${terminalStatus}`,
+            account_id: "account-a",
+            request_id: `request-pg-stale-${terminalStatus}`,
+            sku: ACCOUNT_A_KEY.sku,
+            status: "PROCESSING",
+            claimed_session_id: "collector-owner",
+            claim_expires_at: "2026-07-31T00:00:10.000Z",
+            deadline_at: "2026-07-31T00:00:20.000Z",
+            claim_fence: "claim-new",
+            capture_context_json: {
+              sellerCompanyId: "7311458",
+              revision: 2,
+              observedAt: "2026-07-31T00:00:02.000Z",
+            },
+            created_at: "2026-07-31T00:00:00.000Z",
+            updated_at: "2026-07-31T00:00:02.000Z",
+          }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release() {},
+    };
+    const repository = createPostgresCollectorOzonEnrichmentRepository({
+      pool: {
+        async connect() { return client; },
+        async query() { return { rows: [], rowCount: 0 }; },
+      },
+    });
+    const common = {
+      accountId: "account-a",
+      collectorSessionId: "collector-owner",
+      jobId: `job-pg-stale-${terminalStatus}`,
+      key: ACCOUNT_A_KEY,
+      responseHash: `pg-stale-${terminalStatus}-hash`,
+      capturedAt: new Date("2026-07-31T00:00:03.000Z"),
+      expiresAt: new Date("2026-07-31T06:00:03.000Z"),
+      captureContext: {
+        sellerCompanyId: "2681910",
+        revision: 1,
+        observedAt: "2026-07-31T00:00:01.000Z",
+      },
+      claimFence: "claim-old",
+      now: new Date("2026-07-31T00:00:03.000Z"),
+    };
+    const operation = terminalStatus === "success"
+      ? repository.completeJobAndCache({ ...common, result: completeResult(930) })
+      : repository.failJobAndCache({
+          ...common,
+          error: { code: "SELLER_CONTEXT_CHANGED", status: 409 },
+        });
+
+    await assert.rejects(operation, (error) =>
+      error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+    assert.equal(calls.at(-1).sql, "ROLLBACK");
+    assert.equal(
+      calls.some(({ sql }) => sql.startsWith("INSERT INTO collector_ozon_enrichment_cache")),
+      false,
+    );
+    assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
+  });
+}
+
 test("PostgreSQL job claim locks the account transaction and enforces the four-job limit", async () => {
   const calls = [];
   let processingCount = "3";
@@ -1863,7 +1988,14 @@ test("create-or-get held reset clears server-owned retry and capture state in bo
 
 test("JSON linked enqueue is idempotent and rejects a collect-item mismatch", async () => {
   const repository = createJsonCollectorOzonEnrichmentRepository({
-    state: { caches: { collectBox: [collectItem("collect-a", "account-a")] } },
+    state: {
+      caches: {
+        collectBox: [
+          collectItem("collect-a", "account-a"),
+          collectItem("collect-other", "account-a"),
+        ],
+      },
+    },
   });
   const input = {
     accountId: "account-a",
@@ -1885,6 +2017,186 @@ test("JSON linked enqueue is idempotent and rejects a collect-item mismatch", as
     ...input,
     collectItemId: "collect-other",
   }), (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_CONFLICT");
+});
+
+test("linked enqueue ignores terminal history and creates one fresh active job in both adapters", async () => {
+  const now = new Date("2026-08-01T08:05:00.000Z");
+  const terminal = {
+    id: "job-linked-terminal",
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    requestId: "collect-request-old",
+    sku: ACCOUNT_A_KEY.sku,
+    status: "FAILED",
+    refreshBundle: {},
+    attemptCount: 1,
+    nextAttemptAt: "2026-08-01T08:00:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    createdAt: "2026-08-01T08:00:00.000Z",
+    updatedAt: "2026-08-01T08:01:00.000Z",
+    completedAt: "2026-08-01T08:01:00.000Z",
+  };
+  const input = {
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    requestId: "collect-request-fresh",
+    sku: ACCOUNT_A_KEY.sku,
+    refreshBundle: {},
+    now,
+  };
+  const state = {
+    caches: { collectBox: [collectItem("collect-a", "account-a")] },
+    collectorOzonEnrichmentJobs: [structuredClone(terminal)],
+  };
+  const jsonJob = await createJsonCollectorOzonEnrichmentRepository({ state })
+    .enqueueForCollect(input);
+  assert.equal(jsonJob.status, "PENDING");
+  assert.notEqual(jsonJob.id, terminal.id);
+  assert.equal(state.collectorOzonEnrichmentJobs.length, 2);
+
+  const calls = [];
+  const postgresJob = await createPostgresCollectorOzonEnrichmentRepository({
+    pool: {
+      async query(sql, params = []) {
+        const normalized = String(sql).replace(/\s+/g, " ").trim();
+        calls.push({ sql: normalized, params });
+        if (normalized.includes("collect_item_id=$2 AND sku=$3")) {
+          return normalized.includes("status IN ('PENDING','PROCESSING')")
+            ? { rows: [], rowCount: 0 }
+            : { rows: [{
+                ...terminal,
+                account_id: terminal.accountId,
+                collect_item_id: terminal.collectItemId,
+                request_id: terminal.requestId,
+                next_attempt_at: terminal.nextAttemptAt,
+                deadline_at: terminal.deadlineAt,
+                created_at: terminal.createdAt,
+                updated_at: terminal.updatedAt,
+                completed_at: terminal.completedAt,
+              }], rowCount: 1 };
+        }
+        if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
+          return { rows: [{
+            id: "job-linked-fresh",
+            account_id: input.accountId,
+            collect_item_id: input.collectItemId,
+            request_id: input.requestId,
+            sku: input.sku,
+            status: "PENDING",
+            refresh_bundle: {},
+            attempt_count: 0,
+            next_attempt_at: now.toISOString(),
+            deadline_at: "9999-12-31T23:59:59.999Z",
+            created_at: now.toISOString(),
+            updated_at: now.toISOString(),
+          }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    },
+  }).enqueueForCollect(input);
+  assert.equal(postgresJob.id, "job-linked-fresh");
+  assert.ok(calls.some((call) =>
+    call.sql.includes("collect_item_id=$2 AND sku=$3")
+    && call.sql.includes("status IN ('PENDING','PROCESSING')")));
+});
+
+test("collected complete evidence terminates active linked jobs in both adapters", async () => {
+  const now = new Date("2026-08-01T08:05:00.000Z");
+  const active = {
+    id: "job-linked-active",
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    requestId: "collect-request-active",
+    sku: ACCOUNT_A_KEY.sku,
+    status: "PROCESSING",
+    claimedSessionId: "collector-a",
+    claimExpiresAt: "2026-08-01T08:06:00.000Z",
+    claimFence: "claim-active",
+    refreshBundle: {},
+    attemptCount: 1,
+    nextAttemptAt: "2026-08-01T08:00:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    createdAt: "2026-08-01T08:00:00.000Z",
+    updatedAt: "2026-08-01T08:01:00.000Z",
+  };
+  const input = {
+    accountId: active.accountId,
+    collectItemId: active.collectItemId,
+    sku: active.sku,
+    now,
+  };
+  const duplicate = {
+    ...structuredClone(active),
+    id: "job-linked-active-duplicate",
+    status: "PENDING",
+    claimedSessionId: null,
+    claimExpiresAt: null,
+    claimFence: null,
+    createdAt: "2026-08-01T08:02:00.000Z",
+    updatedAt: "2026-08-01T08:02:00.000Z",
+  };
+  const crossAccountIdCollision = {
+    ...structuredClone(active),
+    accountId: "account-b",
+    collectItemId: "collect-b",
+    requestId: "collect-request-cross-account",
+    status: "PENDING",
+    claimedSessionId: null,
+    claimExpiresAt: null,
+    claimFence: null,
+  };
+  const state = {
+    collectorOzonEnrichmentJobs: [
+      structuredClone(active),
+      duplicate,
+      crossAccountIdCollision,
+    ],
+  };
+  const jsonResult = await createJsonCollectorOzonEnrichmentRepository({ state })
+    .completeLinkedJobsFromCollectEvidence(input);
+  assert.equal(jsonResult.length, 1);
+  assert.equal(state.collectorOzonEnrichmentJobs[0].status, "SUCCESS");
+  assert.equal(state.collectorOzonEnrichmentJobs[0].claimFence, null);
+  assert.equal(state.collectorOzonEnrichmentJobs[1].status, "FAILED");
+  assert.deepEqual(state.collectorOzonEnrichmentJobs[1].error, {
+    code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED",
+    status: 409,
+  });
+  assert.equal(state.collectorOzonEnrichmentJobs[2].status, "PENDING");
+  assert.equal(state.collectorOzonEnrichmentJobs[2].result, undefined);
+
+  const calls = [];
+  const postgresResult = await createPostgresCollectorOzonEnrichmentRepository({
+    pool: {
+      async query(sql, params = []) {
+        const normalized = String(sql).replace(/\s+/g, " ").trim();
+        calls.push({ sql: normalized, params });
+        if (!normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [{
+          ...active,
+          account_id: active.accountId,
+          collect_item_id: active.collectItemId,
+          request_id: active.requestId,
+          status: "SUCCESS",
+          claimed_session_id: null,
+          claim_expires_at: null,
+          claim_fence: null,
+          result_json: { status: "COMPLETE", source: "COLLECTED_PUBLIC_EVIDENCE" },
+          next_attempt_at: active.nextAttemptAt,
+          deadline_at: active.deadlineAt,
+          created_at: active.createdAt,
+          updated_at: now.toISOString(),
+          completed_at: now.toISOString(),
+        }], rowCount: 1 };
+      },
+    },
+  }).completeLinkedJobsFromCollectEvidence(input);
+  assert.equal(postgresResult.length, 1);
+  assert.ok(calls[0].sql.includes("status IN ('PENDING','PROCESSING')"));
+  assert.deepEqual(calls[0].params.slice(0, 3), [active.accountId, active.collectItemId, active.sku]);
 });
 
 test("linked enqueue snapshots caller input once before validation and persistence", async () => {
@@ -1910,7 +2222,11 @@ test("linked enqueue snapshots caller input once before validation and persisten
   const postgresJob = await createPostgresCollectorOzonEnrichmentRepository({
     pool: {
       async query(sql, params = []) {
-        calls.push({ sql: String(sql).replace(/\s+/g, " ").trim(), params });
+        const normalized = String(sql).replace(/\s+/g, " ").trim();
+        calls.push({ sql: normalized, params });
+        if (!normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
+          return { rows: [], rowCount: 0 };
+        }
         return { rows: [{
           id: "linked-snapshot-job",
           account_id: base.accountId,
@@ -1929,8 +2245,8 @@ test("linked enqueue snapshots caller input once before validation and persisten
     },
   }).enqueueForCollect(postgresInput.input);
   assert.equal(postgresInput.readCount(), 1);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].params[5], "true");
+  const insert = calls.find((call) => call.sql.startsWith("INSERT INTO collector_ozon_enrichment_jobs"));
+  assert.equal(insert.params[5], "true");
   assert.equal(postgresJob.refreshBundle, true);
 });
 
@@ -2346,6 +2662,228 @@ test("JSON linked retries wait until due and persist only stable error fields", 
   })).id, enqueued.id);
 });
 
+test("JSON claim normalizes legacy duplicate active linked jobs and preserves superseded audit history", async () => {
+  const baseJob = (id, requestId, createdAt, overrides = {}) => ({
+    id,
+    accountId: "account-a",
+    collectItemId: "collect-legacy-duplicate",
+    requestId,
+    sku: ACCOUNT_A_KEY.sku,
+    status: "PENDING",
+    preferredSessionId: null,
+    claimedSessionId: null,
+    claimExpiresAt: null,
+    claimFence: null,
+    refreshBundle: {},
+    attemptCount: 0,
+    nextAttemptAt: createdAt,
+    lastError: null,
+    captureContext: null,
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    result: null,
+    error: null,
+    createdAt,
+    updatedAt: createdAt,
+    completedAt: null,
+    ...overrides,
+  });
+  const state = {
+    caches: { collectBox: [collectItem("collect-legacy-duplicate", "account-a")] },
+    collectorSessions: [activeSession("collector-a", "account-a", {
+      expiresAt: "2026-08-02T00:00:00.000Z",
+    })],
+    collectorOzonEnrichmentJobs: [
+      baseJob("legacy-linked-a", "legacy-request-a", "2026-08-01T07:59:58.000Z"),
+      baseJob("legacy-linked-b", "legacy-request-b", "2026-08-01T07:59:59.000Z", {
+        status: "PROCESSING",
+        claimedSessionId: "collector-a",
+        claimExpiresAt: "2026-08-01T08:01:00.000Z",
+        claimFence: "legacy-fence",
+      }),
+      baseJob("legacy-linked-c", "legacy-request-c", "2026-08-01T08:00:00.000Z"),
+      baseJob("legacy-linked-b", "legacy-request-cross-account", "2026-08-01T08:00:00.500Z", {
+        accountId: "account-b",
+        collectItemId: "collect-legacy-cross-account",
+        sku: "sku-cross-account",
+      }),
+    ],
+  };
+  let persists = 0;
+  const repository = createJsonCollectorOzonEnrichmentRepository({
+    state,
+    async persist() { persists += 1; },
+  });
+
+  const claimed = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: new Date("2026-08-01T08:00:01.000Z"),
+    claimExpiresAt: new Date("2026-08-01T08:01:01.000Z"),
+    claimFence: "canonical-fence",
+    captureContext: {
+      sellerCompanyId: "2681910",
+      revision: 1,
+      observedAt: "2026-08-01T08:00:01.000Z",
+    },
+  });
+
+  assert.equal(claimed.id, "legacy-linked-a");
+  assert.equal(persists >= 1, true);
+  assert.equal(state.collectorOzonEnrichmentJobs.length, 4, "superseded rows remain auditable");
+  const active = state.collectorOzonEnrichmentJobs.filter((job) =>
+    job.accountId === "account-a" && ["PENDING", "PROCESSING"].includes(job.status));
+  assert.deepEqual(active.map(({ id }) => id), ["legacy-linked-a"]);
+  for (const duplicateId of ["legacy-linked-b", "legacy-linked-c"]) {
+    const duplicate = state.collectorOzonEnrichmentJobs.find(
+      ({ id, accountId }) => id === duplicateId && accountId === "account-a",
+    );
+    assert.equal(duplicate.status, "FAILED");
+    assert.deepEqual(duplicate.error, {
+      code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED",
+      status: 409,
+    });
+    assert.deepEqual(duplicate.lastError, duplicate.error);
+    assert.equal(duplicate.claimedSessionId, null);
+    assert.equal(duplicate.claimExpiresAt, null);
+    assert.equal(duplicate.claimFence, null);
+    assert.equal(duplicate.completedAt, "2026-08-01T08:00:01.000Z");
+  }
+  const crossAccountCollision = state.collectorOzonEnrichmentJobs.find(
+    ({ id, accountId }) => id === "legacy-linked-b" && accountId === "account-b",
+  );
+  assert.equal(crossAccountCollision.status, "PENDING");
+  assert.equal(crossAccountCollision.error, null);
+  assert.equal(crossAccountCollision.completedAt, null);
+});
+
+test("JSON tenant-scoped enqueue and claim never normalize another account's legacy duplicates", async () => {
+  const legacyJob = (id, requestId, createdAt) => ({
+    id,
+    accountId: "account-b",
+    collectItemId: "collect-legacy-b",
+    requestId,
+    sku: "sku-legacy-b",
+    status: "PENDING",
+    preferredSessionId: null,
+    claimedSessionId: null,
+    claimExpiresAt: null,
+    claimFence: null,
+    refreshBundle: {},
+    attemptCount: 0,
+    nextAttemptAt: createdAt,
+    lastError: null,
+    captureContext: null,
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    result: null,
+    error: null,
+    createdAt,
+    updatedAt: createdAt,
+    completedAt: null,
+  });
+  const state = {
+    caches: { collectBox: [
+      collectItem("collect-tenant-a", "account-a"),
+      collectItem("collect-legacy-b", "account-b"),
+    ] },
+    collectorSessions: [activeSession("collector-a", "account-a", {
+      expiresAt: "2026-08-02T00:00:00.000Z",
+    })],
+    collectorOzonEnrichmentJobs: [
+      legacyJob("legacy-b-a", "legacy-b-request-a", "2026-08-01T07:59:58.000Z"),
+      legacyJob("legacy-b-b", "legacy-b-request-b", "2026-08-01T07:59:59.000Z"),
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const beforeB = structuredClone(state.collectorOzonEnrichmentJobs);
+
+  const enqueuedA = await repository.enqueueForCollect({
+    accountId: "account-a",
+    collectItemId: "collect-tenant-a",
+    requestId: "tenant-a-request",
+    sku: "sku-tenant-a",
+    refreshBundle: {},
+    now: new Date("2026-08-01T08:00:00.000Z"),
+  });
+  assert.deepEqual(
+    state.collectorOzonEnrichmentJobs.filter((job) => job.accountId === "account-b"),
+    beforeB,
+  );
+
+  const claimedA = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: new Date("2026-08-01T08:00:01.000Z"),
+    claimExpiresAt: new Date("2026-08-01T08:01:01.000Z"),
+    claimFence: "tenant-a-fence",
+    captureContext: {
+      sellerCompanyId: "2681910",
+      revision: 1,
+      observedAt: "2026-08-01T08:00:01.000Z",
+    },
+  });
+  assert.equal(claimedA.id, enqueuedA.id);
+  assert.deepEqual(
+    state.collectorOzonEnrichmentJobs.filter((job) => job.accountId === "account-b"),
+    beforeB,
+  );
+});
+
+test("JSON late failure from an expired claim cannot mutate a same-session reclaim", async () => {
+  const state = {
+    caches: { collectBox: [collectItem("collect-fenced", "account-a")] },
+    collectorSessions: [activeSession("collector-a", "account-a", {
+      expiresAt: "2026-08-02T00:00:00.000Z",
+    })],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const job = await repository.enqueueForCollect({
+    accountId: "account-a",
+    collectItemId: "collect-fenced",
+    requestId: "collect-request-fenced",
+    sku: ACCOUNT_A_KEY.sku,
+    refreshBundle: {},
+    now: new Date("2026-08-01T08:00:00.000Z"),
+  });
+  const oldCaptureContext = {
+    sellerCompanyId: "2681910",
+    revision: 1,
+    observedAt: "2026-08-01T08:00:00.000Z",
+  };
+  await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: new Date("2026-08-01T08:00:00.000Z"),
+    claimExpiresAt: new Date("2026-08-01T08:00:05.000Z"),
+    claimFence: "claim-old",
+    captureContext: oldCaptureContext,
+  });
+  const reclaimed = await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: new Date("2026-08-01T08:00:05.000Z"),
+    claimExpiresAt: new Date("2026-08-01T08:00:20.000Z"),
+    claimFence: "claim-new",
+    captureContext: {
+      sellerCompanyId: "7311458",
+      revision: 2,
+      observedAt: "2026-08-01T08:00:05.000Z",
+    },
+  });
+  assert.equal(reclaimed.id, job.id);
+  const beforeLateFailure = structuredClone(state);
+
+  await assert.rejects(repository.deferClaim({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: job.id,
+    error: { code: "SELLER_CONTEXT_CHANGED", status: 409 },
+    now: new Date("2026-08-01T08:00:06.000Z"),
+    claimFence: "claim-old",
+    captureContext: oldCaptureContext,
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+  assert.deepEqual(state, beforeLateFailure);
+});
+
 test("JSON linked jobs enforce account scope for read, claim, defer, and completion", async () => {
   const state = {
     caches: { collectBox: [
@@ -2543,6 +3081,11 @@ test("PostgreSQL terminal failure increments attemptCount in the atomic job writ
 
 test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay account scoped", async () => {
   const calls = [];
+  const captureEvidence = {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: "2026-08-01T08:00:00.000Z",
+  };
   const row = {
     id: "job-linked-pg",
     account_id: "account-a",
@@ -2590,22 +3133,36 @@ test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay acc
     collectorSessionId: "collector-a",
     jobId: "job-linked-pg",
     error: { code: "OZON_RETRYABLE", status: 503, message: "do not persist" },
+    captureContext: captureEvidence,
+    claimFence: "claim-fenced-defer",
     now: new Date("2026-08-01T08:00:01.000Z"),
   });
 
-  assert.match(calls[0].sql, /FROM collect_items AS collect_item/);
-  assert.match(calls[0].sql, /collect_item\.account_id=\$2/);
-  assert.match(calls[0].sql, /ON CONFLICT \(account_id, request_id, sku\) DO NOTHING/);
-  assert.match(calls[1].sql, /WHERE account_id=\$1 AND claimed_session_id=\$2 AND id=\$3/);
-  assert.match(calls[1].sql, /attempt_count=attempt_count\+1/);
-  assert.match(calls[1].sql, /last_error_json=\$5::jsonb/);
-  assert.match(calls[1].sql, /next_attempt_at=\$4 \+ CASE/);
+  const insertCall = calls.find((call) => call.sql.startsWith("INSERT INTO collector_ozon_enrichment_jobs"));
+  const deferCall = calls.find((call) => call.sql.startsWith("UPDATE collector_ozon_enrichment_jobs"));
+  assert.match(insertCall.sql, /FROM collect_items AS collect_item/);
+  assert.match(insertCall.sql, /collect_item\.account_id=\$2/);
+  assert.match(insertCall.sql, /ON CONFLICT \(account_id, request_id, sku\) DO NOTHING/);
+  assert.match(deferCall.sql, /WHERE account_id=\$1 AND claimed_session_id=\$2 AND id=\$3/);
+  assert.match(deferCall.sql, /attempt_count=attempt_count\+1/);
+  assert.match(deferCall.sql, /last_error_json=\$5::jsonb/);
+  assert.match(deferCall.sql, /next_attempt_at=\$4 \+ CASE/);
+  assert.match(deferCall.sql, /claim_fence=\$11/);
+  assert.match(deferCall.sql, /capture_context_json IS NOT DISTINCT FROM \$12::jsonb/);
   assert.match(
-    calls[1].sql,
+    deferCall.sql,
     /CASE WHEN attempt_count=0 THEN \$6::double precision WHEN attempt_count=1 THEN \$7::double precision WHEN attempt_count=2 THEN \$8::double precision WHEN attempt_count=3 THEN \$9::double precision ELSE \$10::double precision END \* INTERVAL '1 millisecond'/,
   );
-  assert.equal(calls[1].params[4], JSON.stringify({ code: "OZON_RETRYABLE", status: 503 }));
-  assert.deepEqual(calls[1].params.slice(5), [30_000, 120_000, 600_000, 1_800_000, 3_600_000]);
+  assert.equal(deferCall.params[4], JSON.stringify({ code: "OZON_RETRYABLE", status: 503 }));
+  assert.deepEqual(deferCall.params.slice(5), [
+    30_000,
+    120_000,
+    600_000,
+    1_800_000,
+    3_600_000,
+    "claim-fenced-defer",
+    JSON.stringify(captureEvidence),
+  ]);
 
   const claimClientCalls = [];
   const claimClient = {
@@ -2656,10 +3213,15 @@ test("PostgreSQL linked enqueue replays only the same collect item", async () =>
       async query(sql, params = []) {
         const normalized = String(sql).replace(/\s+/g, " ").trim();
         calls.push({ sql: normalized, params });
+        if (normalized.includes("collect_item_id=$2 AND sku=$3")) {
+          return params[1] === "collect-a"
+            ? { rows: [existing], rowCount: 1 }
+            : { rows: [], rowCount: 0 };
+        }
         if (normalized.startsWith("INSERT INTO collector_ozon_enrichment_jobs")) {
           return { rows: [], rowCount: 0 };
         }
-        if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
+        if (normalized.includes("request_id=$2 AND sku=$3")) {
           return { rows: [existing], rowCount: 1 };
         }
         return { rows: [], rowCount: 0 };
@@ -2680,9 +3242,63 @@ test("PostgreSQL linked enqueue replays only the same collect item", async () =>
     ...input,
     collectItemId: "collect-other",
   }), (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_CONFLICT");
-  for (const call of calls.filter((entry) => entry.sql.startsWith("SELECT *"))) {
-    assert.match(call.sql, /WHERE account_id=\$1 AND request_id=\$2 AND sku=\$3/);
-  }
+  assert.ok(calls.some((entry) => /collect_item_id=\$2 AND sku=\$3/.test(entry.sql)));
+  assert.ok(calls.some((entry) => /request_id=\$2 AND sku=\$3/.test(entry.sql)));
+});
+
+test("PostgreSQL defer classifies a same-session rotated fence as Seller context changed", async () => {
+  const calls = [];
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: {
+      async query(sql, params = []) {
+        const normalized = String(sql).replace(/\s+/g, " ").trim();
+        calls.push({ sql: normalized, params });
+        if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (normalized.startsWith("SELECT id FROM collector_sessions")) {
+          return { rows: [{ id: "collector-a" }], rowCount: 1 };
+        }
+        if (normalized.startsWith("SELECT * FROM collector_ozon_enrichment_jobs")) {
+          return { rows: [{
+            id: "job-fence-rotated-pg",
+            account_id: "account-a",
+            request_id: "request-fence-rotated-pg",
+            sku: ACCOUNT_A_KEY.sku,
+            status: "PROCESSING",
+            claimed_session_id: "collector-a",
+            claim_expires_at: "2026-08-01T08:01:00.000Z",
+            deadline_at: "9999-12-31T23:59:59.999Z",
+            claim_fence: "claim-new",
+            capture_context_json: {
+              sellerCompanyId: "7311458",
+              revision: 2,
+              observedAt: "2026-08-01T08:00:05.000Z",
+            },
+            created_at: "2026-08-01T08:00:00.000Z",
+            updated_at: "2026-08-01T08:00:05.000Z",
+          }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    },
+  });
+
+  await assert.rejects(repository.deferClaim({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-fence-rotated-pg",
+    error: { code: "SELLER_CONTEXT_CHANGED", status: 409 },
+    captureContext: {
+      sellerCompanyId: "2681910",
+      revision: 1,
+      observedAt: "2026-08-01T08:00:00.000Z",
+    },
+    claimFence: "claim-old",
+    now: new Date("2026-08-01T08:00:06.000Z"),
+  }), (error) => error?.code === "SELLER_CONTEXT_CHANGED" && error?.status === 409);
+  const update = calls.find(({ sql }) => sql.startsWith("UPDATE collector_ozon_enrichment_jobs"));
+  assert.equal(update.params[10], "claim-old");
 });
 
 test("PostgreSQL completion stores only allowlisted capture evidence in job and cache", async () => {
@@ -2708,6 +3324,7 @@ test("PostgreSQL completion stores only allowlisted capture evidence in job and 
           attempt_count: 0,
           next_attempt_at: "2026-08-01T08:00:00.000Z",
           capture_context_json: JSON.parse(params[6]),
+          claim_fence: params[7],
           result_json: completeResult(268),
           deadline_at: "9999-12-31T23:59:59.999Z",
           created_at: "2026-08-01T08:00:00.000Z",
@@ -2730,6 +3347,7 @@ test("PostgreSQL completion stores only allowlisted capture evidence in job and 
     result: completeResult(268),
     responseHash: "capture-pg-hash",
     captureContext,
+    claimFence: "capture-pg-fence",
     capturedAt: new Date("2026-08-01T08:00:01.000Z"),
     expiresAt: new Date("2026-08-01T14:00:01.000Z"),
     now: new Date("2026-08-01T08:00:01.000Z"),
@@ -2739,7 +3357,10 @@ test("PostgreSQL completion stores only allowlisted capture evidence in job and 
   const cacheWrite = calls.find((call) => call.sql.startsWith("INSERT INTO collector_ozon_enrichment_cache"));
   assert.deepEqual(completed.captureContext, captureContext);
   assert.match(jobWrite.sql, /capture_context_json=\$7::jsonb/);
+  assert.match(jobWrite.sql, /claim_fence=\$8/);
+  assert.match(jobWrite.sql, /capture_context_json IS NOT DISTINCT FROM \$7::jsonb/);
   assert.equal(jobWrite.params[6], JSON.stringify(captureContext));
+  assert.equal(jobWrite.params[7], "capture-pg-fence");
   assert.match(cacheWrite.sql, /capture_context_json/);
   assert.equal(cacheWrite.params[11], JSON.stringify(captureContext));
   assert.equal(calls.at(-1).sql, "COMMIT");

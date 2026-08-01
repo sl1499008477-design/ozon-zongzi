@@ -2,7 +2,12 @@ import {
   assertCollectorScopeFieldsAbsentV4,
   preflightCollectRequestsV4,
 } from "./collection-pipeline.mjs";
-import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
+import {
+  buildOzonEnrichmentSummary,
+  mergeOzonEnrichmentResult,
+  reconcileOzonEnrichmentSummary,
+} from "./collect-enrichment-policy.mjs";
+import { mergeCollectedItemPublicEvidence } from "./collect-item-identity-policy.mjs";
 
 function routeError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
@@ -16,6 +21,7 @@ export function createJsonAccountScopedCollectionHandler({
   saveState,
   stateTransaction,
   enqueueForCollect,
+  completeLinkedJobsFromCollectEvidence,
   sendJson,
   sendError,
   countAccountItems,
@@ -28,6 +34,7 @@ export function createJsonAccountScopedCollectionHandler({
     || typeof saveState !== "function"
     || typeof stateTransaction?.run !== "function"
     || typeof enqueueForCollect !== "function"
+    || typeof completeLinkedJobsFromCollectEvidence !== "function"
     || typeof sendJson !== "function"
     || typeof sendError !== "function"
     || typeof countAccountItems !== "function"
@@ -130,7 +137,7 @@ export function createJsonAccountScopedCollectionHandler({
             raw: input.payload,
             sourceId: prepared.identity.source,
           }, prepared.identity.source);
-          const item = {
+          const incomingItem = {
             ...normalized,
             id: prepared.collectId,
             accountId: account.id,
@@ -148,7 +155,28 @@ export function createJsonAccountScopedCollectionHandler({
             "operatingStoreId",
             "dataCollectionStoreId",
             "sellerCompanyId",
-          ]) delete item[field];
+          ]) delete incomingItem[field];
+          const canonicalItem = collectBox.find((row) =>
+            String(row.id || "") === prepared.collectId
+            && String(row.accountId || "") === account.id);
+          const item = canonicalItem
+            ? mergeCollectedItemPublicEvidence(canonicalItem, incomingItem)
+            : incomingItem;
+          const effectiveEnrichment = enrichment
+            ? reconcileOzonEnrichmentSummary(item, canonicalItem?.enrichment)
+            : null;
+          if (effectiveEnrichment) item.enrichment = effectiveEnrichment;
+          if (effectiveEnrichment?.status === "COMPLETE") {
+            const previousDraft = item.listingDraft && typeof item.listingDraft === "object"
+              ? item.listingDraft
+              : {};
+            const mergedDraft = mergeOzonEnrichmentResult(previousDraft, item);
+            if (JSON.stringify(mergedDraft) !== JSON.stringify(previousDraft)) {
+              item.listingDraft = mergedDraft;
+              item.draftVersion = Number(item.draftVersion || 0) + 1;
+            }
+            item.status = "COMPLETE";
+          }
           collectBox = collectBox.filter((row) =>
             !(String(row.id) === item.id && String(row.accountId || "") === account.id));
           collectBox.unshift(item);
@@ -156,7 +184,7 @@ export function createJsonAccountScopedCollectionHandler({
             ? workingState.caches
             : {};
           workingState.caches.collectBox = collectBox;
-          if (enrichment?.status === "PENDING_ENRICHMENT") {
+          if (effectiveEnrichment?.status === "PENDING_ENRICHMENT") {
             await enqueueForCollect({
               state: workingState,
               accountId: account.id,
@@ -166,11 +194,19 @@ export function createJsonAccountScopedCollectionHandler({
               refreshBundle: {},
               now: new Date(),
             });
+          } else if (effectiveEnrichment?.status === "COMPLETE") {
+            await completeLinkedJobsFromCollectEvidence({
+              state: workingState,
+              accountId: account.id,
+              collectItemId: item.id,
+              sku: prepared.identity.sourceSku,
+              now: new Date(),
+            });
           }
           const response = {
             item,
             collectItemId: item.id,
-            ...(enrichment ? { enrichment } : {}),
+            ...(effectiveEnrichment ? { enrichment: effectiveEnrichment } : {}),
           };
           collectRequests.push({
             id: prepared.persistedRequestId,
@@ -184,16 +220,23 @@ export function createJsonAccountScopedCollectionHandler({
             contentHash: prepared.contentHash,
             status: "SUCCEEDED",
             response,
+            rawEvidence: {
+              collectItemId: item.id,
+              sourceRequestId: prepared.identity.requestId,
+              contentHash: prepared.contentHash,
+              capturedAt: prepared.normalizedItem.capturedAt || "",
+              payload: structuredClone(input.payload),
+            },
             createdAt: new Date().toISOString(),
           });
           imported.push({ ...item, collectRequestId: prepared.persistedRequestId, duplicate: false });
           results.push({
             index,
             sku: prepared.identity.sourceSku,
-            action: "created",
+            action: canonicalItem ? "updated" : "created",
             collectItemId: item.id,
             collectRequestId: prepared.persistedRequestId,
-            ...(enrichment ? { enrichment } : {}),
+            ...(effectiveEnrichment ? { enrichment: effectiveEnrichment } : {}),
           });
         }
         workingState.collectRequests = collectRequests;

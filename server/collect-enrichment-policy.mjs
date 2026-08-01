@@ -31,13 +31,163 @@ function cleanText(value) {
 
 function enrichmentFieldValues(value = {}) {
   const logistics = value?.logistics && typeof value.logistics === "object" ? value.logistics : {};
+  const draft = plainObject(value?.listingDraft) ? value.listingDraft : {};
+  const draftLogistics = plainObject(draft.logistics) ? draft.logistics : {};
+  const sourceCategory = sourceCategoryEvidence(value);
+  const draftSourceCategory = sourceCategoryEvidence(draft);
   return {
-    descriptionCategoryId: firstPositive(value?.descriptionCategoryId, value?.description_category_id),
-    weightG: firstPositive(value?.weightG, logistics.weightG, value?.weight),
-    lengthMm: firstPositive(value?.lengthMm, logistics.lengthMm, value?.depth),
-    widthMm: firstPositive(value?.widthMm, logistics.widthMm, value?.width),
-    heightMm: firstPositive(value?.heightMm, logistics.heightMm, value?.height),
+    descriptionCategoryId: firstPositive(
+      sourceCategory.descriptionCategoryId,
+      draftSourceCategory.descriptionCategoryId,
+    ),
+    weightG: firstPositive(
+      value?.packageWeight, value?.weightG, logistics.weightG, value?.weight,
+      draft.packageWeight, draft.weightG, draftLogistics.weightG, draft.weight,
+    ),
+    lengthMm: firstPositive(
+      value?.packageLength, value?.lengthMm, logistics.lengthMm, value?.depth,
+      draft.packageLength, draft.lengthMm, draftLogistics.lengthMm, draft.depth,
+    ),
+    widthMm: firstPositive(
+      value?.packageWidth, value?.widthMm, logistics.widthMm, value?.width,
+      draft.packageWidth, draft.widthMm, draftLogistics.widthMm, draft.width,
+    ),
+    heightMm: firstPositive(
+      value?.packageHeight, value?.heightMm, logistics.heightMm, value?.height,
+      draft.packageHeight, draft.heightMm, draftLogistics.heightMm, draft.height,
+    ),
   };
+}
+
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function blankEvidence(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return !value.trim();
+  if (Array.isArray(value)) return value.length === 0;
+  if (plainObject(value)) return Object.keys(value).length === 0;
+  return false;
+}
+
+function evidenceMissing(key, value) {
+  if (["descriptionCategoryId", "typeIdCandidate", "typeId"].includes(key)) {
+    return !positiveNumber(value);
+  }
+  return blankEvidence(value);
+}
+
+function arrayEvidenceKey(value) {
+  if (plainObject(value)) {
+    const identifier = cleanText(
+      value.key ?? value.attribute_id ?? value.attributeId ?? value.id,
+    );
+    if (identifier) return `object:${identifier}`;
+    return `json:${JSON.stringify(value)}`;
+  }
+  return `${typeof value}:${cleanText(value).toLowerCase()}`;
+}
+
+function mergeEvidenceArrays(current, incoming) {
+  const merged = Array.isArray(current) ? structuredClone(current) : [];
+  const indexes = new Map(merged.map((value, index) => [arrayEvidenceKey(value), index]));
+  for (const value of Array.isArray(incoming) ? incoming : []) {
+    if (blankEvidence(value)) continue;
+    const key = arrayEvidenceKey(value);
+    const index = indexes.get(key);
+    if (index === undefined) {
+      indexes.set(key, merged.length);
+      merged.push(structuredClone(value));
+    } else if (plainObject(merged[index]) && plainObject(value)) {
+      merged[index] = mergeEvidenceOnlyIntoBlanks(merged[index], value);
+    }
+  }
+  return merged;
+}
+
+function mergeEvidenceOnlyIntoBlanks(current, incoming) {
+  if (!plainObject(incoming)) return plainObject(current) ? { ...current } : {};
+  const merged = plainObject(current) ? structuredClone(current) : {};
+  for (const [key, value] of Object.entries(incoming)) {
+    if (Array.isArray(merged[key]) && Array.isArray(value)) {
+      merged[key] = mergeEvidenceArrays(merged[key], value);
+    } else if (evidenceMissing(key, merged[key])) {
+      if (!evidenceMissing(key, value)) merged[key] = structuredClone(value);
+    } else if (plainObject(merged[key]) && plainObject(value)) {
+      merged[key] = mergeEvidenceOnlyIntoBlanks(merged[key], value);
+    }
+  }
+  return merged;
+}
+
+function sourceCategoryEvidence(value = {}) {
+  const resolutionSource = plainObject(value?.categoryResolution?.source)
+    ? value.categoryResolution.source
+    : {};
+  const directSource = plainObject(value?.sourceCategory) ? value.sourceCategory : {};
+  const variant = plainObject(value?.variantData) ? value.variantData : {};
+  const variantCategories = Array.isArray(variant.categories) ? variant.categories : [];
+  const variantEvidence = {
+    descriptionCategoryId: firstPositive(
+      variant.description_category_id,
+      variant.descriptionCategoryId,
+    ),
+    path: variantCategories
+      .map((category) => cleanText(category?.title || category?.name))
+      .filter(Boolean),
+    attributes: Array.isArray(variant.attributes) ? variant.attributes : [],
+  };
+  return mergeEvidenceOnlyIntoBlanks(
+    mergeEvidenceOnlyIntoBlanks(resolutionSource, directSource),
+    variantEvidence,
+  );
+}
+
+export function normalizeOzonCollectedSourceEvidence(payload = {}) {
+  if (!plainObject(payload)) return {};
+  const normalized = structuredClone(payload);
+  const ingressEvidence = mergeEvidenceOnlyIntoBlanks(
+    sourceCategoryEvidence(payload),
+    {
+      descriptionCategoryId: firstPositive(
+        payload.description_category_id,
+        payload.descriptionCategoryId,
+      ),
+    },
+  );
+  if (Object.keys(ingressEvidence).length) normalized.sourceCategory = ingressEvidence;
+  return normalized;
+}
+
+export function preserveOzonSourceCategoryEvidence(currentDraft = {}, nextDraft = {}) {
+  const current = plainObject(currentDraft) ? currentDraft : {};
+  const next = plainObject(nextDraft) ? structuredClone(nextDraft) : {};
+  const currentResolution = plainObject(current.categoryResolution)
+    ? current.categoryResolution
+    : {};
+  const nextResolution = plainObject(next.categoryResolution)
+    ? next.categoryResolution
+    : null;
+  const currentSource = mergeEvidenceOnlyIntoBlanks(
+    current.sourceCategory,
+    currentResolution.source,
+  );
+  const requestedSource = mergeEvidenceOnlyIntoBlanks(
+    next.sourceCategory,
+    nextResolution?.source,
+  );
+  const protectedSource = mergeEvidenceOnlyIntoBlanks(currentSource, requestedSource);
+  if (Object.keys(protectedSource).length) next.sourceCategory = protectedSource;
+  if (nextResolution) {
+    next.categoryResolution = {
+      ...nextResolution,
+      ...(Object.keys(protectedSource).length
+        ? { source: structuredClone(protectedSource) }
+        : {}),
+    };
+  }
+  return next;
 }
 
 function sanitizeSummaryOverrides(overrides) {
@@ -73,6 +223,12 @@ export function buildOzonEnrichmentSummary(payload, overrides = {}) {
   };
 }
 
+export function reconcileOzonEnrichmentSummary(payload, previous = null) {
+  const current = buildOzonEnrichmentSummary(payload);
+  if (current.status !== "PENDING_ENRICHMENT") return current;
+  return buildOzonEnrichmentSummary(payload, previous);
+}
+
 export function mergeOzonEnrichmentResult(current = {}, result = {}) {
   const draft = current && typeof current === "object" && !Array.isArray(current) ? current : {};
   const currentFields = enrichmentFieldValues(draft);
@@ -87,11 +243,17 @@ export function mergeOzonEnrichmentResult(current = {}, result = {}) {
     }
   }
 
-  const merged = { ...draft, logistics };
-  if (!positiveNumber(currentFields.descriptionCategoryId)) {
-    const enrichedCategoryId = positiveNumber(resultFields.descriptionCategoryId);
-    if (enrichedCategoryId) merged.descriptionCategoryId = enrichedCategoryId;
-  }
+  const resultSourceCategory = plainObject(result.sourceCategory)
+    ? result.sourceCategory
+    : {
+        descriptionCategoryId: resultFields.descriptionCategoryId,
+        ...(positiveNumber(result?.typeId) ? { typeIdCandidate: positiveNumber(result.typeId) } : {}),
+      };
+  const merged = {
+    ...draft,
+    logistics,
+    sourceCategory: mergeEvidenceOnlyIntoBlanks(draft.sourceCategory, resultSourceCategory),
+  };
   return merged;
 }
 

@@ -38,3 +38,20 @@ test("migration 021 adds durable linked retry scheduling and capture evidence", 
   assert.match(sql, /ON collector_ozon_enrichment_jobs\(account_id, next_attempt_at, created_at, id\)/);
   assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE/);
 });
+
+test("migration 022 fences claims and deterministically supersedes legacy duplicate active linked jobs", async () => {
+  const sql = await readFile(
+    new URL("../db/migrations/022_ozon_enrichment_claim_fence.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS claim_fence TEXT/);
+  assert.match(sql, /WHERE status = 'PROCESSING'/);
+  assert.match(sql, /ROW_NUMBER\(\) OVER \([\s\S]*PARTITION BY account_id, collect_item_id, sku[\s\S]*ORDER BY created_at ASC, id ASC/);
+  assert.match(sql, /UPDATE collector_ozon_enrichment_jobs AS duplicate/);
+  assert.match(sql, /OZON_ENRICHMENT_DUPLICATE_SUPERSEDED/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS collector_ozon_enrichment_jobs_active_linked_key/);
+  assert.match(sql, /ON collector_ozon_enrichment_jobs \(account_id, collect_item_id, sku\)/);
+  assert.match(sql, /collect_item_id IS NOT NULL[\s\S]*status IN \('PENDING', 'PROCESSING'\)/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE/);
+});

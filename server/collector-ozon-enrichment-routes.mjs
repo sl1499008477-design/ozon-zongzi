@@ -14,6 +14,7 @@ const FAIL_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/fail\/?$/;
 const RETRY_PATTERN = /^\/ozon\/collect-box\/([^/]+)\/enrichment\/retry\/?$/;
 const JOB_NAMESPACE = "/collector/ozon/enrichment-jobs/";
 const CAPTURE_CLOCK_SKEW_MS = 5_000;
+const CAPTURE_CONTEXT_TTL_MS = 10 * 60 * 1000;
 const VARIANT_RESULT_KEYS = Object.freeze([
   "description_category_id",
   "type_id",
@@ -30,6 +31,7 @@ const CAPTURE_CONTEXT_KEYS = Object.freeze(["sellerCompanyId", "revision", "obse
 const ATTRIBUTE_KEYS = Object.freeze(["key", "value", "collection", "dictionary_value_id"]);
 
 const SENSITIVE_KEY_FRAGMENT = /(?:authorization|cookie|credential|password|passphrase|secret|token|apikey|privatekey)/;
+const EXACT_SENSITIVE_KEYS = new Set(["auth", "jwt", "session", "cookiejar"]);
 const SECRET_VALUE = /(?:\bCollector\s+(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,}|\bBearer\s+[A-Za-z0-9._~+\/-]{20,}={0,2}|\b(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,})/i;
 const PUBLIC_ERROR_CODES = new Set([
   "METHOD_NOT_ALLOWED",
@@ -74,7 +76,8 @@ function canonicalKey(value) {
 
 function forbiddenNestedKey(value) {
   const key = canonicalKey(value);
-  return SENSITIVE_KEY_FRAGMENT.test(key)
+  return EXACT_SENSITIVE_KEYS.has(key)
+    || SENSITIVE_KEY_FRAGMENT.test(key)
     || key.includes("header")
     || key === "action"
     || key.endsWith("action")
@@ -200,8 +203,71 @@ function parseResultAttribute(value) {
   return attribute;
 }
 
+function parseCaptureContext(value, at) {
+  assertRequiredExactKeys(
+    value,
+    CAPTURE_CONTEXT_KEYS,
+    "Ozon Seller 采集证据格式无效",
+  );
+  const forbiddenPath = findForbiddenNestedPath(value);
+  if (forbiddenPath) {
+    throw routeError(
+      `补全请求包含不允许的控制或敏感字段：${forbiddenPath}`,
+      400,
+      "OZON_ENRICH_REQUEST_INVALID",
+    );
+  }
+  const sellerCompanyId = String(value.sellerCompanyId ?? "").trim();
+  if (!/^\d{4,15}$/.test(sellerCompanyId)) {
+    throw routeError("Ozon Seller 公司标识无效");
+  }
+  const revision = value.revision;
+  if (!Number.isSafeInteger(revision) || revision <= 0) {
+    throw routeError("Ozon Seller 采集证据版本无效");
+  }
+  if (
+    typeof value.observedAt !== "string"
+    || !value.observedAt.trim()
+  ) {
+    throw routeError("Ozon Seller 采集证据时间无效");
+  }
+  const observedAt = new Date(value.observedAt);
+  if (
+    Number.isNaN(observedAt.getTime())
+    || observedAt.getTime() < at.getTime() - CAPTURE_CONTEXT_TTL_MS
+    || observedAt.getTime() > at.getTime() + CAPTURE_CLOCK_SKEW_MS
+  ) {
+    throw routeError("Ozon Seller 采集证据时间无效");
+  }
+  return {
+    sellerCompanyId,
+    revision,
+    observedAt: observedAt.toISOString(),
+  };
+}
+
+function parseClaimFence(value) {
+  const claimFence = String(value ?? "").trim();
+  if (!/^[A-Za-z0-9._:-]{1,200}$/.test(claimFence)) {
+    throw routeError("Ozon 商品补全任务围栏无效");
+  }
+  return claimFence;
+}
+
+function parseClaimEnvelope(body, at) {
+  assertRequiredExactKeys(body, ["captureContext"], "Ozon Seller 领取快照格式无效");
+  const scopeChecked = structuredClone(body);
+  delete scopeChecked.captureContext?.sellerCompanyId;
+  assertNoClientControl(scopeChecked);
+  return { captureContext: parseCaptureContext(body.captureContext, at) };
+}
+
 function parseResultEnvelope(body, at) {
-  assertRequiredExactKeys(body, ["variantData", "captureContext"], "Ozon 商品补全结果格式无效");
+  assertRequiredExactKeys(
+    body,
+    ["variantData", "captureContext", "claimFence"],
+    "Ozon 商品补全结果格式无效",
+  );
   assertPlainObject(body.variantData, "Ozon 商品补全结果 variantData 格式无效");
   if (
     Object.keys(body.variantData).some((key) => !VARIANT_RESULT_KEYS.includes(key))
@@ -209,11 +275,6 @@ function parseResultEnvelope(body, at) {
   ) {
     throw routeError("Ozon 商品补全结果 variantData 格式无效");
   }
-  assertRequiredExactKeys(
-    body.captureContext,
-    CAPTURE_CONTEXT_KEYS,
-    "Ozon Seller 采集证据格式无效",
-  );
 
   const scopeChecked = structuredClone(body);
   delete scopeChecked.captureContext.sellerCompanyId;
@@ -248,34 +309,27 @@ function parseResultEnvelope(body, at) {
       ? body.variantData.attributes.map(parseResultAttribute)
       : (() => { throw routeError("Ozon 商品属性格式无效"); })(),
   };
-  const sellerCompanyId = String(body.captureContext.sellerCompanyId ?? "").trim();
-  if (!/^\d{4,15}$/.test(sellerCompanyId)) {
-    throw routeError("Ozon Seller 公司标识无效");
-  }
-  const revision = body.captureContext.revision;
-  if (!Number.isSafeInteger(revision) || revision <= 0) {
-    throw routeError("Ozon Seller 采集证据版本无效");
-  }
-  if (
-    typeof body.captureContext.observedAt !== "string"
-    || !body.captureContext.observedAt.trim()
-  ) {
-    throw routeError("Ozon Seller 采集证据时间无效");
-  }
-  const observedAt = new Date(body.captureContext.observedAt);
-  if (
-    Number.isNaN(observedAt.getTime())
-    || observedAt.getTime() > at.getTime() + CAPTURE_CLOCK_SKEW_MS
-  ) {
-    throw routeError("Ozon Seller 采集证据时间无效");
-  }
   return {
     variantData,
-    captureContext: {
-      sellerCompanyId,
-      revision,
-      observedAt: observedAt.toISOString(),
-    },
+    captureContext: parseCaptureContext(body.captureContext, at),
+    claimFence: parseClaimFence(body.claimFence),
+  };
+}
+
+function parseFailEnvelope(body, at) {
+  assertRequiredExactKeys(
+    body,
+    ["code", "message", "captureContext", "claimFence"],
+    "Ozon 商品补全失败格式无效",
+  );
+  const scopeChecked = structuredClone(body);
+  delete scopeChecked.captureContext.sellerCompanyId;
+  assertNoClientControl(scopeChecked);
+  return {
+    code: requiredString(body.code, "Ozon 商品补全失败缺少错误码"),
+    message: requiredString(body.message, "Ozon 商品补全失败缺少错误说明"),
+    captureContext: parseCaptureContext(body.captureContext, at),
+    claimFence: parseClaimFence(body.claimFence),
   };
 }
 
@@ -358,7 +412,7 @@ export function createCollectorOzonEnrichmentHttpHandler({
     const retryMatch = pathname.match(RETRY_PATTERN);
     const single = req.method === "POST" && pathname === SINGLE_PATH;
     const batch = req.method === "POST" && pathname === BATCH_PATH;
-    const next = req.method === "GET" && pathname === NEXT_PATH;
+    const next = req.method === "POST" && pathname === NEXT_PATH;
     const result = req.method === "POST" && resultMatch;
     const fail = req.method === "POST" && failMatch;
     const retry = req.method === "POST" && retryMatch;
@@ -395,9 +449,8 @@ export function createCollectorOzonEnrichmentHttpHandler({
       }
       if (next) {
         const body = await readJson(req);
-        assertNoClientControl(body);
-        assertExactKeys(body, []);
-        sendJson(res, 200, { ok: true, job: await service.claimNext({ session }) });
+        const input = parseClaimEnvelope(body, new Date(now()));
+        sendJson(res, 200, { ok: true, job: await service.claimNext({ session, ...input }) });
         return true;
       }
 
@@ -426,13 +479,11 @@ export function createCollectorOzonEnrichmentHttpHandler({
         return true;
       }
 
-      assertNoClientControl(body);
-      assertExactKeys(body, ["code", "message"]);
+      const parsed = parseFailEnvelope(body, new Date(now()));
       await service.failClaim({
         session,
         jobId: jobIdFromMatch(failMatch),
-        code: requiredString(body.code, "Ozon 商品补全失败缺少错误码"),
-        message: requiredString(body.message, "Ozon 商品补全失败缺少错误说明"),
+        ...parsed,
       });
       sendJson(res, 200, { ok: true });
       return true;

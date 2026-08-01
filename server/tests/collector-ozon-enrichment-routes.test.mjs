@@ -28,6 +28,24 @@ function resultBody(overrides = {}) {
       revision: 4,
       observedAt: "2026-08-01T08:00:00.000Z",
     },
+    claimFence: "claim-fence-route",
+    ...overrides,
+  };
+}
+
+function claimBody(overrides = {}) {
+  return {
+    captureContext: resultBody().captureContext,
+    ...overrides,
+  };
+}
+
+function failBody(overrides = {}) {
+  return {
+    code: "OZON_ENRICH_NOT_FOUND",
+    message: "not found",
+    captureContext: resultBody().captureContext,
+    claimFence: "claim-fence-route",
     ...overrides,
   };
 }
@@ -110,7 +128,13 @@ function harness(overrides = {}) {
     },
     async claimNext(input) {
       calls.claimNext.push(input);
-      return { id: "job-route", requestId: "request-route", sku: "4862904234", refreshBundle: true };
+      return {
+        id: "job-route",
+        requestId: "request-route",
+        sku: "4862904234",
+        refreshBundle: true,
+        claimFence: "claim-fence-route",
+      };
     },
     async completeClaim(input) { calls.completeClaim.push(input); return result("4862904234"); },
     async failClaim(input) { calls.failClaim.push(input); return { id: input.jobId, status: "FAILED" }; },
@@ -152,9 +176,9 @@ async function request(h, method, pathname, body) {
 const ROUTES = [
   ["POST", "/collector/ozon/enrich", { requestId: "request-one", sku: "4862904234" }],
   ["POST", "/collector/ozon/enrich/batch", { requestId: "request-batch", skus: ["4862904234"] }],
-  ["GET", "/collector/ozon/enrichment-jobs/next", undefined],
+  ["POST", "/collector/ozon/enrichment-jobs/next", claimBody()],
   ["POST", "/collector/ozon/enrichment-jobs/job-route/result", resultBody()],
-  ["POST", "/collector/ozon/enrichment-jobs/job-route/fail", { code: "OZON_ENRICH_NOT_FOUND", message: "not found" }],
+  ["POST", "/collector/ozon/enrichment-jobs/job-route/fail", failBody()],
 ];
 
 test("all five fixed routes authenticate collector.ozon.read before invoking the service", async () => {
@@ -253,13 +277,23 @@ test("batch route preserves the stable unique-SKU limit error contract", async (
 
 test("result route accepts only the fixed Seller result envelope and exposes the minimal claim", async () => {
   const h = harness();
-  const next = await request(h, "GET", "/collector/ozon/enrichment-jobs/next");
+  const next = await request(h, "POST", "/collector/ozon/enrichment-jobs/next", claimBody());
   assert.equal(next.status, 200);
   assert.deepEqual(next.body, {
     ok: true,
-    job: { id: "job-route", requestId: "request-route", sku: "4862904234", refreshBundle: true },
+    job: {
+      id: "job-route",
+      requestId: "request-route",
+      sku: "4862904234",
+      refreshBundle: true,
+      claimFence: "claim-fence-route",
+    },
   });
-  assert.deepEqual(Object.keys(next.body.job).sort(), ["id", "refreshBundle", "requestId", "sku"]);
+  assert.deepEqual(Object.keys(next.body.job).sort(), ["claimFence", "id", "refreshBundle", "requestId", "sku"]);
+  assert.deepEqual(h.calls.claimNext[0], {
+    session: SESSION,
+    captureContext: resultBody().captureContext,
+  });
 
   const completed = await request(
     h,
@@ -273,6 +307,7 @@ test("result route accepts only the fixed Seller result envelope and exposes the
     jobId: "job-route",
     variantData: resultBody().variantData,
     captureContext: resultBody().captureContext,
+    claimFence: "claim-fence-route",
   });
 
   for (const injected of [
@@ -328,7 +363,11 @@ test("result route accepts real Seller source evidence without a guessed type_id
     h,
     "POST",
     "/collector/ozon/enrichment-jobs/job-route/result",
-    { variantData, captureContext: resultBody().captureContext },
+    {
+      variantData,
+      captureContext: resultBody().captureContext,
+      claimFence: "claim-fence-route",
+    },
   );
 
   assert.equal(response.status, 200);
@@ -337,6 +376,7 @@ test("result route accepts real Seller source evidence without a guessed type_id
     jobId: "job-route",
     variantData,
     captureContext: resultBody().captureContext,
+    claimFence: "claim-fence-route",
   });
   assert.equal(normalized.status, "COMPLETE");
   assert.equal(Object.hasOwn(normalized, "typeId"), false);
@@ -352,6 +392,11 @@ test("result route accepts real Seller source evidence without a guessed type_id
     typeName: "Заварочный чайник",
     typeIdCandidate: 123456,
     path: [],
+    attributes: [{
+      key: "8229",
+      value: "Заварочный чайник",
+      dictionary_value_id: 123456,
+    }],
   });
 });
 
@@ -381,8 +426,28 @@ test("nested secret, request-control, and retired-scope keys are rejected before
         attributes: [{ key: "8229", value: "type", [forbiddenKey]: "attacker-controlled" }],
       },
       captureContext: resultBody().captureContext,
+      claimFence: "claim-fence-route",
     });
     assert.equal(response.status, 400, forbiddenKey);
+    assert.equal(h.calls.completeClaim.length, 0, forbiddenKey);
+  }
+
+  for (const forbiddenKey of ["auth", "jwt", "session", "cookieJar"]) {
+    const h = harness();
+    const response = await request(h, "POST", "/collector/ozon/enrichment-jobs/job-route/result", {
+      variantData: {
+        ...resultBody().variantData,
+        attributes: [{
+          key: "8229",
+          value: { safeLookingWrapper: { [forbiddenKey]: "attacker-controlled" } },
+        }],
+      },
+      captureContext: resultBody().captureContext,
+      claimFence: "claim-fence-route",
+    });
+    assert.equal(response.status, 400, forbiddenKey);
+    assert.equal(response.body.code, "OZON_ENRICH_REQUEST_INVALID", forbiddenKey);
+    assert.equal(response.body.message.includes(forbiddenKey), true, forbiddenKey);
     assert.equal(h.calls.completeClaim.length, 0, forbiddenKey);
   }
 
@@ -398,6 +463,7 @@ test("nested secret, request-control, and retired-scope keys are rejected before
         attributes: [{ key: "8229", value: secretValue }],
       },
       captureContext: resultBody().captureContext,
+      claimFence: "claim-fence-route",
     });
     assert.equal(response.status, 400, secretValue);
     assert.equal(h.calls.completeClaim.length, 0, secretValue);
@@ -413,6 +479,7 @@ test("credential detection permits ordinary Collector and Bearer attribute prose
         attributes: [{ key: "8229", value: note }],
       },
       captureContext: resultBody().captureContext,
+      claimFence: "claim-fence-route",
     });
     assert.equal(response.status, 200, note);
     assert.equal(h.calls.completeClaim.length, 1, note);
@@ -501,7 +568,7 @@ test("Seller context failures remain stable public error codes", async () => {
       h,
       "POST",
       "/collector/ozon/enrichment-jobs/job-route/fail",
-      { code, message: "Seller context unavailable" },
+      failBody({ code, message: "Seller context unavailable" }),
     );
     assert.equal(response.status, 409, code);
     assert.equal(response.body.code, code, code);
@@ -557,16 +624,20 @@ test("manual retry uses web account authentication and keeps cross-account items
 
 test("fail route is strict and does not accept nested or arbitrary executor commands", async () => {
   const accepted = harness();
-  const response = await request(accepted, "POST", "/collector/ozon/enrichment-jobs/job-route/fail", {
-    code: "OZON_ENRICH_NOT_FOUND",
-    message: "not found",
-  });
+  const response = await request(
+    accepted,
+    "POST",
+    "/collector/ozon/enrichment-jobs/job-route/fail",
+    failBody(),
+  );
   assert.equal(response.status, 200);
   assert.deepEqual(accepted.calls.failClaim[0], {
     session: SESSION,
     jobId: "job-route",
     code: "OZON_ENRICH_NOT_FOUND",
     message: "not found",
+    captureContext: resultBody().captureContext,
+    claimFence: "claim-fence-route",
   });
 
   for (const injected of [
@@ -580,11 +651,16 @@ test("fail route is strict and does not accept nested or arbitrary executor comm
     { cookie: "secret=1" },
   ]) {
     const h = harness();
-    const rejected = await request(h, "POST", "/collector/ozon/enrichment-jobs/job-route/fail", {
-      code: "OZON_ENRICH_UPSTREAM_FAILED",
-      message: "failed",
-      ...injected,
-    });
+    const rejected = await request(
+      h,
+      "POST",
+      "/collector/ozon/enrichment-jobs/job-route/fail",
+      failBody({
+        code: "OZON_ENRICH_UPSTREAM_FAILED",
+        message: "failed",
+        ...injected,
+      }),
+    );
     assert.equal(rejected.status, 400, Object.keys(injected)[0]);
     assert.equal(h.calls.failClaim.length, 0);
   }
@@ -606,15 +682,38 @@ test("all fixed routes reject query-controlled actions and URLs", async () => {
   }
 });
 
-test("next route reads its body and accepts only an empty plain object", async () => {
-  for (const body of [undefined, {}]) {
+test("next route requires one exact Seller context snapshot before claiming", async () => {
+  {
     const h = harness();
-    const response = await request(h, "GET", "/collector/ozon/enrichment-jobs/next", body);
+    const response = await request(h, "POST", "/collector/ozon/enrichment-jobs/next", claimBody());
     assert.equal(response.status, 200);
     assert.equal(h.calls.claimNext.length, 1);
   }
-
+  {
+    const h = harness();
+    const response = await request(h, "POST", "/collector/ozon/enrichment-jobs/next", claimBody({
+      captureContext: {
+        ...resultBody().captureContext,
+        observedAt: new Date(NOW.getTime() - 10 * 60 * 1000 - 1).toISOString(),
+      },
+    }));
+    assert.equal(response.status, 400);
+    assert.equal(h.calls.claimNext.length, 0);
+  }
+  {
+    const h = harness();
+    const response = await request(h, "POST", "/collector/ozon/enrichment-jobs/next", claimBody({
+      captureContext: {
+        ...resultBody().captureContext,
+        observedAt: new Date(NOW.getTime() - 10 * 60 * 1000).toISOString(),
+      },
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(h.calls.claimNext.length, 1);
+  }
   for (const body of [
+    undefined,
+    {},
     { action: "sync" },
     { nested: { url: "https://attacker.invalid" } },
     { Authorization: "Collector cst_secret-secret-secret-secret" },
@@ -625,7 +724,7 @@ test("next route reads its body and accepts only an empty plain object", async (
     [],
   ]) {
     const h = harness();
-    const response = await request(h, "GET", "/collector/ozon/enrichment-jobs/next", body);
+    const response = await request(h, "POST", "/collector/ozon/enrichment-jobs/next", body);
     assert.equal(response.status, 400, JSON.stringify(body));
     assert.equal(h.calls.claimNext.length, 0, JSON.stringify(body));
   }

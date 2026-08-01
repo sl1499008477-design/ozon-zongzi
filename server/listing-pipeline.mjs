@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import { assertOzonListingReady } from "./collect-enrichment-policy.mjs";
+import {
+  assertOzonListingReady,
+  buildOzonEnrichmentSummary,
+  mergeOzonEnrichmentResult,
+  preserveOzonSourceCategoryEvidence,
+} from "./collect-enrichment-policy.mjs";
 import { attachTrustedCollectAccountScope } from "./collect-hydration-scope.mjs";
 import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { decryptSecret } from "./crypto-secrets.mjs";
@@ -86,10 +91,41 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
   };
 }
 
-function assertCollectItemListingPayloadsReady(normalizedItems) {
+function explicitSourceCategoryForListing(collectItem = {}, index = 0) {
+  const draft = collectItem?.listingDraft && typeof collectItem.listingDraft === "object"
+    && !Array.isArray(collectItem.listingDraft)
+    ? collectItem.listingDraft
+    : {};
+  const variants = Array.isArray(draft.variants) ? draft.variants : [];
+  const variant = variants[index] && typeof variants[index] === "object"
+    && !Array.isArray(variants[index])
+    ? variants[index]
+    : {};
+  for (const candidate of [
+    variant.sourceCategory,
+    variant.categoryResolution?.source,
+    draft.sourceCategory,
+    draft.categoryResolution?.source,
+    collectItem?.sourceCategory,
+    collectItem?.categoryResolution?.source,
+  ]) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      const descriptionCategoryId = Number(
+        candidate.descriptionCategoryId ?? candidate.description_category_id,
+      );
+      if (Number.isFinite(descriptionCategoryId) && descriptionCategoryId > 0) return candidate;
+    }
+  }
+  return {};
+}
+
+function assertCollectItemListingPayloadsReady(collectItem, normalizedItems) {
   const listingPayloads = Array.isArray(normalizedItems) ? normalizedItems : [];
   if (!listingPayloads.length) assertOzonListingReady({});
-  listingPayloads.forEach(assertOzonListingReady);
+  listingPayloads.forEach((payload, index) => assertOzonListingReady({
+    ...payload,
+    sourceCategory: explicitSourceCategoryForListing(collectItem, index),
+  }));
 }
 
 function withoutCollectionScope(value = {}) {
@@ -164,8 +200,10 @@ async function transaction(callback) {
   }
 }
 
-function collectRawPayload(item = {}) {
-  const raw = item.raw && typeof item.raw === "object" ? item.raw : {};
+function collectRawPayload(item = {}, sourceOverride) {
+  const raw = sourceOverride && typeof sourceOverride === "object"
+    ? sourceOverride
+    : item.raw && typeof item.raw === "object" ? item.raw : {};
   const normalized = { ...item };
   for (const key of [
     "listingDraft", "listingResult", "listingTaskId", "listingJobId", "listingSubmittedAt",
@@ -188,9 +226,18 @@ function collectRawPayload(item = {}) {
   };
 }
 
-function collectDraft(item = {}) {
-  if (item.listingDraft && typeof item.listingDraft === "object") return item.listingDraft;
-  return {
+export function buildCollectItemDraftV4(item = {}) {
+  if (item.listingDraft && typeof item.listingDraft === "object") {
+    return preserveOzonSourceCategoryEvidence(
+      item,
+      mergeOzonEnrichmentResult(item.listingDraft, item),
+    );
+  }
+  const logistics = item.logistics && typeof item.logistics === "object"
+    && !Array.isArray(item.logistics)
+    ? item.logistics
+    : {};
+  return preserveOzonSourceCategoryEvidence(item, {
     sku: item.sku || item.sourceExternalId || item.id || "",
     title: item.name || item.title || "",
     price: item.price?.price || item.price || item.priceText || "",
@@ -202,15 +249,16 @@ function collectDraft(item = {}) {
     description: item.description || item.desc || item.subtitle || "",
     tags: Array.isArray(item.tags) ? item.tags : [],
     richContent: item.richContent || item.rich_content || "",
-    packageWeight: item.packageWeight || item.weight || "",
-    packageLength: item.packageLength || item.depth || item.length || "",
-    packageWidth: item.packageWidth || item.width || "",
-    packageHeight: item.packageHeight || item.height || "",
+    packageWeight: item.packageWeight || item.weight || logistics.weightG || "",
+    packageLength: item.packageLength || item.depth || item.length || logistics.lengthMm || "",
+    packageWidth: item.packageWidth || item.width || logistics.widthMm || "",
+    packageHeight: item.packageHeight || item.height || logistics.heightMm || "",
+    ...(Object.keys(logistics).length ? { logistics: structuredClone(logistics) } : {}),
     descriptionCategoryId: item.description_category_id || item.descriptionCategoryId || "",
     typeId: item.type_id || item.typeId || "",
     sourceLink: item.productUrl || item.url || "",
     variants: Array.isArray(item.variants) ? item.variants : (item.variantData?.variants || []),
-  };
+  });
 }
 
 function draftHashValue(draft = {}) {
@@ -236,10 +284,10 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
     }
     const sourceSku = clean(context.sourceSku || item.sourceSku || item.sku || item.sourceExternalId, 240);
     const sourceUrl = clean(context.sourceUrl || item.sourceUrl || item.productUrl || item.url, 2000);
-    const rawPayload = collectRawPayload(item);
+    const rawPayload = collectRawPayload(item, context.rawSource);
     const rawHash = clean(context.contentHash, 128) || hash(rawPayload);
     const rawId = stableId("raw", collectId, rawHash);
-    const draft = collectDraft(item);
+    const draft = buildCollectItemDraftV4(item);
     const draftHash = hash(draftHashValue(draft));
     const draftId = stableId("draft", collectId);
     const accountExists = await client.query("SELECT 1 FROM accounts WHERE id=$1", [accountId]);
@@ -681,6 +729,93 @@ export async function completeCollectItemEnrichmentWithClientV4(client, {
   return saveCollectItemEnrichmentWithClient(client, input, completeJobAndCache);
 }
 
+function collectItemEvidenceSummary(item = {}) {
+  const draft = item.listingDraft && typeof item.listingDraft === "object"
+    && !Array.isArray(item.listingDraft)
+    ? item.listingDraft
+    : {};
+  const evidence = {
+    ...item,
+    ...draft,
+    sourceCategory: draft.sourceCategory || item.sourceCategory,
+    categoryResolution: draft.categoryResolution || item.categoryResolution,
+    logistics: {
+      ...(item.logistics && typeof item.logistics === "object" ? item.logistics : {}),
+      ...(draft.logistics && typeof draft.logistics === "object" ? draft.logistics : {}),
+    },
+  };
+  return buildOzonEnrichmentSummary(evidence);
+}
+
+export async function deferCollectItemEnrichmentWithClientV4(client, {
+  collectItemId,
+  accountId,
+  status,
+  error,
+  deferJob,
+  completeLinkedJobs,
+} = {}) {
+  if (
+    typeof client?.query !== "function"
+    || typeof deferJob !== "function"
+    || typeof completeLinkedJobs !== "function"
+  ) {
+    throw new TypeError("Ozon enrichment defer transaction dependencies required");
+  }
+  const result = await client.query(
+    `SELECT c.id,c.account_id,c.status,c.summary,d.data AS draft_data,d.version AS draft_version
+       FROM collect_items c
+       LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+      WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+      FOR UPDATE OF c`,
+    [clean(collectItemId, 240), clean(accountId, 240)],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const deferredJob = await deferJob(client);
+  const currentItem = collectItemEnrichmentRow(row);
+  const persistedSummary = row.summary?.enrichment;
+  const complete = persistedSummary?.status === "COMPLETE"
+    || collectItemEvidenceSummary(currentItem).status === "COMPLETE";
+  if (complete) {
+    const terminalJob = await completeLinkedJobs(client, deferredJob);
+    return { item: currentItem, job: terminalJob || deferredJob };
+  }
+  const currentSummary = row.summary && typeof row.summary === "object" ? row.summary : {};
+  const evidenceSummary = collectItemEvidenceSummary(currentItem);
+  const enrichment = {
+    status: clean(status || "RETRYING", 80),
+    missingFields: evidenceSummary.missingFields,
+    attemptCount: Number(deferredJob?.attemptCount || 0),
+    nextAttemptAt: String(deferredJob?.nextAttemptAt || ""),
+    lastErrorCode: clean(error?.code, 120),
+  };
+  const updated = await client.query(
+    `UPDATE collect_items
+        SET status=$4,summary=$3::jsonb,updated_at=NOW()
+      WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL
+      RETURNING id,account_id,status,summary`,
+    [
+      row.id,
+      row.account_id,
+      json({ ...currentSummary, enrichment }),
+      enrichment.status,
+    ],
+  );
+  const item = collectItemEnrichmentRow({
+    ...updated.rows[0],
+    draft_data: row.draft_data,
+    draft_version: row.draft_version,
+  });
+  if (!item) throw new Error("Ozon enrichment collect item defer update lost");
+  return { item, job: deferredJob };
+}
+
+export async function deferCollectItemEnrichmentV4(input = {}) {
+  if (!listingPipelineEnabled()) return null;
+  return transaction((client) => deferCollectItemEnrichmentWithClientV4(client, input));
+}
+
 export async function failCollectItemEnrichmentWithClientV4(client, {
   collectItemId,
   accountId,
@@ -759,64 +894,102 @@ function retryJobFromRow(row = {}) {
   };
 }
 
-export async function retryCollectItemEnrichmentV4({ collectItemId, accountId, now } = {}) {
-  if (!listingPipelineEnabled()) return null;
+export async function retryCollectItemEnrichmentWithClientV4(client, {
+  collectItemId,
+  accountId,
+  now,
+} = {}) {
+  if (typeof client?.query !== "function") {
+    throw new TypeError("Ozon enrichment retry transaction client required");
+  }
   const retriedAt = now instanceof Date ? new Date(now) : new Date(now);
   if (Number.isNaN(retriedAt.getTime())) throw new TypeError("Ozon enrichment retry time required");
-  return transaction(async (client) => {
-    const itemResult = await client.query(
-      `SELECT c.id,c.account_id,c.status,c.summary,d.data AS draft_data,d.version AS draft_version
-         FROM collect_items c
-         LEFT JOIN product_drafts d ON d.id=c.current_draft_id
-        WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
-        FOR UPDATE OF c`,
-      [clean(collectItemId, 240), clean(accountId, 240)],
-    );
-    const row = itemResult.rows[0];
-    if (!row) return null;
-    const jobResult = await client.query(
+  const itemResult = await client.query(
+    `SELECT c.id,c.account_id,c.status,c.summary,d.data AS draft_data,d.version AS draft_version
+       FROM collect_items c
+       LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+      WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+      FOR UPDATE OF c`,
+    [clean(collectItemId, 240), clean(accountId, 240)],
+  );
+  const row = itemResult.rows[0];
+  if (!row) return null;
+  const item = collectItemEnrichmentRow(row);
+  const complete = item.enrichment?.status === "COMPLETE"
+    || collectItemEvidenceSummary(item).status === "COMPLETE";
+  if (complete) {
+    const terminalResult = await client.query(
       `SELECT * FROM collector_ozon_enrichment_jobs
-        WHERE account_id=$1 AND collect_item_id=$2 AND status<>'SUCCESS'
+        WHERE account_id=$1 AND collect_item_id=$2 AND status='SUCCESS'
         ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1
         FOR UPDATE`,
       [row.account_id, row.id],
     );
-    if (!jobResult.rows[0]) return null;
-    const updatedJob = await client.query(
-      `UPDATE collector_ozon_enrichment_jobs
-          SET status='PENDING',next_attempt_at=$3,last_error_json=NULL,error_json=NULL,
-              claimed_session_id=NULL,claim_expires_at=NULL,completed_at=NULL,updated_at=$3
-        WHERE account_id=$1 AND id=$2
-        RETURNING *`,
-      [row.account_id, jobResult.rows[0].id, retriedAt],
-    );
-    const summary = row.summary && typeof row.summary === "object" ? row.summary : {};
-    const currentEnrichment = summary.enrichment && typeof summary.enrichment === "object"
-      ? summary.enrichment
-      : {};
-    const enrichment = {
-      ...currentEnrichment,
-      status: "RETRYING",
-      attemptCount: Number(updatedJob.rows[0].attempt_count || 0),
-      nextAttemptAt: retriedAt.toISOString(),
-      lastErrorCode: "",
-    };
-    const updatedItem = await client.query(
-      `UPDATE collect_items
-          SET status='RETRYING',summary=$3::jsonb,updated_at=$4
-        WHERE account_id=$1 AND id=$2 AND deleted_at IS NULL
-        RETURNING id,account_id,status,summary`,
-      [row.account_id, row.id, json({ ...summary, enrichment }), retriedAt],
-    );
+    return terminalResult.rows[0]
+      ? { item, job: retryJobFromRow(terminalResult.rows[0]) }
+      : null;
+  }
+  const jobResult = await client.query(
+    `SELECT * FROM collector_ozon_enrichment_jobs
+      WHERE account_id=$1 AND collect_item_id=$2
+        AND status IN ('PENDING','PROCESSING','FAILED')
+        AND COALESCE(error_json->>'code',last_error_json->>'code','')
+            <> 'OZON_ENRICHMENT_DUPLICATE_SUPERSEDED'
+      ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1
+      FOR UPDATE`,
+    [row.account_id, row.id],
+  );
+  if (!jobResult.rows[0]) return null;
+  const currentJob = jobResult.rows[0];
+  if (
+    currentJob.status === "PROCESSING"
+    && currentJob.claim_expires_at
+    && new Date(currentJob.claim_expires_at).getTime() > retriedAt.getTime()
+  ) {
     return {
-      item: collectItemEnrichmentRow({
-        ...updatedItem.rows[0],
-        draft_data: row.draft_data,
-        draft_version: row.draft_version,
-      }),
-      job: retryJobFromRow(updatedJob.rows[0]),
+      item,
+      job: retryJobFromRow(currentJob),
     };
-  });
+  }
+  const updatedJob = await client.query(
+    `UPDATE collector_ozon_enrichment_jobs
+        SET status='PENDING',next_attempt_at=$3,last_error_json=NULL,error_json=NULL,
+            claimed_session_id=NULL,claim_expires_at=NULL,completed_at=NULL,updated_at=$3
+      WHERE account_id=$1 AND id=$2
+      RETURNING *`,
+    [row.account_id, jobResult.rows[0].id, retriedAt],
+  );
+  const summary = row.summary && typeof row.summary === "object" ? row.summary : {};
+  const currentEnrichment = summary.enrichment && typeof summary.enrichment === "object"
+    ? summary.enrichment
+    : {};
+  const enrichment = {
+    ...currentEnrichment,
+    status: "RETRYING",
+    attemptCount: Number(updatedJob.rows[0].attempt_count || 0),
+    nextAttemptAt: retriedAt.toISOString(),
+    lastErrorCode: "",
+  };
+  const updatedItem = await client.query(
+    `UPDATE collect_items
+        SET status='RETRYING',summary=$3::jsonb,updated_at=$4
+      WHERE account_id=$1 AND id=$2 AND deleted_at IS NULL
+      RETURNING id,account_id,status,summary`,
+    [row.account_id, row.id, json({ ...summary, enrichment }), retriedAt],
+  );
+  return {
+    item: collectItemEnrichmentRow({
+      ...updatedItem.rows[0],
+      draft_data: row.draft_data,
+      draft_version: row.draft_version,
+    }),
+    job: retryJobFromRow(updatedJob.rows[0]),
+  };
+}
+
+export async function retryCollectItemEnrichmentV4(input = {}) {
+  if (!listingPipelineEnabled()) return null;
+  return transaction((client) => retryCollectItemEnrichmentWithClientV4(client, input));
 }
 
 export async function updateCollectItemDraftV4({ collectItemId, accountId, patch = {}, expectedVersion = null }) {
@@ -842,9 +1015,10 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     const currentDraft = row.draft_data && typeof row.draft_data === "object" ? row.draft_data : {};
     const enrichment = resolveCollectItemEnrichmentSummary(row.summary, normalized.enrichment);
     const safePatch = withoutCollectionScope(patch);
-    const listingDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
+    const requestedDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
       ? safePatch.listingDraft
       : { ...currentDraft, ...safePatch };
+    const listingDraft = preserveOzonSourceCategoryEvidence(currentDraft, requestedDraft);
     const item = publicPersistedCollectionItem({
       ...withoutCollectionScope(normalized),
       ...safePatch,
@@ -1039,13 +1213,13 @@ export async function createSubmissionV3({
       const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
       if (replay) {
         try {
-          assertCollectItemListingPayloadsReady(normalizedItems);
+          assertCollectItemListingPayloadsReady(collectItem, normalizedItems);
         } catch (error) {
           throw markListingReplayPreflightError(error);
         }
         return replay;
       }
-      assertCollectItemListingPayloadsReady(normalizedItems);
+      assertCollectItemListingPayloadsReady(collectItem, normalizedItems);
       targetStore = await assertUsableOperatingStore({
         accountId: preparation.accountId,
         storeId: preparation.targetStoreId,
@@ -1059,7 +1233,9 @@ export async function createSubmissionV3({
         ...versions,
       });
     } else {
-      if (isCollectedListing && collectItem) assertCollectItemListingPayloadsReady(normalizedItems);
+      if (isCollectedListing && collectItem) {
+        assertCollectItemListingPayloadsReady(collectItem, normalizedItems);
+      }
       mirrored = await mirrorCollectItemV3(collectItem, {
         accountId,
         storeId,

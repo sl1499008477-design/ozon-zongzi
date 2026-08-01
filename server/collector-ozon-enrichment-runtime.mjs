@@ -9,10 +9,12 @@ import {
 } from "./collector-ozon-enrichment-repository.mjs";
 import { createCollectorOzonEnrichmentHttpHandler } from "./collector-ozon-enrichment-routes.mjs";
 import { createCollectorOzonEnrichmentService } from "./collector-ozon-enrichment-service.mjs";
+import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
 import { getPostgresPool } from "./db/connection.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import {
   completeCollectItemEnrichmentV4,
+  deferCollectItemEnrichmentV4,
   failCollectItemEnrichmentV4,
   readCollectItemEnrichmentV4,
   retryCollectItemEnrichmentV4,
@@ -102,6 +104,14 @@ export function createCollectorOzonEnrichmentRuntime({
     return repository.enqueueForCollect(input);
   }
 
+  async function completeLinkedJobsFromCollectEvidence({ state, ...input } = {}) {
+    if (!state || typeof state !== "object") {
+      throw new TypeError("Ozon enrichment JSON state required");
+    }
+    const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+    return repository.completeLinkedJobsFromCollectEvidence(input);
+  }
+
   const repository = Object.freeze({
     readCache: (input) => callRepository("readCache", input),
     tryAcquireCacheLease: (input) => callRepository("tryAcquireCacheLease", input),
@@ -124,6 +134,23 @@ export function createCollectorOzonEnrichmentRuntime({
       && String(item?.accountId || "") === String(accountId || "")
       && item?.deletedAt == null
       && String(item?.status || "") !== "DELETED");
+  }
+
+  function jsonCollectItemEvidenceSummary(item = {}) {
+    const draft = item.listingDraft && typeof item.listingDraft === "object"
+      && !Array.isArray(item.listingDraft)
+      ? item.listingDraft
+      : {};
+    return buildOzonEnrichmentSummary({
+      ...item,
+      ...draft,
+      sourceCategory: draft.sourceCategory || item.sourceCategory,
+      categoryResolution: draft.categoryResolution || item.categoryResolution,
+      logistics: {
+        ...(item.logistics && typeof item.logistics === "object" ? item.logistics : {}),
+        ...(draft.logistics && typeof draft.logistics === "object" ? draft.logistics : {}),
+      },
+    });
   }
 
   async function readCollectItem(input) {
@@ -204,6 +231,76 @@ export function createCollectorOzonEnrichmentRuntime({
     });
   }
 
+  async function deferCollectItem({ deferClaim, ...input } = {}) {
+    if (persistenceMode() === "postgres") {
+      return deferCollectItemEnrichmentV4({
+        ...input,
+        deferJob: async (client) => {
+          const repository = createPostgresCollectorOzonEnrichmentRepository({
+            pool: client,
+            transactionOwner: "caller",
+          });
+          return repository.deferClaim(deferClaim);
+        },
+        completeLinkedJobs: async (client, deferredJob) => {
+          const repository = createPostgresCollectorOzonEnrichmentRepository({
+            pool: client,
+            transactionOwner: "caller",
+          });
+          await repository.completeLinkedJobsFromCollectEvidence({
+            accountId: input.accountId,
+            collectItemId: input.collectItemId,
+            sku: deferredJob.sku,
+            now: deferClaim.now,
+          });
+          return repository.readJob({
+            accountId: input.accountId,
+            jobId: deferredJob.id,
+          });
+        },
+      });
+    }
+    return stateTransaction.run(async () => {
+      const state = await loadState();
+      const item = jsonCollectItem(state, input);
+      if (!item) return null;
+      const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+      const deferredJob = await repository.deferClaim(deferClaim);
+      const evidenceSummary = jsonCollectItemEvidenceSummary(item);
+      if (item.enrichment?.status === "COMPLETE" || evidenceSummary.status === "COMPLETE") {
+        await repository.completeLinkedJobsFromCollectEvidence({
+          accountId: input.accountId,
+          collectItemId: input.collectItemId,
+          sku: deferredJob.sku,
+          now: deferClaim.now,
+        });
+        const terminalJob = await repository.readJob({
+          accountId: input.accountId,
+          jobId: deferredJob.id,
+        });
+        await saveState(state);
+        return { item: structuredClone(item), job: terminalJob };
+      }
+      const deferredAt = deferClaim.now instanceof Date
+        ? deferClaim.now
+        : new Date(deferClaim.now);
+      if (Number.isNaN(deferredAt.getTime())) {
+        throw new TypeError("Ozon enrichment defer time required");
+      }
+      item.status = String(input.status || "RETRYING");
+      item.enrichment = {
+        status: item.status,
+        missingFields: evidenceSummary.missingFields,
+        attemptCount: Number(deferredJob.attemptCount || 0),
+        nextAttemptAt: String(deferredJob.nextAttemptAt || ""),
+        lastErrorCode: String(input.error?.code || ""),
+      };
+      item.updatedAt = deferredAt.toISOString();
+      await saveState(state);
+      return { item: structuredClone(item), job: structuredClone(deferredJob) };
+    });
+  }
+
   async function failCollectItem({ failure, ...input } = {}) {
     const terminalFailure = () => {
       const failedAt = typeof now === "function" ? new Date(now()) : new Date();
@@ -251,18 +348,37 @@ export function createCollectorOzonEnrichmentRuntime({
       const jobs = Array.isArray(state.collectorOzonEnrichmentJobs)
         ? state.collectorOzonEnrichmentJobs
         : [];
-      const job = jobs
+      const scopedJobs = jobs
         .filter((candidate) =>
           String(candidate?.accountId || "") === String(input.accountId || "")
-          && String(candidate?.collectItemId || "") === String(input.collectItemId || "")
-          && candidate?.status !== "SUCCESS")
+          && String(candidate?.collectItemId || "") === String(input.collectItemId || ""))
         .sort((left, right) =>
           String(right.updatedAt || right.createdAt || "")
             .localeCompare(String(left.updatedAt || left.createdAt || ""))
-          || String(right.id || "").localeCompare(String(left.id || "")))[0];
+          || String(right.id || "").localeCompare(String(left.id || "")));
+      const evidenceSummary = jsonCollectItemEvidenceSummary(item);
+      if (item.enrichment?.status === "COMPLETE" || evidenceSummary.status === "COMPLETE") {
+        const terminalJob = scopedJobs.find((candidate) => candidate?.status === "SUCCESS")
+          || scopedJobs[0];
+        return terminalJob
+          ? { item: structuredClone(item), job: structuredClone(terminalJob) }
+          : null;
+      }
+      const job = scopedJobs.find((candidate) => {
+        if (!["PENDING", "PROCESSING", "FAILED"].includes(candidate?.status)) return false;
+        const code = String(candidate?.error?.code || candidate?.lastError?.code || "");
+        return code !== "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED";
+      });
       if (!job) return null;
       const retriedAt = input.now instanceof Date ? new Date(input.now) : new Date(input.now);
       if (Number.isNaN(retriedAt.getTime())) throw new TypeError("Ozon enrichment retry time required");
+      if (
+        job.status === "PROCESSING"
+        && Number.isFinite(new Date(job.claimExpiresAt).getTime())
+        && new Date(job.claimExpiresAt).getTime() > retriedAt.getTime()
+      ) {
+        return { item: structuredClone(item), job: structuredClone(job) };
+      }
       job.status = "PENDING";
       job.nextAttemptAt = retriedAt.toISOString();
       job.lastError = null;
@@ -293,6 +409,7 @@ export function createCollectorOzonEnrichmentRuntime({
     save: saveCollectItem,
     complete: completeCollectItem,
     fail: failCollectItem,
+    defer: deferCollectItem,
     retry: retryCollectItem,
   });
 
@@ -369,5 +486,11 @@ export function createCollectorOzonEnrichmentRuntime({
     ...(now ? { now } : {}),
   });
 
-  return Object.freeze({ repository, service, handleHttpRoute, enqueueForCollect });
+  return Object.freeze({
+    repository,
+    service,
+    handleHttpRoute,
+    enqueueForCollect,
+    completeLinkedJobsFromCollectEvidence,
+  });
 }

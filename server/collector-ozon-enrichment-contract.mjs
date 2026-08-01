@@ -91,9 +91,25 @@ function sourceCategoryEvidence(variantData) {
     descriptionCategoryId: positiveNumber(variantData?.description_category_id),
     typeName: cleanText(typeAttribute?.value),
     typeIdCandidate: positiveNumber(
-      typeAttribute?.dictionary_value_id ?? typeAttribute?.dictionaryValueId,
+      typeAttribute?.dictionary_value_id
+        ?? typeAttribute?.dictionaryValueId
+        ?? variantData?.type_id
+        ?? variantData?.typeId,
     ),
     path,
+    attributes: attributes.slice(0, 100).map((attribute) => {
+      const projected = {
+        key: cleanText(attribute?.key),
+        value: attribute?.value ?? null,
+      };
+      if (attribute?.dictionary_value_id !== undefined) {
+        projected.dictionary_value_id = attribute.dictionary_value_id;
+      }
+      if (attribute?.dictionaryValueId !== undefined) {
+        projected.dictionaryValueId = attribute.dictionaryValueId;
+      }
+      return projected;
+    }).filter((attribute) => attribute.key),
   };
   return Object.values(evidence).some((value) =>
     Array.isArray(value) ? value.length > 0 : Boolean(value),
