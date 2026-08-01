@@ -132,6 +132,7 @@ import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
+import { assertOzonListingReady } from "./collect-enrichment-policy.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
@@ -2204,6 +2205,7 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     findStore: (storeId) => activeStore(state, storeId, account.id),
   });
   const items = buildCollectBoxListingItems(item);
+  items.forEach(assertOzonListingReady);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);
   const errors = validateCollectBoxListingDraft(item, items, stocks);
   if (errors.length) {
@@ -4057,6 +4059,7 @@ async function handle(req, res) {
         ok: false,
         code: error?.code || error?.body?.code || "COLLECT_LISTING_FAILED",
         message: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
+        ...(Array.isArray(error?.missingFields) ? { missingFields: error.missingFields } : {}),
         ...(error?.body || {}),
       });
     }

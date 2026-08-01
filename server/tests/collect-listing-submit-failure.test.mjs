@@ -35,6 +35,7 @@ const dataFile = path.join(dataDir, "local-state.json");
 const token = "local-test-token";
 const storeId = "local_submit_store";
 const collectId = "collect-submit-failure";
+const completeCollectId = "collect-preview-complete";
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
@@ -84,13 +85,35 @@ await writeFile(dataFile, `${JSON.stringify({
         currencyCode: "CNY",
         descriptionCategoryId: 17028941,
         typeId: 91670,
+        enrichment: {
+          status: "COMPLETE",
+          missingFields: [],
+        },
+        listingWarehouseId: "1020003087687000",
+        listingStock: "5",
+        images: ["https://cdn.example.test/main.jpg"],
+      },
+    }, {
+      id: completeCollectId,
+      accountId: "acct_submit_test",
+      storeId,
+      localStoreId: storeId,
+      sku: "4260049339",
+      status: "待处理",
+      listingDraft: {
+        sku: "4260049339",
+        title: "Complete collect listing preview item",
+        price: "100",
+        currencyCode: "CNY",
+        descriptionCategoryId: 17028941,
+        typeId: 91670,
         packageWeight: "799",
         packageLength: "350",
         packageWidth: "85",
         packageHeight: "50",
         listingWarehouseId: "1020003087687000",
         listingStock: "5",
-        images: ["https://cdn.example.test/main.jpg"],
+        images: ["https://cdn.example.test/complete.jpg"],
       },
     }],
   },
@@ -162,31 +185,44 @@ try {
   assert.equal(foreignTarget.body.code, "TARGET_STORE_NOT_FOUND");
   assert.doesNotMatch(JSON.stringify(foreignTarget.body), /Foreign Secret Store|foreign-secret-client|foreign-secret-key/);
 
-  const response = await requestJson(
+  for (const action of ["preview", "submit"]) {
+    const incomplete = await requestJson(
+      handle,
+      `/ozon/collect-box/${collectId}/listing/${action}`,
+      {
+        targetStoreId: storeId,
+        idempotencyKey: `incomplete-${action}`,
+      },
+      token,
+      storeId,
+    );
+    assert.equal(incomplete.status, 422);
+    assert.equal(incomplete.body.code, "COLLECT_ENRICHMENT_INCOMPLETE");
+    assert.deepEqual(incomplete.body.missingFields, ["weightG", "lengthMm", "widthMm", "heightMm"]);
+    assert.equal(externalWriteCalls, 0);
+    assert.deepEqual(fetchRequests, [], "incomplete collection items must not reach Ozon");
+  }
+
+  assert.equal(externalWriteCalls, 0);
+  assert.deepEqual(fetchRequests, [], "fail-closed route must not make any external request");
+
+  const completePreview = await requestJson(
     handle,
-    `/ozon/collect-box/${collectId}/listing/submit`,
-    {
-      targetStoreId: storeId,
-      idempotencyKey: "submit-pipeline-required",
-      strictTypeMatch: true,
-    },
+    `/ozon/collect-box/${completeCollectId}/listing/preview`,
+    { targetStoreId: storeId, idempotencyKey: "complete-preview" },
     token,
     storeId,
   );
-
-  assert.equal(response.status, 503);
-  assert.equal(response.body.ok, false);
-  assert.equal(response.body.code, "LISTING_PIPELINE_REQUIRED");
-  assert.match(response.body.message, /安全上架任务队列/);
+  assert.equal(completePreview.status, 200, JSON.stringify(completePreview.body));
+  assert.equal(completePreview.body.ok, true);
   assert.equal(externalWriteCalls, 0);
-  assert.deepEqual(fetchRequests, [], "fail-closed route must not make any external request");
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));
   const item = state.caches.collectBox.find((row) => row.id === collectId);
   assert.equal(item.status, "失败");
   assert.equal(item.listingTaskId, "");
   assert.equal(item.listingJobId, "");
-  assert.match(item.listingLastError, /安全上架任务队列/);
+  assert.match(item.listingLastError, /Ozon 商品补全资料不完整/);
 
   console.log("collect listing fail-closed smoke passed");
   process.exitCode = 0;

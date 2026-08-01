@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { assertOzonListingReady } from "./collect-enrichment-policy.mjs";
 import { attachTrustedCollectAccountScope } from "./collect-hydration-scope.mjs";
 import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { decryptSecret } from "./crypto-secrets.mjs";
@@ -55,6 +56,22 @@ function stableId(prefix, ...parts) {
 
 function clean(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
+}
+
+async function assertCollectItemOwnershipBeforeListing(collectItemId, accountId) {
+  const id = clean(collectItemId, 240);
+  if (!id) return;
+  const result = await (await poolReady()).query(
+    "SELECT account_id FROM collect_items WHERE id=$1 LIMIT 1",
+    [id],
+  );
+  const ownerAccountId = clean(result.rows[0]?.account_id, 240);
+  if (ownerAccountId && ownerAccountId !== clean(accountId, 240)) {
+    throw Object.assign(new Error("采集记录不属于当前账号"), {
+      status: 404,
+      code: "COLLECT_ITEM_ACCOUNT_FORBIDDEN",
+    });
+  }
 }
 
 function withoutCollectionScope(value = {}) {
@@ -974,6 +991,12 @@ export async function createSubmissionV3({
         idempotencyKey,
       })
     : null;
+  if (collectItem) {
+    await assertCollectItemOwnershipBeforeListing(collectItem.id, accountId);
+    const listingPayloads = Array.isArray(normalizedItems) ? normalizedItems : [];
+    if (!listingPayloads.length) assertOzonListingReady({});
+    listingPayloads.forEach(assertOzonListingReady);
+  }
   if (preparation) storeId = preparation.targetStoreId;
   const legacyMirrored = preparation
     ? null

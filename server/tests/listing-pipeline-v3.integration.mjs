@@ -151,6 +151,8 @@ try {
       sku: "source-sku-1",
       title: "预处理标题",
       price: "100.00",
+      descriptionCategoryId: 1,
+      logistics: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
       variants: [{ sku: "source-sku-1", offerId: "offer-1", price: "100.00" }],
     },
     collectedAt: new Date().toISOString(),
@@ -187,10 +189,69 @@ try {
     images: ["https://example.invalid/1.jpg"],
     description_category_id: 1,
     type_id: 2,
+    weight: 100,
+    depth: 100,
+    width: 100,
+    height: 100,
     attributes: [],
   }];
+  const beforeIncomplete = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=$1) AS snapshot_count,
+       (SELECT COUNT(*)::int FROM submission_jobs WHERE collect_item_id=$1) AS job_count,
+       (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
+         SELECT id FROM submission_jobs WHERE collect_item_id=$1
+       )) AS outbox_count`,
+    [collectId],
+  );
+  await assert.rejects(
+    prepareCollectItemForListing({
+      collectItem: {
+        ...baseItem,
+        listingDraft: {
+          ...baseItem.listingDraft,
+          descriptionCategoryId: 1,
+          logistics: {},
+          enrichment: { status: "COMPLETE", missingFields: [] },
+        },
+      },
+      accountId,
+      collectItemId: collectId,
+      targetStoreId: storeId,
+      idempotencyKey: `incomplete-${suffix}`,
+      normalizedItems: [{
+        ...normalizedItems[0],
+        weight: 0,
+        depth: 0,
+        width: 0,
+        height: 0,
+      }],
+      stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
+    }),
+    (error) => error?.status === 422
+      && error?.code === "COLLECT_ENRICHMENT_INCOMPLETE"
+      && assert.deepEqual(error.missingFields, ["weightG", "lengthMm", "widthMm", "heightMm"]) === undefined,
+  );
+  const afterIncomplete = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=$1) AS snapshot_count,
+       (SELECT COUNT(*)::int FROM submission_jobs WHERE collect_item_id=$1) AS job_count,
+       (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
+         SELECT id FROM submission_jobs WHERE collect_item_id=$1
+       )) AS outbox_count`,
+    [collectId],
+  );
+  assert.deepEqual(afterIncomplete.rows[0], beforeIncomplete.rows[0]);
   const created = await prepareCollectItemForListing({
-    collectItem: { ...baseItem, listingDraft: { ...baseItem.listingDraft, title: "用户修改标题" } },
+    collectItem: {
+      ...baseItem,
+      listingDraft: {
+        ...baseItem.listingDraft,
+        title: "用户修改标题",
+        descriptionCategoryId: 1,
+        logistics: { weightG: 100, lengthMm: 100, widthMm: 100, heightMm: 100 },
+      },
+    },
     accountId,
     collectItemId: collectId,
     targetStoreId: storeId,
