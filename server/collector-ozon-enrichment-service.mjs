@@ -310,11 +310,13 @@ export function createCollectorOzonEnrichmentService({
   const collectItemPort = collectItems || Object.freeze({
     read: async () => null,
     save: async () => null,
+    complete: async () => null,
     retry: async () => null,
   });
   if (
     !collectItemPort
-    || ["read", "save", "retry"].some((method) => typeof collectItemPort[method] !== "function")
+    || ["read", "save", "complete", "retry"]
+      .some((method) => typeof collectItemPort[method] !== "function")
   ) {
     throw new TypeError("Ozon enrichment collect item contract required");
   }
@@ -624,7 +626,7 @@ export function createCollectorOzonEnrichmentService({
       : NEGATIVE_TTL_MS;
     const expiresAt = new Date(at.getTime() + negativeTtl);
     const key = cacheKey(scoped.accountId, job.sku);
-    await repository.failJobAndCache({
+    const persistedJob = await repository.failJobAndCache({
       accountId: scoped.accountId,
       collectorSessionId: scoped.collectorSessionId,
       jobId: job.id,
@@ -635,7 +637,7 @@ export function createCollectorOzonEnrichmentService({
       expiresAt,
       now: at,
     });
-    return stable;
+    return { stable, job: persistedJob };
   }
 
   function collectItemMissing() {
@@ -679,7 +681,7 @@ export function createCollectorOzonEnrichmentService({
 
   async function applyExecutorFailure({ scoped, job, at, error }) {
     const stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
-    if (stable.retryable) {
+    if (stable.retryable && job.collectItemId) {
       const deferredJob = await repository.deferClaim({
         accountId: scoped.accountId,
         collectorSessionId: scoped.collectorSessionId,
@@ -690,17 +692,12 @@ export function createCollectorOzonEnrichmentService({
       await saveLinkedFailure({ job, stable, persistedJob: deferredJob });
       return { stable, job: deferredJob };
     }
-    const terminalJob = {
-      ...job,
-      status: "FAILED",
-      attemptCount: Number(job.attemptCount || 0) + 1,
-    };
-    await saveLinkedFailure({ job, stable, persistedJob: terminalJob });
-    await persistFailure({ scoped, job, at, error: stable });
-    return { stable, job: terminalJob };
+    const persisted = await persistFailure({ scoped, job, at, error: stable });
+    await saveLinkedFailure({ job, stable: persisted.stable, persistedJob: persisted.job });
+    return persisted;
   }
 
-  async function mergeLinkedCollectItem({ job, result, completedAt }) {
+  async function mergeLinkedCollectItem({ job, result, completedAt, completion }) {
     if (!job.collectItemId) return null;
     let lastConflict = null;
     for (let attempt = 0; attempt < MERGE_MAX_ATTEMPTS; attempt += 1) {
@@ -711,7 +708,7 @@ export function createCollectorOzonEnrichmentService({
       if (!current) throw collectItemMissing();
       const listingDraft = mergeOzonEnrichmentResult(current.listingDraft || {}, result);
       try {
-        const saved = await collectItemPort.save({
+        const saved = await collectItemPort.complete({
           accountId: job.accountId,
           collectItemId: job.collectItemId,
           expectedVersion: Number(current.draftVersion || 0),
@@ -722,6 +719,7 @@ export function createCollectorOzonEnrichmentService({
             job,
             capturedAt: completedAt.toISOString(),
           }),
+          completion,
         });
         if (!saved) throw collectItemMissing();
         return saved;
@@ -772,8 +770,7 @@ export function createCollectorOzonEnrichmentService({
         cache: { hit: false, expiresAt: expiresAt.toISOString() },
       };
       responseHash = responseSha256(result);
-      await mergeLinkedCollectItem({ job, result, completedAt });
-      await repository.completeJobAndCache({
+      const completion = {
         accountId: scoped.accountId,
         collectorSessionId: scoped.collectorSessionId,
         jobId: normalizedJobId,
@@ -785,7 +782,12 @@ export function createCollectorOzonEnrichmentService({
         expiresAt,
         captureContext,
         now: completedAt,
-      });
+      };
+      if (job.collectItemId) {
+        await mergeLinkedCollectItem({ job, result, completedAt, completion });
+      } else {
+        await repository.completeJobAndCache(completion);
+      }
       await writeAudit({
         action: "collector.ozon.enrichment.complete",
         requestId: job.requestId,

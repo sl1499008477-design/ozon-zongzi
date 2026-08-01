@@ -290,6 +290,9 @@ class FakeRepository {
 
   async failJobAndCache(input) {
     const job = await this.finish({ ...input, status: "FAILED", result: null });
+    job.attemptCount = Number(job.attemptCount || 0) + 1;
+    const persisted = this.jobs.find((value) => value.id === job.id && value.accountId === job.accountId);
+    persisted.attemptCount = job.attemptCount;
     this.setCache(input.key, {
       ...input.key,
       status: "ERROR",
@@ -765,6 +768,38 @@ test("failClaim uses the server-fixed sixty-second negative TTL", async () => {
     sku: "sku-negative",
   }), (error) => error?.code === "OZON_ENRICH_NOT_FOUND");
   assert.equal(h.repository.createdJobCount, jobsBefore);
+});
+
+test("retryable failure on a non-linked held job terminates inside its twenty-second deadline", async () => {
+  const h = harness();
+  h.repository.jobs.push({
+    id: "job-held-transient",
+    accountId: "account-a",
+    collectItemId: null,
+    requestId: "request-held-transient",
+    sku: "sku-held-transient",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: new Date(START + 15_000).toISOString(),
+    deadlineAt: new Date(START + 20_000).toISOString(),
+    attemptCount: 0,
+    createdAt: new Date(START).toISOString(),
+  });
+
+  const failed = await h.service.failClaim({
+    session: session("collector-fallback"),
+    jobId: "job-held-transient",
+    code: "NETWORK_ERROR",
+  });
+
+  assert.deepEqual(failed, { id: "job-held-transient", status: "FAILED" });
+  assert.equal(h.repository.deferCount, 0);
+  assert.equal(h.repository.atomicFailCount, 1);
+  assert.equal(h.repository.jobs[0].status, "FAILED");
+  assert.deepEqual(h.repository.jobs[0].error, {
+    status: 502,
+    code: "OZON_ENRICH_UPSTREAM_FAILED",
+  });
 });
 
 test("never returns a six-hour-expired result and creates a server-owned refresh job", async () => {
@@ -1332,6 +1367,7 @@ test("linked completion fills only blank draft fields before publishing success 
     },
     enrichment: { status: "PENDING_ENRICHMENT" },
   };
+  let terminalRepository = null;
   const collectItems = {
     async read(input) {
       assert.deepEqual(input, {
@@ -1351,9 +1387,15 @@ test("linked completion fills only blank draft fields before publishing success 
       });
       return clone(collectItem);
     },
+    async complete(input) {
+      const saved = await this.save(input);
+      await terminalRepository.completeJobAndCache(input.completion);
+      return saved;
+    },
     async retry() { throw new Error("unused"); },
   };
   const h = harness({ collectItems, start: Date.parse("2026-08-01T08:00:01.000Z") });
+  terminalRepository = h.repository;
   h.repository.jobs.push({
     id: "job-linked-complete",
     accountId: "account-a",
@@ -1416,6 +1458,7 @@ test("retryable failures defer linked jobs and expose the correct recoverable it
       collectItems: {
         async read() { throw new Error("failure status must not rewrite the draft"); },
         async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
+        async complete() { throw new Error("failure status must not complete the draft"); },
         async retry() { throw new Error("unused"); },
       },
       start: Date.parse("2026-08-01T08:00:01.000Z"),
@@ -1464,6 +1507,7 @@ test("not found permanently needs attention without deleting the linked item", a
     collectItems: {
       async read() { throw new Error("permanent failure must not rewrite the draft"); },
       async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
+      async complete() { throw new Error("permanent failure must not complete the draft"); },
       async retry() { throw new Error("unused"); },
     },
     start: Date.parse("2026-08-01T08:00:01.000Z"),
@@ -1524,6 +1568,7 @@ test("manual retry is account scoped and preserves the linked job identity on re
     collectItems: {
       async read() { throw new Error("unused"); },
       async save() { throw new Error("unused"); },
+      async complete() { throw new Error("unused"); },
       async retry(input) {
         calls.push(clone(input));
         if (input.accountId !== "account-a") return null;

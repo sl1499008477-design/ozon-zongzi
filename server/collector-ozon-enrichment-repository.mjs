@@ -777,6 +777,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
       if (invalid) throw invalid;
       return commitMutation(["collectorOzonEnrichmentJobs"], () => {
         record.status = status;
+        if (status === "FAILED") record.attemptCount = Number(record.attemptCount || 0) + 1;
         record.result = copy(result ?? null);
         record.error = copy(error ?? null);
         record.completedAt = at.toISOString();
@@ -849,6 +850,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
         ["collectorOzonEnrichmentJobs", "collectorOzonEnrichmentCache"],
         () => {
           record.status = status;
+          if (status === "FAILED") record.attemptCount = Number(record.attemptCount || 0) + 1;
           record.result = copy(result ?? null);
           record.error = copy(error ?? null);
           record.completedAt = at.toISOString();
@@ -1429,7 +1431,8 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
     const otherColumn = status === "SUCCESS" ? "error_json" : "result_json";
     const updated = await query(
       `UPDATE collector_ozon_enrichment_jobs
-          SET status='${status}', ${resultColumn}=$5::jsonb, ${otherColumn}=NULL,
+          SET status='${status}', ${status === "FAILED" ? "attempt_count=attempt_count+1," : ""}
+              ${resultColumn}=$5::jsonb, ${otherColumn}=NULL,
               completed_at=$4, updated_at=$4
         WHERE account_id=$1 AND claimed_session_id=$2 AND id=$3
           AND status='PROCESSING' AND claim_expires_at>$4 AND deadline_at>$4
@@ -1518,17 +1521,20 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
         403,
       );
     }
-    if (!pool.connect) throw new TypeError("Ozon enrichment PostgreSQL pool.connect required");
-    const client = await pool.connect();
+    const ownsTransaction = typeof pool.connect === "function";
+    const client = ownsTransaction ? await pool.connect() : pool;
     let began = false;
     try {
-      await client.query("BEGIN");
-      began = true;
+      if (ownsTransaction) {
+        await client.query("BEGIN");
+        began = true;
+      }
       const resultColumn = status === "SUCCESS" ? "result_json" : "error_json";
       const otherColumn = status === "SUCCESS" ? "error_json" : "result_json";
       const updated = await client.query(
         `UPDATE collector_ozon_enrichment_jobs
-            SET status='${status}', ${resultColumn}=$5::jsonb, ${otherColumn}=NULL,
+            SET status='${status}', ${status === "FAILED" ? "attempt_count=attempt_count+1," : ""}
+                ${resultColumn}=$5::jsonb, ${otherColumn}=NULL,
                 capture_context_json=$7::jsonb, completed_at=$4, updated_at=$4
           WHERE account_id=$1 AND claimed_session_id=$2 AND id=$3 AND sku=$6
             AND status='PROCESSING' AND claim_expires_at>$4 AND deadline_at>$4
@@ -1605,8 +1611,10 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
           evidence ? JSON.stringify(evidence) : null,
         ],
       );
-      await client.query("COMMIT");
-      began = false;
+      if (ownsTransaction) {
+        await client.query("COMMIT");
+        began = false;
+      }
       return jobFromRow(updated.rows[0]);
     } catch (errorValue) {
       if (began) {
@@ -1619,7 +1627,7 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
       if (errorValue?.code?.startsWith("OZON_ENRICHMENT_")) throw errorValue;
       throw repositoryError("Ozon enrichment PostgreSQL terminal transaction failed");
     } finally {
-      client.release();
+      if (ownsTransaction) client.release();
     }
   }
 

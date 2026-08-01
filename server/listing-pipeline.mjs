@@ -83,6 +83,18 @@ export function resolveCollectItemEnrichmentSummary(summary, fallback = null) {
     : null;
 }
 
+export function buildCollectItemMirrorSummary(item = {}, context = {}) {
+  const enrichment = item.enrichment && typeof item.enrichment === "object" && !Array.isArray(item.enrichment)
+    ? structuredClone(item.enrichment)
+    : null;
+  return {
+    name: item.name || item.title || "",
+    image: item.image || item.primaryImage || "",
+    source: context.source || item.source || "",
+    ...(enrichment ? { enrichment } : {}),
+  };
+}
+
 function legacyCollectStatus(status) {
   return {
     QUEUE_PENDING: "上架中",
@@ -255,7 +267,7 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
         clean(context.source || item.source || "ozon", 80),
         clean(context.identityKey, 128),
         clean(item.status || "COLLECTED", 80),
-        json({ name: item.name || item.title || "", image: item.image || item.primaryImage || "", source: context.source || item.source || "" }),
+        json(buildCollectItemMirrorSummary(item, context)),
       ],
     );
     if (!persistedItem.rowCount) {
@@ -526,14 +538,14 @@ export async function readCollectItemEnrichmentV4({ collectItemId, accountId } =
   return collectItemEnrichmentRow(result.rows[0]);
 }
 
-export async function saveCollectItemEnrichmentV4({
+async function saveCollectItemEnrichmentTransaction({
   collectItemId,
   accountId,
   expectedVersion = null,
   listingDraft,
   status,
   enrichment,
-} = {}) {
+} = {}, transactionEffect = null) {
   if (!listingPipelineEnabled()) return null;
   return transaction(async (client) => {
     const result = await client.query(
@@ -596,12 +608,25 @@ export async function saveCollectItemEnrichmentV4({
         RETURNING id,account_id,status,summary`,
       [row.id, row.account_id, clean(status || row.status, 80), json(nextSummary)],
     );
-    return collectItemEnrichmentRow({
+    const saved = collectItemEnrichmentRow({
       ...updated.rows[0],
       draft_data: listingDraft === undefined ? row.draft_data : listingDraft,
       draft_version: draftVersion,
     });
+    if (typeof transactionEffect === "function") await transactionEffect(client);
+    return saved;
   });
+}
+
+export async function saveCollectItemEnrichmentV4(input = {}) {
+  return saveCollectItemEnrichmentTransaction(input);
+}
+
+export async function completeCollectItemEnrichmentV4({ completeJobAndCache, ...input } = {}) {
+  if (typeof completeJobAndCache !== "function") {
+    throw new TypeError("Ozon enrichment terminal transaction callback required");
+  }
+  return saveCollectItemEnrichmentTransaction(input, completeJobAndCache);
 }
 
 function retryJobFromRow(row = {}) {

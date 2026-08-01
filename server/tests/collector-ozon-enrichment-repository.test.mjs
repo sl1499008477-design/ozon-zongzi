@@ -2459,6 +2459,88 @@ test("JSON completion stores allowlisted capture evidence and rejects extra keys
   }), (error) => error?.code === "OZON_ENRICHMENT_CAPTURE_CONTEXT_INVALID");
 });
 
+test("JSON terminal failure increments and returns the persisted attemptCount", async () => {
+  const state = {
+    collectorSessions: [activeSession("collector-a", "account-a", {
+      expiresAt: "2026-08-02T00:00:00.000Z",
+    })],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-failed-attempt-json",
+      accountId: "account-a",
+      requestId: "failed-attempt-json",
+      sku: ACCOUNT_A_KEY.sku,
+      status: "PROCESSING",
+      claimedSessionId: "collector-a",
+      claimExpiresAt: "2026-08-01T08:01:00.000Z",
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      attemptCount: 3,
+      createdAt: "2026-08-01T08:00:00.000Z",
+    }],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+
+  const failed = await repository.failJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-failed-attempt-json",
+    key: ACCOUNT_A_KEY,
+    error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+    responseHash: "failed-attempt-json-hash",
+    capturedAt: new Date("2026-08-01T08:00:01.000Z"),
+    expiresAt: new Date("2026-08-01T08:01:01.000Z"),
+    now: new Date("2026-08-01T08:00:01.000Z"),
+  });
+
+  assert.equal(failed.attemptCount, 4);
+  assert.equal(state.collectorOzonEnrichmentJobs[0].attemptCount, 4);
+});
+
+test("PostgreSQL terminal failure increments attemptCount in the atomic job write", async () => {
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+        return { rows: [{
+          id: "job-failed-attempt-pg",
+          account_id: "account-a",
+          request_id: "failed-attempt-pg",
+          sku: ACCOUNT_A_KEY.sku,
+          status: "FAILED",
+          attempt_count: 4,
+          error_json: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+          deadline_at: "9999-12-31T23:59:59.999Z",
+          created_at: "2026-08-01T08:00:00.000Z",
+          updated_at: "2026-08-01T08:00:01.000Z",
+          completed_at: "2026-08-01T08:00:01.000Z",
+        }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: { async connect() { return client; }, async query() { return { rows: [] }; } },
+  });
+
+  const failed = await repository.failJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-failed-attempt-pg",
+    key: ACCOUNT_A_KEY,
+    error: { status: 404, code: "OZON_ENRICH_NOT_FOUND" },
+    responseHash: "failed-attempt-pg-hash",
+    capturedAt: new Date("2026-08-01T08:00:01.000Z"),
+    expiresAt: new Date("2026-08-01T08:01:01.000Z"),
+    now: new Date("2026-08-01T08:00:01.000Z"),
+  });
+
+  const jobWrite = calls.find((call) => call.sql.startsWith("UPDATE collector_ozon_enrichment_jobs"));
+  assert.match(jobWrite.sql, /attempt_count=attempt_count\+1/);
+  assert.equal(failed.attemptCount, 4);
+});
+
 test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay account scoped", async () => {
   const calls = [];
   const row = {
@@ -2661,4 +2743,49 @@ test("PostgreSQL completion stores only allowlisted capture evidence in job and 
   assert.match(cacheWrite.sql, /capture_context_json/);
   assert.equal(cacheWrite.params[11], JSON.stringify(captureContext));
   assert.equal(calls.at(-1).sql, "COMMIT");
+});
+
+test("PostgreSQL terminal completion joins a caller-owned collect-item transaction", async () => {
+  const calls = [];
+  const transactionClient = {
+    async query(sql, params = []) {
+      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      calls.push({ sql: normalized, params });
+      if (normalized.startsWith("UPDATE collector_ozon_enrichment_jobs")) {
+        return { rows: [{
+          id: "job-caller-transaction",
+          account_id: "account-a",
+          collect_item_id: "collect-a",
+          request_id: "caller-transaction",
+          sku: ACCOUNT_A_KEY.sku,
+          status: "SUCCESS",
+          attempt_count: 2,
+          result_json: completeResult(270),
+          deadline_at: "9999-12-31T23:59:59.999Z",
+          created_at: "2026-08-01T08:00:00.000Z",
+          updated_at: "2026-08-01T08:00:01.000Z",
+          completed_at: "2026-08-01T08:00:01.000Z",
+        }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({ pool: transactionClient });
+
+  const completed = await repository.completeJobAndCache({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    jobId: "job-caller-transaction",
+    key: ACCOUNT_A_KEY,
+    result: completeResult(270),
+    responseHash: "caller-transaction-hash",
+    capturedAt: new Date("2026-08-01T08:00:01.000Z"),
+    expiresAt: new Date("2026-08-01T14:00:01.000Z"),
+    now: new Date("2026-08-01T08:00:01.000Z"),
+  });
+
+  assert.equal(completed.status, "SUCCESS");
+  assert.equal(calls.some((call) => ["BEGIN", "COMMIT", "ROLLBACK"].includes(call.sql)), false);
+  assert.equal(calls.filter((call) => call.sql.startsWith("UPDATE collector_ozon_enrichment_jobs")).length, 1);
+  assert.equal(calls.filter((call) => call.sql.startsWith("INSERT INTO collector_ozon_enrichment_cache")).length, 1);
 });

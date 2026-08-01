@@ -387,3 +387,77 @@ test("JSON runtime manual retry preserves identity, clears stable errors, and hi
     collectItemId: "collect-runtime-retry",
   }), (error) => error?.status === 404 && error?.code === "COLLECT_ITEM_NOT_FOUND");
 });
+
+test("JSON NOT_FOUND failure and manual retry keep item attemptCount equal to the job truth", async () => {
+  const failedAt = new Date("2026-08-01T09:00:00.000Z");
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-attempt",
+        accountId: "account-runtime",
+        sku: "sku-runtime-attempt",
+        status: "RETRYING",
+        draftVersion: 2,
+        listingDraft: { title: "keep" },
+        enrichment: { status: "RETRYING", attemptCount: 3 },
+      }],
+    },
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      revokedAt: null,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-attempt",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-attempt",
+      requestId: "request-runtime-attempt",
+      sku: "sku-runtime-attempt",
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-runtime",
+      claimExpiresAt: "2026-08-01T09:01:00.000Z",
+      refreshBundle: {},
+      attemptCount: 3,
+      nextAttemptAt: "2026-08-01T08:59:00.000Z",
+      lastError: null,
+      captureContext: null,
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T08:00:00.000Z",
+      updatedAt: "2026-08-01T08:59:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => structuredClone(persisted),
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(failedAt),
+  });
+
+  await runtime.service.failClaim({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+    jobId: "job-runtime-attempt",
+    code: "OZON_ENRICH_NOT_FOUND",
+  });
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 4);
+  assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 4);
+
+  const retried = await runtime.service.retryCollectItem({
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-attempt",
+  });
+  assert.equal(retried.job.attemptCount, 4);
+  assert.equal(retried.enrichment.attemptCount, 4);
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].attemptCount, 4);
+  assert.equal(persisted.caches.collectBox[0].enrichment.attemptCount, 4);
+});

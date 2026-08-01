@@ -12,6 +12,7 @@ import { createCollectorOzonEnrichmentService } from "./collector-ozon-enrichmen
 import { getPostgresPool } from "./db/connection.mjs";
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import {
+  completeCollectItemEnrichmentV4,
   readCollectItemEnrichmentV4,
   retryCollectItemEnrichmentV4,
   saveCollectItemEnrichmentV4,
@@ -160,6 +161,41 @@ export function createCollectorOzonEnrichmentRuntime({
     });
   }
 
+  async function completeCollectItem({ completion, ...input } = {}) {
+    if (persistenceMode() === "postgres") {
+      return completeCollectItemEnrichmentV4({
+        ...input,
+        completeJobAndCache: async (client) => {
+          const terminalRepository = createPostgresCollectorOzonEnrichmentRepository({ pool: client });
+          await terminalRepository.completeJobAndCache(completion);
+        },
+      });
+    }
+    return stateTransaction.run(async () => {
+      const state = await loadState();
+      const item = jsonCollectItem(state, input);
+      if (!item) return null;
+      const currentVersion = Number(item.draftVersion || 0);
+      if (Number(input.expectedVersion) !== currentVersion) {
+        throw Object.assign(
+          new Error(`草稿已被其他页面更新，当前版本为 v${currentVersion}，请刷新后重试`),
+          { code: "DRAFT_VERSION_CONFLICT", status: 409 },
+        );
+      }
+      item.listingDraft = structuredClone(input.listingDraft);
+      item.draftVersion = currentVersion + 1;
+      item.status = String(input.status || item.status || "");
+      item.enrichment = structuredClone(input.enrichment);
+      item.updatedAt = completion?.now instanceof Date
+        ? completion.now.toISOString()
+        : new Date(completion?.now || Date.now()).toISOString();
+      const terminalRepository = createJsonCollectorOzonEnrichmentRepository({ state });
+      await terminalRepository.completeJobAndCache(completion);
+      await saveState(state);
+      return structuredClone(item);
+    });
+  }
+
   async function retryCollectItem(input) {
     if (persistenceMode() === "postgres") return retryCollectItemEnrichmentV4(input);
     return stateTransaction.run(async () => {
@@ -209,6 +245,7 @@ export function createCollectorOzonEnrichmentRuntime({
   const collectItems = Object.freeze({
     read: readCollectItem,
     save: saveCollectItem,
+    complete: completeCollectItem,
     retry: retryCollectItem,
   });
 
