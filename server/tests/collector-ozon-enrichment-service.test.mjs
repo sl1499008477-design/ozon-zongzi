@@ -1389,7 +1389,10 @@ test("linked completion fills only blank draft fields before publishing success 
     },
     async complete(input) {
       const saved = await this.save(input);
-      await terminalRepository.completeJobAndCache(input.completion);
+      await terminalRepository.completeJobAndCache({
+        ...input.completion,
+        now: new Date("2026-08-01T08:00:01.000Z"),
+      });
       return saved;
     },
     async fail() { throw new Error("unused"); },

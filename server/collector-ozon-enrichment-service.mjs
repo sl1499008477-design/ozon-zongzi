@@ -731,7 +731,6 @@ export function createCollectorOzonEnrichmentService({
       if (!current) throw collectItemMissing();
       const listingDraft = mergeOzonEnrichmentResult(current.listingDraft || {}, result);
       try {
-        const terminalAt = instant(now());
         const saved = await collectItemPort.complete({
           accountId: job.accountId,
           collectItemId: job.collectItemId,
@@ -743,7 +742,7 @@ export function createCollectorOzonEnrichmentService({
             job,
             capturedAt: completedAt.toISOString(),
           }),
-          completion: { ...completion, now: terminalAt },
+          completion,
         });
         if (!saved) throw collectItemMissing();
         return saved;

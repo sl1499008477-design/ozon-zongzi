@@ -163,6 +163,11 @@ export function createCollectorOzonEnrichmentRuntime({
   }
 
   async function completeCollectItem({ completion, ...input } = {}) {
+    const terminalCompletion = () => {
+      const completedAt = typeof now === "function" ? new Date(now()) : new Date();
+      if (Number.isNaN(completedAt.getTime())) throw new TypeError("Ozon enrichment completion time required");
+      return { ...completion, now: completedAt };
+    };
     if (persistenceMode() === "postgres") {
       return completeCollectItemEnrichmentV4({
         ...input,
@@ -171,7 +176,7 @@ export function createCollectorOzonEnrichmentRuntime({
             pool: client,
             transactionOwner: "caller",
           });
-          await terminalRepository.completeJobAndCache(completion);
+          await terminalRepository.completeJobAndCache(terminalCompletion());
         },
       });
     }
@@ -190,11 +195,10 @@ export function createCollectorOzonEnrichmentRuntime({
       item.draftVersion = currentVersion + 1;
       item.status = String(input.status || item.status || "");
       item.enrichment = structuredClone(input.enrichment);
-      item.updatedAt = completion?.now instanceof Date
-        ? completion.now.toISOString()
-        : new Date(completion?.now || Date.now()).toISOString();
+      const persistedCompletion = terminalCompletion();
+      item.updatedAt = persistedCompletion.now.toISOString();
       const terminalRepository = createJsonCollectorOzonEnrichmentRepository({ state });
-      await terminalRepository.completeJobAndCache(completion);
+      await terminalRepository.completeJobAndCache(persistedCompletion);
       await saveState(state);
       return structuredClone(item);
     });

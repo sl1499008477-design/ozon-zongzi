@@ -538,7 +538,7 @@ export async function readCollectItemEnrichmentV4({ collectItemId, accountId } =
   return collectItemEnrichmentRow(result.rows[0]);
 }
 
-async function saveCollectItemEnrichmentTransaction({
+async function saveCollectItemEnrichmentWithClient(client, {
   collectItemId,
   accountId,
   expectedVersion = null,
@@ -546,8 +546,9 @@ async function saveCollectItemEnrichmentTransaction({
   status,
   enrichment,
 } = {}, transactionEffect = null) {
-  if (!listingPipelineEnabled()) return null;
-  return transaction(async (client) => {
+    if (typeof client?.query !== "function") {
+      throw new TypeError("Ozon enrichment collect item transaction client required");
+    }
     const result = await client.query(
       `SELECT c.*,d.data AS draft_data,d.version AS draft_version,raw.payload AS raw_payload
          FROM collect_items c
@@ -615,7 +616,13 @@ async function saveCollectItemEnrichmentTransaction({
     });
     if (typeof transactionEffect === "function") await transactionEffect(client);
     return saved;
-  });
+}
+
+async function saveCollectItemEnrichmentTransaction(input = {}, transactionEffect = null) {
+  if (!listingPipelineEnabled()) return null;
+  return transaction((client) => (
+    saveCollectItemEnrichmentWithClient(client, input, transactionEffect)
+  ));
 }
 
 export async function saveCollectItemEnrichmentV4(input = {}) {
@@ -627,6 +634,16 @@ export async function completeCollectItemEnrichmentV4({ completeJobAndCache, ...
     throw new TypeError("Ozon enrichment terminal transaction callback required");
   }
   return saveCollectItemEnrichmentTransaction(input, completeJobAndCache);
+}
+
+export async function completeCollectItemEnrichmentWithClientV4(client, {
+  completeJobAndCache,
+  ...input
+} = {}) {
+  if (typeof completeJobAndCache !== "function") {
+    throw new TypeError("Ozon enrichment terminal transaction callback required");
+  }
+  return saveCollectItemEnrichmentWithClient(client, input, completeJobAndCache);
 }
 
 export async function failCollectItemEnrichmentWithClientV4(client, {

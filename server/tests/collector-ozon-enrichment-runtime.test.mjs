@@ -302,6 +302,94 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
   assert.equal(JSON.stringify(audit).includes("cookie"), false);
 });
 
+test("JSON success transaction rechecks the claim after loadState crosses its expiry", async () => {
+  const startedAt = new Date("2026-08-01T08:00:01.000Z");
+  const claimExpiresAt = new Date("2026-08-01T08:00:02.000Z");
+  let clock = startedAt.getTime();
+  let loadCount = 0;
+  let persisted = {
+    caches: {
+      collectBox: [{
+        id: "collect-runtime-complete-expired",
+        accountId: "account-runtime",
+        sku: "sku-runtime-complete-expired",
+        status: "RETRYING",
+        draftVersion: 3,
+        listingDraft: { title: "keep", logistics: {} },
+        enrichment: { status: "RETRYING", attemptCount: 2 },
+      }],
+    },
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      revokedAt: null,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-complete-expired",
+      accountId: "account-runtime",
+      collectItemId: "collect-runtime-complete-expired",
+      requestId: "request-runtime-complete-expired",
+      sku: "sku-runtime-complete-expired",
+      status: "PROCESSING",
+      preferredSessionId: null,
+      claimedSessionId: "collector-runtime",
+      claimExpiresAt: claimExpiresAt.toISOString(),
+      refreshBundle: {},
+      attemptCount: 2,
+      nextAttemptAt: startedAt.toISOString(),
+      lastError: null,
+      captureContext: null,
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      result: null,
+      error: null,
+      createdAt: "2026-08-01T08:00:00.000Z",
+      updatedAt: "2026-08-01T08:00:00.000Z",
+      completedAt: null,
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => {
+      loadCount += 1;
+      if (loadCount === 3) clock = claimExpiresAt.getTime();
+      return structuredClone(persisted);
+    },
+    saveState: async (state) => { persisted = structuredClone(state); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    authenticateAccount: async () => ({ id: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(clock),
+  });
+
+  await assert.rejects(runtime.service.completeClaim({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+    jobId: "job-runtime-complete-expired",
+    variantData: {
+      description_category_id: 17_000_001,
+      type_id: 97_000_001,
+      weight: 500,
+      depth: 300,
+      width: 200,
+      height: 100,
+      attributes: [],
+    },
+    captureContext: {
+      sellerCompanyId: "2681910",
+      revision: 4,
+      observedAt: "2026-08-01T08:00:00.000Z",
+    },
+  }), (error) => error?.code === "OZON_ENRICHMENT_JOB_OWNERSHIP");
+
+  assert.equal(persisted.collectorOzonEnrichmentJobs[0].status, "PROCESSING");
+  assert.equal(persisted.caches.collectBox[0].status, "RETRYING");
+  assert.equal(persisted.caches.collectBox[0].draftVersion, 3);
+  assert.equal(persisted.collectorOzonEnrichmentCache, undefined);
+});
+
 test("JSON runtime manual retry preserves identity, clears stable errors, and hides other accounts", async () => {
   const retriedAt = new Date("2026-08-01T08:10:00.000Z");
   let persisted = {
