@@ -5,21 +5,25 @@ let jsonOperationQueue = Promise.resolve();
 
 const LINKED_JOB_DEADLINE = "9999-12-31T23:59:59.999Z";
 const CAPTURE_CONTEXT_KEYS = new Set(["sellerCompanyId", "revision", "observedAt"]);
-const SENSITIVE_AUTH_KEYS = new Set([
-  "accesstoken",
-  "apikey",
+const SENSITIVE_AUTH_WORDS = new Set([
   "authorization",
-  "clientid",
-  "clientsecret",
   "cookie",
   "cookies",
+  "credential",
   "credentials",
+  "otp",
   "password",
-  "refreshtoken",
   "secret",
-  "sellercredentials",
-  "sellertoken",
   "token",
+]);
+const SENSITIVE_AUTH_SEQUENCES = Object.freeze([
+  ["api", "key"],
+  ["auth", "code"],
+  ["authentication", "code"],
+  ["client", "id"],
+  ["client", "secret"],
+  ["one", "time", "code"],
+  ["verification", "code"],
 ]);
 
 function repositoryError(message, code = "OZON_ENRICHMENT_PERSISTENCE_FAILED", status = 500) {
@@ -154,8 +158,15 @@ function assertNoSensitiveAuth(value, seen = new WeakSet()) {
   if (seen.has(value)) return;
   seen.add(value);
   for (const [key, nested] of Object.entries(value)) {
-    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (SENSITIVE_AUTH_KEYS.has(normalizedKey)) {
+    const words = String(key)
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    const containsSequence = SENSITIVE_AUTH_SEQUENCES.some((sequence) =>
+      words.some((_, index) => sequence.every((word, offset) => words[index + offset] === word)));
+    if (words.some((word) => SENSITIVE_AUTH_WORDS.has(word)) || containsSequence) {
       throw repositoryError(
         "Ozon enrichment payload contains Seller authentication data",
         "OZON_ENRICHMENT_SENSITIVE_DATA",
@@ -539,12 +550,27 @@ export function createJsonCollectorOzonEnrichmentRepository({
         }
         return jobFromRow(existing);
       }
+      const scopedCollectItem = (Array.isArray(state.caches?.collectBox)
+        ? state.caches.collectBox
+        : []).find((item) =>
+        String(item?.id ?? "") === stableKey.collectItemId
+        && String(item?.accountId ?? "") === stableKey.accountId);
+      if (!scopedCollectItem) {
+        throw repositoryError(
+          "Ozon enrichment collect item was not found in the account scope",
+          "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND",
+          404,
+        );
+      }
       const candidate = newJob({
-        ...input,
-        refreshBundle,
         id: randomUUID(),
+        accountId: stableKey.accountId,
+        collectItemId: stableKey.collectItemId,
+        requestId: stableKey.requestId,
+        sku: stableKey.sku,
+        refreshBundle,
         preferredSessionId: null,
-        deadlineAt: input.deadlineAt ?? LINKED_JOB_DEADLINE,
+        deadlineAt: LINKED_JOB_DEADLINE,
         createdAt: at,
         nextAttemptAt: at,
       });
@@ -592,6 +618,9 @@ export function createJsonCollectorOzonEnrichmentRepository({
           existing.claimedSessionId = null;
           existing.claimExpiresAt = null;
           existing.refreshBundle = copy(retried.refreshBundle);
+          existing.attemptCount = 0;
+          existing.nextAttemptAt = retried.nextAttemptAt;
+          existing.lastError = null;
           existing.deadlineAt = retried.deadlineAt;
           existing.result = null;
           existing.error = null;
@@ -1068,7 +1097,7 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
     const collectItemId = requiredText(input.collectItemId, "collectItemId");
     const requestId = requiredText(input.requestId, "requestId");
     const sku = requiredText(input.sku, "sku");
-    const deadline = requiredDate(input.deadlineAt ?? LINKED_JOB_DEADLINE, "deadlineAt");
+    const deadline = requiredDate(LINKED_JOB_DEADLINE, "deadlineAt");
     const inserted = await query(
       `INSERT INTO collector_ozon_enrichment_jobs (
          id, account_id, collect_item_id, request_id, sku, status, refresh_bundle,
@@ -1150,7 +1179,8 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
           SET status='PENDING', refresh_bundle=$5::jsonb,
               preferred_session_id=CASE WHEN preferred.id IS NULL THEN NULL ELSE $6 END,
               claimed_session_id=NULL,
-              claim_expires_at=NULL, deadline_at=$7,
+              claim_expires_at=NULL, attempt_count=0,
+              next_attempt_at=$8, last_error_json=NULL, deadline_at=$7,
               result_json=NULL, error_json=NULL,
               created_at=$8, updated_at=$8, completed_at=NULL
          FROM accounts AS account

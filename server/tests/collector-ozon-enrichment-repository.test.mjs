@@ -36,6 +36,10 @@ function activeSession(id, accountId, overrides = {}) {
   };
 }
 
+function collectItem(id, accountId) {
+  return { id, accountId };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -490,6 +494,13 @@ test("JSON create-or-get atomically requeues only an expired nonterminal stable 
     now: new Date("2026-07-31T00:00:00.000Z"),
     claimExpiresAt: new Date("2026-07-31T00:00:05.000Z"),
   });
+  await repository.deferClaim({
+    accountId: "account-a",
+    collectorSessionId: "collector-original",
+    jobId: "job-expired-stable",
+    error: { code: "OZON_RETRYABLE", status: 503 },
+    now: new Date("2026-07-31T00:00:01.000Z"),
+  });
 
   const retried = await repository.createOrGetJob({
     id: "job-new-id-must-not-replace-stable-id",
@@ -507,6 +518,9 @@ test("JSON create-or-get atomically requeues only an expired nonterminal stable 
   assert.equal(retried.preferredSessionId, "collector-retry");
   assert.equal(retried.claimedSessionId, null);
   assert.equal(retried.claimExpiresAt, null);
+  assert.equal(retried.attemptCount, 0);
+  assert.equal(retried.nextAttemptAt, "2026-07-31T00:00:21.000Z");
+  assert.equal(retried.lastError, null);
   assert.equal(retried.result, null);
   assert.equal(retried.error, null);
   assert.equal(retried.completedAt, null);
@@ -1332,6 +1346,9 @@ test("PostgreSQL create-or-get atomically resets an expired nonterminal stable r
     created_at: "2026-07-31T00:00:21.000Z",
     updated_at: "2026-07-31T00:00:21.000Z",
     completed_at: null,
+    attempt_count: 0,
+    next_attempt_at: "2026-07-31T00:00:21.000Z",
+    last_error_json: null,
   };
   const pool = {
     async query(sql, params = []) {
@@ -1366,6 +1383,9 @@ test("PostgreSQL create-or-get atomically resets an expired nonterminal stable r
   assert.match(calls[1].sql, /result_json=NULL/);
   assert.match(calls[1].sql, /error_json=NULL/);
   assert.match(calls[1].sql, /completed_at=NULL/);
+  assert.match(calls[1].sql, /attempt_count=0/);
+  assert.match(calls[1].sql, /next_attempt_at=\$8/);
+  assert.match(calls[1].sql, /last_error_json=NULL/);
   assert.match(calls[1].sql, /status IN \('PENDING','PROCESSING'\)/);
   assert.match(calls[1].sql, /deadline_at<=\$8/);
   assert.match(calls[1].sql, /preferred\.account_id=\$2/);
@@ -1521,7 +1541,9 @@ test("PostgreSQL terminal fallback distinguishes session, ownership, terminal, m
 });
 
 test("JSON linked enqueue is idempotent and rejects a collect-item mismatch", async () => {
-  const repository = createJsonCollectorOzonEnrichmentRepository({ state: {} });
+  const repository = createJsonCollectorOzonEnrichmentRepository({
+    state: { caches: { collectBox: [collectItem("collect-a", "account-a")] } },
+  });
   const input = {
     accountId: "account-a",
     collectItemId: "collect-a",
@@ -1544,36 +1566,140 @@ test("JSON linked enqueue is idempotent and rejects a collect-item mismatch", as
   }), (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_CONFLICT");
 });
 
-test("linked enqueue rejects nested Seller credentials before persistence", async () => {
-  const state = {};
-  const jsonRepository = createJsonCollectorOzonEnrichmentRepository({ state });
-  const input = {
+test("linked enqueue rejects composite Seller credential keys before persistence", async () => {
+  const sensitiveBundles = [
+    { sellerRequest: { sellerCookie: "must-not-persist" } },
+    { requests: [{ authToken: "must-not-persist" }] },
+    { challenges: [{ verificationCode: "must-not-persist" }] },
+  ];
+  for (const [index, refreshBundle] of sensitiveBundles.entries()) {
+    const state = {
+      caches: { collectBox: [collectItem("collect-a", "account-a")] },
+    };
+    const jsonRepository = createJsonCollectorOzonEnrichmentRepository({ state });
+    const input = {
+      accountId: "account-a",
+      collectItemId: "collect-a",
+      requestId: `credential-request-${index}`,
+      sku: "4862904234",
+      refreshBundle,
+      now: new Date("2026-08-01T08:00:00.000Z"),
+    };
+    await assert.rejects(
+      jsonRepository.enqueueForCollect(input),
+      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    );
+    assert.equal(state.collectorOzonEnrichmentJobs, undefined);
+
+    let queried = false;
+    const postgresRepository = createPostgresCollectorOzonEnrichmentRepository({
+      pool: { async query() { queried = true; return { rows: [] }; } },
+    });
+    await assert.rejects(
+      postgresRepository.enqueueForCollect(input),
+      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    );
+    assert.equal(queried, false);
+  }
+});
+
+test("linked enqueue permits non-secret company and capture metadata", async () => {
+  const state = {
+    caches: { collectBox: [collectItem("collect-a", "account-a")] },
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const refreshBundle = {
+    sellerCompanyId: "2681910",
+    captureContext: { revision: 4, observedAt: "2026-08-01T08:00:00.000Z" },
+  };
+  const job = await repository.enqueueForCollect({
     accountId: "account-a",
     collectItemId: "collect-a",
-    requestId: "credential-request-a",
+    requestId: "safe-metadata-request",
     sku: "4862904234",
-    refreshBundle: { sellerRequest: { sellerToken: "must-not-persist" } },
+    refreshBundle,
     now: new Date("2026-08-01T08:00:00.000Z"),
-  };
-  await assert.rejects(
-    jsonRepository.enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
-  );
-  assert.equal(state.collectorOzonEnrichmentJobs, undefined);
-
-  let queried = false;
-  const postgresRepository = createPostgresCollectorOzonEnrichmentRepository({
-    pool: { async query() { queried = true; return { rows: [] }; } },
   });
-  await assert.rejects(
-    postgresRepository.enqueueForCollect(input),
-    (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
-  );
-  assert.equal(queried, false);
+  assert.deepEqual(job.refreshBundle, refreshBundle);
+});
+
+test("JSON linked enqueue ignores forged internal job state", async () => {
+  const state = {
+    caches: { collectBox: [collectItem("collect-a", "account-a")] },
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const job = await repository.enqueueForCollect({
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    requestId: "forged-internal-state",
+    sku: "4862904234",
+    refreshBundle: {},
+    now: new Date("2026-08-01T08:00:00.000Z"),
+    attemptCount: 99,
+    nextAttemptAt: new Date("2099-01-01T00:00:00.000Z"),
+    lastError: { code: "FORGED" },
+    captureContext: {
+      sellerCompanyId: "forged",
+      revision: 99,
+      observedAt: "2099-01-01T00:00:00.000Z",
+    },
+    status: "SUCCESS",
+    preferredSessionId: "forged-preference",
+    claimedSessionId: "forged-owner",
+    claimExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+    result: { forged: true },
+    error: { forged: true },
+    completedAt: new Date("2099-01-01T00:00:00.000Z"),
+    leaseOwner: "forged-lease",
+  });
+
+  assert.equal(job.status, "PENDING");
+  assert.equal(job.attemptCount, 0);
+  assert.equal(job.nextAttemptAt, "2026-08-01T08:00:00.000Z");
+  assert.equal(job.lastError, null);
+  assert.equal(job.captureContext, null);
+  assert.equal(job.preferredSessionId, null);
+  assert.equal(job.claimedSessionId, null);
+  assert.equal(job.claimExpiresAt, null);
+  assert.equal(job.deadlineAt, "9999-12-31T23:59:59.999Z");
+  assert.equal(job.result, null);
+  assert.equal(job.error, null);
+  assert.equal(job.completedAt, null);
+  assert.equal(Object.hasOwn(state.collectorOzonEnrichmentJobs[0], "leaseOwner"), false);
+});
+
+test("JSON linked enqueue hides cross-account and missing collect items behind one error", async () => {
+  const state = {
+    caches: { collectBox: [collectItem("collect-b", "account-b")] },
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const errors = [];
+  for (const collectItemId of ["collect-b", "collect-missing"]) {
+    try {
+      await repository.enqueueForCollect({
+        accountId: "account-a",
+        collectItemId,
+        requestId: `scope-${collectItemId}`,
+        sku: "4862904234",
+        refreshBundle: {},
+        now: new Date("2026-08-01T08:00:00.000Z"),
+      });
+      assert.fail("out-of-scope collect item must not enqueue");
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  assert.deepEqual(errors.map(({ code, status }) => ({ code, status })), [
+    { code: "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND", status: 404 },
+    { code: "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND", status: 404 },
+  ]);
+  assert.equal(state.collectorOzonEnrichmentJobs, undefined);
 });
 
 test("JSON linked retries wait until due and persist only stable error fields", async () => {
   const state = {
+    caches: { collectBox: [collectItem("collect-a", "account-a")] },
     collectorSessions: [activeSession("collector-a", "account-a", {
       expiresAt: "2026-08-02T00:00:00.000Z",
     })],
@@ -1630,6 +1756,10 @@ test("JSON linked retries wait until due and persist only stable error fields", 
 
 test("JSON linked jobs enforce account scope for read, claim, defer, and completion", async () => {
   const state = {
+    caches: { collectBox: [
+      collectItem("collect-a", "account-a"),
+      collectItem("collect-b", "account-b"),
+    ] },
     collectorSessions: [
       activeSession("collector-a", "account-a", { expiresAt: "2026-08-02T00:00:00.000Z" }),
       activeSession("collector-b", "account-b", { expiresAt: "2026-08-02T00:00:00.000Z" }),
@@ -1680,6 +1810,7 @@ test("JSON linked jobs enforce account scope for read, claim, defer, and complet
 
 test("JSON completion stores allowlisted capture evidence and rejects extra keys", async () => {
   const state = {
+    caches: { collectBox: [collectItem("collect-a", "account-a")] },
     collectorSessions: [activeSession("collector-a", "account-a", {
       expiresAt: "2026-08-02T00:00:00.000Z",
     })],
