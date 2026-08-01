@@ -8,6 +8,12 @@ import {
   parseOzonBatchEnrichmentRequest,
   parseOzonEnrichmentRequest,
 } from "../collector-ozon-enrichment-contract.mjs";
+import {
+  assertOzonListingReady,
+  buildOzonEnrichmentSummary,
+  mergeOzonEnrichmentResult,
+  retryDelayMs,
+} from "../collect-enrichment-policy.mjs";
 
 const RETIRED_SCOPE_KEY_SPELLINGS = [
   "account-id",
@@ -39,6 +45,67 @@ function completeVariantData(overrides = {}) {
     ...overrides,
   };
 }
+
+function completeResult(overrides = {}) {
+  const base = normalizeOzonAgentResult({
+    sku: "4862904234",
+    source: "LOCAL_SELLER",
+    capturedAt: "2026-08-01T00:00:00.000Z",
+    variantData: completeVariantData(),
+  });
+  return {
+    ...base,
+    ...overrides,
+    logistics: { ...base.logistics, ...overrides.logistics },
+  };
+}
+
+test("enrichment fills blanks without overwriting user values", () => {
+  const merged = mergeOzonEnrichmentResult({
+    descriptionCategoryId: 700,
+    logistics: { weightG: 888, lengthMm: 0, widthMm: 0, heightMm: 0 },
+  }, completeResult({ descriptionCategoryId: 900 }));
+  assert.equal(merged.descriptionCategoryId, 700);
+  assert.equal(merged.logistics.weightG, 888);
+  assert.deepEqual(merged.logistics, {
+    weightG: 888,
+    lengthMm: 300,
+    widthMm: 200,
+    heightMm: 100,
+  });
+});
+
+test("enrichment policy retains retry state without allowing it to change completeness", () => {
+  assert.deepEqual(buildOzonEnrichmentSummary({
+    descriptionCategoryId: 123,
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+  }, {
+    attemptCount: 2,
+    nextAttemptAt: "2026-08-01T01:00:00.000Z",
+    lastErrorCode: "OZON_RETRYABLE",
+    status: "PENDING_ENRICHMENT",
+    missingFields: ["weightG"],
+  }), {
+    status: "COMPLETE",
+    missingFields: [],
+    attemptCount: 2,
+    nextAttemptAt: "2026-08-01T01:00:00.000Z",
+    lastErrorCode: "OZON_RETRYABLE",
+  });
+});
+
+test("enrichment retry delays and listing readiness use the stable field order", () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 99].map(retryDelayMs), [30_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000, 3_600_000]);
+  assert.throws(
+    () => assertOzonListingReady({
+      descriptionCategoryId: 123,
+      logistics: { weightG: 500, lengthMm: 0, widthMm: 0, heightMm: 100 },
+    }),
+    (error) => error?.status === 422
+      && error?.code === "COLLECT_ENRICHMENT_INCOMPLETE"
+      && assert.deepEqual(error.missingFields, ["lengthMm", "widthMm"]) === undefined,
+  );
+});
 
 test("normalizes reference and fallback Ozon enrichment fields", async (t) => {
   const cases = [

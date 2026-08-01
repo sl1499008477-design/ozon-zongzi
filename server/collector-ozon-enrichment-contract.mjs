@@ -1,14 +1,7 @@
 import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
+import { missingOzonEnrichmentFields } from "./collect-enrichment-policy.mjs";
 
 export const OZON_ENRICHMENT_CONTRACT_VERSION = "collector.ozon.enrichment.v1";
-
-const REQUIRED_FIELDS = Object.freeze([
-  "descriptionCategoryId",
-  "weightG",
-  "lengthMm",
-  "widthMm",
-  "heightMm",
-]);
 
 const ATTRIBUTE_IDS = Object.freeze({
   typeName: "8229",
@@ -84,17 +77,6 @@ function firstPositive(...values) {
   return 0;
 }
 
-function enrichmentFieldValues(value = {}) {
-  const logistics = value?.logistics && typeof value.logistics === "object" ? value.logistics : {};
-  return {
-    descriptionCategoryId: value?.descriptionCategoryId ?? value?.description_category_id,
-    weightG: value?.weightG ?? logistics.weightG ?? value?.weight,
-    lengthMm: value?.lengthMm ?? logistics.lengthMm ?? value?.depth,
-    widthMm: value?.widthMm ?? logistics.widthMm ?? value?.width,
-    heightMm: value?.heightMm ?? logistics.heightMm ?? value?.height,
-  };
-}
-
 function sourceCategoryEvidence(variantData) {
   const attributes = Array.isArray(variantData?.attributes) ? variantData.attributes : [];
   const typeAttribute = attributes.find(
@@ -150,8 +132,7 @@ export function parseOzonBatchEnrichmentRequest(body) {
 }
 
 export function missingOzonRequiredFields(value) {
-  const fields = enrichmentFieldValues(value);
-  return REQUIRED_FIELDS.filter((field) => !positiveNumber(fields[field]));
+  return missingOzonEnrichmentFields(value);
 }
 
 export function normalizeOzonAgentResult({ sku, variantData, source, capturedAt } = {}) {

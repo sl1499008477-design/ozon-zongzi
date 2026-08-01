@@ -13,6 +13,7 @@ import {
   ingestCollectRequestV4,
   preflightCompleteCollectRequestsV4,
 } from "../collection-pipeline.mjs";
+import { buildOzonEnrichmentSummary } from "../collect-enrichment-policy.mjs";
 
 const requiredFields = Object.freeze([
   "descriptionCategoryId",
@@ -88,6 +89,19 @@ function jsonHarness(body) {
     ),
   };
 }
+
+test("incomplete Ozon payload is collectible but pending enrichment", () => {
+  assert.deepEqual(buildOzonEnrichmentSummary({
+    sku: "4862904234",
+    name: "Public title",
+  }), {
+    status: "PENDING_ENRICHMENT",
+    missingFields: ["descriptionCategoryId", "weightG", "lengthMm", "widthMm", "heightMm"],
+    attemptCount: 0,
+    nextAttemptAt: "",
+    lastErrorCode: "",
+  });
+});
 
 test("batch preflight rejects a later incomplete Ozon item before yielding any prepared request", () => {
   assert.throws(
