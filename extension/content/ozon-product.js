@@ -1689,12 +1689,6 @@
     contentCopy?.mergeSourceDescriptionIntoVariant?.(variantData, collectAllDescription);
     const collectAllHashtags = extractKeywords();
     contentCopy?.mergeSourceHashtagsIntoVariant?.(variantData, collectAllHashtags);
-    // 跟卖视频 listing 级:整组变体是同一商品的不同规格,共用当前页(母体)视频。抓一次转存,
-    // 存进母体采集记录;编辑页 collect-adapter 会把它预填到每个变体行,上架时整组带同一视频。
-    setBtn('转存视频…');
-    const collectVideoMedia = await captureAndTransferPageVideoMedia((t) => setBtn(t));
-    const collectVideoUrl = collectVideoMedia?.videoUrl || null;
-    const collectVideoCover = collectVideoMedia?.videoCover || null;
     const s = anchorProduct?.statistics || {};
     const payload = {
       sku: String(anchorRow.sku),
@@ -1706,8 +1700,6 @@
       ...buildMarketingPricePayload(anchorProduct),
       image: anchorRow.image,
       images: anchorRow.images,
-      videoUrl: collectVideoUrl || undefined,
-      videoCover: collectVideoCover || undefined,
       variantData,
       sellerName: anchorProduct?.seller?.name || undefined,
       sellerLink: anchorProduct?.seller?.link || undefined,
@@ -1893,11 +1885,6 @@
     const collectImages = (svCat?.images?.length ? svCat.images : product.images) || [];
     const collectMainImage = svCat?.mainImage || product.images?.[0] || getMainImageUrl(product) || undefined;
 
-    // 跟卖视频:抓当前 PDP 视频转存成卖家自有 Ozon 视频,随采集存进采集箱;上架时自动带视频。
-    const collectVideoMedia = await captureAndTransferPageVideoMedia();
-    const collectVideoUrl = collectVideoMedia?.videoUrl || null;
-    const collectVideoCover = collectVideoMedia?.videoCover || null;
-
     // 源富内容(11254):composer 缓存抽取注入 variantData(searchVariants 失败也会
     // 新建 {attributes} 兜底),编辑页预填 + 上架经 _sourceVariant 下发。
     const collectRichContent = await jzCollectPageRichContent();
@@ -1936,8 +1923,6 @@
       ...buildMarketingPricePayload(product),
       image: collectMainImage,
       images: collectImages.length ? collectImages : undefined,
-      videoUrl: collectVideoUrl || undefined,
-      videoCover: collectVideoCover || undefined,
       variantData: collectVariantData || undefined,
       sellerName: product.seller?.name || undefined,
       sellerLink: product.seller?.link || undefined,

@@ -417,6 +417,37 @@ test('search page delegates collection without scheduling synchronous enrichment
     );
     await page.evaluate(() => window.__releaseFirstVariant());
 
+    const sellerCachedSku = '8000000003';
+    await page.waitForFunction((sku) =>
+      window.__getSearchRuntimeMessages()
+        .some(({ action, payload }) => action === 'searchVariants' && payload.sku === sku),
+    sellerCachedSku);
+    await page.waitForFunction(() =>
+      document.querySelectorAll('.ozon-helper-data-panel')[3]?.dataset.jzLoadStatus === 'ready');
+    const sellerCachedPanel = page.locator('.ozon-helper-data-panel').nth(3);
+    await sellerCachedPanel.locator('[data-action="collect-one"]').click();
+    await page.waitForFunction(() => window.__getSearchCoordinatorState().collectCalls.length === 2);
+    const sellerCachedRaw = (await page.evaluate(() =>
+      window.__getSearchCoordinatorState())).collectCalls[1].raw;
+    assert.deepEqual(
+      {
+        name: sellerCachedRaw.name,
+        image: sellerCachedRaw.image,
+        images: sellerCachedRaw.images,
+      },
+      {
+        name: `card title ${sellerCachedSku}`,
+        image: `https://cdn.test/card-${sellerCachedSku}.jpg`,
+        images: [`https://cdn.test/card-${sellerCachedSku}.jpg`],
+      },
+      'a fulfilled preFetched Seller variant must not override any public card field',
+    );
+    assert.equal(
+      JSON.stringify(sellerCachedRaw).includes('variant title variant-'),
+      false,
+      'Seller-prefetched values must never enter the public upload payload',
+    );
+
     await page.evaluate(() => { window.__collectReject = true; });
     const secondPanel = page.locator('.ozon-helper-data-panel').nth(1);
     await secondPanel.locator('[data-action="edit-list"]').click();
@@ -435,7 +466,7 @@ test('search page delegates collection without scheduling synchronous enrichment
     await thirdPanel.locator('[data-action="edit-list"]').click();
     await page.waitForFunction(() => window.__getSearchCoordinatorState().opened.length === 1);
     const finalState = await page.evaluate(() => window.__getSearchCoordinatorState());
-    assert.equal(finalState.collectCalls.length, 3);
+    assert.equal(finalState.collectCalls.length, 4);
     assert.match(finalState.opened[0].url, /\/ozon\/products\/collect\/edit\?id=search-collect-id$/);
     assert.equal(errors.length, 0, errors.join('\n'));
   } finally {

@@ -150,6 +150,7 @@ function fixtureHtml(mode) {
           return { items: [completeVariant('${OTHER_SKU}'), completeVariant('${SKU}')] };
         }
         if (action === 'uploadFollowSellVideo') {
+          if ('${mode}'.includes('video-hang')) return new Promise(() => {});
           return { url: 'https://seller-cdn.test/transferred.mp4' };
         }
         if (action === 'pushSourceCollect') {
@@ -359,8 +360,13 @@ test('product page delegates public-first single and multivariant collection wit
     assert.equal(state.collectCalls[0].raw.price, '1200');
     assert.equal(state.collectCalls[0].raw.marketingPrice, '1200');
     assert.equal(state.collectCalls[0].raw.greenPrice, '1100');
-    assert.equal(state.collectCalls[0].raw.videoUrl, 'https://seller-cdn.test/transferred.mp4');
-    assert.equal(state.collectCalls[0].raw.videoCover, 'https://cdn.test/source-cover.jpg');
+    assert.equal(state.collectCalls[0].raw.videoUrl, undefined);
+    assert.equal(state.collectCalls[0].raw.videoCover, undefined);
+    assert.equal(
+      state.runtimeMessages.some(({ action }) => action === 'uploadFollowSellVideo'),
+      false,
+      'public collection must not perform an unattested Seller media write',
+    );
     assert.equal(state.collectCalls[0].raw.sellerName, 'Fixture seller');
     assert.equal(state.collectCalls[0].raw.sellerLink, 'https://www.ozon.ru/seller/fixture/');
     assert.deepEqual(state.collectCalls[0].raw.variantData.hashtags, ['#fixture', '#complete']);
@@ -368,6 +374,12 @@ test('product page delegates public-first single and multivariant collection wit
     assert.ok(state.collectCalls[0].raw.variantData.attributes.some(({ key }) => String(key) === '11254'));
     assert.equal(state.collectCalls[0].local, null);
     await successPage.waitForFunction(() => window.__getProductFixtureState().label === '已采集');
+
+    const videoHangPage = await openFixture('video-hang');
+    await videoHangPage.click('[aria-label="一键采集"]');
+    await videoHangPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
+    state = await videoHangPage.evaluate(() => window.__getProductFixtureState());
+    assert.equal(state.runtimeMessages.some(({ action }) => action === 'uploadFollowSellVideo'), false);
 
     const coldPage = await openFixture('cold-success');
     await coldPage.click('[aria-label="一键采集"]');
@@ -433,6 +445,13 @@ test('product page delegates public-first single and multivariant collection wit
       ],
     );
     assert.equal(JSON.stringify(state.collectCalls[0].raw).includes('_bundleItem'), false);
+
+    const multiVideoHangPage = await openFixture('multivariant-video-hang');
+    await multiVideoHangPage.click('[aria-label="一键采集"]');
+    await multiVideoHangPage.waitForFunction(() =>
+      window.__getProductFixtureState().collectCalls.length === 1);
+    state = await multiVideoHangPage.evaluate(() => window.__getProductFixtureState());
+    assert.equal(state.runtimeMessages.some(({ action }) => action === 'uploadFollowSellVideo'), false);
 
     const multiFailurePage = await openFixture('multivariant-gate-failure');
     await multiFailurePage.click('[aria-label="一键采集"]');

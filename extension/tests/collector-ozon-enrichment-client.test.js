@@ -408,6 +408,45 @@ test('autonomous drain discards a result after Seller revision changes and repor
   assert.equal(JSON.parse(failure.options.body).code, 'SELLER_CONTEXT_CHANGED');
 });
 
+test('autonomous drain queues one empty-stop rerun when a kick arrives during an active claim', async () => {
+  const firstClaim = deferred();
+  let nextCalls = 0;
+  let activeClaims = 0;
+  let maxActiveClaims = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        nextCalls += 1;
+        activeClaims += 1;
+        maxActiveClaims = Math.max(maxActiveClaims, activeClaims);
+        try {
+          if (nextCalls === 1) await firstClaim.promise;
+          return jsonResponse(200, { ok: true, job: null });
+        } finally {
+          activeClaims -= 1;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const firstKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  await nextTurn();
+  assert.equal(nextCalls, 1);
+  const secondKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  assert.strictEqual(secondKick, firstKick, 'overlapping kicks must share one outward promise');
+
+  firstClaim.resolve();
+  await Promise.all([firstKick, secondKick]);
+
+  assert.equal(nextCalls, 2, 'the kick observed during the first round must run one more claim');
+  assert.equal(maxActiveClaims, 1, 'available drain rounds must remain single-concurrency');
+});
+
 test('autonomous drain maps real non-ready Seller recovery results to SELLER_CONTEXT_REQUIRED', async () => {
   for (const status of ['LOGIN_REQUIRED', 'RECOVERING']) {
     const requests = [];

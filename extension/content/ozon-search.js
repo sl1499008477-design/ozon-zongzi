@@ -498,17 +498,6 @@
     }
   }
 
-  function collectVariantItems(response) {
-    return response?.items || response?.data?.items || [];
-  }
-
-  function cachedSearchVariant(sku, data) {
-    const cachedVariant = data?.preFetched?.variant;
-    const response = cachedVariant?.status === 'fulfilled' ? cachedVariant.value : null;
-    const items = collectVariantItems(response);
-    return items.find((item) => window.JzOzonCollectCoordinator.matchesSku(item, sku)) || null;
-  }
-
   async function panelDataForCollect(sku) {
     const cached = panelDataCache.get(sku);
     if (cached) return cached;
@@ -522,38 +511,17 @@
     }
   }
 
-  async function sourceVariantForCollect(sku, data) {
-    const cached = cachedSearchVariant(sku, data);
-    if (cached) return cached;
-    // A still-running Seller read belongs to background enrichment and must never
-    // delay the public collection upload.
-    return null;
-  }
-
-  function mergeInfoHashtags(variant, info) {
-    if (!variant || !Array.isArray(info?.hashtags) || !info.hashtags.length) return;
-    try {
-      window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variant, info.hashtags);
-    } catch {}
-  }
-
-  function buildSearchCollectRaw(sku, info, data, variant) {
-    const sourceCatalog = window.jzExtractCatalogFromSv?.(variant) || null;
-    const collectName = window.jzPreferSourceName
-      ? window.jzPreferSourceName(sourceCatalog?.name, info.name)
-      : (info.name || sourceCatalog?.name || '');
-    const collectImages = sourceCatalog?.images?.length
-      ? sourceCatalog.images
-      : (info.image ? [info.image] : []);
+  function buildSearchCollectRaw(sku, info, data) {
+    const collectImages = info.image ? [info.image] : [];
     return {
       sku: String(sku),
       url: info.url,
-      name: collectName || info.name,
+      name: info.name,
       price: info.price != null ? String(info.price) : undefined,
       priceCurrency: info.priceCurrency || undefined,
       marketingPrice: info.marketingPrice != null ? String(info.marketingPrice) : undefined,
       marketingPriceCurrency: info.marketingPriceCurrency || undefined,
-      image: sourceCatalog?.mainImage || info.image || undefined,
+      image: info.image || undefined,
       images: collectImages.length ? collectImages : undefined,
       hashtags: Array.isArray(info.hashtags) && info.hashtags.length ? [...info.hashtags] : undefined,
       soldCount: data?.soldCount ?? undefined,
@@ -594,12 +562,9 @@
         enrichInfoWithDetailMarketingPrice(info),
       ]);
       info = enrichedInfo;
-      const sourceVariant = await sourceVariantForCollect(productId, data);
-      const variant = sourceVariant ? { ...sourceVariant } : null;
-      mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
         sku: productId,
-        raw: buildSearchCollectRaw(productId, info, data, variant),
+        raw: buildSearchCollectRaw(productId, info, data),
       });
       const resp = await collectPromise;
 
@@ -644,12 +609,9 @@
         enrichInfoWithDetailMarketingPrice(info),
       ]);
       info = enrichedInfo;
-      const sourceVariant = await sourceVariantForCollect(sku, data);
-      const variant = sourceVariant ? { ...sourceVariant } : null;
-      mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
         sku,
-        raw: buildSearchCollectRaw(sku, info, data, variant),
+        raw: buildSearchCollectRaw(sku, info, data),
       });
       const resp = await collectPromise;
       const itemId = resp?.result?.id;

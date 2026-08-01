@@ -283,6 +283,8 @@
     const leaseRecords = new WeakMap();
     let nextGeneration = 1;
     let availablePromise = null;
+    let availableRerunRequested = false;
+    let availableDeadlineAt = 0;
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
     const deactivate = (entry) => {
@@ -592,28 +594,39 @@
       if (!exactKeys(input, ['deadlineAt']) || !Number.isFinite(Number(input.deadlineAt))) {
         return Promise.reject(new TypeError('collector Ozon available drain input is invalid'));
       }
-      if (availablePromise) return availablePromise;
       const deadlineAt = Math.min(Number(input.deadlineAt), now() + MAX_DRAIN_MS);
-      let resolveCancelled;
-      const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
-      const entry = {
-        requestId: AVAILABLE_DRAIN_ID,
-        generation: nextGeneration,
-        refs: 1,
-        tokenRefs: 0,
-        deadlineAt,
-        active: true,
-        currentController: null,
-        cancelled,
-        resolveCancelled,
-        running: null,
-      };
-      nextGeneration += 1;
-      drains.set(entry.requestId, entry);
-      entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
-        .finally(() => deactivate(entry));
+      availableDeadlineAt = Math.max(availableDeadlineAt, deadlineAt);
+      if (availablePromise) {
+        availableRerunRequested = true;
+        return availablePromise;
+      }
       let exposed;
-      exposed = entry.running.finally(() => {
+      exposed = (async () => {
+        do {
+          availableRerunRequested = false;
+          const roundDeadlineAt = availableDeadlineAt;
+          availableDeadlineAt = 0;
+          let resolveCancelled;
+          const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
+          const entry = {
+            requestId: AVAILABLE_DRAIN_ID,
+            generation: nextGeneration,
+            refs: 1,
+            tokenRefs: 0,
+            deadlineAt: roundDeadlineAt,
+            active: true,
+            currentController: null,
+            cancelled,
+            resolveCancelled,
+            running: null,
+          };
+          nextGeneration += 1;
+          drains.set(entry.requestId, entry);
+          entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
+            .finally(() => deactivate(entry));
+          await entry.running;
+        } while (availableRerunRequested);
+      })().finally(() => {
         if (availablePromise === exposed) availablePromise = null;
       });
       availablePromise = exposed;

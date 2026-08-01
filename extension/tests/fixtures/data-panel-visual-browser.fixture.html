@@ -146,6 +146,9 @@
         if (!collectFixtureEnabled) return { data: {}, items: [] };
         collectFixtureMessages.push({ action, payload });
         if (action === "enrichOzonCollect") {
+          if (collectFixtureMode === "pending-hang") {
+            return new Promise(() => {});
+          }
           if (collectFixtureMode === "collector-auth") {
             throwFixtureError("COLLECTOR_AUTH_REQUIRED", "Collector auth required", { status: 401 });
           }
@@ -279,7 +282,13 @@
           if (collectFixtureMode === "upload-failure") {
             throwFixtureError("COLLECTOR_UPLOAD_FAILED", "upload failed", { status: 502, retryable: true });
           }
-          return { dedupeHit: false, result: { id: "collect-fixture" } };
+          return {
+            dedupeHit: false,
+            result: {
+              id: "collect-fixture",
+              enrichment: { status: "PENDING_ENRICHMENT" },
+            },
+          };
         }
         return { data: {}, items: [] };
       };
