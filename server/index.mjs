@@ -2437,7 +2437,7 @@ async function handle(req, res) {
     sendJson(res, 200, {
       ok: true,
       service: "qh-local-api",
-      version: "0.13.46.1-local",
+      version: "0.13.46.2-local",
       persistence: persistenceMode(),
     });
     return;
@@ -4067,6 +4067,8 @@ async function handle(req, res) {
       }
       sendJson(res, 200, result);
     } catch (error) {
+      const errorCode = error?.code || error?.body?.code || "COLLECT_LISTING_FAILED";
+      const enrichmentIncomplete = errorCode === "COLLECT_ENRICHMENT_INCOMPLETE";
       const failurePatch = {
         listingLastError: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
         listingLastErrorAt: new Date().toISOString(),
@@ -4076,12 +4078,12 @@ async function handle(req, res) {
         failurePatch.listingTaskId = "";
         failurePatch.listingJobId = "";
       }
-      if (!error?.preserveExistingListing) {
+      if (!enrichmentIncomplete && !error?.preserveExistingListing) {
         await updateCollectBoxItemAtomic(id, failurePatch, { account }).catch(() => null);
       }
       sendJson(res, error?.status || 502, {
         ok: false,
-        code: error?.code || error?.body?.code || "COLLECT_LISTING_FAILED",
+        code: errorCode,
         message: error?.message || (action === "preview" ? "采集箱草稿预检失败" : "采集箱草稿上架失败"),
         ...(Array.isArray(error?.missingFields) ? { missingFields: error.missingFields } : {}),
         ...(error?.body || {}),
@@ -4845,7 +4847,7 @@ async function handle(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/extension/latest") {
-    sendJson(res, 200, { version: "0.13.46.1", latestVersion: "0.13.46.1", downloadUrl: "/qh-extension-0.13.46.1.zip" });
+    sendJson(res, 200, { version: "0.13.46.2", latestVersion: "0.13.46.2", downloadUrl: "/sonli-extension-0.13.46.2.zip" });
     return;
   }
 

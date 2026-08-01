@@ -155,6 +155,7 @@ test("listing preparation accepts a store-neutral collection item and scopes dep
 
   assert.deepEqual(model, {
     itemReady: true,
+    listingBlocked: false,
     targetStoreId: "store-b",
     categoryStoreId: "store-b",
     currencyCode: "RUB",
@@ -162,6 +163,33 @@ test("listing preparation accepts a store-neutral collection item and scopes dep
       { id: "warehouse-b", storeId: "store-b", clientId: "client-b" },
     ],
   });
+});
+
+test("selecting an eligible target store cannot make incomplete enrichment listing-ready", () => {
+  const model = listingPreparationModel({
+    targetStoreId: "store-a",
+    collectItem: {
+      id: "collect-incomplete",
+      enrichment: {
+        status: "WAITING_FOR_SELLER",
+        missingFields: ["descriptionCategoryId", "weightG"],
+      },
+    },
+    localData: {
+      stores: [{
+        id: "store-a",
+        label: "Store A",
+        clientId: "client-a",
+        status: "active",
+        credentialsSaved: true,
+      }],
+      caches: { warehouses: [] },
+    },
+  });
+
+  assert.equal(model.targetStoreId, "store-a");
+  assert.equal(model.listingBlocked, true);
+  assert.equal(model.itemReady, false);
 });
 
 test("an uncertain retry sends the same listing idempotency key", () => {

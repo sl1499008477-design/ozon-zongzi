@@ -171,6 +171,29 @@ try {
   assert.equal(missingItem.status, 404);
   assert.equal(missingItem.body.code, "COLLECT_ITEM_NOT_FOUND");
 
+  for (const action of ["preview", "submit"]) {
+    const incomplete = await requestJson(
+      handle,
+      `/ozon/collect-box/${collectId}/listing/${action}`,
+      {
+        targetStoreId: storeId,
+        idempotencyKey: `incomplete-${action}`,
+      },
+      token,
+      storeId,
+    );
+    assert.equal(incomplete.status, 422);
+    assert.equal(incomplete.body.code, "COLLECT_ENRICHMENT_INCOMPLETE");
+    assert.deepEqual(incomplete.body.missingFields, ["weightG", "lengthMm", "widthMm", "heightMm"]);
+    const unchangedState = JSON.parse(await readFile(dataFile, "utf8"));
+    const unchangedItem = unchangedState.caches.collectBox.find((row) => row.id === collectId);
+    assert.equal(unchangedItem.status, "待处理");
+    assert.equal(unchangedItem.listingLastError, undefined);
+    assert.equal(unchangedItem.listingLastErrorAt, undefined);
+    assert.equal(externalWriteCalls, 0);
+    assert.deepEqual(fetchRequests, [], "incomplete collection items must not reach Ozon");
+  }
+
   const missingTarget = await requestJson(
     handle,
     `/ozon/collect-box/${collectId}/listing/submit`,
@@ -195,24 +218,6 @@ try {
   assert.equal(foreignTarget.body.code, "TARGET_STORE_NOT_FOUND");
   assert.doesNotMatch(JSON.stringify(foreignTarget.body), /Foreign Secret Store|foreign-secret-client|foreign-secret-key/);
 
-  for (const action of ["preview", "submit"]) {
-    const incomplete = await requestJson(
-      handle,
-      `/ozon/collect-box/${collectId}/listing/${action}`,
-      {
-        targetStoreId: storeId,
-        idempotencyKey: `incomplete-${action}`,
-      },
-      token,
-      storeId,
-    );
-    assert.equal(incomplete.status, 422);
-    assert.equal(incomplete.body.code, "COLLECT_ENRICHMENT_INCOMPLETE");
-    assert.deepEqual(incomplete.body.missingFields, ["weightG", "lengthMm", "widthMm", "heightMm"]);
-    assert.equal(externalWriteCalls, 0);
-    assert.deepEqual(fetchRequests, [], "incomplete collection items must not reach Ozon");
-  }
-
   assert.equal(externalWriteCalls, 0);
   assert.deepEqual(fetchRequests, [], "fail-closed route must not make any external request");
 
@@ -232,7 +237,7 @@ try {
   assert.equal(item.status, "失败");
   assert.equal(item.listingTaskId, "");
   assert.equal(item.listingJobId, "");
-  assert.match(item.listingLastError, /Ozon 商品补全资料不完整/);
+  assert.match(item.listingLastError, /目标经营店铺不存在或不可用/);
 
   console.log("collect listing fail-closed smoke passed");
   process.exitCode = 0;

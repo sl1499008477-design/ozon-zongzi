@@ -23,6 +23,7 @@ const collectorRuntimeFiles = [
   "lib/ozon-enrichment-contract.js",
   "lib/seller-company-context.js",
   "lib/seller-company-context-runtime.js",
+  "lib/seller-recovery-tab.js",
   "tests/collector-session.test.js",
   "tests/collector-ozon-enrichment-client.test.js",
   "tests/ozon-collect-coordinator.test.js",

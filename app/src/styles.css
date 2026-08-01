@@ -1005,6 +1005,11 @@ kbd {
   border-radius: 10px;
 }
 
+.collect-enrichment-alert {
+  margin-bottom: 18px;
+  border-radius: 10px;
+}
+
 .collect-content-rating {
   margin: -6px 0 18px;
   border-radius: 10px;
@@ -2849,6 +2854,28 @@ kbd {
 
 .collect-table-panel .source-table .ant-table {
   border-color: #f5f5f5;
+}
+
+.collect-enrichment-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.collect-enrichment-cell .ant-tag {
+  margin-inline-end: 0;
+}
+
+.collect-enrichment-cell > span:not(.ant-tag) {
+  max-width: 100%;
+  overflow: hidden;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-select {

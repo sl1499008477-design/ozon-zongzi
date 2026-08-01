@@ -1,3 +1,5 @@
+import { collectEnrichmentView } from "./collect-enrichment-view.js";
+
 export function collectAddReadiness({ value, token } = {}) {
   const input = String(value || "").trim();
   if (!input) {
@@ -58,8 +60,10 @@ export function listingPreparationModel({
       const clientId = String(warehouse?.clientId || warehouse?.client_id || "").trim();
       return Boolean(targetClientId && clientId === targetClientId);
     });
+  const listingBlocked = collectEnrichmentView(collectItem?.enrichment).listingBlocked;
   return {
-    itemReady: Boolean(collectItem?.id && targetStore),
+    itemReady: Boolean(collectItem?.id && targetStore && !listingBlocked),
+    listingBlocked,
     targetStoreId: targetStore ? targetId : "",
     categoryStoreId: targetStore ? targetId : "",
     currencyCode: String(

@@ -70,10 +70,18 @@ requirePattern(
   "collect edit must expose source-style content check and listing buttons with stable accessibility labels",
 );
 
+const publicFirstVariantRowsSource = extensionProductSource.match(
+  /const toVariantRow = \(v\) => \{[\s\S]*?const variantData = \{ variants: variantRows \};/,
+)?.[0] || "";
 assert.match(
-  extensionProductSource,
-  /sourceVariant:\s*r\.sourceVariant/,
-  "multi-variant collection must persist each SKU source snapshot instead of only the anchor snapshot",
+  publicFirstVariantRowsSource,
+  /aspectValues:\s*r\.aspectValues/,
+  "multi-variant public collection must preserve each SKU's public aspect values",
+);
+assert.doesNotMatch(
+  publicFirstVariantRowsSource,
+  /sourceVariant\s*:/,
+  "multi-variant public collection must leave Seller source snapshots to asynchronous enrichment",
 );
 
 requirePattern(

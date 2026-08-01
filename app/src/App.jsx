@@ -109,6 +109,17 @@ import {
   dashboardSummaryMoney,
 } from "./dashboard-money.js";
 import { buildPrepareListingBody, collectAddReadiness, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
+import {
+  collectEnrichmentEffectiveSummary,
+  collectEnrichmentErrorSummary,
+  collectEnrichmentListNeedsPolling,
+  collectEnrichmentNeedsPolling,
+  collectEnrichmentSuccessMessage,
+  collectEnrichmentView,
+  collectWorkflowStatus,
+  runCollectEnrichmentRetry,
+  startCollectEnrichmentPolling,
+} from "./collect-enrichment-view.js";
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
 import { installCollectorAuthBridge } from "./collector-auth-bridge.js";
@@ -116,6 +127,7 @@ import {
   emptyLocalRuntimeData,
   localRuntimeStateFromApi,
 } from "./local-runtime-state.js";
+import { createLatestLocalStateRefresh } from "./latest-request-gate.js";
 import {
   EXTENSION_CAPABILITIES,
   EXTENSION_DOWNLOAD_PATH,
@@ -127,6 +139,18 @@ const { Header, Sider, Content } = Layout;
 
 const STORAGE_KEY = "qh-local-binding-v1";
 const SETTINGS_KEY = "qh-local-settings-v1";
+const collectEnrichmentTagColors = Object.freeze({
+  processing: "processing",
+  warning: "warning",
+  danger: "error",
+  success: "success",
+});
+const collectEnrichmentAlertTypes = Object.freeze({
+  processing: "info",
+  warning: "warning",
+  danger: "error",
+  success: "success",
+});
 
 const writeClipboardText = async (value) => {
   const text = String(value || "").trim();
@@ -587,6 +611,10 @@ export function AppShell({ initialState = null }) {
     return parent ? [parent] : [];
   });
   const [form] = Form.useForm();
+  const applyLocalStateRef = useRef(null);
+  const localStateRefreshRef = useRef(null);
+  const messageRef = useRef(message);
+  messageRef.current = message;
 
   const hasStore = Boolean(binding?.storeName);
   const isEditingBindingStore = Boolean(editingBindingStore?.id || editingBindingStore?.storeId);
@@ -637,17 +665,24 @@ export function AppShell({ initialState = null }) {
     setAuthChecked(true);
   };
 
-  const refreshLocalState = async ({ silent = true } = {}) => {
+  applyLocalStateRef.current = applyLocalState;
+  if (!localStateRefreshRef.current) {
+    localStateRefreshRef.current = createLatestLocalStateRefresh({
+      readState: () => apiRequest("/local/state"),
+      applyState: (state) => applyLocalStateRef.current(state),
+    });
+  }
+
+  const refreshLocalState = React.useCallback(async ({ silent = true, source = "manual-refresh" } = {}) => {
     try {
-      const state = await apiRequest("/local/state");
-      await applyLocalState(state);
-      return state;
+      const result = await localStateRefreshRef.current({ source });
+      return result.status === "applied" ? result.state : null;
     } catch (error) {
-      if (!silent) message.error(`本地 API 未启动: ${error.message}`);
+      if (!silent) messageRef.current.error(`本地 API 未启动: ${error.message}`);
       setAuthChecked(true);
       return null;
     }
-  };
+  }, []);
 
   const handleStoreDeleted = createStoreDeletionCleanup({
     clearStoreStorage,
@@ -703,8 +738,8 @@ export function AppShell({ initialState = null }) {
   }, []);
 
   useEffect(() => {
-    refreshLocalState();
-    const timer = window.setInterval(() => refreshLocalState(), 15000);
+    refreshLocalState({ source: "initial-load" });
+    const timer = window.setInterval(() => refreshLocalState({ source: "background-poll" }), 15000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -837,7 +872,7 @@ export function AppShell({ initialState = null }) {
           }
         },
       });
-      await refreshLocalState();
+      await refreshLocalState({ source: "store-sync" });
       const completedTypes = states
         .filter((item) => item.status === "SUCCESS")
         .map((item) => item.type);
@@ -900,7 +935,7 @@ export function AppShell({ initialState = null }) {
         });
       if (editingStoreId) {
         closeBindModal();
-        await refreshLocalState();
+        await refreshLocalState({ source: "store-edit" });
         message.success("门店已修改");
         return;
       }
@@ -922,7 +957,7 @@ export function AppShell({ initialState = null }) {
       localStorage.setItem("token", response.token);
       localStorage.setItem("currentOzonStoreId", store.id);
       closeBindModal();
-      await refreshLocalState();
+      await refreshLocalState({ source: "store-bind" });
       message.success("门店已绑定");
     } catch (error) {
       message.error(`保存失败: ${error.message}`);
@@ -960,7 +995,7 @@ export function AppShell({ initialState = null }) {
       setBinding(nextBinding);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
       localStorage.setItem("currentOzonStoreId", nextBinding.id);
-      await refreshLocalState();
+      await refreshLocalState({ source: "store-switch" });
       message.success(`已切换到 ${nextBinding.storeName}`);
     } catch (error) {
       message.error(`切换失败: ${error.message}`);
@@ -3331,21 +3366,30 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
   const [sourceFilter, setSourceFilter] = useState();
   const [collectInput, setCollectInput] = useState("");
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [retryingEnrichmentId, setRetryingEnrichmentId] = useState("");
+  const [retryEnrichmentOverrides, setRetryEnrichmentOverrides] = useState({});
   const collectItems = localData?.caches?.collectBox || [];
-  const rows = collectItems.map((item, index) => ({
-    id: item.id || "collect-" + index,
-    _image: item.image || item.primaryImage || (item.images || [])[0] || "",
-    _title: item.name || item.title || item.productUrl || "—",
-    sku: item.sku || item.id || "",
-    "商品信息": item.name || item.title || item.productUrl || "—",
-    "采集价格": item.price || item.priceText || "—",
-    "卖家 / 来源": item.source || item.seller || item.sellerName || "—",
-    "品牌": item.brand || "—",
-    "下单链接": item.productUrl || item.url || "—",
-    "采集时间": item.createdAt ? new Date(item.createdAt).toLocaleString() : "—",
-    "状态": item.status || "待处理",
-    "操作": "查看",
-  }));
+  const rows = collectItems.map((item, index) => {
+    const id = item.id || "collect-" + index;
+    const enrichment = collectEnrichmentEffectiveSummary(item, retryEnrichmentOverrides[id]);
+    const enrichmentView = collectEnrichmentView(enrichment);
+    return {
+      id,
+      _image: item.image || item.primaryImage || (item.images || [])[0] || "",
+      _title: item.name || item.title || item.productUrl || "—",
+      _enrichment: enrichment,
+      _enrichmentView: enrichmentView,
+      sku: item.sku || item.id || "",
+      "商品信息": item.name || item.title || item.productUrl || "—",
+      "采集价格": item.price || item.priceText || "—",
+      "卖家 / 来源": item.source || item.seller || item.sellerName || "—",
+      "品牌": item.brand || "—",
+      "下单链接": item.productUrl || item.url || "—",
+      "采集时间": item.createdAt ? new Date(item.createdAt).toLocaleString() : "—",
+      "状态": collectWorkflowStatus(item),
+      "操作": "查看",
+    };
+  });
   const sourceOptions = [
     ...Array.from(new Set(rows.map((row) => row["卖家 / 来源"]).filter((value) => value && value !== "—"))).map((value) => ({
       value,
@@ -3359,11 +3403,61 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
   });
   const sellerSourceColumnWidth = adaptiveTextColumnWidth(visibleRows, "卖家 / 来源", { min: 132, max: 220 });
   const visibleRowIdSignature = visibleRows.map((row) => row.id).join("|");
+  const visibleEnrichmentPollKey = visibleRows
+    .map((row) => `${row.id}:${String(row._enrichment?.status || "")}`)
+    .join("|");
   const countByStatus = (status) => rows.filter((row) => row["状态"] === status).length;
   useEffect(() => {
     const visibleIds = new Set(visibleRows.map((row) => row.id));
     setSelectedRowKeys((keys) => keys.filter((key) => visibleIds.has(key)));
   }, [visibleRowIdSignature]);
+  useEffect(() => {
+    setRetryEnrichmentOverrides((current) => {
+      let changed = false;
+      const next = {};
+      for (const [itemId, override] of Object.entries(current)) {
+        const currentItem = collectItems.find((item) => String(item?.id || "") === itemId);
+        if (currentItem && override?.baseItem === currentItem) next[itemId] = override;
+        else changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [collectItems]);
+  useEffect(() => {
+    if (
+      typeof onRefresh !== "function"
+      || !collectEnrichmentListNeedsPolling(visibleRows.map((row) => row._enrichment))
+    ) return undefined;
+    return startCollectEnrichmentPolling({
+      refresh: () => onRefresh({ silent: true, source: "collect-list-poll" }),
+      setIntervalFn: window.setInterval.bind(window),
+      clearIntervalFn: window.clearInterval.bind(window),
+    });
+  }, [visibleEnrichmentPollKey, onRefresh]);
+  const retryCollectEnrichment = async (collectItemId) => {
+    const itemId = String(collectItemId || "").trim();
+    if (!itemId || retryingEnrichmentId) return;
+    const sourceItem = collectItems.find((item) => String(item?.id || "") === itemId);
+    if (!sourceItem) return;
+    setRetryingEnrichmentId(itemId);
+    message.loading({ content: "正在重新提交资料补全…", key: `collect-enrichment-${itemId}`, duration: 0 });
+    try {
+      const { notice } = await runCollectEnrichmentRetry({
+        item: sourceItem,
+        request: apiRequest,
+        applyOverride: (override) => {
+          setRetryEnrichmentOverrides((current) => ({ ...current, [itemId]: override }));
+        },
+        refresh: onRefresh,
+        refreshSource: "collect-list-retry",
+      });
+      message[notice.type]({ content: notice.content, key: `collect-enrichment-${itemId}` });
+    } catch (error) {
+      message.error({ content: `重新补全失败: ${error?.message || error}`, key: `collect-enrichment-${itemId}` });
+    } finally {
+      setRetryingEnrichmentId("");
+    }
+  };
   const deleteCollectItems = (ids = []) => {
     const targetIds = Array.from(new Set(ids.map((id) => String(id || "")).filter(Boolean)));
     if (!targetIds.length) {
@@ -3418,7 +3512,13 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
           body: { sku: input },
         });
         if (resp?.scraped) {
-          message.success({ content: "已抓取商品数据并加入采集箱", key: "collect-scrape" });
+          const enrichment = resp?.enrichment || resp?.data?.enrichment;
+          message.success({
+            content: enrichment
+              ? collectEnrichmentSuccessMessage(enrichment)
+              : "已抓取商品数据并加入采集箱",
+            key: "collect-scrape",
+          });
         } else {
           message.warning({ content: "未能抓取到商品数据，已创建待处理条目", key: "collect-scrape" });
         }
@@ -3430,7 +3530,7 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
       }
     }
     try {
-      await apiRequest("/ozon/collect-box", {
+      const response = await apiRequest("/ozon/collect-box", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: {
@@ -3442,7 +3542,7 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
           raw: { input },
         },
       });
-      message.success("已加入采集箱");
+      message.success(collectEnrichmentSuccessMessage(response?.enrichment || response?.data?.enrichment));
       await onRefresh?.();
     } catch (error) {
       message.error(`添加失败: ${error.message}`);
@@ -3548,10 +3648,35 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
                 );
               },
             },
-            "采集时间", "状态",
-            { title: "操作", dataIndex: "操作", width: 150, ellipsis: false, render: (value, row) => (
+            "采集时间",
+            {
+              title: "状态",
+              dataIndex: "状态",
+              width: 210,
+              render: (value, row) => {
+                const view = row._enrichmentView;
+                if (!view?.label) return value;
+                return (
+                  <div className="collect-enrichment-cell">
+                    <Tag color={collectEnrichmentTagColors[view.tone]}>{view.label}</Tag>
+                    {view.detail ? <span title={view.detail}>{view.detail}</span> : null}
+                  </div>
+                );
+              },
+            },
+            { title: "操作", dataIndex: "操作", width: 230, ellipsis: false, render: (value, row) => (
               <Space size={6} wrap={false}>
                 <Button type="link" size="small" onClick={() => navigate(`/ozon/products/collect/edit/?id=${encodeURIComponent(row.id)}`)}>{value}</Button>
+                {row._enrichmentView?.retryable ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    loading={retryingEnrichmentId === String(row.id)}
+                    onClick={() => retryCollectEnrichment(row.id)}
+                  >
+                    重新补全
+                  </Button>
+                ) : null}
                 <Button type="link" danger size="small" onClick={() => deleteCollectItems([row.id])}>删除</Button>
               </Space>
             ) },
@@ -4861,6 +4986,8 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const [categorySchemaLoading, setCategorySchemaLoading] = useState(false);
   const [categorySchemaError, setCategorySchemaError] = useState("");
   const [categoryAttributeValues, setCategoryAttributeValues] = useState({});
+  const [enrichmentRetrying, setEnrichmentRetrying] = useState(false);
+  const [enrichmentRetryOverride, setEnrichmentRetryOverride] = useState(null);
   const categoryAutoPreviewKeyRef = useRef("");
   const collectEditInitScopeRef = useRef("");
   const listingSubmissionIntentRef = useRef(null);
@@ -4897,6 +5024,45 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   });
   const item = itemScopeCurrent ? candidateItem : null;
   const scopedPreviewItem = itemScopeCurrent ? previewItem : null;
+  const effectiveEnrichment = collectEnrichmentEffectiveSummary(item, enrichmentRetryOverride);
+  const enrichmentView = collectEnrichmentView(effectiveEnrichment);
+  const enrichmentPollStatus = String(effectiveEnrichment?.status || "");
+  React.useEffect(function() {
+    if (enrichmentRetryOverride && enrichmentRetryOverride.baseItem !== item) {
+      setEnrichmentRetryOverride(null);
+    }
+  }, [item, enrichmentRetryOverride]);
+  React.useEffect(function() {
+    if (
+      typeof onRefresh !== "function"
+      || !collectEnrichmentNeedsPolling(effectiveEnrichment)
+    ) return undefined;
+    return startCollectEnrichmentPolling({
+      refresh: () => onRefresh({ silent: true, source: "collect-edit-poll" }),
+      setIntervalFn: window.setInterval.bind(window),
+      clearIntervalFn: window.clearInterval.bind(window),
+    });
+  }, [itemId, enrichmentPollStatus, onRefresh]);
+  const retryCollectEnrichment = async function() {
+    if (!item?.id || !enrichmentView.retryable || enrichmentRetrying) return;
+    setEnrichmentRetrying(true);
+    message.loading({ content: "正在重新提交资料补全…", key: "collect-edit-enrichment", duration: 0 });
+    try {
+      const sourceItem = item;
+      const { notice } = await runCollectEnrichmentRetry({
+        item: sourceItem,
+        request: apiRequest,
+        applyOverride: setEnrichmentRetryOverride,
+        refresh: onRefresh,
+        refreshSource: "collect-edit-retry",
+      });
+      message[notice.type]({ content: notice.content, key: "collect-edit-enrichment" });
+    } catch (error) {
+      message.error({ content: `重新补全失败: ${error?.message || error}`, key: "collect-edit-enrichment" });
+    } finally {
+      setEnrichmentRetrying(false);
+    }
+  };
   const preparationModel = listingPreparationModel({ localData, targetStoreId: selectedStoreId, collectItem: item });
   const categoryStoreId = preparationModel.categoryStoreId;
   React.useEffect(function() { if (listingSubmissionIntentRef.current && listingSubmissionIntentRef.current.collectItemId !== itemId) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: listingSubmissionIntentRef.current.targetStoreId }); }, [itemId]);
@@ -5054,6 +5220,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       message.error("当前商品店铺数据未就绪，不能预检或上架");
       return;
     }
+    if (preparationModel.listingBlocked) {
+      message.warning([enrichmentView.label || "资料补全未完成", enrichmentView.detail].filter(Boolean).join("："));
+      return;
+    }
     try {
       requireCategoryReadiness(categoryReadinessInput);
     } catch (error) {
@@ -5147,12 +5317,29 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       }
     } catch (error) {
       if (!dryRun && listingSubmissionIntentRef.current?.requestId === submissionIntent.requestId) listingSubmissionIntentRef.current = settleListingSubmissionIntent(submissionIntent, { definitive: listingSubmissionErrorIsDefinitive(error) });
-      setListingResult({
-        status: "error",
-        title: dryRun ? "上架预检失败" : "上架失败",
-        detail: error?.message || String(error),
-      });
-      message.error({ content: "上架失败: " + (error?.message || error), key: "edit-submit" });
+      const incompleteSummary = collectEnrichmentErrorSummary(error);
+      if (incompleteSummary) {
+        const blockedView = collectEnrichmentView(incompleteSummary);
+        const detail = blockedView.detail || "资料补全完成后才能预检或上架";
+        setListingResult({
+          status: "warning",
+          title: blockedView.label || "资料补全未完成",
+          detail,
+        });
+        message.warning({ content: detail, key: "edit-submit" });
+        try {
+          await onRefresh?.({ silent: true });
+        } catch {
+          // The stable 422 remains visible even if the follow-up refresh fails.
+        }
+      } else {
+        setListingResult({
+          status: "error",
+          title: dryRun ? "上架预检失败" : "上架失败",
+          detail: error?.message || String(error),
+        });
+        message.error({ content: "上架失败: " + (error?.message || error), key: "edit-submit" });
+      }
     } finally {
       setLoading(false);
     }
@@ -5162,6 +5349,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const isCollectItem = Boolean(itemScopeCurrent && item?.id && collectItems.some(function(i) { return String(i.id) === String(item.id); }));
   const runCollectPreview = async function({ silent = false } = {}) {
     if (!item || !itemScopeCurrent) return null;
+    if (preparationModel.listingBlocked) {
+      if (!silent) {
+        message.warning([enrichmentView.label || "资料补全未完成", enrichmentView.detail].filter(Boolean).join("："));
+      }
+      return null;
+    }
     if (!categoryTreeReady || !categoryDictionaryReady) {
       const detail = categoryVisibleError || CATEGORY_DATA_ERROR_MESSAGE;
       setCategoryAutoError(detail);
@@ -5656,7 +5849,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   }, [categoryStoreId, itemId, categoryDescriptionId, categoryTypeId, categorySchema, categoryAttributeOptions, previewItem, item, brand]);
 
   React.useEffect(function() {
-    if (!item || !categoryStoreId || !categoryTreeReady || !categoryDictionaryReady || categoryMatched || categoryAutoLoading) return;
+    if (!item || preparationModel.listingBlocked || !categoryStoreId || !categoryTreeReady || !categoryDictionaryReady || categoryMatched || categoryAutoLoading) return;
     if (!sku || !numberFromMoney(price) || !productImageList.length) return;
     const key = [
       itemId,
@@ -5673,6 +5866,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   }, [
     item,
     itemId,
+    preparationModel.listingBlocked,
     categoryStoreId,
     categoryTreeReady,
     categoryDictionaryReady,
@@ -5702,7 +5896,11 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       && collectEditRequiredValueFilled(collectEditFirst(row.name, row.title))
       && numberFromMoney(rowPrice) > 0;
   });
+  const enrichmentListingBlockedText = preparationModel.listingBlocked
+    ? [enrichmentView.label || "资料补全未完成", enrichmentView.detail].filter(Boolean).join("：")
+    : "";
   const listingRequiredMissingFields = [
+    preparationModel.listingBlocked ? "资料补全完成" : "",
     !targetStoreId ? "上架店铺" : "",
     !collectEditRequiredValueFilled(sku) ? "SKU（商品编码）" : "",
     !collectEditRequiredValueFilled(title) ? "俄语标题" : "",
@@ -5721,12 +5919,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     !variantRequiredReady ? "变体 SKU 货号、名称和售价" : "",
     ...missingRequiredCategoryAttributes.map((label) => `类目属性「${label}」`),
   ].filter(Boolean);
-  const listingMissingRequiredText = listingRequiredMissingFields.length
+  const listingMissingRequiredText = enrichmentListingBlockedText || (listingRequiredMissingFields.length
     ? `请先完善必填项：${listingRequiredMissingFields.slice(0, 6).join("、")}${listingRequiredMissingFields.length > 6 ? `等 ${listingRequiredMissingFields.length} 项` : ""}`
-    : "";
+    : "");
   const listingSubmitDisabledReason = listingMissingRequiredText || categoryReadinessState.message;
   const listingSubmitDisabled = loading || Boolean(listingRequiredMissingFields.length) || !categoryReadinessState.ready;
   const readyChecks = [
+    !preparationModel.listingBlocked,
     Boolean(targetStoreId),
     collectEditRequiredValueFilled(sku),
     collectEditRequiredValueFilled(title),
@@ -5869,6 +6068,22 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         </div>
       </div>
 
+      {enrichmentView.label ? (
+        <Alert
+          className="collect-enrichment-alert"
+          type={collectEnrichmentAlertTypes[enrichmentView.tone] || "info"}
+          showIcon
+          message={enrichmentView.label}
+          description={enrichmentView.detail || (enrichmentView.listingBlocked
+            ? "资料会在后台继续补全，完成前不能预检或上架。"
+            : "商品补全资料已可用于上架。")}
+          action={enrichmentView.retryable ? (
+            <Button size="small" loading={enrichmentRetrying} onClick={retryCollectEnrichment}>
+              重新补全
+            </Button>
+          ) : undefined}
+        />
+      ) : null}
       <Alert
         className="collect-listing-status"
         type="success"
@@ -5893,7 +6108,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       {listingResult ? (
         <Alert
           className="collect-listing-result"
-          type={listingResult.status === "success" ? "success" : listingResult.status === "pending" ? "info" : "error"}
+          type={listingResult.status === "success" ? "success" : listingResult.status === "pending" ? "info" : listingResult.status === "warning" ? "warning" : "error"}
           showIcon
           message={listingResult.title}
           description={listingResult.detail}
@@ -6232,7 +6447,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
               <div className="collect-edit-submit-reason">{listingSubmitDisabledReason}</div>
             ) : null}
             <Button icon={<ThunderboltOutlined />} onClick={() => message.info("AI 一键生成保留当前采集文案，未写入示例数据")}>AI 一键生成俄文文案</Button>
-            <Button loading={categoryAutoLoading} disabled={!categoryReadinessState.ready} aria-label="上架预检" onClick={handlePreview} icon={<EyeOutlined />}>内容体检</Button>
+            <Button loading={categoryAutoLoading} disabled={preparationModel.listingBlocked || !categoryReadinessState.ready} aria-label="上架预检" onClick={handlePreview} icon={<EyeOutlined />}>内容体检</Button>
             <Button onClick={handleSaveDraft}>保存草稿</Button>
             <Tooltip rootClassName="prototype-overlay" title={listingSubmitDisabledReason || ""}>
               <span className="collect-edit-submit-wrapper">
