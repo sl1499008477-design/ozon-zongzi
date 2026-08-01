@@ -69,3 +69,36 @@ export function appendAuditEvent(state, input) {
   state.auditEvents = state.auditEvents.slice(0, 1000);
   return event;
 }
+
+export async function insertPostgresAuditEvent(pool, input) {
+  if (!pool || typeof pool.query !== "function") {
+    throw new TypeError("PostgreSQL audit pool is required");
+  }
+  const event = createAuditEvent(input);
+  await pool.query(
+    `INSERT INTO audit_events (
+       event_id, account_id, store_id, action, status, actor_type, actor_id,
+       device_id, source, entity_type, entity_id, correlation_id, metadata,
+       occurred_at, created_at
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$14)
+     ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING`,
+    [
+      event.eventId,
+      event.accountId || null,
+      event.storeId || null,
+      event.action,
+      event.status,
+      event.actorType,
+      event.actorId,
+      event.deviceId,
+      event.source,
+      event.entityType,
+      event.entityId,
+      event.correlationId,
+      JSON.stringify(event.metadata),
+      event.createdAt,
+    ],
+  );
+  return event;
+}

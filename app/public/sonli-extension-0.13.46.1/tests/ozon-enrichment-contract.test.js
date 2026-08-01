@@ -69,6 +69,19 @@ test('accepts the exact complete server v1 result and maps existing collection f
   });
 });
 
+test('accepts additive source category evidence and persists only its safe projection', () => {
+  const sourceCategory = {
+    descriptionCategoryId: 123,
+    typeName: 'Заварочный чайник',
+    typeIdCandidate: 456,
+    path: ['家用电器', 'Заварочный чайник'],
+  };
+  const normalized = normalizeResult(serverResult({ sourceCategory }));
+
+  assert.deepEqual(normalized.sourceCategory, sourceCategory);
+  assert.deepEqual(toCollectFields(normalized).sourceCategory, sourceCategory);
+});
+
 test('normalizes locally captured variant data through the same complete result contract', () => {
   const variantData = completeVariantData();
   const normalized = normalizeVariantData({

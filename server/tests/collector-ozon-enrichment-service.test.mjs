@@ -666,6 +666,7 @@ test("recovers an expired processing claim with another valid same-account sessi
   await waitFor(() => h.repository.jobs[0], "recovery job");
   const first = await h.service.claimNext({ session: session("collector-preferred") });
   const claimExpiry = new Date(h.repository.jobs[0].claimExpiresAt).getTime();
+  assert.equal(claimExpiry - h.clock.value, 15_000);
   h.clock.value = claimExpiry;
   const recovered = await h.service.claimNext({ session: session("collector-fallback") });
   assert.equal(recovered.id, first.id);

@@ -305,6 +305,7 @@
         'typeId',
         'logistics',
         'variantData',
+        'sourceCategory',
         'source',
         'capturedAt',
       ];

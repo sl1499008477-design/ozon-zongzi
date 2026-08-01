@@ -43,6 +43,12 @@ await writeFile(dataFile, JSON.stringify({
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (url, options = {}) => {
   const href = String(url);
+  if (href.endsWith("/v1/description-category/tree")) {
+    return new Response(JSON.stringify({ result: [{
+      description_category_id: 1,
+      children: [{ type_id: 3, type_name: "Valid type", children: [] }],
+    }] }), { status: 200, headers: { "content-type": "application/json" } });
+  }
   if (href.endsWith("/v1/description-category/attribute")) {
     const request = JSON.parse(String(options.body || "{}"));
     if (Number(request.type_id) === 2) {
@@ -94,9 +100,12 @@ try {
     entry: "COLLECT_EDIT_AUTO_CATEGORY",
     items: [item(3, [{ id: 85, values: [{ value: "不存在的品牌" }] }])],
   }, token, storeId);
-  assert.notEqual(unresolved.status, 200, "auto-category preview must reject unresolved required dictionary values");
-  assert.equal(unresolved.body.ok, false);
-  assert.equal(unresolved.body.code, "OZON_CATEGORY_DATA_INVALID");
+  assert.equal(unresolved.status, 200, "auto-category preview must retain a validated category while other fields remain pending");
+  assert.equal(unresolved.body.ok, true);
+  assert.equal(unresolved.body.items[0].description_category_id, 1);
+  assert.equal(unresolved.body.items[0].type_id, 3);
+  assert.equal(unresolved.body.items[0].categoryResolution.status, "MATCHED");
+  assert.match(unresolved.body.warnings.join("\n"), /品牌.*不存在的品牌/);
 
   let createSubmissionCalls = 0;
   const finalState = JSON.parse(await readFile(dataFile, "utf8"));
@@ -141,6 +150,39 @@ try {
     (error) => error.status === 422 && error.code === "OZON_CATEGORY_DATA_INVALID" && error.cause === null,
   );
   assert.equal(createSubmissionCalls, 0, "unresolved final dictionary value must precede snapshot and job creation");
+
+  let prepareListingCalls = 0;
+  await assert.rejects(
+    () => testExports.queueCollectSubmissionV3(
+      finalState,
+      { headers: { authorization: `Bearer ${token}`, "x-ozon-store-id": storeId } },
+      {
+        items: [item(999)],
+        targetStoreId: storeId,
+        idempotencyKey: "category-target-store-validation",
+      },
+      {
+        id: "collect-target-store-validation",
+        accountId: "category-readiness-account",
+        createdBy: "category-readiness-account",
+      },
+      "COLLECT_BOX_DRAFT",
+      {
+        findListingPreparationReplayV3: async () => null,
+        categoryService: {
+          getCategoryTree: async () => ({
+            items: [{ description_category_id: 1, children: [{ type_id: 3, type_name: "Valid type" }] }],
+          }),
+          getCategoryAttributes: async () => ({ items: [] }),
+        },
+        prepareCollectItemForListing: async () => { prepareListingCalls += 1; },
+      },
+    ),
+    (error) => error.status === 400
+      && error.body?.normalizedItemCount === 0
+      && /目标店铺类目待匹配/.test(error.message),
+  );
+  assert.equal(prepareListingCalls, 0, "target-store category validation must precede listing snapshot creation");
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));
   assert.deepEqual(state.jobs, {}, "category readiness failure must not create a listing job");

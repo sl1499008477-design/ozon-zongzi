@@ -1630,7 +1630,39 @@ function listImportJobs(state, account) {
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 }
 
-function publicImportPreviewItem(item = {}, raw = {}) {
+function publicCategoryResolution(resolution) {
+  if (!resolution || typeof resolution !== "object") return undefined;
+  const source = resolution.source && typeof resolution.source === "object"
+    ? {
+        descriptionCategoryId: Number(resolution.source.descriptionCategoryId) || 0,
+        typeName: String(resolution.source.typeName || ""),
+        typeIdCandidate: Number(resolution.source.typeIdCandidate) || 0,
+        path: Array.isArray(resolution.source.path)
+          ? resolution.source.path.map((value) => String(value || "").trim()).filter(Boolean)
+          : [],
+      }
+    : { descriptionCategoryId: 0, typeName: "", typeIdCandidate: 0, path: [] };
+  const result = {
+    offerId: String(resolution.offerId || ""),
+    status: resolution.status === "MATCHED" ? "MATCHED" : "PENDING",
+    source,
+    resolvedAt: String(resolution.resolvedAt || ""),
+  };
+  if (resolution.method) result.method = String(resolution.method);
+  if (resolution.reason) result.reason = String(resolution.reason);
+  if (resolution.targetStoreId) result.targetStoreId = String(resolution.targetStoreId);
+  if (resolution.status === "MATCHED" && resolution.target) {
+    result.target = {
+      storeId: String(resolution.target.storeId || ""),
+      descriptionCategoryId: Number(resolution.target.descriptionCategoryId) || 0,
+      typeId: Number(resolution.target.typeId) || 0,
+    };
+  }
+  return result;
+}
+
+function publicImportPreviewItem(item = {}, raw = {}, resolution) {
+  const safeResolution = publicCategoryResolution(resolution);
   return {
     offer_id: item.offer_id || "",
     sku: raw.scraped_sku || raw.sku || raw.offer_id || "",
@@ -1648,6 +1680,7 @@ function publicImportPreviewItem(item = {}, raw = {}) {
     depth: item.depth || "",
     width: item.width || "",
     height: item.height || "",
+    ...(safeResolution ? { categoryResolution: safeResolution } : {}),
   };
 }
 
@@ -1659,8 +1692,14 @@ async function previewOzonProductImport(state, req, body) {
     err.status = 400;
     throw err;
   }
+  const categoryMatchPolicy = body.entry === "COLLECT_EDIT_AUTO_CATEGORY"
+    ? "TARGET_STORE_EXACT"
+    : "DEFAULT";
   const normalized = await normalizeOzonImportItems(rawItems, {
     strictTypeMatch: !!body.strictTypeMatch,
+    categoryMatchPolicy,
+    targetStoreId: store.id,
+    allowUnresolvedRequiredDictionaryValues: categoryMatchPolicy === "TARGET_STORE_EXACT",
     getCategoryTree: async () => (
       await ozonCategoryService.getCategoryTree({
         accountId: store.ownerAccountId,
@@ -1688,6 +1727,27 @@ async function previewOzonProductImport(state, req, body) {
       }).then(({ items }) => items),
   });
   if (normalized.items.length !== rawItems.length) {
+    if (categoryMatchPolicy === "TARGET_STORE_EXACT") {
+      const normalizedByOfferId = new Map(normalized.items.map((item) => [String(item.offer_id || ""), item]));
+      const resolutionByOfferId = new Map(
+        (normalized.categoryResolutions || []).map((resolution) => [String(resolution.offerId || ""), resolution]),
+      );
+      return {
+        ok: true,
+        dryRun: true,
+        itemCount: rawItems.length,
+        normalizedItemCount: normalized.items.length,
+        warnings: normalized.warnings || [],
+        items: rawItems.map((raw) => {
+          const offerId = String(raw.offer_id || raw.offerId || "");
+          return publicImportPreviewItem(
+            normalizedByOfferId.get(offerId) || raw,
+            raw,
+            resolutionByOfferId.get(offerId),
+          );
+        }),
+      };
+    }
     const err = new Error(normalized.warnings?.[0] || `有 ${rawItems.length - normalized.items.length} 个变体未通过上架预检`);
     err.status = 400;
     err.body = {
@@ -1703,7 +1763,12 @@ async function previewOzonProductImport(state, req, body) {
     dryRun: true,
     itemCount: normalized.items.length,
     warnings: normalized.warnings || [],
-    items: normalized.items.map((item, index) => publicImportPreviewItem(item, rawItems[index] || {})),
+    items: normalized.items.map((item, index) => {
+      const resolution = (normalized.categoryResolutions || []).find(
+        (entry) => String(entry.offerId || "") === String(item.offer_id || ""),
+      );
+      return publicImportPreviewItem(item, rawItems[index] || {}, resolution);
+    }),
   };
 }
 
@@ -1739,6 +1804,8 @@ async function queueCollectSubmissionV3(state, req, body, collectItem, type = "C
   }
   const normalized = await normalizeOzonImportItems(rawItems, {
     strictTypeMatch: !!body.strictTypeMatch,
+    categoryMatchPolicy: collectItem ? "TARGET_STORE_EXACT" : "DEFAULT",
+    targetStoreId: store.id,
     getCategoryTree: async () => (
       await categoryService.getCategoryTree({
         accountId: store.ownerAccountId,

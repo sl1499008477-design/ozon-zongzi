@@ -546,6 +546,7 @@ function pendingCategoryResolution(item, source, reason, ctx) {
     ...categoryResolutionBase(item, source, ctx),
     status: "PENDING",
     reason,
+    targetStoreId: cleanText(ctx.targetStoreId),
   };
 }
 

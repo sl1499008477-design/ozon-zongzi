@@ -1,4 +1,8 @@
-import { appendAuditEvent } from "./audit-event.mjs";
+import {
+  appendAuditEvent,
+  createAuditEvent,
+  insertPostgresAuditEvent,
+} from "./audit-event.mjs";
 import {
   createJsonCollectorOzonEnrichmentRepository,
   createPostgresCollectorOzonEnrichmentRepository,
@@ -19,6 +23,7 @@ export function createCollectorOzonEnrichmentRuntime({
   readJson,
   sendJson,
   initializePostgresRepository,
+  persistPostgresAuditEvent,
   now,
   randomUUID,
   sleep,
@@ -37,6 +42,7 @@ export function createCollectorOzonEnrichmentRuntime({
   }
 
   let postgresRepositoryPromise = null;
+  let postgresPoolPromise = null;
   const auditTransaction = createJsonStateTransactionBoundary({ enabled: () => true });
 
   const initializeRepository = initializePostgresRepository || (async () => {
@@ -54,6 +60,20 @@ export function createCollectorOzonEnrichmentRuntime({
     }
     return postgresRepositoryPromise;
   }
+
+  function postgresPool() {
+    if (!postgresPoolPromise) {
+      postgresPoolPromise = getPostgresPool().catch((error) => {
+        postgresPoolPromise = null;
+        throw error;
+      });
+    }
+    return postgresPoolPromise;
+  }
+
+  const writePostgresAuditEvent = persistPostgresAuditEvent || (async (event) => (
+    insertPostgresAuditEvent(await postgresPool(), event)
+  ));
 
   async function callRepository(method, input) {
     if (persistenceMode() === "postgres") {
@@ -78,33 +98,38 @@ export function createCollectorOzonEnrichmentRuntime({
   });
 
   async function audit(event = {}) {
+    const auditEvent = createAuditEvent({
+      correlationId: String(event.requestId || ""),
+      action: String(event.action || "COLLECTOR_OZON_ENRICHMENT"),
+      status: String(event.status || "UNKNOWN"),
+      accountId: String(event.accountId || ""),
+      deviceId: String(event.collectorSessionId || ""),
+      source: "collector-ozon-enrichment",
+      actorType: "collector_session",
+      actorId: String(event.collectorSessionId || ""),
+      entityType: "ozon_enrichment_job",
+      entityId: String(event.jobId || event.sku || ""),
+      metadata: {
+        requestId: String(event.requestId || ""),
+        sku: String(event.sku || ""),
+        jobId: String(event.jobId || ""),
+        collectorSessionId: String(event.collectorSessionId || ""),
+        cacheHit: event.cacheHit === true,
+        durationMs: Math.max(0, Number(event.durationMs) || 0),
+        code: String(event.code || ""),
+        missingFields: Array.isArray(event.missingFields) ? event.missingFields : [],
+        responseSha256: String(event.responseHash || ""),
+      },
+    });
+    if (persistenceMode() === "postgres") {
+      await writePostgresAuditEvent(auditEvent);
+      return;
+    }
     await auditTransaction.run(() => stateTransaction.run(async () => {
       let lastConflict = null;
       for (let attempt = 0; attempt < AUDIT_SAVE_MAX_ATTEMPTS; attempt += 1) {
         const state = await loadState();
-        appendAuditEvent(state, {
-          correlationId: String(event.requestId || ""),
-          action: String(event.action || "COLLECTOR_OZON_ENRICHMENT"),
-          status: String(event.status || "UNKNOWN"),
-          accountId: String(event.accountId || ""),
-          deviceId: String(event.collectorSessionId || ""),
-          source: "collector-ozon-enrichment",
-          actorType: "collector_session",
-          actorId: String(event.collectorSessionId || ""),
-          entityType: "ozon_enrichment_job",
-          entityId: String(event.jobId || event.sku || ""),
-          metadata: {
-            requestId: String(event.requestId || ""),
-            sku: String(event.sku || ""),
-            jobId: String(event.jobId || ""),
-            collectorSessionId: String(event.collectorSessionId || ""),
-            cacheHit: event.cacheHit === true,
-            durationMs: Math.max(0, Number(event.durationMs) || 0),
-            code: String(event.code || ""),
-            missingFields: Array.isArray(event.missingFields) ? event.missingFields : [],
-            responseSha256: String(event.responseHash || ""),
-          },
-        });
+        appendAuditEvent(state, auditEvent);
         try {
           await saveState(state);
           return;

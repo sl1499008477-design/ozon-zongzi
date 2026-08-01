@@ -12,7 +12,9 @@
       .filter(
         (cookie) =>
           cookie?.name === 'sc_company_id'
-          && String(cookie.domain || '').replace(/^\./, '') === 'seller.ozon.ru',
+          && ['seller.ozon.ru', 'ozon.ru'].includes(
+            String(cookie.domain || '').replace(/^\./, '').toLowerCase(),
+          ),
       )
       .map((cookie) => normalizeCompanyId(cookie.value))
       .filter(Boolean),

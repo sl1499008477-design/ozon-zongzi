@@ -30,6 +30,14 @@ function completeVariantData(sku, overrides = {}) {
   };
 }
 
+function projectedVariantData(variantData) {
+  return {
+    description_category_id: variantData.description_category_id,
+    type_id: variantData.type_id,
+    attributes: variantData.attributes,
+  };
+}
+
 function completeResult(sku) {
   const variantData = completeVariantData(sku);
   return {
@@ -360,11 +368,12 @@ test('agent accepts only the minimal job, captures fixed searchVariants input, a
 
   await agent.drainUntil({ requestId: 'request-one', deadlineAt: Date.now() + 2_000 });
 
-  assert.deepEqual(captures, [{
-    sku: '4862904234',
-    noProxy: true,
-    forceRefresh: true,
-  }]);
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].sku, '4862904234');
+  assert.equal(captures[0].noProxy, true);
+  assert.equal(captures[0].forceRefresh, true);
+  assert.equal(Number.isFinite(captures[0].deadlineAt), true);
+  assert.equal(captures[0].deadlineAt > Date.now(), true);
   assert.deepEqual(requests.map(({ path }) => path), [
     '/collector/ozon/enrichment-jobs/next',
     '/collector/ozon/enrichment-jobs/job-one/result',
@@ -373,7 +382,61 @@ test('agent accepts only the minimal job, captures fixed searchVariants input, a
   const resultRequest = requests[1];
   assert.equal(resultRequest.options.permission, READ_PERMISSION);
   assert.deepEqual(Object.keys(JSON.parse(resultRequest.options.body)), ['variantData']);
-  assert.deepEqual(JSON.parse(resultRequest.options.body), { variantData: matchedVariant });
+  assert.deepEqual(JSON.parse(resultRequest.options.body), {
+    variantData: projectedVariantData(matchedVariant),
+  });
+});
+
+test('agent uploads an allowlisted product projection and ignores portal URL metadata', async () => {
+  const requests = [];
+  let nextCalls = 0;
+  let agent;
+  const variantData = completeVariantData('4862904234', {
+    sourceUrl: 'https://www.ozon.ru/product/4862904234',
+    _bundleItem: {
+      primary_image_url: 'https://cdn.ozon.ru/product.jpg',
+      action: 'create-draft',
+      sellerCompanyId: 'portal-only-context',
+    },
+  });
+  agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path, options) {
+        requests.push({ path, options });
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1
+            ? {
+                ok: true,
+                job: {
+                  id: 'job-realistic-portal-data',
+                  requestId: 'request-realistic-portal-data',
+                  sku: '4862904234',
+                  refreshBundle: true,
+                },
+              }
+            : { ok: true, job: null });
+        }
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { return { ok: true, data: { items: [variantData] } }; },
+    async sleep() { agent.stop('request-realistic-portal-data'); },
+  });
+
+  await agent.drainUntil({
+    requestId: 'request-realistic-portal-data',
+    deadlineAt: Date.now() + 2_000,
+  });
+
+  const result = requests.find(({ path }) => path.endsWith('/result'));
+  assert.ok(result);
+  assert.deepEqual(JSON.parse(result.options.body), {
+    variantData: projectedVariantData(variantData),
+  });
+  assert.doesNotMatch(JSON.stringify(result), /sourceUrl|primary_image_url|create-draft|portal-only-context/);
 });
 
 test('agent settles at its deadline and never posts a late capture result', async () => {
@@ -971,7 +1034,7 @@ test('capture failures never forward raw secrets and cannot select sync or arbit
   });
 });
 
-test('captured variantData rejects nested client control and secret values before result upload', async () => {
+test('captured variantData discards portal-only control and secret metadata before result upload', async () => {
   const forbiddenVariants = [
     completeVariantData('4862904234', { nested: [{ store_id: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ sellerCompanyId: 'attacker-controlled' }] }),
@@ -980,7 +1043,6 @@ test('captured variantData rejects nested client control and secret values befor
     completeVariantData('4862904234', { nested: [{ requestHeaders: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ action: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ script: 'attacker-controlled' }] }),
-    completeVariantData('4862904234', { nested: [{ sourceUrl: 'https://attacker.invalid' }] }),
     completeVariantData('4862904234', { note: 'Collector cst_secret-secret-secret-secret' }),
     completeVariantData('4862904234', { note: 'Bearer abcdefghijklmnopqrstuvwxyz123456' }),
   ];
@@ -1021,15 +1083,74 @@ test('captured variantData rejects nested client control and secret values befor
       deadlineAt: Date.now() + 2_000,
     });
 
-    assert.equal(requests.some(({ path }) => path.endsWith('/result')), false, `case ${index}`);
-    const failure = requests.find(({ path }) => path.endsWith('/fail'));
-    assert.ok(failure, `case ${index}`);
-    assert.deepEqual(JSON.parse(failure.options.body), {
-      code: 'OZON_ENRICH_UPSTREAM_FAILED',
-      message: 'Ozon 商品资料暂时无法读取',
+    const result = requests.find(({ path }) => path.endsWith('/result'));
+    assert.ok(result, `case ${index}`);
+    assert.deepEqual(JSON.parse(result.options.body), {
+      variantData: projectedVariantData(variantData),
     });
+    assert.equal(requests.some(({ path }) => path.endsWith('/fail')), false, `case ${index}`);
     assert.doesNotMatch(JSON.stringify(requests), /attacker-controlled|attacker\.invalid|secret-secret|abcdefghijklmnopqrstuvwxyz/);
   }
+});
+
+test('captured variantData rejects a credential-shaped value inside an uploaded product attribute', async () => {
+  const requests = [];
+  let nextCalls = 0;
+  let agent;
+  agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path, options) {
+        requests.push({ path, options });
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1
+            ? {
+                ok: true,
+                job: {
+                  id: 'job-secret-attribute',
+                  requestId: 'request-secret-attribute',
+                  sku: '4862904234',
+                  refreshBundle: false,
+                },
+              }
+            : { ok: true, job: null });
+        }
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      return {
+        ok: true,
+        data: {
+          items: [completeVariantData('4862904234', {
+            attributes: [
+              { key: '4497', value: 'Bearer abcdefghijklmnopqrstuvwxyz123456' },
+              { key: '9454', value: '300' },
+              { key: '9455', value: '200' },
+              { key: '9456', value: '100' },
+            ],
+          })],
+        },
+      };
+    },
+    async sleep() { agent.stop('request-secret-attribute'); },
+  });
+
+  await agent.drainUntil({
+    requestId: 'request-secret-attribute',
+    deadlineAt: Date.now() + 2_000,
+  });
+
+  assert.equal(requests.some(({ path }) => path.endsWith('/result')), false);
+  const failure = requests.find(({ path }) => path.endsWith('/fail'));
+  assert.ok(failure);
+  assert.deepEqual(JSON.parse(failure.options.body), {
+    code: 'OZON_ENRICH_UPSTREAM_FAILED',
+    message: 'Ozon 商品资料暂时无法读取',
+  });
+  assert.doesNotMatch(JSON.stringify(requests), /abcdefghijklmnopqrstuvwxyz/);
 });
 
 test('batch client preserves first-seen order, caps twenty unique SKUs, and uses one fixed request body', async () => {

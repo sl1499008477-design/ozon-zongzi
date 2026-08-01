@@ -176,12 +176,15 @@
         "https://www.ozon.ru/category/*",
         "https://www.ozon.ru/search/*",
         "https://www.ozon.ru/search-by-image*",
+        "https://www.ozon.ru/product/*",
         "https://ozon.kz/category/*",
         "https://ozon.kz/search/*",
         "https://ozon.kz/search-by-image*",
+        "https://ozon.kz/product/*",
         "https://www.ozon.kz/category/*",
         "https://www.ozon.kz/search/*",
-        "https://www.ozon.kz/search-by-image*"
+        "https://www.ozon.kz/search-by-image*",
+        "https://www.ozon.kz/product/*"
       ],
       "js": [
         "content/shared-utils.js",

@@ -8,6 +8,7 @@ const {
 assert.equal(isTrustedSellerTab({ url: 'https://seller.ozon.ru/app/dashboard/main' }), true);
 assert.equal(isTrustedSellerTab({ url: 'https://www.ozon.ru/product/1' }), false);
 assert.equal(resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '1234', domain: 'seller.ozon.ru' }]), '1234');
+assert.equal(resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '5678', domain: '.ozon.ru' }]), '5678');
 assert.throws(() => resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '1234', domain: 'seller.ozon.ru' }, { name: 'sc_company_id', value: '5678', domain: 'seller.ozon.ru' }]));
 assert.throws(() => resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '1234', domain: 'evil.example' }]));
 

@@ -8,6 +8,10 @@ const sharedUtilsSource = fs.readFileSync(
   path.join(extensionRoot, "content", "shared-utils.js"),
   "utf8",
 );
+const productPageSource = fs.readFileSync(
+  path.join(extensionRoot, "content", "ozon-product.js"),
+  "utf8",
+);
 
 function loadSharedUtils() {
   const location = {
@@ -91,6 +95,11 @@ assert.equal(
   sharedUtilsSource.includes("ozon-helper-rating-star"),
   false,
   "rating rendering must not emit a star span",
+);
+assert.equal(
+  productPageSource.includes("ozon-helper-rating-star"),
+  false,
+  "product-page rating rendering must not emit a star span",
 );
 
 console.log("data panel logistics and rating formatting passed");

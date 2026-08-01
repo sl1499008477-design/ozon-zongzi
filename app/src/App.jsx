@@ -69,9 +69,12 @@ import zhCN from "antd/locale/zh_CN";
 import "antd/dist/reset.css";
 import {
   CATEGORY_DATA_ERROR_MESSAGE,
+  categoryResolutionForStore,
   categoryItemScopeIsCurrent,
   categoryReadiness,
+  manualCategoryResolution,
   requireCategoryReadiness,
+  sourceCategoryEvidenceOf,
 } from "./category-readiness.js";
 import { useCategoryTreeReadiness } from "./use-category-tree-readiness.js";
 import {
@@ -4897,7 +4900,14 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const preparationModel = listingPreparationModel({ localData, targetStoreId: selectedStoreId, collectItem: item });
   const categoryStoreId = preparationModel.categoryStoreId;
   React.useEffect(function() { if (listingSubmissionIntentRef.current && listingSubmissionIntentRef.current.collectItemId !== itemId) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: listingSubmissionIntentRef.current.targetStoreId }); }, [itemId]);
-  const selectListingTarget = (value) => { const next = String(value || ""); if (listingSubmissionIntentRef.current) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: next }); setTargetStoreId(next); };
+  const selectListingTarget = (value) => {
+    const next = String(value || "");
+    if (listingSubmissionIntentRef.current) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: next });
+    setPreviewItem(null);
+    setCategoryAutoError("");
+    categoryAutoPreviewKeyRef.current = "";
+    setTargetStoreId(next);
+  };
   const storeCurrencyCode = preparationModel.currencyCode;
   const readCategoryTree = React.useCallback((language) => apiRequest(`/ozon/categories/tree?language=${encodeURIComponent(language)}`, {
     headers: { "x-ozon-store-id": categoryStoreId },
@@ -4930,21 +4940,28 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       ].join("|");
       if (collectEditInitScopeRef.current === itemScope) return;
       collectEditInitScopeRef.current = itemScope;
+      const storedCategoryResolution = categoryResolutionForStore(
+        draft.categoryResolution || item.categoryResolution,
+        categoryStoreId,
+      );
       const seededDescriptionCategoryId = collectEditFirst(
-        draft.descriptionCategoryId,
-        draft.description_category_id,
-        item.description_category_id,
-        item.descriptionCategoryId,
+        storedCategoryResolution?.target?.descriptionCategoryId,
+        collectCandidate ? "" : draft.descriptionCategoryId,
+        collectCandidate ? "" : draft.description_category_id,
+        collectCandidate ? "" : item.description_category_id,
+        collectCandidate ? "" : item.descriptionCategoryId,
       );
       const seededTypeId = collectEditFirst(
-        draft.typeId,
-        draft.type_id,
-        item.type_id,
-        item.typeId,
+        storedCategoryResolution?.target?.typeId,
+        collectCandidate ? "" : draft.typeId,
+        collectCandidate ? "" : draft.type_id,
+        collectCandidate ? "" : item.type_id,
+        collectCandidate ? "" : item.typeId,
       );
-      setPreviewItem(seededDescriptionCategoryId && seededTypeId ? {
-        description_category_id: seededDescriptionCategoryId,
-        type_id: seededTypeId,
+      setPreviewItem(storedCategoryResolution || (seededDescriptionCategoryId && seededTypeId) ? {
+        description_category_id: seededDescriptionCategoryId || "",
+        type_id: seededTypeId || "",
+        ...(storedCategoryResolution ? { categoryResolution: storedCategoryResolution } : {}),
         categoryPath: collectEditFirst(draft.categoryPath, item.categoryPath, item.category_path, item.category, item.category_name, item.type_name),
       } : null);
       setCategoryAutoError("");
@@ -5202,13 +5219,18 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       });
       if (!requestIsCurrent()) return null;
       const first = Array.isArray(result?.items) ? result.items[0] : null;
+      if (first) setPreviewItem(first);
       if (!first?.description_category_id || !first?.type_id) {
-        const detail = result?.warnings?.[0] || "未能根据当前采集数据自动匹配 Ozon 类目";
+        const reason = first?.categoryResolution?.reason;
+        const detail = reason === "TARGET_TYPE_AMBIGUOUS"
+          ? "目标店铺存在多个同名商品类型，请手动选择"
+          : reason === "SOURCE_TYPE_MISSING"
+            ? "采集来源缺少可核验的商品类型，请手动选择"
+            : "目标店铺未找到唯一对应类型，请手动选择";
         setCategoryAutoError(detail);
         if (!silent) message.warning({ content: detail, key: "collect-category-preview", duration: 4 });
         return null;
       }
-      setPreviewItem(first);
       setCategoryAutoError("");
       if (!silent) {
         message.success({
@@ -5305,6 +5327,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       categoryPath: categoryLabel,
       categoryPathZh: categoryLabel,
       categoryPathRu: categoryRussianLabel,
+      categoryResolution,
       // Kept for compatibility with older drafts. The server applies this only
       // to the anchor SKU; sibling variants use their own categoryAttributes or
       // sourceVariant snapshot.
@@ -5371,19 +5394,25 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     await saveListingDraft({ silent: false }).catch(function() {});
   };
   const currentDraft = item?.listingDraft || {};
+  const categoryResolution = categoryResolutionForStore(
+    scopedPreviewItem?.categoryResolution || currentDraft.categoryResolution,
+    categoryStoreId,
+  );
   const categoryDescriptionId = collectEditFirst(
-    scopedPreviewItem?.description_category_id,
-    item?.description_category_id,
-    item?.descriptionCategoryId,
-    currentDraft.descriptionCategoryId,
-    currentDraft.description_category_id,
+    categoryResolution?.target?.descriptionCategoryId,
+    isCollectItem ? "" : scopedPreviewItem?.description_category_id,
+    isCollectItem ? "" : item?.description_category_id,
+    isCollectItem ? "" : item?.descriptionCategoryId,
+    isCollectItem ? "" : currentDraft.descriptionCategoryId,
+    isCollectItem ? "" : currentDraft.description_category_id,
   );
   const categoryTypeId = collectEditFirst(
-    scopedPreviewItem?.type_id,
-    item?.type_id,
-    item?.typeId,
-    currentDraft.typeId,
-    currentDraft.type_id,
+    categoryResolution?.target?.typeId,
+    isCollectItem ? "" : scopedPreviewItem?.type_id,
+    isCollectItem ? "" : item?.type_id,
+    isCollectItem ? "" : item?.typeId,
+    isCollectItem ? "" : currentDraft.typeId,
+    isCollectItem ? "" : currentDraft.type_id,
   );
   const categoryMatched = Boolean(categoryDescriptionId && categoryTypeId);
   const categoryDictionaryTargets = useMemo(() => categorySchema
@@ -5463,6 +5492,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     item?.category_path,
     item?.category,
   ) || (categoryMatched ? "俄语类目待加载" : "俄语类目待匹配");
+  const sourceCategory = sourceCategoryEvidenceOf(
+    scopedPreviewItem?.categoryResolution ? scopedPreviewItem : item,
+  );
+  const sourceCategoryLabel = sourceCategory.path.length
+    ? sourceCategory.path.join(" / ")
+    : sourceCategory.typeName || (sourceCategory.descriptionCategoryId ? `来源类目 ${sourceCategory.descriptionCategoryId}` : "来源类目暂无数据");
   const handleCategoryChange = function(_, selectedOptions = []) {
     const options = Array.isArray(selectedOptions) ? selectedOptions : [];
     const leaf = options[options.length - 1];
@@ -5485,6 +5520,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       categoryPathRu: nextRuPath,
       category_name: nextZhPath,
       type_name: collectEditText(leaf?.label),
+      categoryResolution: manualCategoryResolution({
+        source: sourceCategory,
+        targetStoreId: categoryStoreId,
+        descriptionCategoryId: nextDescriptionId,
+        typeId: nextTypeId,
+      }),
     }));
     setCategoryAutoError("");
   };
@@ -5937,7 +5978,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             <div className="collect-edit-section-head">
               <div>
                 <h2>产品类目</h2>
-                <p>{categoryMatched ? "已按采集数据自动匹配" : categoryAutoLoading ? "正在按采集数据自动匹配" : "按采集数据自动匹配"}</p>
+                <p>{categoryMatched ? (categoryResolution?.method === "MANUAL" ? "已人工选择目标店铺类目" : "已按采集数据核验目标店铺类目") : categoryAutoLoading ? "正在核验目标店铺类目" : "来源类目已保留，目标店铺类目待核验"}</p>
               </div>
               <Tooltip rootClassName="prototype-overlay" title={categoryMatched ? "已拿到可用于 Ozon 上架的类目和类型 ID" : "系统会优先使用采集到的类目、类型和属性自动匹配"}>
                 <Tag color={categoryMatched ? "green" : categoryAutoLoading ? "processing" : "default"}>{categoryMatched ? "已匹配" : categoryAutoLoading ? "匹配中" : "待匹配"}</Tag>
@@ -5974,11 +6015,16 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
               />
             </div>
             <div className="collect-edit-attr-strip">
-              <span title={`description_category_id: ${categoryDescriptionId || "—"} / type_id: ${categoryTypeId || "—"}`}>
-                {categoryRussianLabel}
+              <span title={`来源 description_category_id: ${sourceCategory.descriptionCategoryId || "—"} / 候选 type_id: ${sourceCategory.typeIdCandidate || "—"}`}>
+                采集来源：{sourceCategoryLabel}
               </span>
             </div>
-            {categoryAutoError ? <div className="collect-edit-empty-note">自动匹配失败：{categoryAutoError}</div> : null}
+            <div className="collect-edit-attr-strip">
+              <span title={`description_category_id: ${categoryDescriptionId || "—"} / type_id: ${categoryTypeId || "—"}`}>
+                目标店铺：{categoryMatched ? `${categoryRussianLabel}（${categoryDescriptionId} / ${categoryTypeId}）` : categoryAutoLoading ? "正在核验" : "待手动选择或自动核验"}
+              </span>
+            </div>
+            {categoryAutoError ? <div className="collect-edit-empty-note">目标类目待处理：{categoryAutoError}</div> : null}
           </section>
 
           <section className="collect-edit-section" id="标题与文案">

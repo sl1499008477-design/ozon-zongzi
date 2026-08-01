@@ -24,6 +24,7 @@
     'typeId',
     'logistics',
     'variantData',
+    'sourceCategory',
     'source',
     'capturedAt',
     'cache',
@@ -50,6 +51,23 @@
   const nativeText = (value) => typeof value === 'string' && value.trim().length > 0;
 
   const cleanText = (value) => String(value == null ? '' : value).trim();
+
+  const validSourceCategory = (value) => exactKeys(
+    value,
+    ['descriptionCategoryId', 'typeName', 'typeIdCandidate', 'path'],
+  )
+    && nativeFiniteNumber(value.descriptionCategoryId)
+    && typeof value.typeName === 'string'
+    && nativeFiniteNumber(value.typeIdCandidate)
+    && Array.isArray(value.path)
+    && value.path.every((entry) => typeof entry === 'string');
+
+  const normalizedSourceCategory = (value) => ({
+    descriptionCategoryId: value.descriptionCategoryId,
+    typeName: cleanText(value.typeName),
+    typeIdCandidate: value.typeIdCandidate,
+    path: value.path.map(cleanText).filter(Boolean),
+  });
 
   const contractError = (
     message,
@@ -150,7 +168,7 @@
   };
 
   const normalizeResult = (value) => {
-    const requiredKeys = RESULT_KEYS.filter((key) => key !== 'typeId');
+    const requiredKeys = RESULT_KEYS.filter((key) => !['typeId', 'sourceCategory'].includes(key));
     if (
       !exactKeys(value, RESULT_KEYS, requiredKeys)
       || value.status !== 'COMPLETE'
@@ -160,6 +178,7 @@
       || !nativeText(value.capturedAt)
       || !nativeFiniteNumber(value.descriptionCategoryId)
       || !isPlainObject(value.variantData)
+      || (Object.hasOwn(value, 'sourceCategory') && !validSourceCategory(value.sourceCategory))
       || !exactKeys(
         value.logistics,
         ['weightG', 'lengthMm', 'widthMm', 'heightMm'],
@@ -189,6 +208,9 @@
         heightMm: value.logistics.heightMm,
       },
       variantData: value.variantData,
+      ...(Object.hasOwn(value, 'sourceCategory')
+        ? { sourceCategory: normalizedSourceCategory(value.sourceCategory) }
+        : {}),
       source: cleanText(value.source),
       capturedAt: cleanText(value.capturedAt),
       cache: {
@@ -212,6 +234,9 @@
       weight_unit: 'g',
       dimension_unit: 'mm',
       variantData: value?.variantData,
+      ...(validSourceCategory(value?.sourceCategory)
+        ? { sourceCategory: normalizedSourceCategory(value.sourceCategory) }
+        : {}),
     };
   };
 

@@ -2932,9 +2932,12 @@
 
     // Format rating display
     const formatRating = (rating, reviewCount) => {
-      if (!rating) return '-';
-      const stars = `${Number(rating).toFixed(1)}<span class="ozon-helper-rating-star">${window.lucideIcon('star', 12)}</span>`;
-      return reviewCount ? `${stars} (${window.formatNumber(reviewCount)})` : stars;
+      const sharedRating = window.jzFormatRating?.(rating, reviewCount);
+      if (sharedRating) return sharedRating;
+      const numericRating = Number(rating);
+      if (!Number.isFinite(numericRating) || numericRating <= 0) return '-';
+      const plainRating = numericRating.toFixed(1);
+      return reviewCount ? `${plainRating} (${window.formatNumber(reviewCount)})` : plainRating;
     };
 
     // Build grouped 2-col rows. 首屏概览复用 shared-utils 的统一结构，避免 PDP

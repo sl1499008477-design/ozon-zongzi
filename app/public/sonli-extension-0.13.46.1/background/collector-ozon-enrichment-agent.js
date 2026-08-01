@@ -107,6 +107,68 @@
     return value;
   };
 
+  const productScalar = (value) => (
+    typeof value === 'string'
+    || (typeof value === 'number' && Number.isFinite(value))
+    || typeof value === 'boolean'
+  );
+
+  const projectAttribute = (attribute) => {
+    if (!isPlainObject(attribute)) return null;
+    const key = cleanText(attribute.key);
+    if (!key) return null;
+    const projected = { key };
+    if (productScalar(attribute.value)) projected.value = attribute.value;
+    else if (Array.isArray(attribute.collection)) {
+      const collection = attribute.collection.filter(productScalar);
+      if (collection.length) projected.collection = collection;
+    }
+    if (!Object.hasOwn(projected, 'value') && !Object.hasOwn(projected, 'collection')) return null;
+    const dictionaryValueId = Number(attribute.dictionary_value_id ?? attribute.dictionaryValueId);
+    if (Number.isFinite(dictionaryValueId) && dictionaryValueId > 0) {
+      projected.dictionary_value_id = dictionaryValueId;
+    }
+    return projected;
+  };
+
+  const projectCategory = (category) => {
+    if (!isPlainObject(category)) return null;
+    const id = Number(category.id);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const projected = { id };
+    const level = Number(category.level);
+    if (Number.isFinite(level) && level >= 0) projected.level = level;
+    if (typeof category.name === 'string') projected.name = category.name;
+    if (typeof category.title === 'string') projected.title = category.title;
+    return projected;
+  };
+
+  // The Seller portal response also contains draft actions, account context and URL
+  // metadata. None of those fields belong to the enrichment contract. Keep only the
+  // stable product fields consumed by the server so portal-only data cannot cross
+  // the Collector boundary or make an otherwise valid capture fail validation.
+  const projectVariantData = (variantData) => {
+    const projected = {};
+    for (const key of [
+      'description_category_id',
+      'type_id',
+      'weight',
+      'depth',
+      'width',
+      'height',
+    ]) {
+      if (productScalar(variantData?.[key])) projected[key] = variantData[key];
+    }
+    projected.attributes = Array.isArray(variantData?.attributes)
+      ? variantData.attributes.map(projectAttribute).filter(Boolean)
+      : [];
+    const categories = Array.isArray(variantData?.categories)
+      ? variantData.categories.map(projectCategory).filter(Boolean)
+      : [];
+    if (categories.length) projected.categories = categories;
+    return projected;
+  };
+
   const normalizeJob = (value) => {
     if (
       !exactKeys(value, JOB_KEYS)
@@ -323,9 +385,10 @@
           sku: job.sku,
           noProxy: true,
           forceRefresh: job.refreshBundle === true,
+          deadlineAt: entry.deadlineAt,
         }), entry, generation);
         ensureCurrent(entry, generation);
-        const variantData = matchedVariantData(capture, job.sku);
+        const variantData = projectVariantData(matchedVariantData(capture, job.sku));
         assertSafeVariantData(variantData);
         ensureCurrent(entry, generation);
         const response = await collectorRequest(

@@ -38,6 +38,7 @@ try {
     '../lib/web-bridge-policy.js',
     '../lib/collector-session.js',
     '../lib/ozon-enrichment-contract.js',
+    '../lib/collector-capture-deadline.js',
     '../lib/seller-identity-policy.js',
     '../lib/seller-company-context-runtime.js',
     '../lib/portal-bridge-policy.js',
@@ -290,16 +291,17 @@ try {
     sessionManager: collectorSessionManager,
     canCapture: async () => {
       try {
-        await sellerCompanyContextRuntime.resolveCurrent();
+        await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
         return true;
       } catch {
         return false;
       }
     },
-    captureVariant: ({ sku, noProxy, forceRefresh }) => searchVariantsLocal({
+    captureVariant: ({ sku, noProxy, forceRefresh, deadlineAt }) => searchVariantsLocal({
       sku,
       noProxy: noProxy === true,
       forceRefresh: forceRefresh === true,
+      deadlineAt,
       sender: null,
     }),
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -621,6 +623,9 @@ try {
     }
 
     // L2: 真调 endpoint(有副作用)
+    const captureOptions = globalThis.JzCollectorCaptureDeadline.portalRequestOptions({
+      deadlineAt: opts.deadlineAt,
+    });
     const resp = await fetchSellerPortal(
       '/seller-prototype/create-bundle-by-variant-id',
       {
@@ -631,8 +636,7 @@ try {
       {
         urlPrefix: '/api/site',
         pageType: 'products',
-        timeoutMs: 30000,
-        allowOzonTab: true,
+        ...captureOptions,
         preferTabId: opts.preferTabId,
         companyId,
       },
@@ -720,8 +724,13 @@ try {
   const getSellerCompanyIdCandidates = async (options = {}) => {
     if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
     try {
-      return [(await sellerCompanyContextRuntime.resolveCurrent()).companyId];
-    } catch { return []; }
+      return [(await sellerCompanyContextRuntime.resolveCurrentWithRecovery()).companyId];
+    } catch (error) {
+      if (/SELLER_(?:COMPANY_CONTEXT_CONFLICT|CONTEXT_RECOVERY_FAILED)/.test(error?.message || '')) {
+        throw error;
+      }
+      return [];
+    }
   };
 
   // 解析当前 Seller 页面实际使用的公司编号。Cookie 是第一来源；Ozon 不再下发
@@ -1623,8 +1632,9 @@ try {
     // 收集每个策略的真实错误，最终 throw 时拼进 message —— 保留 "过期/登录/超时/403"
     // 等关键字,让上游 ozon-product.js prefetchSourceVariant 的 errorCode classifier
     // 能命中 AUTH_REQUIRED / TIMEOUT / ANTIBOT_BLOCKED 等具体分类。
+    const selectedMethods = opts.singleStrategy === true ? methods.slice(0, 1) : methods;
     const lastErrors = [];
-    for (const m of methods) {
+    for (const m of selectedMethods) {
       try {
         console.log(`[fetchSellerPortal] trying ${m.name}...`);
         const data = await m.fn();
@@ -2937,6 +2947,7 @@ try {
       sku: input.sku,
       noProxy: input.noProxy,
       forceRefresh: input.forceRefresh,
+      deadlineAt: input.deadlineAt,
     };
     const sender = input.sender || null;
     const token = null;
@@ -3030,21 +3041,30 @@ try {
         const proxied = await proxyCollectVariant(backendUrl, token, storeId, sku);
         if (proxied) return proxied;
       }
-      const contextCode = /CONFLICT/.test(contextError?.message || '')
+      const contextMessage = contextError?.message || '';
+      const contextCode = /CONFLICT/.test(contextMessage)
         ? 'SELLER_COMPANY_CONTEXT_CONFLICT'
-        : 'SELLER_CONTEXT_REQUIRED';
+        : /RECOVERY_FAILED/.test(contextMessage)
+          ? 'SELLER_CONTEXT_RECOVERY_FAILED'
+          : 'SELLER_CONTEXT_REQUIRED';
       return {
         ok: false,
         error: contextCode,
         message: contextCode === 'SELLER_COMPANY_CONTEXT_CONFLICT'
           ? '检测到多个 Seller 公司编号，请只保留当前经营公司的 Seller 页面后重试'
-          : 'Seller 页面已打开，但公司上下文尚未就绪，请刷新 Seller 页面后重试',
+          : contextCode === 'SELLER_CONTEXT_RECOVERY_FAILED'
+            ? '扩展已尝试恢复 Seller 页面，但公司上下文仍未就绪，请手动刷新 Seller 页面后重试'
+            : '请先打开并登录 Seller 页面后重试',
       };
     }
 
-    const MAX_RETRIES = 2;
+    const deadlineBound = Number.isFinite(Number(message.deadlineAt));
+    const MAX_RETRIES = deadlineBound ? 1 : 2;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
+        const captureOptions = globalThis.JzCollectorCaptureDeadline.portalRequestOptions({
+          deadlineAt: message.deadlineAt,
+        });
         const resp = await fetchSellerPortal(
           '/search',
           {
@@ -3064,8 +3084,7 @@ try {
           {
             urlPrefix: '/api/v1',
             pageType: 'products',
-            timeoutMs: 30000,
-            allowOzonTab: true,
+            ...captureOptions,
             preferTabId: senderTabId,
             companyId,
           },
@@ -3088,7 +3107,11 @@ try {
         try {
           const variantId = items[0].variant_id;
           if (variantId) {
-            const bundleItem = await fetchBundleByVariantId(sku, variantId, companyId, { forceRefresh, preferTabId: senderTabId });
+            const bundleItem = await fetchBundleByVariantId(sku, variantId, companyId, {
+              forceRefresh,
+              preferTabId: senderTabId,
+              deadlineAt: message.deadlineAt,
+            });
             if (bundleItem) {
               if (!Array.isArray(bundleItem.attributes) || bundleItem.attributes.length === 0) {
                 // 只有物理字段、没有业务属性 → 下游批量上架的特征属性(材料/尺寸/配套…)会缺失,
@@ -4704,6 +4727,8 @@ try {
       'importBySku',
       'fetchProductPageState',
       'searchVariants',
+      'enrichOzonCollect',
+      'enrichOzonCollectBatch',
       'pushSourceCollect',
       // 视频转存:download(跨源 .mp4) + media-storage 上传跑在 seller/buyer tab,executeScript
       // 可达 90s+,必须保活防 SW unload 中断 sendResponse。

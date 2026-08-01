@@ -9,7 +9,11 @@ const SOURCE = "ozon";
 const COMPLETE_TTL_MS = 6 * 60 * 60 * 1000;
 const NEGATIVE_TTL_MS = 60 * 1000;
 const DEADLINE_MS = 20 * 1000;
-const CLAIM_TTL_MS = 5 * 1000;
+// Seller capture performs two sequential portal calls (each capped at six
+// seconds) and still needs time to commit the result. Keep a five-second recovery
+// window inside the public deadline so another live Collector can retry a dead
+// executor without invalidating a healthy capture midway through its work.
+const CLAIM_TTL_MS = 15 * 1000;
 const POLL_MS = 250;
 const BATCH_CONCURRENCY = 4;
 const REQUIRED_MISSING_FIELDS = new Set([

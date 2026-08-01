@@ -10,6 +10,88 @@ const itemsOf = (response) => {
   return structuredClone(items);
 };
 
+const positiveNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+};
+
+const cleanText = (value) => String(value ?? "").trim();
+
+const normalizedSourceCategory = (source = {}) => ({
+  descriptionCategoryId: positiveNumber(source.descriptionCategoryId ?? source.description_category_id),
+  typeName: cleanText(source.typeName ?? source.type_name),
+  typeIdCandidate: positiveNumber(source.typeIdCandidate ?? source.type_id_candidate),
+  path: Array.isArray(source.path) ? source.path.map(cleanText).filter(Boolean) : [],
+});
+
+export function sourceCategoryEvidenceOf(item = {}) {
+  const direct = item?.categoryResolution?.source || item?.sourceCategory || {};
+  const variants = [
+    item?.variantData,
+    item?.variant_data,
+    item?._sourceVariant,
+    item?.raw?.variantData,
+    item?.raw?.variant_data,
+    item?.raw,
+  ].filter((value) => value && typeof value === "object");
+  const variant = variants.find((value) =>
+    value.description_category_id || value.descriptionCategoryId
+      || Array.isArray(value.attributes) || Array.isArray(value.categories)
+  ) || {};
+  const typeAttribute = (Array.isArray(variant.attributes) ? variant.attributes : []).find(
+    (attribute) => String(attribute?.key ?? attribute?.id ?? attribute?.attribute_id) === "8229",
+  ) || {};
+  const categories = Array.isArray(variant.categories) ? [...variant.categories] : [];
+  const path = categories
+    .sort((left, right) => positiveNumber(left?.level) - positiveNumber(right?.level))
+    .map((category) => cleanText(category?.title || category?.name))
+    .filter((label, index, labels) => label && labels.indexOf(label) === index);
+  return normalizedSourceCategory({
+    descriptionCategoryId: direct.descriptionCategoryId
+      ?? direct.description_category_id
+      ?? variant.description_category_id
+      ?? variant.descriptionCategoryId,
+    typeName: direct.typeName ?? direct.type_name ?? typeAttribute.value,
+    typeIdCandidate: direct.typeIdCandidate
+      ?? direct.type_id_candidate
+      ?? typeAttribute.dictionary_value_id
+      ?? typeAttribute.dictionaryValueId,
+    path: Array.isArray(direct.path) && direct.path.length ? direct.path : path,
+  });
+}
+
+export function categoryResolutionForStore(resolution, targetStoreId) {
+  if (!resolution || typeof resolution !== "object") return null;
+  const resolutionStoreId = resolution.status === "MATCHED"
+    ? resolution.target?.storeId
+    : resolution.targetStoreId;
+  if (String(resolutionStoreId || "") !== String(targetStoreId || "")) return null;
+  if (resolution.status === "PENDING") return structuredClone(resolution);
+  if (resolution.status !== "MATCHED") return null;
+  if (!positiveNumber(resolution.target?.descriptionCategoryId) || !positiveNumber(resolution.target?.typeId)) return null;
+  return structuredClone(resolution);
+}
+
+export function manualCategoryResolution({
+  source,
+  targetStoreId,
+  descriptionCategoryId,
+  typeId,
+  resolvedAt,
+} = {}) {
+  return {
+    status: "MATCHED",
+    method: "MANUAL",
+    source: normalizedSourceCategory(source),
+    target: {
+      storeId: String(targetStoreId || ""),
+      descriptionCategoryId: positiveNumber(descriptionCategoryId),
+      typeId: positiveNumber(typeId),
+    },
+    resolvedAt: String(resolvedAt || new Date().toISOString()),
+  };
+}
+
 export function categoryRequestScope({ storeId, itemId } = {}) {
   return JSON.stringify([String(storeId || ""), String(itemId || "")]);
 }

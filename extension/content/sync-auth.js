@@ -10,9 +10,14 @@
   if (!policy) return;
 
   const MAX_TICKET_EXCHANGE_ATTEMPTS = 2;
+  const MAX_BRIDGE_REQUESTS = 10;
+  const BRIDGE_RETRY_MS = 1000;
   let activeRequestId = '';
   let attempts = 0;
+  let requestCount = 0;
   let exchangeInFlight = false;
+  let authenticated = false;
+  let retryTimer = null;
 
   const newRequestId = () => {
     try {
@@ -23,10 +28,21 @@
   };
 
   const requestTicket = () => {
-    if (exchangeInFlight || attempts >= MAX_TICKET_EXCHANGE_ATTEMPTS) return;
+    if (
+      authenticated
+      || exchangeInFlight
+      || attempts >= MAX_TICKET_EXCHANGE_ATTEMPTS
+      || requestCount >= MAX_BRIDGE_REQUESTS
+    ) return;
+    requestCount += 1;
     activeRequestId = newRequestId();
     const message = policy.createCollectorAuthRequest(activeRequestId);
     window.postMessage(message, window.location.origin);
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      requestTicket();
+    }, BRIDGE_RETRY_MS);
   };
 
   const sendExchange = (response) => new Promise((resolve) => {
@@ -56,15 +72,22 @@
     }
     const response = policy.normalizeCollectorAuthResponse(event.data, activeRequestId);
     if (!response) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
     attempts += 1;
     exchangeInFlight = true;
     const result = await sendExchange(response);
     exchangeInFlight = false;
+    if (result?.ok === true) {
+      authenticated = true;
+      return;
+    }
     if (
       result?.ok === false
       && result?.code === 'COLLECTOR_TICKET_EXPIRED'
       && attempts < MAX_TICKET_EXCHANGE_ATTEMPTS
     ) {
+      requestCount = 0;
       requestTicket();
     }
   });
@@ -72,7 +95,11 @@
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.action !== 'collector.auth.request') return false;
+      clearTimeout(retryTimer);
+      retryTimer = null;
       attempts = 0;
+      requestCount = 0;
+      authenticated = false;
       requestTicket();
       sendResponse({ ok: true, requested: true });
       return false;
@@ -80,7 +107,4 @@
   } catch {}
 
   requestTicket();
-  setTimeout(() => {
-    if (attempts === 0 && !exchangeInFlight) requestTicket();
-  }, 1000);
 })();

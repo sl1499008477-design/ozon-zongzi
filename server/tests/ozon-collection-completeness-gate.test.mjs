@@ -294,6 +294,7 @@ if (!postgresEnabled()) {
         writeHead(status) { this.status = status; },
         end(body = "") { this.body = String(body); },
       };
+      process.env.QH_LOCAL_NO_LISTEN = "1";
       const { handle } = await import("../index.mjs");
       await handle(request, response);
       const body = JSON.parse(response.body);

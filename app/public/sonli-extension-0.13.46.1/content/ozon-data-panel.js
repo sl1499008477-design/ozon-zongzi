@@ -25,11 +25,11 @@
     '[data-widget="searchResults"] [data-widget="searchResultsItem"]',
   ];
 
-  // skipPaths：商品详情页本体（/product/<id>/）已经有侧边栏数据卡，
-  // 不要在它的"也看了" tile 上重复出现（会被商品详情侧边卡盖住信息）
-  // 改主意：还是在所有 tile 上展示，这样用户在详情页也能直接对比"也看了"的数据。
-  // 留空，全站注入。
-  const SKIP_PATHS = [];
+  // 商品详情页由 ozon-product.js 提供唯一主商品面板。推荐卡不再自动
+  // 创建面板或补全任务，避免几十个推荐 SKU 抢占当前商品的采集队列。
+  function isProductDetailPage() {
+    return /^\/product\/[^/]+/.test(window.location.pathname);
+  }
 
   const panelState = { enabled: true };
   const panelDataCache = new Map();
@@ -948,6 +948,10 @@
   }
 
   function applyToAll() {
+    if (isProductDetailPage()) {
+      getCards().forEach((card) => removeDataPanel(card));
+      return;
+    }
     const cards = getCards();
     if (panelState.enabled) {
       cards.forEach((card) => ensureDataPanel(card));
@@ -1004,13 +1008,7 @@
     // 卖家店铺、收藏夹、商品详情页"也看了"等，避免跟 ozon-search 重复挂面板。
     if (window.OzonHelperSearchInjected) return;
 
-    if (
-      SKIP_PATHS.some((p) =>
-        new RegExp(`^${p.replace(/\*/g, ".*")}$`).test(window.location.pathname)
-      )
-    ) {
-      return;
-    }
+    if (isProductDetailPage()) return;
 
     await loadPanelEnabled();
     listenStorageToggle();

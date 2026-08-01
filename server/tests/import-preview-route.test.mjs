@@ -36,6 +36,7 @@ const token = "local-test-token";
 const storeId = "local_test_store";
 let importCalls = 0;
 let attributeCalls = 0;
+let treeCalls = 0;
 const fetchRequests = [];
 
 await writeFile(dataFile, `${JSON.stringify({
@@ -67,6 +68,16 @@ globalThis.fetch = async (url, options = {}) => {
     importCalls += 1;
     throw new Error("preview route must not call real product import");
   }
+  if (href.endsWith("/v1/description-category/tree")) {
+    treeCalls += 1;
+    return new Response(JSON.stringify({
+      result: [{
+        description_category_id: 17031664,
+        category_name: "Трековое освещение",
+        children: [{ type_id: 971001, type_name: "Трековый светильник", children: [] }],
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
   if (href.endsWith("/v1/description-category/attribute")) {
     attributeCalls += 1;
     return new Response(JSON.stringify({
@@ -97,20 +108,26 @@ try {
     price: "469.03",
     currency_code: "RUB",
     images: [{ file_name: "https://cdn.example.test/main.jpg", default: true }],
-    description_category_id: 17031664,
-    type_id: 971001,
     scraped_sku: "1424490696",
     scraped_description: "Preview description",
     weight: 333,
     depth: 10,
     width: 20,
     height: 30,
+    _sourceVariant: {
+      description_category_id: 17031664,
+      attributes: [{
+        key: "8229",
+        value: "Трековый светильник",
+        dictionary_value_id: 971001,
+      }],
+    },
   };
 
   const response = await requestJson(
     handle,
     "/ozon/products/import/preview",
-    { items: [item], strictTypeMatch: true },
+    { items: [item], strictTypeMatch: false, entry: "COLLECT_EDIT_AUTO_CATEGORY" },
     token,
     storeId,
   );
@@ -122,11 +139,29 @@ try {
   assert.equal(response.body.items[0].offer_id, "preview-1424490696");
   assert.equal(response.body.items[0].description_category_id, 17031664);
   assert.equal(response.body.items[0].type_id, 971001);
+  assert.deepEqual(response.body.items[0].categoryResolution, {
+    offerId: "preview-1424490696",
+    status: "MATCHED",
+    method: "DICTIONARY_VALUE_ID",
+    source: {
+      descriptionCategoryId: 17031664,
+      typeName: "Трековый светильник",
+      typeIdCandidate: 971001,
+      path: [],
+    },
+    target: {
+      storeId,
+      descriptionCategoryId: 17031664,
+      typeId: 971001,
+    },
+    resolvedAt: response.body.items[0].categoryResolution?.resolvedAt,
+  });
+  assert.match(response.body.items[0].categoryResolution.resolvedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(response.body.items[0].attributeCount > 0, true);
   assert.equal(importCalls, 0, "preview route must not call Ozon product import");
   assert.equal(attributeCalls, 1, "preview route should validate attributes once");
-  assert.equal(fetchRequests.length, 1, "preview route must make only the allowlisted attribute request");
-  assert.equal(fetchRequests[0].endsWith("/v1/description-category/attribute"), true);
+  assert.equal(treeCalls, 1, "preview route should validate the source candidate against the target-store tree");
+  assert.equal(fetchRequests.length, 2, "preview route must make only allowlisted category requests");
 
   const state = JSON.parse(await readFile(dataFile, "utf8"));
   assert.deepEqual(state.jobs, {}, "preview route must not create import jobs");

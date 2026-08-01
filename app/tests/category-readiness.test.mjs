@@ -12,6 +12,9 @@ import {
   scopedCategoryTrees,
   loadRealCategoryTrees,
   requireCategoryReadiness,
+  sourceCategoryEvidenceOf,
+  categoryResolutionForStore,
+  manualCategoryResolution,
 } from "../src/category-readiness.js";
 
 const validTree = [{
@@ -196,4 +199,54 @@ test("requires explicit matching local and item store scope before consuming an 
     localStateStoreId: "store-b",
     itemStoreId: "",
   }), false);
+});
+
+test("reads source category evidence without treating it as a target category", () => {
+  assert.deepEqual(sourceCategoryEvidenceOf({
+    variantData: {
+      description_category_id: 17039736,
+      categories: [
+        { level: 2, title: "家用电器" },
+        { level: 3, name: "Заварочный чайник" },
+      ],
+      attributes: [{
+        key: "8229",
+        value: "Заварочный чайник",
+        dictionary_value_id: 123456,
+      }],
+    },
+  }), {
+    descriptionCategoryId: 17039736,
+    typeName: "Заварочный чайник",
+    typeIdCandidate: 123456,
+    path: ["家用电器", "Заварочный чайник"],
+  });
+});
+
+test("uses a matched resolution only for the currently selected target store", () => {
+  const resolution = {
+    status: "MATCHED",
+    method: "DICTIONARY_VALUE_ID",
+    source: { descriptionCategoryId: 10, typeName: "Source", typeIdCandidate: 20, path: [] },
+    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
+    resolvedAt: "2026-08-01T00:00:00.000Z",
+  };
+  assert.deepEqual(categoryResolutionForStore(resolution, "store-a"), resolution);
+  assert.equal(categoryResolutionForStore(resolution, "store-b"), null);
+});
+
+test("records a manual target-store category selection with its source evidence", () => {
+  assert.deepEqual(manualCategoryResolution({
+    source: { descriptionCategoryId: 10, typeName: "Source", typeIdCandidate: 20, path: ["Root", "Source"] },
+    targetStoreId: "store-a",
+    descriptionCategoryId: 30,
+    typeId: 40,
+    resolvedAt: "2026-08-01T00:00:00.000Z",
+  }), {
+    status: "MATCHED",
+    method: "MANUAL",
+    source: { descriptionCategoryId: 10, typeName: "Source", typeIdCandidate: 20, path: ["Root", "Source"] },
+    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
+    resolvedAt: "2026-08-01T00:00:00.000Z",
+  });
 });
