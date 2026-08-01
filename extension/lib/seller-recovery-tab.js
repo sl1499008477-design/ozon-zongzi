@@ -44,6 +44,8 @@
     }
 
     let recoveryPromise = null;
+    let pendingRetainers = 0;
+    const retainedHelperCounts = new Map();
 
     const taggedHelper = async () => {
       const stored = await chromeApi.storage.session.get(HELPER_STORAGE_KEY);
@@ -72,11 +74,35 @@
       return { record, tab };
     };
 
-    const closeTaggedHelper = async () => {
+    const closeTaggedHelper = async (expectedTabId = null) => {
       const helper = await taggedHelper();
-      if (!helper) return;
+      if (!helper) return false;
+      if (
+        expectedTabId != null
+        && helper.record.tabId !== Number(expectedTabId)
+      ) return false;
       await chromeApi.tabs.remove(helper.record.tabId);
-      await chromeApi.storage.session.remove(HELPER_STORAGE_KEY);
+      const stored = await chromeApi.storage.session.get(HELPER_STORAGE_KEY);
+      if (Number(stored?.[HELPER_STORAGE_KEY]?.tabId) === helper.record.tabId) {
+        await chromeApi.storage.session.remove(HELPER_STORAGE_KEY);
+      }
+      return true;
+    };
+
+    const releaseOwnedSnapshot = async (snapshot) => {
+      const sellerTabId = Number(snapshot?.sellerTabId);
+      if (!Number.isInteger(sellerTabId) || sellerTabId <= 0) return false;
+      if ((retainedHelperCounts.get(sellerTabId) || 0) > 0) return false;
+      return closeTaggedHelper(sellerTabId);
+    };
+
+    const closeUnretainedReadyHelper = async (snapshot) => {
+      if (snapshot?.status !== STATUS.READY || pendingRetainers > 0) return false;
+      const helper = await taggedHelper();
+      if (!helper) return false;
+      const helperTabId = helper.record.tabId;
+      if ((retainedHelperCounts.get(helperTabId) || 0) > 0) return false;
+      return closeTaggedHelper(helperTabId);
     };
 
     const markLoginRequired = async (helper) => {
@@ -90,8 +116,9 @@
     };
 
     const readStatus = async () => {
+      let current;
       try {
-        return { status: STATUS.READY, ...(await readCurrent()) };
+        current = await readCurrent();
       } catch (error) {
         const code = errorCode(error);
         if (code === 'SELLER_CONTEXT_RECOVERING') return { status: STATUS.RECOVERING };
@@ -101,6 +128,15 @@
         ) return null;
         throw error;
       }
+      const sellerTabId = Number(current?.sellerTabId);
+      if (!Number.isInteger(sellerTabId) || sellerTabId <= 0) return null;
+      try {
+        const sellerTab = await chromeApi.tabs.get(sellerTabId);
+        if (!isOwnedHelperTab(sellerTab, policy)) return null;
+      } catch {
+        return null;
+      }
+      return { status: STATUS.READY, ...current };
     };
 
     const queryBridge = async (tab) => {
@@ -147,7 +183,6 @@
     } = {}) => {
       const immediate = await readStatus();
       if (immediate?.status === STATUS.READY) {
-        await closeTaggedHelper();
         return immediate;
       }
       if (immediate) return immediate;
@@ -182,20 +217,66 @@
         helper,
       });
       if (recovered?.status === STATUS.READY) {
-        await closeTaggedHelper();
         return recovered;
       }
       if (recovered) return recovered;
       return markLoginRequired(helper);
     };
 
-    const resolveCurrentWithRecovery = (options) => {
+    const resolveShared = (options) => {
       if (!recoveryPromise) {
         recoveryPromise = resolve(options).finally(() => {
           recoveryPromise = null;
         });
       }
       return recoveryPromise;
+    };
+
+    const resolveCurrentWithRecovery = async (options) => {
+      const snapshot = await resolveShared(options);
+      await closeUnretainedReadyHelper(snapshot);
+      return snapshot;
+    };
+
+    const acquireCurrentWithRecovery = async (options) => {
+      pendingRetainers += 1;
+      let snapshot = null;
+      let retainedTabId = null;
+      try {
+        snapshot = await resolveShared(options);
+        if (snapshot?.status === STATUS.READY) {
+          const helper = await taggedHelper();
+          const sellerTabId = Number(snapshot.sellerTabId);
+          if (helper && helper.record.tabId === sellerTabId) {
+            retainedTabId = sellerTabId;
+            retainedHelperCounts.set(
+              retainedTabId,
+              (retainedHelperCounts.get(retainedTabId) || 0) + 1,
+            );
+          }
+        }
+      } finally {
+        pendingRetainers -= 1;
+      }
+
+      if (!retainedTabId) await closeUnretainedReadyHelper(snapshot);
+      let released = false;
+      return Object.freeze({
+        snapshot,
+        release: async () => {
+          if (released) return false;
+          released = true;
+          if (!retainedTabId) return false;
+          const remaining = Math.max(
+            0,
+            (retainedHelperCounts.get(retainedTabId) || 0) - 1,
+          );
+          if (remaining > 0) retainedHelperCounts.set(retainedTabId, remaining);
+          else retainedHelperCounts.delete(retainedTabId);
+          if (remaining === 0) await closeTaggedHelper(retainedTabId);
+          return true;
+        },
+      });
     };
 
     const focusLoginHelper = async () => {
@@ -214,7 +295,9 @@
     };
 
     return Object.freeze({
+      acquireCurrentWithRecovery,
       focusLoginHelper,
+      releaseOwnedSnapshot,
       resolveCurrentWithRecovery,
     });
   };

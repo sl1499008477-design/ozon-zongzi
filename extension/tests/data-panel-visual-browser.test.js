@@ -189,6 +189,8 @@ async function runBrowserFixture({
     const transitionStatus = transitionPage.locator(".tile-root > .oh-seller-context-status");
     await transitionStatus.getByText(/Seller 已识别/).waitFor();
     await transitionStatus.getByText("Seller 店铺已切换").waitFor({ timeout: 7_000 });
+    assert.match(await transitionStatus.textContent(), /Seller 已识别.*7311458.*Seller 店铺已切换/,
+      "READY-to-READY company changes keep the ready state and show the switch notice");
     await transitionStatus.getByText("Seller 店铺已切换").waitFor({ state: "hidden", timeout: 4_000 });
 
     const bfcachePage = await context.newPage();

@@ -275,6 +275,80 @@ try {
     return detectBackendUrl();
   };
 
+  const createCollectorSellerContextLeaseBridge = ({
+    runtime,
+    readyStatus,
+  } = {}) => {
+    if (
+      typeof runtime?.acquireCurrentWithRecovery !== 'function'
+      || typeof runtime?.isSnapshotCurrent !== 'function'
+    ) {
+      throw new TypeError('collector Seller context lease dependencies are required');
+    }
+    const activeLeases = new Map();
+    const sellerSnapshotKey = (snapshot) => {
+      const companyId = String(snapshot?.companyId || snapshot?.sellerCompanyId || '').trim();
+      const revision = Number(snapshot?.revision);
+      const observedAt = new Date(snapshot?.observedAt).getTime();
+      const sellerTabId = Number(snapshot?.sellerTabId);
+      if (
+        !companyId
+        || !Number.isSafeInteger(revision)
+        || revision <= 0
+        || !Number.isFinite(observedAt)
+        || !Number.isSafeInteger(sellerTabId)
+        || sellerTabId <= 0
+      ) return '';
+      return `${companyId}:${revision}:${observedAt}:${sellerTabId}`;
+    };
+    const acquireLease = async (options) => {
+      const lease = await runtime.acquireCurrentWithRecovery(options);
+      if (
+        !lease?.snapshot
+        || typeof lease.snapshot !== 'object'
+        || typeof lease.release !== 'function'
+      ) {
+        throw new TypeError('collector Seller context lease is invalid');
+      }
+      return lease;
+    };
+    const rememberActiveLease = (lease) => {
+      const key = sellerSnapshotKey(lease.snapshot);
+      if (!key) return false;
+      const leases = activeLeases.get(key) || [];
+      leases.push(lease);
+      activeLeases.set(key, leases);
+      return true;
+    };
+    // The agent calls this immediately before resolving the Seller snapshot.
+    // Keep the preflight side-effect free: acquiring here can orphan a helper
+    // lease if the drain is cancelled between the two awaits.
+    const canCapture = async () => true;
+    const sellerContextRuntime = Object.freeze({
+      isSnapshotCurrent: (snapshot) => runtime.isSnapshotCurrent(snapshot),
+      resolveCurrentWithRecovery: async (options) => {
+        const lease = await acquireLease(options);
+        if (lease.snapshot.status !== readyStatus) {
+          await lease.release();
+          return lease.snapshot;
+        }
+        if (!rememberActiveLease(lease)) await lease.release();
+        return lease.snapshot;
+      },
+      releaseSnapshot: async (snapshot) => {
+        if (!snapshot || typeof snapshot !== 'object') return false;
+        const key = sellerSnapshotKey(snapshot);
+        if (!key) return false;
+        const leases = activeLeases.get(key);
+        const lease = leases?.shift();
+        if (!lease) return false;
+        if (leases.length === 0) activeLeases.delete(key);
+        return lease.release();
+      },
+    });
+    return Object.freeze({ canCapture, sellerContextRuntime });
+  };
+
   const collectorSessionManager = globalThis.JzCollectorSession.createCollectorSessionManager({
     chromeApi: chrome,
     backendUrl: getBackendUrl,
@@ -291,20 +365,18 @@ try {
       policy: globalThis.JzSellerIdentityPolicy,
       recoveryTab: globalThis.JzSellerRecoveryTab,
     });
+  const collectorSellerContextLeaseBridge = createCollectorSellerContextLeaseBridge({
+    runtime: sellerCompanyContextRuntime,
+    readyStatus: globalThis.JzSellerRecoveryTab.STATUS.READY,
+  });
   const collectorOzonAgent = globalThis.JzCollectorOzonAgent.create({
     sessionManager: collectorSessionManager,
-    sellerContextRuntime: sellerCompanyContextRuntime,
-    canCapture: async () => {
-      try {
-        const sellerContext = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
-        return sellerContext.status === globalThis.JzSellerRecoveryTab.STATUS.READY;
-      } catch {
-        return false;
-      }
-    },
-    captureVariant: ({ sku, noProxy, forceRefresh, deadlineAt, sellerContext }) => searchVariantsLocal({
+    sellerContextRuntime: collectorSellerContextLeaseBridge.sellerContextRuntime,
+    canCapture: collectorSellerContextLeaseBridge.canCapture,
+    captureVariant: ({ sku, noProxy, readOnly, forceRefresh, deadlineAt, sellerContext }) => searchVariantsLocal({
       sku,
       noProxy: noProxy === true,
+      readOnly: readOnly === true,
       forceRefresh: forceRefresh === true,
       deadlineAt,
       sellerContext,
@@ -369,6 +441,189 @@ try {
     },
   );
 
+  const readOzonPublicPhysicalsInPage = async (
+    sku,
+    timeoutMs,
+    fetchImpl = (...args) => fetch(...args),
+  ) => {
+    const productSku = String(sku || '').trim();
+    if (!/^\d{6,16}$/.test(productSku)) return null;
+
+    const textOf = (value, depth = 0) => {
+      if (value == null || depth > 5) return '';
+      if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+      if (Array.isArray(value)) {
+        return value.map((entry) => textOf(entry, depth + 1)).filter(Boolean).join(' ').trim();
+      }
+      if (typeof value !== 'object') return '';
+      return ['text', 'content', 'name', 'title', 'value', 'textRs']
+        .map((key) => textOf(value[key], depth + 1))
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+    };
+    const normalizedUnit = (rawValue, rawLabel, weight) => {
+      const units = weight ? '(кг|kg|г|g)' : '(мм|mm|см|cm|м|m)';
+      const valueMatch = String(rawValue || '').toLowerCase()
+        .match(new RegExp(`-?\\d+(?:[.,]\\d+)?\\s*${units}(?=\\s|$|[),;])`, 'iu'));
+      if (valueMatch?.[1]) return valueMatch[1].toLowerCase();
+      const labelMatch = String(rawLabel || '').toLowerCase()
+        .match(new RegExp(`(?:[,([/:\\-–]|\\s)\\s*${units}\\s*[)\\]]?\\s*$`, 'iu'));
+      return labelMatch?.[1]?.toLowerCase() || '';
+    };
+    const positiveMeasure = (rawValue, rawLabel, { weight = false } = {}) => {
+      const text = String(rawValue || '').replace(',', '.').trim().toLowerCase();
+      const matched = text.match(/-?\d+(?:\.\d+)?/);
+      if (!matched) return 0;
+      const number = Number(matched[0]);
+      if (!Number.isFinite(number) || number <= 0) return 0;
+      const unit = normalizedUnit(text, rawLabel, weight);
+      if (weight) {
+        if (unit === 'kg' || unit === 'кг') return Math.round(number * 1000);
+        if (unit === 'g' || unit === 'г') return Math.round(number);
+        return 0;
+      }
+      if (unit === 'cm' || unit === 'см') return Math.round(number * 10);
+      if (unit === 'm' || unit === 'м') return Math.round(number * 1000);
+      if (unit === 'mm' || unit === 'мм') return Math.round(number);
+      return 0;
+    };
+    const candidates = {
+      weight: null,
+      depth: null,
+      width: null,
+      height: null,
+    };
+    let candidateOrder = 0;
+    const candidateScore = (label) => {
+      if (/(?:упаков|packag|брутто|gross)/iu.test(label)) return 3;
+      if (/(?:товар|product|нетто|net)/iu.test(label)) return 1;
+      return 2;
+    };
+    const recordCandidate = (field, value, label) => {
+      if (!value) return;
+      const candidate = { value, score: candidateScore(label), order: candidateOrder++ };
+      const current = candidates[field];
+      if (!current || candidate.score > current.score) candidates[field] = candidate;
+    };
+    const currentPhysicals = () => Object.fromEntries(
+      Object.entries(candidates).map(([field, candidate]) => [field, candidate?.value || 0]),
+    );
+    const applyCharacteristic = (labelValue, rawValue) => {
+      const label = String(labelValue || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const value = String(rawValue || '').trim();
+      if (!label || !value) return;
+      if (/(?:размер|габарит|dimensions|size)/iu.test(label)) {
+        const unit = normalizedUnit(value, label, false);
+        const parts = value.replace(/,/g, '.').split(/\s*[x×*хХ;,，]\s*/u)
+          .map((part) => part.match(/-?\d+(?:\.\d+)?/)?.[0] || '')
+          .filter(Boolean);
+        if (parts.length === 3 && unit) {
+          recordCandidate('depth', positiveMeasure(`${parts[0]}${unit}`, label), label);
+          recordCandidate('width', positiveMeasure(`${parts[1]}${unit}`, label), label);
+          recordCandidate('height', positiveMeasure(`${parts[2]}${unit}`, label), label);
+        }
+      } else if (/(?:вес|масса|weight)/iu.test(label)) {
+        recordCandidate('weight', positiveMeasure(value, label, { weight: true }), label);
+      } else if (/(?:длина|глубина|length|depth)/iu.test(label)) {
+        recordCandidate('depth', positiveMeasure(value, label), label);
+      } else if (/(?:ширина|width)/iu.test(label)) {
+        recordCandidate('width', positiveMeasure(value, label), label);
+      } else if (/(?:высота|height)/iu.test(label)) {
+        recordCandidate('height', positiveMeasure(value, label), label);
+      }
+    };
+    const visit = (node, depth = 0) => {
+      if (node == null || depth > 12) return;
+      if (typeof node === 'string') {
+        const trimmed = node.trim();
+        if (/^[\[{]/.test(trimmed)) {
+          try { visit(JSON.parse(trimmed), depth + 1); } catch {}
+        }
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach((entry) => visit(entry, depth + 1));
+        return;
+      }
+      if (typeof node !== 'object') return;
+      const label = textOf(node.name || node.title || node.label);
+      const value = textOf(node.value || node.values);
+      if (label && value) applyCharacteristic(label, value);
+      Object.values(node).forEach((entry) => visit(entry, depth + 1));
+    };
+
+    const path = `/product/${productSku}`;
+    const endpoints = [
+      `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
+      `/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
+    ];
+    const deadlineAt = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+    for (const endpoint of endpoints) {
+      const remainingMs = Math.floor(deadlineAt - Date.now());
+      if (remainingMs < 1) break;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), remainingMs);
+      try {
+        const response = await fetchImpl(endpoint, {
+          method: 'GET',
+          credentials: 'include',
+          headers: { accept: 'application/json', 'x-o3-app-name': 'dweb_client' },
+          signal: controller.signal,
+        });
+        if (!response?.ok) continue;
+        const data = await response.json();
+        visit(data?.widgetStates || {});
+        if (Object.values(candidates).every((candidate) => candidate?.score === 3)) {
+          return currentPhysicals();
+        }
+      } catch {
+        // A single shared deadline covers both response headers and body parsing.
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    const physicals = currentPhysicals();
+    return Object.values(physicals).some((value) => value > 0) ? physicals : null;
+  };
+
+  const fetchReadOnlyOzonPublicPhysicals = async ({
+    sku,
+    deadlineAt,
+    now = () => Date.now(),
+    requestOptionsForDeadline = (input) =>
+      globalThis.JzCollectorCaptureDeadline.portalRequestOptions(input),
+    queryTabs = (query) => chrome.tabs.query(query),
+    executeInTab = async (tabId, args) => {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: readOzonPublicPhysicalsInPage,
+        args,
+        world: 'MAIN',
+      });
+      return results?.[0]?.result || null;
+    },
+  } = {}) => {
+    const captureOptions = requestOptionsForDeadline({
+      deadlineAt,
+      now: now(),
+    });
+    const tabs = await queryTabs({
+      url: [
+        'https://www.ozon.ru/*',
+        'https://ozon.ru/*',
+        'https://www.ozon.kz/*',
+        'https://ozon.kz/*',
+      ],
+    });
+    const target = (Array.isArray(tabs) ? tabs : []).find((tab) =>
+      Number.isInteger(Number(tab?.id))
+      && tab?.status === 'complete'
+      && /^https:\/\/(?:www\.)?ozon\.(?:ru|kz)\//i.test(String(tab?.url || '')));
+    if (!target) return null;
+    return executeInTab(Number(target.id), [String(sku || '').trim(), captureOptions.timeoutMs]);
+  };
+
   /**
    * Execute fetch in a seller.ozon.ru tab's page context (MAIN world).
    * This produces a same-origin request with correct cookies, Sec-Fetch-Site,
@@ -426,6 +681,18 @@ try {
       const gtin = String(v.barcodes[0] || '').trim();
       if (gtin) attributes.push({ key: '7822', value: gtin });
     }
+    const physicalFields = [
+      ['4497', 'weight'],
+      ['9454', 'depth'],
+      ['9455', 'width'],
+      ['9456', 'height'],
+    ];
+    for (const [key, field] of physicalFields) {
+      const value = Number(v[field]);
+      if (Number.isFinite(value) && value > 0) {
+        attributes.push({ key, value: String(value) });
+      }
+    }
     const partMarketingPrice = v.part_marketing_price || v.partMarketingPrice || null;
     const marketingPrice =
       v.marketing_price ||
@@ -469,6 +736,10 @@ try {
       // variant_id 优先 /search 真返的 variant_id，barcode 兜底
       variant_id: v.variant_id || (v.barcodes && v.barcodes[0]) || '',
       description_category_id: descriptionCategoryId,
+      ...(Number(v.weight) > 0 ? { weight: Number(v.weight) } : {}),
+      ...(Number(v.depth) > 0 ? { depth: Number(v.depth) } : {}),
+      ...(Number(v.width) > 0 ? { width: Number(v.width) } : {}),
+      ...(Number(v.height) > 0 ? { height: Number(v.height) } : {}),
       categories,
       // 把 /search 的额外字段也带上，方便上层（如跟卖面板的 is_copy_allowed 检查）使用
       _searchMeta: {
@@ -615,6 +886,36 @@ try {
       _bundleItem: bundleItem,
       ...(complexAttributes.length ? { _bundleComplexAttrs: complexAttributes } : {}),
     };
+  };
+
+  const mergePublicPhysicalsIntoSourceVariant = (sourceVariant, physicals) => {
+    const source = sourceVariant && typeof sourceVariant === 'object' ? sourceVariant : {};
+    const attributes = Array.isArray(source.attributes)
+      ? source.attributes.map((attribute) => ({ ...attribute }))
+      : [];
+    const keys = new Set(attributes.map((attribute) => String(attribute?.key || '')).filter(Boolean));
+    const merged = { ...source, attributes };
+    for (const [field, key] of [
+      ['weight', '4497'],
+      ['depth', '9454'],
+      ['width', '9455'],
+      ['height', '9456'],
+    ]) {
+      const existing = Number(source[field]);
+      const incoming = Number(physicals?.[field]);
+      const value = Number.isFinite(existing) && existing > 0
+        ? existing
+        : Number.isFinite(incoming) && incoming > 0
+          ? incoming
+          : 0;
+      if (!value) continue;
+      merged[field] = value;
+      if (!keys.has(key)) {
+        attributes.push({ key, value: String(value) });
+        keys.add(key);
+      }
+    }
+    return merged;
   };
 
   const fetchBundleByVariantId = async (sku, variantId, companyId, opts = {}) => {
@@ -1509,6 +1810,26 @@ try {
     return r.data;
   };
 
+  const resolveSellerPortalTargetTab = async ({
+    preferTabId,
+    tabsApi = chrome.tabs,
+    identityPolicy = globalThis.JzSellerIdentityPolicy,
+    ensureTab = ensureSellerTab,
+  } = {}) => {
+    const preferredId = Number(preferTabId);
+    if (!Number.isSafeInteger(preferredId) || preferredId <= 0) return ensureTab();
+    try {
+      const preferred = await tabsApi.get(preferredId);
+      const effectiveUrl = String(preferred?.pendingUrl || preferred?.url || '');
+      if (identityPolicy.isTrustedSellerTab({ ...preferred, url: effectiveUrl })) {
+        return preferred;
+      }
+    } catch {}
+    throw Object.assign(new Error('SELLER_CONTEXT_CHANGED'), {
+      code: 'SELLER_CONTEXT_CHANGED',
+    });
+  };
+
   const fetchSellerPortal = async (path, body, timeoutMsOrOpts = 30000) => {
     await _sellerPortalGate(); // 全局节奏闸门(见上)——所有门户调用共用,摊平请求密度防反爬
     // 兼容旧调用：第三个参数可以是数字（timeoutMs，默认 page-type=products-other + url=/api/v1+path），
@@ -1535,7 +1856,7 @@ try {
 
     // 1. Find or auto-open seller.ozon.ru tab —— 直接用 ensureSellerTab 返回的
     // status=complete 的 tab,不再 query+find,避免选到 loading 中的 active tab。
-    const targetTab = await ensureSellerTab();
+    const targetTab = await resolveSellerPortalTargetTab({ preferTabId: opts.preferTabId });
 
     console.log(`[fetchSellerPortal] tab=${targetTab.id} url=${targetTab.url} path=${path}`);
 
@@ -2962,10 +3283,115 @@ try {
     });
   }
 
+  const enrichSellerSearchItems = async ({
+    readOnly,
+    items,
+    sku,
+    companyId,
+    forceRefresh,
+    preferTabId,
+    deadlineAt,
+    fetchBundle = fetchBundleByVariantId,
+    fetchPublicPhysicals = fetchReadOnlyOzonPublicPhysicals,
+    mergeBundle = mergeBundleItemIntoSourceVariant,
+    mergePublicPhysicals = mergePublicPhysicalsIntoSourceVariant,
+  } = {}) => {
+    if (!Array.isArray(items) || !items.length) return items;
+    if (readOnly === true) {
+      try {
+        const source = items[0] || {};
+        const attributes = Array.isArray(source.attributes) ? source.attributes : [];
+        const positivePhysical = (field, key) => {
+          const direct = Number(source[field]);
+          if (Number.isFinite(direct) && direct > 0) return direct;
+          const attribute = attributes.find((entry) => String(entry?.key || '') === key);
+          const nested = Number(attribute?.value);
+          return Number.isFinite(nested) && nested > 0 ? nested : 0;
+        };
+        const complete = [
+          ['weight', '4497'],
+          ['depth', '9454'],
+          ['width', '9455'],
+          ['height', '9456'],
+        ].every(([field, key]) => positivePhysical(field, key) > 0);
+        if (!complete) {
+          const physicals = await fetchPublicPhysicals({ sku, deadlineAt });
+          if (physicals) items[0] = mergePublicPhysicals(source, physicals);
+        }
+      } catch (error) {
+        console.warn(`[searchVariants] read-only public physical capture failed for sku=${sku}:`, error?.message || error);
+      }
+      return items;
+    }
+    try {
+      const variantId = items[0].variant_id;
+      if (!variantId) return items;
+      const bundleItem = await fetchBundle(sku, variantId, companyId, {
+        forceRefresh,
+        preferTabId,
+        deadlineAt,
+      });
+      if (!bundleItem) return items;
+      if (!Array.isArray(bundleItem.attributes) || bundleItem.attributes.length === 0) {
+        console.warn(`[searchVariants] bundle attributes EMPTY for sku=${sku} — 特征属性无法随上架带出(仅物理字段)`);
+      }
+      items[0] = mergeBundle(items[0], bundleItem);
+      if (items[0]._bundleComplexAttrs?.length) {
+        console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${items[0]._bundleComplexAttrs.length} for sku=${sku}`);
+      }
+    } catch (e) {
+      console.warn(`[searchVariants] bundle injection failed for sku=${sku}:`, e.message || e);
+    }
+    return items;
+  };
+
+  const readSellerSearchVariants = async ({
+    sku,
+    companyId,
+    preferTabId = null,
+    requestOptions = {},
+    fetchPortal = fetchSellerPortal,
+    normalizeVariant = normalizeSearchVariantToSv,
+  } = {}) => {
+    const response = await fetchPortal(
+      '/search',
+      {
+        company_id: companyId,
+        need_total: true,
+        filter: {
+          children_nodes: {
+            children_nodes: [
+              { input_leaf: { sku: { values: [String(sku)] } } },
+            ],
+            operator: 'AND',
+          },
+        },
+        pagination: { limit: '50' },
+        is_copy_allowed: false,
+      },
+      {
+        urlPrefix: '/api/v1',
+        pageType: 'products',
+        ...requestOptions,
+        preferTabId,
+        companyId,
+      },
+    );
+    const rawVariants = Array.isArray(response?.variants) ? response.variants
+      : Array.isArray(response?.items) ? response.items
+      : Array.isArray(response?.products) ? response.products
+      : Array.isArray(response) ? response : [];
+    return {
+      response,
+      items: rawVariants.map(normalizeVariant).filter(Boolean),
+    };
+  };
+
   const searchVariantsLocal = async (input = {}) => {
     const message = {
       sku: input.sku,
       noProxy: input.noProxy,
+      readOnly: input.readOnly === true,
       forceRefresh: input.forceRefresh,
       deadlineAt: input.deadlineAt,
     };
@@ -2979,9 +3405,9 @@ try {
       ? globalThis.JzSellerIdentityPolicy.normalizeCompanyId(input.sellerContext.companyId)
       : '';
     // 跟卖时用户本就在 www 商品页 → 用来源标签走跨域快路,免依赖 seller 专用标签
-    const senderTabId = sender?.tab?.id || null;
+    const senderTabId = input.sellerContext?.sellerTabId || sender?.tab?.id || null;
     // 灰度:服务端 collect(search→bundle 链式;命中走俄罗斯 VPS,失败/未命中回落老路)
-    if (await isFleetServerSide(backendUrl, token)) {
+    if (!message.readOnly && await isFleetServerSide(backendUrl, token)) {
       const _ck = `${_FLEET_COLLECT_CACHE_PREFIX}${String(sku)}`;
       // 本地缓存 24h(≤后端 30d,不引入更陈数据);forceRefresh 跳读不跳写,
       // 与老路 fetchBundleByVariantId 的 forceRefresh 语义一致。fleet collect
@@ -3093,35 +3519,12 @@ try {
         const captureOptions = globalThis.JzCollectorCaptureDeadline.portalRequestOptions({
           deadlineAt: message.deadlineAt,
         });
-        const resp = await fetchSellerPortal(
-          '/search',
-          {
-            company_id: companyId,
-            need_total: true,
-            filter: {
-              children_nodes: {
-                children_nodes: [
-                  { input_leaf: { sku: { values: [String(sku)] } } },
-                ],
-                operator: 'AND',
-              },
-            },
-            pagination: { limit: '50' },
-            is_copy_allowed: false,
-          },
-          {
-            urlPrefix: '/api/v1',
-            pageType: 'products',
-            ...captureOptions,
-            preferTabId: senderTabId,
-            companyId,
-          },
-        );
-        const rawVariants = Array.isArray(resp?.variants) ? resp.variants
-          : Array.isArray(resp?.items) ? resp.items
-          : Array.isArray(resp?.products) ? resp.products
-          : Array.isArray(resp) ? resp : [];
-        const items = rawVariants.map(normalizeSearchVariantToSv).filter(Boolean);
+        const { response: resp, items } = await readSellerSearchVariants({
+          sku,
+          companyId,
+          preferTabId: senderTabId,
+          requestOptions: captureOptions,
+        });
         if (items.length === 0) {
           if (attempt === 1) {
             console.log(`[searchVariants] sku=${sku} no variants from /search, raw:`, JSON.stringify(resp).slice(0, 400));
@@ -3132,29 +3535,15 @@ try {
         // Step 2: bundle 补完整 attributes(物理 + 含 40-63 个完整 attr)
         // 失败不致命 — items 已有基础元数据(品牌/类目/GTIN/图片),caller 仍可用,
         // 只是 4497/9454-9456 物理 attr 缺失 → 数据卡片重量·尺寸退化为公开兜底。
-        try {
-          const variantId = items[0].variant_id;
-          if (variantId) {
-            const bundleItem = await fetchBundleByVariantId(sku, variantId, companyId, {
-              forceRefresh,
-              preferTabId: senderTabId,
-              deadlineAt: message.deadlineAt,
-            });
-            if (bundleItem) {
-              if (!Array.isArray(bundleItem.attributes) || bundleItem.attributes.length === 0) {
-                // 只有物理字段、没有业务属性 → 下游批量上架的特征属性(材料/尺寸/配套…)会缺失,
-                // 内容评分「特征」0 分。留痕便于区分「源本就没属性」vs「取数降级」。
-                console.warn(`[searchVariants] bundle attributes EMPTY for sku=${sku} — 特征属性无法随上架带出(仅物理字段)`);
-              }
-              items[0] = mergeBundleItemIntoSourceVariant(items[0], bundleItem);
-              if (items[0]._bundleComplexAttrs?.length) {
-                console.log(`[searchVariants] bundle complex attrs (视频/PDF): ${items[0]._bundleComplexAttrs.length} for sku=${sku}`);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn(`[searchVariants] bundle injection failed for sku=${sku}:`, e.message || e);
-        }
+        await enrichSellerSearchItems({
+          readOnly: message.readOnly,
+          items,
+          sku,
+          companyId,
+          forceRefresh,
+          preferTabId: senderTabId,
+          deadlineAt: message.deadlineAt,
+        });
 
         return { ok: true, data: { items } };
       } catch (e) {

@@ -375,6 +375,7 @@ test('install and startup never reload or remove user-owned Seller tabs', async 
 test('autonomous enrichment drain runs every minute and kicks on startup, pending upload, and session exchange', async () => {
   const nextPath = '/api/collector/ozon/enrichment-jobs/next';
   const startupHarness = loadServiceWorker({
+    sellerCapture: true,
     fetchImpl: async (url) => {
       const pathname = new URL(url).pathname;
       if (pathname === nextPath) {
@@ -406,6 +407,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
   );
 
   const uploadHarness = loadServiceWorker({
+    sellerCapture: true,
     fetchImpl: async (url) => {
       const pathname = new URL(url).pathname;
       if (pathname === '/api/sources/ozon/collect') {
@@ -437,6 +439,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
   );
 
   const exchangeHarness = loadServiceWorker({
+    sellerCapture: true,
     fetchImpl: async (url) => {
       const pathname = new URL(url).pathname;
       if (pathname === '/api/extension/collector-auth/exchange') {
@@ -653,7 +656,13 @@ test('held enrichment directly invokes the local visible Seller capture and post
         return new Response(JSON.stringify({
           ok: true,
           job: nextCalls === 1
-            ? { id: 'job-local', requestId: 'runtime-local', sku, refreshBundle: false }
+            ? {
+              id: 'job-local',
+              requestId: 'runtime-local',
+              sku,
+              refreshBundle: false,
+              claimFence: 'claim-local',
+            }
             : null,
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
@@ -721,6 +730,7 @@ test('held enrichment directly invokes the local visible Seller capture and post
     observedAt: normalizedResultBody.captureContext.observedAt,
   });
   assert.equal(Number.isNaN(Date.parse(normalizedResultBody.captureContext.observedAt)), false);
+  assert.equal(normalizedResultBody.claimFence, 'claim-local');
   assert.equal(harness.executeScriptCalls.length, 1);
   assert.equal(harness.runtimeSendMessageCalls.length, 0);
 });

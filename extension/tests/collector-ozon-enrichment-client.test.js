@@ -353,6 +353,78 @@ test('agent does not claim while trusted Seller context is unavailable and sleep
   assert.deepEqual(sleeps, [250]);
 });
 
+test('agent releases a resolved Seller lease when snapshot normalization fails', async () => {
+  const malformedSnapshot = {
+    status: 'READY',
+    companyId: '',
+    revision: 4,
+    observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+    sellerTabId: 9,
+  };
+  const released = [];
+  let agent;
+  agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch() { throw new Error('an invalid snapshot must not claim'); },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() { return malformedSnapshot; },
+      async isSnapshotCurrent() { return false; },
+      async releaseSnapshot(snapshot) { released.push(snapshot); return true; },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture must not run'); },
+    async sleep() { agent.stop('request-invalid-snapshot'); },
+  });
+
+  await agent.drainUntil({
+    requestId: 'request-invalid-snapshot',
+    deadlineAt: Date.now() + 1_000,
+  });
+
+  assert.deepEqual(released, [malformedSnapshot]);
+});
+
+test('agent releases a Seller lease that resolves after its drain is cancelled', async () => {
+  const resolution = deferred();
+  const snapshot = {
+    status: 'READY',
+    companyId: '2681910',
+    revision: 4,
+    observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+    sellerTabId: 9,
+  };
+  const released = [];
+  let resolving = false;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch() { throw new Error('a cancelled drain must not claim'); },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() { resolving = true; return resolution.promise; },
+      async isSnapshotCurrent() { return false; },
+      async releaseSnapshot(value) { released.push(value); return true; },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('capture must not run'); },
+    async sleep() {},
+  });
+  const drain = agent.drainUntil({
+    requestId: 'request-late-snapshot',
+    deadlineAt: Date.now() + 1_000,
+  });
+  while (!resolving) await nextTurn();
+
+  agent.stop('request-late-snapshot');
+  assert.equal(await settleWithin(drain), 'settled');
+  resolution.resolve(snapshot);
+  await nextTurn();
+
+  assert.deepEqual(released, [snapshot]);
+});
+
 test('autonomous drain discards a result after Seller revision changes and reports the stable retryable failure', async () => {
   const requests = [];
   const captures = [];
@@ -372,6 +444,7 @@ test('autonomous drain discards a result after Seller revision changes and repor
               requestId: 'request-context-switch',
               sku: '4862904234',
               refreshBundle: false,
+              claimFence: 'claim-context-switch',
             },
           } : { ok: true, job: null });
         }
@@ -405,7 +478,83 @@ test('autonomous drain discards a result after Seller revision changes and repor
   assert.equal(requests.some(({ path }) => path.endsWith('/result')), false);
   const failure = requests.find(({ path }) => path.endsWith('/fail'));
   assert.ok(failure);
-  assert.equal(JSON.parse(failure.options.body).code, 'SELLER_CONTEXT_CHANGED');
+  assert.deepEqual(JSON.parse(failure.options.body), {
+    code: 'SELLER_CONTEXT_CHANGED',
+    message: 'Seller 店铺上下文已变化',
+    captureContext: {
+      sellerCompanyId: '2681910',
+      revision: 4,
+      observedAt: '2026-08-01T08:00:00.000Z',
+    },
+    claimFence: 'claim-context-switch',
+  });
+});
+
+test('agent preserves a server Seller-context rejection and reports CHANGED without retrying result', async () => {
+  const requests = [];
+  const events = [];
+  let nextCalls = 0;
+  const snapshot = {
+    status: 'READY',
+    companyId: '2681910',
+    revision: 4,
+    observedAt: Date.parse('2026-08-01T08:00:00.000Z'),
+    sellerTabId: 9,
+  };
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path, options) {
+        requests.push({ path, options });
+        if (path.endsWith('/next')) {
+          nextCalls += 1;
+          return jsonResponse(200, nextCalls === 1 ? {
+            ok: true,
+            job: {
+              id: 'job-server-context-change',
+              requestId: 'request-server-context-change',
+              sku: '4862904234',
+              refreshBundle: false,
+              claimFence: 'claim-server-context-change',
+            },
+          } : { ok: true, job: null });
+        }
+        if (path.endsWith('/result')) {
+          events.push('result');
+          return jsonResponse(409, { ok: false, code: 'SELLER_CONTEXT_CHANGED' });
+        }
+        events.push('fail');
+        return jsonResponse(200, { ok: true });
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() { return snapshot; },
+      async isSnapshotCurrent() { events.push('check'); return true; },
+      async releaseSnapshot() { events.push('release'); },
+    },
+    async canCapture() { return true; },
+    async captureVariant() {
+      events.push('capture');
+      return { ok: true, data: { items: [completeVariantData('4862904234')] } };
+    },
+    async sleep() {},
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.deepEqual(events.slice(0, 4), ['capture', 'check', 'result', 'fail']);
+  assert.equal(requests.filter(({ path }) => path.endsWith('/result')).length, 1);
+  const failure = requests.find(({ path }) => path.endsWith('/fail'));
+  assert.deepEqual(JSON.parse(failure.options.body), {
+    code: 'SELLER_CONTEXT_CHANGED',
+    message: 'Seller 店铺上下文已变化',
+    captureContext: {
+      sellerCompanyId: '2681910',
+      revision: 4,
+      observedAt: '2026-08-01T08:00:00.000Z',
+    },
+    claimFence: 'claim-server-context-change',
+  });
 });
 
 test('autonomous drain queues one empty-stop rerun when a kick arrives during an active claim', async () => {
@@ -835,7 +984,7 @@ test('autonomous drain preserves a live late-deadline kick injected at owner cle
   assert.equal(claims[0].signal.aborted, true, 'the old lifecycle must be released before successor work');
 });
 
-test('autonomous drain maps real non-ready Seller recovery results to SELLER_CONTEXT_REQUIRED', async () => {
+test('autonomous drain never claims without a ready Seller snapshot', async () => {
   for (const status of ['LOGIN_REQUIRED', 'RECOVERING']) {
     const requests = [];
     let nextCalls = 0;
@@ -871,10 +1020,9 @@ test('autonomous drain maps real non-ready Seller recovery results to SELLER_CON
     await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
 
     const failure = requests.find(({ path }) => path.endsWith('/fail'));
-    assert.ok(failure, status);
-    assert.equal(JSON.parse(failure.options.body).code, 'SELLER_CONTEXT_REQUIRED');
+    assert.equal(failure, undefined, status);
     assert.equal(requests.some(({ path }) => path.endsWith('/result')), false);
-    assert.equal(nextCalls, 2, 'a reported claim failure must still reach one normal empty stop');
+    assert.equal(nextCalls, 0, 'a job cannot be claimed without a server-bound Seller snapshot');
   }
 });
 
@@ -899,6 +1047,7 @@ test('agent accepts only the minimal job, captures fixed searchVariants input, a
                 requestId: 'request-one',
                 sku: '4862904234',
                 refreshBundle: true,
+                claimFence: 'claim-fence-one',
               },
             }
           : { ok: true, job: null });
@@ -925,6 +1074,7 @@ test('agent accepts only the minimal job, captures fixed searchVariants input, a
   assert.equal(captures[0].sku, '4862904234');
   assert.equal(captures[0].noProxy, true);
   assert.equal(captures[0].forceRefresh, true);
+  assert.equal(captures[0].readOnly, true);
   assert.equal(Number.isFinite(captures[0].deadlineAt), true);
   assert.equal(captures[0].deadlineAt > Date.now(), true);
   assert.deepEqual(requests.map(({ path }) => path), [
@@ -933,11 +1083,21 @@ test('agent accepts only the minimal job, captures fixed searchVariants input, a
     '/collector/ozon/enrichment-jobs/next',
   ]);
   const resultRequest = requests[1];
+  const claimRequest = requests[0];
+  assert.equal(claimRequest.options.method, 'POST');
+  assert.deepEqual(JSON.parse(claimRequest.options.body), {
+    captureContext: captureContext(),
+  });
   assert.equal(resultRequest.options.permission, READ_PERMISSION);
-  assert.deepEqual(Object.keys(JSON.parse(resultRequest.options.body)), ['variantData', 'captureContext']);
+  assert.deepEqual(Object.keys(JSON.parse(resultRequest.options.body)), [
+    'variantData',
+    'captureContext',
+    'claimFence',
+  ]);
   assert.deepEqual(JSON.parse(resultRequest.options.body), {
     variantData: projectedVariantData(matchedVariant),
     captureContext: captureContext(),
+    claimFence: 'claim-fence-one',
   });
 });
 
@@ -968,6 +1128,7 @@ test('agent uploads an allowlisted product projection and ignores portal URL met
                   requestId: 'request-realistic-portal-data',
                   sku: '4862904234',
                   refreshBundle: true,
+                  claimFence: 'claim-realistic-portal-data',
                 },
               }
             : { ok: true, job: null });
@@ -990,6 +1151,7 @@ test('agent uploads an allowlisted product projection and ignores portal URL met
   assert.deepEqual(JSON.parse(result.options.body), {
     variantData: projectedVariantData(variantData),
     captureContext: captureContext(),
+    claimFence: 'claim-realistic-portal-data',
   });
   assert.doesNotMatch(JSON.stringify(result), /sourceUrl|primary_image_url|create-draft|portal-only-context/);
 });
@@ -1018,6 +1180,7 @@ test('agent projects the real Seller search shape without guessing a top-level t
               requestId: 'request-real-search-shape',
               sku: '4862904234',
               refreshBundle: false,
+              claimFence: 'claim-real-search-shape',
             },
           } : { ok: true, job: null });
         }
@@ -1041,6 +1204,7 @@ test('agent projects the real Seller search shape without guessing a top-level t
     dictionary_value_id: 123456,
   });
   assert.deepEqual(body.captureContext, captureContext());
+  assert.equal(body.claimFence, 'claim-real-search-shape');
 });
 
 test('agent settles at its deadline and never posts a late capture result', async () => {
@@ -1058,6 +1222,7 @@ test('agent settles at its deadline and never posts a late capture result', asyn
             requestId: 'request-deadline',
             sku: '4862904234',
             refreshBundle: true,
+            claimFence: 'claim-deadline',
           },
         });
       },
@@ -1147,6 +1312,7 @@ test('last stop aborts a pending claim and a late claimed job cannot capture or 
       requestId: 'request-stop-claim',
       sku: '4862904234',
       refreshBundle: false,
+      claimFence: 'claim-late-claim',
     },
   }));
 
@@ -1170,6 +1336,7 @@ test('stopping a drain while capture is pending prevents late result and failure
             requestId: 'request-stop-capture',
             sku: '4862904234',
             refreshBundle: false,
+            claimFence: 'claim-late-capture',
           },
         });
       },
@@ -1213,6 +1380,7 @@ test('last stop immediately aborts a pending result Collector request without a 
               requestId: 'request-stop-result',
               sku: '4862904234',
               refreshBundle: false,
+              claimFence: 'claim-stop-result',
             },
           });
         }
@@ -1265,6 +1433,7 @@ test('last stop immediately aborts a pending fixed failure Collector request', a
               requestId: 'request-stop-fail',
               sku: '4862904234',
               refreshBundle: false,
+              claimFence: 'claim-stop-fail',
             },
           });
         }
@@ -1559,6 +1728,7 @@ test('agent rejects arbitrary job data without capture and reports only a fixed 
                   requestId: 'request-arbitrary',
                   sku: '4862904234',
                   refreshBundle: false,
+                  claimFence: 'claim-arbitrary',
                   script: 'steal()',
                 },
               }
@@ -1583,6 +1753,8 @@ test('agent rejects arbitrary job data without capture and reports only a fixed 
   assert.deepEqual(JSON.parse(failure.options.body), {
     code: 'OZON_ENRICH_UPSTREAM_FAILED',
     message: 'Ozon 商品资料暂时无法读取',
+    captureContext: captureContext(),
+    claimFence: 'claim-arbitrary',
   });
 });
 
@@ -1605,6 +1777,7 @@ test('capture failures never forward raw secrets and cannot select sync or arbit
                   requestId: 'request-secret',
                   sku: '4862904234',
                   refreshBundle: false,
+                  claimFence: 'claim-secret',
                 },
               }
             : { ok: true, job: null });
@@ -1635,20 +1808,18 @@ test('capture failures never forward raw secrets and cannot select sync or arbit
   assert.deepEqual(JSON.parse(failure.options.body), {
     code: 'SELLER_CONTEXT_REQUIRED',
     message: '需要登录 Seller',
+    captureContext: captureContext(),
+    claimFence: 'claim-secret',
   });
 });
 
-test('captured variantData discards portal-only control and secret metadata before result upload', async () => {
+test('captured variantData discards portal-only non-sensitive metadata before result upload', async () => {
   const forbiddenVariants = [
     completeVariantData('4862904234', { nested: [{ store_id: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ sellerCompanyId: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ account_id: 'attacker-controlled' }] }),
-    completeVariantData('4862904234', { nested: [{ Authorization: 'attacker-controlled' }] }),
-    completeVariantData('4862904234', { nested: [{ requestHeaders: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ action: 'attacker-controlled' }] }),
     completeVariantData('4862904234', { nested: [{ script: 'attacker-controlled' }] }),
-    completeVariantData('4862904234', { note: 'Collector cst_secret-secret-secret-secret' }),
-    completeVariantData('4862904234', { note: 'Bearer abcdefghijklmnopqrstuvwxyz123456' }),
   ];
 
   for (const [index, variantData] of forbiddenVariants.entries()) {
@@ -1670,6 +1841,7 @@ test('captured variantData discards portal-only control and secret metadata befo
                     requestId: `request-sensitive-${index}`,
                     sku: '4862904234',
                     refreshBundle: false,
+                    claimFence: `claim-sensitive-${index}`,
                   },
                 }
               : { ok: true, job: null });
@@ -1692,9 +1864,67 @@ test('captured variantData discards portal-only control and secret metadata befo
     assert.deepEqual(JSON.parse(result.options.body), {
       variantData: projectedVariantData(variantData),
       captureContext: captureContext(),
+      claimFence: `claim-sensitive-${index}`,
     });
     assert.equal(requests.some(({ path }) => path.endsWith('/fail')), false, `case ${index}`);
     assert.doesNotMatch(JSON.stringify(requests), /attacker-controlled|attacker\.invalid|secret-secret|abcdefghijklmnopqrstuvwxyz/);
+  }
+});
+
+test('captured raw variantData rejects exact credential aliases before projection', async () => {
+  const sensitiveVariants = [
+    completeVariantData('4862904234', { nested: [{ auth: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ jwt: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ session: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ cookieJar: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ Authorization: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { nested: [{ requestHeaders: 'attacker-controlled' }] }),
+    completeVariantData('4862904234', { note: 'Collector cst_secret-secret-secret-secret' }),
+    completeVariantData('4862904234', { note: 'Bearer abcdefghijklmnopqrstuvwxyz123456' }),
+  ];
+
+  for (const [index, variantData] of sensitiveVariants.entries()) {
+    const requests = [];
+    let nextCalls = 0;
+    let agent;
+    agent = createAgent({
+      sessionManager: {
+        async beginCollectorOperation() { return operation(); },
+        async collectorFetch(path, options) {
+          requests.push({ path, options });
+          if (path.endsWith('/next')) {
+            nextCalls += 1;
+            return jsonResponse(200, nextCalls === 1
+              ? {
+                  ok: true,
+                  job: {
+                    id: `job-raw-sensitive-${index}`,
+                    requestId: `request-raw-sensitive-${index}`,
+                    sku: '4862904234',
+                    refreshBundle: false,
+                    claimFence: `claim-raw-sensitive-${index}`,
+                  },
+                }
+              : { ok: true, job: null });
+          }
+          return jsonResponse(200, { ok: true });
+        },
+      },
+      async canCapture() { return true; },
+      async captureVariant() { return { ok: true, data: { items: [variantData] } }; },
+      async sleep() { agent.stop(`request-raw-sensitive-${index}`); },
+    });
+
+    await agent.drainUntil({
+      requestId: `request-raw-sensitive-${index}`,
+      deadlineAt: Date.now() + 2_000,
+    });
+
+    assert.equal(requests.some(({ path }) => path.endsWith('/result')), false, `case ${index}`);
+    const failed = requests.find(({ path }) => path.endsWith('/fail'));
+    assert.ok(failed, `case ${index}`);
+    assert.equal(JSON.parse(failed.options.body).code, 'OZON_ENRICH_UPSTREAM_FAILED');
+    assert.doesNotMatch(JSON.stringify(requests), /attacker-controlled|secret-secret|abcdefghijklmnopqrstuvwxyz/);
   }
 });
 
@@ -1717,6 +1947,7 @@ test('captured variantData rejects a credential-shaped value inside an uploaded 
                   requestId: 'request-secret-attribute',
                   sku: '4862904234',
                   refreshBundle: false,
+                  claimFence: 'claim-secret-attribute',
                 },
               }
             : { ok: true, job: null });
@@ -1754,6 +1985,8 @@ test('captured variantData rejects a credential-shaped value inside an uploaded 
   assert.deepEqual(JSON.parse(failure.options.body), {
     code: 'OZON_ENRICH_UPSTREAM_FAILED',
     message: 'Ozon 商品资料暂时无法读取',
+    captureContext: captureContext(),
+    claimFence: 'claim-secret-attribute',
   });
   assert.doesNotMatch(JSON.stringify(requests), /abcdefghijklmnopqrstuvwxyz/);
 });

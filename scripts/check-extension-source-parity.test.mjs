@@ -72,6 +72,39 @@ test("source parity accepts the reviewed Task 8 product collection contract as l
   }
 });
 
+test("source parity accepts exactly the four reviewed Seller context UI files absent upstream", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "extension-source-parity-"));
+  const upstreamDir = path.join(fixtureRoot, "upstream");
+  cpSync(localExtensionDir, upstreamDir, { recursive: true });
+  const reviewedLocalOnly = [
+    "lib/seller-context-status-controller.js",
+    "lib/seller-context-ui-message-policy.js",
+    "tests/seller-context-status-controller.test.js",
+    "tests/seller-context-ui-message-policy.test.js",
+  ];
+  for (const relativePath of reviewedLocalOnly) rmSync(path.join(upstreamDir, relativePath));
+
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [path.join(rootDir, "scripts", "check-extension-source-parity.mjs")],
+      {
+        cwd: rootDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          QH_SOURCE_EXTENSION_DIR: upstreamDir,
+          QH_LOCAL_EXTENSION_DIR: localExtensionDir,
+          QH_DISTRIBUTED_EXTENSION_DIR: localExtensionDir,
+        },
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("source parity rejects an unknown local-only file with a safe diagnostic", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "extension-source-parity-"));
   const upstreamDir = path.join(fixtureRoot, "upstream");
