@@ -20,3 +20,21 @@ test("migration 020 creates account-scoped Ozon enrichment cache and jobs", asyn
   assert.match(sql, /CREATE INDEX collector_ozon_enrichment_jobs_pending_idx/);
   assert.match(sql, /CREATE INDEX collector_ozon_enrichment_jobs_account_idx/);
 });
+
+test("migration 021 adds durable linked retry scheduling and capture evidence", async () => {
+  const sql = await readFile(
+    new URL("../db/migrations/021_async_collect_enrichment.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS collect_item_id TEXT/);
+  assert.match(sql, /REFERENCES collect_items\(id\) ON DELETE SET NULL/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW\(\)/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS last_error_json JSONB/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS capture_context_json JSONB/);
+  assert.match(sql, /ALTER TABLE collector_ozon_enrichment_cache[\s\S]*ADD COLUMN IF NOT EXISTS capture_context_json JSONB/);
+  assert.match(sql, /DROP INDEX IF EXISTS collector_ozon_enrichment_jobs_pending_idx/);
+  assert.match(sql, /ON collector_ozon_enrichment_jobs\(account_id, next_attempt_at, created_at, id\)/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE/);
+});

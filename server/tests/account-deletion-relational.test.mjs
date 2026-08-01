@@ -11,8 +11,8 @@ function statefulRelationalClient() {
       { id: "cache-other", account_id: "account-other" },
     ],
     collector_ozon_enrichment_jobs: [
-      { id: "job-target", account_id: "account-target" },
-      { id: "job-other", account_id: "account-other" },
+      { id: "job-target", account_id: "account-target", collect_item_id: "collect-target" },
+      { id: "job-other", account_id: "account-other", collect_item_id: "collect-other" },
     ],
     collector_auth_tickets: [
       { id: "ticket-target", account_id: "account-target" },
@@ -123,7 +123,7 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
     { id: "cache-other", account_id: "account-other" },
   ]);
   assert.deepEqual(client.rows.collector_ozon_enrichment_jobs, [
-    { id: "job-other", account_id: "account-other" },
+    { id: "job-other", account_id: "account-other", collect_item_id: "collect-other" },
   ]);
   assert.deepEqual(client.rows.collector_auth_tickets, [
     { id: "ticket-other", account_id: "account-other" },
