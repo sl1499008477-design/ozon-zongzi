@@ -1360,11 +1360,11 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
       `UPDATE collector_ozon_enrichment_jobs
           SET status='PENDING', attempt_count=attempt_count+1,
               next_attempt_at=$4 + CASE
-                WHEN attempt_count=0 THEN $6
-                WHEN attempt_count=1 THEN $7
-                WHEN attempt_count=2 THEN $8
-                WHEN attempt_count=3 THEN $9
-                ELSE $10
+                WHEN attempt_count=0 THEN $6::double precision
+                WHEN attempt_count=1 THEN $7::double precision
+                WHEN attempt_count=2 THEN $8::double precision
+                WHEN attempt_count=3 THEN $9::double precision
+                ELSE $10::double precision
               END * INTERVAL '1 millisecond',
               last_error_json=$5::jsonb,
               claimed_session_id=NULL, claim_expires_at=NULL, updated_at=$4

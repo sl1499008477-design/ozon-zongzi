@@ -2518,6 +2518,10 @@ test("PostgreSQL linked enqueue, due claim, defer, and capture evidence stay acc
   assert.match(calls[1].sql, /attempt_count=attempt_count\+1/);
   assert.match(calls[1].sql, /last_error_json=\$5::jsonb/);
   assert.match(calls[1].sql, /next_attempt_at=\$4 \+ CASE/);
+  assert.match(
+    calls[1].sql,
+    /CASE WHEN attempt_count=0 THEN \$6::double precision WHEN attempt_count=1 THEN \$7::double precision WHEN attempt_count=2 THEN \$8::double precision WHEN attempt_count=3 THEN \$9::double precision ELSE \$10::double precision END \* INTERVAL '1 millisecond'/,
+  );
   assert.equal(calls[1].params[4], JSON.stringify({ code: "OZON_RETRYABLE", status: 503 }));
   assert.deepEqual(calls[1].params.slice(5), [30_000, 120_000, 600_000, 1_800_000, 3_600_000]);
 
