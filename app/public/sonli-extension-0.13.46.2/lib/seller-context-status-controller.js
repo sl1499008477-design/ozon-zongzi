@@ -1,6 +1,15 @@
 (function (root) {
   'use strict';
 
+  const isSellerContextSwitch = (previous, current) => {
+    if (previous?.status !== 'READY') return false;
+    if (current?.status === 'RECOVERING') return true;
+    return current?.status === 'READY'
+      && Boolean(previous.companyId)
+      && Boolean(current.companyId)
+      && String(previous.companyId) !== String(current.companyId);
+  };
+
   const createSellerContextStatusController = ({
     requestStatus,
     onStatus,
@@ -36,7 +45,10 @@
     return Object.freeze({ refresh, start, stop });
   };
 
-  const api = Object.freeze({ createSellerContextStatusController });
+  const api = Object.freeze({
+    createSellerContextStatusController,
+    isSellerContextSwitch,
+  });
   root.JzSellerContextStatusController = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : self);

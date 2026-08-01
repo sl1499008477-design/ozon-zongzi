@@ -172,16 +172,19 @@
   const renderSellerContextStatus = (response) => {
     if (!sellerContextStatus) return;
     const { status, companyId } = safeSellerContext(response);
-    const previousStatus = latestSellerContext.status;
+    const previousContext = latestSellerContext;
     latestSellerContext = { status, companyId };
-    if (status === "RECOVERING" && previousStatus === "READY") {
+    if (globalThis.JzSellerContextStatusController.isSellerContextSwitch(
+      previousContext,
+      latestSellerContext,
+    )) {
       sellerSwitchNoticeUntil = Date.now() + 3_000;
       clearTimeout(sellerSwitchNoticeTimer);
       sellerSwitchNoticeTimer = setTimeout(() => {
         sellerSwitchNoticeUntil = 0;
         renderSellerContextStatus(latestSellerContext);
       }, 3_000);
-    } else if (status !== "RECOVERING") {
+    } else if (sellerSwitchNoticeUntil <= Date.now()) {
       sellerSwitchNoticeUntil = 0;
       clearTimeout(sellerSwitchNoticeTimer);
       sellerSwitchNoticeTimer = null;
@@ -192,6 +195,12 @@
     copy.className = "seller-status-copy";
     if (status === "READY") {
       copy.textContent = `Seller 已识别 · Company ID ${companyId}`;
+      if (sellerSwitchNoticeUntil > Date.now()) {
+        const note = document.createElement("span");
+        note.className = "seller-status-note";
+        note.textContent = "Seller 店铺已切换";
+        copy.appendChild(note);
+      }
     } else if (status === "RECOVERING") {
       copy.textContent = "正在识别 Seller 店铺";
       if (sellerSwitchNoticeUntil > Date.now()) {

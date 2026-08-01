@@ -150,8 +150,10 @@
       sleep,
     });
 
+    const acquireCurrentWithRecovery = (options) => recovery.acquireCurrentWithRecovery(options);
     const resolveCurrent = snapshotCurrent;
     const resolveCurrentWithRecovery = (options) => recovery.resolveCurrentWithRecovery(options);
+    const releaseSnapshot = (snapshot) => recovery.releaseOwnedSnapshot(snapshot);
     const isSnapshotCurrent = async (snapshot) => {
       try {
         const current = await snapshotCurrent();
@@ -163,9 +165,11 @@
     };
 
     return Object.freeze({
+      acquireCurrentWithRecovery,
       focusLoginHelper: recovery.focusLoginHelper,
       isSnapshotCurrent,
       observationsForTabs,
+      releaseSnapshot,
       rememberFromSender,
       resolveCurrent,
       resolveCurrentWithRecovery,

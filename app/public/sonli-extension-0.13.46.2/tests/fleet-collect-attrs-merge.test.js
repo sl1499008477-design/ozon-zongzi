@@ -11,9 +11,20 @@ const helperSource = workerSource.slice(helperStart, helperEnd);
 const loadHelper = new Function(`${helperSource}\nreturn mergeBundleItemIntoSourceVariant;`);
 const mergeBundleItemIntoSourceVariant = loadHelper();
 
-assert.ok(
-  (workerSource.match(/mergeBundleItemIntoSourceVariant\(/g) || []).length >= 2,
-  "fleet and local bundle routes must both call the shared enrichment helper",
+assert.match(
+  workerSource,
+  /mergeBundle\s*=\s*mergeBundleItemIntoSourceVariant/,
+  "the local Seller enrichment route must default to the shared bundle helper",
+);
+assert.match(
+  workerSource,
+  /items\[0\]\s*=\s*mergeBundle\(items\[0\],\s*bundleItem\)/,
+  "the local Seller enrichment route must invoke its shared bundle helper",
+);
+assert.match(
+  workerSource,
+  /const _sv = mergeBundleItemIntoSourceVariant\(_fc\.sourceVariant, _fc\.bundleItem\)/,
+  "the fleet route must invoke the same shared bundle helper",
 );
 
 const bundleItem = {

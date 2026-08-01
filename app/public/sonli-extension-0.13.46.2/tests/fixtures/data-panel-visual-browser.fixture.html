@@ -161,7 +161,9 @@
         if (action === "getSellerContextStatus") {
           sellerContextMessages.push({ action, payload });
           sellerContextStatusCalls += 1;
-          if (sellerMode === "transition" && sellerContextStatusCalls > 1) return { status: "RECOVERING" };
+          if (sellerMode === "transition" && sellerContextStatusCalls > 1) {
+            return { status: "READY", companyId: "7311458", observedAt: 1785528003000 };
+          }
           return { status: sellerContextStatus.status, companyId: sellerContextStatus.companyId, observedAt: sellerContextStatus.observedAt };
         }
         if (action === "openSellerLogin") {

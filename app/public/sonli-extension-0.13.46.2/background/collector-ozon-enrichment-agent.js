@@ -9,7 +9,7 @@
   const DRAIN_COMPLETED = Symbol('collectorOzonDrainCompleted');
   const DRAIN_CANCELLED = Symbol('collectorOzonDrainCancelled');
   const DRAIN_FAILED = Symbol('collectorOzonDrainFailed');
-  const JOB_KEYS = Object.freeze(['id', 'requestId', 'sku', 'refreshBundle']);
+  const JOB_KEYS = Object.freeze(['id', 'requestId', 'sku', 'refreshBundle', 'claimFence']);
   const FAILURE_MESSAGES = Object.freeze({
     OZON_ENRICH_NOT_FOUND: '未找到 Ozon 商品资料',
     OZON_ENRICH_UPSTREAM_FAILED: 'Ozon 商品资料暂时无法读取',
@@ -41,6 +41,7 @@
   ]);
   const SENSITIVE_KEY_FRAGMENT =
     /(?:authorization|cookie|credential|password|passphrase|secret|token|apikey|privatekey)/;
+  const EXACT_SENSITIVE_KEYS = new Set(['auth', 'jwt', 'session', 'cookiejar']);
   const SECRET_VALUE =
     /(?:\bCollector\s+(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,}|\bBearer\s+[A-Za-z0-9._~+\/-]{20,}={0,2}|\b(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,})/i;
 
@@ -80,11 +81,16 @@
   };
 
   const canonicalKey = (value) => String(value || '').replace(/[_-]/g, '').toLowerCase();
+  const sensitiveNestedKey = (value) => {
+    const key = canonicalKey(value);
+    return EXACT_SENSITIVE_KEYS.has(key)
+      || SENSITIVE_KEY_FRAGMENT.test(key)
+      || key.includes('header');
+  };
   const forbiddenNestedKey = (value) => {
     const key = canonicalKey(value);
     return RETIRED_SCOPE_KEYS.has(key)
-      || SENSITIVE_KEY_FRAGMENT.test(key)
-      || key.includes('header')
+      || sensitiveNestedKey(key)
       || key === 'action'
       || key.endsWith('action')
       || key === 'script'
@@ -94,6 +100,29 @@
       || key.endsWith('url')
       || key === 'uri'
       || key.endsWith('uri');
+  };
+
+  const assertRawVariantCredentialsSafe = (value) => {
+    const seen = new WeakSet();
+    const visit = (nested) => {
+      if (typeof nested === 'string' && SECRET_VALUE.test(nested)) {
+        throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      }
+      if (!nested || typeof nested !== 'object') return;
+      if (seen.has(nested)) return;
+      seen.add(nested);
+      if (Array.isArray(nested)) {
+        nested.forEach(visit);
+        return;
+      }
+      if (!isPlainObject(nested)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+      for (const [key, child] of Object.entries(nested)) {
+        if (sensitiveNestedKey(key)) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        visit(child);
+      }
+    };
+    visit(value);
+    return value;
   };
 
   const assertSafeVariantData = (value) => {
@@ -191,6 +220,7 @@
       || typeof value.sku !== 'string'
       || !cleanText(value.sku)
       || typeof value.refreshBundle !== 'boolean'
+      || !safeJobId(value.claimFence)
     ) {
       throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
     }
@@ -199,6 +229,7 @@
       requestId: cleanText(value.requestId),
       sku: cleanText(value.sku),
       refreshBundle: value.refreshBundle === true,
+      claimFence: safeJobId(value.claimFence),
     };
   };
 
@@ -395,9 +426,17 @@
         signal,
       }));
 
-    const reportFailure = async (entry, generation, collectorOperation, rawJob, error) => {
+    const reportFailure = async (
+      entry,
+      generation,
+      collectorOperation,
+      rawJob,
+      error,
+      sellerContext,
+    ) => {
       const id = safeJobId(rawJob?.id);
-      if (!id || !isCurrent(entry, generation)) return false;
+      const claimFence = safeJobId(rawJob?.claimFence);
+      if (!id || !claimFence || !isCurrent(entry, generation)) return false;
       const failure = fixedFailure(error?.code);
       try {
         ensureCurrent(entry, generation);
@@ -409,7 +448,12 @@
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ code: failure.code, message: failure.message }),
+            body: JSON.stringify({
+              code: failure.code,
+              message: failure.message,
+              captureContext: captureContextFor(sellerContext),
+              claimFence,
+            }),
           },
         );
         ensureCurrent(entry, generation);
@@ -419,30 +463,40 @@
       }
     };
 
-    const executeClaim = async (entry, generation, collectorOperation, rawJob) => {
+    const captureContextFor = (sellerContext) => ({
+      sellerCompanyId: cleanText(sellerContext.companyId),
+      revision: Number(sellerContext.revision),
+      observedAt: new Date(sellerContext.observedAt).toISOString(),
+    });
+
+    const executeClaim = async (
+      entry,
+      generation,
+      collectorOperation,
+      rawJob,
+      sellerContext,
+    ) => {
       let job;
       try {
         job = normalizeJob(rawJob);
         ensureCurrent(entry, generation);
-        let sellerContext;
-        try {
-          sellerContext = normalizeSellerContext(await withLifecycle(
-            sellerContextRuntime.resolveCurrentWithRecovery(),
-            entry,
-            generation,
-          ));
-        } catch (error) {
-          if (error?.code === 'SELLER_CONTEXT_CHANGED') throw error;
-          throw fixedFailure('SELLER_CONTEXT_REQUIRED');
-        }
-        ensureCurrent(entry, generation);
         const capture = await withLifecycle(captureVariant({
           sku: job.sku,
           noProxy: true,
+          readOnly: true,
           forceRefresh: job.refreshBundle === true,
           deadlineAt: entry.deadlineAt,
           sellerContext,
         }), entry, generation);
+        ensureCurrent(entry, generation);
+        const captureCode = cleanText(capture?.error || capture?.code);
+        if (capture?.ok !== true && SELLER_AUTH_CAPTURE_CODES.has(captureCode)) {
+          throw fixedFailure('SELLER_CONTEXT_REQUIRED');
+        }
+        const rawVariantData = matchedVariantData(capture, job.sku);
+        assertRawVariantCredentialsSafe(rawVariantData);
+        const variantData = projectVariantData(rawVariantData);
+        assertSafeVariantData(variantData);
         ensureCurrent(entry, generation);
         const contextIsCurrent = await withLifecycle(
           sellerContextRuntime.isSnapshotCurrent(sellerContext),
@@ -450,12 +504,6 @@
           generation,
         );
         if (contextIsCurrent !== true) throw fixedFailure('SELLER_CONTEXT_CHANGED');
-        const captureCode = cleanText(capture?.error || capture?.code);
-        if (capture?.ok !== true && SELLER_AUTH_CAPTURE_CODES.has(captureCode)) {
-          throw fixedFailure('SELLER_CONTEXT_REQUIRED');
-        }
-        const variantData = projectVariantData(matchedVariantData(capture, job.sku));
-        assertSafeVariantData(variantData);
         ensureCurrent(entry, generation);
         const response = await collectorRequest(
           entry,
@@ -467,31 +515,42 @@
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               variantData,
-              captureContext: {
-                sellerCompanyId: cleanText(sellerContext.companyId),
-                revision: Number(sellerContext.revision),
-                observedAt: new Date(sellerContext.observedAt).toISOString(),
-              },
+              captureContext: captureContextFor(sellerContext),
+              claimFence: job.claimFence,
             }),
           },
         );
         ensureCurrent(entry, generation);
-        if (!response?.ok) throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+        if (!response?.ok) {
+          const failure = await jsonBody(response);
+          throw fixedFailure(failure?.code === 'SELLER_CONTEXT_CHANGED'
+            ? 'SELLER_CONTEXT_CHANGED'
+            : 'OZON_ENRICH_UPSTREAM_FAILED');
+        }
         return true;
       } catch (error) {
         if (isCurrent(entry, generation)) {
-          await reportFailure(entry, generation, collectorOperation, job || rawJob, error);
+          await reportFailure(
+            entry,
+            generation,
+            collectorOperation,
+            job || rawJob,
+            error,
+            sellerContext,
+          );
         }
         return false;
       }
     };
 
-    const claimNext = (entry, generation, collectorOperation) =>
+    const claimNext = (entry, generation, collectorOperation, sellerContext) =>
       withCollectorStage(entry, generation, async (signal) => {
         const response = await sessionManager.collectorFetch(NEXT_PATH, {
           collectorOperation,
           permission: READ_PERMISSION,
-          method: 'GET',
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ captureContext: captureContextFor(sellerContext) }),
           signal,
         });
         ensureCurrent(entry, generation);
@@ -535,16 +594,54 @@
           } catch {}
           continue;
         }
+        let sellerContext = null;
+        let leasedSellerContext = null;
+        const sellerContextPromise = Promise.resolve()
+          .then(() => sellerContextRuntime.resolveCurrentWithRecovery());
+        const releaseSellerContext = async (snapshot) => {
+          if (!snapshot || typeof snapshot !== 'object') return false;
+          try {
+            return await sellerContextRuntime.releaseSnapshot?.(snapshot) === true;
+          } catch {
+            return false;
+          }
+        };
         try {
-          const job = await claimNext(entry, generation, collectorOperation);
+          leasedSellerContext = await withLifecycle(
+            sellerContextPromise,
+            entry,
+            generation,
+          );
+          sellerContext = normalizeSellerContext(leasedSellerContext);
+          ensureCurrent(entry, generation);
+        } catch (error) {
+          if (leasedSellerContext) {
+            await releaseSellerContext(leasedSellerContext);
+          } else {
+            void sellerContextPromise.then(releaseSellerContext, () => false);
+          }
+          if (stopWhenEmpty) return DRAIN_FAILED;
+          try {
+            await withLifecycle(
+              sleep(Math.min(POLL_MS, Math.max(0, entry.deadlineAt - now()))),
+              entry,
+              generation,
+            );
+          } catch {}
+          continue;
+        }
+        try {
+          const job = await claimNext(entry, generation, collectorOperation, sellerContext);
           ensureCurrent(entry, generation);
           if (job) {
-            await executeClaim(entry, generation, collectorOperation, job);
+            await executeClaim(entry, generation, collectorOperation, job, sellerContext);
             continue;
           }
           if (stopWhenEmpty) return DRAIN_COMPLETED;
         } catch {
           // The held public request owns the user-facing error. Polling stays fail-closed.
+        } finally {
+          await releaseSellerContext(leasedSellerContext || sellerContext);
         }
         if (!isCurrent(entry, generation)) break;
         try {

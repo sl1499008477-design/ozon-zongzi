@@ -131,6 +131,7 @@ const actions = [];
 const intervals = [];
 const clearedIntervals = [];
 const windowListeners = new Map();
+let sellerCompanyId = "2681910";
 const activeProductTab = {
   id: 73,
   url: "https://www.ozon.ru/product/collector-session-product-123/",
@@ -155,7 +156,7 @@ const chrome = {
           ok: true,
           data: {
             status: "READY",
-            companyId: "2681910",
+            companyId: sellerCompanyId,
             observedAt: 1785528000000,
           },
         },
@@ -261,8 +262,15 @@ setTimeout(async () => {
   assert.doesNotMatch(sellerStatus.textContent, /Cookie|token|SELLER_CONTEXT_REQUIRED/);
   assert.equal(actions.includes("getSellerContextStatus"), true);
   assert.equal(intervals.length, 1, "popup must refresh Seller status on a bounded interval");
+  sellerCompanyId = "7311458";
   intervals[0]();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(actions.filter((action) => action === "getSellerContextStatus").length, 2);
+  assert.match(sellerStatus.textContent, /Seller 已识别.*7311458.*Seller 店铺已切换/,
+    "READY-to-READY company changes must show an explicit switch notice");
+  await new Promise((resolve) => setTimeout(resolve, 3_050));
+  assert.doesNotMatch(sellerStatus.textContent, /Seller 店铺已切换/,
+    "Seller switch notice must clear after its three-second timer");
   await document.getElementById("logout-btn").listeners.get("click")();
   assert.deepEqual(clearedIntervals, [1], "logout must stop Seller status polling immediately");
   await document.getElementById("collector-auth-recheck-btn").listeners.get("click")();

@@ -1,6 +1,24 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createSellerContextStatusController } = require('../lib/seller-context-status-controller.js');
+const {
+  createSellerContextStatusController,
+  isSellerContextSwitch,
+} = require('../lib/seller-context-status-controller.js');
+
+test('READY to READY Company ID changes are explicit Seller switches', () => {
+  assert.equal(isSellerContextSwitch(
+    { status: 'READY', companyId: '2681910' },
+    { status: 'READY', companyId: '7311458' },
+  ), true);
+  assert.equal(isSellerContextSwitch(
+    { status: 'READY', companyId: '2681910' },
+    { status: 'READY', companyId: '2681910' },
+  ), false);
+  assert.equal(isSellerContextSwitch(
+    { status: 'READY', companyId: '2681910' },
+    { status: 'RECOVERING' },
+  ), true);
+});
 
 test('status controller ignores an older response and clears its polling timer', async () => {
   const pending = [];
