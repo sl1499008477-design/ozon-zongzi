@@ -77,6 +77,7 @@ function loadServiceWorker({
   const createdAlarms = [];
   const fetchCalls = [];
   const executeScriptCalls = [];
+  const intervalCalls = [];
   const runtimeSendMessageCalls = [];
   const importedScripts = [];
   const session = createStorageArea({
@@ -226,8 +227,9 @@ function loadServiceWorker({
       platform: 'test',
       userAgent: 'service-worker-behavior-test',
     },
-    setInterval() {
-      return 1;
+    setInterval(callback, delay) {
+      intervalCalls.push({ callback, delay });
+      return intervalCalls.length;
     },
     setTimeout(callback, delay = 0) {
       if (delay <= 1000) queueMicrotask(callback);
@@ -253,6 +255,7 @@ function loadServiceWorker({
     executeScriptCalls,
     fetchCalls,
     importedScripts,
+    intervalCalls,
     local,
     runtimeOnMessage,
     runtimeOnStartup,
@@ -324,6 +327,34 @@ test('actual service worker starts without retired sync modules or sync alarms',
     'collector-ozon-enrichment-agent.js',
     'collector-ozon-enrichment-client.js',
   ]);
+});
+
+test('Ozon enrichment runtime messages keep the service worker alive while cold capture runs', async () => {
+  const harness = loadServiceWorker();
+  const sender = {
+    tab: { id: 7, url: 'https://www.ozon.ru/product/example-4862904234/' },
+    url: 'https://www.ozon.ru/product/example-4862904234/',
+  };
+  const single = await sendRuntimeMessage(harness, {
+    action: 'enrichOzonCollect',
+    requestId: 'keepalive-single',
+    sku: '4862904234',
+    invalid: true,
+  }, sender);
+  const batch = await sendRuntimeMessage(harness, {
+    action: 'enrichOzonCollectBatch',
+    requestId: 'keepalive-batch',
+    skus: ['4862904234', '2780832763'],
+    invalid: true,
+  }, sender);
+
+  assert.equal(single.ok, false);
+  assert.equal(batch.ok, false);
+  assert.deepEqual(
+    harness.intervalCalls.map(({ delay }) => delay),
+    [15_000, 15_000],
+    'single and batch enrichment must both hold the MV3 service worker open',
+  );
 });
 
 test('Ozon enrichment runtime messages are exact, Collector-authenticated, and preserve stable errors', async () => {
@@ -417,13 +448,18 @@ test('Ozon enrichment runtime messages are exact, Collector-authenticated, and p
   assert.doesNotMatch(failed.error, /do-not-leak|cst_/);
 });
 
-test('held enrichment directly invokes the local visible Seller capture and posts its exact result', async () => {
+test('held enrichment directly invokes the local visible Seller capture and posts its safe projection', async () => {
   const sku = '4862904234';
   const variantData = {
     sku,
     description_category_id: 123,
     type_id: 456,
+    categories: [
+      { id: 100, level: 2, name: '家用电器', title: '家用电器', company_id: 'must-not-cross' },
+      { id: 123, level: 3, name: 'Заварочный чайник', title: 'Заварочный чайник' },
+    ],
     attributes: [
+      { key: '8229', value: 'Заварочный чайник', dictionary_value_id: 456 },
       { key: '4497', value: '500' },
       { key: '9454', value: '300' },
       { key: '9455', value: '200' },
@@ -513,7 +549,15 @@ test('held enrichment directly invokes the local visible Seller capture and post
   ]);
 
   assert.equal(response.ok, true);
-  assert.deepEqual(JSON.parse(JSON.stringify(postedVariantData)), variantData);
+  assert.deepEqual(JSON.parse(JSON.stringify(postedVariantData)), {
+    description_category_id: 123,
+    type_id: 456,
+    categories: [
+      { id: 100, level: 2, name: '家用电器', title: '家用电器' },
+      { id: 123, level: 3, name: 'Заварочный чайник', title: 'Заварочный чайник' },
+    ],
+    attributes: variantData.attributes,
+  });
   assert.equal(harness.executeScriptCalls.length, 1);
   assert.equal(harness.runtimeSendMessageCalls.length, 0);
 });

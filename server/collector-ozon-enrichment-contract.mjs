@@ -11,6 +11,7 @@ const REQUIRED_FIELDS = Object.freeze([
 ]);
 
 const ATTRIBUTE_IDS = Object.freeze({
+  typeName: "8229",
   weightG: "4497",
   weightKg: "4383",
   lengthMm: "9454",
@@ -86,12 +87,37 @@ function firstPositive(...values) {
 function enrichmentFieldValues(value = {}) {
   const logistics = value?.logistics && typeof value.logistics === "object" ? value.logistics : {};
   return {
-    descriptionCategoryId: value?.descriptionCategoryId,
+    descriptionCategoryId: value?.descriptionCategoryId ?? value?.description_category_id,
     weightG: value?.weightG ?? logistics.weightG ?? value?.weight,
     lengthMm: value?.lengthMm ?? logistics.lengthMm ?? value?.depth,
     widthMm: value?.widthMm ?? logistics.widthMm ?? value?.width,
     heightMm: value?.heightMm ?? logistics.heightMm ?? value?.height,
   };
+}
+
+function sourceCategoryEvidence(variantData) {
+  const attributes = Array.isArray(variantData?.attributes) ? variantData.attributes : [];
+  const typeAttribute = attributes.find(
+    (attribute) => cleanText(attribute?.key) === ATTRIBUTE_IDS.typeName,
+  );
+  const categories = Array.isArray(variantData?.categories) ? variantData.categories : [];
+  const path = [...categories]
+    .sort((left, right) => positiveNumber(left?.level) - positiveNumber(right?.level))
+    .map((category) => cleanText(category?.title || category?.name))
+    .filter((label, index, labels) => label && labels.indexOf(label) === index);
+  const evidence = {
+    descriptionCategoryId: positiveNumber(variantData?.description_category_id),
+    typeName: cleanText(typeAttribute?.value),
+    typeIdCandidate: positiveNumber(
+      typeAttribute?.dictionary_value_id ?? typeAttribute?.dictionaryValueId,
+    ),
+    path,
+  };
+  return Object.values(evidence).some((value) =>
+    Array.isArray(value) ? value.length > 0 : Boolean(value),
+  )
+    ? evidence
+    : null;
 }
 
 export function parseOzonEnrichmentRequest(body) {
@@ -152,6 +178,8 @@ export function normalizeOzonAgentResult({ sku, variantData, source, capturedAt 
   };
   const typeId = positiveNumber(variantData?.type_id);
   if (typeId) result.typeId = typeId;
+  const sourceCategory = sourceCategoryEvidence(variantData);
+  if (sourceCategory) result.sourceCategory = sourceCategory;
   const missingFields = missingOzonRequiredFields(result);
   if (missingFields.length) {
     throw contractError(

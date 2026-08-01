@@ -112,6 +112,35 @@ test("normalization omits optional typeId", () => {
   assert.equal(Object.hasOwn(normalized, "typeId"), false);
 });
 
+test("normalization exposes additive source category evidence", () => {
+  const normalized = normalizeOzonAgentResult({
+    sku: "4862904234",
+    source: "LOCAL_SELLER",
+    capturedAt: "2026-08-01T00:00:00.000Z",
+    variantData: completeVariantData({
+      description_category_id: 17039736,
+      categories: [
+        { id: 17000000, level: 2, title: "家用电器" },
+        { id: 17039736, level: 3, name: "Заварочный чайник" },
+      ],
+      attributes: [
+        { key: "8229", value: "Заварочный чайник", dictionary_value_id: 123456 },
+        { key: "4497", value: "500" },
+        { key: "9454", value: "300" },
+        { key: "9455", value: "200" },
+        { key: "9456", value: "100" },
+      ],
+    }),
+  });
+
+  assert.deepEqual(normalized.sourceCategory, {
+    descriptionCategoryId: 17039736,
+    typeName: "Заварочный чайник",
+    typeIdCandidate: 123456,
+    path: ["家用电器", "Заварочный чайник"],
+  });
+});
+
 test("normalization rejects zero, negative, and non-finite required values", async (t) => {
   const cases = [
     ["zero category", completeVariantData({ description_category_id: 0 }), ["descriptionCategoryId"]],
@@ -162,6 +191,18 @@ test("Ozon completeness gate recognizes fields merged into a collection payload"
     depth: 300,
     width: 200,
     height: 100,
+  }));
+});
+
+test("Ozon completeness gate accepts the extension collection field contract", () => {
+  assert.doesNotThrow(() => assertCompleteOzonCollectPayload("ozon", {
+    description_category_id: 123,
+    weight: 500,
+    depth: 300,
+    width: 200,
+    height: 100,
+    weight_unit: "g",
+    dimension_unit: "mm",
   }));
 });
 
