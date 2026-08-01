@@ -62,7 +62,7 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
   const id = clean(collectItemId, 240);
   if (!id) return;
   const result = await client.query(
-    `SELECT 1 FROM collect_items
+    `SELECT id,current_draft_id FROM collect_items
       WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL
       FOR UPDATE`,
     [id, clean(accountId, 240)],
@@ -73,6 +73,16 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
       code: "COLLECT_ITEM_NOT_FOUND",
     });
   }
+  const currentDraftId = clean(result.rows[0]?.current_draft_id, 240);
+  const draft = currentDraftId
+    ? await client.query("SELECT data FROM product_drafts WHERE id=$1 FOR SHARE", [currentDraftId])
+    : { rows: [] };
+  return {
+    id,
+    listingDraft: draft.rows[0]?.data && typeof draft.rows[0].data === "object"
+      ? draft.rows[0].data
+      : {},
+  };
 }
 
 function assertCollectItemListingPayloadsReady(normalizedItems) {
@@ -960,13 +970,22 @@ async function readListingPreparationReplay(client, preparation, baseIdempotency
   return { duplicate: true, job: publicJob(latest) };
 }
 
-export async function findListingPreparationReplayV3(input = {}) {
+export async function findListingPreparationReplayV3(input = {}, { validateCollectItem = null } = {}) {
   if (!listingPipelineEnabled()) return null;
   const preparation = assertListingPreparationInput(input);
   const baseIdempotencyKey = listingPreparationIdempotencyKey(preparation);
   return transaction(async (client) => {
+    const currentItem = await assertCollectItemAvailableForListing(
+      client,
+      preparation.collectItemId,
+      preparation.accountId,
+    );
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
-    return readListingPreparationReplay(client, preparation, baseIdempotencyKey);
+    const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
+    if (replay && typeof validateCollectItem === "function") {
+      await validateCollectItem(currentItem);
+    }
+    return replay;
   });
 }
 

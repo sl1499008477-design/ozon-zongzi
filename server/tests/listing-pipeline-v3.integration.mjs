@@ -568,6 +568,61 @@ try {
     assert.equal(routeReplay.status, 200, JSON.stringify(routeReplay.body));
     assert.equal(routeReplay.body.job.id, created.job.id);
     assert.equal(routeExternalCalls, 0);
+    const replayBlocker = await pool.connect();
+    let concurrentReplayPromise;
+    let concurrentDraftUpdatePromise;
+    let concurrentReplayResult;
+    try {
+      await replayBlocker.query("BEGIN");
+      const replayBlockerPid = Number((await replayBlocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      const replayDatabaseKey = crypto.createHash("sha256")
+        .update(["listing-prepare", accountId, `prepare-${suffix}`].join("|"))
+        .digest("hex");
+      await replayBlocker.query("SELECT pg_advisory_xact_lock(hashtext($1))", [replayDatabaseKey]);
+      concurrentReplayPromise = requestJson(
+        handle,
+        `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+        { targetStoreId: storeId, idempotencyKey: `prepare-${suffix}` },
+        routeToken,
+      );
+      let replayBlocked = false;
+      for (let attempt = 0; attempt < 100 && !replayBlocked; attempt += 1) {
+        const blocked = await pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) LIMIT 1",
+          [replayBlockerPid],
+        );
+        replayBlocked = blocked.rowCount > 0;
+        if (!replayBlocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(replayBlocked, true, "route replay must reach the held idempotency lock");
+      concurrentDraftUpdatePromise = pool.query(
+        `UPDATE product_drafts
+            SET data=data-'logistics'-'packageWeight'-'packageLength'-'packageWidth'-'packageHeight'
+          WHERE collect_item_id=$1`,
+        [collectId],
+      );
+      let draftUpdateBlocked = false;
+      for (let attempt = 0; attempt < 100 && !draftUpdateBlocked; attempt += 1) {
+        const blocked = await pool.query(
+          `SELECT 1 FROM pg_stat_activity
+            WHERE query LIKE 'UPDATE product_drafts%SET data=data%'
+              AND cardinality(pg_blocking_pids(pid)) > 0
+            LIMIT 1`,
+        );
+        draftUpdateBlocked = blocked.rowCount > 0;
+        if (!draftUpdateBlocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(draftUpdateBlocked, true, "route replay must hold the current draft stable through validation");
+    } finally {
+      await replayBlocker.query("COMMIT").catch(() => null);
+      replayBlocker.release();
+      [concurrentReplayResult] = await Promise.all([
+        concurrentReplayPromise,
+        concurrentDraftUpdatePromise,
+      ]);
+    }
+    assert.equal(concurrentReplayResult.status, 200, JSON.stringify(concurrentReplayResult.body));
+    assert.equal(concurrentReplayResult.body.job.id, created.job.id);
     const replayStateBefore = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
     const replayItemBefore = replayStateBefore.caches.collectBox.find((item) => item.id === collectId);
     const replayRowsBefore = await pool.query(
@@ -577,12 +632,6 @@ try {
          (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
            SELECT id FROM submission_jobs WHERE collect_item_id=$1
          )) AS outbox_count`,
-      [collectId],
-    );
-    await pool.query(
-      `UPDATE product_drafts
-          SET data=data-'logistics'-'packageWeight'-'packageLength'-'packageWidth'-'packageHeight'
-        WHERE collect_item_id=$1`,
       [collectId],
     );
     const incompleteReplay = await requestJson(

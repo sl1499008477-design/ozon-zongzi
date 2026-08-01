@@ -2204,7 +2204,23 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     err.code = "COLLECT_ITEM_NOT_FOUND";
     throw err;
   }
-  const frozenReplay = replayInput ? await findListingPreparationReplayV3(replayInput) : null;
+  let replayItems = null;
+  const frozenReplay = replayInput
+    ? await findListingPreparationReplayV3(replayInput, {
+        validateCollectItem(currentItem) {
+          replayItems = buildCollectBoxListingItems({
+            ...item,
+            listingDraft: currentItem.listingDraft,
+          });
+          try {
+            replayItems.forEach(assertOzonListingReady);
+          } catch (error) {
+            error.preserveExistingListing = true;
+            throw error;
+          }
+        },
+      })
+    : null;
   if (!frozenReplay) {
     resolveLocalListingTarget({
       accountId: account?.id,
@@ -2214,13 +2230,8 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
       findStore: (storeId) => activeStore(state, storeId, account.id),
     });
   }
-  const items = buildCollectBoxListingItems(item);
-  try {
-    items.forEach(assertOzonListingReady);
-  } catch (error) {
-    if (frozenReplay) error.preserveExistingListing = true;
-    throw error;
-  }
+  const items = replayItems || buildCollectBoxListingItems(item);
+  if (!frozenReplay) items.forEach(assertOzonListingReady);
   if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);
   const errors = validateCollectBoxListingDraft(item, items, stocks);
