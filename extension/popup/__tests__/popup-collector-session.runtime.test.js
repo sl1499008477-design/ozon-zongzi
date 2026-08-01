@@ -242,7 +242,7 @@ vm.runInNewContext(sellerStatusControllerSource, runtimeContext, {
 });
 vm.runInNewContext(popupSource, runtimeContext, { filename: "popup.js" });
 
-setTimeout(() => {
+setTimeout(async () => {
   const loginView = document.getElementById("login-view");
   const mainView = document.getElementById("main-view");
   const signals = document.getElementById("signals");
@@ -263,8 +263,12 @@ setTimeout(() => {
   assert.equal(intervals.length, 1, "popup must refresh Seller status on a bounded interval");
   intervals[0]();
   assert.equal(actions.filter((action) => action === "getSellerContextStatus").length, 2);
+  await document.getElementById("logout-btn").listeners.get("click")();
+  assert.deepEqual(clearedIntervals, [1], "logout must stop Seller status polling immediately");
+  await document.getElementById("collector-auth-recheck-btn").listeners.get("click")();
+  assert.equal(intervals.length, 2, "a restored Collector session must restart Seller polling once");
   windowListeners.get("unload")?.();
-  assert.deepEqual(clearedIntervals, [1], "popup unload must clear Seller status polling");
+  assert.deepEqual(clearedIntervals, [1, 2], "popup unload must clear Seller status polling");
   assert.equal(actions.includes("getStores"), false, "popup must not use the Web bearer store API");
   assert.equal(
     actions.includes("checkSellerCookies"),

@@ -155,6 +155,8 @@ async function runBrowserFixture({
     });
     await page.waitForFunction(() => window.__getSellerContextMessages()
       .filter(({ action }) => action === "openSellerLogin").length === 1);
+    assert.equal(await page.evaluate(() => window.__getFixtureTileClickCount()), 0,
+      "Seller login controls must not trigger the host product card click listener");
 
     for (const [mode, expected] of [
       ["ready", { text: /Seller 已识别.*2681910/, state: /is-ready/ }],
@@ -180,6 +182,36 @@ async function runBrowserFixture({
     await failedLoginButton.click();
     await failedLoginButton.getByText("暂时无法打开 Seller 登录").waitFor();
     assert.equal(await failedLoginButton.isDisabled(), true, "failed login keeps an explicit safe feedback state");
+
+    const transitionPage = await context.newPage();
+    extraPages.push(transitionPage);
+    await transitionPage.goto(`http://127.0.0.1:${address.port}${fixturePath}?seller=transition`);
+    const transitionStatus = transitionPage.locator(".tile-root > .oh-seller-context-status");
+    await transitionStatus.getByText(/Seller 已识别/).waitFor();
+    await transitionStatus.getByText("Seller 店铺已切换").waitFor({ timeout: 7_000 });
+    await transitionStatus.getByText("Seller 店铺已切换").waitFor({ state: "hidden", timeout: 4_000 });
+
+    const popupViewportPage = await context.newPage();
+    extraPages.push(popupViewportPage);
+    await popupViewportPage.setViewportSize({ width: 360, height: 700 });
+    await popupViewportPage.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
+    const popupViewport = await popupViewportPage.evaluate(async () => {
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/extension/popup/popup.css";
+      document.head.appendChild(stylesheet);
+      await new Promise((resolve) => { stylesheet.onload = resolve; });
+      document.body.style.padding = "0";
+      document.body.innerHTML = `<div class="popup"><main class="main-view active"><div class="main-body"><section class="seller-context-status is-login-required"><span class="seller-status-copy">需要登录 Seller</span><button class="btn btn-outline seller-status-action">打开 Seller 登录</button></section></div></main></div>`;
+      const status = document.querySelector(".seller-context-status");
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        statusWidth: status.getBoundingClientRect().width,
+      };
+    });
+    assert.equal(popupViewport.documentWidth, popupViewport.viewportWidth, "popup CSS must not overflow its 360px viewport");
+    assert.ok(popupViewport.statusWidth <= 360, "popup Seller status must fit its viewport");
 
     const settingsHelpers = await page.evaluate(() => ({
       groups: window.jzGroupDataCardFields([

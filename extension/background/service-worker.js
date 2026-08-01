@@ -3437,19 +3437,10 @@ try {
     return { status: 'LOGIN_REQUIRED' };
   };
 
-  const openSellerLogin = globalThis.JzSellerContextUiMessagePolicy.createSingleFlight(
-    async () => {
-      try {
-        if (await sellerCompanyContextRuntime.focusLoginHelper()) {
-          return { ok: true, data: { opened: true } };
-        }
-        await chrome.tabs.create({ url: 'https://seller.ozon.ru/app', active: true });
-        return { ok: true, data: { opened: true } };
-      } catch {
-        return { ok: false };
-      }
-    },
-  );
+  const openSellerLogin = globalThis.JzSellerContextUiMessagePolicy.createSellerLoginOpener({
+    focusOwnedHelper: () => sellerCompanyContextRuntime.focusLoginHelper(),
+    createTab: (options) => chrome.tabs.create(options),
+  });
 
     const handle = async () => {
       const collectorOperation = await collectorSessionManager.beginCollectorOperation();

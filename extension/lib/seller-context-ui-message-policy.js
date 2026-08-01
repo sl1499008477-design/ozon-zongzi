@@ -7,7 +7,13 @@
     LOGIN_REQUIRED: 'LOGIN_REQUIRED',
   });
   const ACTIONS = new Set(['getSellerContextStatus', 'openSellerLogin']);
-  const OZONE_PANEL_ORIGINS = new Set(['https://www.ozon.ru', 'https://ozon.ru']);
+  // Keep this exact top-frame set aligned with the manifest's data-panel content script.
+  const OZONE_PANEL_ORIGINS = new Set([
+    'https://ozon.ru',
+    'https://www.ozon.ru',
+    'https://ozon.kz',
+    'https://www.ozon.kz',
+  ]);
   const normalizeCompanyId = (value) => {
     const normalized = String(value == null ? '' : value).trim();
     return /^\d{4,15}$/.test(normalized) ? normalized : '';
@@ -63,10 +69,25 @@
       return pending;
     };
   };
+  const createSellerLoginOpener = ({ focusOwnedHelper, createTab } = {}) => {
+    if (typeof focusOwnedHelper !== 'function' || typeof createTab !== 'function') {
+      throw new TypeError('Seller login opener requires focusOwnedHelper and createTab');
+    }
+    return createSingleFlight(async () => {
+      try {
+        if (await focusOwnedHelper()) return { ok: true, data: { opened: true } };
+        await createTab({ url: 'https://seller.ozon.ru/app', active: true });
+        return { ok: true, data: { opened: true } };
+      } catch {
+        return { ok: false };
+      }
+    });
+  };
 
   const api = Object.freeze({
     STATUS,
     createSingleFlight,
+    createSellerLoginOpener,
     isAllowedSellerContextUiMessage,
     projectSellerContextStatus,
   });

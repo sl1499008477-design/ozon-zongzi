@@ -16,9 +16,17 @@ const panelSender = {
 };
 
 test('Seller status UI messages have an exact shape and sender allowlist', () => {
+  const panelHosts = ['ozon.ru', 'www.ozon.ru', 'ozon.kz', 'www.ozon.kz'];
   for (const action of ['getSellerContextStatus', 'openSellerLogin']) {
     assert.equal(policy.isAllowedSellerContextUiMessage({ action }, popupSender, extensionId), true);
-    assert.equal(policy.isAllowedSellerContextUiMessage({ action }, panelSender, extensionId), true);
+    for (const host of panelHosts) {
+      const sender = {
+        ...panelSender,
+        url: `https://${host}/search/?text=test`,
+        tab: { id: 7, url: `https://${host}/search/?text=test` },
+      };
+      assert.equal(policy.isAllowedSellerContextUiMessage({ action }, sender, extensionId), true);
+    }
     assert.equal(policy.isAllowedSellerContextUiMessage({ action, debug: true }, popupSender, extensionId), false);
   }
   for (const sender of [
@@ -26,6 +34,8 @@ test('Seller status UI messages have an exact shape and sender allowlist', () =>
     { ...panelSender, frameId: 1 },
     { ...panelSender, url: 'https://seller.ozon.ru/app' },
     { ...panelSender, tab: { id: 7, url: 'https://seller.ozon.ru/app' } },
+    { ...panelSender, url: 'https://foo.ozon.ru/search/', tab: { id: 7, url: 'https://foo.ozon.ru/search/' } },
+    { ...panelSender, url: 'https://www.ozon.kz.evil.example/search/', tab: { id: 7, url: 'https://www.ozon.kz.evil.example/search/' } },
     { ...panelSender, id: 'other-extension' },
     { url: 'https://www.ozon.ru/search/' },
   ]) {
@@ -61,4 +71,26 @@ test('Seller login opener is single-flight and allows a later retry', async () =
   await first;
   await open();
   assert.equal(calls, 2);
+});
+
+test('Seller login opener falls back to one exact Seller login tab and retries after failure', async () => {
+  const created = [];
+  let failCreate = true;
+  const open = policy.createSellerLoginOpener({
+    focusOwnedHelper: async () => false,
+    createTab: async (options) => {
+      created.push(options);
+      if (failCreate) {
+        failCreate = false;
+        throw new Error('create failed');
+      }
+    },
+  });
+  assert.deepEqual(await Promise.all([open(), open()]), [{ ok: false }, { ok: false }]);
+  assert.deepEqual(created, [{ url: 'https://seller.ozon.ru/app', active: true }]);
+  assert.deepEqual(await open(), { ok: true, data: { opened: true } });
+  assert.deepEqual(created, [
+    { url: 'https://seller.ozon.ru/app', active: true },
+    { url: 'https://seller.ozon.ru/app', active: true },
+  ]);
 });

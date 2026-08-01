@@ -14,11 +14,15 @@
       <a href="/product/fixture-product-123456789" aria-label="fixture product">fixture product</a>
     </article>
     <script>
+      let fixtureTileClickCount = 0;
+      document.querySelector(".tile-root").addEventListener("click", () => { fixtureTileClickCount += 1; });
+      window.__getFixtureTileClickCount = () => fixtureTileClickCount;
       const fixtureStorage = {};
       const sellerMode = new URLSearchParams(window.location.search).get("seller");
       const sellerContextMessages = [];
+      let sellerContextStatusCalls = 0;
       window.__getSellerContextMessages = () => sellerContextMessages.map((message) => ({ ...message }));
-      let sellerContextStatus = sellerMode === "ready"
+      let sellerContextStatus = sellerMode === "ready" || sellerMode === "transition"
         ? { status: "READY", companyId: "2681910", observedAt: 1785528000000 }
         : sellerMode === "recovering"
           ? { status: "RECOVERING" }
@@ -156,6 +160,8 @@
       window.sendMessage = async (action, payload) => {
         if (action === "getSellerContextStatus") {
           sellerContextMessages.push({ action, payload });
+          sellerContextStatusCalls += 1;
+          if (sellerMode === "transition" && sellerContextStatusCalls > 1) return { status: "RECOVERING" };
           return { status: sellerContextStatus.status, companyId: sellerContextStatus.companyId, observedAt: sellerContextStatus.observedAt };
         }
         if (action === "openSellerLogin") {

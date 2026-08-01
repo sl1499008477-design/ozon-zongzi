@@ -119,7 +119,15 @@
       button.dataset.action = "open-seller-login";
       button.textContent = "打开 Seller 登录";
       button.setAttribute("aria-label", "打开 Seller 登录");
-      button.addEventListener("click", () => openSellerLogin(button));
+      const suppressHostCard = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      button.addEventListener("pointerdown", suppressHostCard);
+      button.addEventListener("click", (event) => {
+        suppressHostCard(event);
+        openSellerLogin(button);
+      });
       container.append(copy, button);
       return;
     }
@@ -956,6 +964,9 @@
     sellerLoginFeedbackTimers.forEach((timer) => clearTimeout(timer));
     sellerLoginFeedbackTimers.clear();
   }, { once: true });
+  window.addEventListener?.("pageshow", () => {
+    if (sellerContextSubscribers.size > 0) sellerStatusController.start();
+  });
 
   function getCards() {
     const cards = new Set();

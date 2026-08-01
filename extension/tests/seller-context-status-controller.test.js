@@ -43,3 +43,21 @@ test('status controller safely reports request failure only for the latest gener
   await Promise.all([first, second]);
   assert.deepEqual(seen, [{ status: 'LOGIN_REQUIRED' }]);
 });
+
+test('status controller does not create a duplicate timer across page restore', () => {
+  const timers = [];
+  const cleared = [];
+  const controller = createSellerContextStatusController({
+    requestStatus: async () => ({ status: 'READY' }),
+    onStatus: () => {},
+    setInterval: (fn) => { timers.push(fn); return timers.length; },
+    clearInterval: (id) => cleared.push(id),
+  });
+  controller.start();
+  controller.start();
+  assert.equal(timers.length, 1);
+  controller.stop();
+  controller.start();
+  assert.deepEqual(cleared, [1]);
+  assert.equal(timers.length, 2);
+});

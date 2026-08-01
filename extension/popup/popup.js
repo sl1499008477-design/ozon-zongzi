@@ -613,6 +613,7 @@
 
   logoutBtn.addEventListener("click", async () => {
     await sendMessage({ action: "logout" });
+    sellerStatusController.stop();
     setLoginState(false);
     showTip("采集会话已清除，请在 Web 管理后台保持登录");
   });
@@ -797,6 +798,7 @@
       setLoginState(true);
       await initMainView(auth);
     } else {
+      sellerStatusController.stop();
       setLoginState(false);
     }
   };
@@ -807,6 +809,7 @@
     await new Promise((resolve) => setTimeout(resolve, 400));
     const auth = await fetchAuth();
     if (!auth.authenticated) {
+      sellerStatusController.stop();
       setLoginState(false);
       showTip("尚未取得采集会话，请确认已在同一浏览器用户配置中登录");
       return;
