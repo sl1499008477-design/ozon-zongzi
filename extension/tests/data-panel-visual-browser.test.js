@@ -133,20 +133,53 @@ async function runBrowserFixture({
     await page.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
     try {
       await page.waitForSelector('.ozon-helper-data-panel [data-field="sales30d"]');
-      await page.waitForSelector('.ozon-helper-data-panel [data-action="open-seller-login"]');
+      await page.waitForSelector('.tile-root > .oh-seller-context-status [data-action="open-seller-login"]');
     } catch (error) {
       throw new Error(`data panel fixture did not render\n${pageErrors.join("\n")}`, { cause: error });
     }
     await page.evaluate(() => window.__setPanelFixtureWidth(640));
 
     const sellerLoginStatus = await page.evaluate(() => {
-      const panel = document.querySelector(".ozon-helper-data-panel");
-      const action = panel.querySelector("[data-action='open-seller-login']");
-      return { text: panel.textContent, label: action?.textContent || "" };
+      const status = document.querySelector(".tile-root > .oh-seller-context-status");
+      const action = status.querySelector("[data-action='open-seller-login']");
+      return { text: status.textContent, label: action?.textContent || "", state: status.className };
     });
     assert.match(sellerLoginStatus.text, /需要登录 Seller/);
     assert.equal(sellerLoginStatus.label, "打开 Seller 登录");
+    assert.match(sellerLoginStatus.state, /is-login-required/);
     assert.doesNotMatch(sellerLoginStatus.text, /Cookie|token|SELLER_CONTEXT_REQUIRED/);
+    await page.evaluate(() => {
+      const button = document.querySelector("[data-action='open-seller-login']");
+      button.click();
+      button.click();
+    });
+    await page.waitForFunction(() => window.__getSellerContextMessages()
+      .filter(({ action }) => action === "openSellerLogin").length === 1);
+
+    for (const [mode, expected] of [
+      ["ready", { text: /Seller 已识别.*2681910/, state: /is-ready/ }],
+      ["recovering", { text: /正在识别 Seller 店铺/, state: /is-recovering/ }],
+    ]) {
+      const statusPage = await context.newPage();
+      extraPages.push(statusPage);
+      await statusPage.goto(`http://127.0.0.1:${address.port}${fixturePath}?seller=${mode}`);
+      const status = statusPage.locator(".tile-root > .oh-seller-context-status");
+      await status.waitFor();
+      const presentation = await status.evaluate((element) => ({ text: element.textContent, state: element.className }));
+      assert.match(presentation.text, expected.text);
+      assert.match(presentation.state, expected.state);
+      await statusPage.setViewportSize({ width: 400, height: 900 });
+      const horizontalOverflow = await status.evaluate((element) => element.scrollWidth > element.clientWidth);
+      assert.equal(horizontalOverflow, false, `${mode} Seller status must fit the narrow panel viewport`);
+    }
+
+    const failedLoginPage = await context.newPage();
+    extraPages.push(failedLoginPage);
+    await failedLoginPage.goto(`http://127.0.0.1:${address.port}${fixturePath}?seller=login-failure`);
+    const failedLoginButton = failedLoginPage.locator("[data-action='open-seller-login']");
+    await failedLoginButton.click();
+    await failedLoginButton.getByText("暂时无法打开 Seller 登录").waitFor();
+    assert.equal(await failedLoginButton.isDisabled(), true, "failed login keeps an explicit safe feedback state");
 
     const settingsHelpers = await page.evaluate(() => ({
       groups: window.jzGroupDataCardFields([
@@ -205,6 +238,14 @@ async function runBrowserFixture({
     for (const action of ["open-field-settings", "follow-sell", "edit-list", "collect-one"]) {
       assert.ok(wide.actions.includes(action), `missing rendered action ${action}`);
     }
+    const sellerStatusAfterPanelRedraw = await page.evaluate(() => {
+      const panel = document.querySelector(".ozon-helper-data-panel");
+      window.jzRenderPanelSkeleton(panel);
+      const statusText = document.querySelector(".tile-root > .oh-seller-context-status")?.textContent || "";
+      window.jzRenderProductPanelV2(panel, { sku: "123456789" });
+      return statusText;
+    });
+    assert.match(sellerStatusAfterPanelRedraw, /需要登录 Seller/);
 
     const openCollectFixture = async (mode) => {
       const fixturePage = await context.newPage();

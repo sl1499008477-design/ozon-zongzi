@@ -193,6 +193,7 @@
         "lib/sidebar-section-toggle.js",
         "lib/ozon-enrichment-contract.js",
         "lib/ozon-collect-coordinator.js",
+        "lib/seller-context-status-controller.js",
         "content/ozon-data-panel.js"
       ],
       "css": [

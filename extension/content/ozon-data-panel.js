@@ -36,6 +36,12 @@
   const panelFastDataPromises = new Map();
   const panelVariantRetryStates = new Map();
   const SAFE_SELLER_STATUSES = new Set(["READY", "RECOVERING", "LOGIN_REQUIRED"]);
+  const sellerContextSubscribers = new Set();
+  let latestSellerContext = { status: "LOGIN_REQUIRED" };
+  let sellerSwitchNoticeUntil = 0;
+  let sellerSwitchNoticeTimer = null;
+  let sellerLoginInFlight = null;
+  const sellerLoginFeedbackTimers = new Set();
   const collectCoordinator = window.JzOzonCollectCoordinator.getPageCoordinator({
     sendMessage: (action, payload) => window.sendMessage(action, payload),
     now: () => Date.now(),
@@ -68,28 +74,43 @@
   function safeSellerContext(response) {
     const data = response?.data || response || {};
     const status = SAFE_SELLER_STATUSES.has(data.status) ? data.status : "LOGIN_REQUIRED";
-    const companyId = /^\d{1,20}$/.test(String(data.companyId || ""))
-      ? String(data.companyId)
+    const companyId = /^\d{4,15}$/.test(String(data.companyId || "").trim())
+      ? String(data.companyId).trim()
       : "";
     return { status: status === "READY" && !companyId ? "LOGIN_REQUIRED" : status, companyId };
   }
 
-  function renderSellerContextStatus(panel, response) {
-    if (!panel) return;
-    panel.querySelector(".oh-seller-context-status")?.remove();
+  function renderSellerContextStatus(container, response) {
+    if (!container) return;
     const { status, companyId } = safeSellerContext(response);
-    const statusEl = document.createElement("section");
-    statusEl.className = `oh-seller-context-status is-${status.toLowerCase().replace(/_/g, "-")}`;
-    statusEl.setAttribute("aria-live", "polite");
+    const previousStatus = latestSellerContext.status;
+    latestSellerContext = { status, companyId };
+    if (status === "RECOVERING" && previousStatus === "READY") {
+      sellerSwitchNoticeUntil = Date.now() + 3_000;
+      clearTimeout(sellerSwitchNoticeTimer);
+      sellerSwitchNoticeTimer = setTimeout(() => {
+        sellerSwitchNoticeUntil = 0;
+        sellerContextSubscribers.forEach((subscriber) => subscriber(latestSellerContext));
+      }, 3_000);
+    } else if (status !== "RECOVERING") {
+      sellerSwitchNoticeUntil = 0;
+      clearTimeout(sellerSwitchNoticeTimer);
+      sellerSwitchNoticeTimer = null;
+    }
+    container.className = `oh-seller-context-status is-${status.toLowerCase().replace(/_/g, "-")}`;
+    container.setAttribute("aria-live", "polite");
+    container.innerHTML = "";
     const copy = document.createElement("span");
     copy.className = "oh-seller-context-copy";
     if (status === "READY") copy.textContent = `Seller 已识别 · Company ID ${companyId}`;
     else if (status === "RECOVERING") {
       copy.textContent = "正在识别 Seller 店铺";
-      const note = document.createElement("span");
-      note.className = "oh-seller-context-note";
-      note.textContent = "Seller 店铺已切换";
-      copy.appendChild(note);
+      if (sellerSwitchNoticeUntil > Date.now()) {
+        const note = document.createElement("span");
+        note.className = "oh-seller-context-note";
+        note.textContent = "Seller 店铺已切换";
+        copy.appendChild(note);
+      }
     } else {
       copy.textContent = "需要登录 Seller";
       const button = document.createElement("button");
@@ -98,18 +119,51 @@
       button.dataset.action = "open-seller-login";
       button.textContent = "打开 Seller 登录";
       button.setAttribute("aria-label", "打开 Seller 登录");
-      statusEl.append(copy, button);
-      panel.appendChild(statusEl);
+      button.addEventListener("click", () => openSellerLogin(button));
+      container.append(copy, button);
       return;
     }
-    statusEl.appendChild(copy);
-    panel.appendChild(statusEl);
+    container.appendChild(copy);
   }
 
-  function loadSellerContextStatus(panel) {
-    Promise.resolve(window.sendMessage("getSellerContextStatus", {}))
-      .then((response) => renderSellerContextStatus(panel, response))
-      .catch(() => renderSellerContextStatus(panel, { status: "LOGIN_REQUIRED" }));
+  const sellerStatusController = window.JzSellerContextStatusController
+    .createSellerContextStatusController({
+      requestStatus: () => window.sendMessage("getSellerContextStatus", {}),
+      onStatus: (response) => sellerContextSubscribers.forEach((subscriber) => subscriber(response)),
+      pollMs: 5_000,
+    });
+
+  function subscribeSellerContextStatus(container) {
+    const subscriber = (response) => renderSellerContextStatus(container, response);
+    sellerContextSubscribers.add(subscriber);
+    subscriber(latestSellerContext);
+    if (sellerContextSubscribers.size === 1) sellerStatusController.start();
+    return () => {
+      sellerContextSubscribers.delete(subscriber);
+      if (sellerContextSubscribers.size === 0) sellerStatusController.stop();
+    };
+  }
+
+  async function openSellerLogin(button) {
+    if (sellerLoginInFlight) return;
+    button.disabled = true;
+    button.textContent = "正在打开…";
+    sellerLoginInFlight = Promise.resolve(window.sendMessage("openSellerLogin", {}));
+    try {
+      const result = await sellerLoginInFlight;
+      if (!result?.opened) throw new Error("not-opened");
+      button.textContent = "已打开 Seller 登录";
+    } catch {
+      button.textContent = "暂时无法打开 Seller 登录";
+    } finally {
+      sellerLoginInFlight = null;
+      const timer = setTimeout(() => {
+        sellerLoginFeedbackTimers.delete(timer);
+        button.disabled = false;
+        button.textContent = "打开 Seller 登录";
+      }, 1_500);
+      sellerLoginFeedbackTimers.add(timer);
+    }
   }
 
   // ─── 工具函数 ──────────────────────────────────────
@@ -464,7 +518,11 @@
     panel.dataset.jzLoadStatus = "pending";
     card.appendChild(panel);
     card._ohPanel = panel;
-    loadSellerContextStatus(panel);
+    const sellerStatus = document.createElement("section");
+    sellerStatus.setAttribute("lang", "zh-Hans");
+    card.appendChild(sellerStatus);
+    card._ohSellerContextStatus = sellerStatus;
+    card._ohSellerContextUnsubscribe = subscribeSellerContextStatus(sellerStatus);
 
     // 阻止整个 panel 的 click 冒泡到 Ozon tile（避免误触发跳转）
     panel.addEventListener("click", (e) => {
@@ -881,12 +939,23 @@
   }
 
   function removeDataPanel(card) {
+    card._ohSellerContextUnsubscribe?.();
+    card._ohSellerContextUnsubscribe = null;
+    card._ohSellerContextStatus?.remove();
+    card._ohSellerContextStatus = null;
     if (card._ohPanel) {
       card._ohPanel.remove();
       card._ohPanel = null;
     }
     card._ohPanelAttached = false;
   }
+
+  window.addEventListener?.("pagehide", () => {
+    sellerStatusController.stop();
+    clearTimeout(sellerSwitchNoticeTimer);
+    sellerLoginFeedbackTimers.forEach((timer) => clearTimeout(timer));
+    sellerLoginFeedbackTimers.clear();
+  }, { once: true });
 
   function getCards() {
     const cards = new Set();

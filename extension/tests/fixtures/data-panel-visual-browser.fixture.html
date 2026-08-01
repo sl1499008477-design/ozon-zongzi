@@ -15,7 +15,14 @@
     </article>
     <script>
       const fixtureStorage = {};
-      let sellerContextStatus = { status: "LOGIN_REQUIRED" };
+      const sellerMode = new URLSearchParams(window.location.search).get("seller");
+      const sellerContextMessages = [];
+      window.__getSellerContextMessages = () => sellerContextMessages.map((message) => ({ ...message }));
+      let sellerContextStatus = sellerMode === "ready"
+        ? { status: "READY", companyId: "2681910", observedAt: 1785528000000 }
+        : sellerMode === "recovering"
+          ? { status: "RECOVERING" }
+          : { status: "LOGIN_REQUIRED" };
       window.__setSellerContextStatus = (next) => {
         sellerContextStatus = { ...next };
       };
@@ -148,9 +155,14 @@
       };
       window.sendMessage = async (action, payload) => {
         if (action === "getSellerContextStatus") {
+          sellerContextMessages.push({ action, payload });
           return { status: sellerContextStatus.status, companyId: sellerContextStatus.companyId, observedAt: sellerContextStatus.observedAt };
         }
-        if (action === "openSellerLogin") return { opened: true };
+        if (action === "openSellerLogin") {
+          sellerContextMessages.push({ action, payload });
+          if (sellerMode === "login-failure") throw new Error("fixture seller login unavailable");
+          return { opened: true };
+        }
         if (!collectFixtureEnabled) return { data: {}, items: [] };
         collectFixtureMessages.push({ action, payload });
         if (action === "enrichOzonCollect") {
@@ -306,6 +318,7 @@
     </script>
     <script src="/extension/lib/ozon-enrichment-contract.js"></script>
     <script src="/extension/lib/ozon-collect-coordinator.js"></script>
+    <script src="/extension/lib/seller-context-status-controller.js"></script>
     <script src="/extension/content/ozon-data-panel.js"></script>
   </body>
 </html>

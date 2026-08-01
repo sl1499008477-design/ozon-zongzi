@@ -154,12 +154,17 @@
   };
 
   const SAFE_SELLER_STATUSES = new Set(["READY", "RECOVERING", "LOGIN_REQUIRED"]);
+  let latestSellerContext = { status: "LOGIN_REQUIRED" };
+  let sellerSwitchNoticeUntil = 0;
+  let sellerSwitchNoticeTimer = null;
+  let sellerLoginInFlight = null;
+  let sellerLoginFeedbackTimer = null;
 
   const safeSellerContext = (response) => {
     const data = response?.data || response || {};
     const status = SAFE_SELLER_STATUSES.has(data.status) ? data.status : "LOGIN_REQUIRED";
-    const companyId = /^\d{1,20}$/.test(String(data.companyId || ""))
-      ? String(data.companyId)
+    const companyId = /^\d{4,15}$/.test(String(data.companyId || "").trim())
+      ? String(data.companyId).trim()
       : "";
     return { status: status === "READY" && !companyId ? "LOGIN_REQUIRED" : status, companyId };
   };
@@ -167,6 +172,20 @@
   const renderSellerContextStatus = (response) => {
     if (!sellerContextStatus) return;
     const { status, companyId } = safeSellerContext(response);
+    const previousStatus = latestSellerContext.status;
+    latestSellerContext = { status, companyId };
+    if (status === "RECOVERING" && previousStatus === "READY") {
+      sellerSwitchNoticeUntil = Date.now() + 3_000;
+      clearTimeout(sellerSwitchNoticeTimer);
+      sellerSwitchNoticeTimer = setTimeout(() => {
+        sellerSwitchNoticeUntil = 0;
+        renderSellerContextStatus(latestSellerContext);
+      }, 3_000);
+    } else if (status !== "RECOVERING") {
+      sellerSwitchNoticeUntil = 0;
+      clearTimeout(sellerSwitchNoticeTimer);
+      sellerSwitchNoticeTimer = null;
+    }
     sellerContextStatus.className = `seller-context-status is-${status.toLowerCase().replace(/_/g, "-")}`;
     sellerContextStatus.innerHTML = "";
     const copy = document.createElement("span");
@@ -175,10 +194,12 @@
       copy.textContent = `Seller 已识别 · Company ID ${companyId}`;
     } else if (status === "RECOVERING") {
       copy.textContent = "正在识别 Seller 店铺";
-      const note = document.createElement("span");
-      note.className = "seller-status-note";
-      note.textContent = "Seller 店铺已切换";
-      copy.appendChild(note);
+      if (sellerSwitchNoticeUntil > Date.now()) {
+        const note = document.createElement("span");
+        note.className = "seller-status-note";
+        note.textContent = "Seller 店铺已切换";
+        copy.appendChild(note);
+      }
     } else {
       copy.textContent = "需要登录 Seller";
     }
@@ -189,17 +210,35 @@
     button.className = "btn btn-outline seller-status-action";
     button.textContent = "打开 Seller 登录";
     button.setAttribute("aria-label", "打开 Seller 登录");
-    button.addEventListener("click", () => sendMessage({ action: "openSellerLogin" }).catch(() => {}));
+    button.addEventListener("click", async () => {
+      if (sellerLoginInFlight) return;
+      button.disabled = true;
+      button.textContent = "正在打开…";
+      sellerLoginInFlight = sendMessage({ action: "openSellerLogin" });
+      try {
+        const result = await sellerLoginInFlight;
+        if (!result?.ok || !result?.data?.opened) throw new Error("not-opened");
+        button.textContent = "已打开 Seller 登录";
+      } catch {
+        button.textContent = "暂时无法打开 Seller 登录";
+      } finally {
+        sellerLoginInFlight = null;
+        clearTimeout(sellerLoginFeedbackTimer);
+        sellerLoginFeedbackTimer = setTimeout(() => {
+          button.disabled = false;
+          button.textContent = "打开 Seller 登录";
+        }, 1_500);
+      }
+    });
     sellerContextStatus.appendChild(button);
   };
 
-  const loadSellerContextStatus = async () => {
-    try {
-      renderSellerContextStatus(await sendMessage({ action: "getSellerContextStatus" }));
-    } catch {
-      renderSellerContextStatus({ status: "LOGIN_REQUIRED" });
-    }
-  };
+  const sellerStatusController = globalThis.JzSellerContextStatusController
+    .createSellerContextStatusController({
+      requestStatus: () => sendMessage({ action: "getSellerContextStatus" }),
+      onStatus: renderSellerContextStatus,
+      pollMs: 5_000,
+    });
 
   // ─── Counts (feed nav badges only) ───
   const loadCounts = async () => {
@@ -569,7 +608,7 @@
         : "https://" + BRAND_WEB_HOST;
     setConnectionState("ok", "采集会话已连接");
     await Promise.all([buildSignals(), checkUpdateBanner()]);
-    loadSellerContextStatus();
+    sellerStatusController.start();
   };
 
   logoutBtn.addEventListener("click", async () => {
@@ -577,6 +616,12 @@
     setLoginState(false);
     showTip("采集会话已清除，请在 Web 管理后台保持登录");
   });
+
+  window.addEventListener?.("unload", () => {
+    sellerStatusController.stop();
+    clearTimeout(sellerSwitchNoticeTimer);
+    clearTimeout(sellerLoginFeedbackTimer);
+  }, { once: true });
 
   // ─── Nav / CTA routing ───
   const ACTION_PATHS = {

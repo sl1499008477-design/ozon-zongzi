@@ -122,8 +122,15 @@ const popupSource = fs.readFileSync(
   path.resolve(__dirname, "../popup.js"),
   "utf8",
 );
+const sellerStatusControllerSource = fs.readFileSync(
+  path.resolve(__dirname, "../../lib/seller-context-status-controller.js"),
+  "utf8",
+);
 const document = new FakeDocument();
 const actions = [];
+const intervals = [];
+const clearedIntervals = [];
+const windowListeners = new Map();
 const activeProductTab = {
   id: 73,
   url: "https://www.ozon.ru/product/collector-session-product-123/",
@@ -198,7 +205,7 @@ const chrome = {
   },
 };
 
-vm.runInNewContext(popupSource, {
+const runtimeContext = {
   chrome,
   console,
   document,
@@ -211,15 +218,29 @@ vm.runInNewContext(popupSource, {
   },
   NodeFilter: { SHOW_TEXT: 4 },
   URL,
+  alert() {},
+  setTimeout,
+  clearTimeout,
+  setInterval(listener) {
+    intervals.push(listener);
+    return intervals.length;
+  },
+  clearInterval(id) {
+    clearedIntervals.push(id);
+  },
   window: {
     screen: { width: 1440, height: 900, colorDepth: 24 },
     close() {},
     confirm: () => true,
+    addEventListener(type, listener) {
+      windowListeners.set(type, listener);
+    },
   },
-  alert() {},
-  setTimeout,
-  clearTimeout,
-}, { filename: "popup.js" });
+};
+vm.runInNewContext(sellerStatusControllerSource, runtimeContext, {
+  filename: "seller-context-status-controller.js",
+});
+vm.runInNewContext(popupSource, runtimeContext, { filename: "popup.js" });
 
 setTimeout(() => {
   const loginView = document.getElementById("login-view");
@@ -239,6 +260,11 @@ setTimeout(() => {
   assert.match(sellerStatus.textContent, /2681910/);
   assert.doesNotMatch(sellerStatus.textContent, /Cookie|token|SELLER_CONTEXT_REQUIRED/);
   assert.equal(actions.includes("getSellerContextStatus"), true);
+  assert.equal(intervals.length, 1, "popup must refresh Seller status on a bounded interval");
+  intervals[0]();
+  assert.equal(actions.filter((action) => action === "getSellerContextStatus").length, 2);
+  windowListeners.get("unload")?.();
+  assert.deepEqual(clearedIntervals, [1], "popup unload must clear Seller status polling");
   assert.equal(actions.includes("getStores"), false, "popup must not use the Web bearer store API");
   assert.equal(
     actions.includes("checkSellerCookies"),

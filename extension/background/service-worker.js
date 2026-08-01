@@ -40,6 +40,7 @@ try {
     '../lib/ozon-enrichment-contract.js',
     '../lib/collector-capture-deadline.js',
     '../lib/seller-identity-policy.js',
+    '../lib/seller-context-ui-message-policy.js',
     '../lib/seller-recovery-tab.js',
     '../lib/seller-company-context-runtime.js',
     '../lib/portal-bridge-policy.js',
@@ -3429,25 +3430,26 @@ try {
   };
 
   const sellerContextStatusProjection = async () => {
-    const safe = { status: 'LOGIN_REQUIRED' };
     try {
       const context = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
-      const status = context?.status;
-      if (status === globalThis.JzSellerRecoveryTab.STATUS.RECOVERING) {
-        return { status: 'RECOVERING' };
-      }
-      const companyId = globalThis.JzSellerIdentityPolicy.normalizeCompanyId(context?.companyId);
-      const observedAt = Number(context?.observedAt);
-      if (
-        status === globalThis.JzSellerRecoveryTab.STATUS.READY
-        && companyId
-        && Number.isFinite(observedAt)
-      ) {
-        return { status: 'READY', companyId, observedAt };
-      }
+      return globalThis.JzSellerContextUiMessagePolicy.projectSellerContextStatus(context);
     } catch {}
-    return safe;
+    return { status: 'LOGIN_REQUIRED' };
   };
+
+  const openSellerLogin = globalThis.JzSellerContextUiMessagePolicy.createSingleFlight(
+    async () => {
+      try {
+        if (await sellerCompanyContextRuntime.focusLoginHelper()) {
+          return { ok: true, data: { opened: true } };
+        }
+        await chrome.tabs.create({ url: 'https://seller.ozon.ru/app', active: true });
+        return { ok: true, data: { opened: true } };
+      } catch {
+        return { ok: false };
+      }
+    },
+  );
 
     const handle = async () => {
       const collectorOperation = await collectorSessionManager.beginCollectorOperation();
@@ -3474,18 +3476,16 @@ try {
           }
         }
         case 'getSellerContextStatus': {
+          if (!globalThis.JzSellerContextUiMessagePolicy.isAllowedSellerContextUiMessage(
+            message, sender, chrome.runtime.id,
+          )) return { ok: false };
           return { ok: true, data: await sellerContextStatusProjection() };
         }
         case 'openSellerLogin': {
-          try {
-            if (await sellerCompanyContextRuntime.focusLoginHelper()) {
-              return { ok: true, data: { opened: true } };
-            }
-            await chrome.tabs.create({ url: 'https://seller.ozon.ru/app', active: true });
-            return { ok: true, data: { opened: true } };
-          } catch {
-            return { ok: false };
-          }
+          if (!globalThis.JzSellerContextUiMessagePolicy.isAllowedSellerContextUiMessage(
+            message, sender, chrome.runtime.id,
+          )) return { ok: false };
+          return openSellerLogin();
         }
         case 'focusSellerRecoveryTab': {
           return {
