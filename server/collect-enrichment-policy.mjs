@@ -7,12 +7,22 @@ export const OZON_ENRICHMENT_FIELDS = Object.freeze([
 ]);
 
 function positiveNumber(value) {
-  try {
-    const number = Number(value);
-    return Number.isFinite(number) && number > 0 ? number : 0;
-  } catch {
-    return 0;
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value > 0 ? value : 0;
   }
+  if (typeof value !== "string") return 0;
+  const text = value.trim();
+  if (!/^[+]?(?:\d+\.?\d*|\.\d+)$/.test(text)) return 0;
+  const number = Number(text);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function firstPositive(...values) {
+  for (const value of values) {
+    const number = positiveNumber(value);
+    if (number) return number;
+  }
+  return 0;
 }
 
 function cleanText(value) {
@@ -22,11 +32,11 @@ function cleanText(value) {
 function enrichmentFieldValues(value = {}) {
   const logistics = value?.logistics && typeof value.logistics === "object" ? value.logistics : {};
   return {
-    descriptionCategoryId: value?.descriptionCategoryId ?? value?.description_category_id,
-    weightG: value?.weightG ?? logistics.weightG ?? value?.weight,
-    lengthMm: value?.lengthMm ?? logistics.lengthMm ?? value?.depth,
-    widthMm: value?.widthMm ?? logistics.widthMm ?? value?.width,
-    heightMm: value?.heightMm ?? logistics.heightMm ?? value?.height,
+    descriptionCategoryId: firstPositive(value?.descriptionCategoryId, value?.description_category_id),
+    weightG: firstPositive(value?.weightG, logistics.weightG, value?.weight),
+    lengthMm: firstPositive(value?.lengthMm, logistics.lengthMm, value?.depth),
+    widthMm: firstPositive(value?.widthMm, logistics.widthMm, value?.width),
+    heightMm: firstPositive(value?.heightMm, logistics.heightMm, value?.height),
   };
 }
 

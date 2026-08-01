@@ -75,6 +75,41 @@ test("enrichment fills blanks without overwriting user values", () => {
   });
 });
 
+test("empty top-level fields do not hide enriched logistics values", () => {
+  const merged = mergeOzonEnrichmentResult({
+    descriptionCategoryId: 0,
+    weightG: 0,
+    logistics: { weightG: 0, lengthMm: 0, widthMm: 0, heightMm: 0 },
+  }, completeResult());
+
+  assert.equal(merged.logistics.weightG, 500);
+  assert.deepEqual(buildOzonEnrichmentSummary(merged).missingFields, []);
+  assert.doesNotThrow(() => assertOzonListingReady(merged));
+});
+
+test("enrichment ignores non-numeric JSON values when checking and merging fields", () => {
+  const invalid = {
+    descriptionCategoryId: true,
+    logistics: { weightG: [500], lengthMm: {}, widthMm: "  ", heightMm: true },
+  };
+  assert.deepEqual(buildOzonEnrichmentSummary(invalid).missingFields, [
+    "descriptionCategoryId",
+    "weightG",
+    "lengthMm",
+    "widthMm",
+    "heightMm",
+  ]);
+
+  const merged = mergeOzonEnrichmentResult(invalid, completeResult());
+  assert.equal(merged.descriptionCategoryId, 123);
+  assert.deepEqual(merged.logistics, {
+    weightG: 500,
+    lengthMm: 300,
+    widthMm: 200,
+    heightMm: 100,
+  });
+});
+
 test("enrichment policy retains retry state without allowing it to change completeness", () => {
   assert.deepEqual(buildOzonEnrichmentSummary({
     descriptionCategoryId: 123,
