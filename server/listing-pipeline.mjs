@@ -58,20 +58,25 @@ function clean(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
 }
 
-async function assertCollectItemOwnershipBeforeListing(collectItemId, accountId) {
+async function assertCollectItemAvailableForListing(collectItemId, accountId) {
   const id = clean(collectItemId, 240);
   if (!id) return;
   const result = await (await poolReady()).query(
-    "SELECT account_id FROM collect_items WHERE id=$1 LIMIT 1",
-    [id],
+    "SELECT 1 FROM collect_items WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL LIMIT 1",
+    [id, clean(accountId, 240)],
   );
-  const ownerAccountId = clean(result.rows[0]?.account_id, 240);
-  if (ownerAccountId && ownerAccountId !== clean(accountId, 240)) {
-    throw Object.assign(new Error("采集记录不属于当前账号"), {
+  if (!result.rowCount) {
+    throw Object.assign(new Error("采集箱条目不存在"), {
       status: 404,
-      code: "COLLECT_ITEM_ACCOUNT_FORBIDDEN",
+      code: "COLLECT_ITEM_NOT_FOUND",
     });
   }
+}
+
+function assertCollectItemListingPayloadsReady(normalizedItems) {
+  const listingPayloads = Array.isArray(normalizedItems) ? normalizedItems : [];
+  if (!listingPayloads.length) assertOzonListingReady({});
+  listingPayloads.forEach(assertOzonListingReady);
 }
 
 function withoutCollectionScope(value = {}) {
@@ -288,9 +293,9 @@ async function mirrorCollectItemWithClient(client, item = {}, context = {}) {
       ],
     );
     if (!persistedItem.rowCount) {
-      throw Object.assign(new Error("采集记录不属于当前账号"), {
+      throw Object.assign(new Error("采集箱条目不存在"), {
         status: 404,
-        code: "COLLECT_ITEM_ACCOUNT_FORBIDDEN",
+        code: "COLLECT_ITEM_NOT_FOUND",
       });
     }
 
@@ -992,12 +997,10 @@ export async function createSubmissionV3({
       })
     : null;
   if (collectItem) {
-    await assertCollectItemOwnershipBeforeListing(collectItem.id, accountId);
-    const listingPayloads = Array.isArray(normalizedItems) ? normalizedItems : [];
-    if (!listingPayloads.length) assertOzonListingReady({});
-    listingPayloads.forEach(assertOzonListingReady);
+    await assertCollectItemAvailableForListing(collectItem.id, accountId);
   }
   if (preparation) storeId = preparation.targetStoreId;
+  if (collectItem && !preparation) assertCollectItemListingPayloadsReady(normalizedItems);
   const legacyMirrored = preparation
     ? null
     : await mirrorCollectItemV3(collectItem, { accountId, storeId, ...versions });
@@ -1011,6 +1014,7 @@ export async function createSubmissionV3({
     if (preparation) {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
       const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
+      assertCollectItemListingPayloadsReady(normalizedItems);
       if (replay) return replay;
       targetStore = await assertUsableOperatingStore({
         accountId: preparation.accountId,

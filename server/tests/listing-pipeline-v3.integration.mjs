@@ -300,7 +300,14 @@ try {
       collectItemId: collectId,
       targetStoreId: secondStoreId,
       idempotencyKey: `prepare-${suffix}`,
-      normalizedItems: [{ ...normalizedItems[0], name: "用户修改标题" }],
+      normalizedItems: [{
+        ...normalizedItems[0],
+        name: "用户修改标题",
+        weight: 0,
+        depth: 0,
+        width: 0,
+        height: 0,
+      }],
       stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
     }),
     (error) => error?.status === 409 && error?.code === "LISTING_TARGET_STORE_CONFLICT",
@@ -485,6 +492,59 @@ try {
     assert.equal(routeReplay.status, 200, JSON.stringify(routeReplay.body));
     assert.equal(routeReplay.body.job.id, created.job.id);
     assert.equal(routeExternalCalls, 0);
+    const replayRowsBefore = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=$1) AS snapshot_count,
+         (SELECT COUNT(*)::int FROM submission_jobs WHERE collect_item_id=$1) AS job_count,
+         (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
+           SELECT id FROM submission_jobs WHERE collect_item_id=$1
+         )) AS outbox_count`,
+      [collectId],
+    );
+    await pool.query(
+      `UPDATE product_drafts
+          SET data=data-'logistics'-'packageWeight'-'packageLength'-'packageWidth'-'packageHeight'
+        WHERE collect_item_id=$1`,
+      [collectId],
+    );
+    const incompleteReplay = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+      { targetStoreId: storeId, idempotencyKey: `prepare-${suffix}` },
+      routeToken,
+    );
+    assert.equal(incompleteReplay.status, 422, JSON.stringify(incompleteReplay.body));
+    assert.equal(incompleteReplay.body.code, "COLLECT_ENRICHMENT_INCOMPLETE");
+    assert.deepEqual(incompleteReplay.body.missingFields, ["weightG", "lengthMm", "widthMm", "heightMm"]);
+    const replayRowsAfter = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=$1) AS snapshot_count,
+         (SELECT COUNT(*)::int FROM submission_jobs WHERE collect_item_id=$1) AS job_count,
+         (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
+           SELECT id FROM submission_jobs WHERE collect_item_id=$1
+         )) AS outbox_count`,
+      [collectId],
+    );
+    assert.deepEqual(replayRowsAfter.rows[0], replayRowsBefore.rows[0]);
+    const incompleteStatus = await pool.query("SELECT status FROM collect_items WHERE id=$1", [collectId]);
+    assert.notEqual(incompleteStatus.rows[0].status, "QUEUE_PENDING");
+    assert.equal(routeExternalCalls, 0);
+    const changedTargetReplay = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+      { targetStoreId: secondStoreId, idempotencyKey: `prepare-${suffix}` },
+      routeToken,
+    );
+    assert.equal(changedTargetReplay.status, 409);
+    assert.equal(changedTargetReplay.body.code, "LISTING_TARGET_STORE_CONFLICT");
+    const changedIdempotencyIncomplete = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,
+      { targetStoreId: storeId, idempotencyKey: `changed-${suffix}` },
+      routeToken,
+    );
+    assert.equal(changedIdempotencyIncomplete.status, 404);
+    assert.equal(changedIdempotencyIncomplete.body.code, "TARGET_STORE_NOT_FOUND");
     const missingTarget = await requestJson(
       handle,
       `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,

@@ -2188,8 +2188,14 @@ function validateCollectBoxListingDraft(item = {}, items = [], stocks = []) {
 
 async function collectBoxListingRequest(state, req, id, body = {}, { account, dryRun = false } = {}) {
   const requestedTargetStoreId = cleanText(body.targetStoreId || body.storeId);
-  const frozenReplay = !dryRun && listingPipelineEnabled() ? await findListingPreparationReplayV3({ accountId: account?.id, collectItemId: id, targetStoreId: requestedTargetStoreId, idempotencyKey: body.idempotencyKey }) : null;
-  if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
+  const replayInput = !dryRun && listingPipelineEnabled()
+    ? assertListingPreparationInput({
+        accountId: account?.id,
+        collectItemId: id,
+        targetStoreId: requestedTargetStoreId,
+        idempotencyKey: body.idempotencyKey,
+      })
+    : null;
   const item = cacheItemsForAccount(state, "collectBox", account)
     .find((row) => String(row.id) === String(id));
   if (!item) {
@@ -2197,15 +2203,19 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     err.status = 404;
     throw err;
   }
-  resolveLocalListingTarget({
-    accountId: account?.id,
-    collectItemId: item.id,
-    targetStoreId: requestedTargetStoreId,
-    idempotencyKey: dryRun ? `preview:${item.id}` : body.idempotencyKey,
-    findStore: (storeId) => activeStore(state, storeId, account.id),
-  });
+  const frozenReplay = replayInput ? await findListingPreparationReplayV3(replayInput) : null;
+  if (!frozenReplay) {
+    resolveLocalListingTarget({
+      accountId: account?.id,
+      collectItemId: item.id,
+      targetStoreId: requestedTargetStoreId,
+      idempotencyKey: dryRun ? `preview:${item.id}` : body.idempotencyKey,
+      findStore: (storeId) => activeStore(state, storeId, account.id),
+    });
+  }
   const items = buildCollectBoxListingItems(item);
   items.forEach(assertOzonListingReady);
+  if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);
   const errors = validateCollectBoxListingDraft(item, items, stocks);
   if (errors.length) {

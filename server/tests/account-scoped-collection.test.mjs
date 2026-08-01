@@ -489,24 +489,65 @@ if (!postgresEnabled()) {
        VALUES ($1,$2,'Task 4 target store',$3,'active')`,
       [storeA, accountA, `task4-client-${suffix}`],
     );
-    await assert.rejects(
-      createSubmissionV3({
-        collectItem: accountBResult.item,
-        accountId: accountA,
-        storeId: storeA,
-        normalizedItems: [{
-          offer_id: `offer-b-${suffix}`,
-          name: "cross-account prepare",
-          price: "100.00",
-          currency_code: "CNY",
-          images: ["https://cdn.example.test/b.jpg"],
-          description_category_id: 1,
-          type_id: 2,
-          attributes: [],
-        }],
-      }),
-      (error) => error?.status === 404 && error?.code === "COLLECT_ITEM_ACCOUNT_FORBIDDEN",
-    );
+    const readyListingItems = [{
+      offer_id: `offer-b-${suffix}`,
+      name: "account-scoped prepare",
+      price: "100.00",
+      currency_code: "CNY",
+      images: ["https://cdn.example.test/b.jpg"],
+      description_category_id: 1,
+      type_id: 2,
+      weight: 100,
+      depth: 100,
+      width: 100,
+      height: 100,
+      attributes: [],
+    }];
+    const hiddenCollectItems = [
+      accountBResult.item,
+      { ...accountBResult.item, id: `missing-collect-${suffix}` },
+    ];
+    for (const hiddenCollectItem of hiddenCollectItems) {
+      await assert.rejects(
+        createSubmissionV3({
+          collectItem: hiddenCollectItem,
+          accountId: accountA,
+          targetStoreId: "",
+          idempotencyKey: `missing-target-${suffix}`,
+          normalizedItems: readyListingItems,
+        }),
+        (error) => error?.status === 422 && error?.code === "TARGET_STORE_REQUIRED",
+      );
+      await assert.rejects(
+        createSubmissionV3({
+          collectItem: hiddenCollectItem,
+          accountId: accountA,
+          targetStoreId: storeA,
+          idempotencyKey: "",
+          normalizedItems: readyListingItems,
+        }),
+        (error) => error?.status === 422 && error?.code === "IDEMPOTENCY_KEY_REQUIRED",
+      );
+    }
+    const hiddenErrors = [];
+    for (const hiddenCollectItem of hiddenCollectItems) {
+      try {
+        await createSubmissionV3({
+          collectItem: hiddenCollectItem,
+          accountId: accountA,
+          targetStoreId: storeA,
+          idempotencyKey: `hidden-item-${suffix}`,
+          normalizedItems: readyListingItems,
+        });
+        assert.fail("hidden collect item must not be listable");
+      } catch (error) {
+        hiddenErrors.push({ status: error?.status, code: error?.code, message: error?.message });
+      }
+    }
+    assert.deepEqual(hiddenErrors, [
+      { status: 404, code: "COLLECT_ITEM_NOT_FOUND", message: "采集箱条目不存在" },
+      { status: 404, code: "COLLECT_ITEM_NOT_FOUND", message: "采集箱条目不存在" },
+    ]);
   });
 
   test("client scope fields are rejected instead of honored", async () => {
