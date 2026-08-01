@@ -96,8 +96,16 @@ export function createJsonAccountScopedCollectionHandler({
           }
           if (existing?.status === "SUCCEEDED") {
             const existingItem = existing.response?.item || {};
+            const existingEnrichment = prepared.identity.source === "ozon"
+              ? existing.response?.enrichment
+                || existingItem.enrichment
+                || buildOzonEnrichmentSummary(existingItem)
+              : null;
+            const responseItem = existingEnrichment
+              ? { ...existingItem, enrichment: existingEnrichment }
+              : existingItem;
             imported.push({
-              ...existingItem,
+              ...responseItem,
               collectRequestId: existing.id,
               duplicate: true,
             });
@@ -107,9 +115,7 @@ export function createJsonAccountScopedCollectionHandler({
               action: "updated",
               collectItemId: existing.response?.collectItemId || existingItem.id || "",
               collectRequestId: existing.id,
-              ...(existing.response?.enrichment || existingItem.enrichment
-                ? { enrichment: existing.response?.enrichment || existingItem.enrichment }
-                : {}),
+              ...(existingEnrichment ? { enrichment: existingEnrichment } : {}),
             });
             continue;
           }
@@ -205,6 +211,7 @@ export function createJsonAccountScopedCollectionHandler({
               ok: true,
               data: imported[0] || null,
               requestId: imported[0]?.collectRequestId || "",
+              ...(imported[0]?.enrichment ? { enrichment: imported[0].enrichment } : {}),
             };
       });
       sendJson(res, 200, responseBody);

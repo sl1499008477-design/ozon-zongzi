@@ -213,6 +213,84 @@ if (!postgresEnabled()) {
       sku: publicSourceSku,
       status: "PENDING",
     }]);
+
+    for (const requestKey of [first.requestId, publicResult.requestId]) {
+      await pool.query(
+        `UPDATE collect_requests
+            SET response=(response - 'enrichment')
+              || jsonb_build_object('item', (response->'item') - 'enrichment')
+          WHERE id=$1 AND account_id=$2`,
+        [requestKey, accountA],
+      );
+    }
+    await pool.query(
+      "DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=$1 AND request_id=$2 AND sku=$3",
+      [accountA, publicRequestId, publicSourceSku],
+    );
+
+    const completeHistoricalResponse = await invokeCollector(
+      "POST",
+      "/sources/ozon/collect",
+      input,
+    );
+    assert.equal(completeHistoricalResponse.status, 200);
+    assert.equal(completeHistoricalResponse.body.data.duplicate, true);
+    assert.deepEqual(completeHistoricalResponse.body.enrichment, {
+      status: "COMPLETE",
+      missingFields: [],
+      attemptCount: 0,
+      nextAttemptAt: "",
+      lastErrorCode: "",
+    });
+    assert.deepEqual(
+      completeHistoricalResponse.body.data.enrichment,
+      completeHistoricalResponse.body.enrichment,
+    );
+
+    const pendingHistoricalResponse = await invokeCollector(
+      "POST",
+      "/sources/ozon/collect",
+      {
+        source: "ozon",
+        sourceSku: publicSourceSku,
+        requestId: publicRequestId,
+        payload: { sku: publicSourceSku, name: "Public-only item" },
+      },
+    );
+    assert.equal(pendingHistoricalResponse.status, 200);
+    assert.equal(pendingHistoricalResponse.body.data.duplicate, true);
+    assert.deepEqual(pendingHistoricalResponse.body.enrichment, {
+      status: "PENDING_ENRICHMENT",
+      missingFields: [
+        "descriptionCategoryId",
+        "weightG",
+        "lengthMm",
+        "widthMm",
+        "heightMm",
+      ],
+      attemptCount: 0,
+      nextAttemptAt: "",
+      lastErrorCode: "",
+    });
+    assert.deepEqual(
+      pendingHistoricalResponse.body.data.enrichment,
+      pendingHistoricalResponse.body.enrichment,
+    );
+    const historicalStorage = await pool.query(
+      `SELECT
+         (COUNT(*) FILTER (WHERE response ? 'enrichment'))::int AS top_level_count,
+         (COUNT(*) FILTER (WHERE response->'item' ? 'enrichment'))::int AS item_count,
+         (SELECT COUNT(*)::int FROM collector_ozon_enrichment_jobs
+           WHERE account_id=$1 AND request_id=$2 AND sku=$3) AS job_count
+       FROM collect_requests
+       WHERE account_id=$1 AND id=ANY($4::text[])`,
+      [accountA, publicRequestId, publicSourceSku, [first.requestId, publicResult.requestId]],
+    );
+    assert.deepEqual(historicalStorage.rows[0], {
+      top_level_count: 0,
+      item_count: 0,
+      job_count: 0,
+    });
     const rawListingMetadata = await pool.query(
       `SELECT
          d.data #>> '{targetStore,clientId}' AS target_client_id,

@@ -2345,7 +2345,12 @@ async function handleFastCollectionRoute(req, res, url) {
       }
       sendJson(res, 200, isBatch
         ? { ok: errors.length === 0, imported: imported.length, data: imported, results, errors }
-        : { ok: true, data: imported[0] || null, requestId: imported[0]?.collectRequestId || "" });
+        : {
+            ok: true,
+            data: imported[0] || null,
+            requestId: imported[0]?.collectRequestId || "",
+            ...(imported[0]?.enrichment ? { enrichment: imported[0].enrichment } : {}),
+          });
       return true;
     }
   } catch (error) {

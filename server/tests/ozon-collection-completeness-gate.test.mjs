@@ -161,6 +161,7 @@ test("JSON collection stores public Ozon data with enrichment and one linked pen
     nextAttemptAt: "",
     lastErrorCode: "",
   });
+  assert.deepEqual(harness.response.body.enrichment, data.enrichment);
   assert.deepEqual(harness.state.caches.collectBox[0].enrichment, data.enrichment);
   assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 1);
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].collectItemId, data.id);
@@ -169,6 +170,66 @@ test("JSON collection stores public Ozon data with enrichment and one linked pen
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].sku, "4862904234");
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].status, "PENDING");
   assert.equal(harness.saved, 1);
+});
+
+test("JSON historical success replay derives complete and pending enrichment without rewriting history or creating jobs", async () => {
+  for (const fixture of [
+    {
+      sku: "json-history-complete",
+      requestId: "json-history-complete-request",
+      payload: {
+        ...completeOzonPayload(),
+        sku: "json-history-complete",
+        name: "Historical complete",
+      },
+      expected: {
+        status: "COMPLETE",
+        missingFields: [],
+        attemptCount: 0,
+        nextAttemptAt: "",
+        lastErrorCode: "",
+      },
+    },
+    {
+      sku: "json-history-pending",
+      requestId: "json-history-pending-request",
+      payload: { sku: "json-history-pending", name: "Historical pending" },
+      expected: {
+        status: "PENDING_ENRICHMENT",
+        missingFields: requiredFields,
+        attemptCount: 0,
+        nextAttemptAt: "",
+        lastErrorCode: "",
+      },
+    },
+  ]) {
+    const input = collectInput({
+      sourceSku: fixture.sku,
+      requestId: fixture.requestId,
+      payload: fixture.payload,
+    });
+    const harness = jsonHarness(input);
+    await harness.invoke();
+
+    delete harness.state.caches.collectBox[0].enrichment;
+    delete harness.state.collectRequests[0].response.enrichment;
+    delete harness.state.collectRequests[0].response.item.enrichment;
+    harness.state.collectorOzonEnrichmentJobs = [];
+
+    await harness.invoke();
+
+    assert.equal(harness.response.status, 200, fixture.sku);
+    assert.equal(harness.response.body.data.duplicate, true, fixture.sku);
+    assert.deepEqual(harness.response.body.data.enrichment, fixture.expected, fixture.sku);
+    assert.deepEqual(harness.response.body.enrichment, fixture.expected, fixture.sku);
+    assert.equal(Object.hasOwn(harness.state.caches.collectBox[0], "enrichment"), false, fixture.sku);
+    assert.equal(
+      Object.hasOwn(harness.state.collectRequests[0].response.item, "enrichment"),
+      false,
+      fixture.sku,
+    );
+    assert.equal(harness.state.collectorOzonEnrichmentJobs.length, 0, fixture.sku);
+  }
 });
 
 test("JSON mixed batch preflights every payload shape before writing", async () => {

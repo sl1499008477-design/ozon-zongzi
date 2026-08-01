@@ -315,15 +315,23 @@ export async function ingestCollectRequestV4(options = {}) {
           const storedResponse = row.response && typeof row.response === "object"
             ? row.response
             : { item: normalizedItem, collectItemId: row.collect_item_id };
+          const storedItem = storedResponse.item && typeof storedResponse.item === "object"
+            ? storedResponse.item
+            : normalizedItem;
+          const replayEnrichment = sourceId === "ozon"
+            ? storedResponse.enrichment
+              || storedItem.enrichment
+              || buildOzonEnrichmentSummary(storedItem)
+            : null;
           return {
             duplicate: true,
             requestId: row.id,
             ...storedResponse,
-            ...(enrichment ? {
-              enrichment: storedResponse.enrichment
-                || storedResponse.item?.enrichment
-                || enrichment,
-            } : {}),
+            item: replayEnrichment
+              ? { ...storedItem, enrichment: replayEnrichment }
+              : storedItem,
+            collectItemId: storedResponse.collectItemId || row.collect_item_id,
+            ...(replayEnrichment ? { enrichment: replayEnrichment } : {}),
           };
         }
         await client.query(
