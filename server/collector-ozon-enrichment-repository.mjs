@@ -5,55 +5,26 @@ let jsonOperationQueue = Promise.resolve();
 
 const LINKED_JOB_DEADLINE = "9999-12-31T23:59:59.999Z";
 const CAPTURE_CONTEXT_KEYS = new Set(["sellerCompanyId", "revision", "observedAt"]);
-const SENSITIVE_AUTH_WORDS = new Set([
-  "authorization",
-  "cookie",
-  "credential",
-  "otp",
-  "password",
-  "secret",
-  "token",
+// The live service contract uses a boolean refresh flag and linked ingestion uses
+// an empty placeholder. Any future metadata shape must be added here as an
+// explicit, versioned contract instead of reopening arbitrary JSON persistence.
+const CREATE_JOB_INPUT_KEYS = new Set([
+  "id",
+  "accountId",
+  "requestId",
+  "sku",
+  "preferredSessionId",
+  "refreshBundle",
+  "deadlineAt",
+  "createdAt",
 ]);
-const SENSITIVE_AUTH_SEQUENCES = Object.freeze([
-  ["access", "token"],
-  ["api", "key"],
-  ["api", "secret"],
-  ["auth", "code"],
-  ["authentication", "code"],
-  ["authorization", "code"],
-  ["client", "credential"],
-  ["client", "id"],
-  ["client", "secret"],
-  ["client", "token"],
-  ["one", "time", "code"],
-  ["otp", "code"],
-  ["refresh", "token"],
-  ["seller", "cookie"],
-  ["seller", "credential"],
-  ["seller", "password"],
-  ["seller", "secret"],
-  ["seller", "token"],
-  ["verification", "code"],
-]);
-const SENSITIVE_AUTH_SEQUENCE_WORDS = new Set(SENSITIVE_AUTH_SEQUENCES.flat());
-const SENSITIVE_AUTH_PLURAL_STEMS = new Set([
-  ...SENSITIVE_AUTH_WORDS,
-  ...SENSITIVE_AUTH_SEQUENCE_WORDS,
-]);
-const SENSITIVE_AUTH_COMPACT_SUFFIXES = Object.freeze([
-  ...SENSITIVE_AUTH_WORDS,
-  ...SENSITIVE_AUTH_SEQUENCES.map((sequence) => sequence.join("")),
-]);
-// Avoid ambiguous compact substrings: `secret` appears in secretary, `otp` across
-// hotProduct, and `clientid` at the start of clientIdentity. Their exact word,
-// sequence, suffix, and unambiguous plural forms remain covered by the other guards.
-const SENSITIVE_AUTH_COMPACT_FRAGMENTS = Object.freeze([
-  ...[...SENSITIVE_AUTH_WORDS].filter((word) => word !== "otp" && word !== "secret"),
-  "secrets",
-  "clientids",
-  ...SENSITIVE_AUTH_SEQUENCES
-    .map((sequence) => sequence.join(""))
-    .filter((fragment) => fragment !== "clientid"),
+const ENQUEUE_JOB_INPUT_KEYS = new Set([
+  "accountId",
+  "collectItemId",
+  "requestId",
+  "sku",
+  "refreshBundle",
+  "now",
 ]);
 
 function repositoryError(message, code = "OZON_ENRICHMENT_PERSISTENCE_FAILED", status = 500) {
@@ -183,46 +154,38 @@ function captureContext(value) {
   };
 }
 
-function normalizeAuthKeyWord(word) {
-  if (word.endsWith("s") && SENSITIVE_AUTH_PLURAL_STEMS.has(word.slice(0, -1))) {
-    return word.slice(0, -1);
-  }
-  return word;
+function persistenceContractError() {
+  return repositoryError(
+    "Ozon enrichment payload is outside the persistence contract",
+    "OZON_ENRICHMENT_SENSITIVE_DATA",
+    400,
+  );
 }
 
-function assertNoSensitiveAuth(value, seen = new WeakSet()) {
-  if (!value || typeof value !== "object") return;
-  if (seen.has(value)) return;
-  seen.add(value);
-  for (const [key, nested] of Object.entries(value)) {
-    const words = String(key)
-      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean)
-      .map(normalizeAuthKeyWord);
-    const containsSequence = SENSITIVE_AUTH_SEQUENCES.some((sequence) =>
-      words.some((_, index) => sequence.every((word, offset) => words[index + offset] === word)));
-    const compactKey = words.join("");
-    const containsCompactSensitiveKey = SENSITIVE_AUTH_COMPACT_SUFFIXES.some(
-      (suffix) => compactKey.endsWith(suffix),
-    );
-    const containsCompactSensitiveFragment = SENSITIVE_AUTH_COMPACT_FRAGMENTS.some(
-      (fragment) => compactKey.includes(fragment),
-    );
-    if (words.some((word) => SENSITIVE_AUTH_WORDS.has(word))
-        || containsSequence
-        || containsCompactSensitiveKey
-        || containsCompactSensitiveFragment) {
-      throw repositoryError(
-        "Ozon enrichment payload contains Seller authentication data",
-        "OZON_ENRICHMENT_SENSITIVE_DATA",
-        400,
-      );
-    }
-    assertNoSensitiveAuth(nested, seen);
+function assertExactInputContract(value, allowedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw persistenceContractError();
   }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw persistenceContractError();
+  }
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw persistenceContractError();
+  }
+}
+
+function fixedRefreshBundle(value) {
+  if (value === null || value === undefined) return {};
+  if (typeof value === "boolean") return value;
+  if (!Array.isArray(value) && typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      (prototype === Object.prototype || prototype === null)
+      && Object.keys(value).length === 0
+    ) return {};
+  }
+  throw persistenceContractError();
 }
 
 function sameCacheKey(record, key) {
@@ -316,7 +279,7 @@ function cacheRecord(key, existing = {}) {
   };
 }
 
-function newJob(input) {
+function newPendingJob(input) {
   const createdAt = requiredDate(input.createdAt, "createdAt").toISOString();
   return {
     id: requiredText(input.id, "job id"),
@@ -332,11 +295,11 @@ function newJob(input) {
       : null,
     claimedSessionId: null,
     claimExpiresAt: null,
-    refreshBundle: copy(input.refreshBundle ?? {}),
-    attemptCount: Number.isInteger(input.attemptCount) ? input.attemptCount : 0,
-    nextAttemptAt: requiredDate(input.nextAttemptAt ?? createdAt, "nextAttemptAt").toISOString(),
-    lastError: copy(input.lastError ?? null),
-    captureContext: captureContext(input.captureContext),
+    refreshBundle: fixedRefreshBundle(input.refreshBundle),
+    attemptCount: 0,
+    nextAttemptAt: createdAt,
+    lastError: null,
+    captureContext: null,
     deadlineAt: requiredDate(input.deadlineAt, "deadlineAt").toISOString(),
     result: null,
     error: null,
@@ -574,14 +537,15 @@ export function createJsonCollectorOzonEnrichmentRepository({
   }
 
   async function enqueueForCollect(input) {
-    const at = requiredDate(input.now, "now");
-    const refreshBundle = copy(input.refreshBundle ?? {});
-    assertNoSensitiveAuth(refreshBundle);
+    const request = copy(input);
+    assertExactInputContract(request, ENQUEUE_JOB_INPUT_KEYS);
+    const at = requiredDate(request.now, "now");
+    const refreshBundle = fixedRefreshBundle(request.refreshBundle);
     const stableKey = {
-      accountId: requiredText(input.accountId, "accountId"),
-      collectItemId: requiredText(input.collectItemId, "collectItemId"),
-      requestId: requiredText(input.requestId, "requestId"),
-      sku: requiredText(input.sku, "sku"),
+      accountId: requiredText(request.accountId, "accountId"),
+      collectItemId: requiredText(request.collectItemId, "collectItemId"),
+      requestId: requiredText(request.requestId, "requestId"),
+      sku: requiredText(request.sku, "sku"),
     };
     return serializeJsonOperation(async () => {
       const existing = jobEntries().find((record) =>
@@ -610,7 +574,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
           404,
         );
       }
-      const candidate = newJob({
+      const candidate = newPendingJob({
         id: randomUUID(),
         accountId: stableKey.accountId,
         collectItemId: stableKey.collectItemId,
@@ -620,7 +584,6 @@ export function createJsonCollectorOzonEnrichmentRepository({
         preferredSessionId: null,
         deadlineAt: LINKED_JOB_DEADLINE,
         createdAt: at,
-        nextAttemptAt: at,
       });
       return commitMutation(["collectorOzonEnrichmentJobs"], () => {
         state.collectorOzonEnrichmentJobs = jobEntries();
@@ -631,11 +594,13 @@ export function createJsonCollectorOzonEnrichmentRepository({
   }
 
   async function createOrGetJob(input) {
+    const request = copy(input);
+    assertExactInputContract(request, CREATE_JOB_INPUT_KEYS);
     const stableKey = {
-      id: requiredText(input.id, "job id"),
-      accountId: requiredText(input.accountId, "accountId"),
-      requestId: requiredText(input.requestId, "requestId"),
-      sku: requiredText(input.sku, "sku"),
+      id: requiredText(request.id, "job id"),
+      accountId: requiredText(request.accountId, "accountId"),
+      requestId: requiredText(request.requestId, "requestId"),
+      sku: requiredText(request.sku, "sku"),
     };
     return serializeJsonOperation(async () => {
       const existing = jobEntries().find((record) =>
@@ -643,13 +608,13 @@ export function createJsonCollectorOzonEnrichmentRepository({
         && record.requestId === stableKey.requestId
         && record.sku === stableKey.sku);
       if (existing) {
-        const retryAt = requiredDate(input.createdAt, "createdAt");
+        const retryAt = requiredDate(request.createdAt, "createdAt");
         const terminal = existing.status === "SUCCESS" || existing.status === "FAILED";
         const existingDeadline = new Date(existing.deadlineAt).getTime();
         if (terminal || (Number.isFinite(existingDeadline) && existingDeadline > retryAt.getTime())) {
           return copy(existing);
         }
-        const retried = newJob({ ...input, id: existing.id });
+        const retried = newPendingJob({ ...request, id: existing.id });
         if (
           retried.preferredSessionId
           && !scopedCollectorSession(
@@ -669,6 +634,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
           existing.attemptCount = 0;
           existing.nextAttemptAt = retried.nextAttemptAt;
           existing.lastError = null;
+          existing.captureContext = null;
           existing.deadlineAt = retried.deadlineAt;
           existing.result = null;
           existing.error = null;
@@ -685,7 +651,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
           409,
         );
       }
-      const candidate = newJob(input);
+      const candidate = newPendingJob(request);
       if (
         candidate.preferredSessionId
         && !scopedCollectorSession(
@@ -1138,13 +1104,14 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
   }
 
   async function enqueueForCollect(input) {
-    const at = requiredDate(input.now, "now");
-    const refreshBundle = copy(input.refreshBundle ?? {});
-    assertNoSensitiveAuth(refreshBundle);
-    const accountId = requiredText(input.accountId, "accountId");
-    const collectItemId = requiredText(input.collectItemId, "collectItemId");
-    const requestId = requiredText(input.requestId, "requestId");
-    const sku = requiredText(input.sku, "sku");
+    const request = copy(input);
+    assertExactInputContract(request, ENQUEUE_JOB_INPUT_KEYS);
+    const at = requiredDate(request.now, "now");
+    const refreshBundle = fixedRefreshBundle(request.refreshBundle);
+    const accountId = requiredText(request.accountId, "accountId");
+    const collectItemId = requiredText(request.collectItemId, "collectItemId");
+    const requestId = requiredText(request.requestId, "requestId");
+    const sku = requiredText(request.sku, "sku");
     const deadline = requiredDate(LINKED_JOB_DEADLINE, "deadlineAt");
     const inserted = await query(
       `INSERT INTO collector_ozon_enrichment_jobs (
@@ -1194,7 +1161,9 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
   }
 
   async function createOrGetJob(input) {
-    const record = newJob(input);
+    const request = copy(input);
+    assertExactInputContract(request, CREATE_JOB_INPUT_KEYS);
+    const record = newPendingJob(request);
     const recordParams = [
       record.id,
       record.accountId,
@@ -1208,10 +1177,11 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
     const result = await query(
       `INSERT INTO collector_ozon_enrichment_jobs (
          id, account_id, request_id, sku, status, refresh_bundle,
-         preferred_session_id, deadline_at, created_at, updated_at
+         preferred_session_id, attempt_count, next_attempt_at, last_error_json,
+         capture_context_json, deadline_at, created_at, updated_at
        )
        SELECT $1,$2,$3,$4,'PENDING',$5::jsonb,
-              CASE WHEN preferred.id IS NULL THEN NULL ELSE $6 END,$7,$8,$8
+              CASE WHEN preferred.id IS NULL THEN NULL ELSE $6 END,0,$8,NULL,NULL,$7,$8,$8
          FROM accounts AS account
          LEFT JOIN collector_sessions AS preferred
            ON preferred.id=$6 AND preferred.account_id=$2
@@ -1228,7 +1198,8 @@ export function createPostgresCollectorOzonEnrichmentRepository({ pool } = {}) {
               preferred_session_id=CASE WHEN preferred.id IS NULL THEN NULL ELSE $6 END,
               claimed_session_id=NULL,
               claim_expires_at=NULL, attempt_count=0,
-              next_attempt_at=$8, last_error_json=NULL, deadline_at=$7,
+              next_attempt_at=$8, last_error_json=NULL, capture_context_json=NULL,
+              deadline_at=$7,
               result_json=NULL, error_json=NULL,
               created_at=$8, updated_at=$8, completed_at=NULL
          FROM accounts AS account
