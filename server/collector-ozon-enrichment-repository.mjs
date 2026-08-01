@@ -20,19 +20,16 @@ const SENSITIVE_AUTH_SEQUENCES = Object.freeze([
   ["api", "key"],
   ["auth", "code"],
   ["authentication", "code"],
+  ["authorization", "code"],
   ["client", "id"],
   ["client", "secret"],
   ["one", "time", "code"],
+  ["otp", "code"],
   ["verification", "code"],
 ]);
 const SENSITIVE_AUTH_COMPACT_SUFFIXES = Object.freeze([
-  "apikey",
-  "sellertoken",
-  "refreshtoken",
-  "clientsecret",
-  "clientid",
-  "verificationcode",
-  "onetimecode",
+  ...SENSITIVE_AUTH_WORDS,
+  ...SENSITIVE_AUTH_SEQUENCES.map((sequence) => sequence.join("")),
 ]);
 
 function repositoryError(message, code = "OZON_ENRICHMENT_PERSISTENCE_FAILED", status = 500) {
@@ -177,7 +174,7 @@ function assertNoSensitiveAuth(value, seen = new WeakSet()) {
       words.some((_, index) => sequence.every((word, offset) => words[index + offset] === word)));
     const compactKey = words.join("");
     const containsCompactSensitiveKey = SENSITIVE_AUTH_COMPACT_SUFFIXES.some(
-      (suffix) => compactKey === suffix || compactKey.endsWith(suffix),
+      (suffix) => compactKey.endsWith(suffix),
     );
     if (words.some((word) => SENSITIVE_AUTH_WORDS.has(word))
         || containsSequence

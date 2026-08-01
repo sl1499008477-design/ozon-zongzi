@@ -1603,7 +1603,7 @@ test("linked enqueue rejects composite Seller credential keys before persistence
   }
 });
 
-test("linked enqueue rejects compact lowercase Seller credential keys before persistence", async () => {
+test("linked enqueue rejects normalized Seller credential semantics before persistence", async () => {
   const sensitiveBundles = [
     { metadata: { apikey: "must-not-persist" } },
     { entries: [{ sellertoken: "must-not-persist" }] },
@@ -1612,6 +1612,20 @@ test("linked enqueue rejects compact lowercase Seller credential keys before per
     { products: [{ details: { clientid: "must-not-persist" } }] },
     { checkpoints: [{ verificationcode: "must-not-persist" }] },
     { batches: [{ confirmation: { onetimecode: "must-not-persist" } }] },
+    { metadata: { accesstoken: "must-not-persist" } },
+    { actors: [{ sellercredentials: "must-not-persist" }] },
+    { sellerProfile: { sellercookie: "must-not-persist" } },
+    { actors: [{ profile: { sellerpassword: "must-not-persist" } }] },
+    { metadata: { sellersecret: "must-not-persist" } },
+    { forms: [{ authcode: "must-not-persist" }] },
+    { forms: [{ details: { authenticationcode: "must-not-persist" } }] },
+    { checkpoints: [{ authorizationcode: "must-not-persist" }] },
+    { batches: [{ confirmation: { otpcode: "must-not-persist" } }] },
+    { formats: { accessToken: "must-not-persist" } },
+    { formats: { access_token: "must-not-persist" } },
+    { formats: { "access-token": "must-not-persist" } },
+    { formats: { ACCESSTOKEN: "must-not-persist" } },
+    { formats: { aCcEsStOkEn: "must-not-persist" } },
   ];
   for (const [index, refreshBundle] of sensitiveBundles.entries()) {
     const state = {
