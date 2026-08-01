@@ -27,8 +27,6 @@
     now: () => Date.now(),
     timeoutMs: 20_000,
   });
-  let collectionPrefetchAllowed = false;
-  const collectionPrefetchScheduledSkus = new Set();
 
   // queue 负责数据面板请求节流。
   // queue 由 collector/task-queue.js 提供（content_scripts 注入顺序保证）
@@ -271,8 +269,6 @@
       renderLockedPanel(gate);
       return;
     }
-    collectCoordinator.prefetch({ sku: productId }).catch(() => {});
-
     // tile 可见实价(RUB)传给 populate 定佣金档 —— 比市场月均价更贴近当前档位;
     // 币种明确是 CNY/USD(跨境视图)才不用,与 PDP 同口径。
     const tileRub =
@@ -529,20 +525,8 @@
   async function sourceVariantForCollect(sku, data) {
     const cached = cachedSearchVariant(sku, data);
     if (cached) return cached;
-    try {
-      const result = await collectCoordinator.prefetch({ sku });
-      if (window.JzOzonCollectCoordinator.matchesSku(result?.variantData, sku)) {
-        return result.variantData;
-      }
-    } catch {}
-    const pendingVariant = data?.preFetched?.variant;
-    if (pendingVariant && typeof pendingVariant.then === 'function') {
-      try {
-        const response = await pendingVariant;
-        return collectVariantItems(response)
-          .find((item) => window.JzOzonCollectCoordinator.matchesSku(item, sku)) || null;
-      } catch {}
-    }
+    // A still-running Seller read belongs to background enrichment and must never
+    // delay the public collection upload.
     return null;
   }
 
@@ -551,51 +535,6 @@
     try {
       window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variant, info.hashtags);
     } catch {}
-  }
-
-  async function localCompleteEnrichment(sku, data, info) {
-    let variant = await sourceVariantForCollect(sku, data);
-    if (!variant) {
-      const response = await window.sendMessage('searchVariants', { sku });
-      const items = collectVariantItems(response);
-      variant = items.find((item) => window.JzOzonCollectCoordinator.matchesSku(item, sku)) || null;
-    }
-    const catalog = window.jzExtractCatalogFromSv?.(variant) || {};
-    const cachedDimensions = await (window.jzReadCachedWeightDims?.(sku).catch(() => null) ?? null);
-    const positiveNumber = (...values) => {
-      for (const value of values) {
-        const number = Number(value);
-        if (Number.isFinite(number) && number > 0) return Math.round(number);
-      }
-      return undefined;
-    };
-    const descriptionCategoryId = positiveNumber(
-      variant?.description_category_id,
-      variant?.descriptionCategoryId,
-      data?.descriptionCategoryId,
-      data?.categoryId,
-    );
-    const typeId = positiveNumber(variant?.type_id, variant?.typeId, data?.typeId);
-    const weight = positiveNumber(catalog.weightG, data?.weightG, cachedDimensions?.weightG);
-    const depth = positiveNumber(catalog.depthMm, data?.lengthMm, cachedDimensions?.lengthMm);
-    const width = positiveNumber(catalog.widthMm, data?.widthMm, cachedDimensions?.widthMm);
-    const height = positiveNumber(catalog.heightMm, data?.heightMm, cachedDimensions?.heightMm);
-    mergeInfoHashtags(variant, info);
-    const variantData = {
-      ...(variant || {}),
-      description_category_id: descriptionCategoryId,
-      ...(typeId ? { type_id: typeId } : {}),
-      weight,
-      depth,
-      width,
-      height,
-    };
-    return window.JzOzonEnrichmentContract.normalizeVariantData({
-      sku: String(sku),
-      variantData,
-      source: 'EXTENSION_SELLER_CAPTURE',
-      capturedAt: new Date().toISOString(),
-    });
   }
 
   function buildSearchCollectRaw(sku, info, data, variant) {
@@ -661,12 +600,7 @@
       const collectPromise = collectCoordinator.collect({
         sku: productId,
         raw: buildSearchCollectRaw(productId, info, data, variant),
-        localFallback: () => localCompleteEnrichment(productId, data, info),
       });
-      if (collectCoordinator.getState(productId).status === 'PREFETCHING') {
-        btn.dataset.jzOriginalHtml = btn.innerHTML;
-        btn.innerHTML = '正在补全商品资料';
-      }
       const resp = await collectPromise;
 
       const label = resp?.dedupeHit ? '近期已采集' : '已采集';
@@ -716,11 +650,7 @@
       const collectPromise = collectCoordinator.collect({
         sku,
         raw: buildSearchCollectRaw(sku, info, data, variant),
-        localFallback: () => localCompleteEnrichment(sku, data, info),
       });
-      if (collectCoordinator.getState(sku).status === 'PREFETCHING') {
-        btn.innerHTML = '正在补全商品资料';
-      }
       const resp = await collectPromise;
       const itemId = resp?.result?.id;
       const frontendUrl = 'http://127.0.0.1:3000';
@@ -830,25 +760,8 @@
     } catch {}
   }
 
-  function prefetchVisibleCards(cards) {
-    if (!collectionPrefetchAllowed) return;
-    const skus = [];
-    for (const card of cards) {
-      if (!card?.isConnected) continue;
-      const sku = extractProductId(extractCardInfo(card).url);
-      if (sku && !collectionPrefetchScheduledSkus.has(sku)) {
-        collectionPrefetchScheduledSkus.add(sku);
-        skus.push(sku);
-      }
-    }
-    for (let index = 0; index < skus.length; index += 20) {
-      collectCoordinator.prefetchBatch({ skus: skus.slice(index, index + 20) }).catch(() => {});
-    }
-  }
-
   function applyToCards() {
     const cards = getCards();
-    prefetchVisibleCards(cards);
     cards.forEach((card) => {
       ensureBadge(card);
       if (panelState.enabled) {
@@ -878,7 +791,6 @@
 
   async function init() {
     const auth = await window.checkAuth();
-    collectionPrefetchAllowed = auth.loggedIn === true;
     if (!auth.loggedIn) {
       window.createLoginPrompt();
     }

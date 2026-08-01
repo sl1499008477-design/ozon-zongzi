@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
+import { normalizeOzonAgentResult } from "../collector-ozon-enrichment-contract.mjs";
 import { createCollectorOzonEnrichmentHttpHandler } from "../collector-ozon-enrichment-routes.mjs";
 
 const SESSION = Object.freeze({
@@ -293,6 +294,67 @@ test("result route accepts only the fixed Seller result envelope and exposes the
   }
 });
 
+test("result route accepts real Seller source evidence without a guessed type_id", async () => {
+  let completionInput;
+  let normalized;
+  const h = harness({
+    service: {
+      async completeClaim(input) {
+        completionInput = input;
+        normalized = normalizeOzonAgentResult({
+          sku: "4862904234",
+          variantData: input.variantData,
+          source: "EXTENSION_SELLER_CAPTURE",
+          capturedAt: input.captureContext.observedAt,
+        });
+        return normalized;
+      },
+    },
+  });
+  const variantData = {
+    description_category_id: 17_000_001,
+    weight: 500,
+    depth: 300,
+    width: 200,
+    height: 100,
+    attributes: [{
+      key: "8229",
+      value: "Заварочный чайник",
+      dictionary_value_id: 123456,
+    }],
+  };
+
+  const response = await request(
+    h,
+    "POST",
+    "/collector/ozon/enrichment-jobs/job-route/result",
+    { variantData, captureContext: resultBody().captureContext },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(completionInput, {
+    session: SESSION,
+    jobId: "job-route",
+    variantData,
+    captureContext: resultBody().captureContext,
+  });
+  assert.equal(normalized.status, "COMPLETE");
+  assert.equal(Object.hasOwn(normalized, "typeId"), false);
+  assert.equal(normalized.descriptionCategoryId, 17_000_001);
+  assert.deepEqual(normalized.logistics, {
+    weightG: 500,
+    lengthMm: 300,
+    widthMm: 200,
+    heightMm: 100,
+  });
+  assert.deepEqual(normalized.sourceCategory, {
+    descriptionCategoryId: 17_000_001,
+    typeName: "Заварочный чайник",
+    typeIdCandidate: 123456,
+    path: [],
+  });
+});
+
 test("nested secret, request-control, and retired-scope keys are rejected before result caching", async () => {
   const forbiddenKeys = [
     "token",
@@ -364,6 +426,9 @@ test("result validation rejects malformed Seller evidence and unknown data befor
     resultBody({ variantData: { ...resultBody().variantData, description_category_id: 0 } }),
     resultBody({ variantData: { ...resultBody().variantData, description_category_id: 1.5 } }),
     resultBody({ variantData: { ...resultBody().variantData, type_id: "97000001" } }),
+    resultBody({ variantData: { ...resultBody().variantData, type_id: 0 } }),
+    resultBody({ variantData: { ...resultBody().variantData, type_id: -1 } }),
+    resultBody({ variantData: { ...resultBody().variantData, type_id: 1.5 } }),
     resultBody({ variantData: { ...resultBody().variantData, weight: -1 } }),
     resultBody({ captureContext: { ...resultBody().captureContext, revision: 0 } }),
     resultBody({ captureContext: { ...resultBody().captureContext, revision: 1.5 } }),

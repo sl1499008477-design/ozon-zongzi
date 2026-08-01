@@ -344,7 +344,7 @@ async function startServer() {
   return server;
 }
 
-test('search page batches visible prefetch and delegates both collection paths to the coordinator', async () => {
+test('search page delegates collection without scheduling synchronous enrichment batches', async () => {
   const server = await startServer();
   let browser;
   try {
@@ -354,17 +354,10 @@ test('search page batches visible prefetch and delegates both collection paths t
     page.on('pageerror', (error) => errors.push(error.stack || error.message));
     const address = server.address();
     await page.goto(`http://127.0.0.1:${address.port}/fixture`);
-    await page.waitForFunction(() =>
-      window.__getSearchCoordinatorState().prefetchCalls.flat().length === 21
-      && document.querySelectorAll('.ozon-helper-data-panel').length === 21,
-    );
+    await page.waitForFunction(() => document.querySelectorAll('.ozon-helper-data-panel').length === 21);
 
     const initial = await page.evaluate(() => window.__getSearchCoordinatorState());
-    assert.deepEqual(initial.prefetchCalls.map((batch) => batch.length), [20, 1]);
-    assert.deepEqual(
-      initial.prefetchCalls.flat(),
-      Array.from({ length: 21 }, (_, index) => String(8000000000 + index)),
-    );
+    assert.deepEqual(initial.prefetchCalls, []);
     await page.evaluate(() => {
       window.__triggerSearchMutation();
       window.__triggerSearchMutation();
@@ -372,10 +365,9 @@ test('search page batches visible prefetch and delegates both collection paths t
     });
     await page.waitForTimeout(50);
     assert.deepEqual(
-      (await page.evaluate(() => window.__getSearchCoordinatorState())).prefetchCalls
-        .map((batch) => batch.length),
-      [20, 1],
-      'repeated DOM mutations must not schedule already-seen SKU batches again',
+      (await page.evaluate(() => window.__getSearchCoordinatorState())).prefetchCalls,
+      [],
+      'repeated DOM mutations must not schedule enrichment batches',
     );
     assert.equal(
       (await page.evaluate(() => window.__getSearchRuntimeMessages()))
@@ -408,9 +400,9 @@ test('search page batches visible prefetch and delegates both collection paths t
         gmvSum: firstRaw.gmvSum,
       },
       {
-        name: 'variant title variant-8000000000',
-        image: 'https://cdn.test/variant-variant-8000000000.jpg',
-        images: ['https://cdn.test/variant-variant-8000000000.jpg'],
+        name: 'card title 8000000000',
+        image: 'https://cdn.test/card-8000000000.jpg',
+        images: ['https://cdn.test/card-8000000000.jpg'],
         hashtags: ['#fixture'],
         marketingPrice: '1399',
         marketingPriceCurrency: 'RUB',
@@ -452,7 +444,7 @@ test('search page batches visible prefetch and delegates both collection paths t
   }
 });
 
-test('production coordinator and message wrapper resist native MutationObserver prefetch floods', async () => {
+test('production coordinator uploads once without held enrichment under native MutationObserver churn', async () => {
   const server = await startServer();
   let browser;
   try {
@@ -462,11 +454,7 @@ test('production coordinator and message wrapper resist native MutationObserver 
     page.on('pageerror', (error) => errors.push(error.stack || error.message));
     const address = server.address();
     await page.goto(`http://127.0.0.1:${address.port}/production-fixture`);
-    await page.waitForFunction(() =>
-      window.__getProductionRuntimeMessages()
-        .filter(({ action }) => action === 'enrichOzonCollectBatch').length === 1
-      && document.querySelectorAll('.ozon-helper-data-panel').length === 1,
-    );
+    await page.waitForFunction(() => document.querySelectorAll('.ozon-helper-data-panel').length === 1);
     assert.equal(
       await page.evaluate(() => /\[native code\]/.test(MutationObserver.toString())),
       true,
@@ -480,7 +468,7 @@ test('production coordinator and message wrapper resist native MutationObserver 
     });
     await page.waitForTimeout(100);
     let messages = await page.evaluate(() => window.__getProductionRuntimeMessages());
-    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 1);
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 0);
     assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollect').length, 0);
 
     await page.locator('[data-action="collect-one"]').click();
@@ -488,15 +476,11 @@ test('production coordinator and message wrapper resist native MutationObserver 
       window.__getProductionRuntimeMessages().some(({ action }) => action === 'pushSourceCollect'),
     );
     messages = await page.evaluate(() => window.__getProductionRuntimeMessages());
-    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 1);
-    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollect').length, 1);
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollectBatch').length, 0);
+    assert.equal(messages.filter(({ action }) => action === 'enrichOzonCollect').length, 0);
     assert.equal(messages.filter(({ action }) => action === 'pushSourceCollect').length, 1);
-    const batch = messages.find(({ action }) => action === 'enrichOzonCollectBatch');
-    const retry = messages.find(({ action }) => action === 'enrichOzonCollect');
     const upload = messages.find(({ action }) => action === 'pushSourceCollect');
-    assert.notEqual(retry.requestId, batch.requestId);
-    assert.equal(upload.requestId, batch.requestId);
-    assert.match(batch.requestId, /^ozon-collect-\d+-[A-Za-z0-9_-]{16,}-1-8123456789$/);
+    assert.match(upload.requestId, /^ozon-collect-\d+-[A-Za-z0-9_-]{16,}-1-8123456789$/);
     assert.equal(errors.length, 0, errors.join('\n'));
   } finally {
     await browser?.close();

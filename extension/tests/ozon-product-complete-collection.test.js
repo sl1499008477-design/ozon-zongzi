@@ -158,15 +158,20 @@ function fixtureHtml(mode) {
         return {};
       };
 
+      const skuCollectCalls = [];
       window.JZSkuCollect = {
-        collectBySkus: async (skus) => ({
+        collectBySkus: async (skus) => {
+          skuCollectCalls.push(skus.map(String));
+          if ('${mode}' === 'multivariant-seller-hang') return new Promise(() => {});
+          return ({
           sourceMap: new Map(skus.map((sku) => [String(sku), {
             _sourceVariant: completeVariant(String(sku)),
             name: 'Seller title ' + sku,
             images: ['https://cdn.test/seller-' + sku + '.jpg'],
             description: 'Description ' + sku,
           }])),
-        }),
+          });
+        },
       };
 
       const prefetchCalls = [];
@@ -281,6 +286,7 @@ function fixtureHtml(mode) {
         prefetchBatchNetworkCalls: structuredClone(prefetchBatchNetworkCalls),
         collectCalls: structuredClone(collectCalls),
         runtimeMessages: structuredClone(runtimeMessages),
+        skuCollectCalls: structuredClone(skuCollectCalls),
         label: document.querySelector('[aria-label="一键采集"] .ozon-helper-action-label')?.textContent
           || document.querySelector('[aria-label="一键采集"]')?.textContent?.trim()
           || '',
@@ -321,7 +327,7 @@ function closeServer(server) {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-test('product page delegates complete single and multivariant collection to the page coordinator', async () => {
+test('product page delegates public-first single and multivariant collection without synchronous enrichment', async () => {
   const server = await startServer();
   const browser = await chromium.launch({ executablePath: browserPath(), headless: true });
   const address = server.address();
@@ -336,9 +342,8 @@ test('product page delegates complete single and multivariant collection to the 
     };
 
     const successPage = await openFixture('success');
-    await successPage.waitForFunction(() => window.__getProductFixtureState().prefetchCalls.length > 0);
     let state = await successPage.evaluate(() => window.__getProductFixtureState());
-    assert.deepEqual(state.prefetchCalls, [SKU]);
+    assert.deepEqual(state.prefetchCalls, []);
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
 
     await successPage.click('[aria-label="一键采集"]');
@@ -346,8 +351,11 @@ test('product page delegates complete single and multivariant collection to the 
     state = await successPage.evaluate(() => window.__getProductFixtureState());
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
     assert.equal(state.collectCalls[0].sku, SKU);
-    assert.equal(state.collectCalls[0].raw.name, `Seller title ${SKU}`);
-    assert.deepEqual(state.collectCalls[0].raw.images, [`https://cdn.test/seller-${SKU}.jpg`]);
+    assert.equal(state.collectCalls[0].raw.name, 'Fixture page title');
+    assert.deepEqual(state.collectCalls[0].raw.images, [
+      'https://cdn.test/page-1.jpg',
+      'https://cdn.test/page-2.jpg',
+    ]);
     assert.equal(state.collectCalls[0].raw.price, '1200');
     assert.equal(state.collectCalls[0].raw.marketingPrice, '1200');
     assert.equal(state.collectCalls[0].raw.greenPrice, '1100');
@@ -358,13 +366,12 @@ test('product page delegates complete single and multivariant collection to the 
     assert.deepEqual(state.collectCalls[0].raw.variantData.hashtags, ['#fixture', '#complete']);
     assert.equal(state.collectCalls[0].raw.variantData.description, 'Fixture description');
     assert.ok(state.collectCalls[0].raw.variantData.attributes.some(({ key }) => String(key) === '11254'));
-    assert.equal(state.collectCalls[0].local.sku, SKU);
-    assert.equal(state.collectCalls[0].local.variantData._searchMeta.skus[0].sku, SKU);
+    assert.equal(state.collectCalls[0].local, null);
     await successPage.waitForFunction(() => window.__getProductFixtureState().label === '已采集');
 
     const coldPage = await openFixture('cold-success');
     await coldPage.click('[aria-label="一键采集"]');
-    await coldPage.waitForFunction(() => window.__getProductFixtureState().label === '正在补全商品资料');
+    await coldPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
 
     const failedPage = await openFixture('upload-failure');
     await failedPage.click('[aria-label="一键采集"]');
@@ -392,67 +399,68 @@ test('product page delegates complete single and multivariant collection to the 
     assert.equal(state.collectCalls.length, 0);
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
 
-    const multiPage = await openFixture('multivariant');
+    const multiPage = await openFixture('multivariant-seller-hang');
     await multiPage.click('[aria-label="一键采集"]');
     await multiPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
     state = await multiPage.evaluate(() => window.__getProductFixtureState());
-    assert.deepEqual(state.prefetchBatchCalls, [[SKU, OTHER_SKU]]);
-    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
+    assert.deepEqual(state.prefetchBatchCalls, []);
+    assert.deepEqual(state.prefetchBatchRetryFlags, []);
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
     assert.equal(state.collectCalls[0].sku, SKU);
     assert.deepEqual(state.collectCalls[0].raw.variantData.variants.map(({ sku }) => sku), [SKU, OTHER_SKU]);
+    assert.deepEqual(state.skuCollectCalls, []);
     assert.deepEqual(
       state.collectCalls[0].raw.variantData.variants.map((row) => ({
-        categoryId: row.sourceVariant.description_category_id,
+        name: row.name,
+        image: row.image,
         weight: row.weight,
         depth: row.depth,
         width: row.width,
         height: row.height,
+        sourceVariant: row.sourceVariant,
       })),
       [
-        { categoryId: 321, weight: 500, depth: 300, width: 200, height: 100 },
-        { categoryId: 321, weight: 500, depth: 300, width: 200, height: 100 },
+        {
+          name: 'Blue fixture', image: 'https://cdn.test/blue.jpg',
+          weight: undefined, depth: undefined, width: undefined, height: undefined,
+          sourceVariant: undefined,
+        },
+        {
+          name: 'Red fixture', image: 'https://cdn.test/red.jpg',
+          weight: undefined, depth: undefined, width: undefined, height: undefined,
+          sourceVariant: undefined,
+        },
       ],
     );
+    assert.equal(JSON.stringify(state.collectCalls[0].raw).includes('_bundleItem'), false);
 
     const multiFailurePage = await openFixture('multivariant-gate-failure');
     await multiFailurePage.click('[aria-label="一键采集"]');
-    await multiFailurePage.waitForFunction(() => window.__getProductFixtureState().label === '缺少：重量');
-    state = await multiFailurePage.evaluate(() => window.__getProductFixtureState());
-    assert.deepEqual(state.prefetchBatchCalls, [[SKU, OTHER_SKU]]);
-    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
-    assert.deepEqual(state.prefetchBatchNetworkCalls, [[OTHER_SKU]]);
-    assert.equal(state.collectCalls.length, 0);
-    assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
-
-    await multiFailurePage.evaluate(() => {
-      const button = document.querySelector('[aria-label="一键采集"]');
-      button.disabled = false;
-      button.click();
-    });
     await multiFailurePage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
     state = await multiFailurePage.evaluate(() => window.__getProductFixtureState());
-    assert.deepEqual(state.prefetchBatchRetryFlags, [true, true]);
-    assert.deepEqual(state.prefetchBatchNetworkCalls, [[OTHER_SKU], [OTHER_SKU]]);
+    assert.deepEqual(state.prefetchBatchCalls, []);
+    assert.deepEqual(state.prefetchBatchRetryFlags, []);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, []);
     assert.equal(state.collectCalls.length, 1);
+    assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
 
     const initRetryPage = await openFixture('multivariant-init-retry');
-    await initRetryPage.waitForFunction(() => window.__getProductFixtureState().prefetchCalls.length === 1);
     await initRetryPage.click('[aria-label="一键采集"]');
     await initRetryPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
     state = await initRetryPage.evaluate(() => window.__getProductFixtureState());
-    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
-    assert.deepEqual(state.prefetchBatchNetworkCalls, [[SKU, OTHER_SKU]]);
+    assert.deepEqual(state.prefetchCalls, []);
+    assert.deepEqual(state.prefetchBatchRetryFlags, []);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, []);
     assert.equal(state.collectCalls.length, 1);
 
     const authRetryPage = await openFixture('multivariant-auth-retry');
-    await authRetryPage.waitForFunction(() => window.__getProductFixtureState().prefetchCalls.length === 1);
     await authRetryPage.evaluate(() => window.__fixtureRelogin());
     await authRetryPage.click('[aria-label="一键采集"]');
     await authRetryPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);
     state = await authRetryPage.evaluate(() => window.__getProductFixtureState());
-    assert.deepEqual(state.prefetchBatchRetryFlags, [true]);
-    assert.deepEqual(state.prefetchBatchNetworkCalls, [[SKU, OTHER_SKU]]);
+    assert.deepEqual(state.prefetchCalls, []);
+    assert.deepEqual(state.prefetchBatchRetryFlags, []);
+    assert.deepEqual(state.prefetchBatchNetworkCalls, []);
     assert.equal(state.collectCalls.length, 1);
   } finally {
     await context.close();

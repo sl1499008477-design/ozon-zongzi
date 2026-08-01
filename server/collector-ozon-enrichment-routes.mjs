@@ -23,6 +23,9 @@ const VARIANT_RESULT_KEYS = Object.freeze([
   "height",
   "attributes",
 ]);
+const REQUIRED_VARIANT_RESULT_KEYS = Object.freeze(
+  VARIANT_RESULT_KEYS.filter((key) => key !== "type_id"),
+);
 const CAPTURE_CONTEXT_KEYS = Object.freeze(["sellerCompanyId", "revision", "observedAt"]);
 const ATTRIBUTE_KEYS = Object.freeze(["key", "value", "collection", "dictionary_value_id"]);
 
@@ -199,11 +202,13 @@ function parseResultAttribute(value) {
 
 function parseResultEnvelope(body, at) {
   assertRequiredExactKeys(body, ["variantData", "captureContext"], "Ozon 商品补全结果格式无效");
-  assertRequiredExactKeys(
-    body.variantData,
-    VARIANT_RESULT_KEYS,
-    "Ozon 商品补全结果 variantData 格式无效",
-  );
+  assertPlainObject(body.variantData, "Ozon 商品补全结果 variantData 格式无效");
+  if (
+    Object.keys(body.variantData).some((key) => !VARIANT_RESULT_KEYS.includes(key))
+    || REQUIRED_VARIANT_RESULT_KEYS.some((key) => !Object.hasOwn(body.variantData, key))
+  ) {
+    throw routeError("Ozon 商品补全结果 variantData 格式无效");
+  }
   assertRequiredExactKeys(
     body.captureContext,
     CAPTURE_CONTEXT_KEYS,
@@ -228,11 +233,13 @@ function parseResultEnvelope(body, at) {
       "Ozon 商品类目标识无效",
       { integer: true },
     ),
-    type_id: positiveFiniteNumber(
-      body.variantData.type_id,
-      "Ozon 商品类型标识无效",
-      { integer: true },
-    ),
+    ...(Object.hasOwn(body.variantData, "type_id") ? {
+      type_id: positiveFiniteNumber(
+        body.variantData.type_id,
+        "Ozon 商品类型标识无效",
+        { integer: true },
+      ),
+    } : {}),
     weight: positiveFiniteNumber(body.variantData.weight, "Ozon 商品重量无效"),
     depth: positiveFiniteNumber(body.variantData.depth, "Ozon 商品长度无效"),
     width: positiveFiniteNumber(body.variantData.width, "Ozon 商品宽度无效"),

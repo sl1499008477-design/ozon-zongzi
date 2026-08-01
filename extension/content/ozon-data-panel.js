@@ -218,6 +218,8 @@
       renderLockedPanel(gate);
       return;
     }
+    // Keep the panel's opportunistic warm-up for backward compatibility. Collection
+    // itself is public-first and never waits for this held enrichment request.
     collectCoordinator.prefetch({ sku: productId }).catch(() => {});
 
     // tile 可见实价(RUB)传给 populate 定佣金档 —— 比市场月均价更贴近当前档位;
@@ -640,98 +642,6 @@
     return { attempted: Boolean(slot), rejected, variant };
   }
 
-  async function collectSourceFields(productId, cachedPanelData) {
-    const currentVariant = await panelVariantState(productId, cachedPanelData);
-    let variantMatch = currentVariant.variant;
-    if (!variantMatch && !currentVariant.attempted) {
-      const variantResponse = await window.sendMessage("searchVariants", { sku: productId });
-      variantMatch = matchingPanelVariant(variantResponse, productId);
-    }
-    const catalog = window.jzExtractCatalogFromSv?.(variantMatch) || {};
-    const persistedDimensions = await (window
-      .jzReadCachedWeightDims?.(productId)
-      .catch(() => null) ?? null);
-    const positiveNumber = (...values) => {
-      for (const value of values) {
-        const number = Number(value);
-        if (Number.isFinite(number) && number > 0) return Math.round(number);
-      }
-      return undefined;
-    };
-    const descriptionCategoryId = positiveNumber(
-      variantMatch?.description_category_id,
-      variantMatch?.descriptionCategoryId,
-      cachedPanelData?.descriptionCategoryId,
-      cachedPanelData?.categoryId,
-    );
-    const typeId = positiveNumber(
-      variantMatch?.type_id,
-      variantMatch?.typeId,
-      cachedPanelData?.typeId,
-    );
-    const weight = positiveNumber(
-      catalog.weightG,
-      cachedPanelData?.weightG,
-      persistedDimensions?.weightG,
-    );
-    const depth = positiveNumber(
-      catalog.depthMm,
-      cachedPanelData?.lengthMm,
-      persistedDimensions?.lengthMm,
-    );
-    const width = positiveNumber(
-      catalog.widthMm,
-      cachedPanelData?.widthMm,
-      persistedDimensions?.widthMm,
-    );
-    const height = positiveNumber(
-      catalog.heightMm,
-      cachedPanelData?.heightMm,
-      persistedDimensions?.heightMm,
-    );
-    return {
-      variantMatch,
-      payload: {
-        variantData: variantMatch || undefined,
-        description_category_id: descriptionCategoryId,
-        type_id: typeId,
-        weight,
-        depth,
-        width,
-        height,
-        weight_unit: weight ? "g" : undefined,
-        dimension_unit: depth || width || height ? "mm" : undefined,
-      },
-    };
-  }
-
-  function mergeInfoHashtags(variant, info) {
-    if (!variant || !Array.isArray(info?.hashtags) || !info.hashtags.length) return;
-    try {
-      window.JZFollowSellContentCopy?.mergeSourceHashtagsIntoVariant?.(variant, info.hashtags);
-    } catch {}
-  }
-
-  async function localCompleteEnrichment(productId, cachedPanelData, info) {
-    const { variantMatch, payload } = await collectSourceFields(productId, cachedPanelData);
-    mergeInfoHashtags(variantMatch, info);
-    const variantData = {
-      ...(variantMatch || {}),
-      description_category_id: payload.description_category_id,
-      ...(payload.type_id ? { type_id: payload.type_id } : {}),
-      weight: payload.weight,
-      depth: payload.depth,
-      width: payload.width,
-      height: payload.height,
-    };
-    return window.JzOzonEnrichmentContract.normalizeVariantData({
-      sku: String(productId),
-      variantData,
-      source: "EXTENSION_SELLER_CAPTURE",
-      capturedAt: new Date().toISOString(),
-    });
-  }
-
   function buildPanelCollectRaw(productId, info, data) {
     return {
       sku: String(productId),
@@ -781,7 +691,7 @@
       };
     }
     if (/OZON_ENRICH_INCOMPLETE|OZON_ENRICH_CONTRACT_MISMATCH/.test(code) || message.startsWith("缺少：")) {
-      return { text: message || "商品资料不完整，未写入采集箱", title: message };
+      return { text: message || "商品补全资料不完整", title: message };
     }
     if (/OZON_ENRICH_BUSY/.test(code)) {
       return { text: "商品资料正在排队，请稍后重试", title: message };
@@ -818,20 +728,10 @@
         enrichInfoWithDetailMarketingPrice(info),
       ]);
       info = enrichedInfo;
-      const sourceVariant = (await panelVariantState(productId, data, {
-        retryRejected: true,
-      })).variant;
-      const variant = sourceVariant ? { ...sourceVariant } : null;
-      mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
         sku: productId,
         raw: buildPanelCollectRaw(productId, info, data),
-        localFallback: () => localCompleteEnrichment(productId, data, info),
       });
-      if (collectCoordinator.getState(productId).status === "PREFETCHING") {
-        btn.dataset.jzOriginalHtml = btn.innerHTML;
-        btn.innerHTML = "正在补全商品资料";
-      }
       const resp = await collectPromise;
 
       const label = resp?.dedupeHit ? "近期已采集" : "已采集";
@@ -883,19 +783,10 @@
         enrichInfoWithDetailMarketingPrice(info),
       ]);
       info = enrichedInfo;
-      const sourceVariant = (await panelVariantState(sku, data, {
-        retryRejected: true,
-      })).variant;
-      const variant = sourceVariant ? { ...sourceVariant } : null;
-      mergeInfoHashtags(variant, info);
       const collectPromise = collectCoordinator.collect({
         sku,
         raw: buildPanelCollectRaw(sku, info, data),
-        localFallback: () => localCompleteEnrichment(sku, data, info),
       });
-      if (collectCoordinator.getState(sku).status === "PREFETCHING") {
-        btn.innerHTML = "正在补全商品资料";
-      }
       const resp = await collectPromise;
       const itemId = resp?.result?.id;
       // 从 brand webHost 直接构造,不要从 backendUrl 反推 — 旧 `.replace('/api','')`

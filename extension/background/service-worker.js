@@ -94,6 +94,8 @@ try {
   const FOLLOW_SELL_CHECK_ALARM = 'follow-sell-task-check';
   const FOLLOW_SELL_CHECK_INTERVAL_MINUTES = 5; // 每 5 分钟拉一次最近任务
   const FOLLOW_SELL_RECENT_WINDOW_MS = 60 * 60 * 1000; // 只通知最近 1 小时内创建的失败任务
+  const COLLECTOR_OZON_ENRICHMENT_ALARM = 'collectorOzonEnrichmentTick';
+  const COLLECTOR_OZON_DRAIN_MS = 20_000;
 
   const STORAGE_KEYS = {
     latestVersion: 'extensionLatestVersion',
@@ -290,6 +292,7 @@ try {
     });
   const collectorOzonAgent = globalThis.JzCollectorOzonAgent.create({
     sessionManager: collectorSessionManager,
+    sellerContextRuntime: sellerCompanyContextRuntime,
     canCapture: async () => {
       try {
         const sellerContext = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
@@ -298,11 +301,12 @@ try {
         return false;
       }
     },
-    captureVariant: ({ sku, noProxy, forceRefresh, deadlineAt }) => searchVariantsLocal({
+    captureVariant: ({ sku, noProxy, forceRefresh, deadlineAt, sellerContext }) => searchVariantsLocal({
       sku,
       noProxy: noProxy === true,
       forceRefresh: forceRefresh === true,
       deadlineAt,
+      sellerContext,
       sender: null,
     }),
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -312,6 +316,20 @@ try {
     agent: collectorOzonAgent,
     getBackendUrl,
   });
+  const kickCollectorOzonEnrichment = () => {
+    try {
+      const drain = collectorOzonAgent.drainAvailable({
+        deadlineAt: Date.now() + COLLECTOR_OZON_DRAIN_MS,
+      });
+      void Promise.resolve(drain).catch((error) => {
+        console.warn('[collector-ozon-enrichment] drain failed:', error?.message || error);
+      });
+      return drain;
+    } catch (error) {
+      console.warn('[collector-ozon-enrichment] drain startup failed:', error?.message || error);
+      return null;
+    }
+  };
   const exactRuntimeMessage = (message, keys) => {
     if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
     return Object.keys(message).length === keys.length
@@ -2814,6 +2832,12 @@ try {
     });
   };
 
+  const setupCollectorOzonEnrichmentAlarm = () => {
+    chrome.alarms.create(COLLECTOR_OZON_ENRICHMENT_ALARM, {
+      periodInMinutes: 1,
+    });
+  };
+
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === UPDATE_CHECK_ALARM) {
       checkForUpdate();
@@ -2821,6 +2845,8 @@ try {
       checkFollowSellTasks();
     } else if (alarm.name === FX_ALARM) {
       refreshExchangeRate();
+    } else if (alarm.name === COLLECTOR_OZON_ENRICHMENT_ALARM) {
+      kickCollectorOzonEnrichment();
     }
   });
 
@@ -2837,6 +2863,7 @@ try {
     setupUpdateAlarm();
     setupFollowSellCheckAlarm();
     setupFxAlarm();
+    setupCollectorOzonEnrichmentAlarm();
     checkForUpdate();
     refreshExchangeRate();
   });
@@ -2844,6 +2871,8 @@ try {
   chrome.runtime.onStartup.addListener(() => {
     setupFollowSellCheckAlarm();
     setupFxAlarm();
+    setupCollectorOzonEnrichmentAlarm();
+    kickCollectorOzonEnrichment();
     refreshExchangeRate();
   });
 
@@ -2945,6 +2974,9 @@ try {
     const backendUrl = await getBackendUrl();
     const sku = message.sku;
     const forceRefresh = Boolean(message.forceRefresh);
+    const frozenSellerCompanyId = input.sellerContext
+      ? globalThis.JzSellerIdentityPolicy.normalizeCompanyId(input.sellerContext.companyId)
+      : '';
     // 跟卖时用户本就在 www 商品页 → 用来源标签走跨域快路,免依赖 seller 专用标签
     const senderTabId = sender?.tab?.id || null;
     // 灰度:服务端 collect(search→bundle 链式;命中走俄罗斯 VPS,失败/未命中回落老路)
@@ -3024,7 +3056,12 @@ try {
     // sc_company_id Cookie，因此统一解析 Cookie + 页面真实请求观测值。
     let companyId = '';
     try {
-      companyId = await resolveSellerCompanyId();
+      if (input.sellerContext && !frozenSellerCompanyId) {
+        throw Object.assign(new Error('SELLER_CONTEXT_REQUIRED'), {
+          code: 'SELLER_CONTEXT_REQUIRED',
+        });
+      }
+      companyId = frozenSellerCompanyId || await resolveSellerCompanyId();
     } catch (contextError) {
       // 本机没有可验证 Seller 上下文时仍保留同租户代采兜底。
       if (!message.noProxy) {
@@ -3524,6 +3561,7 @@ try {
               deviceFingerprint: await getExtensionFingerprint(),
               extensionVersion: String(manifest.version || ''),
             });
+            kickCollectorOzonEnrichment();
             return {
               ok: true,
               data: {
@@ -3636,7 +3674,7 @@ try {
           };
         }
         case 'pushSourceCollect': {
-          return globalThis.JzCollectorClient.upload({
+          const upload = await globalThis.JzCollectorClient.upload({
             sourceId: message.sourceId,
             raw: message.raw,
             requestId: message.requestId,
@@ -3644,6 +3682,13 @@ try {
             capturedAt: message.capturedAt,
             collectorOperation,
           });
+          const enrichmentStatus = String(
+            upload?.data?.result?.enrichment?.status || '',
+          );
+          if (['PENDING_ENRICHMENT', 'WAITING_FOR_SELLER', 'RETRYING'].includes(enrichmentStatus)) {
+            kickCollectorOzonEnrichment();
+          }
+          return upload;
         }
         case 'collectBatch': {
           // Legacy action, kept for backward compatibility with older content scripts.

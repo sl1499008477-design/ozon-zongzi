@@ -95,28 +95,6 @@
     return values;
   };
   const matchesSku = (value, sku) => candidateSkuValues(value).includes(cleanText(sku));
-  const mergeVariantData = (rawVariantData, serverVariantData) => {
-    if (!plainObject(rawVariantData)) return serverVariantData;
-    if (!plainObject(serverVariantData)) return rawVariantData;
-    const merged = { ...rawVariantData, ...serverVariantData };
-    const serverAttributes = Array.isArray(serverVariantData.attributes)
-      ? serverVariantData.attributes
-      : [];
-    const serverAttributeKeys = new Set(
-      serverAttributes.map((attribute) => cleanText(attribute?.key)).filter(Boolean),
-    );
-    const pageOnlyAttributes = (Array.isArray(rawVariantData.attributes)
-      ? rawVariantData.attributes
-      : [])
-      .filter((attribute) => {
-        const key = cleanText(attribute?.key);
-        return key && !serverAttributeKeys.has(key);
-      });
-    if (serverAttributes.length || pageOnlyAttributes.length) {
-      merged.attributes = [...serverAttributes, ...pageOnlyAttributes];
-    }
-    return merged;
-  };
   let pageCoordinator = null;
 
   function create({
@@ -131,9 +109,7 @@
       || typeof now !== 'function'
       || !Number.isFinite(Number(timeoutMs))
       || Number(timeoutMs) <= 0
-      || typeof contract?.assertComplete !== 'function'
       || typeof contract?.normalizeResult !== 'function'
-      || typeof contract?.toCollectFields !== 'function'
       || (randomUUID !== undefined && typeof randomUUID !== 'function')
     ) {
       throw new TypeError('Ozon collect coordinator dependencies are required');
@@ -180,6 +156,7 @@
           promise: null,
           result: null,
           error: null,
+          collectionStarted: false,
           collectPromise: null,
           collectResult: null,
           finalizedUpload: null,
@@ -231,13 +208,13 @@
       } else if (code === 'OZON_ENRICH_INCOMPLETE' || code === 'OZON_ENRICH_CONTRACT_MISMATCH') {
         message = missingLabels.length
           ? `缺少：${missingLabels.join('、')}`
-          : '商品资料不完整，未写入采集箱';
+          : '商品补全资料不完整';
       } else if (code === 'OZON_ENRICH_BUSY') {
         message = '商品资料正在排队，请稍后重试';
       } else if (code === 'OZON_ENRICH_UPSTREAM_FAILED' || code === 'OZON_ENRICH_REQUEST_EXPIRED') {
         message = 'Ozon 商品资料暂时无法读取';
       } else if (code === 'OZON_COLLECT_INCOMPLETE') {
-        message = '商品资料不完整，未写入采集箱';
+        message = '商品补全资料不完整';
       } else if (code === 'COLLECT_PAYLOAD_INVALID') {
         message = '采集数据格式无效，请刷新页面后重试';
       } else if (
@@ -296,55 +273,11 @@
       return result;
     };
 
-    const normalizeLocalResult = (value, sku) => {
-      const allowedKeys = [
-        'status',
-        'contractVersion',
-        'sku',
-        'descriptionCategoryId',
-        'typeId',
-        'logistics',
-        'variantData',
-        'sourceCategory',
-        'source',
-        'capturedAt',
-      ];
-      const logisticsKeys = ['weightG', 'lengthMm', 'widthMm', 'heightMm'];
-      const nativePositive = (number) => typeof number === 'number'
-        && Number.isFinite(number)
-        && number > 0;
-      if (
-        !plainObject(value)
-        || value.status !== 'COMPLETE'
-        || value.contractVersion !== contract.CONTRACT_VERSION
-        || Object.keys(value).some((key) => !allowedKeys.includes(key))
-        || typeof value.sku !== 'string'
-        || value.sku.trim() !== sku
-        || !nativePositive(value.descriptionCategoryId)
-        || (Object.hasOwn(value, 'typeId') && !nativePositive(value.typeId))
-        || !plainObject(value.logistics)
-        || Object.keys(value.logistics).length !== logisticsKeys.length
-        || !logisticsKeys.every((key) => nativePositive(value.logistics[key]))
-        || !plainObject(value.variantData)
-        || !matchesSku(value.variantData, sku)
-        || typeof value.source !== 'string'
-        || !value.source.trim()
-        || typeof value.capturedAt !== 'string'
-        || !value.capturedAt.trim()
-      ) {
-        throw Object.assign(new Error('Ozon 本地商品资料 contract 不匹配'), {
-          code: 'OZON_ENRICH_CONTRACT_MISMATCH',
-          status: 422,
-          retryable: false,
-        });
-      }
-      contract.assertComplete(value);
-      return value;
-    };
-
     const startPrefetch = (entry) => {
-      entry.status = 'PREFETCHING';
-      entry.error = null;
+      if (!entry.collectionStarted) {
+        entry.status = 'PREFETCHING';
+        entry.error = null;
+      }
       let promise;
       let operation;
       try {
@@ -359,13 +292,16 @@
         .then((value) => {
           const result = normalizeServerResult(value, entry.sku);
           entry.result = result;
-          entry.status = 'READY';
-          entry.error = null;
+          if (!entry.collectionStarted) {
+            entry.status = 'READY';
+            entry.error = null;
+          }
           return result;
         })
         .catch((error) => {
           if (entry.promise === promise) entry.promise = null;
-          throw updateFailure(entry, error, 'enrich');
+          if (!entry.collectionStarted) throw updateFailure(entry, error, 'enrich');
+          throw mappedError(error, 'enrich');
         });
       entry.promise = promise;
       return promise;
@@ -419,8 +355,10 @@
       });
 
       chunk.forEach((entry, index) => {
-        entry.status = 'PREFETCHING';
-        entry.error = null;
+        if (!entry.collectionStarted) {
+          entry.status = 'PREFETCHING';
+          entry.error = null;
+        }
         let itemPromise;
         itemPromise = batchPromise
           .then((items) => {
@@ -442,13 +380,16 @@
             }
             const result = normalizeServerResult(item.result, entry.sku);
             entry.result = result;
-            entry.status = 'READY';
-            entry.error = null;
+            if (!entry.collectionStarted) {
+              entry.status = 'READY';
+              entry.error = null;
+            }
             return result;
           })
           .catch((error) => {
             if (entry.promise === itemPromise) entry.promise = null;
-            throw updateFailure(entry, error, 'enrich');
+            if (!entry.collectionStarted) throw updateFailure(entry, error, 'enrich');
+            throw mappedError(error, 'enrich');
           });
         entry.promise = itemPromise;
       });
@@ -493,67 +434,35 @@
       }));
     };
 
-    const collect = ({ sku, raw, localFallback } = {}) => {
+    const collect = ({ sku, raw } = {}) => {
       const entry = entryFor(sku);
       if (entry.collectPromise) return entry.collectPromise;
 
-      const enrichment = entry.result
-        ? Promise.resolve(entry.result)
-        : prefetchEntry(entry, true);
+      let uploadOperation;
       let collectPromise;
-      collectPromise = enrichment
-        .catch(async (error) => {
-          const failure = mappedError(error, 'enrich');
-          if (AUTH_CODES.has(failure.code) || typeof localFallback !== 'function') throw failure;
-          try {
-            const fallback = await localFallback({ sku: entry.sku });
-            const result = normalizeLocalResult(fallback, entry.sku);
-            entry.result = result;
-            entry.promise = Promise.resolve(result);
-            entry.status = 'READY';
-            entry.error = null;
-            return result;
-          } catch (fallbackError) {
-            const localFailure = mappedError(fallbackError, 'enrich');
-            if (
-              failure.code === 'OZON_ENRICH_INCOMPLETE'
-              || failure.code === 'OZON_ENRICH_NOT_FOUND'
-              || failure.code === 'OZON_ENRICH_BUSY'
-            ) {
-              throw failure;
-            }
-            throw localFailure;
-          }
-        })
-        .then((result) => {
-          contract.assertComplete(result);
-          if (!entry.finalizedUpload) {
-            const timestamp = Number(now());
-            const collectFields = contract.toCollectFields(result);
-            entry.finalizedUpload = finalizedJsonPayload({
-              sourceId: 'ozon',
-              requestId: entry.requestId,
-              capturedAt: new Date(
-                Number.isFinite(timestamp) ? timestamp : Date.now(),
-              ).toISOString(),
-              raw: {
-                ...(plainObject(raw) ? raw : {}),
-                sku: entry.sku,
-                ...collectFields,
-                variantData: mergeVariantData(raw?.variantData, collectFields.variantData),
-              },
-            });
-          }
-          entry.status = 'SAVING';
-          entry.error = null;
-          return withTimeout(
-            Promise.resolve().then(() => sendMessage(
-              'pushSourceCollect',
-              entry.finalizedUpload,
-            )),
-            'collect',
-          );
-        })
+      try {
+        entry.collectionStarted = true;
+        if (!entry.finalizedUpload) {
+          const timestamp = Number(now());
+          entry.finalizedUpload = finalizedJsonPayload({
+            sourceId: 'ozon',
+            requestId: entry.requestId,
+            capturedAt: new Date(
+              Number.isFinite(timestamp) ? timestamp : Date.now(),
+            ).toISOString(),
+            raw: {
+              ...(plainObject(raw) ? raw : {}),
+              sku: entry.sku,
+            },
+          });
+        }
+        entry.status = 'SAVING';
+        entry.error = null;
+        uploadOperation = sendMessage('pushSourceCollect', entry.finalizedUpload);
+      } catch (error) {
+        uploadOperation = Promise.reject(error);
+      }
+      collectPromise = withTimeout(uploadOperation, 'collect')
         .then((response) => {
           if (
             !exactKeys(response, ['dedupeHit', 'result'])
@@ -575,7 +484,7 @@
           return entry.collectResult;
         })
         .catch((error) => {
-          const failure = updateFailure(entry, error, entry.result ? 'collect' : 'enrich');
+          const failure = updateFailure(entry, error, 'collect');
           if (entry.collectPromise === collectPromise) entry.collectPromise = null;
           throw failure;
         });

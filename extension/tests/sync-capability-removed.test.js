@@ -275,6 +275,7 @@ function loadServiceWorker({
   assert.equal(runtimeOnMessage.listeners.length, 1, 'service worker must register one message handler');
   return {
     context,
+    alarmsOnAlarm,
     createdAlarms,
     executeScriptCalls,
     fetchCalls,
@@ -369,6 +370,110 @@ test('install and startup never reload or remove user-owned Seller tabs', async 
   await settle();
   assert.deepEqual(harness.reloadedTabs, []);
   assert.deepEqual(harness.removedTabs, []);
+});
+
+test('autonomous enrichment drain runs every minute and kicks on startup, pending upload, and session exchange', async () => {
+  const nextPath = '/api/collector/ozon/enrichment-jobs/next';
+  const startupHarness = loadServiceWorker({
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === nextPath) {
+        return new Response(JSON.stringify({ ok: true, job: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected startup path: ${pathname}`);
+    },
+  });
+  for (const listener of startupHarness.runtimeOnStartup.listeners) listener();
+  await settle();
+  const enrichmentAlarms = startupHarness.createdAlarms
+    .filter(({ name }) => name === 'collectorOzonEnrichmentTick');
+  assert.equal(enrichmentAlarms.length, 1);
+  assert.equal(enrichmentAlarms[0].options.periodInMinutes, 1);
+  assert.equal(
+    startupHarness.fetchCalls.filter(({ url }) => new URL(url).pathname === nextPath).length,
+    1,
+  );
+  for (const listener of startupHarness.alarmsOnAlarm.listeners) {
+    listener({ name: 'collectorOzonEnrichmentTick' });
+  }
+  await settle();
+  assert.equal(
+    startupHarness.fetchCalls.filter(({ url }) => new URL(url).pathname === nextPath).length,
+    2,
+  );
+
+  const uploadHarness = loadServiceWorker({
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/sources/ozon/collect') {
+        return new Response(JSON.stringify({
+          duplicate: false,
+          data: { id: 'public-first', enrichment: { status: 'PENDING_ENRICHMENT' } },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === nextPath) {
+        return new Response(JSON.stringify({ ok: true, job: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected upload path: ${pathname}`);
+    },
+  });
+  const uploaded = await sendRuntimeMessage(uploadHarness, {
+    action: 'pushSourceCollect',
+    sourceId: 'ozon',
+    requestId: 'public-first-kick',
+    raw: { sku: '4862904234', name: 'Public title' },
+  });
+  await settle();
+  assert.equal(uploaded.ok, true);
+  assert.equal(
+    uploadHarness.fetchCalls.filter(({ url }) => new URL(url).pathname === nextPath).length,
+    1,
+  );
+
+  const exchangeHarness = loadServiceWorker({
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        return new Response(JSON.stringify({
+          data: {
+            collectorToken: 'csess_exchanged_behavior_test_123456789',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            account: { id: 'account-exchanged', displayName: 'Exchanged' },
+            permissions: ['collector.upload', 'collector.ozon.read'],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === nextPath) {
+        return new Response(JSON.stringify({ ok: true, job: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected exchange path: ${pathname}`);
+    },
+  });
+  const exchanged = await sendRuntimeMessage(exchangeHarness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-kick',
+    ticket: 'ctt_exchange_kick_secret_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, {
+    url: 'http://127.0.0.1:3000/app',
+    tab: { id: 20, url: 'http://127.0.0.1:3000/app' },
+  });
+  await settle();
+  assert.equal(exchanged.ok, true);
+  assert.equal(
+    exchangeHarness.fetchCalls.filter(({ url }) => new URL(url).pathname === nextPath).length,
+    1,
+  );
 });
 
 test('logout never reloads or removes a user-owned Seller tab', async () => {
@@ -532,7 +637,7 @@ test('held enrichment directly invokes the local visible Seller capture and post
   let resolvePublic;
   const publicResponse = new Promise((resolve) => { resolvePublic = resolve; });
   let nextCalls = 0;
-  let postedVariantData = null;
+  let postedResultBody = null;
   const harness = loadServiceWorker({
     sellerCapture: true,
     executeScriptImpl: async (input) => {
@@ -553,7 +658,7 @@ test('held enrichment directly invokes the local visible Seller capture and post
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       if (pathname === '/api/collector/ozon/enrichment-jobs/job-local/result') {
-        postedVariantData = JSON.parse(options.body).variantData;
+        postedResultBody = JSON.parse(options.body);
         resolvePublic(new Response(JSON.stringify({ ok: true, data: completeResult }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -600,15 +705,22 @@ test('held enrichment directly invokes the local visible Seller capture and post
   ]);
 
   assert.equal(response.ok, true);
-  assert.deepEqual(JSON.parse(JSON.stringify(postedVariantData)), {
+  const normalizedResultBody = JSON.parse(JSON.stringify(postedResultBody));
+  assert.deepEqual(normalizedResultBody.variantData, {
     description_category_id: 123,
     type_id: 456,
-    categories: [
-      { id: 100, level: 2, name: '家用电器', title: '家用电器' },
-      { id: 123, level: 3, name: 'Заварочный чайник', title: 'Заварочный чайник' },
-    ],
+    weight: 500,
+    depth: 300,
+    width: 200,
+    height: 100,
     attributes: variantData.attributes,
   });
+  assert.deepEqual(normalizedResultBody.captureContext, {
+    sellerCompanyId: '1234',
+    revision: 1,
+    observedAt: normalizedResultBody.captureContext.observedAt,
+  });
+  assert.equal(Number.isNaN(Date.parse(normalizedResultBody.captureContext.observedAt)), false);
   assert.equal(harness.executeScriptCalls.length, 1);
   assert.equal(harness.runtimeSendMessageCalls.length, 0);
 });

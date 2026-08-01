@@ -5,11 +5,20 @@
   const POLL_MS = 250;
   const MAX_DRAIN_MS = 20_000;
   const NEXT_PATH = '/collector/ozon/enrichment-jobs/next';
+  const AVAILABLE_DRAIN_ID = '__collectorOzonEnrichmentAvailable__';
   const JOB_KEYS = Object.freeze(['id', 'requestId', 'sku', 'refreshBundle']);
   const FAILURE_MESSAGES = Object.freeze({
     OZON_ENRICH_NOT_FOUND: '未找到 Ozon 商品资料',
     OZON_ENRICH_UPSTREAM_FAILED: 'Ozon 商品资料暂时无法读取',
+    SELLER_CONTEXT_CHANGED: 'Seller 店铺上下文已变化',
+    SELLER_CONTEXT_REQUIRED: '需要登录 Seller',
   });
+  const SELLER_AUTH_CAPTURE_CODES = new Set([
+    'AUTH_REQUIRED',
+    'NO_SELLER_TAB',
+    'SELLER_CONTEXT_REQUIRED',
+    'SELLER_COMPANY_CONTEXT_REQUIRED',
+  ]);
   const RETIRED_SCOPE_KEYS = new Set([
     'accountid',
     'createdby',
@@ -131,42 +140,43 @@
     return projected;
   };
 
-  const projectCategory = (category) => {
-    if (!isPlainObject(category)) return null;
-    const id = Number(category.id);
-    if (!Number.isFinite(id) || id <= 0) return null;
-    const projected = { id };
-    const level = Number(category.level);
-    if (Number.isFinite(level) && level >= 0) projected.level = level;
-    if (typeof category.name === 'string') projected.name = category.name;
-    if (typeof category.title === 'string') projected.title = category.title;
-    return projected;
-  };
-
   // The Seller portal response also contains draft actions, account context and URL
   // metadata. None of those fields belong to the enrichment contract. Keep only the
   // stable product fields consumed by the server so portal-only data cannot cross
   // the Collector boundary or make an otherwise valid capture fail validation.
   const projectVariantData = (variantData) => {
-    const projected = {};
-    for (const key of [
-      'description_category_id',
-      'type_id',
-      'weight',
-      'depth',
-      'width',
-      'height',
-    ]) {
-      if (productScalar(variantData?.[key])) projected[key] = variantData[key];
-    }
-    projected.attributes = Array.isArray(variantData?.attributes)
+    const attributes = Array.isArray(variantData?.attributes)
       ? variantData.attributes.map(projectAttribute).filter(Boolean)
       : [];
-    const categories = Array.isArray(variantData?.categories)
-      ? variantData.categories.map(projectCategory).filter(Boolean)
-      : [];
-    if (categories.length) projected.categories = categories;
-    return projected;
+    const attributeNumber = (key) => {
+      const attribute = attributes.find((entry) => cleanText(entry?.key) === key);
+      const number = Number(attribute?.value);
+      return Number.isFinite(number) && number > 0 ? number : 0;
+    };
+    const positiveNumber = (...values) => {
+      for (const value of values) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) return number;
+      }
+      throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+    };
+    const positiveInteger = (value) => {
+      const number = Number(value);
+      if (Number.isSafeInteger(number) && number > 0) return number;
+      throw fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
+    };
+    const typeId = Object.hasOwn(variantData || {}, 'type_id')
+      ? positiveInteger(variantData.type_id)
+      : null;
+    return {
+      description_category_id: positiveInteger(variantData?.description_category_id),
+      ...(typeId ? { type_id: typeId } : {}),
+      weight: positiveNumber(variantData?.weight, attributeNumber('4497')),
+      depth: positiveNumber(variantData?.depth, attributeNumber('9454')),
+      width: positiveNumber(variantData?.width, attributeNumber('9455')),
+      height: positiveNumber(variantData?.height, attributeNumber('9456')),
+      attributes,
+    };
   };
 
   const normalizeJob = (value) => {
@@ -187,6 +197,30 @@
       sku: cleanText(value.sku),
       refreshBundle: value.refreshBundle === true,
     };
+  };
+
+  const normalizeSellerContext = (value) => {
+    const companyId = cleanText(value?.companyId);
+    const revision = Number(value?.revision);
+    const observedAt = Number(value?.observedAt);
+    if (
+      value?.status !== 'READY'
+      || !/^\d{4,15}$/.test(companyId)
+      || !Number.isSafeInteger(revision)
+      || revision <= 0
+      || !Number.isFinite(observedAt)
+      || Number.isNaN(new Date(observedAt).getTime())
+    ) {
+      throw fixedFailure('SELLER_CONTEXT_REQUIRED');
+    }
+    const sellerTabId = Number(value?.sellerTabId);
+    return Object.freeze({
+      status: 'READY',
+      companyId,
+      revision,
+      observedAt,
+      ...(Number.isSafeInteger(sellerTabId) && sellerTabId > 0 ? { sellerTabId } : {}),
+    });
   };
 
   const candidateSkuValues = (value) => {
@@ -224,6 +258,7 @@
     sessionManager,
     captureVariant,
     canCapture,
+    sellerContextRuntime,
     sleep,
     now = () => Date.now(),
     setTimer = (...args) => root.setTimeout(...args),
@@ -234,6 +269,8 @@
       || typeof sessionManager?.collectorFetch !== 'function'
       || typeof captureVariant !== 'function'
       || typeof canCapture !== 'function'
+      || typeof sellerContextRuntime?.resolveCurrentWithRecovery !== 'function'
+      || typeof sellerContextRuntime?.isSnapshotCurrent !== 'function'
       || typeof sleep !== 'function'
       || typeof now !== 'function'
       || typeof setTimer !== 'function'
@@ -245,6 +282,7 @@
     const drains = new Map();
     const leaseRecords = new WeakMap();
     let nextGeneration = 1;
+    let availablePromise = null;
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
     const deactivate = (entry) => {
@@ -381,13 +419,36 @@
       try {
         job = normalizeJob(rawJob);
         ensureCurrent(entry, generation);
+        let sellerContext;
+        try {
+          sellerContext = normalizeSellerContext(await withLifecycle(
+            sellerContextRuntime.resolveCurrentWithRecovery(),
+            entry,
+            generation,
+          ));
+        } catch (error) {
+          if (error?.code === 'SELLER_CONTEXT_CHANGED') throw error;
+          throw fixedFailure('SELLER_CONTEXT_REQUIRED');
+        }
+        ensureCurrent(entry, generation);
         const capture = await withLifecycle(captureVariant({
           sku: job.sku,
           noProxy: true,
           forceRefresh: job.refreshBundle === true,
           deadlineAt: entry.deadlineAt,
+          sellerContext,
         }), entry, generation);
         ensureCurrent(entry, generation);
+        const contextIsCurrent = await withLifecycle(
+          sellerContextRuntime.isSnapshotCurrent(sellerContext),
+          entry,
+          generation,
+        );
+        if (contextIsCurrent !== true) throw fixedFailure('SELLER_CONTEXT_CHANGED');
+        const captureCode = cleanText(capture?.error || capture?.code);
+        if (capture?.ok !== true && SELLER_AUTH_CAPTURE_CODES.has(captureCode)) {
+          throw fixedFailure('SELLER_CONTEXT_REQUIRED');
+        }
         const variantData = projectVariantData(matchedVariantData(capture, job.sku));
         assertSafeVariantData(variantData);
         ensureCurrent(entry, generation);
@@ -399,7 +460,14 @@
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ variantData }),
+            body: JSON.stringify({
+              variantData,
+              captureContext: {
+                sellerCompanyId: cleanText(sellerContext.companyId),
+                revision: Number(sellerContext.revision),
+                observedAt: new Date(sellerContext.observedAt).toISOString(),
+              },
+            }),
           },
         );
         ensureCurrent(entry, generation);
@@ -431,7 +499,7 @@
         return body.job;
       });
 
-    const runDrain = async (entry, generation) => {
+    const runDrain = async (entry, generation, { stopWhenEmpty = false } = {}) => {
       let collectorOperation;
       try {
         collectorOperation = await withLifecycle(requireOperation(), entry, generation);
@@ -441,13 +509,15 @@
       }
       if (!collectorOperation) return;
       while (isCurrent(entry, generation)) {
-        let trusted = false;
-        try {
-          ensureCurrent(entry, generation);
-          trusted = await withLifecycle(canCapture(), entry, generation) === true;
-          ensureCurrent(entry, generation);
-        } catch {
-          trusted = false;
+        let trusted = stopWhenEmpty;
+        if (!stopWhenEmpty) {
+          try {
+            ensureCurrent(entry, generation);
+            trusted = await withLifecycle(canCapture(), entry, generation) === true;
+            ensureCurrent(entry, generation);
+          } catch {
+            trusted = false;
+          }
         }
         if (!isCurrent(entry, generation)) break;
         if (!trusted) {
@@ -467,6 +537,7 @@
             await executeClaim(entry, generation, collectorOperation, job);
             continue;
           }
+          if (stopWhenEmpty) return;
         } catch {
           // The held public request owns the user-facing error. Polling stays fail-closed.
         }
@@ -517,6 +588,38 @@
       return leaseHandle(entry, false);
     };
 
+    const drainAvailable = (input = {}) => {
+      if (!exactKeys(input, ['deadlineAt']) || !Number.isFinite(Number(input.deadlineAt))) {
+        return Promise.reject(new TypeError('collector Ozon available drain input is invalid'));
+      }
+      if (availablePromise) return availablePromise;
+      const deadlineAt = Math.min(Number(input.deadlineAt), now() + MAX_DRAIN_MS);
+      let resolveCancelled;
+      const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
+      const entry = {
+        requestId: AVAILABLE_DRAIN_ID,
+        generation: nextGeneration,
+        refs: 1,
+        tokenRefs: 0,
+        deadlineAt,
+        active: true,
+        currentController: null,
+        cancelled,
+        resolveCancelled,
+        running: null,
+      };
+      nextGeneration += 1;
+      drains.set(entry.requestId, entry);
+      entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
+        .finally(() => deactivate(entry));
+      let exposed;
+      exposed = entry.running.finally(() => {
+        if (availablePromise === exposed) availablePromise = null;
+      });
+      availablePromise = exposed;
+      return exposed;
+    };
+
     const stop = function stop(requestId, releaseToken) {
       const normalizedRequestId = cleanText(requestId);
       if (arguments.length >= 2) {
@@ -538,7 +641,7 @@
       return true;
     };
 
-    return Object.freeze({ drainUntil, stop });
+    return Object.freeze({ drainAvailable, drainUntil, stop });
   }
 
   const api = Object.freeze({ create });

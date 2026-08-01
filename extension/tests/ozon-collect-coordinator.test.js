@@ -205,15 +205,13 @@ test('page integrations reuse one global coordinator instance', () => {
   assert.match(first.getState(SKU).requestId, /33333333-3333-4333-8333-333333333333/);
 });
 
-test('concurrent collect clicks share one enrichment and one upload before SUCCESS', async () => {
-  const enrichment = deferred();
+test('collect uploads public raw data first and shares one in-flight request before SUCCESS', async () => {
   const upload = deferred();
   const calls = [];
   const coordinator = create({
     now: () => 2000,
     sendMessage(action, payload) {
       calls.push({ action, payload });
-      if (action === 'enrichOzonCollect') return enrichment.promise;
       if (action === 'pushSourceCollect') return upload.promise;
       throw new Error(`unexpected action ${action}`);
     },
@@ -234,39 +232,89 @@ test('concurrent collect clicks share one enrichment and one upload before SUCCE
   const first = coordinator.collect({ sku: SKU, raw });
   const second = coordinator.collect({ sku: SKU, raw });
   assert.strictEqual(second, first, 'concurrent clicks must reuse the same collection promise');
-  assert.equal(coordinator.getState(SKU).status, 'PREFETCHING');
-  enrichment.resolve(completeResult());
-  await new Promise((resolve) => setImmediate(resolve));
-
   assert.equal(coordinator.getState(SKU).status, 'SAVING');
+  assert.deepEqual(calls.map(({ action }) => action), ['pushSourceCollect']);
   assert.equal(calls.filter(({ action }) => action === 'pushSourceCollect').length, 1);
   assert.notEqual(coordinator.getState(SKU).status, 'SUCCESS');
   const uploadCall = calls.find(({ action }) => action === 'pushSourceCollect');
   assert.equal(uploadCall.payload.sourceId, 'ozon');
-  assert.equal(uploadCall.payload.requestId, calls[0].payload.requestId);
+  assert.equal(uploadCall.payload.requestId, coordinator.getState(SKU).requestId);
   assert.deepEqual(uploadCall.payload.raw, {
     ...raw,
     sku: SKU,
-    description_category_id: 123,
-    type_id: 456,
-    weight: 500,
-    depth: 300,
-    width: 200,
-    height: 100,
-    weight_unit: 'g',
-    dimension_unit: 'mm',
-    variantData: completeResult().variantData,
   });
   assert.deepEqual(raw, rawSnapshot, 'collection must not mutate the page payload');
 
-  upload.resolve({ dedupeHit: false, result: { id: 'collect-1' } });
-  assert.deepEqual(await first, { dedupeHit: false, result: { id: 'collect-1' } });
+  upload.resolve({
+    dedupeHit: false,
+    result: { id: 'collect-1', enrichment: { status: 'PENDING_ENRICHMENT' } },
+  });
+  assert.deepEqual(await first, {
+    dedupeHit: false,
+    result: { id: 'collect-1', enrichment: { status: 'PENDING_ENRICHMENT' } },
+  });
   assert.equal(coordinator.getState(SKU).status, 'SUCCESS');
   assert.strictEqual(await coordinator.collect({ sku: SKU, raw }), await first);
   assert.equal(calls.filter(({ action }) => action === 'pushSourceCollect').length, 1);
 });
 
-test('final upload preserves page-only rich and multivariant fields while server enrichment stays authoritative', async () => {
+test('a late background prefetch cannot overwrite the public collection state', async () => {
+  for (const settlePrefetch of ['resolve', 'reject']) {
+    const enrichment = deferred();
+    const coordinator = create({
+      sendMessage(action) {
+        if (action === 'enrichOzonCollect') return enrichment.promise;
+        if (action === 'pushSourceCollect') {
+          return Promise.resolve({
+            dedupeHit: false,
+            result: { id: `public-${settlePrefetch}`, enrichment: { status: 'PENDING_ENRICHMENT' } },
+          });
+        }
+        throw new Error(`unexpected action ${action}`);
+      },
+    });
+
+    const prefetch = coordinator.prefetch({ sku: SKU });
+    await coordinator.collect({ sku: SKU, raw: { sku: SKU, name: 'Public title' } });
+    assert.equal(coordinator.getState(SKU).status, 'SUCCESS');
+
+    if (settlePrefetch === 'resolve') enrichment.resolve(completeResult());
+    else enrichment.reject(codedError('OZON_ENRICH_UPSTREAM_FAILED'));
+    await prefetch.catch(() => {});
+
+    assert.equal(
+      coordinator.getState(SKU).status,
+      'SUCCESS',
+      `${settlePrefetch} prefetch must not replace the completed public upload state`,
+    );
+  }
+});
+
+test('pending, waiting, and retrying enrichment summaries are successful public collections', async () => {
+  for (const status of ['PENDING_ENRICHMENT', 'WAITING_FOR_SELLER', 'RETRYING']) {
+    const calls = [];
+    const coordinator = create({
+      sendMessage: async (action, payload) => {
+        calls.push({ action, payload });
+        return {
+          dedupeHit: false,
+          result: { id: `collect-${status}`, enrichment: { status } },
+        };
+      },
+    });
+
+    const outcome = await coordinator.collect({
+      sku: SKU,
+      raw: { sku: SKU, name: 'Public title' },
+    });
+
+    assert.deepEqual(calls.map(({ action }) => action), ['pushSourceCollect']);
+    assert.equal(outcome.result.enrichment.status, status);
+    assert.equal(coordinator.getState(SKU).status, 'SUCCESS');
+  }
+});
+
+test('public upload preserves page-only rich and multivariant fields without synchronous overwrites', async () => {
   const calls = [];
   const coordinator = create({
     now: () => Date.parse('2026-08-01T00:00:00.000Z'),
@@ -313,14 +361,14 @@ test('final upload preserves page-only rich and multivariant fields while server
   assert.deepEqual(upload.images, ['https://cdn.test/page.jpg']);
   assert.equal(upload.videoUrl, 'https://cdn.test/video.mp4');
   assert.equal(upload.sellerName, 'Page seller');
-  assert.equal(upload.variantData.description_category_id, 123);
+  assert.equal(upload.variantData.description_category_id, 999);
   assert.equal(upload.variantData.description, 'Page description');
   assert.deepEqual(upload.variantData.hashtags, ['#page']);
   assert.deepEqual(upload.variantData.variants, variants);
   assert.deepEqual(
     upload.variantData.attributes.filter(({ key }) => ['4497', '11254'].includes(String(key))),
     [
-      { key: '4497', value: '500' },
+      { key: '4497', value: '1' },
       { key: '11254', value: '{"content":"page rich content"}' },
     ],
   );
@@ -426,7 +474,7 @@ test('incomplete enrichment enters ERROR with a stable ordered missing-field mes
   assert.equal(calls.includes('pushSourceCollect'), false);
 });
 
-test('background prefetch reuses ERROR until collect explicitly retries', async () => {
+test('background prefetch errors do not block or restart public collection', async () => {
   const calls = [];
   let enrichAttempt = 0;
   const coordinator = create({
@@ -454,11 +502,11 @@ test('background prefetch reuses ERROR until collect explicitly retries', async 
     await coordinator.collect({ sku: SKU, raw: { sku: SKU } }),
     { dedupeHit: false, result: { id: 'explicit-retry' } },
   );
-  assert.equal(calls.filter((action) => action === 'enrichOzonCollect').length, 2);
+  assert.equal(calls.filter((action) => action === 'enrichOzonCollect').length, 1);
   assert.equal(calls.filter((action) => action === 'pushSourceCollect').length, 1);
 });
 
-test('explicit collect retry advances the enrichment generation but keeps one upload request ID', async () => {
+test('public collect keeps its upload request ID without advancing a failed enrichment generation', async () => {
   const calls = [];
   const terminalEnrichmentIds = new Set();
   const coordinator = create({
@@ -502,9 +550,8 @@ test('explicit collect retry advances the enrichment generation but keeps one up
 
   const enrichmentCalls = calls.filter(({ action }) => action === 'enrichOzonCollect');
   const uploadCalls = calls.filter(({ action }) => action === 'pushSourceCollect');
-  assert.equal(enrichmentCalls.length, 2);
+  assert.equal(enrichmentCalls.length, 1);
   assert.equal(enrichmentCalls[0].payload.requestId, uploadRequestId);
-  assert.notEqual(enrichmentCalls[1].payload.requestId, uploadRequestId);
   assert.equal(uploadCalls[0].payload.requestId, uploadRequestId);
   assert.equal(coordinator.getState(SKU).requestId, uploadRequestId);
 
@@ -514,12 +561,12 @@ test('explicit collect retry advances the enrichment generation but keeps one up
   );
   assert.equal(
     calls.filter(({ action }) => action === 'enrichOzonCollect').length,
-    2,
+    1,
     'SUCCESS must not start another enrichment generation',
   );
 });
 
-test('a complete local v1 fallback may upload after backend failure', async () => {
+test('public collection never invokes the retired local enrichment fallback', async () => {
   const calls = [];
   const fallbackCalls = [];
   const coordinator = create({
@@ -545,74 +592,13 @@ test('a complete local v1 fallback may upload after backend failure', async () =
     },
   });
 
-  assert.deepEqual(fallbackCalls, [{ sku: SKU }]);
+  assert.deepEqual(fallbackCalls, []);
   assert.deepEqual(outcome, { dedupeHit: true, result: { id: 'local-fallback-collect' } });
   assert.equal(coordinator.getState(SKU).status, 'SUCCESS');
-  assert.deepEqual(calls.map(({ action }) => action), ['enrichOzonCollect', 'pushSourceCollect']);
+  assert.deepEqual(calls.map(({ action }) => action), ['pushSourceCollect']);
 });
 
-test('an incomplete or non-v1 local fallback cannot upload or reach SUCCESS', async () => {
-  for (const fallback of [
-    () => ({
-      ...localCompleteResult(),
-      logistics: { weightG: 500, lengthMm: 300, widthMm: 0, heightMm: 100 },
-    }),
-    () => ({ ...localCompleteResult(), contractVersion: 'collector.ozon.enrichment.v2' }),
-    () => ({
-      ...localCompleteResult(),
-      descriptionCategoryId: '123',
-      logistics: { weightG: '500', lengthMm: '300', widthMm: '200', heightMm: '100' },
-      source: 123,
-    }),
-  ]) {
-    const calls = [];
-    const coordinator = create({
-      sendMessage: async (action) => {
-        calls.push(action);
-        throw codedError('OZON_ENRICH_UPSTREAM_FAILED', 'backend unavailable', { retryable: true });
-      },
-    });
-
-    await assert.rejects(coordinator.collect({
-      sku: SKU,
-      raw: { sku: SKU },
-      localFallback: fallback,
-    }));
-    assert.equal(coordinator.getState(SKU).status, 'ERROR');
-    assert.equal(calls.includes('pushSourceCollect'), false);
-    assert.notEqual(coordinator.getState(SKU).status, 'SUCCESS');
-  }
-});
-
-test('a local fallback cannot upload variantData belonging to a different SKU', async () => {
-  const calls = [];
-  const coordinator = create({
-    sendMessage: async (action) => {
-      calls.push(action);
-      if (action === 'enrichOzonCollect') {
-        throw codedError('OZON_ENRICH_UPSTREAM_FAILED', 'backend unavailable', {
-          retryable: true,
-        });
-      }
-      return { dedupeHit: false, result: { id: 'must-not-upload' } };
-    },
-  });
-  const crossSkuResult = localCompleteResult();
-  crossSkuResult.variantData._searchMeta = { skus: [{ sku: 'DIFFERENT-SKU' }] };
-
-  await assert.rejects(
-    coordinator.collect({
-      sku: SKU,
-      raw: { sku: SKU },
-      localFallback: () => crossSkuResult,
-    }),
-    (error) => error?.code === 'OZON_ENRICH_CONTRACT_MISMATCH',
-  );
-  assert.equal(calls.includes('pushSourceCollect'), false);
-  assert.equal(coordinator.getState(SKU).status, 'ERROR');
-});
-
-test('network upload retry reuses the stable request ID and complete result', async () => {
+test('network upload retry reuses the stable request ID and frozen public payload', async () => {
   const calls = [];
   let uploadAttempt = 0;
   const firstRaw = {
@@ -668,10 +654,10 @@ test('network upload retry reuses the stable request ID and complete result', as
   );
   const enrichCalls = calls.filter(({ action }) => action === 'enrichOzonCollect');
   const uploadCalls = calls.filter(({ action }) => action === 'pushSourceCollect');
-  assert.equal(enrichCalls.length, 1, 'upload retry must reuse the stored complete result');
+  assert.equal(enrichCalls.length, 0, 'public upload retry must not start enrichment');
   assert.equal(uploadCalls.length, 2);
-  assert.equal(uploadCalls[0].payload.requestId, enrichCalls[0].payload.requestId);
-  assert.equal(uploadCalls[1].payload.requestId, enrichCalls[0].payload.requestId);
+  assert.equal(uploadCalls[0].payload.requestId, coordinator.getState(SKU).requestId);
+  assert.equal(uploadCalls[1].payload.requestId, coordinator.getState(SKU).requestId);
   assert.equal(JSON.stringify(uploadCalls[1].payload), firstUploadJson);
   assert.deepEqual(uploadCalls[1].payload.raw, uploadCalls[0].payload.raw);
   assert.equal(coordinator.getState(SKU).status, 'SUCCESS');
@@ -855,7 +841,7 @@ test('repeated batch prefetch reuses ERROR and BLOCKED_AUTH until a click retrie
     await coordinator.collect({ sku: authSku, raw: { sku: authSku } }),
     { dedupeHit: false, result: { id: 'auth-recovered' } },
   );
-  assert.equal(calls.filter(({ action }) => action === 'enrichOzonCollect').length, 1);
+  assert.equal(calls.filter(({ action }) => action === 'enrichOzonCollect').length, 0);
 });
 
 test('user-initiated batch retry recovers a failed or blocked anchor with a new enrichment generation', async () => {

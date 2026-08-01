@@ -97,18 +97,6 @@
       })
     : null;
 
-  function collectVariantItems(response) {
-    const items = response?.items || response?.data?.items;
-    return Array.isArray(items) ? items : [];
-  }
-
-  function matchingProductVariant(response, sku) {
-    const normalizedSku = String(sku || '').trim();
-    if (!normalizedSku) return null;
-    return collectVariantItems(response).find((item) =>
-      window.JzOzonCollectCoordinator.matchesSku(item, normalizedSku)) || null;
-  }
-
   function invalidProductVariantError(cause) {
     return Object.assign(new Error('Ozon 商品变体数据无效'), {
       code: 'OZON_ENRICH_CONTRACT_MISMATCH',
@@ -138,7 +126,7 @@
     }
     if (/OZON_ENRICH_INCOMPLETE|OZON_ENRICH_CONTRACT_MISMATCH/.test(code)
       || message.startsWith('缺少：')) {
-      return message || '商品资料不完整，未写入采集箱';
+      return message || '商品补全资料不完整';
     }
     if (/OZON_ENRICH_BUSY/.test(code)) return '商品资料正在排队，请稍后重试';
     if (/OZON_ENRICH_NOT_FOUND/.test(code)) return '未找到该商品的完整资料';
@@ -1488,13 +1476,12 @@
   }
 
   // 「一键采集」= 采集当前商品的所有变体 SKU(2026-05-30)。
-  // 复用一键跟卖的变体展开思路:Phase A SSR 逐页补全跨轴所有变体 → Phase B
-  // JZSkuCollect.collectBySkus 逐变体抓 sv(search+bundle)→ 组装 N 个 raw payload
-  // 批量推送到采集箱(走会 prune 的 /sources/ozon/collect/batch)。
+  // 复用一键跟卖的变体展开思路：SSR 逐页补全跨轴所有公开变体，
+  // 然后一次写入母体采集记录。Seller 属性由带 context 证据的后台任务补全。
   // 静默执行,进度直接显示在按钮上;单/无变体页直接委托 performProductCollect(单采)。
   //
-  // 注意:下面的 Phase A SSR 展开块是 toggleFollowSellPanel(§Phase A,约 7397-7480)
-  // 的精简镜像(去掉了与 Phase B worker pool 的交错,改为展开完再统一 collectBySkus)。
+  // 注意:下面的 SSR 展开块是 toggleFollowSellPanel(§Phase A,约 7397-7480)
+  // 的精简镜像，但采集路径不启动跟卖面板的 Seller worker pool。
   // 若 Ozon 改 aspects/SSR 格式,两处需同步更新。
   async function collectAllVariants(btn, options = {}) {
     const forceSingleResubmit = Boolean(options.forceResubmit);
@@ -1630,23 +1617,6 @@
       });
     }
 
-    // ── Phase B:逐变体抓 sv(search+bundle)──
-    const allSkus = variants.map((v) => String(v.sku)).filter(Boolean);
-    let sourceMap = new Map();
-    if (window.JZSkuCollect?.collectBySkus) {
-      try {
-        const res = await window.JZSkuCollect.collectBySkus(allSkus, {
-          onProgress: (done, total) => setBtn(`抓取变体 ${done}/${total}…`),
-          // PDP 上有更优路径:母体富内容由 jzCollectPageRichContent 从 composer 缓存抽
-          // (listing 级,见下方 variantData 注入),不必逐变体走买家 tab 重复拉。
-          captureRichContent: false,
-        });
-        sourceMap = res.sourceMap || new Map();
-      } catch (e) {
-        console.warn('[ozon-helper] collectAll phaseB err:', e?.message || e);
-      }
-    }
-
     // ── 组装成「一条多变体采集记录」(锚定母体/当前页 SKU)──
     // 旧实现把每个变体 push 成独立一行(N 行),用户在采集箱看到一堆同款散行。
     // 现在改为:N 个变体写进母体 variantData.variants,后端按母体 SKU upsert 一行,
@@ -1657,35 +1627,18 @@
     const anchorProduct = (() => { try { return extractProductData(); } catch { return null; } })();
     const anchorSku = String(anchorProduct?.sku || anchorProduct?.productId || '');
 
-    // 把一个 aspect 变体裁成编辑页变体行 + catalog(sv 优先,DOM/aspect 兜底)。
+    // 初次采集只使用公开 aspect/DOM 字段。Seller 源快照只能由带修订证据的
+    // 后台任务补入，不能从 content script 未认证地混入 public upload。
     const toVariantRow = (v) => {
       const sku = String(v.sku);
-      const distilled = sourceMap.get(sku) || null;
-      const sv = distilled?._sourceVariant || null;
-      const svCat = window.jzExtractCatalogFromSv ? window.jzExtractCatalogFromSv(sv) : null;
-      const name = window.jzPreferSourceName
-        ? window.jzPreferSourceName(svCat?.name || distilled?.name, v.title)
-        : (v.title || distilled?.name || '');
-      const images = svCat?.images?.length
-        ? svCat.images
-        : (distilled?.images?.length ? distilled.images : (v.coverImage ? [v.coverImage] : []));
+      const images = v.coverImage ? [v.coverImage] : [];
       let link = '';
       try { if (v.link) link = new URL(v.link, 'https://www.ozon.ru').href; } catch {}
       return {
         sku,
-        sv,
-        sourceVariant: sv || undefined,
-        name: name || v.title || '',
-        image: svCat?.mainImage || v.coverImage || undefined,
+        name: v.title || '',
+        image: v.coverImage || undefined,
         images: images.length ? images : undefined,
-        description: distilled?.description || undefined,
-        richContent: distilled?.richContent || undefined,
-        barcode: distilled?.barcode || undefined,
-        weight: distilled?.weight || undefined,
-        depth: distilled?.depth || undefined,
-        width: distilled?.width || undefined,
-        height: distilled?.height || undefined,
-        bundleComplexAttrs: distilled?._bundleComplexAttrs || sv?._bundleComplexAttrs || undefined,
         // 价格口径同单采/后端:RUB 源送原卢布 + 'RUB'(后端 ×汇率);
         //   CNY 源(含 Ozon 跨境页默认人民币)送原人民币 + 'CNY'(后端原值保留);其它外币留空不猜。
         price: v.priceRub
@@ -1704,11 +1657,6 @@
     // 母体必须精确匹配当前页 SKU，禁止把第一个兄弟变体当作锚点。
     const anchorRow = rows.find((r) => r.sku === anchorSku);
     if (!anchorRow) throw invalidProductVariantError();
-    const anchorSv = anchorRow?.sv || null;
-
-    // 每个变体必须保留自己的完整 seller 源快照。除合并变体型号外，类目、属性、
-    // 媒体、条码和物理尺寸都可能不同；如果这里只保留轻量行，编辑页和正式上架
-    // 只能退回锚点变体数据，最终会把多个 SKU 错误地上传成相同商品。
     const variantRows = rows.map((r) => ({
       sku: r.sku,
       name: r.name || undefined,
@@ -1717,20 +1665,11 @@
       ...(r.sku === anchorSku ? buildMarketingPricePayload(anchorProduct) : {}),
       image: r.image,
       images: r.images,
-      description: r.description,
-      richContent: r.richContent,
-      barcode: r.barcode,
-      weight: r.weight,
-      depth: r.depth,
-      width: r.width,
-      height: r.height,
-      bundleComplexAttrs: r.bundleComplexAttrs,
-      sourceVariant: r.sourceVariant,
       aspectValues: r.aspectValues,
       link: r.link,
     }));
 
-    const variantData = Object.assign({}, anchorSv || {}, { variants: variantRows });
+    const variantData = { variants: variantRows };
     mergeMarketingPriceIntoVariantData(variantData, anchorProduct);
     // 源富内容(11254)listing 级:同视频语义,整组变体共用当前页(母体)的富内容。
     // 从 composer 缓存抽(通常零额外请求)注入母体 variantData.attributes —— 编辑页
@@ -1787,36 +1726,7 @@
       hashtags: collectAllHashtags,
     });
 
-    // 每个变体都先走服务器完整性门禁。prefetchBatch 不上传；任意一行失败
-    // 都会阻断母体写入，不保留一个不完整的 anchor 充当成功。
-    setBtn('正在补全商品资料');
-    const gatedRows = await collectCoordinator.prefetchBatch({
-      skus: variantRows.map((row) => row.sku),
-      retryFailed: true,
-    });
-    if (!Array.isArray(gatedRows) || gatedRows.length !== variantRows.length) {
-      throw invalidProductVariantError();
-    }
-    gatedRows.forEach((result, index) => {
-      if (result?.status === 'ERROR') throw result.error || invalidProductVariantError();
-      if (String(result?.sku || '') !== variantRows[index].sku) {
-        throw invalidProductVariantError();
-      }
-      window.JzOzonEnrichmentContract.assertComplete(result);
-      const row = variantRows[index];
-      row.weight = result.logistics.weightG;
-      row.depth = result.logistics.lengthMm;
-      row.width = result.logistics.widthMm;
-      row.height = result.logistics.heightMm;
-      row.sourceVariant = {
-        ...(row.sourceVariant && typeof row.sourceVariant === 'object'
-          ? row.sourceVariant
-          : {}),
-        ...result.variantData,
-      };
-    });
-
-    // 最终写入决策只属于 Task 7 coordinator。
+    // 公开变体资料先一次写入采集箱；Seller 字段由后台任务逐步补全。
     const resp = await collectCoordinator.collect({ sku: anchorSku, raw: payload });
     const dedupeHit = !!resp?.dedupeHit;
     const itemId = resp?.result?.id || resp?.result?.data?.id || null;
@@ -1971,20 +1881,8 @@
       throw e;
     }
 
-    let localVariantError = null;
-    const variantPromise = product.sku
-      ? window.sendMessage('searchVariants', { sku: product.sku }).catch((error) => {
-          localVariantError = error;
-          return null;
-        })
-      : Promise.resolve(null);
-
-    const variantResp = await variantPromise;
-    const variantMatch = matchingProductVariant(variantResp, product.sku);
-
-    if (variantMatch) {
-      console.log(`[ozon-helper] collectProduct: searchVariants found variant_id=${variantMatch.variant_id}, images=${variantMatch.images?.length || 0}, attrs=${variantMatch.attributes?.length || 0}`);
-    }
+    // Seller 资料不得阻塞公开采集。类目、属性和包装数据由后台补全任务写回。
+    const variantMatch = null;
 
     // 跟卖式 catalog 抽取:name/images 切成 sv(search+bundle)优先,DOM 兜底。
     // statistics / price / seller 仍走 DOM(seller-portal 接口不返回)。
@@ -2053,21 +1951,7 @@
     const collectPromise = collectCoordinator.collect({
       sku: product.sku,
       raw: collectPayload,
-      localFallback: () => {
-        if (!variantMatch || !collectVariantData) {
-          throw invalidProductVariantError(localVariantError);
-        }
-        return window.JzOzonEnrichmentContract.normalizeVariantData({
-          sku: product.sku,
-          variantData: collectVariantData,
-          source: 'LOCAL_SELLER',
-          capturedAt: new Date().toISOString(),
-        });
-      },
     });
-    if (collectCoordinator.getState(product.sku).status === 'PREFETCHING') {
-      options.onStatus?.('正在补全商品资料');
-    }
     const resp = await collectPromise;
     const bucketRecord = buildPdpBucketRecord(product, {
       name: collectName || product.title,
@@ -10602,11 +10486,6 @@
   }
 
   async function init() {
-    if (_JZ_IS_PRODUCT_PAGE) {
-      const stableSku = window.location.pathname.match(/\/product\/.*-(\d+)/)?.[1]
-        || String(extractProductData()?.sku || '');
-      if (stableSku) collectCoordinator.prefetch({ sku: stableSku }).catch(() => {});
-    }
     const auth = await window.checkAuth();
     if (!auth.loggedIn) {
       window.createLoginPrompt();
