@@ -48,6 +48,7 @@
   // today + signals
   const todayCountEl = document.getElementById("today-count");
   const signalsContainer = document.getElementById("signals");
+  const sellerContextStatus = document.getElementById("seller-context-status");
 
   // nav badges
   const navBadgeProducts = document.getElementById("nav-badge-products");
@@ -150,6 +151,54 @@
   const fetchAuth = async () => {
     const response = await sendMessage({ action: "getAuth" });
     return response?.data || response || {};
+  };
+
+  const SAFE_SELLER_STATUSES = new Set(["READY", "RECOVERING", "LOGIN_REQUIRED"]);
+
+  const safeSellerContext = (response) => {
+    const data = response?.data || response || {};
+    const status = SAFE_SELLER_STATUSES.has(data.status) ? data.status : "LOGIN_REQUIRED";
+    const companyId = /^\d{1,20}$/.test(String(data.companyId || ""))
+      ? String(data.companyId)
+      : "";
+    return { status: status === "READY" && !companyId ? "LOGIN_REQUIRED" : status, companyId };
+  };
+
+  const renderSellerContextStatus = (response) => {
+    if (!sellerContextStatus) return;
+    const { status, companyId } = safeSellerContext(response);
+    sellerContextStatus.className = `seller-context-status is-${status.toLowerCase().replace(/_/g, "-")}`;
+    sellerContextStatus.innerHTML = "";
+    const copy = document.createElement("span");
+    copy.className = "seller-status-copy";
+    if (status === "READY") {
+      copy.textContent = `Seller 已识别 · Company ID ${companyId}`;
+    } else if (status === "RECOVERING") {
+      copy.textContent = "正在识别 Seller 店铺";
+      const note = document.createElement("span");
+      note.className = "seller-status-note";
+      note.textContent = "Seller 店铺已切换";
+      copy.appendChild(note);
+    } else {
+      copy.textContent = "需要登录 Seller";
+    }
+    sellerContextStatus.appendChild(copy);
+    if (status !== "LOGIN_REQUIRED") return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-outline seller-status-action";
+    button.textContent = "打开 Seller 登录";
+    button.setAttribute("aria-label", "打开 Seller 登录");
+    button.addEventListener("click", () => sendMessage({ action: "openSellerLogin" }).catch(() => {}));
+    sellerContextStatus.appendChild(button);
+  };
+
+  const loadSellerContextStatus = async () => {
+    try {
+      renderSellerContextStatus(await sendMessage({ action: "getSellerContextStatus" }));
+    } catch {
+      renderSellerContextStatus({ status: "LOGIN_REQUIRED" });
+    }
   };
 
   // ─── Counts (feed nav badges only) ───
@@ -520,6 +569,7 @@
         : "https://" + BRAND_WEB_HOST;
     setConnectionState("ok", "采集会话已连接");
     await Promise.all([buildSignals(), checkUpdateBanner()]);
+    loadSellerContextStatus();
   };
 
   logoutBtn.addEventListener("click", async () => {

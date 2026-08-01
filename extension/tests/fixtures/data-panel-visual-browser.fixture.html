@@ -15,6 +15,10 @@
     </article>
     <script>
       const fixtureStorage = {};
+      let sellerContextStatus = { status: "LOGIN_REQUIRED" };
+      window.__setSellerContextStatus = (next) => {
+        sellerContextStatus = { ...next };
+      };
       let fixtureStorageMode = "success";
       let fixtureStorageSetCalls = 0;
       const fixtureStorageSetPayloads = [];
@@ -143,6 +147,10 @@
         throw Object.assign(new Error(message), { code, ...extra });
       };
       window.sendMessage = async (action, payload) => {
+        if (action === "getSellerContextStatus") {
+          return { status: sellerContextStatus.status, companyId: sellerContextStatus.companyId, observedAt: sellerContextStatus.observedAt };
+        }
+        if (action === "openSellerLogin") return { opened: true };
         if (!collectFixtureEnabled) return { data: {}, items: [] };
         collectFixtureMessages.push({ action, payload });
         if (action === "enrichOzonCollect") {

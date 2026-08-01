@@ -35,6 +35,7 @@
   const panelDataCache = new Map();
   const panelFastDataPromises = new Map();
   const panelVariantRetryStates = new Map();
+  const SAFE_SELLER_STATUSES = new Set(["READY", "RECOVERING", "LOGIN_REQUIRED"]);
   const collectCoordinator = window.JzOzonCollectCoordinator.getPageCoordinator({
     sendMessage: (action, payload) => window.sendMessage(action, payload),
     now: () => Date.now(),
@@ -63,6 +64,53 @@
   window.sendMessage('getFleetServersideFlag', {})
     .then((d) => { if (d?.on) variantsQueue.setParams({ concurrency: 6, staggerMs: 0 }); })
     .catch(() => {});
+
+  function safeSellerContext(response) {
+    const data = response?.data || response || {};
+    const status = SAFE_SELLER_STATUSES.has(data.status) ? data.status : "LOGIN_REQUIRED";
+    const companyId = /^\d{1,20}$/.test(String(data.companyId || ""))
+      ? String(data.companyId)
+      : "";
+    return { status: status === "READY" && !companyId ? "LOGIN_REQUIRED" : status, companyId };
+  }
+
+  function renderSellerContextStatus(panel, response) {
+    if (!panel) return;
+    panel.querySelector(".oh-seller-context-status")?.remove();
+    const { status, companyId } = safeSellerContext(response);
+    const statusEl = document.createElement("section");
+    statusEl.className = `oh-seller-context-status is-${status.toLowerCase().replace(/_/g, "-")}`;
+    statusEl.setAttribute("aria-live", "polite");
+    const copy = document.createElement("span");
+    copy.className = "oh-seller-context-copy";
+    if (status === "READY") copy.textContent = `Seller 已识别 · Company ID ${companyId}`;
+    else if (status === "RECOVERING") {
+      copy.textContent = "正在识别 Seller 店铺";
+      const note = document.createElement("span");
+      note.className = "oh-seller-context-note";
+      note.textContent = "Seller 店铺已切换";
+      copy.appendChild(note);
+    } else {
+      copy.textContent = "需要登录 Seller";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "oh-seller-context-action";
+      button.dataset.action = "open-seller-login";
+      button.textContent = "打开 Seller 登录";
+      button.setAttribute("aria-label", "打开 Seller 登录");
+      statusEl.append(copy, button);
+      panel.appendChild(statusEl);
+      return;
+    }
+    statusEl.appendChild(copy);
+    panel.appendChild(statusEl);
+  }
+
+  function loadSellerContextStatus(panel) {
+    Promise.resolve(window.sendMessage("getSellerContextStatus", {}))
+      .then((response) => renderSellerContextStatus(panel, response))
+      .catch(() => renderSellerContextStatus(panel, { status: "LOGIN_REQUIRED" }));
+  }
 
   // ─── 工具函数 ──────────────────────────────────────
   function extractProductId(url) {
@@ -416,6 +464,7 @@
     panel.dataset.jzLoadStatus = "pending";
     card.appendChild(panel);
     card._ohPanel = panel;
+    loadSellerContextStatus(panel);
 
     // 阻止整个 panel 的 click 冒泡到 Ozon tile（避免误触发跳转）
     panel.addEventListener("click", (e) => {
@@ -458,6 +507,15 @@
   }
 
   function handlePanelAction(action, card, panel, btn) {
+    if (action === "open-seller-login") {
+      if (btn?.disabled) return;
+      if (btn) btn.disabled = true;
+      Promise.resolve(window.sendMessage("openSellerLogin", {}))
+        .catch(() => {})
+        .finally(() => { if (btn) btn.disabled = false; });
+      return;
+    }
+
     if (action === "toggle-section") {
       window.JZSidebarSectionToggle?.toggleSidebarSection(btn);
       return;

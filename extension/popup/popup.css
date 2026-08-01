@@ -78,6 +78,28 @@ summary:focus-visible {
   flex-direction: column;
 }
 
+.seller-context-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.seller-context-status.is-ready { color: var(--green); background: var(--green-soft); border-color: var(--green-border); }
+.seller-context-status.is-recovering { color: var(--orange); background: var(--orange-soft); border-color: #fed7aa; }
+.seller-context-status.is-login-required { color: var(--red); background: var(--red-soft); border-color: var(--red-border); }
+.seller-context-status .seller-status-copy { min-width: 0; }
+.seller-context-status .seller-status-note { display: block; margin-top: 2px; color: var(--text-muted); font-size: 11px; font-weight: 500; }
+.seller-context-status .seller-status-action { flex: 0 0 auto; padding: 5px 8px; font-size: 12px; }
+
 /* Login */
 .login-view {
   min-height: 520px;

@@ -144,6 +144,14 @@ const chrome = {
             backendUrl: "http://127.0.0.1:3000/api",
           },
         },
+        getSellerContextStatus: {
+          ok: true,
+          data: {
+            status: "READY",
+            companyId: "2681910",
+            observedAt: 1785528000000,
+          },
+        },
         // These responses model the missing Web bearer and Seller cookie.
         // Correct popup startup must never request either capability.
         getStores: { ok: false, error: "[401] Unauthorized" },
@@ -226,7 +234,11 @@ setTimeout(() => {
   assert.equal(mainView.classList.contains("active"), true);
   assert.ok(captureCard, "valid Collector session should render the page-capture CTA");
   assert.equal(captureButton?.disabled, false, "page-capture CTA must remain enabled");
-  assert.doesNotMatch(signals.textContent, /Cookie|Seller|数据店铺|登录已掉线/);
+  const sellerStatus = document.getElementById("seller-context-status");
+  assert.match(sellerStatus.textContent, /Seller 已识别/);
+  assert.match(sellerStatus.textContent, /2681910/);
+  assert.doesNotMatch(sellerStatus.textContent, /Cookie|token|SELLER_CONTEXT_REQUIRED/);
+  assert.equal(actions.includes("getSellerContextStatus"), true);
   assert.equal(actions.includes("getStores"), false, "popup must not use the Web bearer store API");
   assert.equal(
     actions.includes("checkSellerCookies"),

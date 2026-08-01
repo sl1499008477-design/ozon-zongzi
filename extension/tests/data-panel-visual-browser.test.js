@@ -133,10 +133,20 @@ async function runBrowserFixture({
     await page.goto(`http://127.0.0.1:${address.port}${fixturePath}`);
     try {
       await page.waitForSelector('.ozon-helper-data-panel [data-field="sales30d"]');
+      await page.waitForSelector('.ozon-helper-data-panel [data-action="open-seller-login"]');
     } catch (error) {
       throw new Error(`data panel fixture did not render\n${pageErrors.join("\n")}`, { cause: error });
     }
     await page.evaluate(() => window.__setPanelFixtureWidth(640));
+
+    const sellerLoginStatus = await page.evaluate(() => {
+      const panel = document.querySelector(".ozon-helper-data-panel");
+      const action = panel.querySelector("[data-action='open-seller-login']");
+      return { text: panel.textContent, label: action?.textContent || "" };
+    });
+    assert.match(sellerLoginStatus.text, /需要登录 Seller/);
+    assert.equal(sellerLoginStatus.label, "打开 Seller 登录");
+    assert.doesNotMatch(sellerLoginStatus.text, /Cookie|token|SELLER_CONTEXT_REQUIRED/);
 
     const settingsHelpers = await page.evaluate(() => ({
       groups: window.jzGroupDataCardFields([

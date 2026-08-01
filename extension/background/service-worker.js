@@ -3428,6 +3428,27 @@ try {
     return companyId;
   };
 
+  const sellerContextStatusProjection = async () => {
+    const safe = { status: 'LOGIN_REQUIRED' };
+    try {
+      const context = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
+      const status = context?.status;
+      if (status === globalThis.JzSellerRecoveryTab.STATUS.RECOVERING) {
+        return { status: 'RECOVERING' };
+      }
+      const companyId = globalThis.JzSellerIdentityPolicy.normalizeCompanyId(context?.companyId);
+      const observedAt = Number(context?.observedAt);
+      if (
+        status === globalThis.JzSellerRecoveryTab.STATUS.READY
+        && companyId
+        && Number.isFinite(observedAt)
+      ) {
+        return { status: 'READY', companyId, observedAt };
+      }
+    } catch {}
+    return safe;
+  };
+
     const handle = async () => {
       const collectorOperation = await collectorSessionManager.beginCollectorOperation();
       const collectorSession = collectorOperation;
@@ -3450,6 +3471,20 @@ try {
               ok: false,
               error: error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
             };
+          }
+        }
+        case 'getSellerContextStatus': {
+          return { ok: true, data: await sellerContextStatusProjection() };
+        }
+        case 'openSellerLogin': {
+          try {
+            if (await sellerCompanyContextRuntime.focusLoginHelper()) {
+              return { ok: true, data: { opened: true } };
+            }
+            await chrome.tabs.create({ url: 'https://seller.ozon.ru/app', active: true });
+            return { ok: true, data: { opened: true } };
+          } catch {
+            return { ok: false };
           }
         }
         case 'focusSellerRecoveryTab': {
