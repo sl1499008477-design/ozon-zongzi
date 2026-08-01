@@ -447,6 +447,121 @@ test('autonomous drain queues one empty-stop rerun when a kick arrives during an
   assert.equal(maxActiveClaims, 1, 'available drain rounds must remain single-concurrency');
 });
 
+test('autonomous drain serially consumes a finite stream of kicks and then settles', async () => {
+  const claimGates = [deferred(), deferred()];
+  let claims = 0;
+  let activeClaims = 0;
+  let maxActiveClaims = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        const claimIndex = claims;
+        claims += 1;
+        activeClaims += 1;
+        maxActiveClaims = Math.max(maxActiveClaims, activeClaims);
+        try {
+          if (claimGates[claimIndex]) await claimGates[claimIndex].promise;
+          return jsonResponse(200, { ok: true, job: null });
+        } finally {
+          activeClaims -= 1;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const firstKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  await nextTurn();
+  const secondKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  claimGates[0].resolve();
+  while (claims < 2) await nextTurn();
+  const thirdKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  claimGates[1].resolve();
+
+  assert.strictEqual(secondKick, firstKick);
+  assert.strictEqual(thirdKick, firstKick);
+  await Promise.all([firstKick, secondKick, thirdKick]);
+  assert.equal(claims, 3, 'each finite active-window kick must be covered exactly once');
+  assert.equal(maxActiveClaims, 1, 'continuous kicks must never overlap claims');
+});
+
+test('autonomous drain parks operation-start failures until a later kick retries them', async (t) => {
+  for (const scenario of [
+    { name: 'rejected operation', firstOperation: async () => { throw new Error('session unavailable'); } },
+    { name: 'missing permission', firstOperation: async () => operation([]) },
+  ]) {
+    await t.test(scenario.name, async () => {
+      let operationStarts = 0;
+      let claims = 0;
+      const agent = createAgent({
+        sessionManager: {
+          async beginCollectorOperation() {
+            operationStarts += 1;
+            return operationStarts === 1 ? scenario.firstOperation() : operation();
+          },
+          async collectorFetch(path) {
+            assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+            claims += 1;
+            return jsonResponse(200, { ok: true, job: null });
+          },
+        },
+        async canCapture() { return true; },
+        async captureVariant() { throw new Error('empty drains must not capture'); },
+        async sleep() {},
+      });
+
+      await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+      assert.equal(operationStarts, 1, 'a finite kick must not spin on a non-lifecycle failure');
+      assert.equal(claims, 0);
+
+      await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+      assert.equal(operationStarts, 2, 'the next external kick must retry the parked generation');
+      assert.equal(claims, 1);
+    });
+  }
+});
+
+test('autonomous drain retries an operation failure when a newer kick arrived during the attempt', async () => {
+  const firstOperation = deferred();
+  let operationStarts = 0;
+  let claims = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() {
+        operationStarts += 1;
+        if (operationStarts === 1) {
+          await firstOperation.promise;
+          throw new Error('session unavailable');
+        }
+        return operation();
+      },
+      async collectorFetch(path) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        claims += 1;
+        return jsonResponse(200, { ok: true, job: null });
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const firstKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  await nextTurn();
+  const activeKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  assert.strictEqual(activeKick, firstKick);
+
+  firstOperation.resolve();
+  await Promise.all([firstKick, activeKick]);
+
+  assert.equal(operationStarts, 2, 'the newer generation must authorize one successor attempt');
+  assert.equal(claims, 1);
+});
+
 test('autonomous drain consumes a kick from the promise ownership cleanup window', async () => {
   let claims = 0;
   let activeClaims = 0;
@@ -497,6 +612,54 @@ test('autonomous drain consumes a kick from the promise ownership cleanup window
   assert.equal(injected, true, 'test must inject the kick before availablePromise ownership clears');
   assert.equal(claims, 2, 'the cleanup-window kick must trigger a following empty-stop round');
   assert.equal(maxActiveClaims, 1, 'cleanup recovery must remain single-concurrency');
+});
+
+test('autonomous drain lets a cleanup-window kick retry a parked operation failure', async () => {
+  let operationStarts = 0;
+  let claims = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() {
+        operationStarts += 1;
+        return operationStarts === 1 ? operation([]) : operation();
+      },
+      async collectorFetch(path) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        claims += 1;
+        return jsonResponse(200, { ok: true, job: null });
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const nativeFinally = Promise.prototype.finally;
+  let finallyCalls = 0;
+  let injected = false;
+  let cleanupKick;
+  Promise.prototype.finally = function interceptAvailableCleanup(onFinally) {
+    finallyCalls += 1;
+    if (finallyCalls !== 2) return nativeFinally.call(this, onFinally);
+    return nativeFinally.call(this, () => {
+      injected = true;
+      cleanupKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+      return onFinally();
+    });
+  };
+
+  let firstKick;
+  try {
+    firstKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  } finally {
+    Promise.prototype.finally = nativeFinally;
+  }
+  await firstKick;
+  await cleanupKick;
+
+  assert.equal(injected, true);
+  assert.equal(operationStarts, 2, 'the cleanup generation must authorize one retry');
+  assert.equal(claims, 1);
 });
 
 test('autonomous drain starts a successor for a live kick beyond the active owner deadline', async () => {
@@ -555,6 +718,63 @@ test('autonomous drain starts a successor for a live kick beyond the active owne
   );
   assert.notStrictEqual(claims[1].signal, claims[0].signal, 'the successor needs its own lifecycle');
   assert.equal(claims[0].signal.aborted, true, 'the old lifecycle must end at its own deadline');
+});
+
+test('autonomous drain hands a late kick to a successor when its supplemental round hits the old deadline', async () => {
+  const firstClaim = deferred();
+  const supplementalClaim = deferred();
+  const claims = [];
+  let clock = 1_000;
+  let activeClaims = 0;
+  let maxActiveClaims = 0;
+  const timerDelays = [];
+  const agent = createAgent({
+    now: () => clock,
+    setTimer(_callback, delay) {
+      timerDelays.push(delay);
+      return timerDelays.length;
+    },
+    clearTimer() {},
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path, options) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        claims.push({ at: clock, signal: options.signal });
+        activeClaims += 1;
+        maxActiveClaims = Math.max(maxActiveClaims, activeClaims);
+        try {
+          if (claims.length === 1) await firstClaim.promise;
+          if (claims.length === 2) await supplementalClaim.promise;
+          return jsonResponse(200, { ok: true, job: null });
+        } finally {
+          activeClaims -= 1;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const firstKick = agent.drainAvailable({ deadlineAt: 1_100 });
+  await nextTurn();
+  assert.equal(claims.length, 1);
+  const lateKick = agent.drainAvailable({ deadlineAt: 2_000 });
+
+  clock = 1_050;
+  firstClaim.resolve();
+  while (claims.length < 2) await nextTurn();
+  assert.equal(claims[1].at, 1_050, 'the old owner may start its required supplemental round');
+
+  clock = 1_100;
+  supplementalClaim.resolve();
+  await Promise.all([firstKick, lateKick]);
+
+  assert.deepEqual(claims.map(({ at }) => at), [1_000, 1_050, 1_100]);
+  assert.equal(maxActiveClaims, 1, 'the successor must wait for the old owner to release');
+  assert.equal(timerDelays.includes(900), true, 'the successor must retain the late kick deadline');
+  assert.equal(claims[1].signal.aborted, true, 'the supplemental old-owner claim must be cancelled');
+  assert.notStrictEqual(claims[2].signal, claims[1].signal, 'the successor needs a fresh lifecycle');
 });
 
 test('autonomous drain preserves a live late-deadline kick injected at owner cleanup', async () => {
@@ -654,6 +874,7 @@ test('autonomous drain maps real non-ready Seller recovery results to SELLER_CON
     assert.ok(failure, status);
     assert.equal(JSON.parse(failure.options.body).code, 'SELLER_CONTEXT_REQUIRED');
     assert.equal(requests.some(({ path }) => path.endsWith('/result')), false);
+    assert.equal(nextCalls, 2, 'a reported claim failure must still reach one normal empty stop');
   }
 });
 

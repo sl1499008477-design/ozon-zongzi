@@ -6,6 +6,9 @@
   const MAX_DRAIN_MS = 20_000;
   const NEXT_PATH = '/collector/ozon/enrichment-jobs/next';
   const AVAILABLE_DRAIN_ID = '__collectorOzonEnrichmentAvailable__';
+  const DRAIN_COMPLETED = Symbol('collectorOzonDrainCompleted');
+  const DRAIN_CANCELLED = Symbol('collectorOzonDrainCancelled');
+  const DRAIN_FAILED = Symbol('collectorOzonDrainFailed');
   const JOB_KEYS = Object.freeze(['id', 'requestId', 'sku', 'refreshBundle']);
   const FAILURE_MESSAGES = Object.freeze({
     OZON_ENRICH_NOT_FOUND: '未找到 Ozon 商品资料',
@@ -284,7 +287,6 @@
     let nextGeneration = 1;
     let availablePromise = null;
     let availableRequestedGeneration = 0;
-    let availableProcessedGeneration = 0;
     let pendingAvailableKicks = [];
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
@@ -508,9 +510,9 @@
         collectorOperation = await withLifecycle(requireOperation(), entry, generation);
         ensureCurrent(entry, generation);
       } catch {
-        return;
+        return isCurrent(entry, generation) ? DRAIN_FAILED : DRAIN_CANCELLED;
       }
-      if (!collectorOperation) return;
+      if (!collectorOperation) return DRAIN_FAILED;
       while (isCurrent(entry, generation)) {
         let trusted = stopWhenEmpty;
         if (!stopWhenEmpty) {
@@ -540,7 +542,7 @@
             await executeClaim(entry, generation, collectorOperation, job);
             continue;
           }
-          if (stopWhenEmpty) return;
+          if (stopWhenEmpty) return DRAIN_COMPLETED;
         } catch {
           // The held public request owns the user-facing error. Polling stays fail-closed.
         }
@@ -553,6 +555,7 @@
           );
         } catch {}
       }
+      return DRAIN_CANCELLED;
     };
 
     const drainUntil = (input = {}) => {
@@ -594,14 +597,7 @@
     const pruneAvailableKicks = (observedAt = now()) => {
       const live = [];
       for (const kick of pendingAvailableKicks) {
-        if (kick.deadlineAt <= observedAt) {
-          availableProcessedGeneration = Math.max(
-            availableProcessedGeneration,
-            kick.generation,
-          );
-        } else {
-          live.push(kick);
-        }
+        if (kick.deadlineAt > observedAt) live.push(kick);
       }
       pendingAvailableKicks = live;
       return live;
@@ -626,22 +622,23 @@
       drains.set(entry.requestId, entry);
       entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
         .finally(() => deactivate(entry));
-      await entry.running;
+      return entry.running;
     };
 
     const runAvailableOwner = async (ownerDeadlineAt) => {
       while (true) {
         const observedAt = now();
-        if (observedAt >= ownerDeadlineAt) return;
+        if (observedAt >= ownerDeadlineAt) return 0;
         const live = pruneAvailableKicks(observedAt);
-        if (live.length === 0) return;
+        if (live.length === 0) return 0;
 
-        pendingAvailableKicks = [];
         const roundGeneration = live[live.length - 1].generation;
-        await runAvailableRound(ownerDeadlineAt);
-        availableProcessedGeneration = Math.max(
-          availableProcessedGeneration,
-          roundGeneration,
+        const outcome = await runAvailableRound(ownerDeadlineAt);
+        if (outcome === DRAIN_FAILED) return roundGeneration;
+        if (outcome === DRAIN_CANCELLED) return 0;
+        // Commit only the kicks covered by an explicit empty stop; cancellation keeps them live.
+        pendingAvailableKicks = pendingAvailableKicks.filter(
+          ({ generation }) => generation > roundGeneration,
         );
       }
     };
@@ -649,10 +646,17 @@
     const runAvailableOwners = async () => {
       while (true) {
         const live = pruneAvailableKicks();
-        if (live.length === 0) return;
+        if (live.length === 0) return 0;
         // A successor coalesces the current live queue, but never changes an active owner's deadline.
         const ownerDeadlineAt = Math.max(...live.map(({ deadlineAt }) => deadlineAt));
-        await runAvailableOwner(ownerDeadlineAt);
+        const failedGeneration = await runAvailableOwner(ownerDeadlineAt);
+        // A newer external kick authorizes one retry; the failed generation alone stays parked.
+        if (
+          failedGeneration > 0
+          && !pruneAvailableKicks().some(({ generation }) => generation > failedGeneration)
+        ) {
+          return failedGeneration;
+        }
       }
     };
 
@@ -667,10 +671,21 @@
         deadlineAt,
       });
       if (availablePromise) return availablePromise;
+      let blockedGeneration = 0;
+      const runOwners = async () => {
+        blockedGeneration = await runAvailableOwners();
+      };
+      const hasRunnableKicks = () => {
+        const live = pruneAvailableKicks();
+        return live.length > 0 && (
+          blockedGeneration === 0
+          || live.some(({ generation }) => generation > blockedGeneration)
+        );
+      };
       let exposed;
-      exposed = runAvailableOwners().finally(async () => {
-        while (availablePromise === exposed && pruneAvailableKicks().length > 0) {
-          await runAvailableOwners();
+      exposed = runOwners().finally(async () => {
+        while (availablePromise === exposed && hasRunnableKicks()) {
+          blockedGeneration = await runAvailableOwners();
         }
         if (availablePromise === exposed) {
           availablePromise = null;
