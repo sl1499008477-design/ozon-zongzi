@@ -205,7 +205,10 @@
         await chromeApi.tabs.update(helper.record.tabId, { active: true });
         return true;
       } catch {
-        await chromeApi.storage.session.remove(HELPER_STORAGE_KEY);
+        const stored = await chromeApi.storage.session.get(HELPER_STORAGE_KEY);
+        if (Number(stored?.[HELPER_STORAGE_KEY]?.tabId) === helper.record.tabId) {
+          await chromeApi.storage.session.remove(HELPER_STORAGE_KEY);
+        }
         return false;
       }
     };

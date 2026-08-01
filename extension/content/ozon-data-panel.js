@@ -963,7 +963,7 @@
     clearTimeout(sellerSwitchNoticeTimer);
     sellerLoginFeedbackTimers.forEach((timer) => clearTimeout(timer));
     sellerLoginFeedbackTimers.clear();
-  }, { once: true });
+  });
   window.addEventListener?.("pageshow", () => {
     if (sellerContextSubscribers.size > 0) sellerStatusController.start();
   });

@@ -191,6 +191,25 @@ async function runBrowserFixture({
     await transitionStatus.getByText("Seller 店铺已切换").waitFor({ timeout: 7_000 });
     await transitionStatus.getByText("Seller 店铺已切换").waitFor({ state: "hidden", timeout: 4_000 });
 
+    const bfcachePage = await context.newPage();
+    extraPages.push(bfcachePage);
+    await bfcachePage.goto(`http://127.0.0.1:${address.port}${fixturePath}?seller=ready`);
+    await bfcachePage.waitForFunction(() => window.__getSellerContextMessages()
+      .filter(({ action }) => action === "getSellerContextStatus").length === 1);
+    for (const expectedCalls of [2, 3]) {
+      await bfcachePage.evaluate(() => {
+        window.dispatchEvent(new Event("pagehide"));
+        window.dispatchEvent(new Event("pageshow"));
+      });
+      await bfcachePage.waitForFunction((count) => window.__getSellerContextMessages()
+        .filter(({ action }) => action === "getSellerContextStatus").length === count, expectedCalls);
+    }
+    await bfcachePage.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(await bfcachePage.evaluate(() => window.__getSellerContextMessages()
+      .filter(({ action }) => action === "getSellerContextStatus").length), 3,
+    "repeated pageshow without pagehide must not create a duplicate Seller status timer");
+
     const popupViewportPage = await context.newPage();
     extraPages.push(popupViewportPage);
     await popupViewportPage.setViewportSize({ width: 360, height: 700 });

@@ -202,7 +202,7 @@ test('Seller request hook advances runtime through A to B to A and stabilizes on
   uninstall();
 });
 
-function createRecoveryHarness({ userTabs = [], onSleep, helperUrl, updateError } = {}) {
+function createRecoveryHarness({ userTabs = [], onSleep, helperUrl, updateError, onUpdate } = {}) {
   const session = createStorageArea();
   const createdTabOptions = [];
   const removedTabs = [];
@@ -249,6 +249,7 @@ function createRecoveryHarness({ userTabs = [], onSleep, helperUrl, updateError 
       },
       async update(tabId, options) {
         focusedTabs.push({ tabId, options: { ...options } });
+        await onUpdate?.({ session, tabId, options });
         if (updateError) throw updateError;
         return { ...liveTabs.get(tabId), ...options };
       },
@@ -386,6 +387,19 @@ test('a stale helper focus failure clears its tag so the caller can open a fresh
   await harness.manager.resolveCurrentWithRecovery({ pollIntervalMs: 10, probeTimeoutMs: 10, timeoutMs: 20 });
   assert.equal(await harness.manager.focusLoginHelper(), false);
   assert.equal(harness.session.state[recoveryTab.HELPER_STORAGE_KEY], undefined);
+});
+
+test('a failed old-helper focus cannot delete a concurrently replaced helper tag', async () => {
+  const harness = createRecoveryHarness({
+    helperUrl: 'https://seller.ozon.ru/signin',
+    updateError: new Error('tab closed'),
+    onUpdate: async ({ session }) => {
+      await session.set({ [recoveryTab.HELPER_STORAGE_KEY]: { tabId: 71, active: false } });
+    },
+  });
+  await harness.manager.resolveCurrentWithRecovery({ pollIntervalMs: 10, probeTimeoutMs: 10, timeoutMs: 20 });
+  assert.equal(await harness.manager.focusLoginHelper(), false);
+  assert.deepEqual(harness.session.state[recoveryTab.HELPER_STORAGE_KEY], { tabId: 71, active: false });
 });
 
 test('a helper navigated outside Seller is never focused or closed as extension-owned', async () => {
