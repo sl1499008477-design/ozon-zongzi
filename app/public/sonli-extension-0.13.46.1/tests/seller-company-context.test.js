@@ -48,6 +48,22 @@ const uninstall = installObserver({
       'x-o3-company-id': 'invalid',
     },
   });
+  await root.fetch('/api/composer-api.bx/_action/setUserCookies', {
+    method: 'POST',
+    body: JSON.stringify({
+      cookies: [{
+        name: 'sc_company_id',
+        value: '9021436',
+        params: 'path=/;domain=.ozon.ru;',
+      }],
+    }),
+  });
+  await root.fetch('https://untrusted.example/api/composer-api.bx/_action/setUserCookies', {
+    method: 'POST',
+    body: JSON.stringify({
+      cookies: [{ name: 'sc_company_id', value: '8000001' }],
+    }),
+  });
 
   const xhr = new root.XMLHttpRequest();
   xhr.setRequestHeader('x-o3-company-id', '7311458');
@@ -55,7 +71,7 @@ const uninstall = installObserver({
 
   assert.deepEqual(
     observed,
-    ['2681910', '7311458'],
+    ['2681910', '9021436', '7311458'],
     'observer should emit each valid Seller company once and ignore unrelated request data',
   );
   assert.deepEqual(xhr.headers, [

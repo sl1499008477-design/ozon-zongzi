@@ -31,7 +31,36 @@
   const companyIdFromFetchArgs = (input, init) => {
     const initValue = normalizeCompanyId(readHeader(init?.headers, COMPANY_HEADER));
     if (initValue) return initValue;
-    return normalizeCompanyId(readHeader(input?.headers, COMPANY_HEADER));
+    const requestValue = normalizeCompanyId(readHeader(input?.headers, COMPANY_HEADER));
+    if (requestValue) return requestValue;
+
+    const requestUrl = typeof input === 'string' ? input : String(input?.url || '');
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(requestUrl, 'https://seller.ozon.ru');
+    } catch {
+      return '';
+    }
+    if (
+      parsedUrl.protocol !== 'https:'
+      || parsedUrl.hostname !== 'seller.ozon.ru'
+      || parsedUrl.pathname !== '/api/composer-api.bx/_action/setUserCookies'
+    ) {
+      return '';
+    }
+    if (typeof init?.body !== 'string') return '';
+    try {
+      const payload = JSON.parse(init.body);
+      const companyIds = [...new Set(
+        (Array.isArray(payload?.cookies) ? payload.cookies : [])
+          .filter((cookie) => cookie?.name === 'sc_company_id')
+          .map((cookie) => normalizeCompanyId(cookie?.value))
+          .filter(Boolean),
+      )];
+      return companyIds.length === 1 ? companyIds[0] : '';
+    } catch {
+      return '';
+    }
   };
 
   const installObserver = ({ root: pageRoot = root, onCompanyId } = {}) => {
