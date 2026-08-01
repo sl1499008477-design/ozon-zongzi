@@ -1658,6 +1658,87 @@ test("linked enqueue rejects normalized Seller credential semantics before persi
   }
 });
 
+test("linked enqueue rejects plural and nonterminal credential semantics before either persistence gate", async (t) => {
+  const sensitiveKeys = [
+    "tokens",
+    "accessTokens",
+    "accesstokens",
+    "refreshTokens",
+    "apiKeys",
+    "clientIds",
+    "clientSecrets",
+    "verificationCodes",
+    "passwords",
+    "secrets",
+    "cookieValue",
+    "accessTokenValue",
+    "passwordHash",
+    "authorizationHeader",
+    "accessTokensValue",
+    "requestaccesstokensvalue",
+  ];
+
+  for (const [index, sensitiveKey] of sensitiveKeys.entries()) {
+    await t.test(sensitiveKey, async () => {
+      const refreshBundle = {
+        requests: [{ [sensitiveKey]: "must-not-persist" }],
+      };
+      const state = {
+        caches: { collectBox: [collectItem("collect-a", "account-a")] },
+      };
+      let jsonSaveCalled = false;
+      const input = {
+        accountId: "account-a",
+        collectItemId: "collect-a",
+        requestId: `nonterminal-credential-request-${index}`,
+        sku: "4862904234",
+        refreshBundle,
+        now: new Date("2026-08-01T08:00:00.000Z"),
+      };
+
+      let jsonError = null;
+      try {
+        await createJsonCollectorOzonEnrichmentRepository({
+          state,
+          async persist() { jsonSaveCalled = true; },
+        }).enqueueForCollect(input);
+      } catch (error) {
+        jsonError = error;
+      }
+
+      let postgresQueried = false;
+      let postgresError = null;
+      const postgresRepository = createPostgresCollectorOzonEnrichmentRepository({
+        pool: {
+          async query() {
+            postgresQueried = true;
+            return { rows: [], rowCount: 0 };
+          },
+        },
+      });
+      try {
+        await postgresRepository.enqueueForCollect(input);
+      } catch (error) {
+        postgresError = error;
+      }
+
+      assert.deepEqual({
+        jsonCode: jsonError?.code ?? null,
+        jsonJobCreated: Boolean(state.collectorOzonEnrichmentJobs?.length),
+        jsonSaveCalled,
+        postgresCode: postgresError?.code ?? null,
+        postgresQueried,
+      }, {
+        jsonCode: "OZON_ENRICHMENT_SENSITIVE_DATA",
+        jsonJobCreated: false,
+        jsonSaveCalled: false,
+        postgresCode: "OZON_ENRICHMENT_SENSITIVE_DATA",
+        postgresQueried: false,
+      });
+    });
+  }
+});
+
 test("linked enqueue permits non-secret company and capture metadata", async () => {
   const state = {
     caches: { collectBox: [collectItem("collect-a", "account-a")] },
@@ -1672,6 +1753,17 @@ test("linked enqueue permits non-secret company and capture metadata", async () 
       categoryid: "17028922",
       barcode: "4600000000000",
       sourceid: "catalog-import",
+      productCodes: ["4862904234"],
+      categoryIds: ["17028922"],
+      hotProduct: true,
+      secretaryName: "Catalog contact",
+    },
+    request: {
+      requestId: "safe-metadata-request",
+      requestHeaders: ["accept-language"],
+      clientIdentity: "browser-worker",
+      apiVersion: "v1",
+      accessMode: "read-only",
     },
   };
   const job = await repository.enqueueForCollect({

@@ -8,28 +8,52 @@ const CAPTURE_CONTEXT_KEYS = new Set(["sellerCompanyId", "revision", "observedAt
 const SENSITIVE_AUTH_WORDS = new Set([
   "authorization",
   "cookie",
-  "cookies",
   "credential",
-  "credentials",
   "otp",
   "password",
   "secret",
   "token",
 ]);
 const SENSITIVE_AUTH_SEQUENCES = Object.freeze([
+  ["access", "token"],
   ["api", "key"],
+  ["api", "secret"],
   ["auth", "code"],
   ["authentication", "code"],
   ["authorization", "code"],
+  ["client", "credential"],
   ["client", "id"],
   ["client", "secret"],
+  ["client", "token"],
   ["one", "time", "code"],
   ["otp", "code"],
+  ["refresh", "token"],
+  ["seller", "cookie"],
+  ["seller", "credential"],
+  ["seller", "password"],
+  ["seller", "secret"],
+  ["seller", "token"],
   ["verification", "code"],
+]);
+const SENSITIVE_AUTH_SEQUENCE_WORDS = new Set(SENSITIVE_AUTH_SEQUENCES.flat());
+const SENSITIVE_AUTH_PLURAL_STEMS = new Set([
+  ...SENSITIVE_AUTH_WORDS,
+  ...SENSITIVE_AUTH_SEQUENCE_WORDS,
 ]);
 const SENSITIVE_AUTH_COMPACT_SUFFIXES = Object.freeze([
   ...SENSITIVE_AUTH_WORDS,
   ...SENSITIVE_AUTH_SEQUENCES.map((sequence) => sequence.join("")),
+]);
+// Avoid ambiguous compact substrings: `secret` appears in secretary, `otp` across
+// hotProduct, and `clientid` at the start of clientIdentity. Their exact word,
+// sequence, suffix, and unambiguous plural forms remain covered by the other guards.
+const SENSITIVE_AUTH_COMPACT_FRAGMENTS = Object.freeze([
+  ...[...SENSITIVE_AUTH_WORDS].filter((word) => word !== "otp" && word !== "secret"),
+  "secrets",
+  "clientids",
+  ...SENSITIVE_AUTH_SEQUENCES
+    .map((sequence) => sequence.join(""))
+    .filter((fragment) => fragment !== "clientid"),
 ]);
 
 function repositoryError(message, code = "OZON_ENRICHMENT_PERSISTENCE_FAILED", status = 500) {
@@ -159,6 +183,13 @@ function captureContext(value) {
   };
 }
 
+function normalizeAuthKeyWord(word) {
+  if (word.endsWith("s") && SENSITIVE_AUTH_PLURAL_STEMS.has(word.slice(0, -1))) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
 function assertNoSensitiveAuth(value, seen = new WeakSet()) {
   if (!value || typeof value !== "object") return;
   if (seen.has(value)) return;
@@ -169,16 +200,21 @@ function assertNoSensitiveAuth(value, seen = new WeakSet()) {
       .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter(Boolean);
+      .filter(Boolean)
+      .map(normalizeAuthKeyWord);
     const containsSequence = SENSITIVE_AUTH_SEQUENCES.some((sequence) =>
       words.some((_, index) => sequence.every((word, offset) => words[index + offset] === word)));
     const compactKey = words.join("");
     const containsCompactSensitiveKey = SENSITIVE_AUTH_COMPACT_SUFFIXES.some(
       (suffix) => compactKey.endsWith(suffix),
     );
+    const containsCompactSensitiveFragment = SENSITIVE_AUTH_COMPACT_FRAGMENTS.some(
+      (fragment) => compactKey.includes(fragment),
+    );
     if (words.some((word) => SENSITIVE_AUTH_WORDS.has(word))
         || containsSequence
-        || containsCompactSensitiveKey) {
+        || containsCompactSensitiveKey
+        || containsCompactSensitiveFragment) {
       throw repositoryError(
         "Ozon enrichment payload contains Seller authentication data",
         "OZON_ENRICHMENT_SENSITIVE_DATA",
