@@ -29,6 +29,7 @@ const pool = await getPostgresPool();
 const collectIds = [];
 
 async function cleanup() {
+  await pool.query("DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=ANY($1::text[])", [[accountA, accountB, accountCascade]]);
   await pool.query("DELETE FROM collect_requests WHERE collect_item_id=ANY($1::text[]) OR account_id=ANY($2::text[])", [[...collectIds, noStoreCollectItemId], [accountA, accountB, accountCascade]]);
   await pool.query("DELETE FROM collect_raw_payloads WHERE collect_item_id=ANY($1::text[]) OR account_id=ANY($2::text[])", [[...collectIds, noStoreCollectItemId], [accountA, accountB, accountCascade]]);
   await pool.query("DELETE FROM collect_items WHERE id=ANY($1::text[]) OR account_id=ANY($2::text[])", [[...collectIds, noStoreCollectItemId], [accountA, accountB, accountCascade]]);
@@ -129,6 +130,53 @@ try {
   });
   collectIds.push(first.collectItemId);
   assert.equal(first.duplicate, false);
+  assert.equal(first.enrichment.status, "COMPLETE");
+  assert.deepEqual(first.item.enrichment, first.enrichment);
+
+  const publicSku = `public-${suffix}`;
+  const publicRequestId = `public-request-${suffix}`;
+  const publicFirst = await ingestCollectRequestV4({
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: publicSku,
+      requestId: publicRequestId,
+      payload: { sku: publicSku, name: "Public-first V4 item" },
+    },
+  });
+  collectIds.push(publicFirst.collectItemId);
+  assert.equal(publicFirst.enrichment.status, "PENDING_ENRICHMENT");
+  assert.deepEqual(publicFirst.enrichment.missingFields, [
+    "descriptionCategoryId",
+    "weightG",
+    "lengthMm",
+    "widthMm",
+    "heightMm",
+  ]);
+  const publicReplay = await ingestCollectRequestV4({
+    authenticatedAccount: { id: accountA },
+    input: {
+      source: "ozon",
+      sourceSku: publicSku,
+      requestId: publicRequestId,
+      payload: { sku: publicSku, name: "Public-first V4 item" },
+    },
+  });
+  assert.equal(publicReplay.duplicate, true);
+  assert.equal(publicReplay.collectItemId, publicFirst.collectItemId);
+  const linkedJob = await pool.query(
+    `SELECT account_id,collect_item_id,request_id,sku,status
+       FROM collector_ozon_enrichment_jobs
+      WHERE account_id=$1 AND request_id=$2 AND sku=$3`,
+    [accountA, publicRequestId, publicSku],
+  );
+  assert.deepEqual(linkedJob.rows, [{
+    account_id: accountA,
+    collect_item_id: publicFirst.collectItemId,
+    request_id: publicRequestId,
+    sku: publicSku,
+    status: "PENDING",
+  }]);
   const historicalDataStore = await pool.query(
     "SELECT data_collection_store_id FROM collect_items WHERE id=$1",
     [first.collectItemId],

@@ -158,3 +158,46 @@ test("PostgreSQL audit write failure emits only a safe logger signal", async () 
   assert.equal(loggerSignals.length, 1);
   assert.equal(JSON.stringify(loggerSignals).includes("credential detail"), false);
 });
+
+test("JSON runtime enqueues a collect-linked job into the caller-owned transaction state", async () => {
+  const state = {
+    caches: {
+      collectBox: [{ id: "collect-runtime-linked", accountId: "account-runtime" }],
+    },
+    collectorOzonEnrichmentJobs: [],
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => state,
+    saveState: async () => { throw new Error("outer transaction owns the only save"); },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({ collectorSessionId: "collector-runtime", accountId: "account-runtime" }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(NOW),
+  });
+
+  const first = await runtime.enqueueForCollect({
+    state,
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-linked",
+    requestId: "request-runtime-linked",
+    sku: "sku-runtime-linked",
+    refreshBundle: {},
+    now: NOW,
+  });
+  const replay = await runtime.enqueueForCollect({
+    state,
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-linked",
+    requestId: "request-runtime-linked",
+    sku: "sku-runtime-linked",
+    refreshBundle: {},
+    now: NOW,
+  });
+
+  assert.equal(first.id, replay.id);
+  assert.equal(state.collectorOzonEnrichmentJobs.length, 1);
+  assert.equal(state.collectorOzonEnrichmentJobs[0].accountId, "account-runtime");
+  assert.equal(state.collectorOzonEnrichmentJobs[0].collectItemId, "collect-runtime-linked");
+});

@@ -74,6 +74,10 @@ if (!postgresEnabled()) {
       await pool.query("DELETE FROM submission_snapshots WHERE id=ANY($1::text[])", [snapshotIds]);
     }
     await pool.query(
+      "DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=ANY($1::text[])",
+      [[accountA, accountB]],
+    );
+    await pool.query(
       "DELETE FROM collect_requests WHERE account_id=ANY($1::text[])",
       [[accountA, accountB]],
     );
@@ -162,6 +166,53 @@ if (!postgresEnabled()) {
     });
     collectItemIds.add(first.collectItemId);
     assert.equal(first.duplicate, false, "an account with zero operating stores can upload");
+    assert.equal(first.enrichment.status, "COMPLETE");
+
+    const publicSourceSku = `public-${suffix}`;
+    const publicRequestId = `public-request-${suffix}`;
+    const publicResult = await ingestCollectRequestV4({
+      authenticatedAccount: { id: accountA },
+      input: {
+        source: "ozon",
+        sourceSku: publicSourceSku,
+        requestId: publicRequestId,
+        payload: { sku: publicSourceSku, name: "Public-only item" },
+      },
+    });
+    collectItemIds.add(publicResult.collectItemId);
+    assert.equal(publicResult.item.name, "Public-only item");
+    assert.equal(publicResult.enrichment.status, "PENDING_ENRICHMENT");
+    assert.deepEqual(publicResult.enrichment.missingFields, [
+      "descriptionCategoryId",
+      "weightG",
+      "lengthMm",
+      "widthMm",
+      "heightMm",
+    ]);
+    const publicReplay = await ingestCollectRequestV4({
+      authenticatedAccount: { id: accountA },
+      input: {
+        source: "ozon",
+        sourceSku: publicSourceSku,
+        requestId: publicRequestId,
+        payload: { sku: publicSourceSku, name: "Public-only item" },
+      },
+    });
+    assert.equal(publicReplay.duplicate, true);
+    assert.equal(publicReplay.collectItemId, publicResult.collectItemId);
+    const linkedJobs = await pool.query(
+      `SELECT account_id,collect_item_id,request_id,sku,status
+         FROM collector_ozon_enrichment_jobs
+        WHERE account_id=$1 AND request_id=$2 AND sku=$3`,
+      [accountA, publicRequestId, publicSourceSku],
+    );
+    assert.deepEqual(linkedJobs.rows, [{
+      account_id: accountA,
+      collect_item_id: publicResult.collectItemId,
+      request_id: publicRequestId,
+      sku: publicSourceSku,
+      status: "PENDING",
+    }]);
     const rawListingMetadata = await pool.query(
       `SELECT
          d.data #>> '{targetStore,clientId}' AS target_client_id,

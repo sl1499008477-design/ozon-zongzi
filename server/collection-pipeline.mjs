@@ -4,6 +4,8 @@ import { runMigrations } from "./db/migrate.mjs";
 import { mirrorCollectItemV3 } from "./listing-pipeline.mjs";
 import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
 import { assertCompleteOzonCollectPayload } from "./collector-ozon-enrichment-contract.mjs";
+import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
+import { createPostgresCollectorOzonEnrichmentRepository } from "./collector-ozon-enrichment-repository.mjs";
 
 let ready = false;
 
@@ -92,9 +94,10 @@ export function prepareCollectRequestV4({
   if (!sourceRequestId) {
     throw collectorError("采集请求缺少 requestId", 422, "COLLECT_REQUEST_ID_REQUIRED");
   }
-  const payload = input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)
-    ? input.payload
-    : {};
+  if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
+    throw collectorError("采集商品 payload 格式无效", 422, "COLLECT_PAYLOAD_INVALID");
+  }
+  const payload = input.payload;
   const contentHash = sha256(canonicalJson(payload));
   const identity = {
     accountId,
@@ -149,23 +152,31 @@ export function prepareCompleteCollectRequestV4({
   return prepared;
 }
 
-export function preflightCompleteCollectRequestsV4({
+function preflightCollectRequests({
   authenticatedAccount,
   inputs = [],
   source,
   enforceScopeFields = true,
+  prepare,
 } = {}) {
   return inputs.map((value) => {
     const input = value && typeof value === "object" ? value : {};
     const effectiveInput = { ...input, source: input.source || source };
-    const prepared = prepareCompleteCollectRequestV4({
+    const prepared = prepare({
       authenticatedAccount,
       input: effectiveInput,
       enforceScopeFields,
-      completenessPayload: input.payload,
     });
     return { input, prepared };
   });
+}
+
+export function preflightCollectRequestsV4(options = {}) {
+  return preflightCollectRequests({ ...options, prepare: prepareCollectRequestV4 });
+}
+
+export function preflightCompleteCollectRequestsV4(options = {}) {
+  return preflightCollectRequests({ ...options, prepare: prepareCompleteCollectRequestV4 });
 }
 
 async function transaction(callback) {
@@ -243,7 +254,7 @@ export async function ingestCollectRequestV4(options = {}) {
         capturedAt: legacyItem.capturedAt || legacyItem.collectedAt || legacyItem.createdAt,
         payload: legacyItem,
       };
-  const prepared = prepareCompleteCollectRequestV4({
+  const prepared = prepareCollectRequestV4({
     authenticatedAccount,
     input,
     enforceScopeFields: usingAccountScopedContract,
@@ -256,7 +267,7 @@ export async function ingestCollectRequestV4(options = {}) {
     requestHash,
     collectId,
     persistedRequestId: requestId,
-    normalizedItem,
+    normalizedItem: preparedItem,
   } = prepared;
   const {
     accountId,
@@ -264,6 +275,12 @@ export async function ingestCollectRequestV4(options = {}) {
     sourceSku,
     requestId: sourceRequestId,
   } = identity;
+  const enrichment = sourceId === "ozon"
+    ? buildOzonEnrichmentSummary(preparedItem)
+    : null;
+  const normalizedItem = enrichment
+    ? { ...preparedItem, enrichment }
+    : preparedItem;
 
   try {
     return await transaction(async (client) => {
@@ -295,7 +312,19 @@ export async function ingestCollectRequestV4(options = {}) {
           );
         }
         if (row?.status === "SUCCEEDED") {
-          return { duplicate: true, requestId: row.id, item: row.response?.item || normalizedItem, collectItemId: row.collect_item_id };
+          const storedResponse = row.response && typeof row.response === "object"
+            ? row.response
+            : { item: normalizedItem, collectItemId: row.collect_item_id };
+          return {
+            duplicate: true,
+            requestId: row.id,
+            ...storedResponse,
+            ...(enrichment ? {
+              enrichment: storedResponse.enrichment
+                || storedResponse.item?.enrichment
+                || enrichment,
+            } : {}),
+          };
         }
         await client.query(
           `UPDATE collect_requests SET status='PROCESSING',attempt_count=attempt_count+1,
@@ -314,12 +343,24 @@ export async function ingestCollectRequestV4(options = {}) {
         captureRaw: true,
         changeReason: "PREPROCESSED",
       });
+      if (enrichment?.status === "PENDING_ENRICHMENT") {
+        const repository = createPostgresCollectorOzonEnrichmentRepository({ pool: client });
+        await repository.enqueueForCollect({
+          accountId,
+          collectItemId: collectId,
+          requestId: sourceRequestId,
+          sku: sourceSku,
+          refreshBundle: {},
+          now: new Date(),
+        });
+      }
       const response = {
         item: { ...normalizedItem, draftVersion: mirrored?.version || 1, pipelineVersion: "v4" },
         collectItemId: collectId,
         draftId: mirrored?.draftId || "",
         draftVersion: mirrored?.version || 1,
         action: mirrored?.created ? "created" : "updated",
+        ...(enrichment ? { enrichment } : {}),
       };
       await client.query(
         `UPDATE collect_requests SET status='SUCCEEDED',collect_item_id=$2,response=$3::jsonb,

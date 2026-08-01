@@ -89,7 +89,7 @@ import {
   getCollectRequestForAccount,
   ingestCollectRequestV4,
   assertCollectorScopeFieldsAbsentV4,
-  preflightCompleteCollectRequestsV4,
+  preflightCollectRequestsV4,
 } from "./collection-pipeline.mjs";
 import {
   calculateWithActivePricing,
@@ -365,7 +365,10 @@ const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollection
   authenticate: collectorAuthRuntime.authenticateRequest,
   readJson: readBody,
   normalizeItem: normalizeCollectItem,
+  loadState,
   saveState,
+  stateTransaction: jsonStateTransaction,
+  enqueueForCollect: collectorOzonEnrichmentRuntime.enqueueForCollect,
   sendJson,
   sendError,
   countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
@@ -2304,7 +2307,7 @@ async function handleFastCollectionRoute(req, res, url) {
         sendError(res, 422, "采集请求没有商品数据", "COLLECT_ITEMS_EMPTY");
         return true;
       }
-      const preparedInputs = preflightCompleteCollectRequestsV4({
+      const preparedInputs = preflightCollectRequestsV4({
         authenticatedAccount: account,
         inputs,
         source: sourceId,
@@ -2327,6 +2330,7 @@ async function handleFastCollectionRoute(req, res, url) {
             action: result.action || (result.duplicate ? "updated" : "created"),
             collectItemId: result.collectItemId || result.item?.id || "",
             collectRequestId: result.requestId || "",
+            ...(result.enrichment ? { enrichment: result.enrichment } : {}),
           });
         } catch (error) {
           if (!isBatch) throw error;

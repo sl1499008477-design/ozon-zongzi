@@ -1,7 +1,8 @@
 import {
   assertCollectorScopeFieldsAbsentV4,
-  preflightCompleteCollectRequestsV4,
+  preflightCollectRequestsV4,
 } from "./collection-pipeline.mjs";
+import { buildOzonEnrichmentSummary } from "./collect-enrichment-policy.mjs";
 
 function routeError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
@@ -11,7 +12,10 @@ export function createJsonAccountScopedCollectionHandler({
   authenticate,
   readJson,
   normalizeItem,
+  loadState,
   saveState,
+  stateTransaction,
+  enqueueForCollect,
   sendJson,
   sendError,
   countAccountItems,
@@ -20,7 +24,10 @@ export function createJsonAccountScopedCollectionHandler({
     typeof authenticate !== "function"
     || typeof readJson !== "function"
     || typeof normalizeItem !== "function"
+    || typeof loadState !== "function"
     || typeof saveState !== "function"
+    || typeof stateTransaction?.run !== "function"
+    || typeof enqueueForCollect !== "function"
     || typeof sendJson !== "function"
     || typeof sendError !== "function"
     || typeof countAccountItems !== "function"
@@ -56,95 +63,151 @@ export function createJsonAccountScopedCollectionHandler({
       const inputs = isBatch ? (Array.isArray(body.items) ? body.items : []) : [body];
       if (!inputs.length) throw routeError("采集请求没有商品数据", 422, "COLLECT_ITEMS_EMPTY");
 
-      const imported = [];
-      const collectRequests = Array.isArray(state.collectRequests) ? state.collectRequests : [];
-      let collectBox = Array.isArray(state.caches.collectBox) ? state.caches.collectBox : [];
-      const preparedInputs = preflightCompleteCollectRequestsV4({
+      const preparedInputs = preflightCollectRequestsV4({
         authenticatedAccount: account,
         inputs,
         source: pathSource,
       });
-      for (const { input, prepared } of preparedInputs) {
-        const existing = collectRequests.find((request) =>
-          request.accountId === prepared.identity.accountId
-          && request.source === prepared.identity.source
-          && request.sourceSku === prepared.identity.sourceSku
-          && request.idempotencyKey === prepared.idempotencyKey);
-        if (existing && existing.contentHash !== prepared.contentHash) {
-          throw routeError(
-            "相同采集请求标识已用于不同内容",
-            409,
-            "COLLECT_REQUEST_CONFLICT",
-          );
-        }
-        if (existing?.status === "SUCCEEDED") {
-          imported.push({
-            ...existing.response.item,
-            collectRequestId: existing.id,
-            duplicate: true,
-          });
-          continue;
-        }
+      const responseBody = await stateTransaction.run(async () => {
+        const latestState = await loadState();
+        const workingState = latestState;
+        const imported = [];
+        const results = [];
+        const collectRequests = Array.isArray(workingState.collectRequests)
+          ? workingState.collectRequests
+          : [];
+        let collectBox = Array.isArray(workingState.caches?.collectBox)
+          ? workingState.caches.collectBox
+          : [];
 
-        const normalized = normalizeItem({
-          ...prepared.normalizedItem,
-          id: prepared.collectId,
-          raw: input.payload,
-          sourceId: prepared.identity.source,
-        }, prepared.identity.source);
-        const item = {
-          ...normalized,
-          id: prepared.collectId,
-          accountId: account.id,
-          createdBy: account.id,
-          source: prepared.identity.source,
-          sourceSku: prepared.identity.sourceSku,
-          sourceUrl: prepared.normalizedItem.sourceUrl,
-          deviceFingerprint: prepared.normalizedItem.deviceFingerprint,
-          capturedAt: prepared.normalizedItem.capturedAt,
-        };
-        for (const field of [
-          "storeId",
-          "localStoreId",
-          "operatingStoreId",
-          "dataCollectionStoreId",
-          "sellerCompanyId",
-        ]) delete item[field];
-        collectBox = collectBox.filter((row) =>
-          !(String(row.id) === item.id && String(row.accountId || "") === account.id));
-        collectBox.unshift(item);
-        const response = { item, collectItemId: item.id };
-        collectRequests.push({
-          id: prepared.persistedRequestId,
-          idempotencyKey: prepared.idempotencyKey,
-          accountId: account.id,
-          createdBy: account.id,
-          storeId: null,
-          source: prepared.identity.source,
-          sourceSku: prepared.identity.sourceSku,
-          sourceRequestId: prepared.identity.requestId,
-          contentHash: prepared.contentHash,
-          status: "SUCCEEDED",
-          response,
-          createdAt: new Date().toISOString(),
-        });
-        imported.push({ ...item, collectRequestId: prepared.persistedRequestId, duplicate: false });
-      }
-      state.collectRequests = collectRequests;
-      state.caches.collectBox = collectBox;
-      await saveState(state);
-      sendJson(res, 200, isBatch
-        ? {
-            ok: true,
-            imported: imported.length,
-            data: imported,
-            total: countAccountItems(state, account).length,
+        for (let index = 0; index < preparedInputs.length; index += 1) {
+          const { input, prepared } = preparedInputs[index];
+          const existing = collectRequests.find((request) =>
+            request.accountId === prepared.identity.accountId
+            && request.source === prepared.identity.source
+            && request.sourceSku === prepared.identity.sourceSku
+            && request.idempotencyKey === prepared.idempotencyKey);
+          if (existing && existing.contentHash !== prepared.contentHash) {
+            throw routeError(
+              "相同采集请求标识已用于不同内容",
+              409,
+              "COLLECT_REQUEST_CONFLICT",
+            );
           }
-        : {
-            ok: true,
-            data: imported[0] || null,
-            requestId: imported[0]?.collectRequestId || "",
+          if (existing?.status === "SUCCEEDED") {
+            const existingItem = existing.response?.item || {};
+            imported.push({
+              ...existingItem,
+              collectRequestId: existing.id,
+              duplicate: true,
+            });
+            results.push({
+              index,
+              sku: prepared.identity.sourceSku,
+              action: "updated",
+              collectItemId: existing.response?.collectItemId || existingItem.id || "",
+              collectRequestId: existing.id,
+              ...(existing.response?.enrichment || existingItem.enrichment
+                ? { enrichment: existing.response?.enrichment || existingItem.enrichment }
+                : {}),
+            });
+            continue;
+          }
+
+          const enrichment = prepared.identity.source === "ozon"
+            ? buildOzonEnrichmentSummary(prepared.normalizedItem)
+            : null;
+          const normalized = normalizeItem({
+            ...prepared.normalizedItem,
+            ...(enrichment ? { enrichment } : {}),
+            id: prepared.collectId,
+            raw: input.payload,
+            sourceId: prepared.identity.source,
+          }, prepared.identity.source);
+          const item = {
+            ...normalized,
+            id: prepared.collectId,
+            accountId: account.id,
+            createdBy: account.id,
+            source: prepared.identity.source,
+            sourceSku: prepared.identity.sourceSku,
+            sourceUrl: prepared.normalizedItem.sourceUrl,
+            deviceFingerprint: prepared.normalizedItem.deviceFingerprint,
+            capturedAt: prepared.normalizedItem.capturedAt,
+            ...(enrichment ? { enrichment } : {}),
+          };
+          for (const field of [
+            "storeId",
+            "localStoreId",
+            "operatingStoreId",
+            "dataCollectionStoreId",
+            "sellerCompanyId",
+          ]) delete item[field];
+          collectBox = collectBox.filter((row) =>
+            !(String(row.id) === item.id && String(row.accountId || "") === account.id));
+          collectBox.unshift(item);
+          workingState.caches = workingState.caches && typeof workingState.caches === "object"
+            ? workingState.caches
+            : {};
+          workingState.caches.collectBox = collectBox;
+          if (enrichment?.status === "PENDING_ENRICHMENT") {
+            await enqueueForCollect({
+              state: workingState,
+              accountId: account.id,
+              collectItemId: item.id,
+              requestId: prepared.identity.requestId,
+              sku: prepared.identity.sourceSku,
+              refreshBundle: {},
+              now: new Date(),
+            });
+          }
+          const response = {
+            item,
+            collectItemId: item.id,
+            ...(enrichment ? { enrichment } : {}),
+          };
+          collectRequests.push({
+            id: prepared.persistedRequestId,
+            idempotencyKey: prepared.idempotencyKey,
+            accountId: account.id,
+            createdBy: account.id,
+            storeId: null,
+            source: prepared.identity.source,
+            sourceSku: prepared.identity.sourceSku,
+            sourceRequestId: prepared.identity.requestId,
+            contentHash: prepared.contentHash,
+            status: "SUCCEEDED",
+            response,
+            createdAt: new Date().toISOString(),
           });
+          imported.push({ ...item, collectRequestId: prepared.persistedRequestId, duplicate: false });
+          results.push({
+            index,
+            sku: prepared.identity.sourceSku,
+            action: "created",
+            collectItemId: item.id,
+            collectRequestId: prepared.persistedRequestId,
+            ...(enrichment ? { enrichment } : {}),
+          });
+        }
+        workingState.collectRequests = collectRequests;
+        workingState.caches.collectBox = collectBox;
+        await saveState(workingState);
+        return isBatch
+          ? {
+              ok: true,
+              imported: imported.length,
+              data: imported,
+              results,
+              total: countAccountItems(workingState, account).length,
+            }
+          : {
+              ok: true,
+              data: imported[0] || null,
+              requestId: imported[0]?.collectRequestId || "",
+            };
+      });
+      sendJson(res, 200, responseBody);
     } catch (error) {
       sendError(
         res,

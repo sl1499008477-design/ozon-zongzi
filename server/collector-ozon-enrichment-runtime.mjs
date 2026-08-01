@@ -86,6 +86,14 @@ export function createCollectorOzonEnrichmentRuntime({
     });
   }
 
+  async function enqueueForCollect({ state, ...input } = {}) {
+    if (!state || typeof state !== "object") {
+      throw new TypeError("Ozon enrichment JSON state required");
+    }
+    const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+    return repository.enqueueForCollect(input);
+  }
+
   const repository = Object.freeze({
     readCache: (input) => callRepository("readCache", input),
     tryAcquireCacheLease: (input) => callRepository("tryAcquireCacheLease", input),
@@ -160,5 +168,5 @@ export function createCollectorOzonEnrichmentRuntime({
     sendJson,
   });
 
-  return Object.freeze({ repository, service, handleHttpRoute });
+  return Object.freeze({ repository, service, handleHttpRoute, enqueueForCollect });
 }
