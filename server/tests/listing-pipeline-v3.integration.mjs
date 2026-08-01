@@ -1,7 +1,7 @@
 import "../env.mjs";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -32,6 +32,8 @@ const foreignStoreId = `test_store_foreign_${suffix}`;
 const disabledStoreId = `test_store_disabled_${suffix}`;
 const noCredentialStoreId = `test_store_no_credential_${suffix}`;
 const collectId = `test_collect_${suffix}`;
+const raceCollectId = `test_collect_race_${suffix}`;
+const collectIds = [collectId, raceCollectId];
 const warehouseAId = `wh_${crypto.createHash("sha256").update(`${storeId}|1`).digest("hex").slice(0, 24)}`;
 const warehouseBId = `wh_${crypto.createHash("sha256").update(`${secondStoreId}|2`).digest("hex").slice(0, 24)}`;
 const storeIds = [storeId, secondStoreId, foreignStoreId, disabledStoreId, noCredentialStoreId];
@@ -58,7 +60,7 @@ async function requestJson(handle, pathname, body, token) {
 }
 
 async function cleanup() {
-  const jobs = await pool.query("SELECT id, snapshot_id FROM submission_jobs WHERE collect_item_id=$1", [collectId]);
+  const jobs = await pool.query("SELECT id, snapshot_id FROM submission_jobs WHERE collect_item_id=ANY($1::text[])", [collectIds]);
   const jobIds = jobs.rows.map((row) => row.id);
   const snapshotIds = jobs.rows.map((row) => row.snapshot_id);
   if (jobIds.length) {
@@ -67,8 +69,8 @@ async function cleanup() {
     await pool.query("DELETE FROM submission_jobs WHERE id=ANY($1::text[])", [jobIds]);
   }
   if (snapshotIds.length) await pool.query("DELETE FROM submission_snapshots WHERE id=ANY($1::text[])", [snapshotIds]);
-  await pool.query("DELETE FROM collect_items WHERE id=$1", [collectId]);
-  await pool.query("DELETE FROM collect_raw_payloads WHERE collect_item_id=$1", [collectId]);
+  await pool.query("DELETE FROM collect_items WHERE id=ANY($1::text[])", [collectIds]);
+  await pool.query("DELETE FROM collect_raw_payloads WHERE collect_item_id=ANY($1::text[])", [collectIds]);
   await pool.query("DELETE FROM stores WHERE id=ANY($1::text[])", [storeIds]);
   await pool.query("DELETE FROM accounts WHERE id=ANY($1::text[])", [[accountId, foreignAccountId]]);
 }
@@ -425,6 +427,80 @@ try {
     job_count: 1,
   });
 
+  const raceItem = {
+    ...baseItem,
+    id: raceCollectId,
+    sku: "source-sku-race",
+    listingDraft: { ...baseItem.listingDraft, sku: "source-sku-race" },
+  };
+  await mirrorCollectItemV3(raceItem, { accountId, storeId, captureRaw: true });
+  const raceIdempotencyKey = `delete-race-${suffix}`;
+  const raceDatabaseKey = crypto.createHash("sha256")
+    .update(["listing-prepare", accountId, raceIdempotencyKey].join("|"))
+    .digest("hex");
+  const blocker = await pool.connect();
+  let raceListingPromise;
+  let raceDeletePromise;
+  let raceResults = [];
+  try {
+    await blocker.query("BEGIN");
+    const blockerPid = Number((await blocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+    await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1))", [raceDatabaseKey]);
+    raceListingPromise = prepareCollectItemForListing({
+      collectItem: raceItem,
+      accountId,
+      collectItemId: raceCollectId,
+      targetStoreId: storeId,
+      idempotencyKey: raceIdempotencyKey,
+      normalizedItems: [{ ...normalizedItems[0], offer_id: "offer-race", scraped_sku: "source-sku-race" }],
+      stocks: [{ offer_id: "offer-race", warehouse_id: 1, stock: 5 }],
+    });
+    let listingBlocked = false;
+    for (let attempt = 0; attempt < 100 && !listingBlocked; attempt += 1) {
+      const blocked = await pool.query(
+        "SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) LIMIT 1",
+        [blockerPid],
+      );
+      listingBlocked = blocked.rowCount > 0;
+      if (!listingBlocked) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(listingBlocked, true, "listing preparation must reach the held idempotency lock");
+    raceDeletePromise = softDeleteCollectItemsV3(accountId, [raceCollectId]);
+    let deleteBlockedByListing = false;
+    for (let attempt = 0; attempt < 100 && !deleteBlockedByListing; attempt += 1) {
+      const blocked = await pool.query(
+        `SELECT 1 FROM pg_stat_activity
+          WHERE query LIKE 'UPDATE collect_items SET deleted_at=NOW()%'
+            AND cardinality(pg_blocking_pids(pid)) > 0
+          LIMIT 1`,
+      );
+      deleteBlockedByListing = blocked.rowCount > 0;
+      if (!deleteBlockedByListing) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(deleteBlockedByListing, true, "soft delete must wait for the listing transaction's item lock");
+  } finally {
+    await blocker.query("COMMIT").catch(() => null);
+    blocker.release();
+    raceResults = await Promise.allSettled([raceListingPromise, raceDeletePromise].filter(Boolean));
+  }
+  assert.deepEqual(raceResults.map((result) => result.status), ["fulfilled", "fulfilled"]);
+  assert.equal(raceResults[1].value, 1);
+  const deletedRaceItem = await pool.query("SELECT deleted_at,status FROM collect_items WHERE id=$1", [raceCollectId]);
+  assert.ok(deletedRaceItem.rows[0].deleted_at);
+  assert.equal(deletedRaceItem.rows[0].status, "DELETED");
+  await assert.rejects(
+    prepareCollectItemForListing({
+      collectItem: raceItem,
+      accountId,
+      collectItemId: raceCollectId,
+      targetStoreId: storeId,
+      idempotencyKey: `deleted-${suffix}`,
+      normalizedItems: [{ ...normalizedItems[0], offer_id: "offer-race", scraped_sku: "source-sku-race" }],
+      stocks: [{ offer_id: "offer-race", warehouse_id: 1, stock: 5 }],
+    }),
+    (error) => error?.status === 404 && error?.code === "COLLECT_ITEM_NOT_FOUND",
+  );
+
   const routeToken = `listing-route-token-${suffix}`;
   routeDataDir = await mkdtemp(path.join(os.tmpdir(), "listing-route-replay-"));
   await writeFile(path.join(routeDataDir, "local-state.json"), JSON.stringify({
@@ -492,6 +568,8 @@ try {
     assert.equal(routeReplay.status, 200, JSON.stringify(routeReplay.body));
     assert.equal(routeReplay.body.job.id, created.job.id);
     assert.equal(routeExternalCalls, 0);
+    const replayStateBefore = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
+    const replayItemBefore = replayStateBefore.caches.collectBox.find((item) => item.id === collectId);
     const replayRowsBefore = await pool.query(
       `SELECT
          (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=$1) AS snapshot_count,
@@ -527,7 +605,21 @@ try {
     );
     assert.deepEqual(replayRowsAfter.rows[0], replayRowsBefore.rows[0]);
     const incompleteStatus = await pool.query("SELECT status FROM collect_items WHERE id=$1", [collectId]);
-    assert.notEqual(incompleteStatus.rows[0].status, "QUEUE_PENDING");
+    assert.equal(incompleteStatus.rows[0].status, replayItemBefore.status);
+    const replayStateAfter = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
+    const replayItemAfter = replayStateAfter.caches.collectBox.find((item) => item.id === collectId);
+    assert.deepEqual(
+      {
+        status: replayItemAfter.status,
+        listingTaskId: replayItemAfter.listingTaskId,
+        listingJobId: replayItemAfter.listingJobId,
+      },
+      {
+        status: replayItemBefore.status,
+        listingTaskId: replayItemBefore.listingTaskId,
+        listingJobId: replayItemBefore.listingJobId,
+      },
+    );
     assert.equal(routeExternalCalls, 0);
     const changedTargetReplay = await requestJson(
       handle,

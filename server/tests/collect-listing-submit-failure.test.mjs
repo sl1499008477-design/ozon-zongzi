@@ -161,6 +161,16 @@ delete process.env.POSTGRES_HOST;
 try {
   const { handle } = await import("../index.mjs");
 
+  const missingItem = await requestJson(
+    handle,
+    "/ozon/collect-box/missing-listing-item/listing/submit",
+    { targetStoreId: storeId, idempotencyKey: "missing-listing-item" },
+    token,
+    storeId,
+  );
+  assert.equal(missingItem.status, 404);
+  assert.equal(missingItem.body.code, "COLLECT_ITEM_NOT_FOUND");
+
   const missingTarget = await requestJson(
     handle,
     `/ozon/collect-box/${collectId}/listing/submit`,

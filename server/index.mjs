@@ -2201,6 +2201,7 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
   if (!item) {
     const err = new Error("采集箱条目不存在");
     err.status = 404;
+    err.code = "COLLECT_ITEM_NOT_FOUND";
     throw err;
   }
   const frozenReplay = replayInput ? await findListingPreparationReplayV3(replayInput) : null;
@@ -2214,7 +2215,12 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     });
   }
   const items = buildCollectBoxListingItems(item);
-  items.forEach(assertOzonListingReady);
+  try {
+    items.forEach(assertOzonListingReady);
+  } catch (error) {
+    if (frozenReplay) error.preserveExistingListing = true;
+    throw error;
+  }
   if (frozenReplay) return publicQueuedListingSubmission(frozenReplay);
   const stocks = listingStockRowsFromDraft(item.listingDraft || {}, item, items);
   const errors = validateCollectBoxListingDraft(item, items, stocks);
@@ -4064,7 +4070,9 @@ async function handle(req, res) {
         failurePatch.listingTaskId = "";
         failurePatch.listingJobId = "";
       }
-      await updateCollectBoxItemAtomic(id, failurePatch, { account }).catch(() => null);
+      if (!error?.preserveExistingListing) {
+        await updateCollectBoxItemAtomic(id, failurePatch, { account }).catch(() => null);
+      }
       sendJson(res, error?.status || 502, {
         ok: false,
         code: error?.code || error?.body?.code || "COLLECT_LISTING_FAILED",

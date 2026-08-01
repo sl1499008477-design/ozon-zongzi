@@ -58,11 +58,13 @@ function clean(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
 }
 
-async function assertCollectItemAvailableForListing(collectItemId, accountId) {
+async function assertCollectItemAvailableForListing(client, collectItemId, accountId) {
   const id = clean(collectItemId, 240);
   if (!id) return;
-  const result = await (await poolReady()).query(
-    "SELECT 1 FROM collect_items WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL LIMIT 1",
+  const result = await client.query(
+    `SELECT 1 FROM collect_items
+      WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL
+      FOR UPDATE`,
     [id, clean(accountId, 240)],
   );
   if (!result.rowCount) {
@@ -996,21 +998,18 @@ export async function createSubmissionV3({
         idempotencyKey,
       })
     : null;
-  if (collectItem) {
-    await assertCollectItemAvailableForListing(collectItem.id, accountId);
-  }
+  const isCollectedListing = Boolean(preparation) || type === "COLLECT_BOX_DRAFT";
   if (preparation) storeId = preparation.targetStoreId;
-  if (collectItem && !preparation) assertCollectItemListingPayloadsReady(normalizedItems);
-  const legacyMirrored = preparation
-    ? null
-    : await mirrorCollectItemV3(collectItem, { accountId, storeId, ...versions });
   return transaction(async (client) => {
     let targetStore = null;
-    let mirrored = legacyMirrored;
+    let mirrored = null;
     let baseIdempotencyKey = preparation
       ? listingPreparationIdempotencyKey(preparation)
       : "";
     let latest = null;
+    if (isCollectedListing && collectItem) {
+      await assertCollectItemAvailableForListing(client, collectItem.id, accountId);
+    }
     if (preparation) {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
       const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
@@ -1025,6 +1024,14 @@ export async function createSubmissionV3({
       mirrored = await mirrorCollectItemV3(collectItem, {
         accountId,
         storeId: preparation.targetStoreId,
+        client,
+        ...versions,
+      });
+    } else {
+      if (isCollectedListing && collectItem) assertCollectItemListingPayloadsReady(normalizedItems);
+      mirrored = await mirrorCollectItemV3(collectItem, {
+        accountId,
+        storeId,
         client,
         ...versions,
       });
