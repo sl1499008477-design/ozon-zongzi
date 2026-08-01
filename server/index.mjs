@@ -2212,12 +2212,7 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
             ...item,
             listingDraft: currentItem.listingDraft,
           });
-          try {
-            replayItems.forEach(assertOzonListingReady);
-          } catch (error) {
-            error.preserveExistingListing = true;
-            throw error;
-          }
+          replayItems.forEach(assertOzonListingReady);
         },
       })
     : null;

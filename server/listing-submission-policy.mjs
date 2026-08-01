@@ -2,6 +2,11 @@ function policyError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
 
+export function markListingReplayPreflightError(error) {
+  if (error && typeof error === "object") error.preserveExistingListing = true;
+  return error;
+}
+
 function clean(value) {
   return String(value || "").trim();
 }
@@ -97,14 +102,16 @@ export function resolveListingPreparationReplay({
 } = {}) {
   if (!existing) return null;
   if (clean(existing.store_id || existing.storeId) !== clean(targetStoreId)) {
-    throw policyError(
+    throw markListingReplayPreflightError(policyError(
       "该幂等键已绑定其他目标经营店铺",
       409,
       "LISTING_TARGET_STORE_CONFLICT",
-    );
+    ));
   }
   if (clean(existing.collect_item_id || existing.collectItemId) !== clean(collectItemId)) {
-    throw policyError("该幂等键已用于其他采集商品", 409, "LISTING_IDEMPOTENCY_CONFLICT");
+    throw markListingReplayPreflightError(
+      policyError("该幂等键已用于其他采集商品", 409, "LISTING_IDEMPOTENCY_CONFLICT"),
+    );
   }
   return existing;
 }

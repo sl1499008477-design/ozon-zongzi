@@ -126,7 +126,7 @@ test("validated target metadata excludes every credential field", () => {
   assert.doesNotMatch(JSON.stringify(target), /plain-secret|ciphertext|apiKey|credential|authTag|iv/);
 });
 
-test("same idempotency replay returns the frozen target and a changed target conflicts", () => {
+test("frozen replay conflicts preserve the existing listing state", () => {
   const existing = {
     id: "job-a",
     collect_item_id: "collect-a",
@@ -143,7 +143,19 @@ test("same idempotency replay returns the frozen target and a changed target con
       collectItemId: "collect-a",
       targetStoreId: "store-b",
     }),
-    (error) => error?.status === 409 && error?.code === "LISTING_TARGET_STORE_CONFLICT",
+    (error) => error?.status === 409
+      && error?.code === "LISTING_TARGET_STORE_CONFLICT"
+      && error?.preserveExistingListing === true,
+  );
+  assert.throws(
+    () => resolveListingPreparationReplay({
+      existing,
+      collectItemId: "collect-b",
+      targetStoreId: "store-a",
+    }),
+    (error) => error?.status === 409
+      && error?.code === "LISTING_IDEMPOTENCY_CONFLICT"
+      && error?.preserveExistingListing === true,
   );
 });
 

@@ -32,8 +32,9 @@ const foreignStoreId = `test_store_foreign_${suffix}`;
 const disabledStoreId = `test_store_disabled_${suffix}`;
 const noCredentialStoreId = `test_store_no_credential_${suffix}`;
 const collectId = `test_collect_${suffix}`;
+const changedPayloadCollectId = `test_collect_changed_payload_${suffix}`;
 const raceCollectId = `test_collect_race_${suffix}`;
-const collectIds = [collectId, raceCollectId];
+const collectIds = [collectId, changedPayloadCollectId, raceCollectId];
 const warehouseAId = `wh_${crypto.createHash("sha256").update(`${storeId}|1`).digest("hex").slice(0, 24)}`;
 const warehouseBId = `wh_${crypto.createHash("sha256").update(`${secondStoreId}|2`).digest("hex").slice(0, 24)}`;
 const storeIds = [storeId, secondStoreId, foreignStoreId, disabledStoreId, noCredentialStoreId];
@@ -159,9 +160,24 @@ try {
     },
     collectedAt: new Date().toISOString(),
   };
+  const changedPayloadItem = {
+    ...baseItem,
+    id: changedPayloadCollectId,
+    sku: "source-sku-changed-payload",
+    status: "已上架",
+    listingTaskId: "existing-payload-task",
+    listingJobId: "existing-payload-job",
+    listingDraft: {
+      ...baseItem.listingDraft,
+      sku: "source-sku-changed-payload",
+      title: "Changed payload item",
+      variants: [{ sku: "source-sku-changed-payload", offerId: "offer-changed-payload", price: "100.00" }],
+    },
+  };
 
   const first = await mirrorCollectItemV3(baseItem, { accountId, storeId, captureRaw: true });
   assert.equal(first.version, 1);
+  await mirrorCollectItemV3(changedPayloadItem, { accountId, storeId, captureRaw: true });
   const [publicItem] = await listCollectItemsV3({ accountId });
   assert.equal("createdBy" in publicItem, false);
   assert.equal("sellerCompanyId" in publicItem, false);
@@ -533,6 +549,22 @@ try {
           listingStock: "5",
           images: ["https://example.invalid/1.jpg"],
         },
+      }, {
+        ...changedPayloadItem,
+        accountId,
+        listingDraft: {
+          ...changedPayloadItem.listingDraft,
+          description: "Changed payload replay description",
+          descriptionCategoryId: 1,
+          typeId: 2,
+          packageWeight: "100",
+          packageLength: "100",
+          packageWidth: "100",
+          packageHeight: "100",
+          listingWarehouseId: "1",
+          listingStock: "5",
+          images: ["https://example.invalid/changed-payload.jpg"],
+        },
       }],
       warehouses: [
         { id: warehouseAId, warehouse_id: "1", storeId, name: "Store A FBS", warehouse_type: "FBS", status: "active" },
@@ -678,6 +710,64 @@ try {
     );
     assert.equal(changedTargetReplay.status, 409);
     assert.equal(changedTargetReplay.body.code, "LISTING_TARGET_STORE_CONFLICT");
+    const changedTargetState = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
+    const changedTargetItem = changedTargetState.caches.collectBox.find((item) => item.id === collectId);
+    assert.deepEqual(
+      {
+        status: changedTargetItem.status,
+        listingTaskId: changedTargetItem.listingTaskId,
+        listingJobId: changedTargetItem.listingJobId,
+      },
+      {
+        status: replayItemBefore.status,
+        listingTaskId: replayItemBefore.listingTaskId,
+        listingJobId: replayItemBefore.listingJobId,
+      },
+    );
+    const changedTargetRows = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=ANY($1::text[])) AS snapshot_count,
+         (SELECT COUNT(*)::int FROM submission_jobs WHERE collect_item_id=ANY($1::text[])) AS job_count,
+         (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
+           SELECT id FROM submission_jobs WHERE collect_item_id=ANY($1::text[])
+         )) AS outbox_count`,
+      [[collectId, changedPayloadCollectId]],
+    );
+    assert.deepEqual(changedTargetRows.rows[0], replayRowsBefore.rows[0]);
+    const changedPayloadBefore = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"))
+      .caches.collectBox.find((item) => item.id === changedPayloadCollectId);
+    const changedPayloadReplay = await requestJson(
+      handle,
+      `/ozon/collect-box/${encodeURIComponent(changedPayloadCollectId)}/listing/submit`,
+      { targetStoreId: storeId, idempotencyKey: `prepare-${suffix}` },
+      routeToken,
+    );
+    assert.equal(changedPayloadReplay.status, 409);
+    assert.equal(changedPayloadReplay.body.code, "LISTING_IDEMPOTENCY_CONFLICT");
+    const changedPayloadState = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
+    const changedPayloadAfter = changedPayloadState.caches.collectBox.find((item) => item.id === changedPayloadCollectId);
+    assert.deepEqual(
+      {
+        status: changedPayloadAfter.status,
+        listingTaskId: changedPayloadAfter.listingTaskId,
+        listingJobId: changedPayloadAfter.listingJobId,
+      },
+      {
+        status: changedPayloadBefore.status,
+        listingTaskId: changedPayloadBefore.listingTaskId,
+        listingJobId: changedPayloadBefore.listingJobId,
+      },
+    );
+    const changedPayloadRows = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=ANY($1::text[])) AS snapshot_count,
+         (SELECT COUNT(*)::int FROM submission_jobs WHERE collect_item_id=ANY($1::text[])) AS job_count,
+         (SELECT COUNT(*)::int FROM outbox_events WHERE aggregate_id IN (
+           SELECT id FROM submission_jobs WHERE collect_item_id=ANY($1::text[])
+         )) AS outbox_count`,
+      [[collectId, changedPayloadCollectId]],
+    );
+    assert.deepEqual(changedPayloadRows.rows[0], replayRowsBefore.rows[0]);
     const changedIdempotencyIncomplete = await requestJson(
       handle,
       `/ozon/collect-box/${encodeURIComponent(collectId)}/listing/submit`,

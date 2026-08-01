@@ -7,6 +7,7 @@ import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import {
   assertListingPreparationInput,
+  markListingReplayPreflightError,
   resolveListingPreparationReplay,
   validateTargetStoreRecord,
 } from "./listing-submission-policy.mjs";
@@ -983,7 +984,11 @@ export async function findListingPreparationReplayV3(input = {}, { validateColle
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
     const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
     if (replay && typeof validateCollectItem === "function") {
-      await validateCollectItem(currentItem);
+      try {
+        await validateCollectItem(currentItem);
+      } catch (error) {
+        throw markListingReplayPreflightError(error);
+      }
     }
     return replay;
   });
@@ -1032,8 +1037,15 @@ export async function createSubmissionV3({
     if (preparation) {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
       const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
+      if (replay) {
+        try {
+          assertCollectItemListingPayloadsReady(normalizedItems);
+        } catch (error) {
+          throw markListingReplayPreflightError(error);
+        }
+        return replay;
+      }
       assertCollectItemListingPayloadsReady(normalizedItems);
-      if (replay) return replay;
       targetStore = await assertUsableOperatingStore({
         accountId: preparation.accountId,
         storeId: preparation.targetStoreId,
