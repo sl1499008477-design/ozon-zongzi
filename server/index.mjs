@@ -358,6 +358,10 @@ const collectorOzonEnrichmentRuntime = createCollectorOzonEnrichmentRuntime({
   persistenceMode,
   stateTransaction: jsonStateTransaction,
   authenticate: collectorAuthRuntime.authenticateSessionRequest,
+  authenticateAccount: async (req) => {
+    if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
+    return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
+  },
   readJson: readBody,
   sendJson,
 });

@@ -4,6 +4,7 @@ import {
   normalizeOzonAgentResult,
 } from "./collector-ozon-enrichment-contract.mjs";
 import { sanitizeCollectorText } from "./collector-auth-service.mjs";
+import { mergeOzonEnrichmentResult } from "./collect-enrichment-policy.mjs";
 
 const SOURCE = "ozon";
 const COMPLETE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -16,6 +17,7 @@ const DEADLINE_MS = 20 * 1000;
 const CLAIM_TTL_MS = 15 * 1000;
 const POLL_MS = 250;
 const BATCH_CONCURRENCY = 4;
+const MERGE_MAX_ATTEMPTS = 4;
 const REQUIRED_MISSING_FIELDS = new Set([
   "descriptionCategoryId",
   "weightG",
@@ -28,22 +30,38 @@ const EXECUTOR_FAILURES = Object.freeze({
   OZON_ENRICH_NOT_FOUND: Object.freeze({
     status: 404,
     message: "未找到 Ozon 商品资料",
-    retryable: true,
+    retryable: false,
+    disposition: "NEEDS_ATTENTION",
   }),
   OZON_ENRICH_INCOMPLETE: Object.freeze({
     status: 422,
     message: "Ozon 商品资料不完整",
-    retryable: true,
+    retryable: false,
+    disposition: "NEEDS_ATTENTION",
   }),
   OZON_ENRICH_BUSY: Object.freeze({
     status: 429,
     message: "Ozon 商品资料正在排队，请稍后重试",
     retryable: true,
+    disposition: "RETRYING",
   }),
   OZON_ENRICH_UPSTREAM_FAILED: Object.freeze({
     status: 502,
     message: "Ozon 商品资料暂时无法读取",
     retryable: true,
+    disposition: "RETRYING",
+  }),
+  SELLER_CONTEXT_REQUIRED: Object.freeze({
+    status: 409,
+    message: "需要打开并登录 Ozon Seller 页面",
+    retryable: true,
+    disposition: "WAITING_FOR_SELLER",
+  }),
+  SELLER_CONTEXT_CHANGED: Object.freeze({
+    status: 409,
+    message: "Ozon Seller 账号上下文已变化",
+    retryable: true,
+    disposition: "WAITING_FOR_SELLER",
   }),
 });
 
@@ -72,6 +90,11 @@ const PUBLIC_SERVICE_FAILURES = Object.freeze({
     status: 502,
     message: "Ozon 商品资料暂时无法读取",
     retryable: true,
+  }),
+  COLLECT_ITEM_NOT_FOUND: Object.freeze({
+    status: 404,
+    message: "采集箱条目不存在",
+    retryable: false,
   }),
 });
 
@@ -163,10 +186,22 @@ function cachedResult(record, hit) {
   return result;
 }
 
+function executorFailureCode(code) {
+  const normalized = String(code || "").trim().toUpperCase();
+  if (Object.hasOwn(EXECUTOR_FAILURES, normalized)) return normalized;
+  if (normalized === "HTTP_429") return "OZON_ENRICH_BUSY";
+  if (
+    normalized === "NETWORK_ERROR"
+    || normalized === "TIMEOUT"
+    || normalized === "ETIMEDOUT"
+    || /^HTTP_5\d\d$/.test(normalized)
+  ) return "OZON_ENRICH_UPSTREAM_FAILED";
+  if (normalized === "OZON_ENRICH_INVALID") return "OZON_ENRICH_INCOMPLETE";
+  return "OZON_ENRICH_UPSTREAM_FAILED";
+}
+
 function stableExecutorError(code, missingFields = []) {
-  const stableCode = Object.hasOwn(EXECUTOR_FAILURES, code)
-    ? code
-    : "OZON_ENRICH_UPSTREAM_FAILED";
+  const stableCode = executorFailureCode(code);
   const policy = EXECUTOR_FAILURES[stableCode];
   return {
     status: policy.status,
@@ -174,6 +209,7 @@ function stableExecutorError(code, missingFields = []) {
     message: policy.message,
     missingFields: stableMissingFields(missingFields),
     retryable: policy.retryable,
+    disposition: policy.disposition,
   };
 }
 
@@ -220,6 +256,8 @@ function publicServiceError(error) {
     code = repositoryCode;
   } else if (repositoryCode === "OZON_ENRICHMENT_JOB_NOT_FOUND") {
     code = repositoryCode;
+  } else if (repositoryCode === "COLLECT_ITEM_NOT_FOUND") {
+    code = repositoryCode;
   } else if ([
     "OZON_ENRICHMENT_JOB_OWNERSHIP",
     "OZON_ENRICHMENT_JOB_TERMINAL",
@@ -248,6 +286,7 @@ function errorFromJob(job = {}) {
 
 export function createCollectorOzonEnrichmentService({
   repository,
+  collectItems = null,
   now = () => new Date(),
   randomUUID = crypto.randomUUID,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -260,12 +299,24 @@ export function createCollectorOzonEnrichmentService({
     "releaseCacheLease",
     "createOrGetJob",
     "claimNextJob",
+    "deferClaim",
     "completeJobAndCache",
     "failJobAndCache",
     "readJob",
   ];
   if (!repository || repositoryMethods.some((method) => typeof repository[method] !== "function")) {
     throw new TypeError("Ozon enrichment service repository contract required");
+  }
+  const collectItemPort = collectItems || Object.freeze({
+    read: async () => null,
+    save: async () => null,
+    retry: async () => null,
+  });
+  if (
+    !collectItemPort
+    || ["read", "save", "retry"].some((method) => typeof collectItemPort[method] !== "function")
+  ) {
+    throw new TypeError("Ozon enrichment collect item contract required");
   }
   if (
     typeof now !== "function"
@@ -566,6 +617,7 @@ export function createCollectorOzonEnrichmentService({
 
   async function persistFailure({ scoped, job, at, error }) {
     const stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
+    const persistedError = { status: stable.status, code: stable.code };
     const requestedTtl = Number(error?.retryAfterMs);
     const negativeTtl = Number.isFinite(requestedTtl) && requestedTtl > 0
       ? Math.min(NEGATIVE_TTL_MS, requestedTtl)
@@ -577,8 +629,8 @@ export function createCollectorOzonEnrichmentService({
       collectorSessionId: scoped.collectorSessionId,
       jobId: job.id,
       key,
-      error: stable,
-      responseHash: responseSha256(stable),
+      error: persistedError,
+      responseHash: responseSha256(persistedError),
       capturedAt: at,
       expiresAt,
       now: at,
@@ -586,7 +638,109 @@ export function createCollectorOzonEnrichmentService({
     return stable;
   }
 
-  async function completeClaim({ session, jobId, variantData } = {}) {
+  function collectItemMissing() {
+    return enrichmentError(
+      404,
+      "COLLECT_ITEM_NOT_FOUND",
+      "采集箱条目不存在",
+      { retryable: false },
+    );
+  }
+
+  function linkedSummary({ status, job, error = null, nextAttemptAt = "", capturedAt = "" }) {
+    const attemptCount = Number(job?.attemptCount || 0);
+    return {
+      status,
+      missingFields: stableMissingFields(error?.missingFields),
+      attemptCount,
+      nextAttemptAt: String(nextAttemptAt || ""),
+      lastErrorCode: String(error?.code || ""),
+      ...(capturedAt ? { capturedAt: String(capturedAt) } : {}),
+    };
+  }
+
+  async function saveLinkedFailure({ job, stable, persistedJob }) {
+    if (!job.collectItemId) return null;
+    const summaryJob = persistedJob || job;
+    const saved = await collectItemPort.save({
+      accountId: job.accountId,
+      collectItemId: job.collectItemId,
+      status: stable.disposition,
+      enrichment: linkedSummary({
+        status: stable.disposition,
+        job: summaryJob,
+        error: stable,
+        nextAttemptAt: stable.retryable ? summaryJob.nextAttemptAt : "",
+      }),
+    });
+    if (!saved) throw collectItemMissing();
+    return saved;
+  }
+
+  async function applyExecutorFailure({ scoped, job, at, error }) {
+    const stable = stableExecutorError(String(error?.code || ""), error?.missingFields);
+    if (stable.retryable) {
+      const deferredJob = await repository.deferClaim({
+        accountId: scoped.accountId,
+        collectorSessionId: scoped.collectorSessionId,
+        jobId: job.id,
+        error: stable,
+        now: at,
+      });
+      await saveLinkedFailure({ job, stable, persistedJob: deferredJob });
+      return { stable, job: deferredJob };
+    }
+    const terminalJob = {
+      ...job,
+      status: "FAILED",
+      attemptCount: Number(job.attemptCount || 0) + 1,
+    };
+    await saveLinkedFailure({ job, stable, persistedJob: terminalJob });
+    await persistFailure({ scoped, job, at, error: stable });
+    return { stable, job: terminalJob };
+  }
+
+  async function mergeLinkedCollectItem({ job, result, completedAt }) {
+    if (!job.collectItemId) return null;
+    let lastConflict = null;
+    for (let attempt = 0; attempt < MERGE_MAX_ATTEMPTS; attempt += 1) {
+      const current = await collectItemPort.read({
+        accountId: job.accountId,
+        collectItemId: job.collectItemId,
+      });
+      if (!current) throw collectItemMissing();
+      const listingDraft = mergeOzonEnrichmentResult(current.listingDraft || {}, result);
+      try {
+        const saved = await collectItemPort.save({
+          accountId: job.accountId,
+          collectItemId: job.collectItemId,
+          expectedVersion: Number(current.draftVersion || 0),
+          listingDraft,
+          status: "COMPLETE",
+          enrichment: linkedSummary({
+            status: "COMPLETE",
+            job,
+            capturedAt: completedAt.toISOString(),
+          }),
+        });
+        if (!saved) throw collectItemMissing();
+        return saved;
+      } catch (error) {
+        if (!["DRAFT_VERSION_CONFLICT", "LOCAL_STATE_VERSION_CONFLICT"].includes(error?.code)) {
+          throw error;
+        }
+        lastConflict = error;
+      }
+    }
+    throw lastConflict || enrichmentError(
+      409,
+      "OZON_ENRICH_UPSTREAM_FAILED",
+      "采集草稿并发更新失败",
+      { retryable: true },
+    );
+  }
+
+  async function completeClaim({ session, jobId, variantData, captureContext = null } = {}) {
     const scoped = sessionScope(session);
     const normalizedJobId = requiredText(
       jobId,
@@ -605,11 +759,11 @@ export function createCollectorOzonEnrichmentService({
         normalized = normalizeOzonAgentResult({
           sku: job.sku,
           variantData,
-          source: "BACKEND_FLEET",
+          source: "EXTENSION_SELLER_CAPTURE",
           capturedAt: completedAt.toISOString(),
         });
       } catch (error) {
-        const stable = await persistFailure({ scoped, job, at: completedAt, error });
+        const { stable } = await applyExecutorFailure({ scoped, job, at: completedAt, error });
         throw enrichmentError(stable.status, stable.code, stable.message, stable);
       }
       const expiresAt = new Date(completedAt.getTime() + COMPLETE_TTL_MS);
@@ -618,6 +772,7 @@ export function createCollectorOzonEnrichmentService({
         cache: { hit: false, expiresAt: expiresAt.toISOString() },
       };
       responseHash = responseSha256(result);
+      await mergeLinkedCollectItem({ job, result, completedAt });
       await repository.completeJobAndCache({
         accountId: scoped.accountId,
         collectorSessionId: scoped.collectorSessionId,
@@ -628,6 +783,7 @@ export function createCollectorOzonEnrichmentService({
         executorSessionId: scoped.collectorSessionId,
         capturedAt: completedAt,
         expiresAt,
+        captureContext,
         now: completedAt,
       });
       await writeAudit({
@@ -643,6 +799,7 @@ export function createCollectorOzonEnrichmentService({
         code: "",
         missingFields: [],
         responseHash,
+        captureContext,
       });
       return result;
     } catch (error) {
@@ -681,11 +838,10 @@ export function createCollectorOzonEnrichmentService({
     try {
       job = await repository.readJob({ accountId: scoped.accountId, jobId: normalizedJobId });
       assertClaimOwnership(job, scoped, failedAt);
-      const stable = await persistFailure({
+      const { stable, job: persistedJob } = await applyExecutorFailure({
         scoped,
         job,
         at: failedAt,
-        // The fixed executor failure contract has no retryAfter input; failClaim is always 60s.
         error: { code: String(code || "") },
       });
       await writeAudit({
@@ -702,7 +858,7 @@ export function createCollectorOzonEnrichmentService({
         missingFields: stable.missingFields,
         responseHash: responseSha256(stable),
       });
-      return { id: job.id, status: "FAILED" };
+      return { id: job.id, status: persistedJob.status };
     } catch (error) {
       const failure = publicServiceError(error);
       await writeAudit({
@@ -725,11 +881,74 @@ export function createCollectorOzonEnrichmentService({
     }
   }
 
+  async function retryCollectItem({ accountId, collectItemId } = {}) {
+    const scopedAccountId = requiredText(
+      accountId,
+      "COLLECTOR_AUTH_REQUIRED",
+      "需要账号认证",
+      401,
+    );
+    const normalizedCollectItemId = requiredText(
+      collectItemId,
+      "COLLECT_ITEM_NOT_FOUND",
+      "采集箱条目不存在",
+      404,
+    );
+    const retriedAt = instant(now());
+    let response = null;
+    let failure = null;
+    try {
+      const retried = await collectItemPort.retry({
+        accountId: scopedAccountId,
+        collectItemId: normalizedCollectItemId,
+        now: retriedAt,
+      });
+      if (!retried) throw collectItemMissing();
+      const job = retried.job && typeof retried.job === "object" ? retried.job : {};
+      response = {
+        collectItemId: normalizedCollectItemId,
+        enrichment: retried.item?.enrichment && typeof retried.item.enrichment === "object"
+          ? structuredClone(retried.item.enrichment)
+          : null,
+        job: {
+          id: String(job.id || ""),
+          requestId: String(job.requestId || ""),
+          sku: String(job.sku || ""),
+          status: String(job.status || ""),
+          attemptCount: Number(job.attemptCount || 0),
+          nextAttemptAt: String(job.nextAttemptAt || ""),
+        },
+      };
+      return response;
+    } catch (error) {
+      failure = publicServiceError(error);
+      throw failure;
+    } finally {
+      await writeAudit({
+        action: "collector.ozon.enrichment.manual_retry",
+        requestId: String(response?.job?.requestId || ""),
+        accountId: scopedAccountId,
+        sku: String(response?.job?.sku || ""),
+        jobId: String(response?.job?.id || ""),
+        collectorSessionId: "",
+        actorType: "account",
+        actorId: scopedAccountId,
+        cacheHit: false,
+        durationMs: 0,
+        status: auditStatus(failure),
+        code: String(failure?.code || ""),
+        missingFields: [],
+        responseHash: responseSha256(response || errorPayload(failure)),
+      });
+    }
+  }
+
   return Object.freeze({
     enrichOne,
     enrichBatch,
     claimNext,
     completeClaim,
     failClaim,
+    retryCollectItem,
   });
 }

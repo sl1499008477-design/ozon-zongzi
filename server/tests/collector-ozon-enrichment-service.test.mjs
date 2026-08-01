@@ -23,6 +23,27 @@ function variantData(descriptionCategoryId = 123) {
   };
 }
 
+function sellerVariantData(descriptionCategoryId = 123) {
+  return {
+    description_category_id: descriptionCategoryId,
+    type_id: 456,
+    weight: 500,
+    depth: 300,
+    width: 200,
+    height: 100,
+    attributes: [],
+  };
+}
+
+function captureContext(overrides = {}) {
+  return {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: new Date(START).toISOString(),
+    ...overrides,
+  };
+}
+
 function completeResult(sku, descriptionCategoryId = 123) {
   return {
     status: "COMPLETE",
@@ -62,6 +83,8 @@ class FakeRepository {
     this.maximumProcessing = 0;
     this.atomicCompleteCount = 0;
     this.atomicFailCount = 0;
+    this.deferCount = 0;
+    this.lastCompleteInput = null;
     this.leaseAttempts = [];
   }
 
@@ -174,6 +197,9 @@ class FakeRepository {
       claimExpiresAt: null,
       result: null,
       error: null,
+      attemptCount: 0,
+      nextAttemptAt: input.createdAt.toISOString(),
+      lastError: null,
       createdAt: input.createdAt.toISOString(),
       deadlineAt: input.deadlineAt.toISOString(),
     };
@@ -258,6 +284,7 @@ class FakeRepository {
       leaseExpiresAt: null,
     });
     this.atomicCompleteCount += 1;
+    this.lastCompleteInput = clone(input);
     return job;
   }
 
@@ -279,12 +306,36 @@ class FakeRepository {
     return job;
   }
 
+  async deferClaim(input) {
+    this.requireSession(input.accountId, input.collectorSessionId);
+    const job = this.jobs.find((value) =>
+      value.accountId === input.accountId && value.id === input.jobId);
+    if (
+      !job
+      || job.status !== "PROCESSING"
+      || job.claimedSessionId !== input.collectorSessionId
+    ) {
+      throw Object.assign(new Error("claim ownership rejected"), {
+        status: 409,
+        code: "OZON_ENRICHMENT_JOB_OWNERSHIP",
+      });
+    }
+    job.status = "PENDING";
+    job.attemptCount = Number(job.attemptCount || 0) + 1;
+    job.nextAttemptAt = new Date(input.now.getTime() + 30_000).toISOString();
+    job.lastError = clone(input.error);
+    job.claimedSessionId = null;
+    job.claimExpiresAt = null;
+    this.deferCount += 1;
+    return clone(job);
+  }
+
   async readJob({ accountId, jobId }) {
     return clone(this.jobs.find((job) => job.accountId === accountId && job.id === jobId) || null);
   }
 }
 
-function harness({ repository, start = START } = {}) {
+function harness({ repository, start = START, collectItems } = {}) {
   const clock = { value: start };
   const sessions = [
     session("collector-request"),
@@ -304,6 +355,7 @@ function harness({ repository, start = START } = {}) {
       await new Promise((resolve) => setImmediate(resolve));
     },
     audit: async (event) => audits.push(event),
+    ...(collectItems ? { collectItems } : {}),
   });
   return { audits, clock, repository: fake, service };
 }
@@ -416,7 +468,7 @@ test("normalizes a claimed variant before persisting success for exactly six hou
   const result = await pending;
   assert.equal(result.descriptionCategoryId, 703);
   assert.deepEqual(result.logistics, { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 });
-  assert.equal(result.source, "BACKEND_FLEET");
+  assert.equal(result.source, "EXTENSION_SELLER_CAPTURE");
   assert.equal(result.cache.hit, false);
   assert.equal(new Date(result.cache.expiresAt).getTime(), completedAt + 6 * 60 * 60 * 1000);
   assert.equal(h.repository.jobs[0].status, "SUCCESS");
@@ -702,6 +754,10 @@ test("failClaim uses the server-fixed sixty-second negative TTL", async () => {
   const cached = h.repository.cache.get(h.repository.cacheKey(key("account-a", "sku-negative")));
   assert.equal(new Date(cached.expiresAt).getTime() - failedAt, 60_000);
   assert.equal(h.repository.atomicFailCount, 1);
+  assert.deepEqual(h.repository.jobs[0].error, {
+    status: 404,
+    code: "OZON_ENRICH_NOT_FOUND",
+  });
   const jobsBefore = h.repository.createdJobCount;
   await assert.rejects(h.service.enrichOne({
     session: session("collector-request"),
@@ -809,7 +865,7 @@ test("batch preserves order and isolates a failed item from successful siblings"
     code: "OZON_ENRICH_INCOMPLETE",
     message: "Ozon 商品资料不完整",
     missingFields: ["weightG"],
-    retryable: true,
+    retryable: false,
   });
 });
 
@@ -1262,4 +1318,254 @@ test("batch preserves request-expired as a non-retryable public item error", asy
     missingFields: [],
     retryable: false,
   });
+});
+
+test("linked completion fills only blank draft fields before publishing success and safe evidence", async () => {
+  const savedItems = [];
+  const collectItem = {
+    id: "collect-linked-complete",
+    accountId: "account-a",
+    draftVersion: 7,
+    listingDraft: {
+      descriptionCategoryId: "",
+      logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
+    },
+    enrichment: { status: "PENDING_ENRICHMENT" },
+  };
+  const collectItems = {
+    async read(input) {
+      assert.deepEqual(input, {
+        accountId: "account-a",
+        collectItemId: "collect-linked-complete",
+      });
+      return clone(collectItem);
+    },
+    async save(input) {
+      savedItems.push(clone(input));
+      assert.equal(input.expectedVersion, 7);
+      Object.assign(collectItem, {
+        draftVersion: 8,
+        listingDraft: clone(input.listingDraft),
+        status: input.status,
+        enrichment: clone(input.enrichment),
+      });
+      return clone(collectItem);
+    },
+    async retry() { throw new Error("unused"); },
+  };
+  const h = harness({ collectItems, start: Date.parse("2026-08-01T08:00:01.000Z") });
+  h.repository.jobs.push({
+    id: "job-linked-complete",
+    accountId: "account-a",
+    collectItemId: "collect-linked-complete",
+    requestId: "request-linked-complete",
+    sku: "4862904234",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: "2026-08-01T08:01:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    attemptCount: 2,
+    createdAt: "2026-08-01T08:00:00.000Z",
+  });
+
+  const result = await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: "job-linked-complete",
+    variantData: sellerVariantData(17_000_001),
+    captureContext: captureContext({ observedAt: "2026-08-01T08:00:00.000Z" }),
+  });
+
+  assert.equal(savedItems.length, 1);
+  assert.equal(collectItem.listingDraft.logistics.weightG, 777);
+  assert.equal(collectItem.listingDraft.logistics.lengthMm, 300);
+  assert.equal(collectItem.listingDraft.descriptionCategoryId, 17_000_001);
+  assert.deepEqual(collectItem.enrichment, {
+    status: "COMPLETE",
+    missingFields: [],
+    attemptCount: 2,
+    nextAttemptAt: "",
+    lastErrorCode: "",
+    capturedAt: "2026-08-01T08:00:01.000Z",
+  });
+  assert.equal(result.source, "EXTENSION_SELLER_CAPTURE");
+  assert.equal(h.repository.atomicCompleteCount, 1);
+  assert.deepEqual(h.repository.lastCompleteInput.captureContext, {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: "2026-08-01T08:00:00.000Z",
+  });
+  assert.deepEqual(h.audits.at(-1).captureContext, {
+    sellerCompanyId: "2681910",
+    revision: 4,
+    observedAt: "2026-08-01T08:00:00.000Z",
+  });
+  assert.equal(JSON.stringify(h.audits.at(-1)).includes("cookie"), false);
+});
+
+test("retryable failures defer linked jobs and expose the correct recoverable item state", async () => {
+  for (const [code, expectedStatus] of [
+    ["SELLER_CONTEXT_REQUIRED", "WAITING_FOR_SELLER"],
+    ["SELLER_CONTEXT_CHANGED", "WAITING_FOR_SELLER"],
+    ["OZON_ENRICH_BUSY", "RETRYING"],
+    ["NETWORK_ERROR", "RETRYING"],
+    ["TIMEOUT", "RETRYING"],
+    ["HTTP_503", "RETRYING"],
+  ]) {
+    const saved = [];
+    const h = harness({
+      collectItems: {
+        async read() { throw new Error("failure status must not rewrite the draft"); },
+        async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
+        async retry() { throw new Error("unused"); },
+      },
+      start: Date.parse("2026-08-01T08:00:01.000Z"),
+    });
+    h.repository.jobs.push({
+      id: `job-${code}`,
+      accountId: "account-a",
+      collectItemId: `collect-${code}`,
+      requestId: `request-${code}`,
+      sku: `sku-${code}`,
+      status: "PROCESSING",
+      claimedSessionId: "collector-fallback",
+      claimExpiresAt: "2026-08-01T08:01:00.000Z",
+      deadlineAt: "9999-12-31T23:59:59.999Z",
+      attemptCount: 0,
+      createdAt: "2026-08-01T08:00:00.000Z",
+    });
+
+    const deferredJob = await h.service.failClaim({
+      session: session("collector-fallback"),
+      jobId: `job-${code}`,
+      code,
+      message: "cookie=must-not-be-stored",
+    });
+
+    assert.equal(deferredJob.status, "PENDING", code);
+    assert.equal(h.repository.deferCount, 1, code);
+    assert.equal(h.repository.atomicFailCount, 0, code);
+    assert.equal(saved[0].status, expectedStatus, code);
+    assert.deepEqual(saved[0].enrichment, {
+      status: expectedStatus,
+      missingFields: [],
+      attemptCount: 1,
+      nextAttemptAt: "2026-08-01T08:00:31.000Z",
+      lastErrorCode: code === "HTTP_503" || code === "NETWORK_ERROR" || code === "TIMEOUT"
+        ? "OZON_ENRICH_UPSTREAM_FAILED"
+        : code,
+    }, code);
+    assert.equal(JSON.stringify(h.repository.jobs[0]).includes("must-not-be-stored"), false, code);
+  }
+});
+
+test("not found permanently needs attention without deleting the linked item", async () => {
+  const saved = [];
+  const h = harness({
+    collectItems: {
+      async read() { throw new Error("permanent failure must not rewrite the draft"); },
+      async save(input) { saved.push(clone(input)); return { id: input.collectItemId }; },
+      async retry() { throw new Error("unused"); },
+    },
+    start: Date.parse("2026-08-01T08:00:01.000Z"),
+  });
+  h.repository.jobs.push({
+    id: "job-not-found-linked",
+    accountId: "account-a",
+    collectItemId: "collect-not-found-linked",
+    requestId: "request-not-found-linked",
+    sku: "sku-not-found-linked",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: "2026-08-01T08:01:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    attemptCount: 3,
+    createdAt: "2026-08-01T08:00:00.000Z",
+  });
+
+  const failed = await h.service.failClaim({
+    session: session("collector-fallback"),
+    jobId: "job-not-found-linked",
+    code: "OZON_ENRICH_NOT_FOUND",
+  });
+
+  assert.equal(failed.status, "FAILED");
+  assert.equal(h.repository.atomicFailCount, 1);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].status, "NEEDS_ATTENTION");
+  assert.equal(saved[0].deleted, undefined);
+  assert.deepEqual(saved[0].enrichment, {
+    status: "NEEDS_ATTENTION",
+    missingFields: [],
+    attemptCount: 4,
+    nextAttemptAt: "",
+    lastErrorCode: "OZON_ENRICH_NOT_FOUND",
+  });
+});
+
+test("manual retry is account scoped and preserves the linked job identity on replay", async () => {
+  const stable = {
+    id: "job-manual-stable",
+    accountId: "account-a",
+    collectItemId: "collect-manual-stable",
+    requestId: "request-manual-stable",
+    sku: "sku-manual-stable",
+    status: "PENDING",
+    nextAttemptAt: "2026-08-01T08:00:01.000Z",
+    lastError: null,
+    captureContext: {
+      sellerCompanyId: "2681910",
+      revision: 3,
+      observedAt: "2026-08-01T08:00:00.000Z",
+    },
+  };
+  const calls = [];
+  const h = harness({
+    start: Date.parse("2026-08-01T08:00:01.000Z"),
+    collectItems: {
+      async read() { throw new Error("unused"); },
+      async save() { throw new Error("unused"); },
+      async retry(input) {
+        calls.push(clone(input));
+        if (input.accountId !== "account-a") return null;
+        return {
+          item: { id: input.collectItemId, accountId: input.accountId, enrichment: { status: "RETRYING" } },
+          job: clone(stable),
+        };
+      },
+    },
+  });
+
+  const first = await h.service.retryCollectItem({
+    accountId: "account-a",
+    collectItemId: "collect-manual-stable",
+  });
+  const second = await h.service.retryCollectItem({
+    accountId: "account-a",
+    collectItemId: "collect-manual-stable",
+  });
+  assert.deepEqual(first, {
+    collectItemId: "collect-manual-stable",
+    enrichment: { status: "RETRYING" },
+    job: {
+      id: "job-manual-stable",
+      requestId: "request-manual-stable",
+      sku: "sku-manual-stable",
+      status: "PENDING",
+      attemptCount: 0,
+      nextAttemptAt: "2026-08-01T08:00:01.000Z",
+    },
+  });
+  assert.deepEqual(second, first);
+  assert.equal(Object.hasOwn(first, "accountId"), false);
+  assert.equal(Object.hasOwn(first.job, "captureContext"), false);
+  assert.deepEqual(h.audits.map((event) => [event.action, event.status]), [
+    ["collector.ozon.enrichment.manual_retry", "SUCCESS"],
+    ["collector.ozon.enrichment.manual_retry", "SUCCESS"],
+  ]);
+  assert.equal(JSON.stringify(h.audits).includes("captureContext"), false);
+  assert.deepEqual(calls.map((call) => call.accountId), ["account-a", "account-a"]);
+  await assert.rejects(h.service.retryCollectItem({
+    accountId: "account-b",
+    collectItemId: "collect-manual-stable",
+  }), (error) => error?.status === 404 && error?.code === "COLLECT_ITEM_NOT_FOUND");
 });

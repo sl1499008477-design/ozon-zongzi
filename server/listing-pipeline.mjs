@@ -71,6 +71,18 @@ function withoutCollectionScope(value = {}) {
   return result;
 }
 
+export function resolveCollectItemEnrichmentSummary(summary, fallback = null) {
+  const persisted = summary && typeof summary === "object" && !Array.isArray(summary)
+    ? summary.enrichment
+    : null;
+  if (persisted && typeof persisted === "object" && !Array.isArray(persisted)) {
+    return structuredClone(persisted);
+  }
+  return fallback && typeof fallback === "object" && !Array.isArray(fallback)
+    ? structuredClone(fallback)
+    : null;
+}
+
 function legacyCollectStatus(status) {
   return {
     QUEUE_PENDING: "上架中",
@@ -464,8 +476,10 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
   return result.rows.map((row) => {
     const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
     const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
+    const enrichment = resolveCollectItemEnrichmentSummary(row.summary, normalized.enrichment);
     return publicPersistedCollectionItem({
       ...withoutCollectionScope(normalized),
+      ...(enrichment ? { enrichment } : {}),
       id: row.id,
       sku: row.source_sku || normalized.sku || "",
       productUrl: row.source_url || normalized.productUrl || "",
@@ -479,6 +493,200 @@ export async function listCollectItemsV3({ accountId = "", includeDeleted = fals
       accountId: row.account_id || "",
       pipelineVersion: "v3",
     });
+  });
+}
+
+function collectItemEnrichmentRow(row = {}) {
+  if (!row.id) return null;
+  const summary = row.summary && typeof row.summary === "object" ? row.summary : {};
+  return {
+    id: String(row.id),
+    accountId: String(row.account_id || row.accountId || ""),
+    status: String(row.status || ""),
+    listingDraft: row.draft_data && typeof row.draft_data === "object"
+      ? row.draft_data
+      : row.listingDraft && typeof row.listingDraft === "object"
+        ? row.listingDraft
+        : {},
+    draftVersion: Number(row.draft_version ?? row.draftVersion ?? 0),
+    enrichment: resolveCollectItemEnrichmentSummary(summary, row.enrichment),
+  };
+}
+
+export async function readCollectItemEnrichmentV4({ collectItemId, accountId } = {}) {
+  if (!listingPipelineEnabled()) return null;
+  const pool = await poolReady();
+  const result = await pool.query(
+    `SELECT c.id,c.account_id,c.status,c.summary,d.data AS draft_data,d.version AS draft_version
+       FROM collect_items c
+       LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+      WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL`,
+    [clean(collectItemId, 240), clean(accountId, 240)],
+  );
+  return collectItemEnrichmentRow(result.rows[0]);
+}
+
+export async function saveCollectItemEnrichmentV4({
+  collectItemId,
+  accountId,
+  expectedVersion = null,
+  listingDraft,
+  status,
+  enrichment,
+} = {}) {
+  if (!listingPipelineEnabled()) return null;
+  return transaction(async (client) => {
+    const result = await client.query(
+      `SELECT c.*,d.data AS draft_data,d.version AS draft_version,raw.payload AS raw_payload
+         FROM collect_items c
+         LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+         LEFT JOIN LATERAL (
+           SELECT payload FROM collect_raw_payloads r
+            WHERE r.collect_item_id=c.id AND r.account_id=c.account_id
+            ORDER BY r.created_at DESC LIMIT 1
+         ) raw ON TRUE
+        WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+        FOR UPDATE OF c`,
+      [clean(collectItemId, 240), clean(accountId, 240)],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const currentVersion = Number(row.draft_version || 0);
+    let draftVersion = currentVersion;
+    if (listingDraft !== undefined) {
+      if (Number(expectedVersion) !== currentVersion) {
+        throw Object.assign(
+          new Error(`草稿已被其他页面更新，当前版本为 v${currentVersion}，请刷新后重试`),
+          { code: "DRAFT_VERSION_CONFLICT", status: 409 },
+        );
+      }
+      const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
+      const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
+      const mirrored = await mirrorCollectItemWithClient(client, {
+        ...withoutCollectionScope(normalized),
+        id: row.id,
+        accountId: row.account_id,
+        sku: row.source_sku || normalized.sku || "",
+        productUrl: row.source_url || normalized.productUrl || "",
+        source: row.source || normalized.source || "ozon",
+        status: clean(status || row.status, 80),
+        listingDraft: structuredClone(listingDraft),
+      }, {
+        collectId: row.id,
+        accountId: row.account_id,
+        source: row.source || "ozon",
+        identityKey: row.identity_key || "",
+        expectedVersion: currentVersion,
+        captureRaw: false,
+        changeReason: "OZON_ENRICHMENT_MERGE",
+      });
+      draftVersion = Number(mirrored?.version || currentVersion);
+    }
+    const currentSummary = row.summary && typeof row.summary === "object" ? row.summary : {};
+    const nextSummary = {
+      ...currentSummary,
+      ...(enrichment && typeof enrichment === "object"
+        ? { enrichment: structuredClone(enrichment) }
+        : {}),
+    };
+    const updated = await client.query(
+      `UPDATE collect_items
+          SET status=$3,summary=$4::jsonb,updated_at=NOW()
+        WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL
+        RETURNING id,account_id,status,summary`,
+      [row.id, row.account_id, clean(status || row.status, 80), json(nextSummary)],
+    );
+    return collectItemEnrichmentRow({
+      ...updated.rows[0],
+      draft_data: listingDraft === undefined ? row.draft_data : listingDraft,
+      draft_version: draftVersion,
+    });
+  });
+}
+
+function retryJobFromRow(row = {}) {
+  if (!row.id) return null;
+  return {
+    id: String(row.id),
+    accountId: String(row.account_id || ""),
+    collectItemId: row.collect_item_id || null,
+    requestId: String(row.request_id || ""),
+    sku: String(row.sku || ""),
+    status: String(row.status || ""),
+    preferredSessionId: row.preferred_session_id || null,
+    claimedSessionId: row.claimed_session_id || null,
+    claimExpiresAt: row.claim_expires_at ? new Date(row.claim_expires_at).toISOString() : null,
+    refreshBundle: row.refresh_bundle || {},
+    attemptCount: Number(row.attempt_count || 0),
+    nextAttemptAt: row.next_attempt_at ? new Date(row.next_attempt_at).toISOString() : null,
+    lastError: row.last_error_json || null,
+    captureContext: row.capture_context_json || null,
+    deadlineAt: row.deadline_at ? new Date(row.deadline_at).toISOString() : null,
+    result: row.result_json || null,
+    error: row.error_json || null,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null,
+  };
+}
+
+export async function retryCollectItemEnrichmentV4({ collectItemId, accountId, now } = {}) {
+  if (!listingPipelineEnabled()) return null;
+  const retriedAt = now instanceof Date ? new Date(now) : new Date(now);
+  if (Number.isNaN(retriedAt.getTime())) throw new TypeError("Ozon enrichment retry time required");
+  return transaction(async (client) => {
+    const itemResult = await client.query(
+      `SELECT c.id,c.account_id,c.status,c.summary,d.data AS draft_data,d.version AS draft_version
+         FROM collect_items c
+         LEFT JOIN product_drafts d ON d.id=c.current_draft_id
+        WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+        FOR UPDATE OF c`,
+      [clean(collectItemId, 240), clean(accountId, 240)],
+    );
+    const row = itemResult.rows[0];
+    if (!row) return null;
+    const jobResult = await client.query(
+      `SELECT * FROM collector_ozon_enrichment_jobs
+        WHERE account_id=$1 AND collect_item_id=$2 AND status<>'SUCCESS'
+        ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1
+        FOR UPDATE`,
+      [row.account_id, row.id],
+    );
+    if (!jobResult.rows[0]) return null;
+    const updatedJob = await client.query(
+      `UPDATE collector_ozon_enrichment_jobs
+          SET status='PENDING',next_attempt_at=$3,last_error_json=NULL,error_json=NULL,
+              claimed_session_id=NULL,claim_expires_at=NULL,completed_at=NULL,updated_at=$3
+        WHERE account_id=$1 AND id=$2
+        RETURNING *`,
+      [row.account_id, jobResult.rows[0].id, retriedAt],
+    );
+    const summary = row.summary && typeof row.summary === "object" ? row.summary : {};
+    const currentEnrichment = summary.enrichment && typeof summary.enrichment === "object"
+      ? summary.enrichment
+      : {};
+    const enrichment = {
+      ...currentEnrichment,
+      status: "RETRYING",
+      attemptCount: Number(updatedJob.rows[0].attempt_count || 0),
+      nextAttemptAt: retriedAt.toISOString(),
+      lastErrorCode: "",
+    };
+    const updatedItem = await client.query(
+      `UPDATE collect_items
+          SET status='RETRYING',summary=$3::jsonb,updated_at=$4
+        WHERE account_id=$1 AND id=$2 AND deleted_at IS NULL
+        RETURNING id,account_id,status,summary`,
+      [row.account_id, row.id, json({ ...summary, enrichment }), retriedAt],
+    );
+    return {
+      item: collectItemEnrichmentRow({
+        ...updatedItem.rows[0],
+        draft_data: row.draft_data,
+        draft_version: row.draft_version,
+      }),
+      job: retryJobFromRow(updatedJob.rows[0]),
+    };
   });
 }
 
@@ -503,6 +711,7 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
     const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
     const currentDraft = row.draft_data && typeof row.draft_data === "object" ? row.draft_data : {};
+    const enrichment = resolveCollectItemEnrichmentSummary(row.summary, normalized.enrichment);
     const safePatch = withoutCollectionScope(patch);
     const listingDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
       ? safePatch.listingDraft
@@ -510,6 +719,7 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
     const item = publicPersistedCollectionItem({
       ...withoutCollectionScope(normalized),
       ...safePatch,
+      ...(enrichment ? { enrichment } : {}),
       id: row.id,
       accountId: row.account_id,
       storeId: row.store_id || "",

@@ -11,10 +11,23 @@ const BATCH_PATH = "/collector/ozon/enrich/batch";
 const NEXT_PATH = "/collector/ozon/enrichment-jobs/next";
 const RESULT_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/result\/?$/;
 const FAIL_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/fail\/?$/;
+const RETRY_PATTERN = /^\/ozon\/collect-box\/([^/]+)\/enrichment\/retry\/?$/;
 const JOB_NAMESPACE = "/collector/ozon/enrichment-jobs/";
+const CAPTURE_CLOCK_SKEW_MS = 5_000;
+const VARIANT_RESULT_KEYS = Object.freeze([
+  "description_category_id",
+  "type_id",
+  "weight",
+  "depth",
+  "width",
+  "height",
+  "attributes",
+]);
+const CAPTURE_CONTEXT_KEYS = Object.freeze(["sellerCompanyId", "revision", "observedAt"]);
+const ATTRIBUTE_KEYS = Object.freeze(["key", "value", "collection", "dictionary_value_id"]);
 
 const SENSITIVE_KEY_FRAGMENT = /(?:authorization|cookie|credential|password|passphrase|secret|token|apikey|privatekey)/;
-const SECRET_VALUE = /(?:\bCollector\s+(?:cst|ctt)_[A-Za-z0-9_-]{16,}|\bBearer\s+[A-Za-z0-9._~+\/-]{20,}={0,2}|\b(?:cst|ctt)_[A-Za-z0-9_-]{16,})/i;
+const SECRET_VALUE = /(?:\bCollector\s+(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,}|\bBearer\s+[A-Za-z0-9._~+\/-]{20,}={0,2}|\b(?:csess|cst|ctt)_[A-Za-z0-9_-]{16,})/i;
 const PUBLIC_ERROR_CODES = new Set([
   "METHOD_NOT_ALLOWED",
   "COLLECTOR_AUTH_REQUIRED",
@@ -38,6 +51,9 @@ const PUBLIC_ERROR_CODES = new Set([
   "OZON_ENRICHMENT_JOB_NOT_FOUND",
   "OZON_ENRICHMENT_JOB_OWNERSHIP",
   "OZON_ENRICH_UPSTREAM_FAILED",
+  "SELLER_CONTEXT_REQUIRED",
+  "SELLER_CONTEXT_CHANGED",
+  "COLLECT_ITEM_NOT_FOUND",
 ]);
 
 function routeError(message, status = 400, code = "OZON_ENRICH_REQUEST_INVALID") {
@@ -81,6 +97,16 @@ function assertExactKeys(value, allowed) {
   }
 }
 
+function assertRequiredExactKeys(value, required, message) {
+  assertPlainObject(value, message);
+  if (
+    Object.keys(value).length !== required.length
+    || required.some((key) => !Object.hasOwn(value, key))
+  ) {
+    throw routeError(message);
+  }
+}
+
 function findForbiddenNestedPath(value, path = "$", seen = new WeakSet()) {
   if (typeof value === "string" && SECRET_VALUE.test(value)) return path;
   if (!value || typeof value !== "object") return "";
@@ -121,6 +147,129 @@ function assertNoClientControl(value) {
       "OZON_ENRICH_REQUEST_INVALID",
     );
   }
+}
+
+function positiveFiniteNumber(value, message, { integer = false } = {}) {
+  if (
+    typeof value !== "number"
+    || !Number.isFinite(value)
+    || value <= 0
+    || (integer && (!Number.isSafeInteger(value)))
+  ) {
+    throw routeError(message);
+  }
+  return value;
+}
+
+function productScalar(value) {
+  return typeof value === "string"
+    || typeof value === "boolean"
+    || (typeof value === "number" && Number.isFinite(value));
+}
+
+function parseResultAttribute(value) {
+  assertPlainObject(value, "Ozon 商品属性格式无效");
+  if (Object.keys(value).some((key) => !ATTRIBUTE_KEYS.includes(key))) {
+    throw routeError("Ozon 商品属性包含不允许的字段");
+  }
+  const key = String(value.key ?? "").trim();
+  if (!/^\d{1,20}$/.test(key)) throw routeError("Ozon 商品属性标识无效");
+  const hasValue = Object.hasOwn(value, "value");
+  const hasCollection = Object.hasOwn(value, "collection");
+  if (hasValue === hasCollection) throw routeError("Ozon 商品属性值无效");
+  const attribute = { key };
+  if (hasValue) {
+    if (!productScalar(value.value)) throw routeError("Ozon 商品属性值无效");
+    attribute.value = value.value;
+  } else {
+    if (!Array.isArray(value.collection) || value.collection.some((item) => !productScalar(item))) {
+      throw routeError("Ozon 商品属性值无效");
+    }
+    attribute.collection = [...value.collection];
+  }
+  if (Object.hasOwn(value, "dictionary_value_id")) {
+    attribute.dictionary_value_id = positiveFiniteNumber(
+      value.dictionary_value_id,
+      "Ozon 商品属性字典标识无效",
+      { integer: true },
+    );
+  }
+  return attribute;
+}
+
+function parseResultEnvelope(body, at) {
+  assertRequiredExactKeys(body, ["variantData", "captureContext"], "Ozon 商品补全结果格式无效");
+  assertRequiredExactKeys(
+    body.variantData,
+    VARIANT_RESULT_KEYS,
+    "Ozon 商品补全结果 variantData 格式无效",
+  );
+  assertRequiredExactKeys(
+    body.captureContext,
+    CAPTURE_CONTEXT_KEYS,
+    "Ozon Seller 采集证据格式无效",
+  );
+
+  const scopeChecked = structuredClone(body);
+  delete scopeChecked.captureContext.sellerCompanyId;
+  assertNoClientControl(scopeChecked);
+  const forbiddenPath = findForbiddenNestedPath(body);
+  if (forbiddenPath) {
+    throw routeError(
+      `补全请求包含不允许的控制或敏感字段：${forbiddenPath}`,
+      400,
+      "OZON_ENRICH_REQUEST_INVALID",
+    );
+  }
+
+  const variantData = {
+    description_category_id: positiveFiniteNumber(
+      body.variantData.description_category_id,
+      "Ozon 商品类目标识无效",
+      { integer: true },
+    ),
+    type_id: positiveFiniteNumber(
+      body.variantData.type_id,
+      "Ozon 商品类型标识无效",
+      { integer: true },
+    ),
+    weight: positiveFiniteNumber(body.variantData.weight, "Ozon 商品重量无效"),
+    depth: positiveFiniteNumber(body.variantData.depth, "Ozon 商品长度无效"),
+    width: positiveFiniteNumber(body.variantData.width, "Ozon 商品宽度无效"),
+    height: positiveFiniteNumber(body.variantData.height, "Ozon 商品高度无效"),
+    attributes: Array.isArray(body.variantData.attributes)
+      ? body.variantData.attributes.map(parseResultAttribute)
+      : (() => { throw routeError("Ozon 商品属性格式无效"); })(),
+  };
+  const sellerCompanyId = String(body.captureContext.sellerCompanyId ?? "").trim();
+  if (!/^\d{4,15}$/.test(sellerCompanyId)) {
+    throw routeError("Ozon Seller 公司标识无效");
+  }
+  const revision = body.captureContext.revision;
+  if (!Number.isSafeInteger(revision) || revision <= 0) {
+    throw routeError("Ozon Seller 采集证据版本无效");
+  }
+  if (
+    typeof body.captureContext.observedAt !== "string"
+    || !body.captureContext.observedAt.trim()
+  ) {
+    throw routeError("Ozon Seller 采集证据时间无效");
+  }
+  const observedAt = new Date(body.captureContext.observedAt);
+  if (
+    Number.isNaN(observedAt.getTime())
+    || observedAt.getTime() > at.getTime() + CAPTURE_CLOCK_SKEW_MS
+  ) {
+    throw routeError("Ozon Seller 采集证据时间无效");
+  }
+  return {
+    variantData,
+    captureContext: {
+      sellerCompanyId,
+      revision,
+      observedAt: observedAt.toISOString(),
+    },
+  };
 }
 
 function requiredString(value, message) {
@@ -170,22 +319,27 @@ function isNamespacePath(pathname) {
   return pathname === SINGLE_PATH
     || pathname === BATCH_PATH
     || pathname === NEXT_PATH
-    || pathname.startsWith(JOB_NAMESPACE);
+    || pathname.startsWith(JOB_NAMESPACE)
+    || RETRY_PATTERN.test(pathname);
 }
 
 export function createCollectorOzonEnrichmentHttpHandler({
   authenticate,
+  authenticateAccount,
   service,
   readJson,
   sendJson,
+  now = () => new Date(),
 } = {}) {
   if (
     typeof authenticate !== "function"
+    || typeof authenticateAccount !== "function"
     || !service
-    || ["enrichOne", "enrichBatch", "claimNext", "completeClaim", "failClaim"]
+    || ["enrichOne", "enrichBatch", "claimNext", "completeClaim", "failClaim", "retryCollectItem"]
       .some((method) => typeof service[method] !== "function")
     || typeof readJson !== "function"
     || typeof sendJson !== "function"
+    || typeof now !== "function"
   ) {
     throw new TypeError("Ozon enrichment routes dependencies are required");
   }
@@ -194,12 +348,14 @@ export function createCollectorOzonEnrichmentHttpHandler({
     const pathname = url?.pathname || "";
     const resultMatch = pathname.match(RESULT_PATTERN);
     const failMatch = pathname.match(FAIL_PATTERN);
+    const retryMatch = pathname.match(RETRY_PATTERN);
     const single = req.method === "POST" && pathname === SINGLE_PATH;
     const batch = req.method === "POST" && pathname === BATCH_PATH;
     const next = req.method === "GET" && pathname === NEXT_PATH;
     const result = req.method === "POST" && resultMatch;
     const fail = req.method === "POST" && failMatch;
-    if (!single && !batch && !next && !result && !fail) {
+    const retry = req.method === "POST" && retryMatch;
+    if (!single && !batch && !next && !result && !fail && !retry) {
       if (!isNamespacePath(pathname)) return false;
       sendJson(res, 405, errorResponse(routeError(
         "该 Ozon 商品补全接口不支持当前方法",
@@ -210,7 +366,9 @@ export function createCollectorOzonEnrichmentHttpHandler({
     }
 
     try {
-      const session = await authenticate(req, PERMISSION);
+      const session = retry
+        ? await authenticateAccount(req)
+        : await authenticate(req, PERMISSION);
       if ([...url.searchParams.keys()].length) {
         throw routeError("Ozon 商品补全接口不接受查询控制参数");
       }
@@ -236,20 +394,32 @@ export function createCollectorOzonEnrichmentHttpHandler({
         return true;
       }
 
+      if (retry) {
+        const body = await readJson(req);
+        assertNoClientControl(body);
+        assertRequiredExactKeys(body, [], "手动重试请求格式无效");
+        const accountId = requiredString(session?.id ?? session?.accountId, "需要账号认证");
+        const data = await service.retryCollectItem({
+          accountId,
+          collectItemId: jobIdFromMatch(retryMatch),
+        });
+        sendJson(res, 200, { ok: true, data });
+        return true;
+      }
+
       const body = await readJson(req);
-      assertNoClientControl(body);
       if (result) {
-        assertExactKeys(body, ["variantData"]);
-        assertPlainObject(body.variantData, "Ozon 商品补全结果缺少 variantData");
+        const parsed = parseResultEnvelope(body, new Date(now()));
         await service.completeClaim({
           session,
           jobId: jobIdFromMatch(resultMatch),
-          variantData: body.variantData,
+          ...parsed,
         });
         sendJson(res, 200, { ok: true });
         return true;
       }
 
+      assertNoClientControl(body);
       assertExactKeys(body, ["code", "message"]);
       await service.failClaim({
         session,
