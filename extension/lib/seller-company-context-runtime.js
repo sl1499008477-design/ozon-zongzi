@@ -2,146 +2,182 @@
   'use strict';
 
   const STORAGE_PREFIX = 'sonliSellerCompanyContext:';
-  const RECOVERY_FAILURE_COOLDOWN_MS = 30_000;
+  const CURRENT_STORAGE_KEY = `${STORAGE_PREFIX}current`;
+  const PREVIOUS_STORAGE_KEY = `${STORAGE_PREFIX}previous`;
+  const DEFAULT_TTL_MS = 10 * 60 * 1000;
+  const DEFAULT_STABILIZATION_WINDOW_MS = 1_000;
+
+  const contextError = (code) => Object.assign(new Error(code), { code });
 
   const createSellerCompanyContextRuntime = ({
     chromeApi = root.chrome,
     policy = root.JzSellerIdentityPolicy,
+    recoveryTab = root.JzSellerRecoveryTab,
     now = () => Date.now(),
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    ttlMs = DEFAULT_TTL_MS,
+    stabilizationWindowMs = DEFAULT_STABILIZATION_WINDOW_MS,
   } = {}) => {
     if (
       !chromeApi?.storage?.session
       || !chromeApi?.tabs
-      || !chromeApi?.cookies
-      || !policy?.resolveTrustedSellerCompanyContext
+      || !policy?.isTrustedSellerTab
+      || !policy?.normalizeCompanyId
+      || !recoveryTab?.createSellerRecoveryTabManager
     ) {
       throw new TypeError('seller company context runtime dependencies are required');
     }
-    const storageKey = (tabId) => `${STORAGE_PREFIX}${Number(tabId)}`;
-    const recoverableContextError = (error) => [
-      'SELLER_CONTEXT_REQUIRED',
-      'SELLER_COMPANY_CONTEXT_REQUIRED',
-    ].includes(error?.message);
-    let recoveryPromise = null;
-    let recoveryBlockedUntil = 0;
 
-    const rememberFromSender = async (sender, rawCompanyId) => {
-      const tab = sender?.tab;
-      if (!policy.isTrustedSellerTab(tab) || Number(sender?.frameId || 0) !== 0) {
-        throw new Error('SELLER_CONTEXT_REQUIRED');
-      }
-      const companyId = policy.normalizeCompanyId(rawCompanyId);
-      if (!companyId) throw new Error('SELLER_COMPANY_CONTEXT_INVALID');
-      await chromeApi.storage.session.set({
-        [storageKey(tab.id)]: {
+    const storageKey = (tabId) => `${STORAGE_PREFIX}${Number(tabId)}`;
+    const safeTtlMs = Math.max(1, Number(ttlMs) || DEFAULT_TTL_MS);
+    const safeStabilizationWindowMs = Math.max(
+      0,
+      Number(stabilizationWindowMs) || 0,
+    );
+    let observationWrites = Promise.resolve();
+
+    const normalizeStored = (value) => {
+      const companyId = policy.normalizeCompanyId(value?.companyId);
+      const observedAt = Number(value?.observedAt);
+      const revision = Number(value?.revision);
+      const tabId = Number(value?.tabId);
+      if (
+        !companyId
+        || !Number.isFinite(observedAt)
+        || !Number.isInteger(revision)
+        || revision <= 0
+        || !Number.isInteger(tabId)
+        || tabId <= 0
+      ) return null;
+      return { companyId, observedAt, revision, tabId };
+    };
+
+    const rememberFromSender = (sender, rawCompanyId) => {
+      const write = observationWrites.catch(() => {}).then(async () => {
+        const tab = sender?.tab;
+        if (!policy.isTrustedSellerTab(tab) || Number(sender?.frameId) !== 0) {
+          throw contextError('SELLER_CONTEXT_REQUIRED');
+        }
+        const companyId = policy.normalizeCompanyId(rawCompanyId);
+        if (!companyId) throw contextError('SELLER_COMPANY_CONTEXT_INVALID');
+
+        const stored = await chromeApi.storage.session.get(CURRENT_STORAGE_KEY);
+        const current = normalizeStored(stored?.[CURRENT_STORAGE_KEY]);
+        const observation = {
           companyId,
           observedAt: now(),
-        },
+          revision: current
+            ? current.revision + (current.companyId === companyId ? 0 : 1)
+            : 1,
+          tabId: Number(tab.id),
+        };
+        const values = {
+          [CURRENT_STORAGE_KEY]: observation,
+          [storageKey(tab.id)]: observation,
+        };
+        if (current && current.companyId !== companyId) {
+          values[PREVIOUS_STORAGE_KEY] = current;
+        }
+        await chromeApi.storage.session.set(values);
+        return {
+          companyId: observation.companyId,
+          revision: observation.revision,
+          observedAt: observation.observedAt,
+          sellerTabId: observation.tabId,
+        };
       });
-      return { companyId, sellerTabId: Number(tab.id) };
+      observationWrites = write.catch(() => {});
+      return write;
     };
 
     const observationsForTabs = async (sellerTabs) => {
-      const keys = (sellerTabs || []).map((tab) => storageKey(tab.id));
+      const trustedTabs = (sellerTabs || []).filter((tab) => policy.isTrustedSellerTab(tab));
+      const keys = trustedTabs.map((tab) => storageKey(tab.id));
       if (!keys.length) return [];
       const stored = await chromeApi.storage.session.get(keys);
-      return sellerTabs.flatMap((tab) => {
-        const value = stored?.[storageKey(tab.id)];
-        return value
-          ? [{
-              tabId: Number(tab.id),
-              companyId: value.companyId,
-              observedAt: value.observedAt,
-            }]
-          : [];
+      return trustedTabs.flatMap((tab) => {
+        const observation = normalizeStored(stored?.[storageKey(tab.id)]);
+        return observation ? [observation] : [];
       });
     };
 
-    const resolveCurrent = async () => {
-      const sellerTabs = await chromeApi.tabs.query({
-        url: 'https://seller.ozon.ru/*',
-      });
-      const cookies = await chromeApi.cookies.getAll({
-        url: 'https://seller.ozon.ru/',
-        name: 'sc_company_id',
-      });
-      return policy.resolveTrustedSellerCompanyContext({
-        cookies,
-        observations: await observationsForTabs(sellerTabs),
-        sellerTabs,
-        now: now(),
-      });
+    const allObservations = async () => {
+      const stored = await chromeApi.storage.session.get(null);
+      return Object.entries(stored || {}).flatMap(([key, value]) => (
+        /^sonliSellerCompanyContext:\d+$/.test(key)
+          ? [normalizeStored(value)].filter(Boolean)
+          : []
+      ));
     };
 
-    const recoverCurrent = async ({ timeoutMs = 7_000, pollIntervalMs = 250 } = {}) => {
-      const sellerTabs = (await chromeApi.tabs.query({
-        url: 'https://seller.ozon.ru/*',
-      })).filter((tab) => policy.isTrustedSellerTab(tab));
-      if (!sellerTabs.length) throw new Error('SELLER_CONTEXT_REQUIRED');
+    const snapshotCurrent = async () => {
+      await observationWrites;
+      const stored = await chromeApi.storage.session.get([
+        CURRENT_STORAGE_KEY,
+        PREVIOUS_STORAGE_KEY,
+      ]);
+      const current = normalizeStored(stored?.[CURRENT_STORAGE_KEY]);
+      const previous = normalizeStored(stored?.[PREVIOUS_STORAGE_KEY]);
+      const currentTime = Number(now());
+      if (
+        !current
+        || current.observedAt > currentTime + 5_000
+        || currentTime - current.observedAt > safeTtlMs
+      ) throw contextError('SELLER_CONTEXT_REQUIRED');
 
-      const sellerTab = sellerTabs.find((tab) => tab.active) || sellerTabs[0];
-      const startedAt = now();
-      try {
-        await chromeApi.tabs.reload(sellerTab.id);
-      } catch (error) {
-        throw Object.assign(new Error('SELLER_CONTEXT_RECOVERY_FAILED'), { cause: error });
+      if (safeStabilizationWindowMs > 0) {
+        const competing = [previous, ...(await allObservations())]
+          .filter(Boolean)
+          .some((observation) => (
+          observation.companyId !== current.companyId
+          && currentTime - observation.observedAt <= safeStabilizationWindowMs
+          && observation.observedAt <= currentTime + 5_000
+          ));
+        if (competing) throw contextError('SELLER_CONTEXT_RECOVERING');
       }
-
-      const safeTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
-        ? Number(timeoutMs)
-        : 7_000;
-      const safePollIntervalMs = Number.isFinite(Number(pollIntervalMs)) && Number(pollIntervalMs) > 0
-        ? Number(pollIntervalMs)
-        : 250;
-      while (now() - startedAt < safeTimeoutMs) {
-        const remainingMs = safeTimeoutMs - (now() - startedAt);
-        await sleep(Math.min(safePollIntervalMs, remainingMs));
-        try {
-          return await resolveCurrent();
-        } catch (error) {
-          if (!recoverableContextError(error)) throw error;
-        }
-      }
-      throw new Error('SELLER_CONTEXT_RECOVERY_FAILED');
+      return {
+        companyId: current.companyId,
+        revision: current.revision,
+        observedAt: current.observedAt,
+        sellerTabId: current.tabId,
+      };
     };
 
-    const resolveCurrentWithRecovery = async (options = {}) => {
-      try {
-        const resolved = await resolveCurrent();
-        recoveryBlockedUntil = 0;
-        return resolved;
-      } catch (error) {
-        if (!recoverableContextError(error)) throw error;
-      }
+    const recovery = recoveryTab.createSellerRecoveryTabManager({
+      chromeApi,
+      policy,
+      readCurrent: snapshotCurrent,
+      sleep,
+    });
 
-      if (now() < recoveryBlockedUntil) {
-        throw new Error('SELLER_CONTEXT_RECOVERY_FAILED');
-      }
-      if (!recoveryPromise) recoveryPromise = recoverCurrent(options);
-      const currentRecovery = recoveryPromise;
+    const resolveCurrent = snapshotCurrent;
+    const resolveCurrentWithRecovery = (options) => recovery.resolveCurrentWithRecovery(options);
+    const isSnapshotCurrent = async (snapshot) => {
       try {
-        return await currentRecovery;
-      } catch (error) {
-        if (error?.message === 'SELLER_CONTEXT_RECOVERY_FAILED') {
-          recoveryBlockedUntil = Math.max(recoveryBlockedUntil, now() + RECOVERY_FAILURE_COOLDOWN_MS);
-        }
-        throw error;
-      } finally {
-        if (recoveryPromise === currentRecovery) recoveryPromise = null;
+        const current = await snapshotCurrent();
+        return current.companyId === policy.normalizeCompanyId(snapshot?.companyId)
+          && current.revision === Number(snapshot?.revision);
+      } catch {
+        return false;
       }
     };
 
     return Object.freeze({
+      focusLoginHelper: recovery.focusLoginHelper,
+      isSnapshotCurrent,
       observationsForTabs,
       rememberFromSender,
       resolveCurrent,
       resolveCurrentWithRecovery,
+      snapshotCurrent,
     });
   };
 
   const api = Object.freeze({
     createSellerCompanyContextRuntime,
+    CURRENT_STORAGE_KEY,
+    DEFAULT_STABILIZATION_WINDOW_MS,
+    PREVIOUS_STORAGE_KEY,
     STORAGE_PREFIX,
   });
   root.JzSellerCompanyContextRuntime = api;

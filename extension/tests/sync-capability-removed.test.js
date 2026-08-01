@@ -80,6 +80,9 @@ function loadServiceWorker({
   const intervalCalls = [];
   const runtimeSendMessageCalls = [];
   const importedScripts = [];
+  const removedTabs = [];
+  const reloadedTabs = [];
+  const tabQueryCalls = [];
   const session = createStorageArea({
     sonliCollectorSession: {
       collectorToken: 'csess_behavior_test_secret_123456789',
@@ -92,6 +95,20 @@ function loadServiceWorker({
         'collector.ozon.read',
       ],
     },
+    ...(sellerCapture ? {
+      'sonliSellerCompanyContext:current': {
+        companyId: '1234',
+        observedAt: Date.now(),
+        revision: 1,
+        tabId: 9,
+      },
+      'sonliSellerCompanyContext:9': {
+        companyId: '1234',
+        observedAt: Date.now(),
+        revision: 1,
+        tabId: 9,
+      },
+    } : {}),
   });
   const local = createStorageArea(localInitial);
   if (rejectPendingUploadWrite) {
@@ -171,19 +188,26 @@ function loadServiceWorker({
     storage: { local, session, sync },
     tabs: {
       create: async () => ({ id: 1 }),
+      get: async (tabId) => ({ id: tabId, url: 'https://seller.ozon.ru/app' }),
       onCreated: event,
       onRemoved: event,
       onUpdated: event,
-      query: async () => sellerCapture
-        ? [{
-            id: 9,
-            url: 'https://seller.ozon.ru/app/products',
-            status: 'complete',
-            active: true,
-          }]
-        : [],
-      reload() {},
-      remove: async () => {},
+      query: async (query = {}) => {
+        tabQueryCalls.push(query);
+        const requestedUrls = Array.isArray(query.url) ? query.url : [query.url].filter(Boolean);
+        const requestsSeller = !requestedUrls.length
+          || requestedUrls.includes('https://seller.ozon.ru/*');
+        return sellerCapture && requestsSeller
+          ? [{
+              id: 9,
+              url: 'https://seller.ozon.ru/app/products',
+              status: 'complete',
+              active: true,
+            }]
+          : [];
+      },
+      reload(tabId) { reloadedTabs.push(tabId); },
+      remove: async (tabId) => { removedTabs.push(tabId); },
       sendMessage: async () => null,
       update: async () => ({}),
     },
@@ -257,9 +281,13 @@ function loadServiceWorker({
     importedScripts,
     intervalCalls,
     local,
+    removedTabs,
+    reloadedTabs,
+    runtimeOnInstalled,
     runtimeOnMessage,
     runtimeOnStartup,
     runtimeSendMessageCalls,
+    tabQueryCalls,
   };
 }
 
@@ -327,6 +355,29 @@ test('actual service worker starts without retired sync modules or sync alarms',
     'collector-ozon-enrichment-agent.js',
     'collector-ozon-enrichment-client.js',
   ]);
+  assert.equal(
+    harness.importedScripts.includes('../lib/seller-recovery-tab.js'),
+    true,
+    'service worker package must import the Seller recovery helper',
+  );
+});
+
+test('install and startup never reload or remove user-owned Seller tabs', async () => {
+  const harness = loadServiceWorker({ sellerCapture: true });
+  for (const listener of harness.runtimeOnInstalled.listeners) listener();
+  for (const listener of harness.runtimeOnStartup.listeners) listener();
+  await settle();
+  assert.deepEqual(harness.reloadedTabs, []);
+  assert.deepEqual(harness.removedTabs, []);
+});
+
+test('logout never reloads or removes a user-owned Seller tab', async () => {
+  const harness = loadServiceWorker({ sellerCapture: true });
+  const response = await sendRuntimeMessage(harness, { action: 'logout' });
+  await settle();
+  assert.equal(response.ok, true);
+  assert.deepEqual(harness.reloadedTabs, []);
+  assert.deepEqual(harness.removedTabs, []);
 });
 
 test('Ozon enrichment runtime messages keep the service worker alive while cold capture runs', async () => {

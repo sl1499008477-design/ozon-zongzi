@@ -40,6 +40,7 @@ try {
     '../lib/ozon-enrichment-contract.js',
     '../lib/collector-capture-deadline.js',
     '../lib/seller-identity-policy.js',
+    '../lib/seller-recovery-tab.js',
     '../lib/seller-company-context-runtime.js',
     '../lib/portal-bridge-policy.js',
     '../lib/chrome-storage-promises.js',
@@ -218,7 +219,7 @@ try {
   // in local storage. Collector auth must never reuse or preserve them.
   removeStorage(['ozonAuthToken', 'ozonStoreId']).catch(() => {});
 
-  // Debounced ozon tab reload — prevents rapid reload storms on auth state changes
+  // Debounced buyer-page reload. Seller pages may contain unsaved forms and are never reloaded.
   let _reloadTimer = null;
   function reloadOzonTabs() {
     clearTimeout(_reloadTimer);
@@ -227,7 +228,6 @@ try {
         url: [
           'https://ozon.ru/*',
           'https://www.ozon.ru/*',
-          'https://seller.ozon.ru/*',
           'https://ozon.kz/*',
           'https://www.ozon.kz/*',
         ],
@@ -286,13 +286,14 @@ try {
     globalThis.JzSellerCompanyContextRuntime.createSellerCompanyContextRuntime({
       chromeApi: chrome,
       policy: globalThis.JzSellerIdentityPolicy,
+      recoveryTab: globalThis.JzSellerRecoveryTab,
     });
   const collectorOzonAgent = globalThis.JzCollectorOzonAgent.create({
     sessionManager: collectorSessionManager,
     canCapture: async () => {
       try {
-        await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
-        return true;
+        const sellerContext = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
+        return sellerContext.status === globalThis.JzSellerRecoveryTab.STATUS.READY;
       } catch {
         return false;
       }
@@ -724,7 +725,10 @@ try {
   const getSellerCompanyIdCandidates = async (options = {}) => {
     if (options.sender?.tab && !globalThis.JzSellerIdentityPolicy.isTrustedSellerTab(options.sender.tab)) return [];
     try {
-      return [(await sellerCompanyContextRuntime.resolveCurrentWithRecovery()).companyId];
+      const sellerContext = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
+      return sellerContext.status === globalThis.JzSellerRecoveryTab.STATUS.READY
+        ? [sellerContext.companyId]
+        : [];
     } catch (error) {
       if (/SELLER_(?:COMPANY_CONTEXT_CONFLICT|CONTEXT_RECOVERY_FAILED)/.test(error?.message || '')) {
         throw error;
@@ -2827,18 +2831,6 @@ try {
     }
   });
 
-  /**
-   * Reload all seller.ozon.ru tabs so manifest-declared content_scripts get injected.
-   * Needed when the extension loads after the tab is already open (e.g. install/update/startup).
-   */
-  const reloadSellerTabs = async () => {
-    const tabs = await chrome.tabs.query({ url: 'https://seller.ozon.ru/*' });
-    for (const tab of tabs) {
-      chrome.tabs.reload(tab.id);
-    }
-    if (tabs.length) console.log(`[reloadSellerTabs] reloaded ${tabs.length} seller tab(s)`);
-  };
-
   chrome.runtime.onInstalled.addListener(() => {
     detectBackendUrl();
     createContextMenus();
@@ -2847,14 +2839,12 @@ try {
     setupFxAlarm();
     checkForUpdate();
     refreshExchangeRate();
-    reloadSellerTabs();
   });
 
   chrome.runtime.onStartup.addListener(() => {
     setupFollowSellCheckAlarm();
     setupFxAlarm();
     refreshExchangeRate();
-    reloadSellerTabs();
   });
 
   chrome.contextMenus.onClicked.addListener((info) => {
@@ -3424,6 +3414,11 @@ try {
               error: error?.message || 'SELLER_COMPANY_CONTEXT_INVALID',
             };
           }
+        }
+        case 'focusSellerRecoveryTab': {
+          return {
+            ok: await sellerCompanyContextRuntime.focusLoginHelper(),
+          };
         }
         case 'enrichOzonCollect': {
           try {

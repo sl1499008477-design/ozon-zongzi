@@ -1,7 +1,12 @@
 (() => {
   'use strict';
   const context = globalThis.JzSellerCompanyContext;
-  if (!context || globalThis.__JZ_SELLER_COMPANY_CONTEXT_HOOK__) return;
+  if (
+    !context
+    || globalThis.__JZ_SELLER_COMPANY_CONTEXT_HOOK__
+    || window.top !== window
+    || window.location.origin !== 'https://seller.ozon.ru'
+  ) return;
   globalThis.__JZ_SELLER_COMPANY_CONTEXT_HOOK__ = true;
 
   const MESSAGE_MARKER = '__jzSellerCompanyContext';

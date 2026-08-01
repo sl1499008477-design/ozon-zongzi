@@ -7,6 +7,9 @@ const {
 } = require('../lib/seller-identity-policy.js');
 assert.equal(isTrustedSellerTab({ url: 'https://seller.ozon.ru/app/dashboard/main' }), true);
 assert.equal(isTrustedSellerTab({ url: 'https://www.ozon.ru/product/1' }), false);
+assert.equal(isTrustedSellerTab({ url: 'http://seller.ozon.ru/app' }), false);
+assert.equal(isTrustedSellerTab({ url: 'https://seller.ozon.ru.evil.example/app' }), false);
+assert.equal(isTrustedSellerTab({ url: 'https://seller.ozon.ru:444/app' }), false);
 assert.equal(resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '1234', domain: 'seller.ozon.ru' }]), '1234');
 assert.equal(resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '5678', domain: '.ozon.ru' }]), '5678');
 assert.throws(() => resolveTrustedSellerCompanyId([{ name: 'sc_company_id', value: '1234', domain: 'seller.ozon.ru' }, { name: 'sc_company_id', value: '5678', domain: 'seller.ozon.ru' }]));
@@ -52,20 +55,37 @@ assert.throws(
   }),
   /SELLER_COMPANY_CONTEXT_CONFLICT/,
 );
-assert.throws(
-  () => resolveTrustedSellerCompanyContext({
+assert.deepEqual(
+  resolveTrustedSellerCompanyContext({
     cookies: [],
     observations: [
-      { tabId: 7, companyId: '2681910', observedAt: now - 1_000 },
-      { tabId: 8, companyId: '7311458', observedAt: now - 1_000 },
+      { tabId: 7, companyId: '2681910', observedAt: now - 2_000, revision: 3 },
+      { tabId: 8, companyId: '7311458', observedAt: now - 1_000, revision: 4 },
     ],
     sellerTabs: [
       ...sellerTabs,
       { id: 8, url: 'https://seller.ozon.ru/app/products', active: false },
     ],
     now,
+    stabilizationWindowMs: 500,
   }),
-  /SELLER_COMPANY_CONTEXT_CONFLICT/,
+  { companyId: '7311458', sellerTabId: 8, source: 'observed' },
+);
+assert.throws(
+  () => resolveTrustedSellerCompanyContext({
+    cookies: [],
+    observations: [
+      { tabId: 7, companyId: '2681910', observedAt: now - 200, revision: 3 },
+      { tabId: 8, companyId: '7311458', observedAt: now - 100, revision: 4 },
+    ],
+    sellerTabs: [
+      ...sellerTabs,
+      { id: 8, url: 'https://seller.ozon.ru/app/products', active: false },
+    ],
+    now,
+    stabilizationWindowMs: 1_000,
+  }),
+  /SELLER_CONTEXT_RECOVERING/,
 );
 assert.throws(
   () => resolveTrustedSellerCompanyContext({

@@ -1,4 +1,7 @@
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const {
   installObserver,
   normalizeCompanyId,
@@ -8,6 +11,50 @@ assert.equal(normalizeCompanyId('2681910'), '2681910');
 assert.equal(normalizeCompanyId(' 2681910 '), '2681910');
 assert.equal(normalizeCompanyId('123'), '');
 assert.equal(normalizeCompanyId('2681910-token'), '');
+
+const loadMainWorldHook = ({ origin, topFrame = true }) => {
+  const listeners = new Map();
+  const posted = [];
+  let observedCallback = null;
+  const window = {
+    location: { origin },
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    postMessage(message, targetOrigin) {
+      posted.push({ message, targetOrigin });
+    },
+  };
+  window.top = topFrame ? window : {};
+  const context = vm.createContext({
+    JzSellerCompanyContext: {
+      installObserver({ onCompanyId }) {
+        observedCallback = onCompanyId;
+      },
+      normalizeCompanyId,
+    },
+    URL,
+    globalThis: null,
+    window,
+  });
+  context.globalThis = context;
+  vm.runInContext(readFileSync(
+    path.join(__dirname, '../content/seller-company-context-hook.js'),
+    'utf8',
+  ), context);
+  return { listeners, observed: () => observedCallback, posted, window };
+};
+
+const exactTopHook = loadMainWorldHook({ origin: 'https://seller.ozon.ru' });
+assert.equal(typeof exactTopHook.observed(), 'function');
+exactTopHook.observed()('2681910');
+assert.equal(exactTopHook.posted.length, 1);
+
+const portHook = loadMainWorldHook({ origin: 'https://seller.ozon.ru:444' });
+assert.equal(portHook.observed(), null, 'non-exact Seller origins must not install the observer');
+
+const framedHook = loadMainWorldHook({ origin: 'https://seller.ozon.ru', topFrame: false });
+assert.equal(framedHook.observed(), null, 'non-top frames must not install the observer');
 
 class FakeXMLHttpRequest {
   constructor() {

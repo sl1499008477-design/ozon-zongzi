@@ -1,7 +1,11 @@
 (function (root) {
   'use strict';
   const isTrustedSellerTab = (tab) => {
-    try { const url = new URL(String(tab?.url || '')); return url.protocol === 'https:' && url.hostname === 'seller.ozon.ru'; } catch { return false; }
+    try {
+      return new URL(String(tab?.url || '')).origin === 'https://seller.ozon.ru';
+    } catch {
+      return false;
+    }
   };
   const normalizeCompanyId = (value) => {
     const normalized = String(value == null ? '' : value).trim();
@@ -30,27 +34,42 @@
     sellerTabs = [],
     now = Date.now(),
     ttlMs = 10 * 60 * 1000,
+    stabilizationWindowMs = 0,
   } = {}) => {
     const trustedTabs = (sellerTabs || []).filter(isTrustedSellerTab);
     if (!trustedTabs.length) throw new Error('SELLER_CONTEXT_REQUIRED');
     const trustedTabIds = new Set(trustedTabs.map((tab) => Number(tab.id)));
-    const validObservations = (observations || []).filter((observation) => {
-      const observedAt = Number(observation?.observedAt);
-      return trustedTabIds.has(Number(observation?.tabId))
-        && Boolean(normalizeCompanyId(observation?.companyId))
-        && Number.isFinite(observedAt)
-        && observedAt <= Number(now) + 5_000
-        && Number(now) - observedAt <= Number(ttlMs);
-    });
+    const validObservations = (observations || [])
+      .map((observation, index) => ({ ...observation, index }))
+      .filter((observation) => {
+        const observedAt = Number(observation?.observedAt);
+        return trustedTabIds.has(Number(observation?.tabId))
+          && Boolean(normalizeCompanyId(observation?.companyId))
+          && Number.isFinite(observedAt)
+          && observedAt <= Number(now) + 5_000
+          && Number(now) - observedAt <= Number(ttlMs);
+      })
+      .sort((left, right) => (
+        Number(right.observedAt) - Number(left.observedAt)
+        || Number(right.revision || 0) - Number(left.revision || 0)
+        || right.index - left.index
+      ));
     const cookieIds = trustedCookieCompanyIds(cookies);
-    const observedIds = [...new Set(
-      validObservations.map((observation) => normalizeCompanyId(observation.companyId)),
-    )];
-    if (cookieIds.length > 1 || observedIds.length > 1) {
+    const latestObservation = validObservations[0];
+    const observedId = normalizeCompanyId(latestObservation?.companyId);
+    const safeStabilizationWindowMs = Math.max(0, Number(stabilizationWindowMs) || 0);
+    const recentObservedIds = new Set(validObservations
+      .filter((observation) => (
+        Number(now) - Number(observation.observedAt) <= safeStabilizationWindowMs
+      ))
+      .map((observation) => normalizeCompanyId(observation.companyId)));
+    if (safeStabilizationWindowMs > 0 && recentObservedIds.size > 1) {
+      throw new Error('SELLER_CONTEXT_RECOVERING');
+    }
+    if (cookieIds.length > 1) {
       throw new Error('SELLER_COMPANY_CONTEXT_CONFLICT');
     }
     const cookieId = cookieIds[0] || '';
-    const observedId = observedIds[0] || '';
     if (cookieId && observedId && cookieId !== observedId) {
       throw new Error('SELLER_COMPANY_CONTEXT_CONFLICT');
     }
@@ -61,9 +80,7 @@
       }
       throw new Error('SELLER_COMPANY_CONTEXT_REQUIRED');
     }
-    const observedTabId = validObservations.find(
-      (observation) => normalizeCompanyId(observation.companyId) === companyId,
-    )?.tabId;
+    const observedTabId = observedId === companyId ? latestObservation?.tabId : undefined;
     const activeTabId = trustedTabs.find((tab) => tab.active)?.id;
     return {
       companyId,
