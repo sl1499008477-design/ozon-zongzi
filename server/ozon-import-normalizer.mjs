@@ -392,6 +392,36 @@ function sourceTypeNameOf(item) {
   ));
 }
 
+function sourceCategoryPathOf(item) {
+  const direct = item?.sourceCategory?.path;
+  if (Array.isArray(direct)) {
+    return direct.map((value) => cleanText(value)).filter(Boolean);
+  }
+  return [...asArray(sourceVariantOf(item).categories)]
+    .sort((left, right) => toPositiveNumber(left?.level) - toPositiveNumber(right?.level))
+    .map((category) => cleanText(firstFilled(category?.title, category?.name)))
+    .filter((label, index, labels) => label && labels.indexOf(label) === index);
+}
+
+function sourceCategoryEvidenceOf(item) {
+  const dictionaryCandidates = uniquePositiveNumbers([
+    item?.sourceCategory?.typeIdCandidate,
+    ...sourceAttributeDictionaryValueIds(item, 8229),
+    ...bundleAttributeDictionaryValueIds(item, 8229),
+  ]);
+  return {
+    descriptionCategoryId: toPositiveNumber(firstFilled(
+      item?.sourceCategory?.descriptionCategoryId,
+      sourceVariantOf(item).description_category_id,
+      sourceVariantOf(item).descriptionCategoryId,
+      descriptionCategoryIdOf(item),
+    )),
+    typeName: cleanText(firstFilled(item?.sourceCategory?.typeName, sourceTypeNameOf(item))),
+    typeIdCandidate: dictionaryCandidates[0] || 0,
+    path: sourceCategoryPathOf(item),
+  };
+}
+
 function bundleAttributeDictionaryValueIds(item, id) {
   const key = String(id);
   const attrs = asArray(bundleItemOf(item).attributes).filter((attr) =>
@@ -452,6 +482,134 @@ function findTypeCandidateById(tree, typeId) {
   const wantedTypeId = toPositiveNumber(typeId);
   if (!wantedTypeId) return null;
   return collectTypeCandidates(tree, 0).find((candidate) => candidate.typeId === wantedTypeId) || null;
+}
+
+function uniqueCandidatesByTypeId(candidates) {
+  const seen = new Set();
+  return asArray(candidates).filter((candidate) => {
+    if (!candidate?.typeId || seen.has(candidate.typeId)) return false;
+    seen.add(candidate.typeId);
+    return true;
+  });
+}
+
+function matchExactTypeCandidate(candidates, typeName) {
+  const sourceName = cleanText(typeName);
+  if (!sourceName) return { candidate: null, ambiguous: false, method: "" };
+  const exact = uniqueCandidatesByTypeId(
+    candidates.filter((candidate) => cleanText(candidate.typeName) === sourceName),
+  );
+  if (exact.length === 1) {
+    return { candidate: exact[0], ambiguous: false, method: "TYPE_NAME_EXACT" };
+  }
+  if (exact.length > 1) return { candidate: null, ambiguous: true, method: "" };
+
+  const wanted = normalizeName(sourceName);
+  const normalized = uniqueCandidatesByTypeId(
+    candidates.filter((candidate) => normalizeName(candidate.typeName) === wanted),
+  );
+  if (normalized.length === 1) {
+    return { candidate: normalized[0], ambiguous: false, method: "TYPE_NAME_NORMALIZED" };
+  }
+  return { candidate: null, ambiguous: normalized.length > 1, method: "" };
+}
+
+function resolutionTime(ctx) {
+  const value = typeof ctx.now === "function" ? ctx.now() : new Date();
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString();
+}
+
+function categoryResolutionBase(item, source, ctx) {
+  return {
+    offerId: cleanText(firstFilled(item.offer_id, item.offerId, item.scraped_sku, item.sku)),
+    source,
+    resolvedAt: resolutionTime(ctx),
+  };
+}
+
+function matchedCategoryResolution(item, source, candidate, method, ctx) {
+  return {
+    ...categoryResolutionBase(item, source, ctx),
+    status: "MATCHED",
+    method,
+    target: {
+      storeId: cleanText(ctx.targetStoreId),
+      descriptionCategoryId: candidate.descriptionCategoryId,
+      typeId: candidate.typeId,
+    },
+  };
+}
+
+function pendingCategoryResolution(item, source, reason, ctx) {
+  return {
+    ...categoryResolutionBase(item, source, ctx),
+    status: "PENDING",
+    reason,
+  };
+}
+
+function pendingCategoryError(item, resolution) {
+  const sku = cleanText(firstFilled(item.scraped_sku, item.sku, item.offer_id));
+  const error = new Error(`${sku ? `SKU ${sku} ` : ""}目标店铺类目待匹配`);
+  error.categoryResolution = resolution;
+  return error;
+}
+
+async function resolveTargetStoreCategory(item, ctx) {
+  const source = sourceCategoryEvidenceOf(item);
+  const tree = typeof ctx.getCategoryTree === "function" ? await ctx.getCategoryTree() : [];
+  const explicitTypeId = toPositiveNumber(firstFilled(item.type_id, item.typeId));
+  if (explicitTypeId) {
+    const candidate = findTypeCandidateById(tree, explicitTypeId);
+    if (candidate) {
+      return {
+        candidate,
+        resolution: matchedCategoryResolution(item, source, candidate, "DIRECT_TYPE_ID", ctx),
+      };
+    }
+  }
+
+  const dictionaryCandidates = uniquePositiveNumbers([
+    source.typeIdCandidate,
+    ...sourceAttributeDictionaryValueIds(item, 8229),
+    ...bundleAttributeDictionaryValueIds(item, 8229),
+  ]);
+  for (const typeId of dictionaryCandidates) {
+    const candidate = findTypeCandidateById(tree, typeId);
+    if (candidate) {
+      return {
+        candidate,
+        resolution: matchedCategoryResolution(item, source, candidate, "DICTIONARY_VALUE_ID", ctx),
+      };
+    }
+  }
+
+  if (!source.descriptionCategoryId || !source.typeName) {
+    return {
+      candidate: null,
+      resolution: pendingCategoryResolution(item, source, "SOURCE_TYPE_MISSING", ctx),
+    };
+  }
+  const matched = matchExactTypeCandidate(
+    collectTypeCandidates(tree, source.descriptionCategoryId),
+    source.typeName,
+  );
+  if (matched.candidate) {
+    return {
+      candidate: matched.candidate,
+      resolution: matchedCategoryResolution(item, source, matched.candidate, matched.method, ctx),
+    };
+  }
+  return {
+    candidate: null,
+    resolution: pendingCategoryResolution(
+      item,
+      source,
+      matched.ambiguous ? "TARGET_TYPE_AMBIGUOUS" : "TARGET_TYPE_NOT_FOUND",
+      ctx,
+    ),
+  };
 }
 
 function matchTypeCandidate(candidates, typeName) {
@@ -800,7 +958,14 @@ async function normalizeOneImportItem(item, ctx) {
     item.typeId,
   ));
   let typeId = explicitDescriptionCategoryId && explicitTypeId ? explicitTypeId : 0;
-  if (!typeId && typeof ctx.getCategoryTree === "function") {
+  let categoryResolution = null;
+  if (ctx.categoryMatchPolicy === "TARGET_STORE_EXACT") {
+    const resolved = await resolveTargetStoreCategory(item, ctx);
+    categoryResolution = resolved.resolution;
+    if (!resolved.candidate) throw pendingCategoryError(item, categoryResolution);
+    descriptionCategoryId = resolved.candidate.descriptionCategoryId;
+    typeId = resolved.candidate.typeId;
+  } else if (!typeId && typeof ctx.getCategoryTree === "function") {
     const tree = await ctx.getCategoryTree();
     for (const candidateTypeId of typeIdCandidatesOf(item)) {
       const matched = findTypeCandidateById(tree, candidateTypeId);
@@ -872,22 +1037,26 @@ async function normalizeOneImportItem(item, ctx) {
     complex_attributes: sourceComplexAttributes(item, allowedIds),
   };
 
-  return stripUndefined(normalized);
+  return { item: stripUndefined(normalized), categoryResolution };
 }
 
 export async function normalizeOzonImportItems(items, ctx = {}) {
   const normalizedItems = [];
   const warnings = [];
+  const categoryResolutions = [];
   const normalizationContext = { ...ctx, warnings };
   for (const item of asArray(items)) {
     try {
-      normalizedItems.push(await normalizeOneImportItem(item, normalizationContext));
+      const normalized = await normalizeOneImportItem(item, normalizationContext);
+      normalizedItems.push(normalized.item);
+      if (normalized.categoryResolution) categoryResolutions.push(normalized.categoryResolution);
     } catch (error) {
+      if (error?.categoryResolution) categoryResolutions.push(error.categoryResolution);
       if (ctx.strictTypeMatch || isSafeCategoryError(error)) throw error;
       warnings.push(error?.message || String(error));
     }
   }
-  return { items: normalizedItems, warnings };
+  return { items: normalizedItems, warnings, categoryResolutions };
 }
 
 export const testExports = {

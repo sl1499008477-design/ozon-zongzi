@@ -43,8 +43,11 @@ const attrs = [
 async function normalize(items, options = {}) {
   return normalizeOzonImportItems(items, {
     strictTypeMatch: !!options.strictTypeMatch,
+    categoryMatchPolicy: options.categoryMatchPolicy,
+    targetStoreId: options.targetStoreId,
+    now: options.now,
     allowUnresolvedRequiredDictionaryValues: !!options.allowUnresolvedRequiredDictionaryValues,
-    getCategoryTree: async () => tree,
+    getCategoryTree: async () => options.tree || tree,
     getCategoryAttributes: async () => options.attrs || attrs,
     getCategoryAttributeValues: async (_descriptionCategoryId, _typeId, attributeId) => {
       if (options.attributeValuesError?.[Number(attributeId)] || options.attributeValuesError?.[String(attributeId)]) {
@@ -53,6 +56,154 @@ async function normalize(items, options = {}) {
       return options.attributeValues?.[Number(attributeId)] || options.attributeValues?.[String(attributeId)] || [];
     },
   });
+}
+
+function collectedCategoryItem({ offerId, descriptionCategoryId, typeName, typeIdCandidate }) {
+  return {
+    offer_id: offerId,
+    name: `Collected ${offerId}`,
+    price: "100.00",
+    images: [`https://cdn.example.test/${offerId}.jpg`],
+    _sourceVariant: {
+      description_category_id: descriptionCategoryId,
+      attributes: [
+        {
+          key: "8229",
+          value: typeName,
+          ...(typeIdCandidate ? { dictionary_value_id: typeIdCandidate } : {}),
+        },
+      ],
+    },
+  };
+}
+
+const fixedNow = () => new Date("2026-08-01T00:00:00.000Z");
+
+async function testTargetStoreValidatesDictionaryTypeCandidate() {
+  const targetTree = [{
+    description_category_id: 17039736,
+    category_name: "Чайники",
+    children: [{ type_id: 123456, type_name: "Заварочный чайник", children: [] }],
+  }];
+  const result = await normalize([
+    collectedCategoryItem({
+      offerId: "candidate-valid",
+      descriptionCategoryId: 17039736,
+      typeName: "Заварочный чайник",
+      typeIdCandidate: 123456,
+    }),
+  ], {
+    categoryMatchPolicy: "TARGET_STORE_EXACT",
+    targetStoreId: "store-a",
+    now: fixedNow,
+    tree: targetTree,
+  });
+
+  assert.equal(result.items[0].description_category_id, 17039736);
+  assert.equal(result.items[0].type_id, 123456);
+  assert.deepEqual(result.categoryResolutions[0], {
+    offerId: "candidate-valid",
+    status: "MATCHED",
+    method: "DICTIONARY_VALUE_ID",
+    source: {
+      descriptionCategoryId: 17039736,
+      typeName: "Заварочный чайник",
+      typeIdCandidate: 123456,
+      path: [],
+    },
+    target: {
+      storeId: "store-a",
+      descriptionCategoryId: 17039736,
+      typeId: 123456,
+    },
+    resolvedAt: "2026-08-01T00:00:00.000Z",
+  });
+}
+
+async function testTargetStoreRejectsUnknownDictionaryTypeCandidate() {
+  const result = await normalize([
+    collectedCategoryItem({
+      offerId: "candidate-missing",
+      descriptionCategoryId: 17039736,
+      typeName: "不存在的类型",
+      typeIdCandidate: 999999,
+    }),
+  ], {
+    categoryMatchPolicy: "TARGET_STORE_EXACT",
+    targetStoreId: "store-a",
+    now: fixedNow,
+  });
+
+  assert.equal(result.items.length, 0);
+  assert.equal(result.categoryResolutions[0].status, "PENDING");
+  assert.equal(result.categoryResolutions[0].reason, "TARGET_TYPE_NOT_FOUND");
+  assert.equal(result.categoryResolutions[0].target, undefined);
+}
+
+async function testTargetStoreExactTextPolicy() {
+  const targetTree = [{
+    description_category_id: 17039736,
+    children: [
+      { type_id: 123456, type_name: "Заварочный чайник", children: [] },
+      { type_id: 123457, type_name: "Электрический чайник", children: [] },
+    ],
+  }];
+  const cases = [
+    ["text-exact", "Заварочный чайник", "TYPE_NAME_EXACT", 123456],
+    ["text-normalized", "заварочный—чайник", "TYPE_NAME_NORMALIZED", 123456],
+  ];
+  for (const [offerId, typeName, method, typeId] of cases) {
+    const result = await normalize([
+      collectedCategoryItem({ offerId, descriptionCategoryId: 17039736, typeName }),
+    ], {
+      categoryMatchPolicy: "TARGET_STORE_EXACT",
+      targetStoreId: "store-a",
+      now: fixedNow,
+      tree: targetTree,
+    });
+    assert.equal(result.items[0].type_id, typeId);
+    assert.equal(result.categoryResolutions[0].method, method);
+  }
+}
+
+async function testTargetStoreExactPolicyRejectsPartialName() {
+  const result = await normalize([
+    collectedCategoryItem({
+      offerId: "text-partial",
+      descriptionCategoryId: 17031664,
+      typeName: "Трековый",
+    }),
+  ], {
+    categoryMatchPolicy: "TARGET_STORE_EXACT",
+    targetStoreId: "store-a",
+    now: fixedNow,
+  });
+  assert.equal(result.items.length, 0);
+  assert.equal(result.categoryResolutions[0].reason, "TARGET_TYPE_NOT_FOUND");
+}
+
+async function testTargetStoreExactPolicyRejectsAmbiguousNormalizedName() {
+  const ambiguousTree = [{
+    description_category_id: 17039736,
+    children: [
+      { type_id: 123456, type_name: "Чайник-термос", children: [] },
+      { type_id: 123457, type_name: "чайник термос", children: [] },
+    ],
+  }];
+  const result = await normalize([
+    collectedCategoryItem({
+      offerId: "text-ambiguous",
+      descriptionCategoryId: 17039736,
+      typeName: "ЧАЙНИК ТЕРМОС",
+    }),
+  ], {
+    categoryMatchPolicy: "TARGET_STORE_EXACT",
+    targetStoreId: "store-a",
+    now: fixedNow,
+    tree: ambiguousTree,
+  });
+  assert.equal(result.items.length, 0);
+  assert.equal(result.categoryResolutions[0].reason, "TARGET_TYPE_AMBIGUOUS");
 }
 
 async function testFollowSellPayloadToOzonImportItem() {
@@ -617,6 +768,11 @@ async function testNonCategoryFailureKeepsWarningWhenStrictTypeMatchIsFalse() {
 
 await testFollowSellPayloadToOzonImportItem();
 await testStrictTypeMatchFailsFast();
+await testTargetStoreValidatesDictionaryTypeCandidate();
+await testTargetStoreRejectsUnknownDictionaryTypeCandidate();
+await testTargetStoreExactTextPolicy();
+await testTargetStoreExactPolicyRejectsPartialName();
+await testTargetStoreExactPolicyRejectsAmbiguousNormalizedName();
 await testSearchTypeDictionaryValueCanRecoverRealDescriptionCategory();
 await testDictionaryTextValueResolvesToOzonDictionaryId();
 await testInvalidRichContentIsOmittedBeforeUpload();
