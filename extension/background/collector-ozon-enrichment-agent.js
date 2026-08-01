@@ -283,7 +283,8 @@
     const leaseRecords = new WeakMap();
     let nextGeneration = 1;
     let availablePromise = null;
-    let availableRerunRequested = false;
+    let availableRequestedGeneration = 0;
+    let availableProcessedGeneration = 0;
     let availableDeadlineAt = 0;
 
     const deadlineFailure = () => fixedFailure('OZON_ENRICH_UPSTREAM_FAILED');
@@ -590,44 +591,59 @@
       return leaseHandle(entry, false);
     };
 
+    const runAvailableGenerations = async () => {
+      while (availableProcessedGeneration < availableRequestedGeneration) {
+        if (now() >= availableDeadlineAt) {
+          availableProcessedGeneration = availableRequestedGeneration;
+          return;
+        }
+        const roundGeneration = availableRequestedGeneration;
+        let resolveCancelled;
+        const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
+        const entry = {
+          requestId: AVAILABLE_DRAIN_ID,
+          generation: nextGeneration,
+          refs: 1,
+          tokenRefs: 0,
+          deadlineAt: availableDeadlineAt,
+          active: true,
+          currentController: null,
+          cancelled,
+          resolveCancelled,
+          running: null,
+        };
+        nextGeneration += 1;
+        drains.set(entry.requestId, entry);
+        entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
+          .finally(() => deactivate(entry));
+        await entry.running;
+        availableProcessedGeneration = roundGeneration;
+      }
+    };
+
     const drainAvailable = (input = {}) => {
       if (!exactKeys(input, ['deadlineAt']) || !Number.isFinite(Number(input.deadlineAt))) {
         return Promise.reject(new TypeError('collector Ozon available drain input is invalid'));
       }
       const deadlineAt = Math.min(Number(input.deadlineAt), now() + MAX_DRAIN_MS);
-      availableDeadlineAt = Math.max(availableDeadlineAt, deadlineAt);
-      if (availablePromise) {
-        availableRerunRequested = true;
-        return availablePromise;
-      }
+      availableRequestedGeneration += 1;
+      if (availablePromise) return availablePromise;
+      availableDeadlineAt = deadlineAt;
       let exposed;
-      exposed = (async () => {
-        do {
-          availableRerunRequested = false;
-          const roundDeadlineAt = availableDeadlineAt;
+      exposed = runAvailableGenerations().finally(async () => {
+        while (
+          availableProcessedGeneration < availableRequestedGeneration
+          && now() < availableDeadlineAt
+        ) {
+          await runAvailableGenerations();
+        }
+        if (now() >= availableDeadlineAt) {
+          availableProcessedGeneration = availableRequestedGeneration;
+        }
+        if (availablePromise === exposed) {
+          availablePromise = null;
           availableDeadlineAt = 0;
-          let resolveCancelled;
-          const cancelled = new Promise((resolve) => { resolveCancelled = resolve; });
-          const entry = {
-            requestId: AVAILABLE_DRAIN_ID,
-            generation: nextGeneration,
-            refs: 1,
-            tokenRefs: 0,
-            deadlineAt: roundDeadlineAt,
-            active: true,
-            currentController: null,
-            cancelled,
-            resolveCancelled,
-            running: null,
-          };
-          nextGeneration += 1;
-          drains.set(entry.requestId, entry);
-          entry.running = runDrain(entry, entry.generation, { stopWhenEmpty: true })
-            .finally(() => deactivate(entry));
-          await entry.running;
-        } while (availableRerunRequested);
-      })().finally(() => {
-        if (availablePromise === exposed) availablePromise = null;
+        }
       });
       availablePromise = exposed;
       return exposed;

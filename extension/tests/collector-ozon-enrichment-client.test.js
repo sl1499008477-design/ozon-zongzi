@@ -447,6 +447,58 @@ test('autonomous drain queues one empty-stop rerun when a kick arrives during an
   assert.equal(maxActiveClaims, 1, 'available drain rounds must remain single-concurrency');
 });
 
+test('autonomous drain consumes a kick from the promise ownership cleanup window', async () => {
+  let claims = 0;
+  let activeClaims = 0;
+  let maxActiveClaims = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        claims += 1;
+        activeClaims += 1;
+        maxActiveClaims = Math.max(maxActiveClaims, activeClaims);
+        try {
+          return jsonResponse(200, { ok: true, job: null });
+        } finally {
+          activeClaims -= 1;
+        }
+      },
+    },
+    async canCapture() { return true; },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  const nativeFinally = Promise.prototype.finally;
+  let finallyCalls = 0;
+  let injected = false;
+  let cleanupKick;
+  Promise.prototype.finally = function interceptAvailableCleanup(onFinally) {
+    finallyCalls += 1;
+    if (finallyCalls !== 2) return nativeFinally.call(this, onFinally);
+    return nativeFinally.call(this, () => {
+      injected = true;
+      cleanupKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+      return onFinally();
+    });
+  };
+
+  let firstKick;
+  try {
+    firstKick = agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  } finally {
+    Promise.prototype.finally = nativeFinally;
+  }
+  await firstKick;
+  await cleanupKick;
+
+  assert.equal(injected, true, 'test must inject the kick before availablePromise ownership clears');
+  assert.equal(claims, 2, 'the cleanup-window kick must trigger a following empty-stop round');
+  assert.equal(maxActiveClaims, 1, 'cleanup recovery must remain single-concurrency');
+});
+
 test('autonomous drain maps real non-ready Seller recovery results to SELLER_CONTEXT_REQUIRED', async () => {
   for (const status of ['LOGIN_REQUIRED', 'RECOVERING']) {
     const requests = [];
