@@ -1603,6 +1603,47 @@ test("linked enqueue rejects composite Seller credential keys before persistence
   }
 });
 
+test("linked enqueue rejects compact lowercase Seller credential keys before persistence", async () => {
+  const sensitiveBundles = [
+    { metadata: { apikey: "must-not-persist" } },
+    { entries: [{ sellertoken: "must-not-persist" }] },
+    { outer: { entries: [{ refreshtoken: "must-not-persist" }] } },
+    { sellerProfile: { clientsecret: "must-not-persist" } },
+    { products: [{ details: { clientid: "must-not-persist" } }] },
+    { checkpoints: [{ verificationcode: "must-not-persist" }] },
+    { batches: [{ confirmation: { onetimecode: "must-not-persist" } }] },
+  ];
+  for (const [index, refreshBundle] of sensitiveBundles.entries()) {
+    const state = {
+      caches: { collectBox: [collectItem("collect-a", "account-a")] },
+    };
+    const jsonRepository = createJsonCollectorOzonEnrichmentRepository({ state });
+    const input = {
+      accountId: "account-a",
+      collectItemId: "collect-a",
+      requestId: `compact-credential-request-${index}`,
+      sku: "4862904234",
+      refreshBundle,
+      now: new Date("2026-08-01T08:00:00.000Z"),
+    };
+    await assert.rejects(
+      jsonRepository.enqueueForCollect(input),
+      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    );
+    assert.equal(state.collectorOzonEnrichmentJobs, undefined);
+
+    let queried = false;
+    const postgresRepository = createPostgresCollectorOzonEnrichmentRepository({
+      pool: { async query() { queried = true; return { rows: [] }; } },
+    });
+    await assert.rejects(
+      postgresRepository.enqueueForCollect(input),
+      (error) => error?.code === "OZON_ENRICHMENT_SENSITIVE_DATA",
+    );
+    assert.equal(queried, false);
+  }
+});
+
 test("linked enqueue permits non-secret company and capture metadata", async () => {
   const state = {
     caches: { collectBox: [collectItem("collect-a", "account-a")] },
@@ -1610,7 +1651,14 @@ test("linked enqueue permits non-secret company and capture metadata", async () 
   const repository = createJsonCollectorOzonEnrichmentRepository({ state });
   const refreshBundle = {
     sellerCompanyId: "2681910",
+    sellercompanyid: "2681910",
     captureContext: { revision: 4, observedAt: "2026-08-01T08:00:00.000Z" },
+    product: {
+      productcode: "4862904234",
+      categoryid: "17028922",
+      barcode: "4600000000000",
+      sourceid: "catalog-import",
+    },
   };
   const job = await repository.enqueueForCollect({
     accountId: "account-a",

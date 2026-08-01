@@ -25,6 +25,15 @@ const SENSITIVE_AUTH_SEQUENCES = Object.freeze([
   ["one", "time", "code"],
   ["verification", "code"],
 ]);
+const SENSITIVE_AUTH_COMPACT_SUFFIXES = Object.freeze([
+  "apikey",
+  "sellertoken",
+  "refreshtoken",
+  "clientsecret",
+  "clientid",
+  "verificationcode",
+  "onetimecode",
+]);
 
 function repositoryError(message, code = "OZON_ENRICHMENT_PERSISTENCE_FAILED", status = 500) {
   return Object.assign(new Error(message), { code, status });
@@ -166,7 +175,13 @@ function assertNoSensitiveAuth(value, seen = new WeakSet()) {
       .filter(Boolean);
     const containsSequence = SENSITIVE_AUTH_SEQUENCES.some((sequence) =>
       words.some((_, index) => sequence.every((word, offset) => words[index + offset] === word)));
-    if (words.some((word) => SENSITIVE_AUTH_WORDS.has(word)) || containsSequence) {
+    const compactKey = words.join("");
+    const containsCompactSensitiveKey = SENSITIVE_AUTH_COMPACT_SUFFIXES.some(
+      (suffix) => compactKey === suffix || compactKey.endsWith(suffix),
+    );
+    if (words.some((word) => SENSITIVE_AUTH_WORDS.has(word))
+        || containsSequence
+        || containsCompactSensitiveKey) {
       throw repositoryError(
         "Ozon enrichment payload contains Seller authentication data",
         "OZON_ENRICHMENT_SENSITIVE_DATA",
