@@ -151,7 +151,7 @@ export function assertCaptureOnlyFileSet(files) {
   }
 }
 
-export function assertPopupWebLoginGuidance(popupHtml, popupJs) {
+export function assertPopupWebLoginGuidance(popupHtml, popupJs, serviceWorkerSource) {
   for (const guidance of [
     "请先登录 Web 管理后台，再使用采集功能",
     "前往登录",
@@ -159,7 +159,41 @@ export function assertPopupWebLoginGuidance(popupHtml, popupJs) {
   ]) {
     assert.match(popupHtml, new RegExp(guidance), `popup Web login guidance missing: ${guidance}`);
   }
-  assert.match(popupJs, /http:\/\/127\.0\.0\.1:3000\/login/);
+  assert.match(
+    popupJs,
+    /sendMessage\(\{\s*action:\s*["']openFrontend["'],\s*path:\s*["']\/login["']\s*\}\)/,
+    "popup must route Web login through openFrontend",
+  );
+  assert.doesNotMatch(
+    popupJs,
+    /chrome\.tabs\.create\(\{\s*url:\s*["']http:\/\/127\.0\.0\.1:3000\/login["']/,
+    "popup must not create the Web login tab directly",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /const\s+LOCAL_FRONTEND_BASE_URL\s*=\s*["']http:\/\/127\.0\.0\.1:3000["']/,
+    "service worker local frontend base URL missing",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /message\.path\.startsWith\(["']\/["']\)/,
+    "openFrontend must accept only a leading-slash path",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /:\s*`https:\/\/\$\{BRAND_WEB_HOST\}`/,
+    "service worker hosted frontend base URL missing",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /const\s+url\s*=\s*`\$\{frontendBase\}\$\{path\}`/,
+    "service worker must construct the trusted frontend URL",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /data:\s*await\s+openFrontendTab\(\{\s*url\s*\}\)/,
+    "openFrontend must delegate the trusted URL to the frontend tab opener",
+  );
   assert.doesNotMatch(
     `${popupHtml}\n${popupJs}`,
     /账号登录|短信登录|login-password|getStores|checkSellerCookies|syncSellerCookies/,

@@ -61,12 +61,15 @@ for (const zipPath of zipPaths) {
     );
     assertCaptureOnlyFileSet(packagedFiles);
     assertReviewedCaptureOnlyPermissionPolicy(packagedManifest);
-    assertCaptureOnlyServiceWorker(
-      await readFile(path.join(tmpDir, "background", "service-worker.js"), "utf8"),
+    const packagedServiceWorkerSource = await readFile(
+      path.join(tmpDir, "background", "service-worker.js"),
+      "utf8",
     );
+    assertCaptureOnlyServiceWorker(packagedServiceWorkerSource);
     assertPopupWebLoginGuidance(
       await readFile(path.join(tmpDir, "popup", "popup.html"), "utf8"),
       await readFile(path.join(tmpDir, "popup", "popup.js"), "utf8"),
+      packagedServiceWorkerSource,
     );
 
     const tests = [

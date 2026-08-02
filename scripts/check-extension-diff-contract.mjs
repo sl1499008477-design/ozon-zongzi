@@ -128,6 +128,7 @@ assertCaptureOnlyServiceWorker(
 assertPopupWebLoginGuidance(
   readFileSync(path.join(localDir, "popup/popup.html"), "utf8"),
   readFileSync(path.join(localDir, "popup/popup.js"), "utf8"),
+  readFileSync(path.join(localDir, "background/service-worker.js"), "utf8"),
 );
 
 assert.equal(localManifest.name, "ozon 粽子");

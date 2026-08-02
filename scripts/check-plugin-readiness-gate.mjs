@@ -39,6 +39,7 @@ assertCaptureOnlyServiceWorker(
 assertPopupWebLoginGuidance(
   readFileSync(path.join(extensionDir, "popup/popup.html"), "utf8"),
   readFileSync(path.join(extensionDir, "popup/popup.js"), "utf8"),
+  readFileSync(path.join(extensionDir, "background/service-worker.js"), "utf8"),
 );
 
 const requirePattern = (source, pattern, message) => {

@@ -121,7 +121,11 @@ for (const rel of [
 const popupHtml = readFileSync(path.join(localDir, "popup/popup.html"), "utf8");
 const popupJs = readFileSync(path.join(localDir, "popup/popup.js"), "utf8");
 const popupCss = readFileSync(path.join(localDir, "popup/popup.css"), "utf8");
-assertPopupWebLoginGuidance(popupHtml, popupJs);
+assertPopupWebLoginGuidance(
+  popupHtml,
+  popupJs,
+  readFileSync(path.join(localDir, "background/service-worker.js"), "utf8"),
+);
 assert.doesNotMatch(popupHtml, /sonli 采集器|采集器实时状态/);
 assert.doesNotMatch(popupJs, /toggleCollector|collectorGetState/);
 assert.doesNotMatch(popupCss, /\.collector-mon/);

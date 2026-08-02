@@ -182,7 +182,8 @@ test("popup and service worker expose only the Web-login capture flow", () => {
   assert.doesNotThrow(() =>
     assertPopupWebLoginGuidance(
       popupHtml,
-      `${popupJs}\nconst routedWebLoginUrl = "http://127.0.0.1:3000/login";`,
+      popupJs,
+      serviceWorker,
     ));
   assert.match(
     popupJs,
@@ -193,6 +194,25 @@ test("popup and service worker expose only the Web-login capture flow", () => {
     popupJs,
     /chrome\.tabs\.create\(\{ url: "http:\/\/127\.0\.0\.1:3000\/login" \}\);/,
     "popup must not create the Web login tab directly",
+  );
+  assert.throws(
+    () => assertPopupWebLoginGuidance(
+      popupHtml,
+      popupJs.replace('path: "/login"', 'path: "/not-login"'),
+      serviceWorker,
+    ),
+    /route Web login through openFrontend/,
+  );
+  assert.throws(
+    () => assertPopupWebLoginGuidance(
+      popupHtml,
+      popupJs,
+      serviceWorker.replace(
+        "const url = `${frontendBase}${path}`;",
+        "const url = frontendBase;",
+      ),
+    ),
+    /construct the trusted frontend URL/,
   );
   assert.throws(
     () => assertPopupWebLoginGuidance("账号登录", "getStores()"),
