@@ -359,6 +359,42 @@ async function runBrowserFixture({
     assert.equal(publicFirst.state.status, "SUCCESS");
     assert.match(publicFirst.buttonText, /已采集/);
     assert.doesNotMatch(publicFirst.buttonText, /正在补全|未入箱/);
+    const successfulCollectButton = collectPanel.locator('[data-action="collect-one"]');
+    assert.equal(
+      await successfulCollectButton.isDisabled(),
+      true,
+      "success feedback must remain locked until the original label is restored",
+    );
+    await collectPage.evaluate(() => {
+      const button = document.querySelector('[data-action="collect-one"]');
+      button.click();
+      button.click();
+    });
+    assert.equal(
+      await collectPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      1,
+      "success feedback must not open a duplicate collection window",
+    );
+    await collectPage.waitForFunction(() =>
+      document.querySelector('[data-action="collect-one"]')?.textContent.trim() === "采集",
+    );
+    assert.equal(await successfulCollectButton.isDisabled(), false);
+
+    const { fixturePage: uploadHangPage, fixturePanel: uploadHangPanel } =
+      await openCollectFixture("upload-hang");
+    const uploadHangButton = uploadHangPanel.locator('[data-action="collect-one"]');
+    await uploadHangButton.click();
+    assert.equal(
+      await uploadHangButton.innerText(),
+      "采集中…",
+      "collection must show immediate progress while the public upload is pending",
+    );
+    assert.equal(
+      await uploadHangButton.isDisabled(),
+      true,
+      "a pending collection must prevent duplicate clicks",
+    );
 
     const { fixturePage: pendingPage, fixturePanel: pendingPanel } =
       await openCollectFixture("pending-hang");
@@ -451,6 +487,29 @@ async function runBrowserFixture({
       /已采集|采集成功/,
       "a failed public upload must not render collection success",
     );
+    const failedCollectButton = failedCollectPanel.locator('[data-action="collect-one"]');
+    assert.equal(
+      await failedCollectButton.isDisabled(),
+      true,
+      "failure feedback must remain locked until the original label is restored",
+    );
+    await failedCollectPage.evaluate(() => {
+      const button = document.querySelector('[data-action="collect-one"]');
+      button.click();
+      button.click();
+    });
+    assert.equal(
+      await failedCollectPage.evaluate(() => window.__getCollectFixtureMessages()
+        .filter(({ action }) => action === "pushSourceCollect").length),
+      1,
+      "failure feedback must not open a duplicate collection window",
+    );
+    await failedCollectPage.waitForFunction(() =>
+      document.querySelector('[data-action="collect-one"]')?.textContent.trim() === "采集",
+      null,
+      { timeout: 8_000 },
+    );
+    assert.equal(await failedCollectButton.isDisabled(), false);
 
     const { fixturePage: failedEditPage, fixturePanel: failedEditPanel } =
       await openCollectFixture("upload-failure");

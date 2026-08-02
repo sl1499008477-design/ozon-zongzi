@@ -303,6 +303,9 @@
             : { items: [] };
         }
         if (action === "pushSourceCollect") {
+          if (collectFixtureMode === "upload-hang") {
+            return new Promise(() => {});
+          }
           if (collectFixtureMode === "upload-auth-401" || collectFixtureMode === "upload-auth-403") {
             const status = collectFixtureMode.endsWith("401") ? 401 : 403;
             throw Object.assign(new Error("upload auth expired"), { status });

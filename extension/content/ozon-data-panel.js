@@ -857,6 +857,9 @@
       return;
     }
     btn.dataset.busy = "1";
+    btn.dataset.jzOriginalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = "采集中…";
     try {
       const [data, enrichedInfo] = await Promise.all([
         panelDataForCollect(productId),
@@ -874,20 +877,23 @@
     } catch (e) {
       console.warn("[ozon-helper] data-panel collect-one failed:", e);
       if (collectCoordinator.getState(productId).status === "BLOCKED_AUTH") {
+        btn.dataset.busy = "";
+        btn.disabled = false;
+        delete btn.dataset.jzOriginalHtml;
         const body = panel.querySelector(".ozon-helper-sidebar-card-body") || panel;
         window.jzRenderDataCardLoginRequired(body);
         return;
       }
       const failure = collectFailurePresentation(e);
       _flashBtn(btn, failure.text, "is-failed", 7000, failure.title);
-    } finally {
-      btn.dataset.busy = "";
     }
   }
 
   function _flashBtn(btn, text, cls, ms, title = "") {
     const original = btn.dataset.jzOriginalHtml || btn.innerHTML;
     const originalTitle = btn.getAttribute("title");
+    btn.dataset.busy = "1";
+    btn.disabled = true;
     btn.classList.add(cls);
     btn.innerHTML = `<span class="oh-btn-icon">✓</span>${text}`;
     if (title) btn.setAttribute("title", title);
@@ -895,6 +901,8 @@
       btn.classList.remove(cls);
       btn.innerHTML = original;
       delete btn.dataset.jzOriginalHtml;
+      btn.dataset.busy = "";
+      btn.disabled = false;
       if (originalTitle == null) btn.removeAttribute("title");
       else btn.setAttribute("title", originalTitle);
     }, ms);

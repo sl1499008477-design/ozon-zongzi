@@ -3067,6 +3067,8 @@
       collectInFlight = true;
       const btn = e.currentTarget;
       const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="oh-btn-icon">${_lucideSvg('refresh-cw')}</span>采集中…`;
       try {
         // PDP 侧栏数据卡片跟 action bar 上的「一键采集」在同一个 PDP 页、同一份页面
         // 状态,复用同一个 collectAllVariants() — 采当前商品的所有变体 SKU,进度写在
@@ -3078,6 +3080,7 @@
         setTimeout(() => {
           btn.classList.remove('is-collected');
           btn.innerHTML = originalHtml;
+          btn.disabled = false;
           collectInFlight = false;
         }, result?.multiVariant ? 2800 : 1800);
       } catch (err) {
@@ -3086,6 +3089,7 @@
         btn.innerHTML = `<span class="oh-btn-icon">${_lucideSvg('alert-triangle')}</span>${friendly}`;
         setTimeout(() => {
           btn.innerHTML = originalHtml;
+          btn.disabled = false;
           collectInFlight = false;
         }, 1800);
       }

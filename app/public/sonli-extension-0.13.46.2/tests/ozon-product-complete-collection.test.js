@@ -61,6 +61,9 @@ function fixtureHtml(mode) {
     <script type="application/ld+json">${JSON.stringify(productJsonLd)}</script>
   </head><body>
     ${states}
+    <div data-widget="webStickyColumn"></div>
+    <div data-widget="webStickyColumn"></div>
+    <div data-widget="webStickyColumn"><div><div data-widget="webSale"></div></div></div>
     <div data-widget="webHashtags"><a title="#fixture"></a><a title="#complete"></a></div>
     <div data-widget="webPrice">1200 ₽</div>
     <script>
@@ -77,7 +80,10 @@ function fixtureHtml(mode) {
       };
       window.checkAuth = async () => ({ loggedIn: true });
       window.createLoginPrompt = () => {};
-      window.jzDataCardAllowed = async () => ({ allowed: false, reason: 'MEMBERSHIP_REQUIRED' });
+      window.jzDataCardAllowed = async () => ({
+        allowed: '${mode}' === 'sidebar-upload-hang',
+        reason: 'MEMBERSHIP_REQUIRED',
+      });
       window.jzRenderDataCardLocked = () => {};
       window.jzBindPanelBrandFallback = () => {};
       window.normalizePrice = (value) => Number(String(value || '').replace(/[^\\d.]/g, '')) || 0;
@@ -91,7 +97,9 @@ function fixtureHtml(mode) {
       window.jzStripPromo = (value) => value;
       window.jzIsTranslated = () => false;
       window.lucideIcon = () => '<svg></svg>';
-      window.jzPanelBrandHeaderHtml = () => '<div></div>';
+      window.jzPanelBrandHeaderHtml = () => '<button data-action="close-sidebar-card"></button>';
+      window.jzPanelOverviewHtml = () => '<div></div>';
+      window.formatNumber = (value) => String(value ?? '');
       window.extractStateData = (key) => ({
         'state-webGallery': {
           images: ${JSON.stringify(pageMissing ? [] : ['https://cdn.test/page-1.jpg', 'https://cdn.test/page-2.jpg'])},
@@ -254,6 +262,7 @@ function fixtureHtml(mode) {
             catch (error) { call.localError = { code: error?.code || '', message: error?.message || '' }; }
           }
           collectCalls.push(call);
+          if ('${mode}' === 'sidebar-upload-hang') return new Promise(() => {});
           if ('${mode}' === 'cold-success') await new Promise((resolve) => setTimeout(resolve, 250));
           coordinatorStatus = '${['upload-failure', 'auth-failure', 'missing-failure'].includes(mode) ? 'ERROR' : 'SUCCESS'}';
           if ('${mode}' === 'upload-failure') {
@@ -374,6 +383,21 @@ test('product page delegates public-first single and multivariant collection wit
     assert.ok(state.collectCalls[0].raw.variantData.attributes.some(({ key }) => String(key) === '11254'));
     assert.equal(state.collectCalls[0].local, null);
     await successPage.waitForFunction(() => window.__getProductFixtureState().label === '已采集');
+
+    const sidebarHangPage = await openFixture('sidebar-upload-hang');
+    const sidebarCollect = sidebarHangPage.locator('[data-action="collect-one"]');
+    await sidebarCollect.waitFor();
+    await sidebarCollect.click();
+    assert.equal(
+      await sidebarCollect.innerText(),
+      '采集中…',
+      'the product sidebar must show immediate progress while collection is pending',
+    );
+    assert.equal(
+      await sidebarCollect.isDisabled(),
+      true,
+      'the product sidebar must block duplicate clicks while collection is pending',
+    );
 
     const videoHangPage = await openFixture('video-hang');
     await videoHangPage.click('[aria-label="一键采集"]');
