@@ -113,6 +113,7 @@ function harness(overrides = {}) {
     enrichBatch: [],
     observeSellerContext: [],
     claimNext: [],
+    hasAvailableJob: [],
     completeClaim: [],
     failClaim: [],
     retryCollectItem: [],
@@ -144,6 +145,10 @@ function harness(overrides = {}) {
         claimFence: "claim-fence-route",
       };
     },
+    async hasAvailableJob(input) {
+      calls.hasAvailableJob.push(input);
+      return overrides.available ?? true;
+    },
     async observeSellerContext(input) { calls.observeSellerContext.push(input); },
     async completeClaim(input) { calls.completeClaim.push(input); return result("4862904234"); },
     async failClaim(input) { calls.failClaim.push(input); return { id: input.jobId, status: "FAILED" }; },
@@ -160,7 +165,7 @@ function harness(overrides = {}) {
     async authenticate(req, permission) {
       calls.authenticate.push({ req, permission });
       if (overrides.authError) throw overrides.authError;
-      return SESSION;
+      return overrides.session || SESSION;
     },
     async authenticateAccount(req) {
       calls.authenticateAccount.push({ req });
@@ -187,11 +192,12 @@ const ROUTES = [
   ["POST", "/collector/ozon/enrich/batch", { requestId: "request-batch", skus: ["4862904234"] }],
   ["POST", "/collector/ozon/seller-context/observe", observeBody()],
   ["POST", "/collector/ozon/enrichment-jobs/next", claimBody()],
+  ["POST", "/collector/ozon/enrichment-jobs/available", {}],
   ["POST", "/collector/ozon/enrichment-jobs/job-route/result", resultBody()],
   ["POST", "/collector/ozon/enrichment-jobs/job-route/fail", failBody()],
 ];
 
-test("all six fixed routes authenticate collector.ozon.read before invoking the service", async () => {
+test("all seven fixed routes authenticate collector.ozon.read before invoking the service", async () => {
   for (const [method, pathname, body] of ROUTES) {
     const h = harness({
       authError: Object.assign(new Error("permission denied"), {
@@ -207,11 +213,82 @@ test("all six fixed routes authenticate collector.ozon.read before invoking the 
     assert.equal(h.calls.authenticate[0].permission, "collector.ozon.read", pathname);
     assert.equal(
       h.calls.enrichOne.length + h.calls.enrichBatch.length + h.calls.observeSellerContext.length
-        + h.calls.claimNext.length
+        + h.calls.claimNext.length + h.calls.hasAvailableJob.length
         + h.calls.completeClaim.length + h.calls.failClaim.length,
       0,
       pathname,
     );
+  }
+});
+
+test("availability route accepts only an exact empty body and returns the authenticated account result", async () => {
+  const own = harness({ available: true });
+  const available = await request(
+    own,
+    "POST",
+    "/collector/ozon/enrichment-jobs/available",
+    {},
+  );
+  assert.equal(available.status, 200);
+  assert.deepEqual(available.body, { ok: true, available: true });
+  assert.deepEqual(Object.keys(available.body).sort(), ["available", "ok"]);
+  assert.deepEqual(own.calls.hasAvailableJob, [{ session: SESSION }]);
+
+  const OTHER_SESSION = Object.freeze({
+    collectorSessionId: "csess_route_other",
+    accountId: "account-route-other",
+    permissions: ["collector.ozon.read"],
+  });
+  const other = harness({ session: OTHER_SESSION, available: false });
+  const unavailable = await request(
+    other,
+    "POST",
+    "/collector/ozon/enrichment-jobs/available",
+    {},
+  );
+  assert.equal(unavailable.status, 200);
+  assert.deepEqual(unavailable.body, { ok: true, available: false });
+  assert.deepEqual(Object.keys(unavailable.body).sort(), ["available", "ok"]);
+  assert.deepEqual(other.calls.hasAvailableJob, [{ session: OTHER_SESSION }]);
+
+  for (const body of [
+    null,
+    [],
+    { accountId: "account-attacker" },
+    { storeId: "store-attacker" },
+    { companyId: "company-attacker" },
+    { unknown: true },
+  ]) {
+    const rejected = harness();
+    const response = await request(
+      rejected,
+      "POST",
+      "/collector/ozon/enrichment-jobs/available",
+      body,
+    );
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.equal(rejected.calls.hasAvailableJob.length, 0, JSON.stringify(body));
+  }
+
+  const cookie = harness();
+  const req = createRequest("POST", "/collector/ozon/enrichment-jobs/available", {});
+  req.headers.cookie = "session=attacker-controlled";
+  const res = createResponse();
+  const handled = await cookie.handler(req, res, new URL(req.url, "http://127.0.0.1"));
+  assert.equal(handled, true);
+  assert.equal(res.status, 400);
+  assert.equal(cookie.calls.hasAvailableJob.length, 0);
+
+  for (const method of ["GET", "PUT"]) {
+    const wrongMethod = harness();
+    const response = await request(
+      wrongMethod,
+      method,
+      "/collector/ozon/enrichment-jobs/available",
+      {},
+    );
+    assert.equal(response.status, 405, method);
+    assert.equal(wrongMethod.calls.hasAvailableJob.length, 0, method);
   }
 });
 
@@ -746,7 +823,7 @@ test("all fixed routes reject query-controlled actions and URLs", async () => {
       assert.equal(response.status, 400, `${pathname}${query}`);
       assert.equal(
         h.calls.enrichOne.length + h.calls.enrichBatch.length + h.calls.observeSellerContext.length
-          + h.calls.claimNext.length
+          + h.calls.claimNext.length + h.calls.hasAvailableJob.length
           + h.calls.completeClaim.length + h.calls.failClaim.length,
         0,
         pathname,

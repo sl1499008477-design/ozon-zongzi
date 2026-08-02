@@ -10,6 +10,7 @@ const SINGLE_PATH = "/collector/ozon/enrich";
 const BATCH_PATH = "/collector/ozon/enrich/batch";
 const OBSERVE_PATH = "/collector/ozon/seller-context/observe";
 const NEXT_PATH = "/collector/ozon/enrichment-jobs/next";
+const AVAILABLE_PATH = "/collector/ozon/enrichment-jobs/available";
 const RESULT_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/result\/?$/;
 const FAIL_PATTERN = /^\/collector\/ozon\/enrichment-jobs\/([^/]+)\/fail\/?$/;
 const RETRY_PATTERN = /^\/ozon\/collect-box\/([^/]+)\/enrichment\/retry\/?$/;
@@ -390,6 +391,7 @@ function isNamespacePath(pathname) {
     || pathname === BATCH_PATH
     || pathname === OBSERVE_PATH
     || pathname === NEXT_PATH
+    || pathname === AVAILABLE_PATH
     || pathname.startsWith(JOB_NAMESPACE)
     || RETRY_PATTERN.test(pathname);
 }
@@ -411,6 +413,7 @@ export function createCollectorOzonEnrichmentHttpHandler({
       "enrichBatch",
       "observeSellerContext",
       "claimNext",
+      "hasAvailableJob",
       "completeClaim",
       "failClaim",
       "retryCollectItem",
@@ -432,10 +435,11 @@ export function createCollectorOzonEnrichmentHttpHandler({
     const batch = req.method === "POST" && pathname === BATCH_PATH;
     const observe = req.method === "POST" && pathname === OBSERVE_PATH;
     const next = req.method === "POST" && pathname === NEXT_PATH;
+    const available = req.method === "POST" && pathname === AVAILABLE_PATH;
     const result = req.method === "POST" && resultMatch;
     const fail = req.method === "POST" && failMatch;
     const retry = req.method === "POST" && retryMatch;
-    if (!single && !batch && !observe && !next && !result && !fail && !retry) {
+    if (!single && !batch && !observe && !next && !available && !result && !fail && !retry) {
       if (!isNamespacePath(pathname)) return false;
       sendJson(res, 405, errorResponse(routeError(
         "该 Ozon 商品补全接口不支持当前方法",
@@ -452,7 +456,7 @@ export function createCollectorOzonEnrichmentHttpHandler({
       if ([...url.searchParams.keys()].length) {
         throw routeError("Ozon 商品补全接口不接受查询控制参数");
       }
-      if (observe && String(req?.headers?.cookie || "").trim()) {
+      if ((observe || available) && String(req?.headers?.cookie || "").trim()) {
         throw routeError("Ozon Seller 观察接口不接受 Cookie 控制");
       }
       if (single) {
@@ -480,6 +484,12 @@ export function createCollectorOzonEnrichmentHttpHandler({
         const body = await readJson(req);
         const input = parseClaimEnvelope(body, new Date(now()));
         sendJson(res, 200, { ok: true, job: await service.claimNext({ session, ...input }) });
+        return true;
+      }
+      if (available) {
+        const body = await readJson(req);
+        assertRequiredExactKeys(body, [], "Ozon Seller 可用任务请求格式无效");
+        sendJson(res, 200, { ok: true, available: await service.hasAvailableJob({ session }) });
         return true;
       }
 
