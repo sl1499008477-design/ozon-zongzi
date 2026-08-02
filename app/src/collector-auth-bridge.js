@@ -82,6 +82,8 @@ export function postCollectorAuthLogout({
 
 export function normalizeCollectorAuthRequest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
   const keys = Object.keys(value).sort();
   if (
     keys.length !== 3
