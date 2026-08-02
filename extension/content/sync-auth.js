@@ -1,27 +1,17 @@
 /**
  * Trusted Web-page adapter for collector authentication.
  *
- * The page owns its Web login credential. This content script knows only a
- * one-time collector ticket and forwards that ticket to the service worker for
- * exchange. It never reads or writes Web localStorage.
+ * The page owns its Web login credential. This content script accepts only
+ * normalized generation messages and forwards one-time collector tickets to
+ * the service worker. Authentication-cycle state lives in collector-auth-flow.
  */
 (() => {
   const INSTALL_GUARD = '__JZ_COLLECTOR_SYNC_AUTH_INSTALLED__';
   if (globalThis[INSTALL_GUARD]) return;
   const policy = globalThis.JzWebBridgePolicy;
-  if (!policy) return;
+  const collectorAuthFlow = globalThis.JzCollectorAuthFlow;
+  if (!policy || !collectorAuthFlow) return;
   globalThis[INSTALL_GUARD] = true;
-
-  const MAX_TICKET_EXCHANGE_ATTEMPTS = 2;
-  const MAX_BRIDGE_REQUESTS = 10;
-  const BRIDGE_RETRY_MS = 1000;
-  let activeRequestId = '';
-  let attempts = 0;
-  let requestCount = 0;
-  let exchangeInFlight = false;
-  let authenticated = false;
-  let passiveReadyConsumed = false;
-  let retryTimer = null;
 
   const newRequestId = () => {
     try {
@@ -31,43 +21,12 @@
     }
   };
 
-  const requestTicket = () => {
-    if (
-      authenticated
-      || exchangeInFlight
-      || attempts >= MAX_TICKET_EXCHANGE_ATTEMPTS
-      || requestCount >= MAX_BRIDGE_REQUESTS
-    ) return;
-    requestCount += 1;
-    activeRequestId = newRequestId();
-    const message = policy.createCollectorAuthRequest(activeRequestId);
-    window.postMessage(message, window.location.origin);
-    clearTimeout(retryTimer);
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      requestTicket();
-    }, BRIDGE_RETRY_MS);
-  };
-
-  const restartRequestCycle = ({ authoritative = false } = {}) => {
-    if (exchangeInFlight || (authenticated && !authoritative)) return false;
-    if (authoritative) authenticated = false;
-    clearTimeout(retryTimer);
-    retryTimer = null;
-    attempts = 0;
-    requestCount = 0;
-    requestTicket();
-    return true;
-  };
-
-  const sendExchange = (response) => new Promise((resolve) => {
+  const sendRuntime = (action, fields) => new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage({
         portalProtocol: policy.COLLECTOR_AUTH_PROTOCOL,
-        action: 'collector.auth.exchange',
-        requestId: response.requestId,
-        ticket: response.ticket,
-        expiresAt: response.expiresAt,
+        action,
+        ...fields,
       }, (result) => {
         void chrome.runtime.lastError;
         resolve(result || null);
@@ -77,52 +36,54 @@
     }
   });
 
+  const flow = collectorAuthFlow.createCollectorAuthFlow({
+    newRequestId,
+    postRequest: (requestId) => window.postMessage(
+      policy.createCollectorAuthRequest(requestId),
+      window.location.origin,
+    ),
+    beginGeneration: (generationId) => sendRuntime('collector.auth.begin', {
+      generationId,
+    }),
+    clearGeneration: (generationId) => sendRuntime('collector.auth.logout', {
+      generationId,
+    }),
+    exchangeTicket: ({ requestId, generationId, ticket, expiresAt }) => sendRuntime(
+      'collector.auth.exchange',
+      { requestId, generationId, ticket, expiresAt },
+    ),
+    setTimer: (callback, milliseconds) => setTimeout(callback, milliseconds),
+    clearTimer: (timer) => clearTimeout(timer),
+  });
+
   window.addEventListener('message', async (event) => {
     if (
       event.source !== window
       || event.origin !== window.location.origin
-    ) {
+    ) return;
+
+    const ready = policy.normalizeCollectorAuthReady(event.data);
+    if (ready) {
+      await flow.handleReady(ready);
       return;
     }
-    if (policy.normalizeCollectorAuthReady(event.data)) {
-      if (passiveReadyConsumed) return;
-      passiveReadyConsumed = true;
-      restartRequestCycle();
+    const logout = policy.normalizeCollectorAuthLogout(event.data);
+    if (logout) {
+      await flow.handleLogout(logout);
       return;
     }
-    if (exchangeInFlight) return;
-    const response = policy.normalizeCollectorAuthResponse(event.data, activeRequestId);
-    if (!response) return;
-    clearTimeout(retryTimer);
-    retryTimer = null;
-    attempts += 1;
-    exchangeInFlight = true;
-    const result = await sendExchange(response);
-    exchangeInFlight = false;
-    if (result?.ok === true) {
-      authenticated = true;
-      return;
-    }
-    if (
-      result?.ok === false
-      && result?.code === 'COLLECTOR_TICKET_EXPIRED'
-      && attempts < MAX_TICKET_EXCHANGE_ATTEMPTS
-    ) {
-      requestCount = 0;
-      requestTicket();
-    }
+    const response = policy.normalizeCollectorAuthResponse(event.data);
+    if (response) await flow.handleResponse(response);
   });
 
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.action !== 'collector.auth.request') return false;
-      sendResponse({
-        ok: true,
-        requested: restartRequestCycle({ authoritative: true }),
-      });
+      const { requested } = flow.requestAuthoritatively();
+      sendResponse({ ok: true, requested });
       return false;
     });
   } catch {}
 
-  requestTicket();
+  flow.startDiscovery();
 })();
