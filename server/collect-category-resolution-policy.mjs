@@ -13,6 +13,14 @@ export const CATEGORY_RESOLUTION_STATUS = Object.freeze({
   INVALIDATED: "INVALIDATED",
 });
 
+const AUTO_MATCHABLE_STATUSES = new Set([
+  CATEGORY_RESOLUTION_STATUS.QUEUED,
+  CATEGORY_RESOLUTION_STATUS.MATCHING,
+  CATEGORY_RESOLUTION_STATUS.NEEDS_REVIEW,
+  CATEGORY_RESOLUTION_STATUS.RETRYABLE_ERROR,
+  CATEGORY_RESOLUTION_STATUS.INVALIDATED,
+]);
+
 function positiveId(value) {
   const id = Number(value);
   return Number.isInteger(id) && id > 0 ? id : 0;
@@ -111,10 +119,33 @@ export function resolveExactType({ tree, sourceTypeId } = {}) {
 }
 
 export function nextResolution(current = {}, event = {}) {
-  if (current?.status === CATEGORY_RESOLUTION_STATUS.MATCHED
-    && current?.method === "MANUAL"
-    && event?.type === "AUTO_MATCHED") {
+  const currentResolution = current && typeof current === "object" ? current : {};
+  const eventType = String(event?.type || "");
+  const isManualMatch = currentResolution.status === CATEGORY_RESOLUTION_STATUS.MATCHED
+    && currentResolution.method === "MANUAL";
+
+  if (isManualMatch && ["USER_CLEARED", "VALIDATED_INVALIDATION"].includes(eventType)) {
+    return { ...structuredClone(currentResolution), status: CATEGORY_RESOLUTION_STATUS.INVALIDATED };
+  }
+
+  if (isManualMatch) {
     return structuredClone(current);
   }
-  return structuredClone(event?.resolution ?? current);
+
+  const target = event?.target;
+  const descriptionCategoryId = positiveId(target?.descriptionCategoryId);
+  const typeId = positiveId(target?.typeId);
+  if (eventType === "AUTO_MATCHED"
+    && AUTO_MATCHABLE_STATUSES.has(currentResolution.status)
+    && descriptionCategoryId
+    && typeId) {
+    return {
+      ...structuredClone(currentResolution),
+      status: CATEGORY_RESOLUTION_STATUS.MATCHED,
+      method: "AUTO",
+      target: { descriptionCategoryId, typeId },
+    };
+  }
+
+  return structuredClone(currentResolution);
 }
