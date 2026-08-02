@@ -9,6 +9,7 @@ import {
 
 const createWindowHarness = () => {
   const listeners = new Map();
+  const posts = [];
   const windowObject = {
     location: { origin: "http://127.0.0.1:3000" },
     addEventListener(type, listener) {
@@ -17,9 +18,13 @@ const createWindowHarness = () => {
     removeEventListener(type, listener) {
       if (listeners.get(type) === listener) listeners.delete(type);
     },
+    postMessage(payload, targetOrigin) {
+      posts.push({ payload, targetOrigin });
+    },
   };
   return {
     windowObject,
+    posts,
     dispatch(data, overrides = {}) {
       return listeners.get("message")?.({
         source: windowObject,
@@ -31,6 +36,32 @@ const createWindowHarness = () => {
     hasListener: () => listeners.has("message"),
   };
 };
+
+test("publishes a credential-free ready envelope only when the Web account is logged in", () => {
+  const loggedInHarness = createWindowHarness();
+  installCollectorAuthBridge({
+    windowObject: loggedInHarness.windowObject,
+    isLoggedIn: () => true,
+    requestTicket: async () => ({}),
+  });
+  const { posts } = loggedInHarness;
+  assert.deepEqual(posts, [{
+    payload: {
+      protocol: "SONLI_COLLECTOR_AUTH",
+      action: "collector.auth.ready",
+    },
+    targetOrigin: "http://127.0.0.1:3000",
+  }]);
+  assert.deepEqual(Object.keys(posts[0].payload).sort(), ["action", "protocol"]);
+
+  const loggedOutHarness = createWindowHarness();
+  installCollectorAuthBridge({
+    windowObject: loggedOutHarness.windowObject,
+    isLoggedIn: () => false,
+    requestTicket: async () => ({}),
+  });
+  assert.deepEqual(loggedOutHarness.posts, []);
+});
 
 test("normalizes only the exact collector request protocol and a bounded requestId", () => {
   assert.deepEqual(
@@ -89,13 +120,19 @@ test("responds only to an exact same-window, same-origin request while logged in
 
   await harness.dispatch(request);
   assert.equal(ticketRequests, 1);
-  assert.deepEqual(responses, [{
-    protocol: COLLECTOR_AUTH_PROTOCOL,
-    action: COLLECTOR_AUTH_ACTIONS.response,
-    requestId: "request-2",
-    ticket: "ctt_one_time_secret_123456789",
-    expiresAt: "2099-01-01T00:00:00.000Z",
-  }]);
+  assert.deepEqual(responses, [
+    {
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: COLLECTOR_AUTH_ACTIONS.ready,
+    },
+    {
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: COLLECTOR_AUTH_ACTIONS.response,
+      requestId: "request-2",
+      ticket: "ctt_one_time_secret_123456789",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  ]);
   assert.equal(JSON.stringify(responses).includes("web-bearer"), false);
   assert.equal(JSON.stringify(responses).includes("store-must"), false);
 

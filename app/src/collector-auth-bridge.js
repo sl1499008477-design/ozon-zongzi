@@ -2,6 +2,7 @@ export const COLLECTOR_AUTH_PROTOCOL = "SONLI_COLLECTOR_AUTH";
 export const COLLECTOR_AUTH_ACTIONS = Object.freeze({
   request: "collector.auth.request",
   response: "collector.auth.response",
+  ready: "collector.auth.ready",
 });
 
 const validRequestId = (value) => {
@@ -65,5 +66,11 @@ export function installCollectorAuthBridge({
     }
   };
   windowObject.addEventListener("message", onMessage);
+  if (isLoggedIn()) {
+    send({
+      protocol: COLLECTOR_AUTH_PROTOCOL,
+      action: COLLECTOR_AUTH_ACTIONS.ready,
+    });
+  }
   return () => windowObject.removeEventListener("message", onMessage);
 }
