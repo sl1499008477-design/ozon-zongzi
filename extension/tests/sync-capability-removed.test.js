@@ -17,6 +17,10 @@ const trustedWebSender = {
   url: 'http://127.0.0.1:3000/app',
   tab: { id: 20, url: 'http://127.0.0.1:3000/app' },
 };
+const COLLECTOR_SESSION_KEY = 'sonliCollectorSession';
+const COLLECTOR_GENERATION_KEY = 'sonliCollectorAuthGeneration';
+const G1 = 'generation_G1_1234';
+const G2 = 'generation_G2_5678';
 
 function availabilityResponse(url, options, available) {
   assert.equal(new URL(url).pathname, AVAILABILITY_PATH);
@@ -54,11 +58,12 @@ function deferred() {
   return { promise, resolve };
 }
 
-function createInjectedWebTabHarness() {
+function createInjectedWebTabHarness({ runtimeSendMessageImpl } = {}) {
   const runtimeOnMessage = createEvent();
   const executedFiles = [];
   const posts = [];
   const runtimeMessages = [];
+  const sentRuntimeMessages = [];
   const windowListeners = new Map();
   const windowObject = {
     location: { origin: 'http://127.0.0.1:3000' },
@@ -74,8 +79,16 @@ function createInjectedWebTabHarness() {
     runtime: {
       lastError: null,
       onMessage: runtimeOnMessage,
-      sendMessage(_message, callback) {
-        callback?.(null);
+      sendMessage(message, callback) {
+        sentRuntimeMessages.push(message);
+        if (!runtimeSendMessageImpl) {
+          callback?.(null);
+          return;
+        }
+        Promise.resolve(runtimeSendMessageImpl(message)).then(
+          (response) => callback?.(response),
+          () => callback?.(null),
+        );
       },
     },
   };
@@ -103,6 +116,7 @@ function createInjectedWebTabHarness() {
     executedFiles,
     posts,
     runtimeMessages,
+    sentRuntimeMessages,
     listenerCount: () => runtimeOnMessage.listeners.length,
     async executeScript({ files = [] }) {
       for (const relativePath of files) {
@@ -125,6 +139,15 @@ function createInjectedWebTabHarness() {
         if (response !== undefined) return response;
       }
       throw new Error('Could not establish connection. Receiving end does not exist.');
+    },
+    async emitWebMessage(data) {
+      const listener = windowListeners.get('message');
+      assert.ok(listener, 'collector auth content flow must register a Web message listener');
+      await listener({
+        source: windowObject,
+        origin: windowObject.location.origin,
+        data,
+      });
     },
   };
 }
@@ -431,6 +454,7 @@ function loadServiceWorker({
     runtimeOnStartup,
     runtimeSendMessageCalls,
     sentTabMessages,
+    session,
     tabQueryCalls,
     updatedTabs,
     updatedWindows,
@@ -450,6 +474,39 @@ async function sendRuntimeMessage(harness, message, sender = {}) {
   await settle();
   return response;
 }
+
+async function loadCollectorAuthContent(workerHarness) {
+  const webTab = createInjectedWebTabHarness({
+    runtimeSendMessageImpl: (message) => sendRuntimeMessage(
+      workerHarness,
+      message,
+      trustedWebSender,
+    ),
+  });
+  await webTab.executeScript({
+    files: [
+      'lib/web-bridge-policy.js',
+      'lib/collector-auth-flow.js',
+      'content/sync-auth.js',
+    ],
+  });
+  return webTab;
+}
+
+const collectorReady = (generationId) => ({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready',
+  generationId,
+});
+
+const collectorResponse = (requestId, generationId, suffix) => ({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.response',
+  requestId,
+  generationId,
+  ticket: `ctt_real_flow_ticket_${suffix}_123456789`,
+  expiresAt: '2099-01-01T00:00:00.000Z',
+});
 
 test('installed manifest cannot request Seller API while retaining visible seller capture', () => {
   for (const sellerApiUrl of [
@@ -871,6 +928,113 @@ test('Collector portal generations fence stale exchange and stale logout', async
   assert.equal(auth.ok, true);
   assert.equal(auth.data.authenticated, true);
   assert.equal(auth.data.account.id, 'account-generation-g2');
+});
+
+test('authoritative content recovery re-begins Web G1 after internal logout', async () => {
+  let exchangeCount = 0;
+  const worker = loadServiceWorker({
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        exchangeCount += 1;
+        return new Response(JSON.stringify({
+          data: {
+            collectorToken: `csess_real_recovery_${exchangeCount}_123456789`,
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            account: { id: `account-recovery-${exchangeCount}`, displayName: 'Recovery' },
+            permissions: ['collector.upload', 'collector.ozon.read'],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      throw new Error(`unexpected authoritative recovery path: ${pathname}`);
+    },
+  });
+  const webTab = await loadCollectorAuthContent(worker);
+
+  await webTab.emitWebMessage(collectorReady(G1));
+  const firstRequest = webTab.posts.at(-1).message;
+  await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1-first'));
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G1);
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY].account.id, 'account-recovery-1');
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await sendRuntimeMessage(worker, { action: 'logout' }))),
+    { ok: true },
+  );
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY], undefined);
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], undefined);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
+    { ok: true, requested: true },
+  );
+  const recoveryRequest = webTab.posts.at(-1).message;
+  await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G1, 'g1-recovery'));
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(webTab.sentRuntimeMessages.map(({ action, generationId }) => ({
+      action,
+      generationId,
+    })))),
+    [
+      { action: 'collector.auth.begin', generationId: G1 },
+      { action: 'collector.auth.exchange', generationId: G1 },
+      { action: 'collector.auth.begin', generationId: G1 },
+      { action: 'collector.auth.exchange', generationId: G1 },
+    ],
+  );
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G1);
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY].account.id, 'account-recovery-2');
+});
+
+test('authoritative content recovery adopts only current Web G2 over cached G1', async () => {
+  let exchangeCount = 0;
+  const worker = loadServiceWorker({
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        exchangeCount += 1;
+        return new Response(JSON.stringify({
+          data: {
+            collectorToken: `csess_real_current_web_${exchangeCount}_123456789`,
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            account: { id: `account-current-web-${exchangeCount}`, displayName: 'Current Web' },
+            permissions: ['collector.upload', 'collector.ozon.read'],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      throw new Error(`unexpected current Web recovery path: ${pathname}`);
+    },
+  });
+  const webTab = await loadCollectorAuthContent(worker);
+
+  await webTab.emitWebMessage(collectorReady(G1));
+  const firstRequest = webTab.posts.at(-1).message;
+  await webTab.emitWebMessage(collectorResponse(firstRequest.requestId, G1, 'g1'));
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await webTab.sendRuntimeMessage({ action: 'collector.auth.request' }))),
+    { ok: true, requested: true },
+  );
+  const recoveryRequest = webTab.posts.at(-1).message;
+  await webTab.emitWebMessage(collectorResponse(recoveryRequest.requestId, G2, 'g2'));
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(webTab.sentRuntimeMessages.map(({ action, generationId }) => ({
+      action,
+      generationId,
+    })))),
+    [
+      { action: 'collector.auth.begin', generationId: G1 },
+      { action: 'collector.auth.exchange', generationId: G1 },
+      { action: 'collector.auth.begin', generationId: G2 },
+      { action: 'collector.auth.exchange', generationId: G2 },
+    ],
+  );
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G2);
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY].account.id, 'account-current-web-2');
 });
 
 test('Collector exchange errors expose only finite status and sanitized stable code', async () => {
