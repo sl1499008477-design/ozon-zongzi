@@ -314,6 +314,7 @@ export function createCollectorOzonEnrichmentService({
     "createOrGetJob",
     "advanceSellerContext",
     "claimNextJob",
+    "hasClaimableJob",
     "deferClaim",
     "completeJobAndCache",
     "failJobAndCache",
@@ -573,6 +574,19 @@ export function createCollectorOzonEnrichmentService({
         captureContext,
         now: instant(now()),
       });
+    } catch (error) {
+      throw publicServiceError(error);
+    }
+  }
+
+  async function hasAvailableJob({ session } = {}) {
+    const scoped = sessionScope(session);
+    try {
+      return Boolean(await repository.hasClaimableJob({
+        accountId: scoped.accountId,
+        collectorSessionId: scoped.collectorSessionId,
+        now: instant(now()),
+      }));
     } catch (error) {
       throw publicServiceError(error);
     }
@@ -1098,6 +1112,7 @@ export function createCollectorOzonEnrichmentService({
     enrichOne,
     enrichBatch,
     observeSellerContext,
+    hasAvailableJob,
     claimNext,
     completeClaim,
     failClaim,

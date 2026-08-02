@@ -357,6 +357,115 @@ test("preferred claim is exclusive for one second then falls back only within th
   assert.equal(fallback.claimedSessionId, "collector-fallback");
 });
 
+test("JSON availability is read-only and follows the claimable job contract", async () => {
+  const at = new Date("2026-07-31T00:00:10.000Z");
+  const job = (overrides = {}) => ({
+    id: "job-availability",
+    accountId: "account-a",
+    requestId: "request-availability",
+    sku: "sku-availability",
+    status: "PENDING",
+    preferredSessionId: null,
+    claimedSessionId: null,
+    claimExpiresAt: null,
+    nextAttemptAt: "2026-07-31T00:00:00.000Z",
+    deadlineAt: "2026-07-31T00:01:00.000Z",
+    createdAt: "2026-07-31T00:00:00.000Z",
+    ...overrides,
+  });
+  const check = async (state, input, expected) => {
+    const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+    const before = structuredClone(state);
+    assert.equal(await repository.hasClaimableJob({ ...input, now: at }), expected);
+    assert.deepEqual(state, before);
+  };
+
+  await check(
+    { collectorSessions: [activeSession("collector-a", "account-a")] },
+    { accountId: "account-a", collectorSessionId: "collector-a" },
+    false,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-a", "account-a")],
+      collectorOzonEnrichmentJobs: [job({ nextAttemptAt: "2026-07-31T00:00:10.001Z" })],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-a" },
+    false,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-a", "account-a")],
+      collectorOzonEnrichmentJobs: [job({ deadlineAt: "2026-07-31T00:00:10.000Z" })],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-a" },
+    false,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-b", "account-b")],
+      collectorOzonEnrichmentJobs: [job()],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-missing" },
+    false,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-b", "account-b")],
+      collectorOzonEnrichmentJobs: [job()],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-b" },
+    false,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-a", "account-a")],
+      collectorOzonEnrichmentJobs: [
+        ...Array.from({ length: 4 }, (_, index) => job({
+          id: `job-processing-${index}`,
+          status: "PROCESSING",
+          claimedSessionId: `collector-processing-${index}`,
+          claimExpiresAt: "2026-07-31T00:00:20.000Z",
+        })),
+        job({ id: "job-due-after-capacity" }),
+      ],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-a" },
+    false,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-a", "account-a")],
+      collectorOzonEnrichmentJobs: [job()],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-a" },
+    true,
+  );
+  await check(
+    {
+      collectorSessions: [activeSession("collector-a", "account-a")],
+      collectorOzonEnrichmentJobs: [job({
+        status: "PROCESSING",
+        claimedSessionId: "collector-expired",
+        claimExpiresAt: "2026-07-31T00:00:10.000Z",
+      })],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-a" },
+    true,
+  );
+  await check(
+    {
+      collectorSessions: [
+        activeSession("collector-preferred", "account-a"),
+        activeSession("collector-fallback", "account-a"),
+      ],
+      collectorOzonEnrichmentJobs: [job({ preferredSessionId: "collector-preferred" })],
+    },
+    { accountId: "account-a", collectorSessionId: "collector-fallback" },
+    true,
+  );
+});
+
 test("JSON claim prioritizes the polling session preferred job before older general work", async () => {
   const state = { collectorSessions: [activeSession("collector-preferred", "account-a")] };
   const repository = createJsonCollectorOzonEnrichmentRepository({ state });
@@ -1422,6 +1531,49 @@ test("PostgreSQL job claim locks the account transaction and enforces the four-j
   }), null);
   assert.equal(calls.some((call) => call.sql.includes("FOR UPDATE SKIP LOCKED")), false);
   assert.equal(calls.at(-1).sql, "COMMIT");
+});
+
+test("PostgreSQL availability uses one read-only account-session scoped query", async () => {
+  const calls = [];
+  const otherAccountJob = {
+    account_id: "account-b",
+    status: "PENDING",
+    next_attempt_at: "2026-07-31T00:00:00.000Z",
+    deadline_at: "2026-07-31T00:01:00.000Z",
+  };
+  const repository = createPostgresCollectorOzonEnrichmentRepository({
+    pool: {
+      async query(sql, params = []) {
+        calls.push({ sql: String(sql).replace(/\s+/g, " ").trim(), params });
+        return { rows: [{ available: false, ignored: otherAccountJob }], rowCount: 1 };
+      },
+    },
+  });
+
+  assert.equal(await repository.hasClaimableJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: new Date("2026-07-31T00:00:10.000Z"),
+  }), false);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].params, [
+    "account-a",
+    "collector-a",
+    new Date("2026-07-31T00:00:10.000Z"),
+  ]);
+  assert.match(calls[0].sql, /FROM collector_sessions AS session/);
+  assert.match(calls[0].sql, /session\.account_id=\$1 AND session\.id=\$2/);
+  assert.match(calls[0].sql, /session\.revoked_at IS NULL AND session\.expires_at>\$3/);
+  assert.match(calls[0].sql, /job\.account_id=\$1/);
+  assert.match(calls[0].sql, /job\.status='PENDING'/);
+  assert.match(calls[0].sql, /job\.claim_expires_at<=\$3/);
+  assert.match(calls[0].sql, /job\.deadline_at>\$3/);
+  assert.match(calls[0].sql, /job\.next_attempt_at<=\$3/);
+  assert.match(calls[0].sql, /job\.preferred_session_id=\$2/);
+  assert.match(calls[0].sql, /job\.created_at \+ INTERVAL '1 second'<=\$3/);
+  assert.match(calls[0].sql, /status='PROCESSING' AND claim_expires_at>\$3/);
+  assert.equal(/\b(INSERT|UPDATE|DELETE)\b/.test(calls[0].sql), false);
+  assert.equal(/pg_advisory|seller_context/i.test(calls[0].sql), false);
 });
 
 test("PostgreSQL Seller-context observation uses the account-session transaction fence and rejects stale watermarks", async () => {

@@ -996,6 +996,35 @@ export function createJsonCollectorOzonEnrichmentRepository({
     });
   }
 
+  async function hasClaimableJob({ accountId, collectorSessionId, now }) {
+    const scopedAccountId = requiredText(accountId, "accountId");
+    const sessionId = requiredText(collectorSessionId, "collectorSessionId");
+    const at = requiredDate(now, "now");
+    return serializeJsonOperation(async () => {
+      if (!scopedCollectorSession(scopedAccountId, sessionId, at)) return false;
+      const active = jobEntries().filter((record) =>
+        record.accountId === scopedAccountId
+        && record.status === "PROCESSING"
+        && record.claimExpiresAt
+        && new Date(record.claimExpiresAt).getTime() > at.getTime()).length;
+      if (active >= 4) return false;
+      return jobEntries().some((record) =>
+        record.accountId === scopedAccountId
+        && (record.status === "PENDING" || (
+          record.status === "PROCESSING"
+          && record.claimExpiresAt
+          && new Date(record.claimExpiresAt).getTime() <= at.getTime()
+        ))
+        && new Date(record.deadlineAt).getTime() > at.getTime()
+        && (!record.nextAttemptAt || new Date(record.nextAttemptAt).getTime() <= at.getTime())
+        && (
+          !record.preferredSessionId
+          || record.preferredSessionId === sessionId
+          || new Date(record.createdAt).getTime() + 1000 <= at.getTime()
+        ));
+    });
+  }
+
   async function deferClaim({
     accountId,
     collectorSessionId,
@@ -1160,6 +1189,7 @@ export function createJsonCollectorOzonEnrichmentRepository({
     createOrGetJob,
     advanceSellerContext,
     claimNextJob,
+    hasClaimableJob,
     deferClaim,
     completeJobAndCache,
     failJobAndCache,
@@ -1808,6 +1838,44 @@ export function createPostgresCollectorOzonEnrichmentRepository({
     }
   }
 
+  async function hasClaimableJob({ accountId, collectorSessionId, now }) {
+    const scopedAccountId = requiredText(accountId, "accountId");
+    const sessionId = requiredText(collectorSessionId, "collectorSessionId");
+    const at = requiredDate(now, "now");
+    const result = await query(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM collector_sessions AS session
+          WHERE session.account_id=$1 AND session.id=$2
+            AND session.revoked_at IS NULL AND session.expires_at>$3
+            AND (
+              SELECT COUNT(*)
+                FROM collector_ozon_enrichment_jobs
+               WHERE account_id=$1
+                 AND status='PROCESSING' AND claim_expires_at>$3
+            ) < 4
+            AND EXISTS (
+              SELECT 1
+                FROM collector_ozon_enrichment_jobs AS job
+               WHERE job.account_id=$1
+                 AND (
+                   job.status='PENDING'
+                   OR (job.status='PROCESSING' AND job.claim_expires_at<=$3)
+                 )
+                 AND job.deadline_at>$3
+                 AND job.next_attempt_at<=$3
+                 AND (
+                   job.preferred_session_id IS NULL
+                   OR job.preferred_session_id=$2
+                   OR job.created_at + INTERVAL '1 second'<=$3
+                 )
+            )
+       ) AS available`,
+      [scopedAccountId, sessionId, at],
+    );
+    return Boolean(result.rows[0]?.available);
+  }
+
   async function deferClaim({
     accountId,
     collectorSessionId,
@@ -2148,6 +2216,7 @@ export function createPostgresCollectorOzonEnrichmentRepository({
     createOrGetJob,
     advanceSellerContext,
     claimNextJob,
+    hasClaimableJob,
     deferClaim,
     completeJobAndCache,
     failJobAndCache,

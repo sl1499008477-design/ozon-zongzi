@@ -87,6 +87,9 @@ class FakeRepository {
     this.lastSellerContextAdvance = null;
     this.lastCompleteInput = null;
     this.leaseAttempts = [];
+    this.availableJobInput = null;
+    this.availableJobResult = true;
+    this.availableJobError = null;
   }
 
   cacheKey(key) {
@@ -259,6 +262,12 @@ class FakeRepository {
     return clone(input.captureContext);
   }
 
+  async hasClaimableJob(input) {
+    this.availableJobInput = clone(input);
+    if (this.availableJobError) throw this.availableJobError;
+    return this.availableJobResult;
+  }
+
   async finish({ accountId, collectorSessionId, jobId, now, result, error, status }) {
     this.requireSession(accountId, collectorSessionId);
     const job = this.jobs.find((value) => value.accountId === accountId && value.id === jobId);
@@ -415,6 +424,37 @@ test("observing Seller context advances only the authenticated account and Colle
     captureContext: context,
     now: new Date(START),
   });
+});
+
+test("available job forwards the session scope and returns a strict boolean", async () => {
+  const h = harness();
+  h.repository.availableJobResult = 1;
+
+  const available = await h.service.hasAvailableJob({
+    session: session("collector-request"),
+  });
+
+  assert.equal(available, true);
+  assert.deepEqual(h.repository.availableJobInput, {
+    accountId: "account-a",
+    collectorSessionId: "collector-request",
+    now: new Date(START),
+  });
+});
+
+test("available job sanitizes repository failures", async () => {
+  const h = harness();
+  h.repository.availableJobError = Object.assign(
+    new Error("disk path /private/secret cst_secret-secret-secret"),
+    { code: "INTERNAL_DISK_FAILURE" },
+  );
+
+  await assert.rejects(
+    h.service.hasAvailableJob({ session: session("collector-request") }),
+    (error) => error?.status === 502
+      && error?.code === "OZON_ENRICH_UPSTREAM_FAILED"
+      && error?.message === "Ozon 商品资料暂时无法读取",
+  );
 });
 
 test("returns a live six-hour cache hit without creating a job", async () => {
