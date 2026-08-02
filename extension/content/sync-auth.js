@@ -45,6 +45,16 @@
     }, BRIDGE_RETRY_MS);
   };
 
+  const restartRequestCycle = () => {
+    if (exchangeInFlight || authenticated) return false;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    attempts = 0;
+    requestCount = 0;
+    requestTicket();
+    return true;
+  };
+
   const sendExchange = (response) => new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage({
@@ -66,10 +76,14 @@
     if (
       event.source !== window
       || event.origin !== window.location.origin
-      || exchangeInFlight
     ) {
       return;
     }
+    if (policy.normalizeCollectorAuthReady(event.data)) {
+      restartRequestCycle();
+      return;
+    }
+    if (exchangeInFlight) return;
     const response = policy.normalizeCollectorAuthResponse(event.data, activeRequestId);
     if (!response) return;
     clearTimeout(retryTimer);
@@ -95,12 +109,7 @@
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.action !== 'collector.auth.request') return false;
-      clearTimeout(retryTimer);
-      retryTimer = null;
-      attempts = 0;
-      requestCount = 0;
-      authenticated = false;
-      requestTicket();
+      restartRequestCycle();
       sendResponse({ ok: true, requested: true });
       return false;
     });

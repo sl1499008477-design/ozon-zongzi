@@ -3,6 +3,7 @@ const {
   COLLECTOR_AUTH_PROTOCOL,
   createCollectorAuthRequest,
   isTrustedWebBridgeSender,
+  normalizeCollectorAuthReady,
   normalizeCollectorAuthResponse,
 } = require('../lib/web-bridge-policy.js');
 const fs = require('node:fs');
@@ -13,6 +14,18 @@ assert.deepEqual(createCollectorAuthRequest('request-1'), {
   action: 'collector.auth.request',
   requestId: 'request-1',
 });
+assert.deepEqual(normalizeCollectorAuthReady({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready',
+}), {
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  action: 'collector.auth.ready',
+});
+for (const unsafe of [
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready', token: 'never' },
+  { protocol: 'OTHER', action: 'collector.auth.ready' },
+  { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.response' },
+]) assert.equal(normalizeCollectorAuthReady(unsafe), null);
 assert.deepEqual(normalizeCollectorAuthResponse({
   protocol: COLLECTOR_AUTH_PROTOCOL,
   action: 'collector.auth.response',
