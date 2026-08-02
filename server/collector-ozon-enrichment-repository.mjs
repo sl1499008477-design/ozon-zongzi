@@ -513,19 +513,16 @@ export function createJsonCollectorOzonEnrichmentRepository({
     });
   }
 
-  async function normalizeLegacyLinkedJobDuplicates({
+  function legacyLinkedDuplicateIds({
     accountId,
     collectItemId = "",
     sku = "",
-    now,
-  } = {}) {
-    const scopedAccountId = requiredText(accountId, "accountId");
+  }) {
     const scopedCollectItemId = String(collectItemId || "");
     const scopedSku = String(sku || "");
-    const at = requiredDate(now, "now");
     const activeLinked = jobEntries()
       .filter((record) =>
-        String(record?.accountId || "") === scopedAccountId
+        String(record?.accountId || "") === accountId
         && (!scopedCollectItemId || String(record?.collectItemId || "") === scopedCollectItemId)
         && (!scopedSku || String(record?.sku || "") === scopedSku)
         && record?.collectItemId
@@ -547,6 +544,24 @@ export function createJsonCollectorOzonEnrichmentRepository({
       if (winners.has(stableKey)) duplicateIds.add(String(record.id));
       else winners.add(stableKey);
     }
+    return duplicateIds;
+  }
+
+  async function normalizeLegacyLinkedJobDuplicates({
+    accountId,
+    collectItemId = "",
+    sku = "",
+    now,
+  } = {}) {
+    const scopedAccountId = requiredText(accountId, "accountId");
+    const scopedCollectItemId = String(collectItemId || "");
+    const scopedSku = String(sku || "");
+    const at = requiredDate(now, "now");
+    const duplicateIds = legacyLinkedDuplicateIds({
+      accountId: scopedAccountId,
+      collectItemId: scopedCollectItemId,
+      sku: scopedSku,
+    });
     if (!duplicateIds.size) return false;
     const superseded = Object.freeze({
       code: "OZON_ENRICHMENT_DUPLICATE_SUPERSEDED",
@@ -1002,13 +1017,16 @@ export function createJsonCollectorOzonEnrichmentRepository({
     const at = requiredDate(now, "now");
     return serializeJsonOperation(async () => {
       if (!scopedCollectorSession(scopedAccountId, sessionId, at)) return false;
-      const active = jobEntries().filter((record) =>
+      const duplicateIds = legacyLinkedDuplicateIds({ accountId: scopedAccountId });
+      const claimableRecords = jobEntries().filter((record) =>
+        !duplicateIds.has(String(record?.id || "")));
+      const active = claimableRecords.filter((record) =>
         record.accountId === scopedAccountId
         && record.status === "PROCESSING"
         && record.claimExpiresAt
         && new Date(record.claimExpiresAt).getTime() > at.getTime()).length;
       if (active >= 4) return false;
-      return jobEntries().some((record) =>
+      return claimableRecords.some((record) =>
         record.accountId === scopedAccountId
         && (record.status === "PENDING" || (
           record.status === "PROCESSING"

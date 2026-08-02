@@ -466,6 +466,96 @@ test("JSON availability is read-only and follows the claimable job contract", as
   );
 });
 
+test("JSON availability ignores legacy linked duplicates that claim normalization would supersede", async () => {
+  const at = new Date("2026-08-01T08:00:10.000Z");
+  const state = {
+    collectorSessions: [activeSession("collector-a", "account-a", {
+      expiresAt: "2026-08-02T00:00:00.000Z",
+    })],
+    collectorOzonEnrichmentJobs: [
+      {
+        id: "legacy-winner",
+        accountId: "account-a",
+        collectItemId: "collect-duplicate",
+        requestId: "request-legacy-winner",
+        sku: "sku-duplicate",
+        status: "PROCESSING",
+        claimedSessionId: "collector-legacy-winner",
+        claimExpiresAt: "2026-08-01T08:01:00.000Z",
+        nextAttemptAt: "2026-08-01T08:00:00.000Z",
+        deadlineAt: "9999-12-31T23:59:59.999Z",
+        createdAt: "2026-08-01T08:00:00.000Z",
+      },
+      {
+        id: "legacy-duplicate-one",
+        accountId: "account-a",
+        collectItemId: "collect-duplicate",
+        requestId: "request-legacy-duplicate-one",
+        sku: "sku-duplicate",
+        status: "PROCESSING",
+        claimedSessionId: "collector-legacy-duplicate-one",
+        claimExpiresAt: "2026-08-01T08:01:00.000Z",
+        nextAttemptAt: "2026-08-01T08:00:00.000Z",
+        deadlineAt: "9999-12-31T23:59:59.999Z",
+        createdAt: "2026-08-01T08:00:01.000Z",
+      },
+      {
+        id: "legacy-duplicate-two",
+        accountId: "account-a",
+        collectItemId: "collect-duplicate",
+        requestId: "request-legacy-duplicate-two",
+        sku: "sku-duplicate",
+        status: "PROCESSING",
+        claimedSessionId: "collector-legacy-duplicate-two",
+        claimExpiresAt: "2026-08-01T08:01:00.000Z",
+        nextAttemptAt: "2026-08-01T08:00:00.000Z",
+        deadlineAt: "9999-12-31T23:59:59.999Z",
+        createdAt: "2026-08-01T08:00:02.000Z",
+      },
+      {
+        id: "live-unique",
+        accountId: "account-a",
+        collectItemId: "collect-unique",
+        requestId: "request-live-unique",
+        sku: "sku-unique",
+        status: "PROCESSING",
+        claimedSessionId: "collector-live-unique",
+        claimExpiresAt: "2026-08-01T08:01:00.000Z",
+        nextAttemptAt: "2026-08-01T08:00:00.000Z",
+        deadlineAt: "9999-12-31T23:59:59.999Z",
+        createdAt: "2026-08-01T08:00:03.000Z",
+      },
+      {
+        id: "due-pending",
+        accountId: "account-a",
+        requestId: "request-due-pending",
+        sku: "sku-due-pending",
+        status: "PENDING",
+        preferredSessionId: null,
+        nextAttemptAt: "2026-08-01T08:00:00.000Z",
+        deadlineAt: "2026-08-01T08:02:00.000Z",
+        createdAt: "2026-08-01T08:00:04.000Z",
+      },
+    ],
+  };
+  const repository = createJsonCollectorOzonEnrichmentRepository({ state });
+  const before = structuredClone(state);
+
+  assert.equal(await repository.hasClaimableJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: at,
+  }), true);
+  assert.deepEqual(state, before);
+
+  assert.equal((await repository.claimNextJob({
+    accountId: "account-a",
+    collectorSessionId: "collector-a",
+    now: at,
+    claimExpiresAt: new Date("2026-08-01T08:00:25.000Z"),
+  })).id, "due-pending");
+});
+
 test("JSON claim prioritizes the polling session preferred job before older general work", async () => {
   const state = { collectorSessions: [activeSession("collector-preferred", "account-a")] };
   const repository = createJsonCollectorOzonEnrichmentRepository({ state });

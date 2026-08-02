@@ -50,6 +50,7 @@ function repository(job, order) {
     async createOrGetJob() { return job; },
     async advanceSellerContext() { throw new Error("unused"); },
     async claimNextJob() { return null; },
+    async hasClaimableJob() { return false; },
     async deferClaim() { throw new Error("unused"); },
     async completeJobAndCache(input) {
       order.push("complete");
