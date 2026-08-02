@@ -15,8 +15,8 @@ Collection and enrichment success are never rolled back by category Port creatio
 - `scheduleCategoryResolutionAfterCollect(...)` is an additive post-commit helper shared by JSON and PostgreSQL ingress. It returns the original success value and logs only account/item IDs plus a stable code.
 - `createCollectorOzonEnrichmentService` gained the narrow optional `categoryResolutionPort.onEnrichmentComplete(...)` callback and a safe error callback. The hook runs only after `collectItemPort.complete` returns successfully.
 - The Service gained additive internal `operatingStoreContext({ accountId, storeId })`, returning only safe store identity/update metadata after applying its existing ownership, status, and credential policy.
-- Store wakes query only `WAITING_STORE`/`MATCHED` records across all taxonomy scopes and run in coalesced asynchronous composite item/scope cursor pages of at most 16. Worker reconciliation filters for actionability before its limit, so incomplete waiters cannot starve recoverable work. Missing records use the default scope; existing records preserve their persisted scope. Both timer families are stopped on server close.
-- No client request field, collection item, `collect_requests.store_id`, or plugin response gains credential-store scope. No HTTP response contract or database schema changed.
+- Store wakes query only `WAITING_STORE`/`MATCHED` records across all taxonomy scopes and run in coalesced asynchronous composite item/scope cursor pages of at most 16. As superseded by Fix Round 1, worker reconciliation now admits bounded incomplete waiters and delegates completeness to the Service; every attempt consumes the global budget and the durable cursor prevents an incomplete prefix from starving later work. Missing records use the default scope; existing records preserve their persisted scope. Both timer families are stopped on server close.
+- No client request field, collection item, `collect_requests.store_id`, or plugin response gains credential-store scope, and no HTTP response contract changed. Fix Round 1 later added only the additive runtime-cursor migration `025`; the category/collection business schemas remain unchanged.
 
 ## Files changed
 
@@ -75,7 +75,7 @@ Fresh complete server regression after all review fixes:
 - Every lookup/mutation carries explicit `accountId`; store reads require exact ownership and active credential availability. Wake paging selects records only from the supplied account and never changes collection ownership.
 - Stable Repository identity plus existing leases/CAS makes repeated collection, enrichment, wake, and restart notifications idempotent. Store-wake flights are coalesced by account/store.
 - Audit payloads are allowlisted and transaction-bound; runtime logs contain no credential value, raw upstream response, or raw exception message.
-- A committed collection or enrichment result survives category scheduling failure. Missing/waiting work is durable and restart-discoverable. Incomplete waiters are excluded before applying the bounded limit, while store wakes page until drained.
+- A committed collection or enrichment result survives category scheduling failure. Missing/waiting work is durable and restart-discoverable. Fix Round 1 superseded the initial exclusion rule: incomplete waiters may be selected inside the bounded page, are judged only by the Service, and advance the durable fairness cursor after the attempt; store wakes still page until drained.
 - Worker drains are non-overlapping and capped at 16 operations; store wake pages are capped at 16 and scheduled asynchronously. Initial, interval, and continuation timers are all stoppable.
 - Module-boundary tests prohibit collection routes and enrichment Service from importing the category Repository or database directly.
 
@@ -84,7 +84,7 @@ Fresh complete server regression after all review fixes:
 - No live PostgreSQL instance was configured, so real-engine SQL execution/locking and live migration compatibility were not exercised. PostgreSQL Repository transaction behavior, executor-bound audit wiring, actionable query contract, and adapter selection were verified with focused doubles; four existing database-required tests were skipped.
 - No live Ozon API, production credential, production data, or external write was used. Category calls were exercised through deterministic fakes.
 - Primary regression risk is operational load/fairness when an account has a very large backlog. Processing is deliberately bounded and cursor-paged; safe logs and durable statuses provide diagnosis/retry.
-- Roll back by stopping the category worker and reverting the Task 5 commit. Retain existing category-resolution/audit records; there is no Task 5 schema migration or destructive data rewrite to reverse. Existing collection and enrichment data remain valid.
+- Roll back by stopping the category worker and reverting the Task 5 and Fix Round 1 application commits. Fix Round 1 added migration `025_collect_category_resolution_runtime_cursor.sql`; its cursor-only table is additive and may safely remain unused during rollback. Do not destructively drop it as part of an application rollback. Existing category-resolution, collection, enrichment, and audit records remain valid.
 
 ## Fix Round 1 — controller findings
 
@@ -137,3 +137,51 @@ All five changed production modules pass `node --check`; `git diff --check` pass
 - No live Ozon API, credential, production data, or external write was used. Exact-scope category calls and store switches use deterministic fakes.
 - Remaining operational risk is scanning a very large JSON state to construct the bounded page, and PostgreSQL query-plan cost over a very large backlog. External store/category/claim work is strictly candidate-bounded, cursor progress is durable, and every failure is reported with stable identifiers/codes.
 - Rollback by stopping the worker and reverting the Fix Round 1 commit. The migration is additive and contains cursor metadata only; it may safely remain unused during rollback. Do not destructively drop the cursor table during an application rollback. Existing resolution, collection, and audit records remain valid.
+
+## Fix Round 2 — concurrency, snapshot failure, and boundary guard
+
+### Outcome and contract changes
+
+- Repository enqueue is now the final atomic stale-write fence. An existing automatic `MATCHED` row with the same source type survives a stale enqueue even when that enqueue carries an older or empty taxonomy fingerprint. A changed source type still explicitly requeues and clears the obsolete target; `MANUAL` remains protected.
+- Runtime snapshot capture converts a backend current-store read failure into a trusted, conservative empty snapshot. Post-commit scheduling therefore resolves the accepted item to `WAITING_STORE` and never rereads a newer current store for that accepted request.
+- If the capture Port getter, capture function, or call is unavailable, ingress returns a private skip token and omits only the immediate category schedule. Collection success remains intact and normal restart recovery owns the missed work; no post-commit store-context read occurs.
+- The module boundary check is now a reusable guard and rejects named, default, side-effect, and literal dynamic imports of the category Repository or any `db/*` module. Current account collection and enrichment modules remain compliant.
+- The earlier Task 5 worker and rollback paragraphs were corrected to reflect Fix Round 1's bounded incomplete-waiter attempts, durable fairness cursor, and additive migration `025`.
+
+### RED evidence
+
+- The stale duplicate-enqueue barrier ran against both JSON and PostgreSQL-facing adapters: **2 tests, 0 passed, 2 failed**. In both cases a stale enqueue replaced a concurrently committed `MATCHED` record with `QUEUED`.
+- Runtime plus JSON/PostgreSQL-facing capture-failure regressions were **3 tests, 0 passed, 3 failed**. Runtime propagated the backend read failure, while both ingress cases performed an unintended second current-store read after acceptance.
+- The first reusable boundary guard failed module loading before implementation. A from-only implementation then failed the side-effect Repository fixture, and its initial `db` matcher failed the nested literal dynamic `db/internal/pool.mjs` fixture. These failures drove all four import forms and recursive `db/*` coverage.
+
+### GREEN and regression evidence
+
+Category Runtime, Service, Repository, and migration:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test server/tests/collect-category-resolution-runtime.test.mjs server/tests/collect-category-resolution-service.test.mjs server/tests/collect-category-resolution-repository.test.mjs server/tests/collect-category-resolution-migration.test.mjs
+# 123 passed, 0 failed, 0 skipped
+```
+
+Required Task 5 integration set:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/collect-category-resolution-runtime.test.mjs server/tests/collector-scope-ingress.test.mjs server/tests/ozon-collection-completeness-gate.test.mjs server/tests/collector-ozon-enrichment-service.test.mjs server/tests/collector-ozon-enrichment-runtime.test.mjs server/tests/module-boundaries.test.mjs
+# 113 tests; 112 passed, 1 PostgreSQL-configuration skip, 0 failed
+```
+
+Fresh complete server regression:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/*.test.mjs
+# 582 tests; 578 passed, 4 configuration-based skips, 0 failed
+```
+
+All four changed production modules pass `node --check`; `git diff --check` passes. Test inventory remains **165 active, 14 historical/manual** files.
+
+### Unverified range, risks, and rollback
+
+- No PostgreSQL instance was configured. The PostgreSQL-facing barrier test deterministically interleaves stale enqueue and worker completion through the Repository contract, but real-engine locking and `ON CONFLICT` contention remain unverified. Four database-required full-suite cases were skipped.
+- No live Ozon API, credential, production data, or external write was used. Store switches and capture failures use deterministic fakes.
+- The boundary guard intentionally covers literal ESM specifiers. It does not try to evaluate computed dynamic-import expressions; the guarded production modules currently contain no such imports.
+- Roll back by reverting only the Fix Round 2 commit. It adds no schema migration. Migration `025` belongs to Fix Round 1 and may safely remain unused; do not destructively drop its cursor table during an application rollback.

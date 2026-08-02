@@ -340,9 +340,18 @@ export function createCollectCategoryResolutionRuntime({
 
   async function captureCredentialStoreSnapshot(input = {}) {
     const accountId = text(input.accountId);
+    let credentialStoreId = "";
+    try {
+      credentialStoreId = await backendCredentialStoreId(accountId);
+    } catch (error) {
+      log.error("collect category store snapshot context failed", {
+        accountId,
+        code: stableErrorCode(error),
+      });
+    }
     const acceptedContext = Object.freeze({
       accountId,
-      credentialStoreId: await backendCredentialStoreId(accountId),
+      credentialStoreId,
     });
     const snapshot = Object.freeze({});
     trustedCredentialStoreSnapshots.set(snapshot, acceptedContext);

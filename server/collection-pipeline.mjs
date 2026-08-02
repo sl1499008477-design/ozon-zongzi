@@ -17,6 +17,7 @@ import {
 } from "./collect-item-identity-policy.mjs";
 
 let ready = false;
+const SKIP_IMMEDIATE_CATEGORY_RESOLUTION = Object.freeze({});
 
 async function poolReady() {
   const pool = await getPostgresPool();
@@ -86,6 +87,7 @@ export async function scheduleCategoryResolutionAfterCollect({
   credentialStoreSnapshot = null,
   logger = null,
 } = {}) {
+  if (credentialStoreSnapshot === SKIP_IMMEDIATE_CATEGORY_RESOLUTION) return collected;
   let scopedAccountId = "";
   let collectItemId = "";
   try {
@@ -122,8 +124,11 @@ export async function captureCategoryResolutionStoreSnapshot({
   if (!scopedAccountId) return null;
   try {
     const capture = categoryResolutionPort?.captureCredentialStoreSnapshot;
-    if (typeof capture !== "function") return null;
-    return await capture.call(categoryResolutionPort, { accountId: scopedAccountId });
+    if (typeof capture !== "function") return SKIP_IMMEDIATE_CATEGORY_RESOLUTION;
+    const snapshot = await capture.call(categoryResolutionPort, { accountId: scopedAccountId });
+    return snapshot && typeof snapshot === "object"
+      ? snapshot
+      : SKIP_IMMEDIATE_CATEGORY_RESOLUTION;
   } catch (error) {
     try {
       logger?.error?.("collect category store snapshot failed", {
@@ -133,7 +138,7 @@ export async function captureCategoryResolutionStoreSnapshot({
     } catch {
       // A secondary logger cannot reverse an accepted collection request.
     }
-    return null;
+    return SKIP_IMMEDIATE_CATEGORY_RESOLUTION;
   }
 }
 

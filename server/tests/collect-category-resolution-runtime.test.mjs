@@ -178,6 +178,54 @@ test("a trusted empty acceptance snapshot remains WAITING_STORE after a concurre
   assert.equal(waiting.credentialStoreId, null);
 });
 
+test("a failed backend context read issues a conservative snapshot without a post-commit reread", async () => {
+  const item = completeItem({ id: "collect-capture-failed" });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{
+      id: "store-selected-after-failure",
+      ownerAccountId: ACCOUNT_ID,
+      clientId: "after-failure",
+      apiKey: "secret-after-failure",
+    }],
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  let contextReads = 0;
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async () => {
+      contextReads += 1;
+      if (contextReads === 1) throw Object.assign(new Error("sensitive context failure"), {
+        code: "CURRENT_STORE_UNAVAILABLE",
+      });
+      return "store-selected-after-failure";
+    },
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+    logger: { error() {} },
+  });
+
+  const conservativeSnapshot = await runtime.captureCredentialStoreSnapshot({
+    accountId: ACCOUNT_ID,
+  });
+  const waiting = await runtime.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: item.id,
+    credentialStoreSnapshot: conservativeSnapshot,
+  });
+
+  assert.deepEqual(conservativeSnapshot, {});
+  assert.equal(contextReads, 1);
+  assert.equal(waiting.status, "WAITING_STORE");
+  assert.equal(waiting.credentialStoreId, null);
+});
+
 test("enrichment completion promotes one waiting record and repeated notifications stay idempotent", async () => {
   const item = completeItem({
     status: "PENDING_ENRICHMENT",

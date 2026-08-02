@@ -139,9 +139,10 @@ function statefulPostgresPool() {
         rows.push(row);
       } else if (row.method !== "MANUAL" && !(
         row.source_type_id === sourceTypeId
-        && row.taxonomy_fingerprint === taxonomyFingerprint
-        && (["MATCHING", "MATCHED", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(row.status)
-          || row.status === status)
+        && (row.status === "MATCHED"
+          || (row.taxonomy_fingerprint === taxonomyFingerprint
+            && (["MATCHING", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(row.status)
+              || row.status === status)))
       )) {
         Object.assign(row, {
           source_type_id: sourceTypeId,
@@ -671,6 +672,75 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
       leaseExpiresAt: "2026-08-03T10:01:00.000Z",
       now: "2026-08-03T10:00:01.000Z",
     }), null);
+  });
+
+  test(`${adapterName} stale duplicate enqueue cannot erase a concurrently committed match`, async () => {
+    const repository = createRepository();
+    const initial = await repository.enqueue(queued({ taxonomyFingerprint: null }));
+    let staleReadComplete;
+    let releaseDuplicate;
+    const staleReadBarrier = new Promise((resolve) => { staleReadComplete = resolve; });
+    const duplicateGate = new Promise((resolve) => { releaseDuplicate = resolve; });
+    const duplicate = (async () => {
+      const stale = await repository.readForItem(queued());
+      staleReadComplete();
+      await duplicateGate;
+      return repository.enqueue(queued({
+        taxonomyFingerprint: stale.taxonomyFingerprint,
+        now: "2026-08-03T10:00:04.000Z",
+      }));
+    })();
+    await staleReadBarrier;
+
+    await repository.claimNext({
+      accountId: "account-a",
+      taxonomyScope: SCOPE,
+      leaseToken: "taxonomy-refresh-lease",
+      leaseExpiresAt: "2026-08-03T10:01:00.000Z",
+      now: START,
+    });
+    await repository.requeueClaim({
+      accountId: "account-a",
+      id: initial.id,
+      leaseToken: "taxonomy-refresh-lease",
+      sourceTypeId: 94405,
+      status: "QUEUED",
+      taxonomyFingerprint: "taxonomy-v1",
+      credentialStoreId: "store-a",
+      nextAttemptAt: "2026-08-03T10:00:01.000Z",
+      now: "2026-08-03T10:00:01.000Z",
+    });
+    await repository.claimNext({
+      accountId: "account-a",
+      taxonomyScope: SCOPE,
+      leaseToken: "match-lease",
+      leaseExpiresAt: "2026-08-03T10:01:00.000Z",
+      now: "2026-08-03T10:00:02.000Z",
+    });
+    const matched = await repository.completeMatched({
+      accountId: "account-a",
+      id: initial.id,
+      leaseToken: "match-lease",
+      targetDescriptionCategoryId: 17028702,
+      targetTypeId: 94405,
+      method: "TYPE_ID_EXACT",
+      taxonomyFingerprint: "taxonomy-v1",
+      credentialStoreId: "store-a",
+      matchedAt: "2026-08-03T10:00:03.000Z",
+      validatedAt: "2026-08-03T10:00:03.000Z",
+      now: "2026-08-03T10:00:03.000Z",
+    });
+    assert.equal(matched.status, "MATCHED");
+
+    releaseDuplicate();
+    const replay = await duplicate;
+
+    assert.equal(replay.status, "MATCHED");
+    assert.equal(replay.method, "TYPE_ID_EXACT");
+    assert.equal(replay.targetDescriptionCategoryId, 17028702);
+    assert.equal(replay.targetTypeId, 94405);
+    assert.equal(replay.taxonomyFingerprint, "taxonomy-v1");
+    assert.equal(replay.matchedAt, "2026-08-03T10:00:03.000Z");
   });
 
   test(`${adapterName} expired leases recover and stale lease tokens cannot complete`, async () => {

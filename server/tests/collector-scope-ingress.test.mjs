@@ -127,9 +127,17 @@ test("post-commit success also survives a category port initialization failure",
   assert.equal(JSON.stringify(logged).includes("credential detail"), false);
 });
 
-test("acceptance snapshot getter failure is isolated and does not expose its message", async () => {
-  const categoryResolutionPort = Object.defineProperty({}, "captureCredentialStoreSnapshot", {
+test("PostgreSQL-facing acceptance getter failure skips post-commit scheduling without a context reread", async () => {
+  let contextReads = 0;
+  let scheduleCalls = 0;
+  const categoryResolutionPort = Object.defineProperty({
+    async scheduleForCollect() {
+      contextReads += 1;
+      scheduleCalls += 1;
+    },
+  }, "captureCredentialStoreSnapshot", {
     get() {
+      contextReads += 1;
       throw Object.assign(new Error("apiKey=must-not-log"), {
         code: "CATEGORY_PORT_INITIALIZATION_FAILED",
       });
@@ -142,8 +150,18 @@ test("acceptance snapshot getter failure is isolated and does not expose its mes
     accountId: "account-authoritative",
     logger: { error: (...values) => logged.push(values) },
   });
+  const collected = { collectItemId: "collect-item-safe", item: { id: "collect-item-safe" } };
+  const result = await scheduleCategoryResolutionAfterCollect({
+    categoryResolutionPort,
+    accountId: "account-authoritative",
+    collected,
+    credentialStoreSnapshot: snapshot,
+    logger: { error: (...values) => logged.push(values) },
+  });
 
-  assert.equal(snapshot, null);
+  assert.equal(result, collected);
+  assert.equal(contextReads, 1);
+  assert.equal(scheduleCalls, 0);
   assert.equal(JSON.stringify(logged).includes("must-not-log"), false);
 });
 

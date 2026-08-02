@@ -344,6 +344,9 @@ test("JSON category scheduling runs after collection commit and cannot roll back
     requestId: "category-schedule-after-commit",
   }), {
     categoryResolutionPort: {
+      async captureCredentialStoreSnapshot() {
+        return Object.freeze({});
+      },
       async scheduleForCollect(input) {
         const stored = harness.state.caches.collectBox.find((item) => item.id === input.collectItemId);
         assert.equal(stored?.status, "COMPLETE", "collection must commit before category scheduling");
@@ -364,6 +367,7 @@ test("JSON category scheduling runs after collection commit and cannot roll back
   assert.deepEqual(scheduleCalls, [{
     accountId: "json-account",
     collectItemId: harness.state.caches.collectBox[0].id,
+    credentialStoreSnapshot: {},
   }]);
   assert.equal(JSON.stringify(harness.response.body).includes("credentialStoreId"), false);
   assert.equal(JSON.stringify(harness.state.caches.collectBox[0]).includes("credentialStoreId"), false);
@@ -396,6 +400,38 @@ test("JSON collection captures an opaque store snapshot before commit and forwar
   assert.equal(calls[1][1].credentialStoreSnapshot, acceptedStoreSnapshot);
   assert.equal(JSON.stringify(harness.state).includes("credentialStoreSnapshot"), false);
   assert.equal(JSON.stringify(harness.response.body).includes("credentialStoreSnapshot"), false);
+});
+
+test("JSON collection skips immediate category scheduling when the capture Port fails before commit", async () => {
+  let currentStore = "store-before-capture-failure";
+  let contextReads = 0;
+  let scheduleCalls = 0;
+  const categoryResolutionPort = {
+    async captureCredentialStoreSnapshot() {
+      contextReads += 1;
+      currentStore = "store-after-capture-failure";
+      throw Object.assign(new Error("sensitive capture failure"), {
+        code: "CATEGORY_CONTEXT_UNAVAILABLE",
+      });
+    },
+    async scheduleForCollect() {
+      scheduleCalls += 1;
+      contextReads += 1;
+      return currentStore;
+    },
+  };
+  const harness = jsonHarness(collectInput({
+    sourceSku: "capture-port-failure",
+    requestId: "capture-port-failure",
+  }), { categoryResolutionPort, logger: { error() {} } });
+
+  await harness.invoke();
+
+  assert.equal(harness.response.status, 200);
+  assert.equal(harness.state.collectRequests[0].status, "SUCCEEDED");
+  assert.equal(currentStore, "store-after-capture-failure");
+  assert.equal(contextReads, 1);
+  assert.equal(scheduleCalls, 0);
 });
 
 test("JSON pending canonical item becomes complete and atomically supersedes its active linked job", async () => {

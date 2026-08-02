@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { assertCategoryResolutionPortBoundary } from "../module-import-boundary.mjs";
 
 const [
   serverEntry,
@@ -91,15 +92,24 @@ for (const [source, label] of [
   [accountScopedCollectionRoutes, "account-scoped collection routes"],
   [enrichmentService, "Ozon enrichment service"],
 ]) {
-  assert.doesNotMatch(
-    source,
-    /from\s+["'][^"']*collect-category-resolution-repository\.mjs["']/i,
-    `${label} must not import the category resolution repository module directly`,
-  );
-  assert.doesNotMatch(
-    source,
-    /from\s+["'][^"']*(?:\/db\/|db\/connection\.mjs|db\/migrate\.mjs)["']/i,
-    `${label} must not import generic database modules`,
+  assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(source, { label }));
+}
+for (const [name, source, expectedSpecifier] of [
+  ["named Repository", 'import { createRepository } from "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
+  ["default Repository", 'import repository from "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
+  ["side-effect Repository", 'import "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
+  ["dynamic Repository", 'await import("./collect-category-resolution-repository.mjs");', "./collect-category-resolution-repository.mjs"],
+  ["named database", 'import { getPool } from "./db/connection.mjs";', "./db/connection.mjs"],
+  ["default database", 'import database from "../db/migrate.mjs";', "../db/migrate.mjs"],
+  ["side-effect database", 'import "./db/bootstrap.mjs";', "./db/bootstrap.mjs"],
+  ["dynamic database", 'await import("../db/connection.mjs");', "../db/connection.mjs"],
+  ["nested dynamic database", 'await import("../db/internal/pool.mjs");', "../db/internal/pool.mjs"],
+]) {
+  assert.throws(
+    () => assertCategoryResolutionPortBoundary(source, { label: `${name} fixture` }),
+    (error) => error?.code === "CATEGORY_RESOLUTION_MODULE_BOUNDARY"
+      && error?.specifier === expectedSpecifier,
+    `${name} import must be rejected`,
   );
 }
 const collectorAuthRouteIndex = serverEntry.indexOf("collectorAuthRuntime.handleHttpRoute(req, res, url)");

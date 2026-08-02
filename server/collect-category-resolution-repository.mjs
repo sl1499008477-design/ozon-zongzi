@@ -394,6 +394,8 @@ export function createJsonCollectCategoryResolutionRepository({
       const existing = entries.find((record) => sameStableKey(record, request));
       if (existing && (
         existing.method === "MANUAL"
+        || (existing.status === "MATCHED"
+          && Number(existing.sourceTypeId || 0) === Number(request.sourceTypeId || 0))
         || (["MATCHING", "MATCHED", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(existing.status)
           && sameExecutionKey(existing, request))
         || (existing.status === request.status && sameExecutionKey(existing, request))
@@ -952,10 +954,15 @@ export function createPostgresCollectCategoryResolutionRepository({
        WHERE current.method IS DISTINCT FROM 'MANUAL'
          AND NOT (
            current.source_type_id IS NOT DISTINCT FROM EXCLUDED.source_type_id
-           AND current.taxonomy_fingerprint IS NOT DISTINCT FROM EXCLUDED.taxonomy_fingerprint
            AND (
-             current.status IN ('MATCHING','MATCHED','NEEDS_REVIEW','RETRYABLE_ERROR')
-             OR current.status=EXCLUDED.status
+             current.status='MATCHED'
+             OR (
+               current.taxonomy_fingerprint IS NOT DISTINCT FROM EXCLUDED.taxonomy_fingerprint
+               AND (
+                 current.status IN ('MATCHING','NEEDS_REVIEW','RETRYABLE_ERROR')
+                 OR current.status=EXCLUDED.status
+               )
+             )
            )
          )
        RETURNING current.*`,
