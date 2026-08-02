@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
   PENDING_UPLOADS_STORAGE_KEY,
   COLLECTOR_PERMISSIONS,
   COLLECTOR_SESSION_STORAGE_KEY,
@@ -119,6 +120,244 @@ test('expired collector sessions are cleared from session storage', async () => 
   });
   assert.equal(await harness.manager.getCollectorSession(), null);
   assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+});
+
+test('activating a new Collector generation clears the previous session and is idempotent', async () => {
+  const harness = createHarness();
+  await harness.manager.setCollectorSession(validSession());
+
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_A_1234'),
+    { changed: true },
+  );
+  assert.equal(await harness.manager.getCollectorSession(), null);
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_A_1234',
+  );
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_A_1234'),
+    { changed: false },
+  );
+});
+
+test('clearing a stale Collector generation cannot remove the active generation session', async () => {
+  const harness = createHarness();
+  await harness.manager.activateCollectorGeneration('generation_B_5678');
+  await harness.manager.setCollectorSession(validSession({
+    account: { id: 'account-b', displayName: 'B' },
+  }));
+
+  assert.equal(
+    await harness.manager.clearCollectorGeneration('generation_A_1234'),
+    false,
+  );
+  assert.equal((await harness.manager.getCollectorSession()).account.id, 'account-b');
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_B_5678',
+  );
+  assert.equal(
+    await harness.manager.clearCollectorGeneration('generation_B_5678'),
+    true,
+  );
+  assert.equal(await harness.manager.getCollectorSession(), null);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], undefined);
+  const generationWritesBeforeRetry = harness.calls.filter(
+    ([area, method]) => area === 'session' && (method === 'set' || method === 'remove'),
+  ).length;
+  assert.equal(
+    await harness.manager.clearCollectorGeneration('generation_B_5678'),
+    false,
+  );
+  assert.equal(
+    harness.calls.filter(
+      ([area, method]) => area === 'session' && (method === 'set' || method === 'remove'),
+    ).length,
+    generationWritesBeforeRetry,
+  );
+});
+
+test('failed generation storage mutations clear the session before changing the generation marker', async () => {
+  const activateHarness = createHarness();
+  await activateHarness.manager.activateCollectorGeneration('generation_G1_1234');
+  await activateHarness.manager.setCollectorSession(validSession());
+  const originalSet = activateHarness.chromeApi.storage.session.set.bind(
+    activateHarness.chromeApi.storage.session,
+  );
+  activateHarness.chromeApi.storage.session.set = async (values) => {
+    if (values?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === 'generation_G2_5678') {
+      throw new Error('simulated generation activation failure');
+    }
+    return originalSet(values);
+  };
+
+  await assert.rejects(
+    activateHarness.manager.activateCollectorGeneration('generation_G2_5678'),
+    /simulated generation activation failure/,
+  );
+  assert.equal(activateHarness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+  assert.equal(
+    activateHarness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_G1_1234',
+  );
+
+  const clearHarness = createHarness();
+  await clearHarness.manager.activateCollectorGeneration('generation_G2_5678');
+  await clearHarness.manager.setCollectorSession(validSession());
+  const originalRemove = clearHarness.chromeApi.storage.session.remove.bind(
+    clearHarness.chromeApi.storage.session,
+  );
+  clearHarness.chromeApi.storage.session.remove = async (key) => {
+    if (key === COLLECTOR_AUTH_GENERATION_STORAGE_KEY) {
+      throw new Error('simulated generation clear failure');
+    }
+    return originalRemove(key);
+  };
+
+  await assert.rejects(
+    clearHarness.manager.clearCollectorGeneration('generation_G2_5678'),
+    /simulated generation clear failure/,
+  );
+  assert.equal(clearHarness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+  assert.equal(
+    clearHarness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_G2_5678',
+  );
+});
+
+test('Collector generation IDs reject malformed values before storage or network side effects', async () => {
+  let fetchCalls = 0;
+  const harness = createHarness({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return jsonResponse(200, { data: validSession() });
+    },
+  });
+  const invalidGenerationIds = [
+    'too_short',
+    'generation has spaces',
+    'g'.repeat(129),
+  ];
+
+  for (const generationId of invalidGenerationIds) {
+    await assert.rejects(
+      () => harness.manager.activateCollectorGeneration(generationId),
+      (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_INVALID',
+    );
+    await assert.rejects(
+      () => harness.manager.clearCollectorGeneration(generationId),
+      (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_INVALID',
+    );
+    await assert.rejects(
+      () => harness.manager.exchangeCollectorTicket({
+        ticket: 'ctt_invalid_generation_secret_123456789',
+        generationId,
+      }),
+      (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_INVALID',
+    );
+  }
+
+  assert.equal(fetchCalls, 0);
+  assert.deepEqual(harness.sessionState, {});
+});
+
+test('ticket exchange requires its generation to be active before the network request', async () => {
+  let fetchCalls = 0;
+  const harness = createHarness({
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return jsonResponse(200, { data: validSession() });
+    },
+  });
+
+  await assert.rejects(
+    harness.manager.exchangeCollectorTicket({
+      ticket: 'ctt_inactive_generation_secret_123456789',
+      generationId: 'generation_inactive_1234',
+    }),
+    (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_CHANGED',
+  );
+  assert.equal(fetchCalls, 0);
+  assert.equal(await harness.manager.getCollectorSession(), null);
+});
+
+test('a stale G1 exchange cannot write after G2 activates or after G2 installs its session', async () => {
+  const g1Response = deferred();
+  const g2Session = validSession({
+    collectorToken: 'cst_generation_g2_secret_123456789',
+    account: { id: 'account-g2', displayName: 'G2' },
+  });
+  let exchangeCalls = 0;
+  const harness = createHarness({
+    fetchImpl: async () => {
+      exchangeCalls += 1;
+      return exchangeCalls === 1
+        ? g1Response.promise
+        : jsonResponse(200, { data: g2Session });
+    },
+  });
+
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  const staleExchange = harness.manager.exchangeCollectorTicket({
+    ticket: 'ctt_generation_g1_secret_123456789',
+    generationId: 'generation_G1_1234',
+  });
+  while (exchangeCalls < 1) await new Promise((resolve) => setImmediate(resolve));
+
+  await harness.manager.activateCollectorGeneration('generation_G2_5678');
+  g1Response.resolve(jsonResponse(200, { data: validSession() }));
+
+  await assert.rejects(
+    staleExchange,
+    (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_CHANGED',
+  );
+  assert.equal(await harness.manager.getCollectorSession(), null);
+
+  const installedG2 = await harness.manager.exchangeCollectorTicket({
+    ticket: 'ctt_generation_g2_secret_123456789',
+    generationId: 'generation_G2_5678',
+  });
+  assert.deepEqual(installedG2, g2Session);
+  assert.equal(await harness.manager.clearCollectorGeneration('generation_G1_1234'), false);
+  assert.deepEqual(await harness.manager.getCollectorSession(), g2Session);
+});
+
+test('generation activation shares the final exchange session-mutation queue', async () => {
+  const harness = createHarness({
+    fetchImpl: async () => jsonResponse(200, { data: validSession() }),
+  });
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  const originalGet = harness.chromeApi.storage.session.get.bind(
+    harness.chromeApi.storage.session,
+  );
+  const delayedFinalGenerationRead = deferred();
+  let generationGets = 0;
+  harness.chromeApi.storage.session.get = async (key) => {
+    const captured = await originalGet(key);
+    if (key === COLLECTOR_AUTH_GENERATION_STORAGE_KEY) {
+      generationGets += 1;
+      if (generationGets === 2) return delayedFinalGenerationRead.promise;
+    }
+    return captured;
+  };
+
+  const exchange = harness.manager.exchangeCollectorTicket({
+    ticket: 'ctt_shared_queue_secret_123456789',
+    generationId: 'generation_G1_1234',
+  });
+  while (generationGets < 2) await new Promise((resolve) => setImmediate(resolve));
+  const capturedG1 = await originalGet(COLLECTOR_AUTH_GENERATION_STORAGE_KEY);
+  const activateG2 = harness.manager.activateCollectorGeneration('generation_G2_5678');
+  await new Promise((resolve) => setImmediate(resolve));
+  delayedFinalGenerationRead.resolve(capturedG1);
+
+  await Promise.all([exchange, activateG2]);
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_G2_5678',
+  );
+  assert.equal(await harness.manager.getCollectorSession(), null);
 });
 
 test('collectorFetch owns the immutable Collector authorization header and clears on 401/403', async () => {
@@ -278,6 +517,7 @@ test('ticket expiry is retried exactly once and secret values are redacted', asy
       });
     },
   });
+  await harness.manager.activateCollectorGeneration('generation_retry_1234');
   let ticketCalls = 0;
   await assert.rejects(
     harness.manager.exchangeCollectorTicketWithRetry({
@@ -287,6 +527,7 @@ test('ticket expiry is retried exactly once and secret values are redacted', asy
       }),
       deviceFingerprint: 'machine-v3-test',
       extensionVersion: '1.2.3',
+      generationId: 'generation_retry_1234',
     }),
     (error) => {
       assert.equal(error.code, 'COLLECTOR_TICKET_EXPIRED');
@@ -529,9 +770,13 @@ test('collector diagnostics redact ticket, session, bearer, code and nested fiel
       status: { authorization: bearer },
     }),
   });
+  await harness.manager.activateCollectorGeneration('generation_error_1234');
 
   await assert.rejects(
-    harness.manager.exchangeCollectorTicket({ ticket }),
+    harness.manager.exchangeCollectorTicket({
+      ticket,
+      generationId: 'generation_error_1234',
+    }),
     (error) => {
       assert.equal(error.code, 'COLLECTOR_REQUEST_FAILED');
       assert.equal(JSON.stringify(error).includes('ctt_'), false);

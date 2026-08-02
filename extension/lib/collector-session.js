@@ -2,6 +2,7 @@
   'use strict';
 
   const COLLECTOR_SESSION_STORAGE_KEY = 'sonliCollectorSession';
+  const COLLECTOR_AUTH_GENERATION_STORAGE_KEY = 'sonliCollectorAuthGeneration';
   const PENDING_UPLOADS_STORAGE_KEY = 'sonliCollectorPendingUploads';
   const COLLECTOR_LAST_OWNER_KEY = 'sonliCollectorLastOwner';
   const COLLECTOR_PERMISSIONS = Object.freeze([
@@ -30,6 +31,7 @@
   const SECRET_PATTERN = /(?:ctt|cst|csess)_[A-Za-z0-9_-]*|bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
   const SENSITIVE_DIAGNOSTIC_KEY_PATTERN = /authorization|bearer|secret|ticket|token/i;
   const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,119}$/;
+  const COLLECTOR_AUTH_GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
   const redactCollectorSecrets = (value, secrets = []) => {
     let text = String(value == null ? '' : value);
@@ -75,6 +77,18 @@
     error.status = Number(status) || 0;
     error.code = sanitizeCollectorErrorCode(code, 'COLLECTOR_REQUEST_FAILED', secrets);
     return error;
+  };
+
+  const requireCollectorGenerationId = (value) => {
+    const generationId = String(value || '');
+    if (!COLLECTOR_AUTH_GENERATION_PATTERN.test(generationId)) {
+      throw collectorError(
+        'COLLECTOR_AUTH_GENERATION_INVALID',
+        400,
+        'COLLECTOR_AUTH_GENERATION_INVALID',
+      );
+    }
+    return generationId;
   };
 
   const throwIfAborted = (signal) => {
@@ -177,6 +191,49 @@
       sessionMutationTail = run.catch(() => {});
       return run;
     };
+    const assertStoredCollectorGeneration = async (generationId, secret) => {
+      const stored = await chromeApi.storage.session.get(
+        COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+      );
+      if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] !== generationId) {
+        throw collectorError(
+          'COLLECTOR_AUTH_GENERATION_CHANGED',
+          409,
+          'COLLECTOR_AUTH_GENERATION_CHANGED',
+          [secret],
+        );
+      }
+    };
+
+    async function activateCollectorGeneration(value) {
+      const generationId = requireCollectorGenerationId(value);
+      return serializeSessionMutation(async () => {
+        const stored = await chromeApi.storage.session.get(
+          COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        );
+        if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === generationId) {
+          return { changed: false };
+        }
+        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+        await chromeApi.storage.session.set({
+          [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
+        });
+        return { changed: true };
+      });
+    }
+
+    async function clearCollectorGeneration(value) {
+      const generationId = requireCollectorGenerationId(value);
+      return serializeSessionMutation(async () => {
+        const stored = await chromeApi.storage.session.get(
+          COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        );
+        if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] !== generationId) return false;
+        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+        await chromeApi.storage.session.remove(COLLECTOR_AUTH_GENERATION_STORAGE_KEY);
+        return true;
+      });
+    }
 
     async function getCollectorSession() {
       return serializeSessionMutation(async () => {
@@ -284,7 +341,7 @@
         return true;
       });
 
-    async function setCollectorSession(session) {
+    async function writeCollectorSession(session) {
       const safe = safeSession(session);
       const expiresAt = Date.parse(safe.expiresAt);
       if (!safe.collectorToken || !accountIdOf(safe) || !Number.isFinite(expiresAt)) {
@@ -292,16 +349,18 @@
           session?.collectorToken,
         ]);
       }
-      return serializeSessionMutation(async () => {
-        await chromeApi.storage.session.set({ [COLLECTOR_SESSION_STORAGE_KEY]: safe });
-        await chromeApi.storage.local.set({
-          [COLLECTOR_LAST_OWNER_KEY]: {
-            accountId: accountIdOf(safe),
-            sessionIdentity: sessionIdentityOf(safe),
-          },
-        });
-        return safe;
+      await chromeApi.storage.session.set({ [COLLECTOR_SESSION_STORAGE_KEY]: safe });
+      await chromeApi.storage.local.set({
+        [COLLECTOR_LAST_OWNER_KEY]: {
+          accountId: accountIdOf(safe),
+          sessionIdentity: sessionIdentityOf(safe),
+        },
       });
+      return safe;
+    }
+
+    async function setCollectorSession(session) {
+      return serializeSessionMutation(() => writeCollectorSession(session));
     }
 
     async function clearCollectorSession(collectorOperation) {
@@ -330,9 +389,12 @@
       ticket,
       deviceFingerprint,
       extensionVersion,
+      generationId: generationIdValue,
     } = {}) {
       const secret = String(ticket || '');
       if (!secret) throw collectorError('COLLECTOR_TICKET_REQUIRED', 400, 'COLLECTOR_TICKET_REQUIRED');
+      const generationId = requireCollectorGenerationId(generationIdValue);
+      await serializeSessionMutation(() => assertStoredCollectorGeneration(generationId, secret));
       const baseUrl = await resolveBackendUrl();
       let response;
       try {
@@ -375,13 +437,17 @@
         }, [secret]));
         throw error;
       }
-      return setCollectorSession(body?.data || body);
+      return serializeSessionMutation(async () => {
+        await assertStoredCollectorGeneration(generationId, secret);
+        return writeCollectorSession(body?.data || body);
+      });
     }
 
     async function exchangeCollectorTicketWithRetry({
       requestTicket,
       deviceFingerprint,
       extensionVersion,
+      generationId,
     } = {}) {
       if (typeof requestTicket !== 'function') {
         throw new TypeError('collector ticket retry requires requestTicket');
@@ -394,6 +460,7 @@
             ticket: issued?.ticket,
             deviceFingerprint,
             extensionVersion,
+            generationId,
           });
         } catch (error) {
           lastError = error;
@@ -580,7 +647,9 @@
     }
 
     return Object.freeze({
+      activateCollectorGeneration,
       beginCollectorOperation,
+      clearCollectorGeneration,
       clearCollectorSession,
       collectorFetch,
       enqueuePendingUpload,
@@ -595,6 +664,7 @@
   }
 
   const api = Object.freeze({
+    COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
     COLLECTOR_PERMISSIONS,
     COLLECTOR_LAST_OWNER_KEY,
     COLLECTOR_SESSION_STORAGE_KEY,
