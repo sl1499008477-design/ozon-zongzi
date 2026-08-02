@@ -1,6 +1,7 @@
 import {
   assertCollectorScopeFieldsAbsentV4,
   preflightCollectRequestsV4,
+  scheduleCategoryResolutionAfterCollect,
 } from "./collection-pipeline.mjs";
 import {
   buildOzonEnrichmentSummary,
@@ -26,6 +27,8 @@ export function createJsonAccountScopedCollectionHandler({
   sendJson,
   sendError,
   countAccountItems,
+  categoryResolutionPort = null,
+  logger = null,
 } = {}) {
   if (
     typeof authenticate !== "function"
@@ -264,6 +267,17 @@ export function createJsonAccountScopedCollectionHandler({
               ...(imported[0]?.enrichment ? { enrichment: imported[0].enrichment } : {}),
             };
       });
+      const collectedItems = isBatch
+        ? (Array.isArray(responseBody.data) ? responseBody.data : [])
+        : responseBody.data ? [responseBody.data] : [];
+      for (const item of collectedItems) {
+        await scheduleCategoryResolutionAfterCollect({
+          categoryResolutionPort,
+          accountId: account.id,
+          collected: { collectItemId: item.id, item },
+          logger,
+        });
+      }
       sendJson(res, 200, responseBody);
     } catch (error) {
       sendError(

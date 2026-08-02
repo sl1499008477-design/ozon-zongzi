@@ -72,6 +72,45 @@ function collectorError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
 
+function stableCategoryScheduleErrorCode(error) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
+    ? code
+    : "CATEGORY_RESOLUTION_SCHEDULE_FAILED";
+}
+
+export async function scheduleCategoryResolutionAfterCollect({
+  categoryResolutionPort = null,
+  accountId,
+  collected,
+  logger = null,
+} = {}) {
+  let scopedAccountId = "";
+  let collectItemId = "";
+  try {
+    const scheduleForCollect = categoryResolutionPort?.scheduleForCollect;
+    if (typeof scheduleForCollect !== "function") return collected;
+    scopedAccountId = clean(accountId, 240);
+    collectItemId = clean(collected?.collectItemId || collected?.item?.id, 240);
+    if (!scopedAccountId || !collectItemId) return collected;
+    await scheduleForCollect.call(categoryResolutionPort, {
+      accountId: scopedAccountId,
+      collectItemId,
+    });
+  } catch (error) {
+    try {
+      logger?.error?.("collect category scheduling failed", {
+        accountId: scopedAccountId,
+        collectItemId,
+        code: stableCategoryScheduleErrorCode(error),
+      });
+    } catch {
+      // A secondary logger cannot reverse a successfully committed collection.
+    }
+  }
+  return collected;
+}
+
 function rejectCollectorScopeFields(input = {}) {
   const forbidden = findRetiredCollectorScopePath(input);
   if (forbidden) {
@@ -302,7 +341,7 @@ export async function ingestCollectRequestV4(options = {}) {
     : preparedItem;
 
   try {
-    return await transaction(async (client) => {
+    const collected = await transaction(async (client) => {
       await client.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
         [`collect-identity:${accountId}:${sourceId}:${sourceSku}`],
@@ -461,6 +500,12 @@ export async function ingestCollectRequestV4(options = {}) {
         [requestId, collectId, JSON.stringify(response), accountId],
       );
       return { duplicate: false, requestId, ...response };
+    });
+    return scheduleCategoryResolutionAfterCollect({
+      categoryResolutionPort: options.categoryResolutionPort,
+      accountId,
+      collected,
+      logger: options.logger,
     });
   } catch (error) {
     const pool = await poolReady();

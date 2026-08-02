@@ -132,6 +132,7 @@ import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
+import { createCollectCategoryResolutionRuntime } from "./collect-category-resolution-runtime.mjs";
 import {
   assertOzonListingReady,
   explicitOzonListingTarget,
@@ -358,6 +359,17 @@ async function saveState(state) {
 
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
+const ozonCategoryService = createOzonCategoryService();
+const collectCategoryResolutionRuntime = createCollectCategoryResolutionRuntime({
+  loadState,
+  saveState,
+  persistenceMode,
+  stateTransaction: jsonStateTransaction,
+  categoryService: ozonCategoryService,
+  currentCredentialStoreForAccount: async (accountId) => jsonStateTransaction.run(async () => (
+    currentStoreIdForAccount(await loadState(), accountId)
+  )),
+});
 const collectorOzonEnrichmentRuntime = createCollectorOzonEnrichmentRuntime({
   loadState,
   saveState,
@@ -370,6 +382,7 @@ const collectorOzonEnrichmentRuntime = createCollectorOzonEnrichmentRuntime({
   },
   readJson: readBody,
   sendJson,
+  categoryResolutionPort: collectCategoryResolutionRuntime,
 });
 const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollectionHandler({
   authenticate: collectorAuthRuntime.authenticateRequest,
@@ -384,16 +397,37 @@ const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollection
   sendJson,
   sendError,
   countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
+  categoryResolutionPort: collectCategoryResolutionRuntime,
+  logger: console,
 });
 const ozonSyncService = createOzonSyncService({
   loadState,
   saveState,
 });
-const ozonCategoryService = createOzonCategoryService();
 const objectCleanupWorker = createObjectCleanupWorker({
   loadState, saveState, removeObject,
   stateTransaction: jsonStateTransaction,
 });
+
+async function notifyOperatingStoreAvailable({ accountId, storeId }) {
+  try {
+    await collectCategoryResolutionRuntime.onOperatingStoreAvailable({ accountId, storeId });
+  } catch (error) {
+    const code = String(error?.code || "CATEGORY_RESOLUTION_STORE_WAKE_FAILED")
+      .trim().toUpperCase();
+    try {
+      console.error("collect category store wake failed", {
+        accountId: String(accountId || ""),
+        storeId: String(storeId || ""),
+        code: /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
+          ? code
+          : "CATEGORY_RESOLUTION_STORE_WAKE_FAILED",
+      });
+    } catch {
+      // Store persistence is already committed and reconciliation can retry.
+    }
+  }
+}
 
 function sendJson(res, status, data, extraHeaders = {}) {
   res.writeHead(status, {
@@ -2453,6 +2487,8 @@ async function handleFastCollectionRoute(req, res, url) {
           const result = await ingestCollectRequestV4({
             authenticatedAccount: account,
             input: { ...input, source: input.source || sourceId },
+            categoryResolutionPort: collectCategoryResolutionRuntime,
+            logger: console,
           });
           const importedItem = { ...result.item, collectRequestId: result.requestId, duplicate: result.duplicate };
           imported.push(importedItem);
@@ -2963,6 +2999,7 @@ async function handle(req, res) {
       },
     });
     await saveState(state);
+    await notifyOperatingStoreAvailable({ accountId: account.id, storeId: store.id });
     sendJson(res, 200, { ok: true, token: state.token, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -3008,6 +3045,7 @@ async function handle(req, res) {
       store.updatedAt = new Date().toISOString();
     }
     await saveState(state);
+    await notifyOperatingStoreAvailable({ accountId: account.id, storeId: store.id });
     sendJson(res, 200, { ok: true, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -3055,6 +3093,9 @@ async function handle(req, res) {
     }
     store.updatedAt = new Date().toISOString();
     await saveState(state);
+    if (nextApiKey) {
+      await notifyOperatingStoreAvailable({ accountId: account.id, storeId: store.id });
+    }
     sendJson(res, 200, { ok: true, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -4988,10 +5029,17 @@ const server = http.createServer((req, res) => {
   });
 });
 
+let stopCollectCategoryResolutionWorker = () => {};
+server.once("close", () => {
+  stopCollectCategoryResolutionWorker();
+  collectCategoryResolutionRuntime.stop();
+});
+
 if (process.env.QH_LOCAL_NO_LISTEN !== "1") {
   server.listen(port, listenHost, () => {
     console.log(`QH local API listening on http://${listenHost}:${port}`);
     scheduleImportStatusPolling(1000);
     objectCleanupWorker.start();
+    stopCollectCategoryResolutionWorker = collectCategoryResolutionRuntime.start();
   });
 }

@@ -11,6 +11,8 @@ const [
   enrichmentService,
   enrichmentRoutes,
   enrichmentRuntime,
+  categoryResolutionRuntime,
+  accountScopedCollectionRoutes,
 ] = await Promise.all([
   readFile(new URL("../index.mjs", import.meta.url), "utf8"),
   readFile(new URL("../../app/src/App.jsx", import.meta.url), "utf8"),
@@ -21,6 +23,8 @@ const [
   readFile(new URL("../collector-ozon-enrichment-service.mjs", import.meta.url), "utf8"),
   readFile(new URL("../collector-ozon-enrichment-routes.mjs", import.meta.url), "utf8"),
   readFile(new URL("../collector-ozon-enrichment-runtime.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../collect-category-resolution-runtime.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../account-scoped-collection-routes.mjs", import.meta.url), "utf8"),
 ]);
 
 assert.ok(
@@ -62,6 +66,26 @@ assert.match(
   enrichmentRuntime,
   /createPostgresCollectorOzonEnrichmentRepository/,
   "Ozon enrichment runtime must own PostgreSQL repository selection",
+);
+assert.match(
+  categoryResolutionRuntime,
+  /createJsonCollectCategoryResolutionRepository/,
+  "category resolution runtime must own JSON repository selection",
+);
+assert.match(
+  categoryResolutionRuntime,
+  /createPostgresCollectCategoryResolutionRepository/,
+  "category resolution runtime must own PostgreSQL repository selection",
+);
+assert.doesNotMatch(
+  accountScopedCollectionRoutes,
+  /CollectCategoryResolutionRepository|getPostgresPool|FROM\s+collect_category_resolutions/i,
+  "account-scoped collection routes must use only the category resolution port",
+);
+assert.doesNotMatch(
+  enrichmentService,
+  /CollectCategoryResolutionRepository|getPostgresPool|FROM\s+collect_category_resolutions/i,
+  "Ozon enrichment service must use only the category resolution port",
 );
 const collectorAuthRouteIndex = serverEntry.indexOf("collectorAuthRuntime.handleHttpRoute(req, res, url)");
 const enrichmentRouteIndex = serverEntry.indexOf("collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)");

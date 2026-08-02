@@ -247,6 +247,13 @@ function auditStatus(error) {
   return error ? "FAILED" : "SUCCESS";
 }
 
+function categoryResolutionErrorCode(error) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
+    ? code
+    : "CATEGORY_RESOLUTION_SCHEDULE_FAILED";
+}
+
 function enrichmentError(status, code, message, details = {}) {
   const missingFields = stableMissingFields(details.missingFields);
   const retryable = details.retryable ?? (status === 429 || status >= 500);
@@ -306,6 +313,11 @@ export function createCollectorOzonEnrichmentService({
   audit = async () => {},
   onAuditError = (event) => console.error("collector Ozon enrichment audit failed", event),
   assertListingReady = assertOzonListingReady,
+  categoryResolutionPort = null,
+  onCategoryResolutionError = (event) => console.error(
+    "collector Ozon category resolution scheduling failed",
+    event,
+  ),
 } = {}) {
   const repositoryMethods = [
     "readCache",
@@ -346,6 +358,9 @@ export function createCollectorOzonEnrichmentService({
     || typeof audit !== "function"
     || typeof onAuditError !== "function"
     || typeof assertListingReady !== "function"
+    || (categoryResolutionPort !== null
+      && typeof categoryResolutionPort?.onEnrichmentComplete !== "function")
+    || typeof onCategoryResolutionError !== "function"
   ) {
     throw new TypeError("Ozon enrichment service dependencies are required");
   }
@@ -837,6 +852,25 @@ export function createCollectorOzonEnrichmentService({
           completion,
         });
         if (!saved) throw collectItemMissing();
+        if (categoryResolutionPort) {
+          try {
+            await categoryResolutionPort.onEnrichmentComplete({
+              accountId: job.accountId,
+              collectItemId: job.collectItemId,
+              completedAt,
+            });
+          } catch (error) {
+            try {
+              await onCategoryResolutionError({
+                accountId: job.accountId,
+                collectItemId: job.collectItemId,
+                code: categoryResolutionErrorCode(error),
+              });
+            } catch {
+              // Reconciliation will rediscover the committed COMPLETE item.
+            }
+          }
+        }
         return saved;
       } catch (error) {
         if (!["DRAFT_VERSION_CONFLICT", "LOCAL_STATE_VERSION_CONFLICT"].includes(error?.code)) {

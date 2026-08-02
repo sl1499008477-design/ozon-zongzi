@@ -4,6 +4,7 @@ import { createJsonAccountScopedCollectionHandler } from "../account-scoped-coll
 import {
   assertCollectorScopeFieldsAbsentV4,
   prepareCollectRequestV4,
+  scheduleCategoryResolutionAfterCollect,
 } from "../collection-pipeline.mjs";
 
 const retiredKeys = [
@@ -21,6 +22,9 @@ const retiredKeys = [
   "seller-company-id",
   "Seller_Company",
   "legacy-scope",
+  "storeId",
+  "operatingStoreId",
+  "dataCollectionStoreId",
 ];
 
 test("V4 ingress rejects every canonical retired scope key at nested array/object depth", () => {
@@ -62,6 +66,64 @@ test("V4 ingress accepts a store-neutral nested payload", () => {
   });
   assert.equal(prepared.identity.accountId, "account-authoritative");
   assert.deepEqual(prepared.normalizedItem.nested, [{ keep: "safe" }]);
+});
+
+test("post-commit category scheduling sends only backend account/item identity and preserves success on failure", async () => {
+  const inputs = [];
+  const logged = [];
+  const collected = {
+    duplicate: false,
+    requestId: "collect-request-safe",
+    collectItemId: "collect-item-safe",
+    item: { id: "collect-item-safe", accountId: "account-authoritative", status: "COMPLETE" },
+  };
+
+  const result = await scheduleCategoryResolutionAfterCollect({
+    categoryResolutionPort: {
+      async scheduleForCollect(input) {
+        inputs.push(structuredClone(input));
+        throw Object.assign(new Error("apiKey=must-not-log"), {
+          code: "CATEGORY_RESOLUTION_SCHEDULE_FAILED",
+        });
+      },
+    },
+    accountId: "account-authoritative",
+    collected,
+    logger: { error: (...values) => logged.push(values) },
+  });
+
+  assert.equal(result, collected);
+  assert.deepEqual(inputs, [{
+    accountId: "account-authoritative",
+    collectItemId: "collect-item-safe",
+  }]);
+  assert.equal(JSON.stringify(inputs).includes("store"), false);
+  assert.equal(JSON.stringify(logged).includes("must-not-log"), false);
+});
+
+test("post-commit success also survives a category port initialization failure", async () => {
+  const collected = {
+    collectItemId: "collect-item-safe",
+    item: { id: "collect-item-safe" },
+  };
+  const categoryResolutionPort = Object.defineProperty({}, "scheduleForCollect", {
+    get() {
+      throw Object.assign(new Error("credential detail must stay hidden"), {
+        code: "CATEGORY_PORT_INITIALIZATION_FAILED",
+      });
+    },
+  });
+  const logged = [];
+
+  const result = await scheduleCategoryResolutionAfterCollect({
+    categoryResolutionPort,
+    accountId: "account-authoritative",
+    collected,
+    logger: { error: (...values) => logged.push(values) },
+  });
+
+  assert.equal(result, collected);
+  assert.equal(JSON.stringify(logged).includes("credential detail"), false);
 });
 
 test("V4 ingress rejects credential-shaped keys at nested array and object depth", () => {

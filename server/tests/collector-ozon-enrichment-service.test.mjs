@@ -369,7 +369,14 @@ class FakeRepository {
   }
 }
 
-function harness({ repository, start = START, collectItems, assertListingReady } = {}) {
+function harness({
+  repository,
+  start = START,
+  collectItems,
+  assertListingReady,
+  categoryResolutionPort,
+  onCategoryResolutionError,
+} = {}) {
   const clock = { value: start };
   const sessions = [
     session("collector-request"),
@@ -391,6 +398,8 @@ function harness({ repository, start = START, collectItems, assertListingReady }
     audit: async (event) => audits.push(event),
     ...(collectItems ? { collectItems } : {}),
     ...(assertListingReady ? { assertListingReady } : {}),
+    ...(categoryResolutionPort ? { categoryResolutionPort } : {}),
+    ...(onCategoryResolutionError ? { onCategoryResolutionError } : {}),
   });
   return { audits, clock, repository: fake, service };
 }
@@ -1559,6 +1568,94 @@ test("linked completion fills blank logistics without replacing target category"
     observedAt: "2026-08-01T08:00:00.000Z",
   });
   assert.equal(JSON.stringify(h.audits.at(-1)).includes("cookie"), false);
+});
+
+test("linked completion notifies category resolution only after commit and isolates callback failure", async () => {
+  const completedAt = "2026-08-01T08:00:01.000Z";
+  const collectItem = {
+    id: "collect-linked-category-hook",
+    accountId: "account-a",
+    draftVersion: 2,
+    listingDraft: {
+      descriptionCategoryId: 700,
+      logistics: { weightG: 500, lengthMm: "", widthMm: "", heightMm: "" },
+    },
+    enrichment: { status: "PENDING_ENRICHMENT" },
+  };
+  let committed = false;
+  let terminalRepository;
+  const hookCalls = [];
+  const safeErrors = [];
+  const h = harness({
+    start: Date.parse(completedAt),
+    categoryResolutionPort: {
+      async onEnrichmentComplete(input) {
+        assert.equal(committed, true, "category scheduling must follow the durable item commit");
+        hookCalls.push(clone(input));
+        throw Object.assign(new Error("secret callback detail"), {
+          code: "CATEGORY_SCHEDULE_UNAVAILABLE",
+        });
+      },
+    },
+    onCategoryResolutionError: async (event) => safeErrors.push(clone(event)),
+    collectItems: {
+      async read() { return clone(collectItem); },
+      async save() { throw new Error("complete port owns the atomic save"); },
+      async complete(input) {
+        Object.assign(collectItem, {
+          draftVersion: collectItem.draftVersion + 1,
+          listingDraft: clone(input.listingDraft),
+          status: input.status,
+          enrichment: clone(input.enrichment),
+        });
+        await terminalRepository.completeJobAndCache({
+          ...input.completion,
+          now: new Date(completedAt),
+        });
+        committed = true;
+        return clone(collectItem);
+      },
+      async fail() { throw new Error("unused"); },
+      async retry() { throw new Error("unused"); },
+    },
+  });
+  terminalRepository = h.repository;
+  h.repository.jobs.push({
+    id: "job-linked-category-hook",
+    accountId: "account-a",
+    collectItemId: collectItem.id,
+    requestId: "request-linked-category-hook",
+    sku: "4862904234",
+    status: "PROCESSING",
+    claimedSessionId: "collector-fallback",
+    claimExpiresAt: "2026-08-01T08:01:00.000Z",
+    deadlineAt: "9999-12-31T23:59:59.999Z",
+    attemptCount: 1,
+    createdAt: "2026-08-01T08:00:00.000Z",
+  });
+
+  const result = await h.service.completeClaim({
+    session: session("collector-fallback"),
+    jobId: "job-linked-category-hook",
+    variantData: sellerVariantData(17_000_001),
+    captureContext: captureContext({ observedAt: "2026-08-01T08:00:00.000Z" }),
+  });
+
+  assert.equal(result.status, "COMPLETE");
+  assert.equal(collectItem.status, "COMPLETE");
+  assert.equal(collectItem.listingDraft.sourceCategory.typeIdCandidate, 456);
+  assert.deepEqual(hookCalls, [{
+    accountId: "account-a",
+    collectItemId: collectItem.id,
+    completedAt: new Date(completedAt),
+  }]);
+  assert.deepEqual(safeErrors, [{
+    accountId: "account-a",
+    collectItemId: collectItem.id,
+    code: "CATEGORY_SCHEDULE_UNAVAILABLE",
+  }]);
+  assert.equal(JSON.stringify(safeErrors).includes("secret callback detail"), false);
+  assert.equal(h.repository.jobs[0].status, "SUCCESS");
 });
 
 test("linked completion validates the merged draft before any COMPLETE transition", async () => {

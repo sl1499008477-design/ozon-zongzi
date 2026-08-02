@@ -373,7 +373,7 @@ export function createCollectCategoryResolutionService({
     });
   }
 
-  async function onOperatingStoreAvailable(input = {}) {
+  async function operatingStoreContext(input = {}) {
     const accountId = requiredText(input.accountId, "accountId");
     const storeId = requiredText(input.storeId, "storeId");
     const storeResult = await readStore(accountId, storeId);
@@ -385,8 +385,19 @@ export function createCollectCategoryResolutionService({
         classified.retryable ? 503 : 409,
       );
     }
-    if (storeResult.kind !== "AVAILABLE") return [];
-    const store = storeResult.store;
+    if (storeResult.kind !== "AVAILABLE") return null;
+    return {
+      id: storeResult.store.id,
+      updatedAt: storeResult.store.updatedAt ?? storeResult.store.updated_at
+        ?? storeResult.store.savedAt ?? storeResult.store.saved_at ?? null,
+    };
+  }
+
+  async function onOperatingStoreAvailable(input = {}) {
+    const accountId = requiredText(input.accountId, "accountId");
+    const storeId = requiredText(input.storeId, "storeId");
+    const store = await operatingStoreContext({ accountId, storeId });
+    if (!store) return [];
     const candidates = typeof collectItemPort.listForCategoryResolution === "function"
       ? await collectItemPort.listForCategoryResolution({ accountId })
       : [];
@@ -843,6 +854,7 @@ export function createCollectCategoryResolutionService({
     scheduleForCollect,
     onEnrichmentComplete,
     onOperatingStoreAvailable,
+    operatingStoreContext,
     resolveNext,
     validateForStore,
     saveManual,

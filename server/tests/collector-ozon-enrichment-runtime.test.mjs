@@ -451,6 +451,8 @@ test("JSON runtime enqueues a collect-linked job into the caller-owned transacti
 
 test("JSON runtime merges a linked Seller result and audits only allowlisted evidence", async () => {
   const completedAt = new Date("2026-08-01T08:00:01.000Z");
+  const categoryCalls = [];
+  const loggerSignals = [];
   let persisted = {
     caches: {
       collectBox: [{
@@ -507,6 +509,16 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
     readJson: async () => ({}),
     sendJson() {},
     now: () => new Date(completedAt),
+    categoryResolutionPort: {
+      async onEnrichmentComplete(input) {
+        assert.equal(persisted.caches.collectBox[0].status, "COMPLETE");
+        categoryCalls.push(structuredClone(input));
+        throw Object.assign(new Error("apiKey=must-not-log"), {
+          code: "CATEGORY_RESOLUTION_SCHEDULE_FAILED",
+        });
+      },
+    },
+    logger: { error: (...values) => loggerSignals.push(values) },
   });
 
   await runtime.service.completeClaim({
@@ -561,6 +573,13 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
   assert.equal(audit.metadata.revision, 4);
   assert.equal(audit.metadata.observedAt, "2026-08-01T08:00:00.000Z");
   assert.equal(JSON.stringify(audit).includes("cookie"), false);
+  assert.deepEqual(categoryCalls, [{
+    accountId: "account-runtime",
+    collectItemId: "collect-runtime-merge",
+    completedAt,
+  }]);
+  assert.equal(loggerSignals.length, 1);
+  assert.equal(JSON.stringify(loggerSignals).includes("must-not-log"), false);
 });
 
 test("JSON success transaction rechecks the claim after loadState crosses its expiry", async () => {

@@ -53,7 +53,12 @@ function collectInput({ source = "ozon", sourceSku = "ozon-complete-sku", reques
   };
 }
 
-function jsonHarness(body, { failEnqueue = false, failSave = false } = {}) {
+function jsonHarness(body, {
+  failEnqueue = false,
+  failSave = false,
+  categoryResolutionPort = null,
+  logger = null,
+} = {}) {
   const state = {
     caches: { collectBox: [] },
     collectRequests: [],
@@ -86,6 +91,8 @@ function jsonHarness(body, { failEnqueue = false, failSave = false } = {}) {
       createJsonCollectorOzonEnrichmentRepository({ state: nextState })
         .completeLinkedJobsFromCollectEvidence(input)
     ),
+    categoryResolutionPort,
+    logger,
     sendJson: (_res, status, data) => { response.status = status; response.body = data; },
     sendError: (_res, status, message, code, details = {}) => {
       response.status = status;
@@ -326,6 +333,41 @@ test("JSON collection stores public Ozon data with enrichment and one linked pen
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].sku, "4862904234");
   assert.equal(harness.state.collectorOzonEnrichmentJobs[0].status, "PENDING");
   assert.equal(harness.saved, 1);
+});
+
+test("JSON category scheduling runs after collection commit and cannot roll back success", async () => {
+  const scheduleCalls = [];
+  const logged = [];
+  let harness;
+  harness = jsonHarness(collectInput({
+    sourceSku: "category-schedule-after-commit",
+    requestId: "category-schedule-after-commit",
+  }), {
+    categoryResolutionPort: {
+      async scheduleForCollect(input) {
+        const stored = harness.state.caches.collectBox.find((item) => item.id === input.collectItemId);
+        assert.equal(stored?.status, "COMPLETE", "collection must commit before category scheduling");
+        scheduleCalls.push(structuredClone(input));
+        throw Object.assign(new Error("credential secret must stay out of logs"), {
+          code: "CATEGORY_RESOLUTION_SCHEDULE_FAILED",
+        });
+      },
+    },
+    logger: { error: (...values) => logged.push(values) },
+  });
+
+  await harness.invoke();
+
+  assert.equal(harness.response.status, 200);
+  assert.equal(harness.saved, 1);
+  assert.equal(harness.state.collectRequests[0].status, "SUCCEEDED");
+  assert.deepEqual(scheduleCalls, [{
+    accountId: "json-account",
+    collectItemId: harness.state.caches.collectBox[0].id,
+  }]);
+  assert.equal(JSON.stringify(harness.response.body).includes("credentialStoreId"), false);
+  assert.equal(JSON.stringify(harness.state.caches.collectBox[0]).includes("credentialStoreId"), false);
+  assert.equal(JSON.stringify(logged).includes("credential secret"), false);
 });
 
 test("JSON pending canonical item becomes complete and atomically supersedes its active linked job", async () => {
@@ -910,6 +952,7 @@ if (!postgresEnabled()) {
     const accountId = `ozon_gate_${suffix}`;
     const sourceSku = `pg-public-${suffix}`;
     const requestId = `pg-public-request-${suffix}`;
+    const categoryScheduleCalls = [];
     const pool = await getPostgresPool();
     try {
       await runMigrations(pool);
@@ -998,6 +1041,11 @@ if (!postgresEnabled()) {
 
       const completed = await ingestCollectRequestV4({
         authenticatedAccount: { id: accountId },
+        categoryResolutionPort: {
+          async scheduleForCollect(input) {
+            categoryScheduleCalls.push(structuredClone(input));
+          },
+        },
         input: collectInput({
           sourceSku,
           requestId: `${requestId}-complete`,
@@ -1009,6 +1057,10 @@ if (!postgresEnabled()) {
         }),
       });
       assert.equal(completed.collectItemId, first.collectItemId);
+      assert.deepEqual(categoryScheduleCalls, [{
+        accountId,
+        collectItemId: first.collectItemId,
+      }]);
       assert.deepEqual(completed.enrichment, {
         status: "COMPLETE",
         missingFields: [],

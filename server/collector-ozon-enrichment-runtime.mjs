@@ -38,6 +38,7 @@ export function createCollectorOzonEnrichmentRuntime({
   randomUUID,
   sleep,
   logger = console,
+  categoryResolutionPort = null,
 } = {}) {
   if (
     typeof loadState !== "function"
@@ -476,6 +477,11 @@ export function createCollectorOzonEnrichmentRuntime({
     ...(sleep ? { sleep } : {}),
     onAuditError: (event) => logger?.error?.(
       "collector Ozon enrichment audit persistence failed",
+      event,
+    ),
+    categoryResolutionPort,
+    onCategoryResolutionError: (event) => logger?.error?.(
+      "collector Ozon category resolution scheduling failed",
       event,
     ),
   });
