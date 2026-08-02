@@ -19,6 +19,7 @@ const trustedWebSender = {
 };
 const COLLECTOR_SESSION_KEY = 'sonliCollectorSession';
 const COLLECTOR_GENERATION_KEY = 'sonliCollectorAuthGeneration';
+const COLLECTOR_INCARNATION_KEY = 'sonliCollectorAuthIncarnation';
 const G1 = 'generation_G1_1234';
 const G2 = 'generation_G2_5678';
 
@@ -475,9 +476,15 @@ async function sendRuntimeMessage(harness, message, sender = {}) {
   return response;
 }
 
+function sendRuntimeMessageUntilResponse(harness, message, sender = {}) {
+  return new Promise((resolve) => {
+    harness.runtimeOnMessage.listeners[0](message, sender, resolve);
+  });
+}
+
 async function loadCollectorAuthContent(workerHarness) {
   const webTab = createInjectedWebTabHarness({
-    runtimeSendMessageImpl: (message) => sendRuntimeMessage(
+    runtimeSendMessageImpl: (message) => sendRuntimeMessageUntilResponse(
       workerHarness,
       message,
       trustedWebSender,
@@ -1035,6 +1042,85 @@ test('authoritative content recovery adopts only current Web G2 over cached G1',
   );
   assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G2);
   assert.equal(worker.session.state[COLLECTOR_SESSION_KEY].account.id, 'account-current-web-2');
+});
+
+test('authoritative same-G1 recovery fences a logout-before deferred exchange incarnation', async () => {
+  const oldExchangeResponse = deferred();
+  const newExchangeResponse = deferred();
+  let exchangeCalls = 0;
+  const worker = loadServiceWorker({
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        exchangeCalls += 1;
+        return exchangeCalls === 1
+          ? oldExchangeResponse.promise
+          : newExchangeResponse.promise;
+      }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      throw new Error(`unexpected same-G1 ABA recovery path: ${pathname}`);
+    },
+  });
+  const oldWebTab = await loadCollectorAuthContent(worker);
+
+  await oldWebTab.emitWebMessage(collectorReady(G1));
+  const oldRequest = oldWebTab.posts.at(-1).message;
+  const oldFlowExchange = oldWebTab.emitWebMessage(
+    collectorResponse(oldRequest.requestId, G1, 'old-incarnation'),
+  );
+  while (exchangeCalls < 1) await new Promise((resolve) => setImmediate(resolve));
+  const oldIncarnation = worker.session.state[COLLECTOR_INCARNATION_KEY];
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await sendRuntimeMessage(worker, { action: 'logout' }))),
+    { ok: true },
+  );
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY], undefined);
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], undefined);
+  assert.equal(worker.session.state[COLLECTOR_INCARNATION_KEY], undefined);
+
+  const recoveryWebTab = await loadCollectorAuthContent(worker);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await recoveryWebTab.sendRuntimeMessage({
+      action: 'collector.auth.request',
+    }))),
+    { ok: true, requested: true },
+  );
+  const recoveryRequest = recoveryWebTab.posts.at(-1).message;
+  const newFlowExchange = recoveryWebTab.emitWebMessage(
+    collectorResponse(recoveryRequest.requestId, G1, 'new-incarnation'),
+  );
+  while (exchangeCalls < 2) await new Promise((resolve) => setImmediate(resolve));
+  const newIncarnation = worker.session.state[COLLECTOR_INCARNATION_KEY];
+
+  oldExchangeResponse.resolve(new Response(JSON.stringify({
+    data: {
+      collectorToken: 'csess_old_incarnation_must_not_restore_123456789',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      account: { id: 'account-old-incarnation', displayName: 'Old Incarnation' },
+      permissions: ['collector.upload', 'collector.ozon.read'],
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  await oldFlowExchange;
+
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY], undefined);
+  assert.notEqual(newIncarnation, oldIncarnation);
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G1);
+  assert.equal(worker.session.state[COLLECTOR_INCARNATION_KEY], newIncarnation);
+
+  newExchangeResponse.resolve(new Response(JSON.stringify({
+    data: {
+      collectorToken: 'csess_new_incarnation_123456789',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      account: { id: 'account-new-incarnation', displayName: 'New Incarnation' },
+      permissions: ['collector.upload', 'collector.ozon.read'],
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  await newFlowExchange;
+
+  assert.equal(worker.session.state[COLLECTOR_SESSION_KEY].account.id, 'account-new-incarnation');
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G1);
+  assert.equal(worker.session.state[COLLECTOR_INCARNATION_KEY], newIncarnation);
 });
 
 test('Collector exchange errors expose only finite status and sanitized stable code', async () => {
