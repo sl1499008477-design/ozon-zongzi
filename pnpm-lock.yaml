@@ -24,6 +24,9 @@ importers:
         specifier: ^0.34.5
         version: 0.34.5
     devDependencies:
+      acorn:
+        specifier: ^8.18.0
+        version: 8.18.0
       playwright-core:
         specifier: 1.54.2
         version: 1.54.2
@@ -197,6 +200,11 @@ packages:
 
   '@types/node@14.18.63':
     resolution: {integrity: sha512-fAtCfv4jJg+ExtXhvCkCqUKZ+4ok/JQk01qDKhL5BDDoS3AxKXhV5/MAVUZyQnSEd2GT92fkgZl0pz0Q0AzcIQ==}
+
+  acorn@8.18.0:
+    resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
 
   anynum@1.0.1:
     resolution: {integrity: sha512-N6//FLET/tXYNM/F6ABca1oH6fWB+KlTt909Le28WMDBk8oaT4vY17DCrwg2MvmuqUKt3Ni4N5dGJ/EoBgcO6A==}
@@ -805,6 +813,8 @@ snapshots:
   '@nodable/entities@2.2.0': {}
 
   '@types/node@14.18.63': {}
+
+  acorn@8.18.0: {}
 
   anynum@1.0.1: {}
 

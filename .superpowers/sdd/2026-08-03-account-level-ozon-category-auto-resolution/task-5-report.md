@@ -97,7 +97,7 @@ Fresh complete server regression after all review fixes:
 - Repeated collection scheduling reads the current resolution and retains its taxonomy fingerprint only when the current source type is unchanged. Valid automatic `MATCHED` and `MANUAL` results remain unchanged and unaudited on replay; a changed source type clears the old target and explicitly requeues.
 - Collection acceptance freezes the server-owned operating-store context before collection persistence. Runtime issues an empty frozen opaque object backed by a private `WeakMap`; only the exact issued object and account binding are trusted. JSON and fast PostgreSQL routes capture it after authentication and before reading/transaction work, pass it only to post-commit scheduling, and Service revalidates the captured store. A captured no-store state remains `WAITING_STORE`; forged objects fall back to current backend context.
 - Capture and scheduling Port getters, calls, and logger failures remain isolated from the already accepted/committed collection. The opaque snapshot is never serialized into collection items, request rows, responses, or audit data.
-- Fix Round 1 introduced raw-text guards for conventional literal `from` imports of `collect-category-resolution-repository.mjs` and generic `db/*` modules. Fix Rounds 2 and 3 supersede that initial syntax coverage. App and extension files remain unchanged.
+- Fix Round 1 introduced raw-text guards for conventional literal `from` imports of `collect-category-resolution-repository.mjs` and generic `db/*` modules. Fix Rounds 2 through 4 supersede that initial syntax coverage. App and extension files remain unchanged.
 
 ### RED evidence
 
@@ -145,7 +145,7 @@ All five changed production modules pass `node --check`; `git diff --check` pass
 - Repository enqueue is now the final atomic stale-write fence. An existing automatic `MATCHED` row with the same source type survives a stale enqueue even when that enqueue carries an older or empty taxonomy fingerprint. A changed source type still explicitly requeues and clears the obsolete target; `MANUAL` remains protected.
 - Runtime snapshot capture converts a backend current-store read failure into a trusted, conservative empty snapshot. Post-commit scheduling therefore resolves the accepted item to `WAITING_STORE` and never rereads a newer current store for that accepted request.
 - If the capture Port getter, capture function, or call is unavailable, ingress returns a private skip token and omits only the immediate category schedule. Collection success remains intact and normal restart recovery owns the missed work; no post-commit store-context read occurs.
-- The reusable Round 2 guard intended to reject named, default, side-effect, and literal dynamic imports of the category Repository or any `db/*` module, but still scanned raw text. Fix Round 3 supersedes that implementation with comment/string-aware extraction. Current account collection and enrichment modules remain compliant.
+- The reusable Round 2 guard intended to reject named, default, side-effect, and literal dynamic imports of the category Repository or any `db/*` module, but still scanned raw text. Fix Round 3 first replaced it with comment/string-aware extraction; Fix Round 4 supersedes Round 3's incomplete lexical boundaries. Current account collection and enrichment modules remain compliant.
 - The earlier Task 5 worker and rollback paragraphs were corrected to reflect Fix Round 1's bounded incomplete-waiter attempts, durable fairness cursor, and additive migration `025`.
 
 ### RED evidence
@@ -183,14 +183,14 @@ All four changed production modules pass `node --check`; `git diff --check` pass
 
 - No PostgreSQL instance was configured. The PostgreSQL-facing barrier test deterministically interleaves stale enqueue and worker completion through the Repository contract, but real-engine locking and `ON CONFLICT` contention remain unverified. Four database-required full-suite cases were skipped.
 - No live Ozon API, credential, production data, or external write was used. Store switches and capture failures use deterministic fakes.
-- The Round 2 raw-text guard did not evaluate computed dynamic-import expressions and was not comment/string aware. Fix Round 3 supersedes the raw regular expressions; computed dynamic specifiers remain intentionally outside the literal-import contract.
+- The Round 2 raw-text guard did not evaluate computed dynamic-import expressions and was not comment/string aware. Fix Rounds 3 and 4 supersede the raw regular expressions; computed dynamic specifiers remain intentionally outside the literal-import contract.
 - Roll back by reverting only the Fix Round 2 commit. It adds no schema migration. Migration `025` belongs to Fix Round 1 and may safely remain unused; do not destructively drop its cursor table during an application rollback.
 
 ## Fix Round 3 — comment/string-aware import extraction
 
 ### Outcome and contract changes
 
-- Replaced raw-source import regular expressions with a small lexical scanner. It skips line and block comments, single- and double-quoted strings, and template raw text; `${...}` template expressions are recursively scanned as executable code.
+- Round 3 replaced raw-source import regular expressions with an initial lexical scanner. It skipped LF-terminated line comments, block comments, single- and double-quoted strings, and template raw text; `${...}` template expressions were recursively scanned as executable code. Fix Round 4 closes the remaining ModuleExportName, line-terminator, and regular-expression gaps.
 - Static side-effect and `from` imports accept comments at token boundaries. Literal dynamic imports accept comments between `import`, `(`, and the first argument. Valid hexadecimal and Unicode string escapes are decoded before applying the existing Repository and recursive `db/*` path policy.
 - Property methods named `import`, such as `loader.import(...)`, are not treated as ESM imports. Named, default, side-effect, and literal dynamic imports of the category Repository and recursive `db/*` paths remain rejected with the stable `CATEGORY_RESOLUTION_MODULE_BOUNDARY` contract.
 - Current account collection and enrichment modules remain compliant. No collection, category-resolution, database, API, App, or extension contract changed.
@@ -227,6 +227,60 @@ The production guard and focused test file pass `node --check`; `git diff --chec
 
 ### Unverified range, risks, and rollback
 
-- The scanner intentionally extracts literal ESM specifiers rather than evaluating computed dynamic-import expressions. The guarded production modules contain no computed dynamic imports.
+- The Round 3 scanner intentionally extracted literal ESM specifiers rather than evaluating computed dynamic-import expressions, but it also failed to recognize string ModuleExportName bindings, standalone CR/U+2028/U+2029 line-comment endings, and regex literals. Fix Round 4 supersedes those incomplete lexical boundaries while keeping computed dynamic specifiers outside the contract.
 - No live PostgreSQL, Ozon API, credential, production data, or external write was involved. Existing four database-required full-suite cases remain configuration-skipped.
 - Roll back by reverting only the Fix Round 3 commit. It adds no schema migration or data rewrite; the earlier category-resolution records and runtime cursor remain valid.
+
+## Fix Round 4 — required lexical boundaries for the import guard
+
+### Outcome and contract changes
+
+- The project initially had no JavaScript parser dependency. Repeated valid-ESM scoped reviews showed that maintaining parser-level regex goals in a bespoke lexer was neither simple nor reliable, so the handwritten scanner was removed rather than extended again.
+- Added `acorn@8.18.0` as a root development dependency with the matching `pnpm-lock.yaml` update. It is used only by the module-boundary development/test guard; runtime collection and category-resolution composition do not import the guard.
+- The guard parses a complete module with `ecmaVersion: "latest"`, `sourceType: "module"`, and hashbang support, then iteratively walks the AST. It collects only string-valued `ImportDeclaration.source` nodes and `ImportExpression.source` nodes whose source is a `Literal` string.
+- Parser-decoded static and literal dynamic specifiers continue through the Repository and recursive `db/*` path policy and stable `CATEGORY_RESOLUTION_MODULE_BOUNDARY` error. Before policy matching, the guard separates a raw URL query or fragment at the first `?`/`#`; the error still reports the complete original specifier. Percent-encoded `%3F`/`%23` remain path data rather than becoming suffix delimiters, and query/fragment contents cannot create a false `db/*` match. A valid string ModuleExportName binding is handled by grammar rather than token guessing.
+- Computed dynamic sources, including concatenations and template expressions, remain outside the contract because their `ImportExpression.source` is not a string `Literal`. Comments, quoted strings, template raw text, nested template expressions, line terminators, regex literals, division, labels, switch clauses, and declaration/expression boundaries are handled by Acorn's module grammar.
+- Named, default, side-effect, literal dynamic, escaped-specifier, property-method, current-module, and error-payload behavior remains covered. No collection, category-resolution, database, API, App, extension, schema, or external-service contract changed.
+
+### RED evidence
+
+- The first Round 4 focused run produced **10 tests; 4 passed, 6 failed**. The failures were the string ModuleExportName false negative, standalone CR/U+2028/U+2029 line-comment false negatives, regex-literal false positive, and template-expression regex-brace false negative; LF and the pre-existing cases remained green.
+- A separate computed-dynamic contract case produced **1 test; 0 passed, 1 failed** because Round 3 rejected a forbidden-looking first string fragment even when the specifier was concatenated.
+- The first lexer implementation made the primary focused set green. A follow-up control-parenthesis case then produced **1 test; 0 passed, 1 failed** because a computed dynamic import's opening parenthesis was not represented in the context stack; the inner close consumed the outer control marker and caused a following regex to be scanned as code.
+- Independent scoped review found one remaining regex-goal issue family. The exact focused run produced **3 tests; 0 passed, 3 failed**: a variable named `of` caused division to swallow a later real forbidden import, while valid regex literals after a closed control block and after `export default` were scanned as code. Removing unconditional contextual-keyword treatment, adding the reserved prefix, and recording block-versus-object braces fixed the three cases; a separate object-literal division case protects the opposite branch.
+- A second scoped review showed the predecessor-only brace rule still classified class declarations and labeled blocks as object literals. Their exact matrix produced **4 tests; 2 passed, 2 failed**: class-declaration and labeled-block regex cases failed while object-literal division and class-expression division stayed green. Replacing the predecessor list with explicit statement-start, pending declaration/expression body, label, and brace contexts fixed those cases and also protects function declaration versus function/arrow expression behavior.
+- A third scoped review found that the expanded state machine still lost statement context after a `case` expression and lost `export default` declaration context across `async`. Those valid switch-case and exported-async-function regex fixtures were both falsely rejected. This repeated grammar-level failure triggered the architecture change to Acorn; case/default, plain/exported class and function declarations, async declarations/expressions, and class/function/arrow expression counterparts now remain as long-term regressions.
+- The parser review then found a separate policy bypass: Node ESM accepts the real Repository with a URL query or fragment, while the filename-anchored matcher allowed it. The focused suffix run produced **2 tests; 1 passed, 1 failed**: recursive `db/*` was already rejected, but the Repository query/fragment case raised no boundary error. Separating the raw URL path before policy matching made Repository and `db/*` static/literal-dynamic suffix cases green; percent-encoded delimiter and safe query/fragment regressions protect the opposite branch.
+
+### GREEN and regression evidence
+
+Focused unit and current-module boundary checks:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/module-import-boundary.test.mjs server/tests/module-boundaries.test.mjs
+# 30 tests; 30 passed, 0 failed, 0 skipped
+```
+
+Task 5 integration set with the focused boundary unit tests:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/collect-category-resolution-runtime.test.mjs server/tests/collector-scope-ingress.test.mjs server/tests/ozon-collection-completeness-gate.test.mjs server/tests/collector-ozon-enrichment-service.test.mjs server/tests/collector-ozon-enrichment-runtime.test.mjs server/tests/module-import-boundary.test.mjs server/tests/module-boundaries.test.mjs
+# 142 tests; 141 passed, 1 PostgreSQL-configuration skip, 0 failed
+```
+
+Fresh complete server regression:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/*.test.mjs
+# 611 tests; 607 passed, 4 configuration-based skips, 0 failed
+```
+
+The guard and focused test file pass `node --check`; `git diff --check` passes. Test inventory is **166 active, 14 historical/manual** files.
+
+### Unverified range, risks, and rollback
+
+- Acorn is pinned through the lockfile but `ecmaVersion: "latest"` means newly adopted JavaScript syntax must also be supported by the installed parser version. A future unsupported syntax will fail the development guard explicitly rather than silently bypassing it.
+- The AST policy deliberately does not evaluate computed dynamic expressions. This is the existing literal-import contract, not an attempt at static evaluation.
+- `pnpm audit --audit-level=high` completed and reported four high-severity plus one moderate advisory in the pre-existing `sharp`, `minio`, and `exceljs` dependency paths; no finding included the newly added Acorn path. Those unrelated dependency upgrades remain outside this guard-only fix.
+- No live PostgreSQL, Ozon API, credential, production data, external write, migration, or data rewrite was involved. The four database-required full-suite cases remain configuration-skipped.
+- Roll back by reverting only the Fix Round 4 commit. It changes the guard, focused tests, this report, and the root development dependency/lockfile; all earlier category-resolution data and migration `025` remain valid.
