@@ -243,6 +243,7 @@
       "js": [
         "lib/portal-bridge-policy.js",
         "lib/web-bridge-policy.js",
+        "lib/collector-auth-flow.js",
         "content/sync-auth.js"
       ],
       "run_at": "document_start"

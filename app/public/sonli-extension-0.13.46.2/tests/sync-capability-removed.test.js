@@ -13,6 +13,10 @@ const manifest = JSON.parse(
   fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'),
 );
 const AVAILABILITY_PATH = '/api/collector/ozon/enrichment-jobs/available';
+const trustedWebSender = {
+  url: 'http://127.0.0.1:3000/app',
+  tab: { id: 20, url: 'http://127.0.0.1:3000/app' },
+};
 
 function availabilityResponse(url, options, available) {
   assert.equal(new URL(url).pathname, AVAILABILITY_PATH);
@@ -81,6 +85,7 @@ function createStorageArea(initial = {}) {
 
 function loadServiceWorker({
   fetchImpl,
+  collectorExchangeImpl,
   sellerCapture = false,
   executeScriptImpl,
   tabCreateImpl,
@@ -309,6 +314,19 @@ function loadServiceWorker({
       importedScripts.push(entry);
       const file = path.resolve(path.dirname(workerPath), entry);
       vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
+      if (entry === '../lib/collector-session.js' && collectorExchangeImpl) {
+        const collectorSessionApi = context.JzCollectorSession;
+        context.JzCollectorSession = Object.freeze({
+          ...collectorSessionApi,
+          createCollectorSessionManager(options) {
+            const manager = collectorSessionApi.createCollectorSessionManager(options);
+            return Object.freeze({
+              ...manager,
+              exchangeCollectorTicket: collectorExchangeImpl,
+            });
+          },
+        });
+      }
     }
   };
   vm.runInContext(fs.readFileSync(workerPath, 'utf8'), context, {
@@ -651,22 +669,154 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
       throw new Error(`unexpected exchange path: ${pathname}`);
     },
   });
+  const begun = await sendRuntimeMessage(exchangeHarness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: 'generation_A_1234',
+  }, trustedWebSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(begun)), {
+    ok: true,
+    data: { changed: true },
+  });
+
   const exchanged = await sendRuntimeMessage(exchangeHarness, {
     portalProtocol: 'SONLI_COLLECTOR_AUTH',
     action: 'collector.auth.exchange',
     requestId: 'exchange-kick',
+    generationId: 'generation_A_1234',
     ticket: 'ctt_exchange_kick_secret_123456789',
     expiresAt: '2099-01-01T00:00:00.000Z',
-  }, {
-    url: 'http://127.0.0.1:3000/app',
-    tab: { id: 20, url: 'http://127.0.0.1:3000/app' },
-  });
+  }, trustedWebSender);
   await settle();
   assert.equal(exchanged.ok, true);
   assert.equal(
     exchangeHarness.fetchCalls.filter(({ url }) => new URL(url).pathname === nextPath).length,
     1,
   );
+});
+
+test('Collector portal generations fence stale exchange and stale logout', async () => {
+  const exchangePath = '/api/extension/collector-auth/exchange';
+  const harness = loadServiceWorker({
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === exchangePath) {
+        return new Response(JSON.stringify({
+          data: {
+            collectorToken: 'csess_generation_g2_secret_123456789',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            account: { id: 'account-generation-g2', displayName: 'Generation G2' },
+            permissions: ['collector.upload', 'collector.ozon.read'],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      throw new Error(`unexpected generation route path: ${pathname}`);
+    },
+  });
+
+  const begunG1 = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: 'generation_G1_1234',
+  }, trustedWebSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(begunG1)), {
+    ok: true,
+    data: { changed: true },
+  });
+
+  const begunG2 = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: 'generation_G2_5678',
+  }, trustedWebSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(begunG2)), {
+    ok: true,
+    data: { changed: true },
+  });
+
+  const staleExchange = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-generation-g1-stale',
+    generationId: 'generation_G1_1234',
+    ticket: 'ctt_exchange_generation_g1_secret_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender);
+  assert.equal(staleExchange.ok, false);
+  assert.equal(staleExchange.code, 'COLLECTOR_AUTH_GENERATION_CHANGED');
+  assert.equal(
+    harness.fetchCalls.filter(({ url }) => new URL(url).pathname === exchangePath).length,
+    0,
+    'a stale generation must be rejected before external exchange',
+  );
+  assert.equal(
+    harness.fetchCalls.filter(({ url }) => new URL(url).pathname === AVAILABILITY_PATH).length,
+    0,
+    'a rejected stale exchange must not kick enrichment',
+  );
+  assert.doesNotMatch(JSON.stringify(staleExchange), /ctt_exchange_generation_g1_secret/);
+
+  const exchangedG2 = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-generation-g2',
+    generationId: 'generation_G2_5678',
+    ticket: 'ctt_exchange_generation_g2_secret_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender);
+  assert.equal(exchangedG2.ok, true);
+
+  const staleLogout = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.logout',
+    generationId: 'generation_G1_1234',
+  }, trustedWebSender);
+  assert.deepEqual(JSON.parse(JSON.stringify(staleLogout)), {
+    ok: true,
+    data: { cleared: false },
+  });
+
+  const auth = await sendRuntimeMessage(harness, { action: 'getAuth' });
+  assert.equal(auth.ok, true);
+  assert.equal(auth.data.authenticated, true);
+  assert.equal(auth.data.account.id, 'account-generation-g2');
+});
+
+test('Collector exchange errors expose only finite status and sanitized stable code', async () => {
+  const ticket = 'ctt_exchange_error_secret_123456789';
+  const harness = loadServiceWorker({
+    collectorExchangeImpl: async () => {
+      const error = new Error(`exchange rejected for ${ticket}`);
+      error.status = Symbol(`503-${ticket}`);
+      error.code = `UPSTREAM_${ticket}`;
+      throw error;
+    },
+  });
+
+  const begun = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: 'generation_error_1234',
+  }, trustedWebSender);
+  assert.equal(begun.ok, true);
+
+  const response = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-error-envelope',
+    generationId: 'generation_error_1234',
+    ticket,
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: false,
+    status: 0,
+    code: 'COLLECTOR_AUTH_FAILED',
+    error: 'exchange rejected for [REDACTED]',
+  });
+  assert.doesNotMatch(JSON.stringify(response), /ctt_exchange_error_secret/);
 });
 
 test('logout never reloads or removes a user-owned Seller tab', async () => {

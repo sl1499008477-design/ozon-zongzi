@@ -4093,6 +4093,24 @@ try {
           reloadOzonTabs();
           return { ok: true };
         }
+        case 'collector.auth.begin': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          const result = await collectorSessionManager.activateCollectorGeneration(
+            message.generationId,
+          );
+          return { ok: true, data: result };
+        }
+        case 'collector.auth.logout': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          const cleared = await collectorSessionManager.clearCollectorGeneration(
+            message.generationId,
+          );
+          return { ok: true, data: { cleared } };
+        }
         case 'collector.auth.exchange': {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
@@ -4103,6 +4121,7 @@ try {
               ticket: message.ticket,
               deviceFingerprint: await getExtensionFingerprint(),
               extensionVersion: String(manifest.version || ''),
+              generationId: message.generationId,
             });
             kickCollectorOzonEnrichment();
             return {
@@ -4115,10 +4134,18 @@ try {
               },
             };
           } catch (error) {
+            const statusValue = error?.status;
+            const status = typeof statusValue === 'number' || typeof statusValue === 'string'
+              ? Number(statusValue)
+              : 0;
             return {
               ok: false,
-              status: error?.status || 0,
-              code: error?.code || 'COLLECTOR_AUTH_FAILED',
+              status: Number.isFinite(status) ? status : 0,
+              code: globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
+                error?.code,
+                'COLLECTOR_AUTH_FAILED',
+                [message.ticket],
+              ),
               error: globalThis.JzCollectorSession.redactCollectorSecrets(
                 error?.message || 'Collector auth failed',
                 [message.ticket],
