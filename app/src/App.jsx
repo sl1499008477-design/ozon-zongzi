@@ -115,6 +115,7 @@ import {
   resolveCollectEditDictionaryValue,
   shouldApplyCollectEditDictionaryDefault,
 } from "./collect-edit-dictionary-match.js";
+import { normalizeCollectEditVariantRow } from "./collect-edit-variant-row.js";
 import {
   collectEditEnrichmentBackfill,
   collectEditSourceCategorySnapshot,
@@ -4981,13 +4982,20 @@ const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", i
   const sourceRows = collectEditVariantSourceRows(item);
   const rows = sourceRows.length ? sourceRows : [item];
   return rows.map((variant, index) => {
-    const rowSku = collectEditFirst(variant.sku, variant.variant_id, variant.product_id, variant.productId, sku);
+    const aspectName = collectEditAspectName(variant);
+    const commercialFields = normalizeCollectEditVariantRow({
+      variant,
+      index,
+      rowCount: rows.length,
+      fallbackSku: sku,
+      fallbackTitle: title,
+      fallbackPrice: price,
+      offerPrefix,
+      aspectName,
+    });
+    const rowSku = commercialFields.sku;
     const sourceVariant = collectEditVariantSourceSnapshot(item, variant, rowSku);
     const rowImages = collectEditImages({ ...sourceVariant, ...variant }, images[index] || images[0] || "");
-    const sellPrice = collectEditFirst(variant.price?.price, variant.priceText, variant.price, variant.marketingPrice, variant.marketing_price, price);
-    const numericSellPrice = numberFromMoney(sellPrice);
-    const aspectName = collectEditAspectName(variant);
-    const variantName = collectEditFirst(variant.name, variant.title, variant.productName, variant.product_name, title);
     const targetResolution = categoryResolutionForStore(
       variant.categoryResolution || item.listingDraft?.categoryResolution || item.categoryResolution,
       targetStoreId,
@@ -5003,13 +5011,13 @@ const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", i
       images: rowImages,
       cover: rowImages[1] || rowImages[0] || images[0] || "",
       video: collectEditFirst(variant.video, variant.videoUrl, variant.video_url),
-      sku: rowSku || sku,
-      offerId: collectEditFirst(variant.offerId, variant.offer_id) || `${offerPrefix}${rowSku || sku}${rows.length > 1 ? `-${String(index + 1).padStart(2, "0")}` : ""}`,
-      name: [variantName, aspectName].filter(Boolean).join(" / "),
+      sku: commercialFields.sku,
+      offerId: commercialFields.offerId,
+      name: commercialFields.name,
       purchasePrice: collectEditFirst(variant.purchase_price, variant.cost_price),
-      sellPrice,
-      oldPrice: collectEditFirst(variant.old_price, variant.price?.old_price) || (numericSellPrice ? (numericSellPrice * 1.25).toFixed(2) : ""),
-      stock: collectEditFirst(variant.stock, variant.quantity, variant.stocks?.present) || "0",
+      sellPrice: commercialFields.sellPrice,
+      oldPrice: commercialFields.oldPrice,
+      stock: commercialFields.stock,
       sourceVariant,
       description: collectEditFirst(variant.description, sourceVariant.description, sourceVariantText(sourceVariant, 4191)),
       richContent: collectEditFirst(variant.richContent, variant.rich_content, sourceVariant.richContent, sourceVariantText(sourceVariant, 11254)),
@@ -5223,13 +5231,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       const nextCurrency = collectEditFirst(storeCurrencyCode, draft.currencyCode, item.price?.currency_code, item.priceCurrency, item.currencyCode, item.currency_code, item.currency) || "CNY";
       const nextImages = collectEditImages({ ...item, images: draft.images || item.images }, draft.image || "");
       const nextOfferPrefix = draft.offerPrefix || "jz-";
-      const draftVariants = Array.isArray(draft.variants)
-        ? draft.variants.map((row, index) => ({
-            ...row,
-            key: row.key || `${row.sku || nextSku || "sku"}-${index}`,
-            index: index + 1,
-          }))
-        : [];
+      const draftVariants = Array.isArray(draft.variants) ? draft.variants : [];
+      const variantSourceItem = draftVariants.length
+        ? { ...item, variants: draftVariants }
+        : item;
       setSku(nextSku);
       setTitle(nextTitle);
       setPrice(nextPrice);
@@ -5276,7 +5281,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setListingStock(collectEditFirst(draft.listingStock, draft.stock, item.listingStock, item.listing_stock, "5"));
       setSourceLink(collectEditFirst(draft.sourceLink) || collectEditSourceUrl(item, nextSku));
       setNote(collectEditFirst(draft.note, item.note, item.remark));
-      setVariantRows(draftVariants.length ? draftVariants : collectEditVariantRows({ item, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix, targetStoreId: categoryStoreId }));
+      setVariantRows(collectEditVariantRows({ item: variantSourceItem, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix, targetStoreId: categoryStoreId }));
       setSelectedVariantKeys([]);
     } else {
       setPreviewItem(null);
