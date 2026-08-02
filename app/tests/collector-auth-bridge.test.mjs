@@ -10,6 +10,7 @@ const {
   isCollectorAuthGenerationId,
   normalizeCollectorAuthRequest,
   postCollectorAuthLogout,
+  startCollectorAuthBridgeLifecycle,
 } = collectorAuthBridge;
 
 const createWindowHarness = () => {
@@ -189,6 +190,92 @@ test("retires the old account generation when its successor factory throws and r
     logoutGenerationId: "",
     announceReady: false,
   });
+});
+
+test("retries a missing Web generation once after retiring the old bridge and cancels pending recovery on cleanup", () => {
+  const createRecoveringController = () => {
+    let factoryCalls = 0;
+    return createCollectorAuthGenerationController({
+      createGenerationId() {
+        factoryCalls += 1;
+        if (factoryCalls === 1) return "generation_A_1234";
+        if (factoryCalls === 2) throw new Error("simulated Web Crypto failure");
+        return "generation_B_5678";
+      },
+    });
+  };
+  const timers = [];
+  const installs = [];
+  const logouts = [];
+  const setTimer = (callback, delay) => {
+    const timer = { callback, delay, cleared: false };
+    timers.push(timer);
+    return timer;
+  };
+  const clearTimer = (timer) => {
+    timer.cleared = true;
+  };
+  const installBridge = (transition) => {
+    installs.push(transition);
+    return () => {};
+  };
+
+  const controller = createRecoveringController();
+  startCollectorAuthBridgeLifecycle({
+    accountId: "account-a",
+    controller,
+    installBridge,
+    postLogout: (generationId) => logouts.push(generationId),
+    setTimer,
+    clearTimer,
+  })();
+
+  const cleanupB = startCollectorAuthBridgeLifecycle({
+    accountId: "account-b",
+    controller,
+    installBridge,
+    postLogout: (generationId) => logouts.push(generationId),
+    setTimer,
+    clearTimer,
+  });
+
+  assert.deepEqual(logouts, ["generation_A_1234"]);
+  assert.deepEqual(installs.map(({ generationId }) => generationId), ["generation_A_1234"]);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 250);
+
+  timers[0].callback();
+  assert.deepEqual(installs.at(-1), {
+    generationId: "generation_B_5678",
+    logoutGenerationId: "",
+    announceReady: true,
+  });
+  cleanupB();
+
+  const cancellationController = createRecoveringController();
+  startCollectorAuthBridgeLifecycle({
+    accountId: "account-a",
+    controller: cancellationController,
+    installBridge,
+    postLogout: (generationId) => logouts.push(generationId),
+    setTimer,
+    clearTimer,
+  })();
+  const cancelledCleanup = startCollectorAuthBridgeLifecycle({
+    accountId: "account-b",
+    controller: cancellationController,
+    installBridge,
+    postLogout: (generationId) => logouts.push(generationId),
+    setTimer,
+    clearTimer,
+  });
+  const cancelledRetry = timers.at(-1);
+  const installCountBeforeCancelledRetry = installs.length;
+
+  cancelledCleanup();
+  assert.equal(cancelledRetry.cleared, true);
+  cancelledRetry.callback();
+  assert.equal(installs.length, installCountBeforeCancelledRetry);
 });
 
 test("uses Web Crypto without passing the account ID to the production generation factory", () => {

@@ -54,6 +54,58 @@ export function createCollectorAuthGenerationController({
   });
 }
 
+export function startCollectorAuthBridgeLifecycle({
+  accountId,
+  controller,
+  installBridge,
+  postLogout,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  retryDelayMs = 250,
+} = {}) {
+  if (!controller || typeof controller.update !== "function") {
+    throw new TypeError("collector auth lifecycle requires a generation controller");
+  }
+  if (typeof installBridge !== "function") {
+    throw new TypeError("collector auth lifecycle requires a bridge installer");
+  }
+  if (typeof postLogout !== "function") {
+    throw new TypeError("collector auth lifecycle requires a logout adapter");
+  }
+
+  const normalizedAccountId = String(accountId || "").trim();
+  let cleanedUp = false;
+  let retryScheduled = false;
+  let retryTimer = null;
+  let removeBridge = null;
+
+  const run = () => {
+    if (cleanedUp) return;
+    const transition = controller.update(normalizedAccountId);
+    if (transition.logoutGenerationId) {
+      postLogout(transition.logoutGenerationId);
+    }
+    if (transition.generationId) {
+      removeBridge = installBridge(transition);
+      return;
+    }
+    if (!normalizedAccountId || retryScheduled) return;
+    retryScheduled = true;
+    retryTimer = setTimer(() => {
+      retryTimer = null;
+      run();
+    }, retryDelayMs);
+  };
+
+  run();
+  return () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    if (retryTimer !== null) clearTimer(retryTimer);
+    if (typeof removeBridge === "function") removeBridge();
+  };
+}
+
 const validRequestId = (value) => {
   const requestId = String(value || "").trim();
   return requestId && requestId.length <= 128 ? requestId : "";

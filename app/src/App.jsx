@@ -130,6 +130,7 @@ import {
   createCollectorAuthGenerationController,
   installCollectorAuthBridge,
   postCollectorAuthLogout,
+  startCollectorAuthBridgeLifecycle,
 } from "./collector-auth-bridge.js";
 import {
   emptyLocalRuntimeData,
@@ -708,20 +709,16 @@ export function AppShell({ initialState = null }) {
 
   const collectorAuthAccountId = String(account?.id || "").trim();
   useEffect(() => {
-    const transition = collectorAuthGenerationRef.current.update(
-      authChecked ? collectorAuthAccountId : "",
-    );
-    if (transition.logoutGenerationId) {
-      postCollectorAuthLogout({ generationId: transition.logoutGenerationId });
-    }
-    if (!transition.generationId) return undefined;
-    return installCollectorAuthBridge({
-      generationId: transition.generationId,
-      isLoggedIn: () => true,
-      requestTicket: () => apiRequest("/extension/collector-auth/ticket", {
-        method: "POST",
+    return startCollectorAuthBridgeLifecycle({
+      accountId: authChecked ? collectorAuthAccountId : "",
+      controller: collectorAuthGenerationRef.current,
+      postLogout: (generationId) => postCollectorAuthLogout({ generationId }),
+      installBridge: (transition) => installCollectorAuthBridge({
+        generationId: transition.generationId,
+        isLoggedIn: () => true,
+        requestTicket: () => apiRequest("/extension/collector-auth/ticket", { method: "POST" }),
+        announceReady: transition.announceReady,
       }),
-      announceReady: transition.announceReady,
     });
   }, [authChecked, collectorAuthAccountId]);
 
