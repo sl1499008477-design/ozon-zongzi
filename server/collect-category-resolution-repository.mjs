@@ -18,6 +18,30 @@ function repositoryError(message, code = "COLLECT_CATEGORY_RESOLUTION_PERSISTENC
   return Object.assign(new Error(message), { code, status });
 }
 
+function collectItemScopeError() {
+  return repositoryError(
+    "Collect item was not found in the category resolution account scope",
+    "COLLECT_CATEGORY_RESOLUTION_SCOPE",
+    404,
+  );
+}
+
+function credentialStoreScopeError() {
+  return repositoryError(
+    "Credential store is outside the category resolution account scope",
+    "COLLECT_CATEGORY_RESOLUTION_CREDENTIAL_STORE_SCOPE",
+    403,
+  );
+}
+
+function executionMismatchError() {
+  return repositoryError(
+    "Category resolution completion does not match the claimed execution",
+    "COLLECT_CATEGORY_RESOLUTION_EXECUTION_MISMATCH",
+    409,
+  );
+}
+
 function requiredText(value, field) {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
@@ -181,6 +205,10 @@ function sameExecutionKey(record, request) {
     && (record?.taxonomyFingerprint ?? null) === request.taxonomyFingerprint;
 }
 
+function sameJsonValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function serializeJson(state, operation) {
   const previous = jsonQueues.get(state) || Promise.resolve();
   const flight = previous.catch(() => {}).then(operation);
@@ -208,11 +236,7 @@ export function createJsonCollectCategoryResolutionRepository({
         String(item?.id ?? "") === collectItemId
         && String(item?.accountId ?? "") === accountId);
     if (!found) {
-      throw repositoryError(
-        "Collect item was not found in the category resolution account scope",
-        "COLLECT_CATEGORY_RESOLUTION_SCOPE",
-        404,
-      );
+      throw collectItemScopeError();
     }
   }
 
@@ -222,28 +246,32 @@ export function createJsonCollectCategoryResolutionRepository({
       String(store?.id ?? "") === credentialStoreId
       && String(store?.ownerAccountId ?? "") === accountId);
     if (!found) {
-      throw repositoryError(
-        "Credential store is outside the category resolution account scope",
-        "COLLECT_CATEGORY_RESOLUTION_SCOPE",
-        403,
-      );
+      throw credentialStoreScopeError();
     }
   }
 
   async function mutate(operation) {
     return serializeJson(state, async () => {
-      const existed = Object.hasOwn(state, "collectCategoryResolutions");
-      const before = copy(state.collectCategoryResolutions);
+      const hadRecords = Object.hasOwn(state, "collectCategoryResolutions");
+      const previousRecords = state.collectCategoryResolutions;
+      const normalizedBefore = Array.isArray(previousRecords) ? previousRecords : [];
+      const working = copy(normalizedBefore);
+      const result = operation(working);
+      if (sameJsonValue(working, normalizedBefore)) return copy(result);
+
+      state.collectCategoryResolutions = working;
       try {
-        state.collectCategoryResolutions = records();
-        const result = operation(state.collectCategoryResolutions);
         await persist(state);
-        return copy(result);
       } catch (error) {
-        if (existed) state.collectCategoryResolutions = before;
-        else delete state.collectCategoryResolutions;
+        if (state.collectCategoryResolutions === working) {
+          if (hadRecords) state.collectCategoryResolutions = previousRecords;
+          else delete state.collectCategoryResolutions;
+        }
         throw error;
       }
+
+      if (state.collectCategoryResolutions !== working) return null;
+      return copy(result);
     });
   }
 
@@ -254,7 +282,7 @@ export function createJsonCollectCategoryResolutionRepository({
       assertStoreScope(request.accountId, request.credentialStoreId);
       const existing = entries.find((record) => sameStableKey(record, request));
       if (existing && (
-        existing.method === "MANUAL"
+        (existing.status === "MATCHED" && existing.method === "MANUAL")
         || (["MATCHING", "MATCHED", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(existing.status)
           && sameExecutionKey(existing, request))
         || (existing.status === request.status && sameExecutionKey(existing, request))
@@ -336,7 +364,6 @@ export function createJsonCollectCategoryResolutionRepository({
       const candidate = entries
         .filter((record) => record.accountId === accountId
           && (!taxonomyScope || record.taxonomyScope === taxonomyScope)
-          && record.method !== "MANUAL"
           && new Date(record.nextAttemptAt).getTime() <= now.getTime()
           && (CLAIMABLE_STATUS.has(record.status)
             || (record.status === "MATCHING"
@@ -345,6 +372,14 @@ export function createJsonCollectCategoryResolutionRepository({
           || String(left.createdAt).localeCompare(String(right.createdAt))
           || String(left.id).localeCompare(String(right.id)))[0];
       if (!candidate) return null;
+      if (candidate.status === "INVALIDATED") {
+        candidate.targetDescriptionCategoryId = null;
+        candidate.targetTypeId = null;
+        candidate.method = null;
+        candidate.displayPath = {};
+        candidate.matchedAt = null;
+        candidate.validatedAt = null;
+      }
       candidate.status = "MATCHING";
       candidate.leaseToken = leaseToken;
       candidate.leaseExpiresAt = leaseExpiresAt.toISOString();
@@ -384,18 +419,24 @@ export function createJsonCollectCategoryResolutionRepository({
     const validatedAt = requiredDate(input.validatedAt ?? at, "validatedAt");
     const path = displayPath(input.displayPath);
     const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    const completionFingerprint = optionalText(input.taxonomyFingerprint, 240);
     const accountId = requiredText(input.accountId, "accountId");
+    assertStoreScope(accountId, credentialStoreId);
     return fencedMutation(input, (current) => {
+      assertStoreScope(accountId, credentialStoreId);
       if (current.status !== "MATCHING"
         || current.method === "MANUAL"
         || new Date(current.leaseExpiresAt || 0).getTime() <= at.getTime()) return null;
-      assertStoreScope(accountId, credentialStoreId);
+      if (!completionFingerprint
+        || !current.taxonomyFingerprint
+        || current.taxonomyFingerprint !== completionFingerprint) {
+        throw executionMismatchError();
+      }
       Object.assign(current, {
         status: "MATCHED",
         targetDescriptionCategoryId,
         targetTypeId,
         method,
-        taxonomyFingerprint: optionalText(input.taxonomyFingerprint, 240),
         credentialStoreId,
         displayPath: path,
         failureCode: null,
@@ -570,28 +611,35 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
     }
   }
 
-  function missingScope() {
-    throw repositoryError(
-      "Collect item or credential store is outside the category resolution account scope",
-      "COLLECT_CATEGORY_RESOLUTION_SCOPE",
-      404,
+  async function requireInputScope({ accountId, collectItemId, credentialStoreId }) {
+    const scoped = await query(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM collect_items WHERE id=$2 AND account_id=$1
+         ) AS collect_item_scoped,
+         ($3::text IS NULL OR EXISTS (
+           SELECT 1 FROM stores WHERE id=$3 AND owner_account_id=$1
+         )) AS credential_store_scoped`,
+      [accountId, collectItemId, credentialStoreId],
     );
+    if (scoped.rows[0]?.collect_item_scoped !== true) throw collectItemScopeError();
+    if (scoped.rows[0]?.credential_store_scoped !== true) throw credentialStoreScopeError();
+  }
+
+  async function requireCredentialStoreScope(accountId, credentialStoreId) {
+    if (!credentialStoreId) return;
+    const scoped = await query(
+      `SELECT EXISTS (
+         SELECT 1 FROM stores WHERE id=$2 AND owner_account_id=$1
+       ) AS credential_store_scoped`,
+      [accountId, credentialStoreId],
+    );
+    if (scoped.rows[0]?.credential_store_scoped !== true) throw credentialStoreScopeError();
   }
 
   async function enqueue(input) {
     const request = enqueueInput(input);
-    const scoped = await query(
-      `SELECT (
-         EXISTS (
-           SELECT 1 FROM collect_items WHERE id=$2 AND account_id=$1
-         )
-         AND ($3::text IS NULL OR EXISTS (
-           SELECT 1 FROM stores WHERE id=$3 AND owner_account_id=$1
-         ))
-       ) AS scope_valid`,
-      [request.accountId, request.collectItemId, request.credentialStoreId],
-    );
-    if (scoped.rows[0]?.scope_valid !== true) missingScope();
+    await requireInputScope(request);
     const result = await query(
       `INSERT INTO collect_category_resolutions AS current (
          id, account_id, collect_item_id, taxonomy_scope, source_type_id, status,
@@ -621,7 +669,7 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
            matched_at=NULL,
            validated_at=NULL,
            updated_at=EXCLUDED.updated_at
-       WHERE current.method IS DISTINCT FROM 'MANUAL'
+       WHERE NOT (current.status='MATCHED' AND current.method='MANUAL')
          AND NOT (
            current.source_type_id IS NOT DISTINCT FROM EXCLUDED.source_type_id
            AND current.taxonomy_fingerprint IS NOT DISTINCT FROM EXCLUDED.taxonomy_fingerprint
@@ -638,12 +686,13 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
       ],
     );
     if (result.rows[0]) return recordFromRow(result.rows[0]);
+    await requireInputScope(request);
     const stable = await query(
       `SELECT * FROM collect_category_resolutions
         WHERE account_id=$1 AND collect_item_id=$2 AND taxonomy_scope=$3`,
       [request.accountId, request.collectItemId, request.taxonomyScope],
     );
-    if (!stable.rows[0]) missingScope();
+    if (!stable.rows[0]) throw collectItemScopeError();
     return recordFromRow(stable.rows[0]);
   }
 
@@ -686,7 +735,6 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
              FROM collect_category_resolutions
             WHERE account_id=$1
               AND ($2::text IS NULL OR taxonomy_scope=$2)
-              AND method IS DISTINCT FROM 'MANUAL'
               AND next_attempt_at<=$3
               AND (
                 status IN ('QUEUED','RETRYABLE_ERROR','INVALIDATED')
@@ -698,7 +746,15 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
          )
          UPDATE collect_category_resolutions AS current
             SET status='MATCHING', lease_token=$4, lease_expires_at=$5,
-                attempt_count=current.attempt_count+1, updated_at=$3
+                attempt_count=current.attempt_count+1, updated_at=$3,
+                target_description_category_id=CASE
+                   WHEN current.status='INVALIDATED' THEN NULL
+                   ELSE current.target_description_category_id END,
+                target_type_id=CASE WHEN current.status='INVALIDATED' THEN NULL ELSE current.target_type_id END,
+                method=CASE WHEN current.status='INVALIDATED' THEN NULL ELSE current.method END,
+                display_path_json=CASE WHEN current.status='INVALIDATED' THEN '{}'::jsonb ELSE current.display_path_json END,
+                matched_at=CASE WHEN current.status='INVALIDATED' THEN NULL ELSE current.matched_at END,
+                validated_at=CASE WHEN current.status='INVALIDATED' THEN NULL ELSE current.validated_at END
            FROM candidate
           WHERE current.account_id=$1 AND current.id=candidate.id
          RETURNING current.*`,
@@ -741,16 +797,33 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
     const matchedAt = requiredDate(input.matchedAt ?? now, "matchedAt");
     const validatedAt = requiredDate(input.validatedAt ?? now, "validatedAt");
     const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    const completionFingerprint = optionalText(input.taxonomyFingerprint, 240);
+    await requireCredentialStoreScope(fence.accountId, credentialStoreId);
+    const claimed = await query(
+      `SELECT taxonomy_fingerprint
+         FROM collect_category_resolutions
+        WHERE account_id=$1 AND id=$2 AND lease_token=$3
+          AND status='MATCHING' AND method IS DISTINCT FROM 'MANUAL'
+          AND lease_expires_at>$4`,
+      [fence.accountId, fence.id, fence.leaseToken, now],
+    );
+    if (claimed.rows[0]
+      && (!completionFingerprint
+        || !claimed.rows[0].taxonomy_fingerprint
+        || claimed.rows[0].taxonomy_fingerprint !== completionFingerprint)) {
+      throw executionMismatchError();
+    }
     const result = await query(
       `UPDATE collect_category_resolutions
           SET status='MATCHED', target_description_category_id=$4, target_type_id=$5,
-              method=$6, taxonomy_fingerprint=$7, credential_store_id=$8,
+              method=$6, credential_store_id=$8,
               display_path_json=$9::jsonb, failure_code=NULL, failure_detail_safe=NULL,
               matched_at=$10, validated_at=$11, lease_token=NULL, lease_expires_at=NULL,
               updated_at=$12
         WHERE account_id=$1 AND id=$2 AND lease_token=$3
           AND status='MATCHING' AND method IS DISTINCT FROM 'MANUAL'
           AND lease_expires_at>$12
+          AND $7::text IS NOT NULL AND taxonomy_fingerprint=$7
           AND ($8::text IS NULL OR EXISTS (
             SELECT 1 FROM stores WHERE id=$8 AND owner_account_id=$1
           ))
@@ -762,6 +835,7 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         matchedAt, validatedAt, now,
       ],
     );
+    if (!result.rows[0]) await requireCredentialStoreScope(fence.accountId, credentialStoreId);
     return recordFromRow(result.rows[0] || null);
   }
 
@@ -836,6 +910,7 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
 
   async function saveManual(input = {}) {
     const request = enqueueInput({ ...input, status: "QUEUED" });
+    await requireInputScope(request);
     const targetDescriptionCategoryId = positiveId(
       input.targetDescriptionCategoryId,
       "targetDescriptionCategoryId",
@@ -877,7 +952,8 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         JSON.stringify(displayPath(input.displayPath)), matchedAt, validatedAt, request.now,
       ],
     );
-    if (!result.rows[0]) missingScope();
+    if (!result.rows[0]) await requireInputScope(request);
+    if (!result.rows[0]) throw collectItemScopeError();
     return recordFromRow(result.rows[0]);
   }
 

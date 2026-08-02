@@ -4,6 +4,7 @@ import {
   createJsonCollectCategoryResolutionRepository,
   createPostgresCollectCategoryResolutionRepository,
 } from "../collect-category-resolution-repository.mjs";
+import { removeAccountScope } from "../account-deletion.mjs";
 
 const START = "2026-08-03T10:00:00.000Z";
 const SCOPE = "OZON:DEFAULT";
@@ -23,6 +24,7 @@ function rowCopy(row) {
 
 function statefulPostgresPool() {
   let rows = [];
+  let credentialStoreToInvalidateBeforeMatchedWrite = null;
   const collectItems = new Set(["account-a:collect-shared", "account-b:collect-b"]);
   const stores = new Set(["account-a:store-a", "account-b:store-b"]);
 
@@ -34,11 +36,28 @@ function statefulPostgresPool() {
     const normalized = String(sql).replace(/\s+/g, " ").trim();
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(normalized)) return { rows: [], rowCount: 0 };
 
-    if (normalized.startsWith("SELECT ( EXISTS (") && normalized.endsWith("AS scope_valid")) {
+    if (normalized.startsWith("SELECT EXISTS (")
+      && normalized.endsWith("AS credential_store_scoped")
+      && params.length === 2) {
+      const [accountId, credentialStoreId] = params;
+      return {
+        rows: [{ credential_store_scoped: stores.has(`${accountId}:${credentialStoreId}`) }],
+        rowCount: 1,
+      };
+    }
+
+    if (normalized.startsWith("SELECT EXISTS (")
+      && normalized.includes("AS collect_item_scoped")
+      && normalized.endsWith("AS credential_store_scoped")) {
       const [accountId, collectItemId, credentialStoreId] = params;
-      const scopeValid = collectItems.has(`${accountId}:${collectItemId}`)
-        && (!credentialStoreId || stores.has(`${accountId}:${credentialStoreId}`));
-      return { rows: [{ scope_valid: scopeValid }], rowCount: 1 };
+      return {
+        rows: [{
+          collect_item_scoped: collectItems.has(`${accountId}:${collectItemId}`),
+          credential_store_scoped:
+            !credentialStoreId || stores.has(`${accountId}:${credentialStoreId}`),
+        }],
+        rowCount: 1,
+      };
     }
 
     if (normalized.startsWith("INSERT INTO collect_category_resolutions AS current")) {
@@ -77,7 +96,7 @@ function statefulPostgresPool() {
           updated_at: iso(now),
         };
         rows.push(row);
-      } else if (row.method !== "MANUAL" && !(
+      } else if (!(row.status === "MATCHED" && row.method === "MANUAL") && !(
         row.source_type_id === sourceTypeId
         && row.taxonomy_fingerprint === taxonomyFingerprint
         && (["MATCHING", "MATCHED", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(row.status)
@@ -120,13 +139,20 @@ function statefulPostgresPool() {
       const found = rows
         .filter((row) => row.account_id === accountId
           && (!taxonomyScope || row.taxonomy_scope === taxonomyScope)
-          && row.method !== "MANUAL"
           && new Date(row.next_attempt_at).getTime() <= nowMs
           && (["QUEUED", "RETRYABLE_ERROR", "INVALIDATED"].includes(row.status)
             || (row.status === "MATCHING"
               && new Date(row.lease_expires_at || 0).getTime() <= nowMs)))
         .sort((left, right) => left.next_attempt_at.localeCompare(right.next_attempt_at))[0];
       if (!found) return { rows: [], rowCount: 0 };
+      if (found.status === "INVALIDATED") {
+        found.target_description_category_id = null;
+        found.target_type_id = null;
+        found.method = null;
+        found.display_path_json = {};
+        found.matched_at = null;
+        found.validated_at = null;
+      }
       Object.assign(found, {
         status: "MATCHING",
         lease_token: leaseToken,
@@ -137,9 +163,29 @@ function statefulPostgresPool() {
       return { rows: [rowCopy(found)], rowCount: 1 };
     }
 
+    if (normalized.startsWith("SELECT taxonomy_fingerprint FROM collect_category_resolutions")) {
+      const [accountId, id, leaseToken, now] = params;
+      const found = rows.find((row) => row.account_id === accountId
+        && row.id === id
+        && row.lease_token === leaseToken
+        && row.status === "MATCHING"
+        && row.method !== "MANUAL"
+        && new Date(row.lease_expires_at).getTime() > new Date(now).getTime());
+      return {
+        rows: found ? [{ taxonomy_fingerprint: found.taxonomy_fingerprint }] : [],
+        rowCount: found ? 1 : 0,
+      };
+    }
+
     if (normalized.startsWith("UPDATE collect_category_resolutions SET status='MATCHED'")) {
+      if (credentialStoreToInvalidateBeforeMatchedWrite) {
+        stores.delete(credentialStoreToInvalidateBeforeMatchedWrite);
+        credentialStoreToInvalidateBeforeMatchedWrite = null;
+      }
       const row = rows.find((candidate) => matchesFence(candidate, params));
       if (!row || row.status !== "MATCHING" || row.method === "MANUAL"
+        || !params[6] || row.taxonomy_fingerprint !== params[6]
+        || (params[7] && !stores.has(`${params[0]}:${params[7]}`))
         || new Date(row.lease_expires_at).getTime() <= new Date(params[11]).getTime()) {
         return { rows: [], rowCount: 0 };
       }
@@ -276,6 +322,9 @@ function statefulPostgresPool() {
 
   return {
     query,
+    invalidateCredentialStoreBeforeNextMatchedWrite(accountId, credentialStoreId) {
+      credentialStoreToInvalidateBeforeMatchedWrite = `${accountId}:${credentialStoreId}`;
+    },
     async connect() {
       return { query, release() {} };
     },
@@ -315,6 +364,32 @@ function queued(overrides = {}) {
   };
 }
 
+function assertCredentialScopeError(error) {
+  assert.deepEqual({
+    code: error?.code,
+    status: error?.status,
+    message: error?.message,
+  }, {
+    code: "COLLECT_CATEGORY_RESOLUTION_CREDENTIAL_STORE_SCOPE",
+    status: 403,
+    message: "Credential store is outside the category resolution account scope",
+  });
+  return true;
+}
+
+function assertExecutionMismatch(error) {
+  assert.deepEqual({
+    code: error?.code,
+    status: error?.status,
+    message: error?.message,
+  }, {
+    code: "COLLECT_CATEGORY_RESOLUTION_EXECUTION_MISMATCH",
+    status: 409,
+    message: "Category resolution completion does not match the claimed execution",
+  });
+  return true;
+}
+
 for (const [adapterName, createRepository] of Object.entries(adapters)) {
   test(`${adapterName} enqueue is idempotent and every read, claim, and update is account scoped`, async () => {
     const repository = createRepository();
@@ -328,7 +403,7 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
         credentialStoreId: "store-b",
         now: "2026-08-03T10:00:00.250Z",
       })),
-      (error) => error?.code === "COLLECT_CATEGORY_RESOLUTION_SCOPE",
+      assertCredentialScopeError,
     );
     assert.equal((await repository.readForItem(queued())).sourceTypeId, 94405);
     assert.equal(await repository.readForItem({
@@ -439,13 +514,24 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
       accountId: "account-a", id: record.id, leaseToken: null,
       failureCode: "MANUAL_TARGET_DISABLED", now: "2026-08-03T10:00:13.000Z",
     });
-    assert.equal(await repository.claimNext({
-      accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "automatic-retry",
-      leaseExpiresAt: "2026-08-03T10:02:00.000Z", now: "2026-08-03T10:00:13.000Z",
-    }), null);
     const invalidManual = await repository.readForItem(queued());
     assert.equal(invalidManual.status, "INVALIDATED");
     assert.equal(invalidManual.method, "MANUAL");
+    const requeued = await repository.enqueue(queued({ now: "2026-08-03T10:00:14.000Z" }));
+    assert.equal(requeued.status, "QUEUED");
+    assert.equal(requeued.method, null);
+    assert.equal((await repository.claimNext({
+      accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "automatic-retry",
+      leaseExpiresAt: "2026-08-03T10:02:00.000Z", now: "2026-08-03T10:00:14.000Z",
+    })).status, "MATCHING");
+    const rematched = await repository.completeMatched({
+      accountId: "account-a", id: record.id, leaseToken: "automatic-retry",
+      targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
+      method: "TYPE_ID_EXACT", taxonomyFingerprint: "taxonomy-v1",
+      credentialStoreId: "store-a", now: "2026-08-03T10:00:15.000Z",
+    });
+    assert.equal(rematched.status, "MATCHED");
+    assert.equal(rematched.method, "TYPE_ID_EXACT");
   });
 
   test(`${adapterName} defer, release, review, and explicit invalidation preserve recoverable transitions`, async () => {
@@ -513,6 +599,67 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
     }));
 
     assert.equal(nextExecution.attemptCount, 0);
+  });
+
+  test(`${adapterName} completion cannot replace the fingerprint owned by its lease`, async () => {
+    const repository = createRepository();
+    const record = await repository.enqueue(queued());
+    await repository.claimNext({
+      accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "fingerprint-lease",
+      leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+    });
+    const completion = {
+      accountId: "account-a", id: record.id, leaseToken: "fingerprint-lease",
+      targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
+      method: "TYPE_ID_EXACT", credentialStoreId: "store-a",
+      now: "2026-08-03T10:00:01.000Z",
+    };
+
+    await assert.rejects(
+      repository.completeMatched({ ...completion, taxonomyFingerprint: "taxonomy-v2" }),
+      assertExecutionMismatch,
+    );
+    await assert.rejects(
+      repository.completeMatched({ ...completion, taxonomyFingerprint: null }),
+      assertExecutionMismatch,
+    );
+    assert.equal((await repository.readForItem(queued())).status, "MATCHING");
+    const matched = await repository.completeMatched({
+      ...completion,
+      taxonomyFingerprint: "taxonomy-v1",
+    });
+    assert.equal(matched.taxonomyFingerprint, "taxonomy-v1");
+  });
+
+  test(`${adapterName} credential-store scope failures share one stable safe error contract`, async () => {
+    const repository = createRepository();
+    await assert.rejects(
+      repository.enqueue(queued({ credentialStoreId: "store-b" })),
+      assertCredentialScopeError,
+    );
+    await assert.rejects(
+      repository.saveManual({
+        ...queued({ credentialStoreId: "missing-store" }),
+        targetDescriptionCategoryId: 17029999,
+        targetTypeId: 94405,
+      }),
+      assertCredentialScopeError,
+    );
+    const record = await repository.enqueue(queued());
+    await repository.claimNext({
+      accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "store-scope-lease",
+      leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+    });
+    await assert.rejects(
+      repository.completeMatched({
+        accountId: "account-a", id: record.id, leaseToken: "store-scope-lease",
+        targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
+        method: "TYPE_ID_EXACT", taxonomyFingerprint: "taxonomy-v1",
+        credentialStoreId: "store-b", now: "2026-08-03T10:00:01.000Z",
+      }),
+      assertCredentialScopeError,
+    );
+    assert.equal((await repository.readForItem(queued())).status, "MATCHING");
   });
 }
 
@@ -596,4 +743,159 @@ test("JSON reads wait for an in-flight persistence failure instead of exposing p
   rejectPersist();
   await assert.rejects(enqueue, /disk failed/);
   assert.equal(await read, null);
+});
+
+test("JSON no-op and stale-fence paths do not persist", async () => {
+  const state = {
+    caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
+    stores: [{ id: "store-a", ownerAccountId: "account-a" }],
+  };
+  const setup = createJsonCollectCategoryResolutionRepository({ state });
+  const record = await setup.enqueue(queued());
+  await setup.claimNext({
+    accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "owned-lease",
+    leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+  });
+  const repository = createJsonCollectCategoryResolutionRepository({
+    state,
+    persist: async () => { throw new Error("persistence must not run"); },
+  });
+
+  assert.equal((await repository.enqueue(queued())).id, record.id);
+  assert.equal(await repository.claimNext({
+    accountId: "account-b", taxonomyScope: SCOPE, leaseToken: "other-account",
+    leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+  }), null);
+  assert.equal(await repository.completeNeedsReview({
+    accountId: "account-a", id: record.id, leaseToken: "stale-token",
+    failureCode: "TYPE_NOT_FOUND", now: "2026-08-03T10:00:01.000Z",
+  }), null);
+  assert.equal((await repository.readForItem(queued())).status, "MATCHING");
+});
+
+test("JSON failed persistence cannot resurrect records removed by concurrent account deletion", async () => {
+  const existing = {
+    id: "resolution-existing",
+    accountId: "account-a",
+    collectItemId: "collect-shared",
+    taxonomyScope: SCOPE,
+    sourceTypeId: 94405,
+    targetDescriptionCategoryId: null,
+    targetTypeId: null,
+    method: null,
+    status: "QUEUED",
+    taxonomyFingerprint: "taxonomy-v1",
+    credentialStoreId: "store-a",
+    displayPath: {},
+    failureCode: null,
+    failureDetailSafe: null,
+    attemptCount: 0,
+    nextAttemptAt: START,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    matchedAt: null,
+    validatedAt: null,
+    createdAt: START,
+    updatedAt: START,
+  };
+  const state = {
+    accounts: [{ id: "account-a" }],
+    caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
+    stores: [{ id: "store-a", ownerAccountId: "account-a" }],
+    collectCategoryResolutions: [structuredClone(existing)],
+  };
+  let rejectPersist;
+  let markPersistStarted;
+  const persistStarted = new Promise((resolve) => { markPersistStarted = resolve; });
+  const repository = createJsonCollectCategoryResolutionRepository({
+    state,
+    persist: async () => {
+      markPersistStarted();
+      await new Promise((resolve, reject) => {
+        rejectPersist = () => reject(new Error("disk failed after deletion"));
+      });
+    },
+  });
+
+  const claim = repository.claimNext({
+    accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "racing-lease",
+    leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+  });
+  await persistStarted;
+  removeAccountScope(state, "account-a", { occurredAt: "2026-08-03T10:00:00.500Z" });
+  rejectPersist();
+
+  await assert.rejects(claim, /disk failed after deletion/);
+  assert.deepEqual(state.collectCategoryResolutions, []);
+});
+
+test("JSON completion rechecks credential-store scope after waiting in the mutation queue", async () => {
+  const state = {
+    caches: { collectBox: [
+      { id: "collect-shared", accountId: "account-a" },
+      { id: "collect-b", accountId: "account-b" },
+    ] },
+    stores: [
+      { id: "store-a", ownerAccountId: "account-a" },
+      { id: "store-b", ownerAccountId: "account-b" },
+    ],
+  };
+  const setup = createJsonCollectCategoryResolutionRepository({ state });
+  const record = await setup.enqueue(queued());
+  await setup.claimNext({
+    accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "store-race-lease",
+    leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+  });
+
+  let releaseFirstPersist;
+  let markFirstPersistStarted;
+  let persistCount = 0;
+  const firstPersistStarted = new Promise((resolve) => { markFirstPersistStarted = resolve; });
+  const repository = createJsonCollectCategoryResolutionRepository({
+    state,
+    persist: async () => {
+      persistCount += 1;
+      if (persistCount !== 1) return;
+      markFirstPersistStarted();
+      await new Promise((resolve) => { releaseFirstPersist = resolve; });
+    },
+  });
+  const blocker = repository.enqueue(queued({
+    accountId: "account-b",
+    collectItemId: "collect-b",
+    credentialStoreId: "store-b",
+    now: "2026-08-03T10:00:00.500Z",
+  }));
+  await firstPersistStarted;
+  const completion = repository.completeMatched({
+    accountId: "account-a", id: record.id, leaseToken: "store-race-lease",
+    targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
+    method: "TYPE_ID_EXACT", taxonomyFingerprint: "taxonomy-v1",
+    credentialStoreId: "store-a", now: "2026-08-03T10:00:01.000Z",
+  });
+  state.stores = state.stores.filter((store) => store.id !== "store-a");
+  releaseFirstPersist();
+
+  await blocker;
+  await assert.rejects(completion, assertCredentialScopeError);
+  assert.equal((await repository.readForItem(queued())).status, "MATCHING");
+});
+
+test("PostgreSQL completion reclassifies a concurrent credential-store loss", async () => {
+  const pool = statefulPostgresPool();
+  const repository = createPostgresCollectCategoryResolutionRepository({ pool });
+  const record = await repository.enqueue(queued());
+  await repository.claimNext({
+    accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "store-race-lease",
+    leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+  });
+  pool.invalidateCredentialStoreBeforeNextMatchedWrite("account-a", "store-a");
+
+  await assert.rejects(repository.completeMatched({
+    accountId: "account-a", id: record.id, leaseToken: "store-race-lease",
+    targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
+    method: "TYPE_ID_EXACT", taxonomyFingerprint: "taxonomy-v1",
+    credentialStoreId: "store-a", now: "2026-08-03T10:00:01.000Z",
+  }), assertCredentialScopeError);
+  assert.equal((await repository.readForItem(queued())).status, "MATCHING");
 });
