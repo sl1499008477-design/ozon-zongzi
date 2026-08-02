@@ -48,6 +48,53 @@ for (const { input, expected } of collectorMessages) {
     message: input,
   }), expected);
 }
+const nullPrototypeBegin = Object.assign(Object.create(null), collectorMessages[0].input);
+assert.deepEqual(normalizePortalBridgeMessage({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  senderUrl,
+  message: nullPrototypeBegin,
+}), collectorMessages[0].expected, 'null-prototype Collector records remain valid');
+
+const inheritedDirectExtra = Object.assign(
+  Object.create({ token: 'inherited-web-bearer' }),
+  collectorMessages[0].input,
+);
+const hiddenDirectExtra = { ...collectorMessages[0].input };
+Object.defineProperty(hiddenDirectExtra, 'token', {
+  value: 'hidden-web-bearer',
+  enumerable: false,
+});
+const symbolDirectExtra = {
+  ...collectorMessages[0].input,
+  [Symbol('token')]: 'symbol-web-bearer',
+};
+const forgedObjectPrototype = Object.create(null);
+function ForgedObject() {}
+ForgedObject.prototype = forgedObjectPrototype;
+Object.defineProperty(forgedObjectPrototype, 'constructor', {
+  value: ForgedObject,
+  enumerable: false,
+});
+const forgedPlainRecord = Object.assign(
+  Object.create(forgedObjectPrototype),
+  collectorMessages[0].input,
+);
+for (const message of [
+  inheritedDirectExtra,
+  hiddenDirectExtra,
+  symbolDirectExtra,
+  forgedPlainRecord,
+]) {
+  assert.throws(
+    () => normalizePortalBridgeMessage({
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      senderUrl,
+      message,
+    }),
+    /PORTAL_BRIDGE_FORBIDDEN/,
+    'Collector normalization must reject non-plain or hidden extra fields',
+  );
+}
 assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true, type: 'x' } }), { protocol: 'JZ_ERP', action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true });
 for (const bad of [
   { protocol: 'SONLI_WEB_CONTROL', message: { action: 'syncAuthFromWeb', token: 't' } },
@@ -97,6 +144,52 @@ assert.deepEqual(
   },
   'the routing-only portalProtocol discriminator must be removed before exact payload validation',
 );
+const nullPrototypeRouteMessage = Object.assign(Object.create(null), {
+  portalProtocol: 'SONLI_COLLECTOR_AUTH',
+  ...collectorMessages[0].input,
+});
+assert.deepEqual(routePortalRuntimeMessage({
+  senderUrl,
+  message: nullPrototypeRouteMessage,
+}), {
+  source: 'PORTAL',
+  route: 'SONLI_COLLECTOR_AUTH',
+  message: collectorMessages[0].expected,
+}, 'null-prototype portal route records remain valid');
+
+const inheritedPortalProtocol = Object.assign(
+  Object.create({ portalProtocol: 'SONLI_COLLECTOR_AUTH' }),
+  collectorMessages[0].input,
+);
+const inheritedRouteExtra = Object.assign(
+  Object.create({ token: 'inherited-route-bearer' }),
+  { portalProtocol: 'SONLI_COLLECTOR_AUTH', ...collectorMessages[0].input },
+);
+const hiddenRouteExtra = {
+  portalProtocol: 'SONLI_COLLECTOR_AUTH',
+  ...collectorMessages[0].input,
+};
+Object.defineProperty(hiddenRouteExtra, 'token', {
+  value: 'hidden-route-bearer',
+  enumerable: false,
+});
+const symbolRouteExtra = {
+  portalProtocol: 'SONLI_COLLECTOR_AUTH',
+  ...collectorMessages[0].input,
+  [Symbol('token')]: 'symbol-route-bearer',
+};
+for (const message of [
+  inheritedPortalProtocol,
+  inheritedRouteExtra,
+  hiddenRouteExtra,
+  symbolRouteExtra,
+]) {
+  assert.throws(
+    () => routePortalRuntimeMessage({ senderUrl, message }),
+    /PORTAL_BRIDGE_FORBIDDEN/,
+    'portal routing must reject inherited discriminators and hidden extra fields',
+  );
+}
 assert.throws(
   () => routePortalRuntimeMessage({
     senderUrl,

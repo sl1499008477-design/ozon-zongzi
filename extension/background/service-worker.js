@@ -4134,10 +4134,18 @@ try {
               },
             };
           } catch (error) {
+            const statusValue = error?.status;
+            const status = typeof statusValue === 'number' || typeof statusValue === 'string'
+              ? Number(statusValue)
+              : 0;
             return {
               ok: false,
-              status: error?.status || 0,
-              code: error?.code || 'COLLECTOR_AUTH_FAILED',
+              status: Number.isFinite(status) ? status : 0,
+              code: globalThis.JzCollectorSession.sanitizeCollectorErrorCode(
+                error?.code,
+                'COLLECTOR_AUTH_FAILED',
+                [message.ticket],
+              ),
               error: globalThis.JzCollectorSession.redactCollectorSecrets(
                 error?.message || 'Collector auth failed',
                 [message.ticket],

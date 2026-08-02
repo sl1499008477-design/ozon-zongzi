@@ -16,14 +16,30 @@
     ]),
   });
   const collectorGenerationPattern = /^[A-Za-z0-9_-]{16,128}$/;
+  const nativeObjectConstructorSource = Function.prototype.toString.call(Object);
+  const isPlainRecord = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    try {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype === null) return true;
+      const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor')?.value;
+      return Object.getPrototypeOf(prototype) === null
+        && typeof constructor === 'function'
+        && constructor.prototype === prototype
+        && Function.prototype.toString.call(constructor) === nativeObjectConstructorSource;
+    } catch {
+      return false;
+    }
+  };
   const hasExactKeys = (source, expected) => {
-    if (!source || typeof source !== 'object' || Array.isArray(source)) return false;
-    const keys = Object.keys(source).sort();
+    if (!isPlainRecord(source)) return false;
+    const keys = Reflect.ownKeys(source).sort((left, right) => String(left).localeCompare(String(right)));
     return keys.length === expected.length
       && expected.every((field, index) => keys[index] === field);
   };
   const normalizePortalBridgeMessage = ({ protocol, message = {}, senderUrl } = {}) => {
     if (!trusted(senderUrl)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+    if (!isPlainRecord(message)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
     if (protocol === 'SONLI_COLLECTOR_AUTH') {
       const expectedKeys = collectorKeys[message.action];
       if (!expectedKeys || !hasExactKeys(message, expectedKeys)) {
@@ -59,15 +75,25 @@
     throw new Error('PORTAL_BRIDGE_FORBIDDEN');
   };
   const routePortalRuntimeMessage = ({ message = {}, senderUrl } = {}) => {
+    if (!isPlainRecord(message)) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+    const hasPortalProtocol = Object.hasOwn(message, 'portalProtocol');
     if (!trusted(senderUrl)) {
-      if (message?.portalProtocol || message?.webBridge) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+      if (hasPortalProtocol || Object.hasOwn(message, 'webBridge')) {
+        throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+      }
       return { source: 'EXTENSION', route: 'INTERNAL', message };
     }
-    if (!message?.portalProtocol) {
-      if (message?.webBridge) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
+    if (!hasPortalProtocol) {
+      if (Object.hasOwn(message, 'webBridge')) throw new Error('PORTAL_BRIDGE_FORBIDDEN');
       return { source: 'EXTENSION_CONTENT', route: 'INTERNAL', message };
     }
-    const { portalProtocol, ...portalMessage } = message;
+    const portalProtocol = message.portalProtocol;
+    const portalDescriptors = Object.getOwnPropertyDescriptors(message);
+    delete portalDescriptors.portalProtocol;
+    const portalMessage = Object.create(
+      Object.getPrototypeOf(message),
+      portalDescriptors,
+    );
     const normalized = normalizePortalBridgeMessage({
       protocol: portalProtocol,
       message: portalMessage,

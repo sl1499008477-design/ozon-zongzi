@@ -85,6 +85,7 @@ function createStorageArea(initial = {}) {
 
 function loadServiceWorker({
   fetchImpl,
+  collectorExchangeImpl,
   sellerCapture = false,
   executeScriptImpl,
   tabCreateImpl,
@@ -313,6 +314,19 @@ function loadServiceWorker({
       importedScripts.push(entry);
       const file = path.resolve(path.dirname(workerPath), entry);
       vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
+      if (entry === '../lib/collector-session.js' && collectorExchangeImpl) {
+        const collectorSessionApi = context.JzCollectorSession;
+        context.JzCollectorSession = Object.freeze({
+          ...collectorSessionApi,
+          createCollectorSessionManager(options) {
+            const manager = collectorSessionApi.createCollectorSessionManager(options);
+            return Object.freeze({
+              ...manager,
+              exchangeCollectorTicket: collectorExchangeImpl,
+            });
+          },
+        });
+      }
     }
   };
   vm.runInContext(fs.readFileSync(workerPath, 'utf8'), context, {
@@ -767,6 +781,42 @@ test('Collector portal generations fence stale exchange and stale logout', async
   assert.equal(auth.ok, true);
   assert.equal(auth.data.authenticated, true);
   assert.equal(auth.data.account.id, 'account-generation-g2');
+});
+
+test('Collector exchange errors expose only finite status and sanitized stable code', async () => {
+  const ticket = 'ctt_exchange_error_secret_123456789';
+  const harness = loadServiceWorker({
+    collectorExchangeImpl: async () => {
+      const error = new Error(`exchange rejected for ${ticket}`);
+      error.status = Symbol(`503-${ticket}`);
+      error.code = `UPSTREAM_${ticket}`;
+      throw error;
+    },
+  });
+
+  const begun = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: 'generation_error_1234',
+  }, trustedWebSender);
+  assert.equal(begun.ok, true);
+
+  const response = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-error-envelope',
+    generationId: 'generation_error_1234',
+    ticket,
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: false,
+    status: 0,
+    code: 'COLLECTOR_AUTH_FAILED',
+    error: 'exchange rejected for [REDACTED]',
+  });
+  assert.doesNotMatch(JSON.stringify(response), /ctt_exchange_error_secret/);
 });
 
 test('logout never reloads or removes a user-owned Seller tab', async () => {
