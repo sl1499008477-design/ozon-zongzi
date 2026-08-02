@@ -73,6 +73,7 @@ test("deduplicates matched values for a multi-select", () => {
     multiple: true,
   }), { matchedById: true, value: ["Первый", "Второй"] });
 });
+
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -108,6 +109,7 @@ export function resolveCollectEditDictionaryValue({
   // Match only option.dictionaryValueId/option.id against normalized IDs.
   // Return the target option.value, never the captured display text.
 }
+
 ```
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
@@ -128,23 +130,24 @@ Expected: 4 tests pass, 0 fail.
 
 **Interfaces:**
 - Consumes: `collectEditDictionaryIdsOf` and `resolveCollectEditDictionaryValue` from Task 1.
+- Produces: `shouldApplyCollectEditDictionaryDefault({ currentValue, sourceValue, matchedById }): boolean` from the helper module.
 - Produces: target dictionary values in `categoryAttributeValues[key]`, while preserving the existing `collectEditResolveSelectControlValue` text fallback.
 
-- [ ] **Step 1: Add a failing integration contract test**
+- [ ] **Step 1: Add failing state-reconciliation behavior tests**
 
-The test must read `app/src/App.jsx` and assert all integration boundaries are present:
-
-```js
-assert.match(appSource, /collectEditDictionaryIdsOf\(attr\)/);
-assert.match(appSource, /resolveCollectEditDictionaryValue\(/);
-assert.match(appSource, /matchedById/);
-assert.match(appSource, /sourceAttributeEvidenceMap/);
-```
-
-It must also assert that the existing text fallback remains in the same resolution path:
+Extend the pure test with literal state transitions that model the page lifecycle:
 
 ```js
-assert.match(appSource, /collectEditResolveSelectControlValue\(sourceValue/);
+assert.equal(shouldApplyCollectEditDictionaryDefault({
+  currentValue: "",
+  sourceValue: "热水瓶",
+  matchedById: true,
+}), true);
+assert.equal(shouldApplyCollectEditDictionaryDefault({
+  currentValue: "热水瓶",
+  sourceValue: "热水瓶",
+  matchedById: false,
+}), false);
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -155,13 +158,28 @@ Run:
 node --test app/tests/collect-edit-dictionary-match.test.mjs
 ```
 
-Expected: FAIL because `App.jsx` has not integrated dictionary ID evidence.
+Expected: FAIL until the late-option reconciliation contract is implemented.
 
-- [ ] **Step 3: Preserve dictionary evidence in source rows**
+- [ ] **Step 3: Implement the reconciliation guard**
+
+Add this pure export to `app/src/collect-edit-dictionary-match.js`:
+
+```js
+export function shouldApplyCollectEditDictionaryDefault({
+  currentValue,
+  sourceValue,
+  matchedById,
+} = {}) {
+  // Return true only when an ID match exists and currentValue is blank or
+  // still equals the untouched captured source value.
+}
+```
+
+- [ ] **Step 4: Preserve dictionary evidence in source rows**
 
 In `collectEditAttributeRows`, add `dictionaryIds: collectEditDictionaryIdsOf(attr)` to each row. Replace the value-only map with `sourceAttributeEvidenceMap`, keyed by the current attribute ID and carrying `{ value, dictionaryIds }`.
 
-- [ ] **Step 4: Resolve the target option before text fallback**
+- [ ] **Step 5: Resolve the target option before text fallback**
 
 For each category schema row:
 
@@ -185,7 +203,7 @@ const value = controlType === "select"
 
 Apply the same resolution when initializing `categoryAttributeValues`. If options load after the raw source text was installed, replace it only when the current value is blank or still equals the untouched captured source value. Preserve any different user-selected value.
 
-- [ ] **Step 5: Run focused tests and verify GREEN**
+- [ ] **Step 6: Run focused tests and verify GREEN**
 
 Run:
 
