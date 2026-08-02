@@ -419,7 +419,7 @@ const handleOzonCategoryRoute = createOzonCategoryRouteHandler({
   sendError,
 });
 
-async function readBody(req, { maxBytes = 10 * 1024 * 1024 } = {}) {
+async function readBody(req, { maxBytes = 10 * 1024 * 1024, requireBody = false } = {}) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -434,7 +434,15 @@ async function readBody(req, { maxBytes = 10 * 1024 * 1024 } = {}) {
     chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw) return {};
+  if (!raw) {
+    if (requireBody) {
+      const err = new Error("请求体不能为空");
+      err.status = 400;
+      err.code = "REQUEST_BODY_REQUIRED";
+      throw err;
+    }
+    return {};
+  }
   try {
     return JSON.parse(raw);
   } catch {
@@ -4966,6 +4974,7 @@ export const testExports = {
   upsertProductByStore,
   validateCollectBoxListingDraft,
   queueCollectSubmissionV3,
+  readBody,
 };
 
 export { handle };

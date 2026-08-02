@@ -94,9 +94,12 @@ function createResponse() {
   };
 }
 
-async function readJson(req) {
+async function readJson(req, { requireBody = false } = {}) {
   const chunks = [];
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  if (!chunks.length && requireBody) {
+    throw Object.assign(new Error("请求体不能为空"), { status: 400 });
+  }
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
 }
 
@@ -250,6 +253,15 @@ test("availability route accepts only an exact empty body and returns the authen
   assert.deepEqual(unavailable.body, { ok: true, available: false });
   assert.deepEqual(Object.keys(unavailable.body).sort(), ["available", "ok"]);
   assert.deepEqual(other.calls.hasAvailableJob, [{ session: OTHER_SESSION }]);
+
+  const absent = harness();
+  const absentBody = await request(
+    absent,
+    "POST",
+    "/collector/ozon/enrichment-jobs/available",
+  );
+  assert.equal(absentBody.status, 400);
+  assert.equal(absent.calls.hasAvailableJob.length, 0);
 
   for (const body of [
     null,

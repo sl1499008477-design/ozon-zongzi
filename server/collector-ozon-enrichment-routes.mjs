@@ -487,7 +487,7 @@ export function createCollectorOzonEnrichmentHttpHandler({
         return true;
       }
       if (available) {
-        const body = await readJson(req);
+        const body = await readJson(req, { requireBody: true });
         assertRequiredExactKeys(body, [], "Ozon Seller 可用任务请求格式无效");
         sendJson(res, 200, { ok: true, available: await service.hasAvailableJob({ session }) });
         return true;
