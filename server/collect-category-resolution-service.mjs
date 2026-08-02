@@ -346,13 +346,18 @@ export function createCollectCategoryResolutionService({
     const taxonomyScope = String(input.taxonomyScope ?? TAXONOMY_SCOPE_OZON_DEFAULT).trim()
       || TAXONOMY_SCOPE_OZON_DEFAULT;
     const item = await readCollectItem(accountId, collectItemId);
+    const current = await repository.readForItem({ accountId, collectItemId, taxonomyScope });
+    const sourceTypeId = sourceTypeIdOf(item);
+    const taxonomyFingerprint = input.taxonomyFingerprint ?? (
+      current?.sourceTypeId === sourceTypeId ? current.taxonomyFingerprint : null
+    );
     return enqueueForState({
       accountId,
       collectItemId,
       item,
       credentialStoreId: input.credentialStoreId,
       taxonomyScope,
-      taxonomyFingerprint: input.taxonomyFingerprint ?? null,
+      taxonomyFingerprint,
     });
   }
 

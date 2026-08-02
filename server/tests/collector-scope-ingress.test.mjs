@@ -3,6 +3,7 @@ import test from "node:test";
 import { createJsonAccountScopedCollectionHandler } from "../account-scoped-collection-routes.mjs";
 import {
   assertCollectorScopeFieldsAbsentV4,
+  captureCategoryResolutionStoreSnapshot,
   prepareCollectRequestV4,
   scheduleCategoryResolutionAfterCollect,
 } from "../collection-pipeline.mjs";
@@ -124,6 +125,26 @@ test("post-commit success also survives a category port initialization failure",
 
   assert.equal(result, collected);
   assert.equal(JSON.stringify(logged).includes("credential detail"), false);
+});
+
+test("acceptance snapshot getter failure is isolated and does not expose its message", async () => {
+  const categoryResolutionPort = Object.defineProperty({}, "captureCredentialStoreSnapshot", {
+    get() {
+      throw Object.assign(new Error("apiKey=must-not-log"), {
+        code: "CATEGORY_PORT_INITIALIZATION_FAILED",
+      });
+    },
+  });
+  const logged = [];
+
+  const snapshot = await captureCategoryResolutionStoreSnapshot({
+    categoryResolutionPort,
+    accountId: "account-authoritative",
+    logger: { error: (...values) => logged.push(values) },
+  });
+
+  assert.equal(snapshot, null);
+  assert.equal(JSON.stringify(logged).includes("must-not-log"), false);
 });
 
 test("V4 ingress rejects credential-shaped keys at nested array and object depth", () => {

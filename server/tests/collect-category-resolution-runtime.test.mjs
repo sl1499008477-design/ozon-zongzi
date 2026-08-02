@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { appendAuditEvent } from "../audit-event.mjs";
 import { createCollectCategoryResolutionRuntime } from "../collect-category-resolution-runtime.mjs";
@@ -9,7 +10,7 @@ const COLLECT_ITEM_ID = "collect-runtime";
 const STORE_ID = "store-runtime";
 const NOW = new Date("2026-08-03T12:00:00.000Z");
 
-function categoryService() {
+function categoryService(taxonomyScope = "OZON:DEFAULT") {
   return {
     async getCategorySnapshot() {
       return {
@@ -18,7 +19,7 @@ function categoryService() {
           category_name: "家居",
           children: [{ type_id: 94_405, type_name: "杯子", children: [] }],
         }],
-        taxonomyScope: "OZON:DEFAULT",
+        taxonomyScope,
         taxonomyFingerprint: "taxonomy-runtime-v1",
         fetchedAt: NOW.toISOString(),
         stale: false,
@@ -91,6 +92,90 @@ test("JSON runtime ignores caller store scope and atomically queues with the bac
   assert.equal(saves, 1);
   assert.equal("credentialStoreId" in item, false);
   assert.equal(JSON.stringify(item).includes(STORE_ID), false);
+});
+
+test("a trusted acceptance snapshot freezes the current store across a concurrent switch", async () => {
+  const item = completeItem();
+  const forgedItem = completeItem({ id: "collect-forged" });
+  const state = {
+    caches: { collectBox: [item, forgedItem] },
+    stores: [
+      { id: "store-before", ownerAccountId: ACCOUNT_ID, clientId: "before", apiKey: "secret-before" },
+      { id: "store-after", ownerAccountId: ACCOUNT_ID, clientId: "after", apiKey: "secret-after" },
+    ],
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  let currentStoreId = "store-before";
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async () => currentStoreId,
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+  });
+
+  const acceptedStoreSnapshot = await runtime.captureCredentialStoreSnapshot({ accountId: ACCOUNT_ID });
+  currentStoreId = "store-after";
+  const queued = await runtime.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreSnapshot: acceptedStoreSnapshot,
+  });
+
+  assert.equal(queued.credentialStoreId, "store-before");
+  assert.equal("apiKey" in acceptedStoreSnapshot, false);
+  assert.equal(JSON.stringify(state.collectCategoryResolutions).includes("credentialStoreSnapshot"), false);
+
+  const forged = await runtime.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: forgedItem.id,
+    credentialStoreSnapshot: Object.freeze({ accountId: ACCOUNT_ID, credentialStoreId: "store-before" }),
+  });
+  assert.equal(forged.credentialStoreId, "store-after");
+});
+
+test("a trusted empty acceptance snapshot remains WAITING_STORE after a concurrent store selection", async () => {
+  const item = completeItem({ id: "collect-accepted-without-store" });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{
+      id: "store-selected-later",
+      ownerAccountId: ACCOUNT_ID,
+      clientId: "later",
+      apiKey: "secret-later",
+    }],
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  let currentStoreId = "";
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async () => currentStoreId,
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+  });
+
+  const acceptedStoreSnapshot = await runtime.captureCredentialStoreSnapshot({ accountId: ACCOUNT_ID });
+  currentStoreId = "store-selected-later";
+  const waiting = await runtime.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: item.id,
+    credentialStoreSnapshot: acceptedStoreSnapshot,
+  });
+
+  assert.deepEqual(acceptedStoreSnapshot, {});
+  assert.equal(waiting.status, "WAITING_STORE");
+  assert.equal(waiting.credentialStoreId, null);
 });
 
 test("enrichment completion promotes one waiting record and repeated notifications stay idempotent", async () => {
@@ -221,6 +306,56 @@ test("PostgreSQL runtime uses the same server-derived schedule contract without 
   })).id, "resolution-postgres");
 });
 
+test("PostgreSQL scheduling forwards an existing fingerprint so repository idempotency can preserve a match", async () => {
+  const repository = postgresRepositoryDouble();
+  const recordKey = `${ACCOUNT_ID}:${COLLECT_ITEM_ID}:OZON:DEFAULT`;
+  const matched = {
+    id: "matched-postgres",
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    taxonomyScope: "OZON:DEFAULT",
+    sourceTypeId: 94405,
+    taxonomyFingerprint: "taxonomy-runtime-v1",
+    credentialStoreId: STORE_ID,
+    status: "MATCHED",
+    method: "TYPE_ID_EXACT",
+    targetDescriptionCategoryId: 17028702,
+    targetTypeId: 94405,
+    updatedAt: NOW.toISOString(),
+  };
+  repository.records.set(recordKey, matched);
+  repository.enqueue = async (input) => {
+    assert.equal(input.taxonomyFingerprint, "taxonomy-runtime-v1");
+    return structuredClone(matched);
+  };
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => { throw new Error("PostgreSQL scheduling must not load JSON state"); },
+    saveState: async () => { throw new Error("PostgreSQL scheduling must not save JSON state"); },
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    persistenceMode: () => "postgres",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    initializePostgresRepository: async () => repository,
+    readCollectItem: async () => completeItem(),
+    readCredentialStore: async ({ accountId, storeId }) => ({
+      id: storeId,
+      ownerAccountId: accountId,
+      clientId: "client-postgres",
+      apiKey: "secret-postgres",
+    }),
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+  });
+
+  const replay = await runtime.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+  });
+
+  assert.equal(replay.status, "MATCHED");
+  assert.equal(replay.targetTypeId, 94405);
+});
+
 test("PostgreSQL store adapter combines credential proof with current owned status and rejects inactive stores", async () => {
   const repository = postgresRepositoryDouble();
   let credentialReads = 0;
@@ -332,10 +467,14 @@ test("PostgreSQL restart query filters actionable states before applying its bat
   const pool = {
     async query(sql, params) {
       queries.push({ sql, params: structuredClone(params) });
+      if (/SELECT cursor_key/.test(sql)) return { rows: [] };
+      if (/INSERT INTO collect_category_resolution_runtime_cursors/.test(sql)) return { rows: [] };
       return { rows: [{
-        id: COLLECT_ITEM_ID,
+        collect_item_id: COLLECT_ITEM_ID,
         account_id: ACCOUNT_ID,
         taxonomy_scope: taxonomyScope,
+        kind: "RECONCILE",
+        cursor_key: `${ACCOUNT_ID}\u001f1\u001f${COLLECT_ITEM_ID}\u001f${taxonomyScope}`,
       }] };
     },
   };
@@ -363,13 +502,12 @@ test("PostgreSQL restart query filters actionable states before applying its bat
   const result = await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
 
   assert.equal(result.scheduled, 1);
-  assert.equal(queries.length, 1);
-  assert.match(queries[0].sql, /summary->'enrichment'->>'status'/);
-  assert.match(queries[0].sql, /resolution\.status='WAITING_STORE'/);
-  assert.match(queries[0].sql, /resolution\.status='MATCHED'/);
-  assert.match(queries[0].sql, /LIMIT \$2/);
-  assert.doesNotMatch(queries[0].sql, /resolution\.taxonomy_scope=\$3/);
-  assert.deepEqual(queries[0].params.slice(0, 3), [ACCOUNT_ID, 1, "OZON:DEFAULT"]);
+  assert.equal(queries.length, 3);
+  assert.match(queries[1].sql, /resolution\.status IN \('WAITING_ENRICHMENT','WAITING_STORE','MATCHED'\)/);
+  assert.match(queries[1].sql, /resolution\.status IN \('QUEUED','RETRYABLE_ERROR','INVALIDATED'\)/);
+  assert.match(queries[1].sql, /LIMIT \$5/);
+  assert.deepEqual(queries[1].params.slice(0, 2), [ACCOUNT_ID, "OZON:DEFAULT"]);
+  assert.equal(queries[1].params[4], 1);
   const resolution = await runtime.readForItem({
     accountId: ACCOUNT_ID,
     collectItemId: COLLECT_ITEM_ID,
@@ -379,7 +517,7 @@ test("PostgreSQL restart query filters actionable states before applying its bat
   assert.equal(repository.records.size, 1);
 });
 
-test("restart reconciliation is bounded and a concurrent drain cannot overlap", async () => {
+test("global restart reconciliation is bounded and a concurrent drain cannot overlap", async () => {
   const state = {
     caches: {
       collectBox: ["one", "two", "three"].map((suffix) => completeItem({
@@ -440,7 +578,7 @@ test("restart reconciliation is bounded and a concurrent drain cannot overlap", 
   assert.equal(first.scheduled, 2);
   assert.equal(first.processed, 0);
   assert.equal(state.collectCategoryResolutions.length, 2);
-  assert.deepEqual(listRequests[0], { accountId: ACCOUNT_ID, limit: 2 });
+  assert.deepEqual(listRequests, []);
 
   const second = await runtime.resolveDue({ limit: 2 });
   assert.ok(second.scheduled + second.processed <= 2);
@@ -484,17 +622,19 @@ test("JSON reconciliation does not let earlier queued items starve a later missi
     randomUUID: () => "runtime-lease",
   });
 
-  const result = await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+  let result = null;
+  for (let attempt = 0; attempt < 8 && state.collectCategoryResolutions.length < 3; attempt += 1) {
+    result = await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+  }
 
   assert.equal(result.scheduled, 1);
-  assert.equal(result.processed, 0);
   assert.equal(state.collectCategoryResolutions.length, 3);
   assert.equal(state.collectCategoryResolutions.some((record) => (
     record.collectItemId === items[2].id
   )), true);
 });
 
-test("incomplete waiting rows do not consume the bounded reconciliation batch", async () => {
+test("durable cursor advances across incomplete waiting rows within the global budget", async () => {
   const blockers = Array.from({ length: 17 }, (_, index) => completeItem({
     id: `${COLLECT_ITEM_ID}-incomplete-${String(index).padStart(2, "0")}`,
     status: "PENDING_ENRICHMENT",
@@ -534,13 +674,63 @@ test("incomplete waiting rows do not consume the bounded reconciliation batch", 
     randomUUID: () => "runtime-lease",
   });
 
-  const result = await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+  const attempts = [];
+  for (let attempt = 0; attempt < blockers.length + 1; attempt += 1) {
+    attempts.push(await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 }));
+  }
 
-  assert.equal(result.scheduled, 1);
-  assert.equal(result.processed, 0);
+  assert.equal(attempts.slice(0, blockers.length).every((result) => (
+    result.scheduled === 0 && result.processed === 0
+  )), true);
+  assert.equal(attempts.at(-1).scheduled, 1);
   assert.equal(state.collectCategoryResolutions.length, blockers.length + 1);
   assert.equal(state.collectCategoryResolutions.at(-1).collectItemId, recoverable.id);
   assert.equal(state.collectCategoryResolutions.at(-1).status, "QUEUED");
+});
+
+test("Service keeps explicit enrichmentComplete false waiting even when legacy status says COMPLETE", async () => {
+  const item = completeItem({
+    id: `${COLLECT_ITEM_ID}-explicit-incomplete`,
+    enrichmentComplete: false,
+    status: "COMPLETE",
+    enrichment: { status: "COMPLETE" },
+  });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{
+      id: STORE_ID,
+      ownerAccountId: ACCOUNT_ID,
+      clientId: "client-runtime",
+      apiKey: "secret-runtime",
+    }],
+    collectCategoryResolutions: [{
+      id: "explicit-incomplete-resolution",
+      accountId: ACCOUNT_ID,
+      collectItemId: item.id,
+      taxonomyScope: "OZON:DEFAULT",
+      sourceTypeId: 94_405,
+      status: "WAITING_ENRICHMENT",
+      nextAttemptAt: NOW.toISOString(),
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+  });
+
+  await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+
+  assert.equal(state.collectCategoryResolutions[0].status, "WAITING_ENRICHMENT");
 });
 
 test("JSON restart reconciliation carries a non-default waiting scope through scheduling", async () => {
@@ -590,6 +780,155 @@ test("JSON restart reconciliation carries a non-default waiting scope through sc
   assert.equal(nonDefault.status, "QUEUED");
   assert.equal(nonDefault.taxonomyScope, taxonomyScope);
   assert.equal(state.collectCategoryResolutions.length, 2);
+});
+
+test("worker claims and matches an exact non-default taxonomy scope", async () => {
+  const taxonomyScope = "OZON:RU";
+  const item = completeItem({ id: `${COLLECT_ITEM_ID}-ru-queued` });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{
+      id: STORE_ID,
+      ownerAccountId: ACCOUNT_ID,
+      clientId: "client-runtime",
+      apiKey: "secret-runtime",
+    }],
+    collectCategoryResolutions: [{
+      id: "ru-queued-resolution",
+      accountId: ACCOUNT_ID,
+      collectItemId: item.id,
+      taxonomyScope,
+      sourceTypeId: 94_405,
+      status: "QUEUED",
+      taxonomyFingerprint: null,
+      credentialStoreId: STORE_ID,
+      attemptCount: 0,
+      nextAttemptAt: NOW.toISOString(),
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(taxonomyScope),
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+  });
+
+  const runs = [];
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    runs.push(await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 }));
+  }
+  const resolution = await runtime.readForItem({
+    accountId: ACCOUNT_ID,
+    collectItemId: item.id,
+    taxonomyScope,
+  });
+
+  assert.ok(runs.reduce((total, run) => total + run.processed, 0) >= 2);
+  assert.equal(resolution.status, "MATCHED");
+  assert.equal(resolution.taxonomyScope, taxonomyScope);
+});
+
+test("one global budget bounds account and store work across five accounts", async () => {
+  const accountIds = ["account-a", "account-b", "account-c", "account-d", "account-e"];
+  const state = {
+    caches: { collectBox: accountIds.map((accountId) => completeItem({
+      id: `collect-${accountId}`,
+      accountId,
+    })) },
+    stores: accountIds.map((accountId) => ({
+      id: `store-${accountId}`,
+      ownerAccountId: accountId,
+      clientId: `client-${accountId}`,
+      apiKey: `secret-${accountId}`,
+    })),
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  let storeLookups = 0;
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async (accountId) => {
+      storeLookups += 1;
+      return `store-${accountId}`;
+    },
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+  });
+
+  const result = await runtime.resolveDue({ limit: 1 });
+
+  assert.equal(result.attempted, 1);
+  assert.equal(result.scheduled + result.processed, 1);
+  assert.equal(storeLookups, 1);
+  assert.equal(state.collectCategoryResolutions.length, 1);
+});
+
+test("durable JSON cursor advances past a poison account after Runtime recreation", async () => {
+  const candidates = [
+    { accountId: "account-a", collectItemId: "collect-poison-candidate-a" },
+    { accountId: "account-b", collectItemId: "collect-poison-candidate-b" },
+  ].sort((left, right) => {
+    const key = (candidate) => crypto.createHash("sha256").update(JSON.stringify([
+      candidate.accountId, "1", candidate.collectItemId, "OZON:DEFAULT",
+    ])).digest("hex");
+    return key(left).localeCompare(key(right));
+  });
+  const [poison, healthy] = candidates;
+  const state = {
+    caches: { collectBox: candidates.map((candidate) => completeItem({
+      id: candidate.collectItemId,
+      accountId: candidate.accountId,
+    })) },
+    stores: [{
+      id: `store-${healthy.accountId}`,
+      ownerAccountId: healthy.accountId,
+      clientId: "client-healthy",
+      apiKey: "secret-healthy",
+    }],
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  const dependencies = {
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: categoryService(),
+    currentCredentialStoreForAccount: async (accountId) => {
+      if (accountId === poison.accountId) {
+        throw Object.assign(new Error("poison"), { code: "STORE_LOOKUP_FAILED" });
+      }
+      return `store-${accountId}`;
+    },
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-lease",
+    logger: { error() {} },
+  };
+
+  const first = await createCollectCategoryResolutionRuntime(dependencies).resolveDue({ limit: 1 });
+  const second = await createCollectCategoryResolutionRuntime(dependencies).resolveDue({ limit: 1 });
+
+  assert.equal(first.errors.length, 1);
+  assert.equal(first.attempted, 1);
+  assert.equal(second.attempted, 1);
+  assert.equal(state.collectCategoryResolutions.length, 1);
+  assert.equal(second.scheduled, 1);
+  assert.equal(state.collectCategoryResolutions[0].accountId, healthy.accountId);
+  assert.ok(state.collectCategoryResolutionRuntimeCursors?.global);
 });
 
 test("store wake pages every waiting row and validates a later matched row", async () => {

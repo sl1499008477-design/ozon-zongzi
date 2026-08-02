@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const migrationUrl = new URL("../db/migrations/024_collect_category_resolution.sql", import.meta.url);
+const runtimeCursorMigrationUrl = new URL(
+  "../db/migrations/025_collect_category_resolution_runtime_cursor.sql",
+  import.meta.url,
+);
 
 test("category resolution migration adds an account-scoped, non-destructive current-record table", async () => {
   const sql = await readFile(migrationUrl, "utf8");
@@ -22,4 +26,13 @@ test("category resolution migration adds an account-scoped, non-destructive curr
   );
   assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
   assert.doesNotMatch(sql, /product_drafts|categoryResolution/);
+});
+
+test("category resolution worker cursor migration is additive and restart-safe", async () => {
+  const sql = await readFile(runtimeCursorMigrationUrl, "utf8");
+
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS collect_category_resolution_runtime_cursors/);
+  assert.match(sql, /worker_key TEXT PRIMARY KEY/);
+  assert.match(sql, /cursor_key TEXT NOT NULL/);
+  assert.doesNotMatch(sql, /DELETE FROM|TRUNCATE TABLE|DROP TABLE/);
 });

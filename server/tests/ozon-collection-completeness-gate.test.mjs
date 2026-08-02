@@ -370,6 +370,34 @@ test("JSON category scheduling runs after collection commit and cannot roll back
   assert.equal(JSON.stringify(logged).includes("credential secret"), false);
 });
 
+test("JSON collection captures an opaque store snapshot before commit and forwards it after commit", async () => {
+  const acceptedStoreSnapshot = Object.freeze({ opaque: true });
+  const calls = [];
+  const harness = jsonHarness(collectInput({
+    sourceSku: "category-snapshot-before-commit",
+    requestId: "category-snapshot-before-commit",
+  }), {
+    categoryResolutionPort: {
+      async captureCredentialStoreSnapshot(input) {
+        calls.push(["capture", structuredClone(input)]);
+        return acceptedStoreSnapshot;
+      },
+      async scheduleForCollect(input) {
+        calls.push(["schedule", input]);
+      },
+    },
+  });
+
+  await harness.invoke();
+
+  assert.equal(harness.response.status, 200);
+  assert.deepEqual(calls[0], ["capture", { accountId: "json-account" }]);
+  assert.equal(calls[1][0], "schedule");
+  assert.equal(calls[1][1].credentialStoreSnapshot, acceptedStoreSnapshot);
+  assert.equal(JSON.stringify(harness.state).includes("credentialStoreSnapshot"), false);
+  assert.equal(JSON.stringify(harness.response.body).includes("credentialStoreSnapshot"), false);
+});
+
 test("JSON pending canonical item becomes complete and atomically supersedes its active linked job", async () => {
   const sourceSku = "json-pending-to-complete";
   const harness = jsonHarness(collectInput({

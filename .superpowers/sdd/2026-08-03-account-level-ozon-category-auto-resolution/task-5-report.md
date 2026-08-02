@@ -85,3 +85,55 @@ Fresh complete server regression after all review fixes:
 - No live Ozon API, production credential, production data, or external write was used. Category calls were exercised through deterministic fakes.
 - Primary regression risk is operational load/fairness when an account has a very large backlog. Processing is deliberately bounded and cursor-paged; safe logs and durable statuses provide diagnosis/retry.
 - Roll back by stopping the category worker and reverting the Task 5 commit. Retain existing category-resolution/audit records; there is no Task 5 schema migration or destructive data rewrite to reverse. Existing collection and enrichment data remain valid.
+
+## Fix Round 1 — controller findings
+
+### Outcome and contract changes
+
+- Worker discovery and execution now share one global candidate budget. A candidate is a literal `{ kind, accountId, collectItemId, taxonomyScope, cursorKey }`; at most `limit` candidates are attempted, and the result exposes `attempted` separately from state-changing `scheduled`/`processed` counts.
+- Due work is claimed with its persisted taxonomy scope. In particular, `OZON:RU` is passed to `service.resolveNext({ accountId, taxonomyScope })` and reaches `MATCHED` through the same fingerprint-fenced Service flow as the default scope.
+- Fairness is durable across Runtime recreation. JSON stores the last attempted cursor in shared server state under `collectCategoryResolutionRuntimeCursors`; PostgreSQL migration `025_collect_category_resolution_runtime_cursor.sql` adds `collect_category_resolution_runtime_cursors(worker_key, cursor_key, updated_at)`. Worker/candidate cursor keys are deterministic hashes rather than persisted account/item identifiers. The cursor advances after each attempted candidate, including safe poison-item failure, and never before the attempt.
+- Runtime no longer decides enrichment completeness. It may page a bounded `WAITING_ENRICHMENT` candidate, but always calls the Service; explicit `enrichmentComplete:false` therefore remains `WAITING_ENRICHMENT` even if a legacy status field says `COMPLETE`.
+- Repeated collection scheduling reads the current resolution and retains its taxonomy fingerprint only when the current source type is unchanged. Valid automatic `MATCHED` and `MANUAL` results remain unchanged and unaudited on replay; a changed source type clears the old target and explicitly requeues.
+- Collection acceptance freezes the server-owned operating-store context before collection persistence. Runtime issues an empty frozen opaque object backed by a private `WeakMap`; only the exact issued object and account binding are trusted. JSON and fast PostgreSQL routes capture it after authentication and before reading/transaction work, pass it only to post-commit scheduling, and Service revalidates the captured store. A captured no-store state remains `WAITING_STORE`; forged objects fall back to current backend context.
+- Capture and scheduling Port getters, calls, and logger failures remain isolated from the already accepted/committed collection. The opaque snapshot is never serialized into collection items, request rows, responses, or audit data.
+- Module-boundary guards now reject literal imports of `collect-category-resolution-repository.mjs` and generic `db/*` modules from account collection routes and the Ozon enrichment Service. App and extension files remain unchanged.
+
+### RED evidence
+
+- Duplicate scheduling: focused JSON/PG hook run produced **2 tests, 0 passed, 2 failed**. JSON returned `QUEUED` instead of `MATCHED`; the PostgreSQL-facing enqueue received `taxonomyFingerprint=null` instead of `taxonomy-runtime-v1`.
+- Accepted-store snapshot: focused run produced **2 tests, 0 passed, 2 failed**. Runtime had no capture API, and the JSON route scheduled without first capturing an opaque snapshot.
+- Exact scope, global budget, durable fairness, and migration: focused run produced **4 tests, 0 passed, 4 failed**. `OZON:RU` was not processed, `limit=1` performed two operations across five accounts, recreated Runtime did not retain a cursor, and migration `025` did not exist.
+- The boundary addition is a guard-only change: the strengthened assertions pass against current compliant modules and will fail future direct literal Repository/database imports.
+
+### GREEN and regression evidence
+
+Category Runtime, Service, Repository, and migration:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test server/tests/collect-category-resolution-runtime.test.mjs server/tests/collect-category-resolution-service.test.mjs server/tests/collect-category-resolution-repository.test.mjs server/tests/collect-category-resolution-migration.test.mjs
+# 120 passed, 0 failed, 0 skipped
+```
+
+Required Task 5 integration set:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/collect-category-resolution-runtime.test.mjs server/tests/collector-scope-ingress.test.mjs server/tests/ozon-collection-completeness-gate.test.mjs server/tests/collector-ozon-enrichment-service.test.mjs server/tests/collector-ozon-enrichment-runtime.test.mjs server/tests/module-boundaries.test.mjs
+# 111 tests; 110 passed, 1 PostgreSQL-configuration skip, 0 failed
+```
+
+Fresh complete server regression:
+
+```sh
+/Users/songliang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --test --test-reporter=tap server/tests/*.test.mjs
+# 578 tests; 574 passed, 4 configuration-based skips, 0 failed
+```
+
+All five changed production modules pass `node --check`; `git diff --check` passes. Test inventory remains **165 active, 14 historical/manual** files.
+
+### Unverified range, risks, and rollback
+
+- No PostgreSQL instance was configured. The additive migration contract, global candidate SQL shape, durable cursor read/upsert, transaction-bound Repository audits, and PostgreSQL-facing schedule hook were verified with deterministic tests/doubles, but real-engine migration, SQL execution plans, multi-process contention, and locking remain unverified. Four database-required full-suite cases were skipped.
+- No live Ozon API, credential, production data, or external write was used. Exact-scope category calls and store switches use deterministic fakes.
+- Remaining operational risk is scanning a very large JSON state to construct the bounded page, and PostgreSQL query-plan cost over a very large backlog. External store/category/claim work is strictly candidate-bounded, cursor progress is durable, and every failure is reported with stable identifiers/codes.
+- Rollback by stopping the worker and reverting the Fix Round 1 commit. The migration is additive and contains cursor metadata only; it may safely remain unused during rollback. Do not destructively drop the cursor table during an application rollback. Existing resolution, collection, and audit records remain valid.

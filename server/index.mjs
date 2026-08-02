@@ -88,6 +88,7 @@ import {
   authenticateCollectionRequest,
   getCollectRequestForAccount,
   ingestCollectRequestV4,
+  captureCategoryResolutionStoreSnapshot,
   assertCollectorScopeFieldsAbsentV4,
   preflightCollectRequestsV4,
 } from "./collection-pipeline.mjs";
@@ -2427,6 +2428,13 @@ async function handleFastCollectionRoute(req, res, url) {
       : collectRequestMatch
         ? await collectorAuthRuntime.authenticateRequest(req, "collector.job.read")
         : await authenticateCollectionRequest(req);
+    const credentialStoreSnapshot = sourceCollectMatch && req.method === "POST"
+      ? await captureCategoryResolutionStoreSnapshot({
+          categoryResolutionPort: collectCategoryResolutionRuntime,
+          accountId: account.id,
+          logger: console,
+        })
+      : null;
 
     if (collectRequestMatch && req.method === "GET") {
       const request = await getCollectRequestForAccount(account.id, decodeURIComponent(collectRequestMatch[1]));
@@ -2488,6 +2496,7 @@ async function handleFastCollectionRoute(req, res, url) {
             authenticatedAccount: account,
             input: { ...input, source: input.source || sourceId },
             categoryResolutionPort: collectCategoryResolutionRuntime,
+            credentialStoreSnapshot,
             logger: console,
           });
           const importedItem = { ...result.item, collectRequestId: result.requestId, duplicate: result.duplicate };

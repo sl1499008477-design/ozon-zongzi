@@ -86,11 +86,6 @@ function categoryAuditEvent(event = {}) {
   };
 }
 
-function enrichmentComplete(item = {}) {
-  if (item.enrichmentComplete === true) return true;
-  return text(item.enrichment?.status ?? item.enrichmentStatus).toUpperCase() === "COMPLETE";
-}
-
 function validInstantMillis(value) {
   if (!value) return null;
   const milliseconds = new Date(value).getTime();
@@ -142,6 +137,7 @@ export function createCollectCategoryResolutionRuntime({
   let intervalTimer = null;
   const storeWakeTimers = new Set();
   const activeStoreWakes = new Set();
+  const trustedCredentialStoreSnapshots = new WeakMap();
   let storeWakeEpoch = 0;
 
   async function initializeDefaultPostgresRepository() {
@@ -239,130 +235,6 @@ export function createCollectCategoryResolutionRuntime({
         .find((candidate) => text(candidate?.id) === text(input.storeId)
           && text(candidate?.ownerAccountId) === text(input.accountId));
       return store ? structuredClone(store) : null;
-    });
-  }
-
-  async function listReconciliationItems(accountId, limit, storeContext = null) {
-    const safeLimit = Math.min(MAX_BATCH_LIMIT, Math.max(1, Number(limit) || MAX_BATCH_LIMIT));
-    if (typeof providedListCollectItems === "function") {
-      const items = await providedListCollectItems({ accountId, limit: safeLimit });
-      return Array.isArray(items) ? items : [];
-    }
-    if (persistenceMode() === "postgres") {
-      const pool = await postgresPool();
-      const result = await pool.query(
-        `SELECT candidate.id,candidate.account_id,candidate.taxonomy_scope
-           FROM (
-             SELECT item.id,item.account_id,$3::TEXT AS taxonomy_scope,
-                    0 AS priority,item.updated_at
-               FROM collect_items item
-              WHERE item.account_id=$1
-                AND item.deleted_at IS NULL
-                AND NOT EXISTS (
-                  SELECT 1
-                    FROM collect_category_resolutions current
-                   WHERE current.account_id=item.account_id
-                     AND current.collect_item_id=item.id
-                     AND current.taxonomy_scope=$3
-                )
-             UNION ALL
-             SELECT item.id,item.account_id,resolution.taxonomy_scope,
-                    CASE
-                      WHEN resolution.status='WAITING_ENRICHMENT' THEN 1
-                      WHEN resolution.status='MATCHED' THEN 2
-                      ELSE 3
-                    END AS priority,
-                    item.updated_at
-               FROM collect_items item
-               JOIN collect_category_resolutions resolution
-                 ON resolution.account_id=item.account_id
-                AND resolution.collect_item_id=item.id
-              WHERE item.account_id=$1
-                AND item.deleted_at IS NULL
-                AND (
-                  (
-                    resolution.status='WAITING_ENRICHMENT'
-                    AND UPPER(COALESCE(item.summary->'enrichment'->>'status',''))='COMPLETE'
-                  )
-                  OR ($4::BOOLEAN AND resolution.status='WAITING_STORE')
-                  OR (
-                    $4::BOOLEAN
-                    AND resolution.status='MATCHED'
-                    AND (
-                      resolution.credential_store_id IS DISTINCT FROM $5
-                      OR resolution.validated_at IS NULL
-                      OR ($6::TIMESTAMPTZ IS NOT NULL AND resolution.validated_at < $6::TIMESTAMPTZ)
-                    )
-                  )
-                )
-           ) candidate
-          ORDER BY candidate.priority,candidate.updated_at,candidate.id,candidate.taxonomy_scope
-          LIMIT $2`,
-        [
-          accountId,
-          safeLimit,
-          TAXONOMY_SCOPE_OZON_DEFAULT,
-          Boolean(storeContext),
-          storeContext?.id ?? null,
-          storeContext?.updatedAt ?? null,
-        ],
-      );
-      const items = await Promise.all(result.rows.map(async (row) => {
-        const item = await readCollectItem({
-          accountId: text(row.account_id),
-          collectItemId: text(row.id),
-        });
-        return item ? { ...item, taxonomyScope: text(row.taxonomy_scope) } : null;
-      }));
-      return items.filter(Boolean);
-    }
-    return stateTransaction.run(async () => {
-      const state = await loadState();
-      const resolutions = Array.isArray(state?.collectCategoryResolutions)
-        ? state.collectCategoryResolutions
-        : [];
-      return (Array.isArray(state?.caches?.collectBox) ? state.caches.collectBox : [])
-        .flatMap((item) => {
-          if (text(item?.accountId) !== accountId
-            || item?.deletedAt != null
-            || text(item?.status).toUpperCase() === "DELETED") return [];
-          const currentRecords = resolutions.filter((record) => (
-            text(record?.accountId) === accountId
-            && text(record?.collectItemId) === text(item?.id)
-          ));
-          const candidates = [];
-          if (!currentRecords.some((record) => (
-            text(record?.taxonomyScope) === TAXONOMY_SCOPE_OZON_DEFAULT
-          ))) {
-            candidates.push({
-              item: { ...item, taxonomyScope: TAXONOMY_SCOPE_OZON_DEFAULT },
-              priority: 0,
-            });
-          }
-          for (const current of currentRecords) {
-            const taxonomyScope = text(current?.taxonomyScope) || TAXONOMY_SCOPE_OZON_DEFAULT;
-            if (current.status === "WAITING_ENRICHMENT" && enrichmentComplete(item)) {
-              candidates.push({ item: { ...item, taxonomyScope }, priority: 1 });
-            } else if (current.status === "MATCHED" && storeContext) {
-              const storeChanged = text(current.credentialStoreId) !== text(storeContext.id);
-              const storeUpdatedAt = validInstantMillis(storeContext.updatedAt);
-              const validatedAt = validInstantMillis(current.validatedAt);
-              if (storeChanged || (storeUpdatedAt !== null
-                && (validatedAt === null || validatedAt < storeUpdatedAt))) {
-                candidates.push({ item: { ...item, taxonomyScope }, priority: 2 });
-              }
-            } else if (current.status === "WAITING_STORE" && storeContext) {
-              candidates.push({ item: { ...item, taxonomyScope }, priority: 3 });
-            }
-          }
-          return candidates;
-        })
-        .sort((left, right) => left.priority - right.priority
-          || text(left.item?.updatedAt).localeCompare(text(right.item?.updatedAt))
-          || text(left.item?.id).localeCompare(text(right.item?.id))
-          || text(left.item?.taxonomyScope).localeCompare(text(right.item?.taxonomyScope)))
-        .slice(0, safeLimit)
-        .map(({ item }) => structuredClone(item));
     });
   }
 
@@ -466,12 +338,36 @@ export function createCollectCategoryResolutionRuntime({
     return text(value?.id ?? value);
   }
 
+  async function captureCredentialStoreSnapshot(input = {}) {
+    const accountId = text(input.accountId);
+    const acceptedContext = Object.freeze({
+      accountId,
+      credentialStoreId: await backendCredentialStoreId(accountId),
+    });
+    const snapshot = Object.freeze({});
+    trustedCredentialStoreSnapshots.set(snapshot, acceptedContext);
+    return snapshot;
+  }
+
+  function credentialStoreContextFromSnapshot(accountId, snapshot) {
+    if (!snapshot || typeof snapshot !== "object") return null;
+    const acceptedContext = trustedCredentialStoreSnapshots.get(snapshot);
+    if (!acceptedContext || text(acceptedContext.accountId) !== accountId) return null;
+    return acceptedContext;
+  }
+
   async function scheduleForCollect(input = {}) {
     const accountId = text(input.accountId);
+    const acceptedStoreContext = credentialStoreContextFromSnapshot(
+      accountId,
+      input.credentialStoreSnapshot,
+    );
     return service.scheduleForCollect({
       accountId,
       collectItemId: input.collectItemId,
-      credentialStoreId: await backendCredentialStoreId(accountId),
+      credentialStoreId: acceptedStoreContext
+        ? acceptedStoreContext.credentialStoreId
+        : await backendCredentialStoreId(accountId),
       taxonomyScope: input.taxonomyScope,
     });
   }
@@ -590,62 +486,253 @@ export function createCollectCategoryResolutionRuntime({
     });
   }
 
-  async function discoverAccountIds(requestedAccountId = "") {
-    if (text(requestedAccountId)) return [text(requestedAccountId)];
-    const state = await loadState();
-    return [...new Set([
-      ...(Array.isArray(state?.accounts) ? state.accounts.map((account) => text(account?.id)) : []),
-      ...(Array.isArray(state?.caches?.collectBox)
-        ? state.caches.collectBox.map((item) => text(item?.accountId))
-        : []),
-      ...(Array.isArray(state?.collectCategoryResolutions)
-        ? state.collectCategoryResolutions.map((record) => text(record?.accountId))
-        : []),
-    ].filter(Boolean))].sort();
+  function runtimeCandidateKey(candidate) {
+    return crypto.createHash("sha256").update(JSON.stringify([
+      text(candidate.accountId),
+      candidate.kind === "RESOLVE" ? "0" : "1",
+      text(candidate.collectItemId),
+      text(candidate.taxonomyScope) || TAXONOMY_SCOPE_OZON_DEFAULT,
+    ])).digest("hex");
+  }
+
+  function rotateCandidates(candidates, cursorKey, limit) {
+    const ordered = candidates
+      .map((candidate) => ({ ...candidate, cursorKey: runtimeCandidateKey(candidate) }))
+      .sort((left, right) => (
+        left.cursorKey < right.cursorKey ? -1 : left.cursorKey > right.cursorKey ? 1 : 0
+      ));
+    if (!ordered.length) return [];
+    const after = ordered.filter((candidate) => candidate.cursorKey > cursorKey);
+    const before = ordered.filter((candidate) => candidate.cursorKey <= cursorKey);
+    return [...after, ...before].slice(0, limit);
+  }
+
+  async function readRuntimeCursor(workerKey) {
+    if (persistenceMode() === "postgres") {
+      const pool = await postgresPool();
+      const result = await pool.query(
+        `SELECT cursor_key
+           FROM collect_category_resolution_runtime_cursors
+          WHERE worker_key=$1`,
+        [workerKey],
+      );
+      return text(result.rows[0]?.cursor_key);
+    }
+    return stateTransaction.run(async () => {
+      const state = await loadState();
+      return text(state?.collectCategoryResolutionRuntimeCursors?.[workerKey]);
+    });
+  }
+
+  async function saveRuntimeCursor(workerKey, cursorKey) {
+    if (persistenceMode() === "postgres") {
+      const pool = await postgresPool();
+      await pool.query(
+        `INSERT INTO collect_category_resolution_runtime_cursors (worker_key,cursor_key,updated_at)
+         VALUES ($1,$2,NOW())
+         ON CONFLICT (worker_key) DO UPDATE
+         SET cursor_key=EXCLUDED.cursor_key,updated_at=EXCLUDED.updated_at`,
+        [workerKey, cursorKey],
+      );
+      return;
+    }
+    await stateTransaction.run(async () => {
+      const state = await loadState();
+      state.collectCategoryResolutionRuntimeCursors = (
+        state.collectCategoryResolutionRuntimeCursors
+        && typeof state.collectCategoryResolutionRuntimeCursors === "object"
+      ) ? state.collectCategoryResolutionRuntimeCursors : {};
+      state.collectCategoryResolutionRuntimeCursors[workerKey] = cursorKey;
+      await saveState(state);
+    });
+  }
+
+  async function listJsonRuntimeCandidates({ accountId, cursorKey, limit }) {
+    return stateTransaction.run(async () => {
+      const state = await loadState();
+      const items = (Array.isArray(state?.caches?.collectBox) ? state.caches.collectBox : [])
+        .filter((item) => (!accountId || text(item?.accountId) === accountId)
+          && item?.deletedAt == null
+          && text(item?.status).toUpperCase() !== "DELETED");
+      const itemKeys = new Set(items.map((item) => `${text(item.accountId)}\u001f${text(item.id)}`));
+      const resolutions = (Array.isArray(state?.collectCategoryResolutions)
+        ? state.collectCategoryResolutions
+        : []).filter((record) => (!accountId || text(record?.accountId) === accountId)
+          && itemKeys.has(`${text(record?.accountId)}\u001f${text(record?.collectItemId)}`));
+      const resolutionsByItem = new Map();
+      for (const record of resolutions) {
+        const itemKey = `${text(record.accountId)}\u001f${text(record.collectItemId)}`;
+        const scopedRecords = resolutionsByItem.get(itemKey) || [];
+        scopedRecords.push(record);
+        resolutionsByItem.set(itemKey, scopedRecords);
+      }
+      const candidates = [];
+      for (const item of items) {
+        const scopedRecords = resolutionsByItem.get(
+          `${text(item.accountId)}\u001f${text(item.id)}`,
+        ) || [];
+        if (!scopedRecords.some((record) => (
+          (text(record.taxonomyScope) || TAXONOMY_SCOPE_OZON_DEFAULT)
+            === TAXONOMY_SCOPE_OZON_DEFAULT
+        ))) {
+          candidates.push({
+            kind: "RECONCILE",
+            accountId: text(item.accountId),
+            collectItemId: text(item.id),
+            taxonomyScope: TAXONOMY_SCOPE_OZON_DEFAULT,
+          });
+        }
+      }
+      const nowMillis = now().getTime();
+      for (const record of resolutions) {
+        const status = text(record.status).toUpperCase();
+        const candidate = {
+          accountId: text(record.accountId),
+          collectItemId: text(record.collectItemId),
+          taxonomyScope: text(record.taxonomyScope) || TAXONOMY_SCOPE_OZON_DEFAULT,
+        };
+        if (["WAITING_ENRICHMENT", "WAITING_STORE", "MATCHED"].includes(status)) {
+          candidates.push({ ...candidate, kind: "RECONCILE" });
+        }
+        const due = validInstantMillis(record.nextAttemptAt) <= nowMillis;
+        const expiredLease = status === "MATCHING"
+          && validInstantMillis(record.leaseExpiresAt) <= nowMillis;
+        const validationRetry = status === "MATCHED"
+          && text(record.failureDetailSafe) === "VALIDATION_RETRY_PENDING";
+        if (due && (["QUEUED", "RETRYABLE_ERROR", "INVALIDATED"].includes(status)
+          || expiredLease || validationRetry)) {
+          candidates.push({ ...candidate, kind: "RESOLVE" });
+        }
+      }
+      return rotateCandidates(candidates, cursorKey, limit).map((candidate) => structuredClone(candidate));
+    });
+  }
+
+  async function listPostgresRuntimeCandidates({ accountId, cursorKey, limit }) {
+    const pool = await postgresPool();
+    const result = await pool.query(
+      `WITH candidates AS (
+         SELECT item.account_id,item.id AS collect_item_id,$2::TEXT AS taxonomy_scope,
+                'RECONCILE'::TEXT AS kind
+           FROM collect_items item
+          WHERE ($1::TEXT IS NULL OR item.account_id=$1)
+            AND item.deleted_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM collect_category_resolutions current
+               WHERE current.account_id=item.account_id
+                 AND current.collect_item_id=item.id
+                 AND current.taxonomy_scope=$2
+            )
+         UNION ALL
+         SELECT resolution.account_id,resolution.collect_item_id,resolution.taxonomy_scope,
+                'RECONCILE'::TEXT AS kind
+           FROM collect_category_resolutions resolution
+           JOIN collect_items item
+             ON item.account_id=resolution.account_id
+            AND item.id=resolution.collect_item_id
+          WHERE ($1::TEXT IS NULL OR resolution.account_id=$1)
+            AND item.deleted_at IS NULL
+            AND resolution.status IN ('WAITING_ENRICHMENT','WAITING_STORE','MATCHED')
+         UNION ALL
+         SELECT resolution.account_id,resolution.collect_item_id,resolution.taxonomy_scope,
+                'RESOLVE'::TEXT AS kind
+           FROM collect_category_resolutions resolution
+           JOIN collect_items item
+             ON item.account_id=resolution.account_id
+            AND item.id=resolution.collect_item_id
+          WHERE ($1::TEXT IS NULL OR resolution.account_id=$1)
+            AND item.deleted_at IS NULL
+            AND resolution.next_attempt_at<=$3
+            AND (
+              resolution.status IN ('QUEUED','RETRYABLE_ERROR','INVALIDATED')
+              OR (resolution.status='MATCHING' AND resolution.lease_expires_at<=$3)
+              OR (resolution.status='MATCHED'
+                  AND resolution.failure_detail_safe='VALIDATION_RETRY_PENDING')
+            )
+       ), keyed AS (
+         SELECT *,md5(concat_ws(E'\\x1f',account_id,
+                         CASE WHEN kind='RESOLVE' THEN '0' ELSE '1' END,
+                         collect_item_id,taxonomy_scope)) AS cursor_key
+           FROM candidates
+       )
+       SELECT account_id,collect_item_id,taxonomy_scope,kind,cursor_key
+         FROM keyed
+       ORDER BY CASE WHEN cursor_key>$4 THEN 0 ELSE 1 END,cursor_key
+       LIMIT $5`,
+      [accountId || null, TAXONOMY_SCOPE_OZON_DEFAULT, now(), cursorKey, limit],
+    );
+    return result.rows.map((row) => ({
+      kind: text(row.kind),
+      accountId: text(row.account_id),
+      collectItemId: text(row.collect_item_id ?? row.id),
+      taxonomyScope: text(row.taxonomy_scope) || TAXONOMY_SCOPE_OZON_DEFAULT,
+      cursorKey: text(row.cursor_key) || runtimeCandidateKey({
+        kind: text(row.kind),
+        accountId: text(row.account_id),
+        collectItemId: text(row.collect_item_id ?? row.id),
+        taxonomyScope: text(row.taxonomy_scope) || TAXONOMY_SCOPE_OZON_DEFAULT,
+      }),
+    }));
+  }
+
+  async function listRuntimeCandidates(input) {
+    return persistenceMode() === "postgres"
+      ? listPostgresRuntimeCandidates(input)
+      : listJsonRuntimeCandidates(input);
   }
 
   async function drain(input = {}) {
     const limit = boundedLimit(input.limit);
-    const accountIds = await discoverAccountIds(input.accountId);
+    const requestedAccountId = text(input.accountId);
+    const workerKey = requestedAccountId
+      ? `account:${crypto.createHash("sha256").update(requestedAccountId).digest("hex")}`
+      : "global";
     let scheduled = 0;
     let processed = 0;
+    let attempted = 0;
     const errors = [];
-
-    for (const accountId of accountIds) {
-      if (scheduled + processed >= limit) break;
-      let items;
-      let storeContext = null;
+    const cursorKey = await readRuntimeCursor(workerKey);
+    const candidates = await listRuntimeCandidates({
+      accountId: requestedAccountId,
+      cursorKey,
+      limit,
+    });
+    const storeIds = new Map();
+    const storeIdForAccount = (accountId) => {
+      if (!storeIds.has(accountId)) storeIds.set(accountId, backendCredentialStoreId(accountId));
+      return storeIds.get(accountId);
+    };
+    for (const candidate of candidates) {
+      attempted += 1;
+      const { accountId, collectItemId, taxonomyScope } = candidate;
       try {
-        const storeId = await backendCredentialStoreId(accountId);
-        storeContext = storeId
-          ? await service.operatingStoreContext({ accountId, storeId })
-          : null;
-        items = await listReconciliationItems(
-          accountId,
-          limit - scheduled - processed,
-          storeContext,
-        );
-      } catch (error) {
-        const code = stableErrorCode(error);
-        errors.push({ accountId, code });
-        log.error("collect category reconciliation failed", { accountId, code });
-        continue;
-      }
-      for (const item of items) {
-        if (scheduled + processed >= limit) break;
-        const collectItemId = text(item?.collectItemId ?? item?.id);
-        const taxonomyScope = text(item?.taxonomyScope) || TAXONOMY_SCOPE_OZON_DEFAULT;
-        if (!collectItemId) continue;
-        try {
+        if (candidate.kind === "RESOLVE") {
+          const result = await service.resolveNext({ accountId, taxonomyScope });
+          if (result) processed += 1;
+        } else {
           const current = await readForItem({ accountId, collectItemId, taxonomyScope });
           if (!current) {
-            await scheduleForCollect({ accountId, collectItemId, taxonomyScope });
+            await service.scheduleForCollect({
+              accountId,
+              collectItemId,
+              credentialStoreId: await storeIdForAccount(accountId),
+              taxonomyScope,
+            });
             scheduled += 1;
-          } else if (current.status === "WAITING_ENRICHMENT" && enrichmentComplete(item)) {
-            await onEnrichmentComplete({ accountId, collectItemId, taxonomyScope });
-            scheduled += 1;
-          } else if (current.status === "WAITING_STORE") {
-            if (storeContext) {
+          } else if (current.status === "WAITING_ENRICHMENT") {
+            const result = await service.onEnrichmentComplete({
+              accountId,
+              collectItemId,
+              credentialStoreId: await storeIdForAccount(accountId),
+              taxonomyScope,
+            });
+            if (result?.status !== current.status) scheduled += 1;
+          } else if (["WAITING_STORE", "MATCHED"].includes(current.status)) {
+            const storeId = await storeIdForAccount(accountId);
+            const storeContext = storeId
+              ? await service.operatingStoreContext({ accountId, storeId })
+              : null;
+            if (current.status === "WAITING_STORE" && storeContext) {
               const result = await service.scheduleForCollect({
                 accountId,
                 collectItemId,
@@ -653,54 +740,47 @@ export function createCollectCategoryResolutionRuntime({
                 taxonomyScope,
               });
               if (result?.status !== "WAITING_STORE") scheduled += 1;
-            }
-          } else if (current.status === "MATCHED" && storeContext) {
-            const storeChanged = text(current.credentialStoreId) !== text(storeContext.id);
-            const storeUpdatedAt = validInstantMillis(storeContext.updatedAt);
-            const validatedAt = validInstantMillis(current.validatedAt);
-            if (storeChanged || (storeUpdatedAt !== null
-              && (validatedAt === null || validatedAt < storeUpdatedAt))) {
-              await service.validateForStore({
-                accountId,
-                collectItemId,
-                storeId: storeContext.id,
-                taxonomyScope,
-              });
-              processed += 1;
+            } else if (current.status === "MATCHED" && storeContext) {
+              const storeChanged = text(current.credentialStoreId) !== text(storeContext.id);
+              const storeUpdatedAt = validInstantMillis(storeContext.updatedAt);
+              const validatedAt = validInstantMillis(current.validatedAt);
+              if (storeChanged || (storeUpdatedAt !== null
+                && (validatedAt === null || validatedAt < storeUpdatedAt))) {
+                await service.validateForStore({
+                  accountId,
+                  collectItemId,
+                  storeId: storeContext.id,
+                  taxonomyScope,
+                });
+                processed += 1;
+              }
             }
           }
-        } catch (error) {
-          const code = stableErrorCode(error);
-          errors.push({ accountId, collectItemId, code });
-          log.error("collect category reconciliation item failed", { accountId, collectItemId, code });
         }
+      } catch (error) {
+        const code = stableErrorCode(error);
+        errors.push({ accountId, collectItemId, taxonomyScope, code });
+        log.error("collect category runtime candidate failed", {
+          accountId, collectItemId, taxonomyScope, code,
+        });
+      }
+      try {
+        await saveRuntimeCursor(workerKey, candidate.cursorKey);
+      } catch (error) {
+        const code = stableErrorCode(error);
+        errors.push({ accountId, collectItemId, taxonomyScope, code });
+        log.error("collect category runtime cursor failed", {
+          accountId, collectItemId, taxonomyScope, code,
+        });
+        break;
       }
     }
-
-    while (scheduled + processed < limit) {
-      let madeProgress = false;
-      for (const accountId of accountIds) {
-        if (scheduled + processed >= limit) break;
-        try {
-          const result = await service.resolveNext({ accountId });
-          if (result) {
-            processed += 1;
-            madeProgress = true;
-          }
-        } catch (error) {
-          const code = stableErrorCode(error);
-          errors.push({ accountId, code });
-          log.error("collect category resolution drain failed", { accountId, code });
-        }
-      }
-      if (!madeProgress) break;
-    }
-    return { skipped: false, scheduled, processed, errors };
+    return { skipped: false, attempted, scheduled, processed, errors };
   }
 
   function resolveDue(input = {}) {
     if (drainPromise) {
-      return Promise.resolve({ skipped: true, scheduled: 0, processed: 0, errors: [] });
+      return Promise.resolve({ skipped: true, attempted: 0, scheduled: 0, processed: 0, errors: [] });
     }
     const current = drain(input).finally(() => {
       if (drainPromise === current) drainPromise = null;
@@ -742,6 +822,7 @@ export function createCollectCategoryResolutionRuntime({
   }
 
   return Object.freeze({
+    captureCredentialStoreSnapshot,
     scheduleForCollect,
     onEnrichmentComplete,
     onOperatingStoreAvailable,

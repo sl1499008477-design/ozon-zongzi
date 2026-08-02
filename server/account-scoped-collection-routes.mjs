@@ -1,5 +1,6 @@
 import {
   assertCollectorScopeFieldsAbsentV4,
+  captureCategoryResolutionStoreSnapshot,
   preflightCollectRequestsV4,
   scheduleCategoryResolutionAfterCollect,
 } from "./collection-pipeline.mjs";
@@ -67,6 +68,11 @@ export function createJsonAccountScopedCollectionHandler({
       }
 
       const account = await authenticate(req, "collector.upload");
+      const credentialStoreSnapshot = await captureCategoryResolutionStoreSnapshot({
+        categoryResolutionPort,
+        accountId: account.id,
+        logger,
+      });
       const pathSource = decodeURIComponent(sourceMatch[1]);
       const body = await readJson(req);
       const isBatch = url.pathname.endsWith("/batch");
@@ -275,6 +281,7 @@ export function createJsonAccountScopedCollectionHandler({
           categoryResolutionPort,
           accountId: account.id,
           collected: { collectItemId: item.id, item },
+          credentialStoreSnapshot,
           logger,
         });
       }

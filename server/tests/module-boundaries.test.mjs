@@ -87,6 +87,21 @@ assert.doesNotMatch(
   /CollectCategoryResolutionRepository|getPostgresPool|FROM\s+collect_category_resolutions/i,
   "Ozon enrichment service must use only the category resolution port",
 );
+for (const [source, label] of [
+  [accountScopedCollectionRoutes, "account-scoped collection routes"],
+  [enrichmentService, "Ozon enrichment service"],
+]) {
+  assert.doesNotMatch(
+    source,
+    /from\s+["'][^"']*collect-category-resolution-repository\.mjs["']/i,
+    `${label} must not import the category resolution repository module directly`,
+  );
+  assert.doesNotMatch(
+    source,
+    /from\s+["'][^"']*(?:\/db\/|db\/connection\.mjs|db\/migrate\.mjs)["']/i,
+    `${label} must not import generic database modules`,
+  );
+}
 const collectorAuthRouteIndex = serverEntry.indexOf("collectorAuthRuntime.handleHttpRoute(req, res, url)");
 const enrichmentRouteIndex = serverEntry.indexOf("collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)");
 const fastCollectionRouteIndex = serverEntry.indexOf(
@@ -94,12 +109,26 @@ const fastCollectionRouteIndex = serverEntry.indexOf(
   enrichmentRouteIndex,
 );
 const broadJsonTransactionIndex = serverEntry.indexOf("return jsonStateTransaction.run(async () =>", enrichmentRouteIndex);
+const fastCollectionHandlerIndex = serverEntry.indexOf("async function handleFastCollectionRoute(");
+const fastStoreSnapshotIndex = serverEntry.indexOf(
+  "const credentialStoreSnapshot = sourceCollectMatch",
+  fastCollectionHandlerIndex,
+);
+const fastCollectionBodyIndex = serverEntry.indexOf(
+  "const body = await readBody(req);",
+  fastStoreSnapshotIndex,
+);
 assert.ok(
   collectorAuthRouteIndex >= 0
     && enrichmentRouteIndex > collectorAuthRouteIndex
     && fastCollectionRouteIndex > enrichmentRouteIndex
     && broadJsonTransactionIndex > enrichmentRouteIndex,
   "Ozon enrichment routes must run after Collector auth and before waiting could hold broad state",
+);
+assert.ok(
+  fastStoreSnapshotIndex > fastCollectionHandlerIndex
+    && fastCollectionBodyIndex > fastStoreSnapshotIndex,
+  "fast PostgreSQL collection ingress must freeze its server-owned store before reading the body",
 );
 
 for (const functionName of [

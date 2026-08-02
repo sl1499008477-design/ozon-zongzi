@@ -83,6 +83,7 @@ export async function scheduleCategoryResolutionAfterCollect({
   categoryResolutionPort = null,
   accountId,
   collected,
+  credentialStoreSnapshot = null,
   logger = null,
 } = {}) {
   let scopedAccountId = "";
@@ -96,6 +97,7 @@ export async function scheduleCategoryResolutionAfterCollect({
     await scheduleForCollect.call(categoryResolutionPort, {
       accountId: scopedAccountId,
       collectItemId,
+      ...(credentialStoreSnapshot ? { credentialStoreSnapshot } : {}),
     });
   } catch (error) {
     try {
@@ -109,6 +111,30 @@ export async function scheduleCategoryResolutionAfterCollect({
     }
   }
   return collected;
+}
+
+export async function captureCategoryResolutionStoreSnapshot({
+  categoryResolutionPort = null,
+  accountId,
+  logger = null,
+} = {}) {
+  const scopedAccountId = clean(accountId, 240);
+  if (!scopedAccountId) return null;
+  try {
+    const capture = categoryResolutionPort?.captureCredentialStoreSnapshot;
+    if (typeof capture !== "function") return null;
+    return await capture.call(categoryResolutionPort, { accountId: scopedAccountId });
+  } catch (error) {
+    try {
+      logger?.error?.("collect category store snapshot failed", {
+        accountId: scopedAccountId,
+        code: stableCategoryScheduleErrorCode(error),
+      });
+    } catch {
+      // A secondary logger cannot reverse an accepted collection request.
+    }
+    return null;
+  }
 }
 
 function rejectCollectorScopeFields(input = {}) {
@@ -300,6 +326,13 @@ export async function ingestCollectRequestV4(options = {}) {
   if (!postgresEnabled()) return null;
   const usingAccountScopedContract = Boolean(options.authenticatedAccount || options.input);
   const authenticatedAccount = options.authenticatedAccount || { id: options.accountId };
+  const credentialStoreSnapshot = Object.hasOwn(options, "credentialStoreSnapshot")
+    ? options.credentialStoreSnapshot
+    : await captureCategoryResolutionStoreSnapshot({
+        categoryResolutionPort: options.categoryResolutionPort,
+        accountId: authenticatedAccount.id,
+        logger: options.logger,
+      });
   const legacyItem = options.item && typeof options.item === "object" ? options.item : {};
   const input = usingAccountScopedContract
     ? (options.input && typeof options.input === "object" ? options.input : {})
@@ -505,6 +538,7 @@ export async function ingestCollectRequestV4(options = {}) {
       categoryResolutionPort: options.categoryResolutionPort,
       accountId,
       collected,
+      credentialStoreSnapshot,
       logger: options.logger,
     });
   } catch (error) {

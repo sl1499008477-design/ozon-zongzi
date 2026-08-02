@@ -434,6 +434,55 @@ test("duplicate scheduling, completion notification, execution, and service rest
   assert.equal((await readResolution(restarted)).status, "MATCHED");
 });
 
+test("replaying collection scheduling preserves an unchanged automatic match", async () => {
+  const harness = createHarness();
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+  await resolveUntilSettled(harness);
+  const before = await readResolution(harness);
+  const auditCount = harness.calls.audits.length;
+
+  const replay = await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+
+  assert.equal(replay.status, "MATCHED");
+  assert.equal(replay.method, "TYPE_ID_EXACT");
+  assert.equal(replay.targetDescriptionCategoryId, 17028702);
+  assert.equal(replay.targetTypeId, 94405);
+  assert.equal(replay.taxonomyFingerprint, "taxonomy-v1");
+  assert.equal(replay.updatedAt, before.updatedAt);
+  assert.equal(harness.calls.audits.length, auditCount);
+});
+
+test("a changed source execution identity explicitly requeues an automatic match", async () => {
+  const harness = createHarness();
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+  await resolveUntilSettled(harness);
+  harness.item.sourceCategory.typeIdCandidate = 95555;
+
+  const replay = await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+
+  assert.equal(replay.status, "QUEUED");
+  assert.equal(replay.sourceTypeId, 95555);
+  assert.equal(replay.taxonomyFingerprint, null);
+  assert.equal(replay.targetDescriptionCategoryId, null);
+  assert.equal(replay.targetTypeId, null);
+});
+
 test("valid manual results survive automatic scheduling and stale worker completion", async () => {
   const harness = createHarness();
   await harness.service.scheduleForCollect({
@@ -450,6 +499,16 @@ test("valid manual results survive automatic scheduling and stale worker complet
     taxonomyFingerprint: "taxonomy-v1",
     displayPath: { zh: ["人工类目"] },
   });
+  const auditCount = harness.calls.audits.length;
+
+  const replay = await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+  assert.equal(replay.method, "MANUAL");
+  assert.equal(replay.targetDescriptionCategoryId, 17029999);
+  assert.equal(harness.calls.audits.length, auditCount);
 
   await harness.service.onEnrichmentComplete({ accountId: ACCOUNT_ID, collectItemId: COLLECT_ITEM_ID });
   assert.equal(await harness.service.resolveNext({ accountId: ACCOUNT_ID }), null);
