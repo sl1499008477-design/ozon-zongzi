@@ -360,6 +360,46 @@ test('generation activation shares the final exchange session-mutation queue', a
   assert.equal(await harness.manager.getCollectorSession(), null);
 });
 
+test('activating G2 waits for an older direct session write and clears its result', async () => {
+  const harness = createHarness();
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  const originalSet = harness.chromeApi.storage.session.set.bind(
+    harness.chromeApi.storage.session,
+  );
+  const oldWriteEntered = deferred();
+  const releaseOldWrite = deferred();
+  let blockNextSessionWrite = true;
+  harness.chromeApi.storage.session.set = async (values) => {
+    if (blockNextSessionWrite && Object.hasOwn(values, COLLECTOR_SESSION_STORAGE_KEY)) {
+      blockNextSessionWrite = false;
+      oldWriteEntered.resolve();
+      await releaseOldWrite.promise;
+    }
+    return originalSet(values);
+  };
+
+  const oldSessionWrite = harness.manager.setCollectorSession(validSession());
+  await oldWriteEntered.promise;
+  let activationSettled = false;
+  const activateG2 = harness.manager.activateCollectorGeneration('generation_G2_5678');
+  activateG2.then(
+    () => { activationSettled = true; },
+    () => { activationSettled = true; },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  const settledBeforeOldWrite = activationSettled;
+
+  releaseOldWrite.resolve();
+  await Promise.all([oldSessionWrite, activateG2]);
+
+  assert.equal(settledBeforeOldWrite, false);
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+    'generation_G2_5678',
+  );
+  assert.equal(await harness.manager.getCollectorSession(), null);
+});
+
 test('collectorFetch owns the immutable Collector authorization header and clears on 401/403', async () => {
   const requests = [];
   const harness = createHarness({
