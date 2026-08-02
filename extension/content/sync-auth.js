@@ -109,8 +109,7 @@
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.action !== 'collector.auth.request') return false;
-      restartRequestCycle();
-      sendResponse({ ok: true, requested: true });
+      sendResponse({ ok: true, requested: restartRequestCycle() });
       return false;
     });
   } catch {}
