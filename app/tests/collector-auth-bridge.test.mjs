@@ -125,6 +125,10 @@ test("creates one random generation per stable Web login and emits logout on acc
 });
 
 test("rejects unsafe generation IDs and retries creation on the next logged-in update", () => {
+  assert.equal(isCollectorAuthGenerationId("x".repeat(15)), false);
+  assert.equal(isCollectorAuthGenerationId("x".repeat(16)), true);
+  assert.equal(isCollectorAuthGenerationId("x".repeat(128)), true);
+  assert.equal(isCollectorAuthGenerationId("x".repeat(129)), false);
   const invalidGenerationIds = [
     "",
     "x".repeat(15),
@@ -152,6 +156,39 @@ test("rejects unsafe generation IDs and retries creation on the next logged-in u
     });
   }
   assert.equal(isCollectorAuthGenerationId("generation_A_1234"), true);
+});
+
+test("retires the old account generation when its successor factory throws and retries later", () => {
+  let factoryCalls = 0;
+  const controller = createCollectorAuthGenerationController({
+    createGenerationId() {
+      factoryCalls += 1;
+      if (factoryCalls === 1) return "generation_A_1234";
+      if (factoryCalls === 2) throw new Error("simulated Web Crypto failure");
+      return "generation_B_5678";
+    },
+  });
+
+  assert.deepEqual(controller.update("account-a"), {
+    generationId: "generation_A_1234",
+    logoutGenerationId: "",
+    announceReady: true,
+  });
+  assert.deepEqual(controller.update("account-b"), {
+    generationId: "",
+    logoutGenerationId: "generation_A_1234",
+    announceReady: false,
+  });
+  assert.deepEqual(controller.update("account-b"), {
+    generationId: "generation_B_5678",
+    logoutGenerationId: "",
+    announceReady: true,
+  });
+  assert.deepEqual(controller.update("account-b"), {
+    generationId: "generation_B_5678",
+    logoutGenerationId: "",
+    announceReady: false,
+  });
 });
 
 test("uses Web Crypto without passing the account ID to the production generation factory", () => {

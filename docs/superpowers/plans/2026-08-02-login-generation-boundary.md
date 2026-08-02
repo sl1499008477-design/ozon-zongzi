@@ -684,3 +684,118 @@ git commit -m "chore(extension): package login generation boundary"
 - [ ] **Step 7: Final clean-tree verification and rollback record**
 
 Run `git status --short`, `git log --oneline c07f230..HEAD`, and the focused auth suite once more. Expected: clean working tree and all tests PASS. Rollback is the exact Task 1–5 commit range after `c07f230`; reverting that range restores the previous build without database migration, while also restoring the known same-page relogin defect.
+
+---
+
+### Task 6: Final fix wave for fail-closed generation invalidation
+
+**Files:**
+- Modify: `app/src/collector-auth-bridge.js`
+- Modify: `app/tests/collector-auth-bridge.test.mjs`
+- Modify: `extension/lib/collector-session.js`
+- Modify: `extension/background/service-worker.js`
+- Modify: `extension/tests/collector-session.test.js`
+- Modify: `extension/tests/sync-capability-removed.test.js`
+- Regenerate: `app/public/sonli-extension-0.13.46.2/**`
+- Regenerate: `app/public/sonli-extension-0.13.46.2.zip`
+- Regenerate: `app/dist/sonli-extension-0.13.46.2.zip`
+- Modify: `docs/superpowers/verification/2026-08-02-login-generation-boundary.md`
+- Create: `.superpowers/sdd/2026-08-02-login-generation-boundary/final-fix-report.md`
+
+**Interfaces:**
+- Changes `activateCollectorGeneration(generationId)` so a changed generation first invalidates session and generation in one storage removal, then stores the successor; a failed successor write leaves no active generation.
+- Changes `clearCollectorGeneration(generationId)` so a matching Web logout removes session and generation in one storage operation while a stale logout remains a zero-write no-op.
+- Produces `logoutCollectorSession()` for internal extension logout; it serially removes both persisted authentication fences and does not reload or remove Seller tabs.
+- Changes `createCollectorAuthGenerationController().update(accountId)` so an account transition retires the old generation before factory execution and converts a throwing/invalid factory into the existing empty recoverable transition result.
+- Changes trusted-Web recovery injection order to `lib/web-bridge-policy.js`, `lib/collector-auth-flow.js`, `content/sync-auth.js` and proves the installed listener handles the retried request.
+
+- [ ] **Step 1: Write and run the failed-successor RED race**
+
+Start a G1 exchange whose HTTP response is held. Make the G2 generation storage write reject, then release G1. Assert activation rejects, both persisted session and generation are absent, and G1 rejects with the literal stable code `COLLECTOR_AUTH_GENERATION_CHANGED` rather than restoring a session.
+
+Run:
+
+```bash
+node --test --test-name-pattern="failed G2|matching generation logout" extension/tests/collector-session.test.js
+```
+
+Expected before implementation: FAIL because G1 remains the active marker after the failed G2 write and because matching logout uses two removal calls.
+
+- [ ] **Step 2: Make transition and matching Web logout invalidation atomic**
+
+Inside the existing session mutation queue, use one invalidation call for both keys:
+
+```js
+await chromeApi.storage.session.remove([
+  COLLECTOR_SESSION_STORAGE_KEY,
+  COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+]);
+```
+
+Only after that succeeds may activation store the successor generation. A matching logout uses the same one-call removal and returns `true`; a stale logout returns `false` without a storage write. Re-run the Step 1 command and require GREEN.
+
+- [ ] **Step 3: Write and run the internal-logout RED race**
+
+In the real service-worker harness, begin G1, hold its exchange response, send internal `{ action: "logout" }`, release the exchange, and assert the logout succeeds, the exchange returns `COLLECTOR_AUTH_GENERATION_CHANGED`, `getAuth` remains unauthenticated, and Seller tabs have zero reload/remove operations.
+
+Run:
+
+```bash
+node --test --test-name-pattern="internal logout" extension/tests/sync-capability-removed.test.js
+```
+
+Expected before implementation: FAIL because internal logout clears only the session snapshot and leaves G1 active.
+
+- [ ] **Step 4: Add and route explicit internal logout invalidation**
+
+Add `logoutCollectorSession()` to the session manager and its frozen public contract. It must run in `serializeSessionMutation` and remove the session and generation keys together. Route only the internal `action: "logout"` branch through it; retain the existing no-reload/no-remove Seller behavior. Re-run Step 3 and the Collector session tests and require GREEN.
+
+- [ ] **Step 5: Write and run the trusted-Web recovery RED integration**
+
+Make the first tab message fail with the standard no-receiver error. Execute every requested injection file inside an isolated content-script VM with a real `chrome.runtime.onMessage` event, then route the retry through the installed listener. Assert the retry resolves `{ ok: true, requested: true }` and the executed dependency order is policy, flow, adapter.
+
+Run:
+
+```bash
+node --test --test-name-pattern="no-receiver" extension/tests/sync-capability-removed.test.js
+```
+
+Expected before implementation: FAIL because `sync-auth.js` sees no `JzCollectorAuthFlow` and does not register a runtime listener.
+
+- [ ] **Step 6: Inject the content authentication flow before the adapter**
+
+Insert exactly one `chrome.scripting.executeScript` call for `lib/collector-auth-flow.js` between the policy and adapter calls. Re-run Step 5 plus `extension/tests/sync-auth-runtime.test.js` and require GREEN.
+
+- [ ] **Step 7: Write and run the Web factory-throw RED transition**
+
+Create A/G1, make the next factory call throw during A to B, and assert `update("account-b")` returns the literal recoverable result below without throwing. Then retry B and assert a fresh generation is announced while the 15-second same-account update remains unannounced:
+
+```js
+{
+  generationId: "",
+  logoutGenerationId: "generation_A_1234",
+  announceReady: false,
+}
+```
+
+Also pin generation validation at literal lengths 15 reject, 16 accept, 128 accept, and 129 reject.
+
+Run:
+
+```bash
+node --test --test-name-pattern="factory|generation IDs" app/tests/collector-auth-bridge.test.mjs
+```
+
+Expected before implementation: FAIL with the factory error escaping and the old controller state retained.
+
+- [ ] **Step 8: Retire old Web state before recoverable generation creation**
+
+Capture `logoutGenerationId`, clear account/generation/announcement state, then call the factory inside `try/catch`. Treat a throw or invalid result identically: return the empty transition result and allow the next update for B to retry. Re-run Step 7 and the complete Web bridge suite and require GREEN.
+
+- [ ] **Step 9: Run focused regression, build, package, and release gates**
+
+Run all Task 5 focused commands, then the Vite build and `node scripts/package-extension.mjs`. Require source/public parity, identical public/dist ZIP SHA-256, both packaged ZIP smoke/readiness checks, personal-data/credential scan, and `git diff --check`. Run `node scripts/verify.mjs`; preserve upstream-directory, Docker, PostgreSQL, and real-Chrome gaps as FAIL/SKIP/NOT RUN unless this wave obtains fresh evidence.
+
+- [ ] **Step 10: Record evidence, commit, and verify a clean tree**
+
+Update the verification document and final-fix report with per-finding RED/GREEN commands, changed contracts, test counts, ZIP SHA, complete-verify outcome, unverified scope, risks, rollback, and created commit hashes. Commit source/tests first and generated artifacts/evidence after fresh verification. Finally rerun the focused auth suite, `git diff --check`, and `git status --short`; require a clean worktree before handoff.

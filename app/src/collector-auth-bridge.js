@@ -32,10 +32,15 @@ export function createCollectorAuthGenerationController({
       let logoutGenerationId = "";
       if (nextAccountId !== accountId) {
         logoutGenerationId = generationId;
-        const candidate = String(createGenerationId() || "");
         accountId = "";
         generationId = "";
         announced = false;
+        let candidate = "";
+        try {
+          candidate = String(createGenerationId() || "");
+        } catch {
+          return { generationId: "", logoutGenerationId, announceReady: false };
+        }
         if (!isCollectorAuthGenerationId(candidate)) {
           return { generationId: "", logoutGenerationId, announceReady: false };
         }

@@ -214,7 +214,10 @@
         if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === generationId) {
           return { changed: false };
         }
-        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+        await chromeApi.storage.session.remove([
+          COLLECTOR_SESSION_STORAGE_KEY,
+          COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        ]);
         await chromeApi.storage.session.set({
           [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
         });
@@ -229,8 +232,20 @@
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
         );
         if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] !== generationId) return false;
-        await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
-        await chromeApi.storage.session.remove(COLLECTOR_AUTH_GENERATION_STORAGE_KEY);
+        await chromeApi.storage.session.remove([
+          COLLECTOR_SESSION_STORAGE_KEY,
+          COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        ]);
+        return true;
+      });
+    }
+
+    async function logoutCollectorSession() {
+      return serializeSessionMutation(async () => {
+        await chromeApi.storage.session.remove([
+          COLLECTOR_SESSION_STORAGE_KEY,
+          COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        ]);
         return true;
       });
     }
@@ -659,6 +674,7 @@
       flushPendingUploads,
       getCollectorSession,
       listPendingUploads,
+      logoutCollectorSession,
       setCollectorSession,
     });
   }
