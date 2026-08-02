@@ -85,8 +85,8 @@
     if (typeof value.requestId !== 'string') return null;
     if (arguments.length > 1 && typeof expectedRequestId !== 'string') return null;
     const normalized = requestId(value.requestId);
-    const expected = requestId(expectedRequestId);
-    if (!normalized || (arguments.length > 1 && (!expected || normalized !== expected))) return null;
+    if (!normalized || value.requestId !== normalized) return null;
+    if (arguments.length > 1 && value.requestId !== expectedRequestId) return null;
     const normalizedGenerationId = generationId(value.generationId);
     const ticket = typeof value.ticket === 'string' ? value.ticket : '';
     const expiresAt = typeof value.expiresAt === 'string' ? value.expiresAt : '';
@@ -94,7 +94,7 @@
     return {
       protocol: COLLECTOR_AUTH_PROTOCOL,
       action: RESPONSE_ACTION,
-      requestId: normalized,
+      requestId: value.requestId,
       generationId: normalizedGenerationId,
       ticket,
       expiresAt,

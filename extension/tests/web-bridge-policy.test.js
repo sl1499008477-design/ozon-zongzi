@@ -83,6 +83,14 @@ assert.equal(normalizeCollectorAuthResponse({
   ticket: 'ctt_ticket_secret_123456789',
   expiresAt: '2030-01-01T00:01:00.000Z',
 }, 'request-1'), null);
+assert.equal(normalizeCollectorAuthResponse({
+  protocol: COLLECTOR_AUTH_PROTOCOL,
+  action: 'collector.auth.response',
+  requestId: ' request-1 ',
+  generationId: 'generation_A_1234',
+  ticket: 'ctt_ticket_secret_123456789',
+  expiresAt: '2030-01-01T00:01:00.000Z',
+}, 'request-1'), null);
 for (const extra of ['token', 'storeId', 'accountId']) {
   assert.equal(normalizeCollectorAuthResponse({
     protocol: COLLECTOR_AUTH_PROTOCOL,
