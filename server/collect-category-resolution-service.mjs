@@ -652,7 +652,10 @@ export function createCollectCategoryResolutionService({
       const retryable = transient ?? classified.retryable;
       const failureCode = classified.failureCode;
       const at = instant(now());
-      const delay = retryable ? retryDelayMs(Number(resolution.attemptCount || 0) + 1) : RETRY_MAX_MS;
+      const attempt = leaseToken
+        ? Number(resolution.attemptCount || 1)
+        : Number(resolution.attemptCount || 0) + 1;
+      const delay = retryable ? retryDelayMs(attempt) : RETRY_MAX_MS;
       const deferred = await repository.deferValidation({
         accountId,
         id: resolution.id,
@@ -668,7 +671,7 @@ export function createCollectCategoryResolutionService({
             ? "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"
             : "COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW",
           resolution,
-          { failureCode, credentialStoreId },
+          { failureCode, credentialStoreId, attempt },
         ),
       });
       return { reused: false, deferred: retryable, resolution: deferred, failureCode };

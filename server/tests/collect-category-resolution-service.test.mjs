@@ -642,6 +642,60 @@ test("a due manual validation retry resumes after service recreation without aut
   assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_VALIDATED");
 });
 
+test("repeated validation failures increment once per execution and keep backoff audit and state aligned", async () => {
+  const validationError = Object.assign(new Error("validation unavailable"), { status: 503 });
+  const harness = createHarness({ validationError });
+  await harness.service.saveManual({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+    targetDescriptionCategoryId: 17029999,
+    targetTypeId: 94405,
+    taxonomyFingerprint: "taxonomy-v1",
+  });
+
+  await harness.service.validateForStore({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    storeId: "store-b",
+  });
+  const first = await readResolution(harness);
+  assert.equal(first.attemptCount, 1);
+  assert.equal(first.nextAttemptAt, "2026-08-03T10:00:30.000Z");
+  assert.equal(harness.calls.audits.at(-1).attempt, 1);
+
+  const restarted = createHarness({
+    state: harness.state,
+    repository: harness.repository,
+    now: first.nextAttemptAt,
+    validationError,
+  });
+  await restarted.service.resolveNext({ accountId: ACCOUNT_ID });
+  const second = await readResolution(restarted);
+  assert.equal(second.attemptCount, 2);
+  assert.equal(second.nextAttemptAt, "2026-08-03T10:01:30.000Z");
+  assert.equal(harness.calls.audits.at(-1).attempt, 2);
+  assert.equal(second.status, "MATCHED");
+  assert.equal(second.method, "MANUAL");
+  assert.equal(second.targetDescriptionCategoryId, 17029999);
+  assert.equal(second.targetTypeId, 94405);
+
+  const restartedAgain = createHarness({
+    state: harness.state,
+    repository: harness.repository,
+    now: second.nextAttemptAt,
+    validationError,
+  });
+  await restartedAgain.service.resolveNext({ accountId: ACCOUNT_ID });
+  const third = await readResolution(restartedAgain);
+  assert.equal(third.attemptCount, 3);
+  assert.equal(third.nextAttemptAt, "2026-08-03T10:03:30.000Z");
+  assert.equal(harness.calls.audits.at(-1).attempt, 3);
+  assert.equal(third.method, "MANUAL");
+  assert.equal(third.targetDescriptionCategoryId, 17029999);
+  assert.equal(third.targetTypeId, 94405);
+});
+
 for (const [name, snapshotError, expectedStatus] of [
   ["status-only 429", Object.assign(new Error("rate limited"), { status: 429 }), "RETRYABLE_ERROR"],
   ["status-only 503", Object.assign(new Error("unavailable"), { status: 503 }), "RETRYABLE_ERROR"],

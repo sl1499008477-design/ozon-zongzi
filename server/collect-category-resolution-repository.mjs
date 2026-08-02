@@ -792,7 +792,9 @@ export function createJsonCollectCategoryResolutionRepository({
         failureDetailSafe: retryable
           ? VALIDATION_RETRY_PENDING
           : VALIDATION_REVIEW_REQUIRED,
-        attemptCount: Number(current.attemptCount || 0) + 1,
+        attemptCount: claimedContinuation
+          ? Number(current.attemptCount || 0)
+          : Number(current.attemptCount || 0) + 1,
         nextAttemptAt: nextAttemptAt.toISOString(),
         leaseToken: null,
         leaseExpiresAt: null,
@@ -1243,7 +1245,9 @@ export function createPostgresCollectCategoryResolutionRepository({
       const result = await query(
         `UPDATE collect_category_resolutions
             SET status='MATCHED', credential_store_id=$4, failure_code=$5,
-                failure_detail_safe=$6, attempt_count=attempt_count+1,
+                failure_detail_safe=$6, attempt_count=CASE
+                  WHEN $3::text IS NULL THEN attempt_count+1
+                  ELSE attempt_count END,
                 next_attempt_at=$7, lease_token=NULL, lease_expires_at=NULL,
                 updated_at=$8
           WHERE account_id=$1 AND id=$2 AND lease_token IS NOT DISTINCT FROM $3

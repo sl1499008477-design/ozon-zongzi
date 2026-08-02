@@ -418,7 +418,7 @@ function statefulPostgresPool() {
         credential_store_id: credentialStoreId,
         failure_code: failureCode,
         failure_detail_safe: failureDetailSafe,
-        attempt_count: row.attempt_count + 1,
+        attempt_count: leaseToken == null ? row.attempt_count + 1 : row.attempt_count,
         next_attempt_at: iso(nextAttemptAt),
         lease_token: null,
         lease_expires_at: null,
@@ -767,6 +767,7 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
       nextAttemptAt: "2026-08-03T10:05:00.000Z", now: "2026-08-03T10:00:10.000Z",
     });
     assert.equal(deferred.status, "RETRYABLE_ERROR");
+    assert.equal(deferred.attemptCount, 1);
     assert.equal(await repository.claimNext({
       accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "too-soon",
       leaseExpiresAt: "2026-08-03T10:05:30.000Z", now: "2026-08-03T10:04:59.999Z",
@@ -952,6 +953,84 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
     assert.equal(deferred.failureCode, "HTTP_503");
     assert.equal(deferred.nextAttemptAt, "2026-08-03T10:03:00.000Z");
     assert.equal(deferred.attemptCount, 1);
+  });
+
+  test(`${adapterName} claimed validation defer keeps the claim attempt and remains lease and CAS fenced`, async () => {
+    const repository = createRepository();
+    const manual = await repository.saveManual({
+      ...queued(),
+      targetDescriptionCategoryId: 17029999,
+      targetTypeId: 94405,
+      displayPath: { zh: ["人工类目"] },
+    });
+    const firstFailure = await repository.deferValidation({
+      accountId: "account-a",
+      id: manual.id,
+      expectedResolution: resolutionIdentity(manual),
+      retryable: true,
+      credentialStoreId: "store-a",
+      failureCode: "HTTP_503",
+      nextAttemptAt: "2026-08-03T10:01:00.000Z",
+      now: "2026-08-03T10:00:01.000Z",
+      auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"),
+    });
+    assert.equal(firstFailure.attemptCount, 1);
+    const claimed = await repository.claimNext({
+      accountId: "account-a",
+      taxonomyScope: SCOPE,
+      leaseToken: "validation-attempt-2",
+      leaseExpiresAt: "2026-08-03T10:03:00.000Z",
+      now: "2026-08-03T10:01:00.000Z",
+    });
+    assert.equal(claimed.attemptCount, 2);
+
+    assert.equal(await repository.deferValidation({
+      accountId: "account-a",
+      id: claimed.id,
+      leaseToken: "wrong-validation-lease",
+      expectedResolution: resolutionIdentity(claimed),
+      retryable: true,
+      credentialStoreId: "store-a",
+      failureCode: "HTTP_503",
+      nextAttemptAt: "2026-08-03T10:02:00.000Z",
+      now: "2026-08-03T10:01:01.000Z",
+      auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"),
+    }), null);
+    assert.equal(await repository.deferValidation({
+      accountId: "account-a",
+      id: claimed.id,
+      leaseToken: claimed.leaseToken,
+      expectedResolution: {
+        ...resolutionIdentity(claimed),
+        taxonomyFingerprint: "stale-taxonomy",
+      },
+      retryable: true,
+      credentialStoreId: "store-a",
+      failureCode: "HTTP_503",
+      nextAttemptAt: "2026-08-03T10:02:00.000Z",
+      now: "2026-08-03T10:01:01.000Z",
+      auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"),
+    }), null);
+    assert.equal((await repository.readForItem(queued())).attemptCount, 2);
+
+    const repeatedFailure = await repository.deferValidation({
+      accountId: "account-a",
+      id: claimed.id,
+      leaseToken: claimed.leaseToken,
+      expectedResolution: resolutionIdentity(claimed),
+      retryable: true,
+      credentialStoreId: "store-a",
+      failureCode: "HTTP_503",
+      nextAttemptAt: "2026-08-03T10:02:00.000Z",
+      now: "2026-08-03T10:01:01.000Z",
+      auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"),
+    });
+    assert.equal(repeatedFailure.status, "MATCHED");
+    assert.equal(repeatedFailure.attemptCount, 2);
+    assert.equal(repeatedFailure.leaseToken, null);
+    assert.equal(repeatedFailure.taxonomyFingerprint, "taxonomy-v1");
+    assert.equal(repeatedFailure.method, "MANUAL");
+    assert.equal(repeatedFailure.targetDescriptionCategoryId, 17029999);
   });
 }
 
