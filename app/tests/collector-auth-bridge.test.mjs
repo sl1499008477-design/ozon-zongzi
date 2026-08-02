@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
+import * as collectorAuthBridge from "../src/collector-auth-bridge.js";
+
+const {
   COLLECTOR_AUTH_ACTIONS,
   COLLECTOR_AUTH_PROTOCOL,
   installCollectorAuthBridge,
   normalizeCollectorAuthRequest,
-} from "../src/collector-auth-bridge.js";
+} = collectorAuthBridge;
 
 const createWindowHarness = () => {
   const listeners = new Map();
@@ -61,6 +63,41 @@ test("publishes a credential-free ready envelope only when the Web account is lo
     requestTicket: async () => ({}),
   });
   assert.deepEqual(loggedOutHarness.posts, []);
+});
+
+test("does not republish ready when the login generation was already announced", () => {
+  const harness = createWindowHarness();
+  const installForSameLogin = (announceReady) => installCollectorAuthBridge({
+    windowObject: harness.windowObject,
+    isLoggedIn: () => true,
+    requestTicket: async () => ({}),
+    announceReady,
+  });
+
+  const uninstallFirst = installForSameLogin(true);
+  uninstallFirst();
+  installForSameLogin(false);
+
+  assert.deepEqual(harness.posts, [{
+    payload: {
+      protocol: "SONLI_COLLECTOR_AUTH",
+      action: "collector.auth.ready",
+    },
+    targetOrigin: "http://127.0.0.1:3000",
+  }]);
+});
+
+test("tracks ready announcements by stable account id across state refreshes", () => {
+  assert.equal(typeof collectorAuthBridge.createCollectorAuthReadyGate, "function");
+  const gate = collectorAuthBridge.createCollectorAuthReadyGate();
+  const firstState = { account: { id: "account-a", displayName: "First" } };
+  const refreshedState = { account: { id: "account-a", displayName: "Refreshed" } };
+
+  assert.equal(gate.shouldAnnounce(firstState.account.id), true);
+  assert.equal(gate.shouldAnnounce(refreshedState.account.id), false);
+  assert.equal(gate.shouldAnnounce("account-b"), true);
+  assert.equal(gate.shouldAnnounce(""), false);
+  assert.equal(gate.shouldAnnounce(firstState.account.id), true);
 });
 
 test("normalizes only the exact collector request protocol and a bounded requestId", () => {

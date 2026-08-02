@@ -191,8 +191,23 @@ export function assertPopupWebLoginGuidance(popupHtml, popupJs, serviceWorkerSou
   );
   assert.match(
     serviceWorkerSource,
-    /data:\s*await\s+openFrontendTab\(\{\s*url\s*\}\)/,
-    "openFrontend must delegate the trusted URL to the frontend tab opener",
+    /if\s*\(\s*path\s*!==\s*["']\/login["']\s*\)/,
+    "openFrontend must reserve URL-preserving tab reuse for the exact login path",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /await\s+chrome\.tabs\.create\(\{\s*url,\s*active:\s*true\s*\}\)/,
+    "non-login openFrontend routes must preserve direct navigation",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /await\s+openFrontendTab\.open\(\{\s*url\s*\}\)/,
+    "login openFrontend must delegate the trusted URL to the frontend tab opener",
+  );
+  assert.match(
+    serviceWorkerSource,
+    /opened\?\.opened\s*!==\s*true[\s\S]*return\s*\{\s*ok:\s*false/,
+    "login opener failure must remain a top-level failure",
   );
   assert.doesNotMatch(
     `${popupHtml}\n${popupJs}`,

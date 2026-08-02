@@ -7,6 +7,7 @@
     updateWindow,
     createTab,
     requestCollectorAuth,
+    injectCollectorAuth = async () => {},
   } = {}) => {
     if (
       typeof queryTabs !== 'function'
@@ -18,17 +19,24 @@
       throw new TypeError('frontend tab opener dependencies are required');
     }
 
-    const requestAuthBestEffort = async (tabId) => {
+    const requestAuthBestEffort = async (tabId, reused) => {
       if (!Number.isInteger(tabId)) return;
       try {
         await requestCollectorAuth(tabId);
-      } catch {}
+      } catch (error) {
+        const message = String(error?.message || error || '');
+        if (!reused || !/Receiving end does not exist/i.test(message)) return;
+        try {
+          await injectCollectorAuth(tabId);
+          await requestCollectorAuth(tabId);
+        } catch {}
+      }
     };
 
     const openedResult = async ({ reused, tabId }) => {
       const result = { opened: true, reused };
       if (Number.isInteger(tabId)) result.tabId = tabId;
-      await requestAuthBestEffort(tabId);
+      await requestAuthBestEffort(tabId, reused);
       return result;
     };
 

@@ -175,8 +175,8 @@ test("popup and service worker expose only the Web-login capture flow", () => {
   );
   assert.match(
     serviceWorker,
-    /data: await openFrontendTab\(\{ url \}\)/,
-    "openFrontend must delegate the trusted URL to the frontend tab opener",
+    /await openFrontendTab\.open\(\{ url \}\)/,
+    "login openFrontend must delegate the trusted URL to the frontend tab opener",
   );
 
   assert.doesNotThrow(() =>

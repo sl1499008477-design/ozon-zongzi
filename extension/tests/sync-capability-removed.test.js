@@ -83,6 +83,11 @@ function loadServiceWorker({
   fetchImpl,
   sellerCapture = false,
   executeScriptImpl,
+  tabCreateImpl,
+  tabQueryImpl,
+  tabSendMessageImpl,
+  tabUpdateImpl,
+  windowUpdateImpl,
   localInitial = {},
   rejectPendingUploadWrite = false,
 } = {}) {
@@ -99,7 +104,11 @@ function loadServiceWorker({
   const importedScripts = [];
   const removedTabs = [];
   const reloadedTabs = [];
+  const createdTabs = [];
+  const sentTabMessages = [];
   const tabQueryCalls = [];
+  const updatedTabs = [];
+  const updatedWindows = [];
   const session = createStorageArea({
     sonliCollectorSession: {
       collectorToken: 'csess_behavior_test_secret_123456789',
@@ -204,13 +213,17 @@ function loadServiceWorker({
     },
     storage: { local, session, sync },
     tabs: {
-      create: async () => ({ id: 1 }),
+      create: async (options) => {
+        createdTabs.push(options);
+        return tabCreateImpl ? tabCreateImpl(options) : { id: 1 };
+      },
       get: async (tabId) => ({ id: tabId, url: 'https://seller.ozon.ru/app' }),
       onCreated: event,
       onRemoved: event,
       onUpdated: event,
       query: async (query = {}) => {
         tabQueryCalls.push(query);
+        if (tabQueryImpl) return tabQueryImpl(query);
         const requestedUrls = Array.isArray(query.url) ? query.url : [query.url].filter(Boolean);
         const requestsSeller = !requestedUrls.length
           || requestedUrls.includes('https://seller.ozon.ru/*');
@@ -225,8 +238,20 @@ function loadServiceWorker({
       },
       reload(tabId) { reloadedTabs.push(tabId); },
       remove: async (tabId) => { removedTabs.push(tabId); },
-      sendMessage: async () => null,
-      update: async () => ({}),
+      sendMessage: async (tabId, message) => {
+        sentTabMessages.push({ tabId, message });
+        return tabSendMessageImpl ? tabSendMessageImpl(tabId, message) : null;
+      },
+      update: async (tabId, update) => {
+        updatedTabs.push({ tabId, update });
+        return tabUpdateImpl ? tabUpdateImpl(tabId, update) : {};
+      },
+    },
+    windows: {
+      update: async (windowId, update) => {
+        updatedWindows.push({ windowId, update });
+        return windowUpdateImpl ? windowUpdateImpl(windowId, update) : {};
+      },
     },
   };
   context = vm.createContext({
@@ -294,6 +319,7 @@ function loadServiceWorker({
     context,
     alarmsOnAlarm,
     createdAlarms,
+    createdTabs,
     executeScriptCalls,
     fetchCalls,
     importedScripts,
@@ -305,7 +331,10 @@ function loadServiceWorker({
     runtimeOnMessage,
     runtimeOnStartup,
     runtimeSendMessageCalls,
+    sentTabMessages,
     tabQueryCalls,
+    updatedTabs,
+    updatedWindows,
   };
 }
 
@@ -378,6 +407,147 @@ test('actual service worker starts without retired sync modules or sync alarms',
     true,
     'service worker package must import the Seller recovery helper',
   );
+});
+
+test('openFrontend preserves exact non-login navigation without reusing a Web tab', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [{
+      id: 17,
+      windowId: 8,
+      url: 'http://127.0.0.1:3000/ozon/dashboard',
+    }],
+  });
+
+  const response = await sendRuntimeMessage(harness, {
+    action: 'openFrontend',
+    path: '/ozon/products/list',
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), { ok: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.createdTabs)), [{
+    url: 'http://127.0.0.1:3000/ozon/products/list',
+    active: true,
+  }]);
+  assert.deepEqual(harness.updatedTabs, []);
+  assert.deepEqual(harness.updatedWindows, []);
+  assert.deepEqual(harness.sentTabMessages, []);
+});
+
+test('openFrontend reuses a trusted Web tab only for the exact login path', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [{
+      id: 17,
+      windowId: 8,
+      url: 'http://127.0.0.1:3000/ozon/dashboard',
+    }],
+    tabSendMessageImpl: async () => ({ ok: true, requested: true }),
+  });
+
+  const response = await sendRuntimeMessage(harness, {
+    action: 'openFrontend',
+    path: '/login',
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { opened: true, reused: true, tabId: 17 },
+  });
+  assert.deepEqual(harness.createdTabs, []);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.updatedTabs)), [{
+    tabId: 17,
+    update: { active: true },
+  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.updatedWindows)), [{
+    windowId: 8,
+    update: { focused: true },
+  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.sentTabMessages)), [{
+    tabId: 17,
+    message: { action: 'collector.auth.request' },
+  }]);
+});
+
+test('openFrontend returns top-level failure when the login opener cannot open a tab', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => {
+      throw new Error('tab query unavailable');
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, {
+    action: 'openFrontend',
+    path: '/login',
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: false,
+    error: 'OPEN_FRONTEND_FAILED',
+  });
+});
+
+test('Collector auth routes query HTTPS brand pages plus the explicit local HTTP allowlist', async () => {
+  const harness = loadServiceWorker({ tabQueryImpl: async () => [] });
+
+  await sendRuntimeMessage(harness, { action: 'openFrontend', path: '/login' });
+  await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.tabQueryCalls.map(({ url }) => url))),
+    [
+      [
+        'https://qh.jizhangerp.com/*',
+        'http://localhost:3000/*',
+        'http://127.0.0.1:3000/*',
+        'http://store.localhost:3000/*',
+      ],
+      [
+        'https://qh.jizhangerp.com/*',
+        'http://localhost:3000/*',
+        'http://127.0.0.1:3000/*',
+        'http://store.localhost:3000/*',
+      ],
+    ],
+  );
+});
+
+test('openFrontend injects collector auth scripts in order before one no-receiver retry', async () => {
+  let authRequests = 0;
+  const harness = loadServiceWorker({
+    executeScriptImpl: async () => [],
+    tabQueryImpl: async () => [{
+      id: 17,
+      windowId: 8,
+      url: 'http://127.0.0.1:3000/ozon/dashboard',
+    }],
+    tabSendMessageImpl: async () => {
+      authRequests += 1;
+      if (authRequests === 1) {
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }
+      return { ok: true, requested: true };
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, {
+    action: 'openFrontend',
+    path: '/login',
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { opened: true, reused: true, tabId: 17 },
+  });
+  assert.equal(authRequests, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.executeScriptCalls)), [
+    {
+      target: { tabId: 17 },
+      files: ['lib/web-bridge-policy.js'],
+    },
+    {
+      target: { tabId: 17 },
+      files: ['content/sync-auth.js'],
+    },
+  ]);
 });
 
 test('install and startup never reload or remove user-owned Seller tabs', async () => {

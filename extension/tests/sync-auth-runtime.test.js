@@ -41,9 +41,12 @@ const sandbox = {
 };
 
 vm.runInNewContext(source, sandbox, { filename: 'sync-auth.js' });
+vm.runInNewContext(source, sandbox, { filename: 'sync-auth-reinjected.js' });
 
 (async () => {
-assert.equal(posts.length, 1);
+assert.equal(posts.length, 1, 'reinjecting sync-auth must not post a second initial request');
+assert.equal(timers.length, 1, 'reinjecting sync-auth must not schedule another retry timer');
+assert.equal(runtimeListeners.length, 1, 'reinjecting sync-auth must not duplicate runtime listeners');
 assert.equal(posts[0].targetOrigin, 'http://127.0.0.1:3000');
 for (let requestCallback = 1; requestCallback <= 10; requestCallback += 1) {
   const retry = timers.shift();
@@ -62,6 +65,15 @@ await windowListeners.get('message')({
 });
 assert.equal(posts.length, 11, 'ready must start a fresh bounded request cycle');
 assert.equal(posts.at(-1).message.action, 'collector.auth.request');
+await windowListeners.get('message')({
+  source: windowObject,
+  origin: windowObject.location.origin,
+  data: {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.ready',
+  },
+});
+assert.equal(posts.length, 11, 'duplicate passive ready must not reset the bounded cycle');
 
 for (const event of [
   {
@@ -122,8 +134,31 @@ assert.equal(posts.length, 11);
 assert.equal(runtimeListeners.length, 1);
 const response = {};
 runtimeListeners[0]({ action: 'collector.auth.request' }, null, (value) => Object.assign(response, value));
-assert.deepEqual(response, { ok: true, requested: false });
-assert.equal(posts.length, 11);
+assert.deepEqual(response, { ok: true, requested: true });
+assert.equal(posts.length, 12, 'runtime recheck must recover after the prior Collector session expires');
+
+const recoveryRequest = posts.at(-1).message;
+const recoveryExchangePending = windowListeners.get('message')({
+  source: windowObject,
+  origin: windowObject.location.origin,
+  data: {
+    protocol: policy.COLLECTOR_AUTH_PROTOCOL,
+    action: 'collector.auth.response',
+    requestId: recoveryRequest.requestId,
+    ticket: 'ctt_runtime_recovery_ticket_123456789',
+    expiresAt: '2030-01-01T00:02:00.000Z',
+  },
+});
+assert.equal(exchanges.length, 2);
+assert.equal(exchanges[1].ticket, 'ctt_runtime_recovery_ticket_123456789');
+
+const blockedRecovery = {};
+runtimeListeners[0]({ action: 'collector.auth.request' }, null, (value) => Object.assign(blockedRecovery, value));
+assert.deepEqual(blockedRecovery, { ok: true, requested: false });
+assert.equal(posts.length, 12, 'runtime recheck must not overlap an exchange already in flight');
+
+resolveExchange();
+await recoveryExchangePending;
 
 console.log('sync auth runtime tests passed');
 })().catch((error) => {

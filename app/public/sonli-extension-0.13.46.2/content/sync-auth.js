@@ -6,8 +6,11 @@
  * exchange. It never reads or writes Web localStorage.
  */
 (() => {
+  const INSTALL_GUARD = '__JZ_COLLECTOR_SYNC_AUTH_INSTALLED__';
+  if (globalThis[INSTALL_GUARD]) return;
   const policy = globalThis.JzWebBridgePolicy;
   if (!policy) return;
+  globalThis[INSTALL_GUARD] = true;
 
   const MAX_TICKET_EXCHANGE_ATTEMPTS = 2;
   const MAX_BRIDGE_REQUESTS = 10;
@@ -17,6 +20,7 @@
   let requestCount = 0;
   let exchangeInFlight = false;
   let authenticated = false;
+  let passiveReadyConsumed = false;
   let retryTimer = null;
 
   const newRequestId = () => {
@@ -45,8 +49,9 @@
     }, BRIDGE_RETRY_MS);
   };
 
-  const restartRequestCycle = () => {
-    if (exchangeInFlight || authenticated) return false;
+  const restartRequestCycle = ({ authoritative = false } = {}) => {
+    if (exchangeInFlight || (authenticated && !authoritative)) return false;
+    if (authoritative) authenticated = false;
     clearTimeout(retryTimer);
     retryTimer = null;
     attempts = 0;
@@ -80,6 +85,8 @@
       return;
     }
     if (policy.normalizeCollectorAuthReady(event.data)) {
+      if (passiveReadyConsumed) return;
+      passiveReadyConsumed = true;
       restartRequestCycle();
       return;
     }
@@ -109,7 +116,10 @@
   try {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.action !== 'collector.auth.request') return false;
-      sendResponse({ ok: true, requested: restartRequestCycle() });
+      sendResponse({
+        ok: true,
+        requested: restartRequestCycle({ authoritative: true }),
+      });
       return false;
     });
   } catch {}

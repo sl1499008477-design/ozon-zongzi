@@ -126,7 +126,10 @@ import {
 } from "./collect-enrichment-view.js";
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
-import { installCollectorAuthBridge } from "./collector-auth-bridge.js";
+import {
+  createCollectorAuthReadyGate,
+  installCollectorAuthBridge,
+} from "./collector-auth-bridge.js";
 import {
   emptyLocalRuntimeData,
   localRuntimeStateFromApi,
@@ -617,8 +620,12 @@ export function AppShell({ initialState = null }) {
   const [form] = Form.useForm();
   const applyLocalStateRef = useRef(null);
   const localStateRefreshRef = useRef(null);
+  const collectorAuthReadyGateRef = useRef(null);
   const messageRef = useRef(message);
   messageRef.current = message;
+  if (!collectorAuthReadyGateRef.current) {
+    collectorAuthReadyGateRef.current = createCollectorAuthReadyGate();
+  }
 
   const hasStore = Boolean(binding?.storeName);
   const isEditingBindingStore = Boolean(editingBindingStore?.id || editingBindingStore?.storeId);
@@ -698,15 +705,20 @@ export function AppShell({ initialState = null }) {
     logoutExtension: async () => true,
   });
 
+  const collectorAuthAccountId = String(account?.id || "").trim();
   useEffect(() => {
-    if (!authChecked || !account) return undefined;
+    const announceReady = collectorAuthReadyGateRef.current.shouldAnnounce(
+      authChecked ? collectorAuthAccountId : "",
+    );
+    if (!authChecked || !collectorAuthAccountId) return undefined;
     return installCollectorAuthBridge({
-      isLoggedIn: () => Boolean(account),
+      isLoggedIn: () => true,
       requestTicket: () => apiRequest("/extension/collector-auth/ticket", {
         method: "POST",
       }),
+      announceReady,
     });
-  }, [authChecked, account]);
+  }, [authChecked, collectorAuthAccountId]);
 
   useEffect(() => {
     const onPop = () => {

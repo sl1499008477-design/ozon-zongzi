@@ -9,11 +9,15 @@ const makeHarness = ({
   createResult = { id: 29 },
   updateTabError = null,
   requestAuthError = null,
+  requestAuthErrors = [],
 } = {}) => {
   const updatedTabs = [];
   const updatedWindows = [];
   const createdTabs = [];
+  const injectedAuthTabs = [];
   const requestedAuthTabs = [];
+  const authEvents = [];
+  let requestAuthCall = 0;
 
   const opener = createFrontendTabOpener({
     queryTabs: async () => tabs,
@@ -30,13 +34,22 @@ const makeHarness = ({
     },
     requestCollectorAuth: async (tabId) => {
       requestedAuthTabs.push(tabId);
-      if (requestAuthError) throw requestAuthError;
+      authEvents.push({ type: 'request', tabId });
+      const error = requestAuthErrors[requestAuthCall] || requestAuthError;
+      requestAuthCall += 1;
+      if (error) throw error;
+    },
+    injectCollectorAuth: async (tabId) => {
+      injectedAuthTabs.push(tabId);
+      authEvents.push({ type: 'inject', tabId });
     },
   });
 
   return {
     ...opener,
+    authEvents,
     createdTabs,
+    injectedAuthTabs,
     requestedAuthTabs,
     updatedTabs,
     updatedWindows,
@@ -103,7 +116,12 @@ test('creates exactly one active tab when focusing the trusted tab fails', async
 });
 
 test('keeps the opened result when collector authentication messaging rejects', async () => {
-  const { open, createdTabs, requestedAuthTabs } = makeHarness({
+  const {
+    open,
+    createdTabs,
+    injectedAuthTabs,
+    requestedAuthTabs,
+  } = makeHarness({
     createResult: { id: 33 },
     requestAuthError: new Error('receiving end does not exist'),
   });
@@ -115,4 +133,53 @@ test('keeps the opened result when collector authentication messaging rejects', 
   });
   assert.equal(createdTabs.length, 1);
   assert.deepEqual(requestedAuthTabs, [33]);
+  assert.deepEqual(injectedAuthTabs, []);
+});
+
+test('injects collector auth into a reused tab on no receiver and retries exactly once', async () => {
+  const {
+    open,
+    authEvents,
+    createdTabs,
+    injectedAuthTabs,
+    requestedAuthTabs,
+  } = makeHarness({
+    tabs: [{ id: 17, windowId: 8 }],
+    requestAuthErrors: [
+      new Error('Could not establish connection. Receiving end does not exist.'),
+    ],
+  });
+
+  assert.deepEqual(await open({ url: 'http://127.0.0.1:3000/login' }), {
+    opened: true,
+    reused: true,
+    tabId: 17,
+  });
+  assert.deepEqual(createdTabs, []);
+  assert.deepEqual(injectedAuthTabs, [17]);
+  assert.deepEqual(requestedAuthTabs, [17, 17]);
+  assert.deepEqual(authEvents, [
+    { type: 'request', tabId: 17 },
+    { type: 'inject', tabId: 17 },
+    { type: 'request', tabId: 17 },
+  ]);
+});
+
+test('does not inject collector auth for a reused tab on other messaging failures', async () => {
+  const {
+    open,
+    injectedAuthTabs,
+    requestedAuthTabs,
+  } = makeHarness({
+    tabs: [{ id: 18, windowId: 9 }],
+    requestAuthError: new Error('The message port closed before a response was received.'),
+  });
+
+  assert.deepEqual(await open({ url: 'http://127.0.0.1:3000/login' }), {
+    opened: true,
+    reused: true,
+    tabId: 18,
+  });
+  assert.deepEqual(requestedAuthTabs, [18]);
+  assert.deepEqual(injectedAuthTabs, []);
 });

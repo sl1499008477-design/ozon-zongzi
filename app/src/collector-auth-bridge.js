@@ -10,6 +10,28 @@ const validRequestId = (value) => {
   return requestId && requestId.length <= 128 ? requestId : "";
 };
 
+export function createCollectorAuthReadyGate() {
+  let currentAccountId = "";
+  let announced = false;
+  return Object.freeze({
+    shouldAnnounce(value) {
+      const nextAccountId = String(value || "").trim();
+      if (!nextAccountId) {
+        currentAccountId = "";
+        announced = false;
+        return false;
+      }
+      if (nextAccountId !== currentAccountId) {
+        currentAccountId = nextAccountId;
+        announced = false;
+      }
+      if (announced) return false;
+      announced = true;
+      return true;
+    },
+  });
+}
+
 export function normalizeCollectorAuthRequest(value) {
   if (!value || typeof value !== "object") return null;
   if (
@@ -32,6 +54,7 @@ export function installCollectorAuthBridge({
   requestTicket,
   postResponse,
   windowObject = window,
+  announceReady = true,
 } = {}) {
   if (typeof isLoggedIn !== "function" || typeof requestTicket !== "function") {
     throw new TypeError("collector auth bridge requires login and ticket adapters");
@@ -66,7 +89,7 @@ export function installCollectorAuthBridge({
     }
   };
   windowObject.addEventListener("message", onMessage);
-  if (isLoggedIn()) {
+  if (announceReady && isLoggedIn()) {
     send({
       protocol: COLLECTOR_AUTH_PROTOCOL,
       action: COLLECTOR_AUTH_ACTIONS.ready,

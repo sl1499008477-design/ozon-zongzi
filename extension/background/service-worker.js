@@ -86,6 +86,10 @@ try {
   const BRAND_WEB_HOST = /__BRAND/.test('qh.jizhangerp.com')
     ? 'store.jizhangerp.com'
     : 'qh.jizhangerp.com';
+  const TRUSTED_FRONTEND_TAB_URLS = [
+    `https://${BRAND_WEB_HOST}/*`,
+    ...LOCAL_FRONTEND_TAB_URLS,
+  ];
 
   // 插件更新检查配置: 走后端 GET /extension/latest?client=extension
   // (URL 在 checkForUpdate 中通过 getBackendUrl() 动态拼接)
@@ -3930,7 +3934,7 @@ try {
 
   const openFrontendTab = globalThis.JzFrontendTabOpener.createFrontendTabOpener({
     queryTabs: () => chrome.tabs.query({
-      url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
+      url: TRUSTED_FRONTEND_TAB_URLS,
     }),
     updateTab: (id, update) => chrome.tabs.update(id, update),
     updateWindow: (id, update) => chrome.windows.update(id, update),
@@ -3938,6 +3942,16 @@ try {
     requestCollectorAuth: (tabId) => chrome.tabs.sendMessage(tabId, {
       action: 'collector.auth.request',
     }),
+    injectCollectorAuth: async (tabId) => {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['lib/web-bridge-policy.js'],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content/sync-auth.js'],
+      });
+    },
   });
 
     // Record the intent synchronously at message arrival. The runtime advances
@@ -4114,7 +4128,7 @@ try {
         }
         case 'requestCollectorAuth': {
           const tabs = await chrome.tabs.query({
-            url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
+            url: TRUSTED_FRONTEND_TAB_URLS,
           });
           let requested = 0;
           for (const tab of tabs) {
@@ -4156,7 +4170,15 @@ try {
             : '/';
           const url = `${frontendBase}${path}`;
 
-          return { ok: true, data: await openFrontendTab({ url }) };
+          if (path !== '/login') {
+            await chrome.tabs.create({ url, active: true });
+            return { ok: true };
+          }
+          const opened = await openFrontendTab.open({ url });
+          if (opened?.opened !== true) {
+            return { ok: false, error: 'OPEN_FRONTEND_FAILED' };
+          }
+          return { ok: true, data: opened };
         }
         case 'openSellerPortal': {
           // 数据卡片「需登录卖家中心」提示按钮 → 复用已有 seller tab(避免重复开),
