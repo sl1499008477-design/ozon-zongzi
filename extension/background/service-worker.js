@@ -4161,17 +4161,34 @@ try {
           const tabs = await chrome.tabs.query({
             url: TRUSTED_FRONTEND_TAB_URLS,
           });
-          let requested = 0;
-          for (const tab of tabs) {
-            if (!tab.id) continue;
-            try {
-              const response = await chrome.tabs.sendMessage(tab.id, {
-                action: 'collector.auth.request',
-              });
-              if (response?.ok) requested += 1;
-            } catch {}
+          const authoritativeTab = (Array.isArray(tabs) ? tabs : [])
+            .filter((tab) => Number.isInteger(tab?.id))
+            .sort((left, right) => {
+              const activeOrder = Number(right.active === true) - Number(left.active === true);
+              if (activeOrder !== 0) return activeOrder;
+              const leftLastAccessed = Number.isFinite(left.lastAccessed)
+                ? left.lastAccessed
+                : Number.NEGATIVE_INFINITY;
+              const rightLastAccessed = Number.isFinite(right.lastAccessed)
+                ? right.lastAccessed
+                : Number.NEGATIVE_INFINITY;
+              if (leftLastAccessed !== rightLastAccessed) {
+                return rightLastAccessed - leftLastAccessed;
+              }
+              return left.id - right.id;
+            })[0];
+          if (!authoritativeTab) return { ok: true, data: { requested: 0 } };
+          try {
+            const response = await chrome.tabs.sendMessage(authoritativeTab.id, {
+              action: 'collector.auth.request',
+            });
+            return {
+              ok: true,
+              data: { requested: response?.ok === true && response?.requested === true ? 1 : 0 },
+            };
+          } catch {
+            return { ok: true, data: { requested: 0 } };
           }
-          return { ok: true, data: { requested } };
         }
         case 'flashBadge': {
           // Flash the toolbar icon badge to draw user attention
