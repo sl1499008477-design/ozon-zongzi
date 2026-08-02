@@ -3949,6 +3949,10 @@ try {
       });
       await chrome.scripting.executeScript({
         target: { tabId },
+        files: ['lib/collector-auth-flow.js'],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId },
         files: ['content/sync-auth.js'],
       });
     },
@@ -4089,7 +4093,7 @@ try {
           }
         }
         case 'logout': {
-          await collectorSessionManager.clearCollectorSession(collectorOperation);
+          await collectorSessionManager.logoutCollectorSession();
           reloadOzonTabs();
           return { ok: true };
         }

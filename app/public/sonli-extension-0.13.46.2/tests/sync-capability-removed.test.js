@@ -48,6 +48,87 @@ function createEvent() {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function createInjectedWebTabHarness() {
+  const runtimeOnMessage = createEvent();
+  const executedFiles = [];
+  const posts = [];
+  const runtimeMessages = [];
+  const windowListeners = new Map();
+  const windowObject = {
+    location: { origin: 'http://127.0.0.1:3000' },
+    addEventListener(type, listener) {
+      windowListeners.set(type, listener);
+    },
+    postMessage(message, targetOrigin) {
+      posts.push({ message, targetOrigin });
+    },
+  };
+  let context;
+  const chrome = {
+    runtime: {
+      lastError: null,
+      onMessage: runtimeOnMessage,
+      sendMessage(_message, callback) {
+        callback?.(null);
+      },
+    },
+  };
+  context = vm.createContext({
+    chrome,
+    clearTimeout() {},
+    console: {
+      error() {},
+      info() {},
+      log() {},
+      warn() {},
+    },
+    crypto: webcrypto,
+    globalThis: null,
+    self: null,
+    setTimeout(callback, milliseconds) {
+      return { callback, milliseconds };
+    },
+    window: windowObject,
+  });
+  context.globalThis = context;
+  context.self = context;
+
+  return {
+    executedFiles,
+    posts,
+    runtimeMessages,
+    listenerCount: () => runtimeOnMessage.listeners.length,
+    async executeScript({ files = [] }) {
+      for (const relativePath of files) {
+        executedFiles.push(relativePath);
+        const file = path.join(extensionRoot, relativePath);
+        vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
+      }
+      return [];
+    },
+    async sendRuntimeMessage(message) {
+      runtimeMessages.push(message);
+      if (runtimeOnMessage.listeners.length === 0) {
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }
+      let response;
+      for (const listener of runtimeOnMessage.listeners) {
+        listener(message, { url: windowObject.location.origin }, (value) => {
+          response = value;
+        });
+        if (response !== undefined) return response;
+      }
+      throw new Error('Could not establish connection. Receiving end does not exist.');
+    },
+  };
+}
+
 function createStorageArea(initial = {}) {
   const state = { ...initial };
   const select = (keys) => {
@@ -529,21 +610,15 @@ test('Collector auth routes query HTTPS brand pages plus the explicit local HTTP
 });
 
 test('openFrontend injects collector auth scripts in order before one no-receiver retry', async () => {
-  let authRequests = 0;
+  const webTab = createInjectedWebTabHarness();
   const harness = loadServiceWorker({
-    executeScriptImpl: async () => [],
+    executeScriptImpl: (input) => webTab.executeScript(input),
     tabQueryImpl: async () => [{
       id: 17,
       windowId: 8,
       url: 'http://127.0.0.1:3000/ozon/dashboard',
     }],
-    tabSendMessageImpl: async () => {
-      authRequests += 1;
-      if (authRequests === 1) {
-        throw new Error('Could not establish connection. Receiving end does not exist.');
-      }
-      return { ok: true, requested: true };
-    },
+    tabSendMessageImpl: (_tabId, message) => webTab.sendRuntimeMessage(message),
   });
 
   const response = await sendRuntimeMessage(harness, {
@@ -555,11 +630,26 @@ test('openFrontend injects collector auth scripts in order before one no-receive
     ok: true,
     data: { opened: true, reused: true, tabId: 17 },
   });
-  assert.equal(authRequests, 2);
+  assert.equal(webTab.listenerCount(), 1);
+  assert.equal(webTab.runtimeMessages.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(webTab.runtimeMessages)), [
+    { action: 'collector.auth.request' },
+    { action: 'collector.auth.request' },
+  ]);
+  assert.equal(webTab.posts.length, 2, 'install discovery and retried recovery both request a ticket');
+  assert.deepEqual(webTab.executedFiles, [
+    'lib/web-bridge-policy.js',
+    'lib/collector-auth-flow.js',
+    'content/sync-auth.js',
+  ]);
   assert.deepEqual(JSON.parse(JSON.stringify(harness.executeScriptCalls)), [
     {
       target: { tabId: 17 },
       files: ['lib/web-bridge-policy.js'],
+    },
+    {
+      target: { tabId: 17 },
+      files: ['lib/collector-auth-flow.js'],
     },
     {
       target: { tabId: 17 },
@@ -826,6 +916,65 @@ test('logout never reloads or removes a user-owned Seller tab', async () => {
   assert.equal(response.ok, true);
   assert.deepEqual(harness.reloadedTabs, []);
   assert.deepEqual(harness.removedTabs, []);
+});
+
+test('internal logout invalidates a held exchange generation before its response can restore a session', async () => {
+  const exchangeStarted = deferred();
+  const exchangeResponse = deferred();
+  const harness = loadServiceWorker({
+    sellerCapture: true,
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        exchangeStarted.resolve();
+        return exchangeResponse.promise;
+      }
+      throw new Error(`unexpected internal logout path: ${pathname}`);
+    },
+  });
+
+  const begun = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: 'generation_G1_1234',
+  }, trustedWebSender);
+  assert.equal(begun.ok, true);
+
+  const heldExchangeResponse = deferred();
+  harness.runtimeOnMessage.listeners[0]({
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'internal-logout-held-exchange',
+    generationId: 'generation_G1_1234',
+    ticket: 'ctt_internal_logout_secret_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender, heldExchangeResponse.resolve);
+  await exchangeStarted.promise;
+
+  const logout = await sendRuntimeMessage(harness, { action: 'logout' });
+  assert.deepEqual(JSON.parse(JSON.stringify(logout)), { ok: true });
+  assert.deepEqual(harness.reloadedTabs, []);
+  assert.deepEqual(harness.removedTabs, []);
+
+  exchangeResponse.resolve(new Response(JSON.stringify({
+    data: {
+      collectorToken: 'csess_internal_logout_must_not_restore_123456789',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      account: { id: 'account-internal-logout', displayName: 'Internal Logout' },
+      permissions: ['collector.upload', 'collector.ozon.read'],
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+  const exchange = await heldExchangeResponse.promise;
+  assert.equal(exchange.ok, false);
+  assert.equal(exchange.code, 'COLLECTOR_AUTH_GENERATION_CHANGED');
+  assert.doesNotMatch(JSON.stringify(exchange), /ctt_internal_logout_secret|csess_internal_logout/);
+
+  const auth = await sendRuntimeMessage(harness, { action: 'getAuth' });
+  assert.equal(auth.ok, true);
+  assert.equal(auth.data.authenticated, false);
+  assert.equal(auth.data.account, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(auth.data.permissions)), []);
 });
 
 test('Ozon enrichment runtime messages keep the service worker alive while cold capture runs', async () => {

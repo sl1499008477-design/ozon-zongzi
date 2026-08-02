@@ -153,7 +153,7 @@ assert.doesNotMatch(workerSource, /STORAGE_KEYS\.(?:token|storeId)/);
 assert.match(workerSource, /JzCollectorClient\.upload\(/);
 assert.match(workerSource, /collectorSessionManager\.beginCollectorOperation\(\)/);
 assert.match(workerSource, /collectorOperation/);
-assert.match(workerSource, /clearCollectorSession\(\s*collectorOperation\s*\)/);
+assert.match(workerSource, /collectorSessionManager\.logoutCollectorSession\(\)/);
 const collectorClientSource = fs.readFileSync('extension/background/collector-client.js', 'utf8');
 assert.match(collectorClientSource, /permission|collector\.upload/);
 assert.match(collectorClientSource, /enqueueRetryablePendingUpload\(/);
