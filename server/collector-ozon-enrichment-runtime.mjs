@@ -119,6 +119,7 @@ export function createCollectorOzonEnrichmentRuntime({
     createOrGetJob: (input) => callRepository("createOrGetJob", input),
     advanceSellerContext: (input) => callRepository("advanceSellerContext", input),
     claimNextJob: (input) => callRepository("claimNextJob", input),
+    hasClaimableJob: (input) => callRepository("hasClaimableJob", input),
     deferClaim: (input) => callRepository("deferClaim", input),
     completeJobAndCache: (input) => callRepository("completeJobAndCache", input),
     failJobAndCache: (input) => callRepository("failJobAndCache", input),

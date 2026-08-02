@@ -42,12 +42,89 @@ function cacheOnlyRepository() {
     async createOrGetJob() { throw new Error("cache hit must not create"); },
     async advanceSellerContext() { throw new Error("unused"); },
     async claimNextJob() { return null; },
+    async hasClaimableJob() { return false; },
     async deferClaim() { throw new Error("unused"); },
     async completeJobAndCache() { throw new Error("unused"); },
     async failJobAndCache() { throw new Error("unused"); },
     async readJob() { return null; },
   };
 }
+
+test("JSON runtime starts with the availability port and keeps preflight read-only", async () => {
+  const persisted = {
+    collectorSessions: [{
+      id: "collector-runtime",
+      accountId: "account-runtime",
+      expiresAt: "2026-07-31T00:01:00.000Z",
+      revokedAt: null,
+    }],
+    collectorOzonEnrichmentJobs: [{
+      id: "job-runtime-available",
+      accountId: "account-runtime",
+      requestId: "request-runtime-available",
+      sku: "sku-runtime-available",
+      status: "PENDING",
+      preferredSessionId: null,
+      nextAttemptAt: "2026-07-31T00:00:00.000Z",
+      deadlineAt: "2026-07-31T00:01:00.000Z",
+      createdAt: "2026-07-31T00:00:00.000Z",
+    }],
+  };
+  const before = structuredClone(persisted);
+  let saveCount = 0;
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => persisted,
+    saveState: async () => { saveCount += 1; },
+    persistenceMode: () => "json",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    authenticate: async () => ({
+      collectorSessionId: "collector-runtime",
+      accountId: "account-runtime",
+    }),
+    readJson: async () => ({}),
+    sendJson() {},
+    now: () => new Date(NOW),
+  });
+
+  assert.equal(await runtime.service.hasAvailableJob({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+  }), true);
+  assert.deepEqual(persisted, before);
+  assert.equal(saveCount, 0);
+});
+
+test("PostgreSQL runtime forwards the exact read-only availability contract", async () => {
+  const inputs = [];
+  const underlying = cacheOnlyRepository();
+  underlying.hasClaimableJob = async (input) => {
+    inputs.push(structuredClone(input));
+    return 1;
+  };
+  const runtime = createCollectorOzonEnrichmentRuntime({
+    loadState: async () => ({}),
+    saveState: async () => { throw new Error("availability must not save JSON state"); },
+    persistenceMode: () => "postgres",
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => false }),
+    authenticate: async () => ({
+      collectorSessionId: "collector-runtime",
+      accountId: "account-runtime",
+    }),
+    readJson: async () => ({}),
+    sendJson() {},
+    initializePostgresRepository: async () => underlying,
+    persistPostgresAuditEvent: async () => { throw new Error("availability must not audit"); },
+    now: () => new Date(NOW),
+  });
+
+  assert.equal(await runtime.service.hasAvailableJob({
+    session: { collectorSessionId: "collector-runtime", accountId: "account-runtime" },
+  }), true);
+  assert.deepEqual(inputs, [{
+    accountId: "account-runtime",
+    collectorSessionId: "collector-runtime",
+    now: new Date(NOW),
+  }]);
+});
 
 const FENCED_SELLER_CONTEXT = Object.freeze({
   sellerCompanyId: "2681910",
