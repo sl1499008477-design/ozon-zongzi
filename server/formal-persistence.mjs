@@ -583,6 +583,7 @@ function overwriteAccountDeletionCollectorCounts(
     deletedCollectorSessionCount,
     deletedCollectorOzonEnrichmentCacheCount,
     deletedCollectorOzonEnrichmentJobCount,
+    deletedCollectCategoryResolutionCount,
   },
 ) {
   const auditEvent = (Array.isArray(state.auditEvents) ? state.auditEvents : []).find((event) =>
@@ -600,6 +601,8 @@ function overwriteAccountDeletionCollectorCounts(
     Math.max(0, Number(deletedCollectorOzonEnrichmentCacheCount) || 0);
   auditEvent.metadata.deletedCollectorOzonEnrichmentJobCount =
     Math.max(0, Number(deletedCollectorOzonEnrichmentJobCount) || 0);
+  auditEvent.metadata.deletedCollectCategoryResolutionCount =
+    Math.max(0, Number(deletedCollectCategoryResolutionCount) || 0);
   return true;
 }
 
@@ -623,6 +626,10 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       error.code = "ACCOUNT_NOT_FOUND";
       throw error;
     }
+    const deletedCollectCategoryResolutions = await client.query(
+      "DELETE FROM collect_category_resolutions WHERE account_id=$1",
+      [accountId],
+    );
     const deletedCollectorOzonEnrichmentJobs = await client.query(
       "DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=$1",
       [accountId],
@@ -649,6 +656,8 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
           deletedCollectorOzonEnrichmentCache.rowCount,
         deletedCollectorOzonEnrichmentJobCount:
           deletedCollectorOzonEnrichmentJobs.rowCount,
+        deletedCollectCategoryResolutionCount:
+          deletedCollectCategoryResolutions.rowCount,
       },
     ) || persistedStateChanged;
 

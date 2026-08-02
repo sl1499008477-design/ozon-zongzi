@@ -14,6 +14,10 @@ function statefulRelationalClient() {
       { id: "job-target", account_id: "account-target", collect_item_id: "collect-target" },
       { id: "job-other", account_id: "account-other", collect_item_id: "collect-other" },
     ],
+    collect_category_resolutions: [
+      { id: "resolution-target", account_id: "account-target", collect_item_id: "collect-target" },
+      { id: "resolution-other", account_id: "account-other", collect_item_id: "collect-other" },
+    ],
     collector_auth_tickets: [
       { id: "ticket-target", account_id: "account-target" },
       { id: "ticket-other", account_id: "account-other" },
@@ -35,7 +39,7 @@ function statefulRelationalClient() {
       }
       if (normalized.startsWith("SELECT id FROM stores")) return { rows: [], rowCount: 0 };
       if (normalized.startsWith("SELECT data_collection_store_id")) return { rows: [], rowCount: 0 };
-      const scopedDelete = normalized.match(/^DELETE FROM (collector_ozon_enrichment_jobs|collector_ozon_enrichment_cache|collector_auth_tickets|collector_sessions) WHERE account_id=\$1$/);
+      const scopedDelete = normalized.match(/^DELETE FROM (collect_category_resolutions|collector_ozon_enrichment_jobs|collector_ozon_enrichment_cache|collector_auth_tickets|collector_sessions) WHERE account_id=\$1$/);
       if (scopedDelete) {
         const table = scopedDelete[1];
         const before = rows[table].length;
@@ -62,6 +66,7 @@ function deletionState() {
         deletedCollectorSessionCount: 8,
         deletedCollectorOzonEnrichmentCacheCount: 7,
         deletedCollectorOzonEnrichmentJobCount: 6,
+        deletedCollectCategoryResolutionCount: 5,
       },
     }],
   };
@@ -96,6 +101,7 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   const collectorSessionDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_sessions"));
   const enrichmentCacheDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_ozon_enrichment_cache"));
   const enrichmentJobDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_ozon_enrichment_jobs"));
+  const categoryResolutionDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collect_category_resolutions"));
   const accountLockIndex = sql.findIndex((statement) =>
     statement.startsWith("SELECT id FROM accounts") && statement.endsWith("FOR UPDATE"));
 
@@ -111,12 +117,15 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   assert.ok(enrichmentJobDeleteIndex > accountLockIndex);
   assert.ok(accountDeleteIndex > enrichmentCacheDeleteIndex);
   assert.ok(accountDeleteIndex > enrichmentJobDeleteIndex);
+  assert.ok(categoryResolutionDeleteIndex > accountLockIndex);
+  assert.ok(accountDeleteIndex > categoryResolutionDeleteIndex);
   assert.equal(sql.some((statement) => statement.includes("DELETE FROM audit_events")), false);
   assert.deepEqual(state.auditEvents[0].metadata, {
     deletedCollectorAuthTicketCount: 1,
     deletedCollectorSessionCount: 1,
     deletedCollectorOzonEnrichmentCacheCount: 1,
     deletedCollectorOzonEnrichmentJobCount: 1,
+    deletedCollectCategoryResolutionCount: 1,
   });
   assert.deepEqual(client.rows.accounts, [{ id: "account-other" }]);
   assert.deepEqual(client.rows.collector_ozon_enrichment_cache, [
@@ -124,6 +133,9 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   ]);
   assert.deepEqual(client.rows.collector_ozon_enrichment_jobs, [
     { id: "job-other", account_id: "account-other", collect_item_id: "collect-other" },
+  ]);
+  assert.deepEqual(client.rows.collect_category_resolutions, [
+    { id: "resolution-other", account_id: "account-other", collect_item_id: "collect-other" },
   ]);
   assert.deepEqual(client.rows.collector_auth_tickets, [
     { id: "ticket-other", account_id: "account-other" },
@@ -144,6 +156,7 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
     deletedCollectorSessionCount: 1,
     deletedCollectorOzonEnrichmentCacheCount: 1,
     deletedCollectorOzonEnrichmentJobCount: 1,
+    deletedCollectCategoryResolutionCount: 1,
   });
 });
 

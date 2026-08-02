@@ -60,6 +60,17 @@ function scopedFixture() {
       requestId: "request-other",
       sku: "4862904234",
     }],
+    collectCategoryResolutions: [{
+      id: "resolution-target",
+      accountId: "account-target",
+      collectItemId: "collect-target",
+      taxonomyScope: "OZON:DEFAULT",
+    }, {
+      id: "resolution-other",
+      accountId: "account-other",
+      collectItemId: "collect-other",
+      taxonomyScope: "OZON:DEFAULT",
+    }],
     accounts: [
       { id: "account-target", role: "user" },
       { id: "account-other", role: "admin" },
@@ -124,6 +135,7 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.equal(result.deletedCollectorSessionCount, 1);
   assert.equal(result.deletedCollectorOzonEnrichmentCacheCount, 1);
   assert.equal(result.deletedCollectorOzonEnrichmentJobCount, 1);
+  assert.equal(result.deletedCollectCategoryResolutionCount, 1);
   assert.deepEqual(state.accounts.map((item) => item.id), ["account-other"]);
   assert.deepEqual(state.stores.map((item) => item.id), ["store-other"]);
   assert.deepEqual(Object.keys(state.sessions), ["other-token"]);
@@ -136,6 +148,10 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.deepEqual(
     state.collectorOzonEnrichmentJobs.map((item) => item.id),
     ["enrichment-job-other"],
+  );
+  assert.deepEqual(
+    state.collectCategoryResolutions.map((item) => item.id),
+    ["resolution-other"],
   );
   assert.deepEqual(state.caches.products.map((item) => item.id), ["product-other"]);
   assert.deepEqual(state.caches.postings, []);

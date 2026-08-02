@@ -2884,6 +2884,8 @@ async function handle(req, res) {
           deletion.deletedCollectorOzonEnrichmentCacheCount,
         deletedCollectorOzonEnrichmentJobCount:
           deletion.deletedCollectorOzonEnrichmentJobCount,
+        deletedCollectCategoryResolutionCount:
+          deletion.deletedCollectCategoryResolutionCount,
       },
     });
     enqueueObjectDeletions(state, deletion.fileObjectKeys);

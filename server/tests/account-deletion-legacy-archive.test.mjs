@@ -114,6 +114,17 @@ await writeFile(dataFile, JSON.stringify({
     requestId: "request-b",
     sku: "shared-sku",
   }],
+  collectCategoryResolutions: [{
+    id: "category-resolution-a",
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    taxonomyScope: "OZON:DEFAULT",
+  }, {
+    id: "category-resolution-b",
+    accountId: "account-b",
+    collectItemId: "collect-b",
+    taxonomyScope: "OZON:DEFAULT",
+  }],
   accounts: [{
     id: "account-admin",
     username: "admin",
@@ -233,6 +244,10 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
     saved.collectorOzonEnrichmentJobs.map((job) => job.id),
     ["enrichment-job-b"],
   );
+  assert.deepEqual(
+    saved.collectCategoryResolutions.map((record) => record.id),
+    ["category-resolution-b"],
+  );
   assert.doesNotMatch(
     JSON.stringify({
       tickets: saved.collectorAuthTickets,
@@ -254,6 +269,7 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
   assert.equal(deletionAudit?.metadata?.deletedCollectorSessionCount, 1);
   assert.equal(deletionAudit?.metadata?.deletedCollectorOzonEnrichmentCacheCount, 1);
   assert.equal(deletionAudit?.metadata?.deletedCollectorOzonEnrichmentJobCount, 1);
+  assert.equal(deletionAudit?.metadata?.deletedCollectCategoryResolutionCount, 1);
 
   const reloaded = testExports.ensureAccountState(structuredClone(saved));
   assert.deepEqual(
