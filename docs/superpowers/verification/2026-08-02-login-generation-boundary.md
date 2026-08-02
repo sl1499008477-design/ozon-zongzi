@@ -60,11 +60,19 @@ Verified contracts:
 
 - Changed-generation activation invalidates the Collector session and old generation marker in one `chrome.storage.session.remove([...])` operation before storing the successor. If the successor write fails, no generation remains active; a held old exchange fails its final check with `COLLECTOR_AUTH_GENERATION_CHANGED` and cannot restore a session.
 - Matching Web logout removes the Collector session and matching generation in one storage operation. A storage failure leaves one coherent pre-logout state; a stale logout remains an idempotent zero-write no-op.
-- Internal extension logout routes through one serialized session-manager operation that invalidates both persisted keys. An exchange that started before logout retains its captured generation, fails its final fence, and cannot re-authenticate the extension. Seller tabs remain neither reloaded nor removed.
+- Internal extension logout routes through one serialized session-manager operation that invalidates all three related `chrome.storage.session` keys: the Collector session, generation, and activation incarnation. An exchange that started before logout retains its captured generation, fails its final fence, and cannot re-authenticate the extension. Seller tabs remain neither reloaded nor removed.
 - Trusted-Web no-receiver recovery dynamically executes dependencies in this order: `lib/web-bridge-policy.js`, `lib/collector-auth-flow.js`, `content/sync-auth.js`. The real service-worker test executes those files in an isolated content-script VM, proves one runtime listener is installed, and proves the retried `collector.auth.request` returns `{ ok: true, requested: true }`.
-- A Web generation factory throw or invalid result occurs only after the old account generation has been retired in controller memory. The controller returns the recoverable empty transition with the old logout generation and retries successor creation on the next account update. Same-account refresh remains unannounced.
+- A Web generation factory throw or invalid result occurs only after the old account generation has been retired in controller memory. The controller returns the recoverable empty transition with the old logout generation and performs one bounded production retry for a transient missing successor; it retries successor creation on the next account update if that bounded retry does not recover. Same-account refresh remains unannounced.
 - Generation validation is pinned at 15 characters rejected, 16 accepted, 128 accepted, and 129 rejected.
 - No database, migration, permission, Seller-login contract, Ozon payload, product schema, credential flow, or 15-second Web refresh interval changed.
+
+### Current recovery-contract regression evidence
+
+The following named tests ran in the focused commands recorded below; this is automated source/package evidence only, not real-Chrome acceptance evidence.
+
+1. **One bounded Web retry after a transient successor-generation failure.** `retires the old account generation when its successor factory throws and retries later` proves retirement before recovery, and `retries a missing Web generation once after retiring the old bridge and cancels pending recovery on cleanup` proves the production retry is single and cleanup-bounded. Both are in `app/tests/collector-auth-bridge.test.mjs`, which passed **13/13**.
+2. **Authoritative recheck discards cached content generation, discovers current Web generation, then begins/exchanges it.** `authoritative recheck rediscovers the current Web generation after authentication` and `authoritative recheck never reactivates or exchanges a stale cached generation` are in `extension/tests/collector-auth-flow.test.js`; `authoritative content recovery adopts only current Web G2 over cached G1` is in `extension/tests/sync-capability-removed.test.js`. Their combined focused command passed **77/77**.
+3. **Logout clears session, generation, and incarnation; same-name G1 recovery rotates incarnation and fences an old deferred exchange.** `internal logout invalidates session generation and activation incarnation together` and `clearing and reactivating the same generation rotates its activation incarnation` are in `extension/tests/collector-session.test.js`; `same-generation reactivation fences an older exchange without locking the network request` and `authoritative same-G1 recovery fences a logout-before deferred exchange incarnation` prove the stale deferred exchange is rejected. Their combined focused command passed **77/77**.
 
 ## TDD evidence summary
 
@@ -142,7 +150,7 @@ node scripts/check-extension-zip-smoke.mjs
 PASS: both packaged runtime/safety smoke paths exited 0
 
 node scripts/check-plugin-readiness-gate.mjs
-PASS: service-worker behavior 24/24 and plugin-page behavior 3/3
+PASS: service-worker behavior 27/27 and extension-page behavior 3/3
 
 node scripts/check-personal-data.mjs
 PASS: tracked personal-data and credential scan passed
