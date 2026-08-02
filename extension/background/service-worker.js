@@ -39,6 +39,7 @@ try {
     '../lib/collector-session.js',
     '../lib/ozon-enrichment-contract.js',
     '../lib/collector-capture-deadline.js',
+    '../lib/frontend-tab-opener.js',
     '../lib/seller-identity-policy.js',
     '../lib/seller-context-ui-message-policy.js',
     '../lib/seller-recovery-tab.js',
@@ -3927,6 +3928,18 @@ try {
     createTab: (options) => chrome.tabs.create(options),
   });
 
+  const openFrontendTab = globalThis.JzFrontendTabOpener.createFrontendTabOpener({
+    queryTabs: () => chrome.tabs.query({
+      url: [`*://${BRAND_WEB_HOST}/*`, ...LOCAL_FRONTEND_TAB_URLS],
+    }),
+    updateTab: (id, update) => chrome.tabs.update(id, update),
+    updateWindow: (id, update) => chrome.windows.update(id, update),
+    createTab: (options) => chrome.tabs.create(options),
+    requestCollectorAuth: (tabId) => chrome.tabs.sendMessage(tabId, {
+      action: 'collector.auth.request',
+    }),
+  });
+
     // Record the intent synchronously at message arrival. The runtime advances
     // its epoch before its first await, closing terminal dispatch immediately.
     const sellerContextObservation = message?.action === 'sellerCompanyContextObserved'
@@ -4143,8 +4156,7 @@ try {
             : '/';
           const url = `${frontendBase}${path}`;
 
-          await chrome.tabs.create({ url, active: true });
-          return { ok: true };
+          return { ok: true, data: await openFrontendTab({ url }) };
         }
         case 'openSellerPortal': {
           // 数据卡片「需登录卖家中心」提示按钮 → 复用已有 seller tab(避免重复开),

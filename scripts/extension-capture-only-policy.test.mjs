@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   REQUIRED_CAPTURE_ONLY_FILES,
@@ -8,6 +9,13 @@ import {
   assertPopupWebLoginGuidance,
   chromeMatchPatternCovers,
 } from "./extension-capture-only-policy.mjs";
+
+const popupHtml = readFileSync(new URL("../extension/popup/popup.html", import.meta.url), "utf8");
+const popupJs = readFileSync(new URL("../extension/popup/popup.js", import.meta.url), "utf8");
+const serviceWorker = readFileSync(
+  new URL("../extension/background/service-worker.js", import.meta.url),
+  "utf8",
+);
 
 test("Chrome match semantics treat wildcard subdomains as covering Seller API", () => {
   assert.equal(
@@ -154,23 +162,42 @@ test("capture-only package requires Collector dependencies and rejects retired s
 
 test("popup and service worker expose only the Web-login capture flow", () => {
   assert.doesNotThrow(() =>
+    assertCaptureOnlyServiceWorker(serviceWorker));
+  assert.match(
+    serviceWorker,
+    /'\.\.\/lib\/frontend-tab-opener\.js'/,
+    "service worker must import the frontend tab opener",
+  );
+  assert.match(
+    serviceWorker,
+    /JzFrontendTabOpener\.createFrontendTabOpener/,
+    "service worker must construct the frontend tab opener",
+  );
+  assert.match(
+    serviceWorker,
+    /data: await openFrontendTab\(\{ url \}\)/,
+    "openFrontend must delegate the trusted URL to the frontend tab opener",
+  );
+
+  assert.doesNotThrow(() =>
     assertPopupWebLoginGuidance(
-      [
-        "请先登录 Web 管理后台，再使用采集功能",
-        "前往登录",
-        "重新检查",
-      ].join("\n"),
-      'chrome.tabs.create({ url: "http://127.0.0.1:3000/login" });',
+      popupHtml,
+      `${popupJs}\nconst routedWebLoginUrl = "http://127.0.0.1:3000/login";`,
     ));
+  assert.match(
+    popupJs,
+    /await sendMessage\(\{ action: "openFrontend", path: "\/login" \}\);/,
+    "popup Web login guidance must route through openFrontend",
+  );
+  assert.doesNotMatch(
+    popupJs,
+    /chrome\.tabs\.create\(\{ url: "http:\/\/127\.0\.0\.1:3000\/login" \}\);/,
+    "popup must not create the Web login tab directly",
+  );
   assert.throws(
     () => assertPopupWebLoginGuidance("账号登录", "getStores()"),
     /Web login guidance/,
   );
-
-  assert.doesNotThrow(() =>
-    assertCaptureOnlyServiceWorker(
-      "importScripts('../lib/collector-session.js', '../lib/ozon-enrichment-contract.js', 'collector-client.js', 'collector-ozon-enrichment-agent.js', 'collector-ozon-enrichment-client.js');",
-    ));
   assert.throws(
     () =>
       assertCaptureOnlyServiceWorker(

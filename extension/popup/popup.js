@@ -796,8 +796,14 @@
     });
   } catch {}
 
-  document.getElementById("web-login-btn").addEventListener("click", () => {
-    chrome.tabs.create({ url: "http://127.0.0.1:3000/login" });
+  document.getElementById("web-login-btn").addEventListener("click", async () => {
+    showTip("正在打开 Web 登录页…", false);
+    try {
+      const response = await sendMessage({ action: "openFrontend", path: "/login" });
+      if (response?.data?.opened !== true) throw new Error("frontend-not-opened");
+    } catch {
+      showTip("无法打开 Web 登录页，请确认本地服务已启动");
+    }
   });
 
   // ─── Boot ───

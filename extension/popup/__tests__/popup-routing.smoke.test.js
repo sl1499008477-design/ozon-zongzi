@@ -62,8 +62,20 @@ assert(!html.includes("sonli 采集器"), "popup must not expose the removed col
 assert(!js.includes("toggleCollector"), "popup must not retain the removed collector toggle");
 assert(js.includes("await openJzcCalc();"), "pricing should open the Ozon calculator on product pages");
 assert(
-  js.includes('chrome.tabs.create({ url: "http://127.0.0.1:3000/login" });'),
-  "web-login button should open the exact local Web login in the same browser profile",
+  js.includes('await sendMessage({ action: "openFrontend", path: "/login" });'),
+  "web-login button should route the Web login through openFrontend",
+);
+assert(
+  !js.includes('chrome.tabs.create({ url: "http://127.0.0.1:3000/login" });'),
+  "web-login button must not create the Web login tab directly",
+);
+assert(
+  js.includes('showTip("正在打开 Web 登录页…", false);'),
+  "web-login button should show opening feedback before awaiting",
+);
+assert(
+  js.includes("无法打开 Web 登录页，请确认本地服务已启动"),
+  "web-login button should show actionable failure feedback",
 );
 assert(html.includes("请先登录 Web 管理后台，再使用采集功能"), "popup should explain the Web login prerequisite");
 assert(html.includes('id="collector-auth-recheck-btn"'), "popup should expose collector-session recheck");
