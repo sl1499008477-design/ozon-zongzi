@@ -29,6 +29,7 @@ function rowCopy(row) {
 
 function statefulPostgresPool() {
   let rows = [];
+  let transactionRows = null;
   let credentialStoreToInvalidateBeforeMatchedWrite = null;
   let foreignKeyFailure = null;
   const collectItems = new Set(["account-a:collect-shared", "account-b:collect-b"]);
@@ -51,7 +52,19 @@ function statefulPostgresPool() {
 
   async function query(sql, params = []) {
     const normalized = String(sql).replace(/\s+/g, " ").trim();
-    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(normalized)) return { rows: [], rowCount: 0 };
+    if (normalized === "BEGIN") {
+      transactionRows = structuredClone(rows);
+      return { rows: [], rowCount: 0 };
+    }
+    if (normalized === "COMMIT") {
+      transactionRows = null;
+      return { rows: [], rowCount: 0 };
+    }
+    if (normalized === "ROLLBACK") {
+      if (transactionRows) rows = transactionRows;
+      transactionRows = null;
+      return { rows: [], rowCount: 0 };
+    }
 
     if (normalized.startsWith("SELECT EXISTS (")
       && normalized.endsWith("AS credential_store_scoped")
@@ -114,7 +127,7 @@ function statefulPostgresPool() {
           updated_at: iso(now),
         };
         rows.push(row);
-      } else if (!(row.status === "MATCHED" && row.method === "MANUAL") && !(
+      } else if (row.method !== "MANUAL" && !(
         row.source_type_id === sourceTypeId
         && row.taxonomy_fingerprint === taxonomyFingerprint
         && (["MATCHING", "MATCHED", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(row.status)
@@ -156,6 +169,7 @@ function statefulPostgresPool() {
       const nowMs = new Date(now).getTime();
       const found = rows
         .filter((row) => row.account_id === accountId
+          && row.method !== "MANUAL"
           && (!taxonomyScope || row.taxonomy_scope === taxonomyScope)
           && new Date(row.next_attempt_at).getTime() <= nowMs
           && (["QUEUED", "RETRYABLE_ERROR", "INVALIDATED"].includes(row.status)
@@ -296,6 +310,78 @@ function statefulPostgresPool() {
       return { rows: [rowCopy(row)], rowCount: 1 };
     }
 
+    if (normalized.startsWith("UPDATE collect_category_resolutions SET source_type_id=$4")) {
+      const [accountId, id, leaseToken, sourceTypeId, status, taxonomyFingerprint,
+        credentialStoreId, nextAttemptAt, now] = params;
+      const row = rows.find((candidate) => candidate.account_id === accountId
+        && candidate.id === id && candidate.lease_token === leaseToken);
+      if (!row || row.status !== "MATCHING" || row.method === "MANUAL"
+        || new Date(row.lease_expires_at).getTime() <= new Date(now).getTime()
+        || (credentialStoreId && !stores.has(`${accountId}:${credentialStoreId}`))) {
+        return { rows: [], rowCount: 0 };
+      }
+      const executionChanged = row.source_type_id !== sourceTypeId
+        || row.taxonomy_fingerprint !== taxonomyFingerprint;
+      Object.assign(row, {
+        source_type_id: sourceTypeId,
+        status,
+        taxonomy_fingerprint: taxonomyFingerprint,
+        credential_store_id: credentialStoreId,
+        target_description_category_id: null,
+        target_type_id: null,
+        method: null,
+        display_path_json: {},
+        failure_code: null,
+        failure_detail_safe: null,
+        attempt_count: executionChanged ? 0 : row.attempt_count,
+        next_attempt_at: iso(nextAttemptAt),
+        lease_token: null,
+        lease_expires_at: null,
+        matched_at: null,
+        validated_at: null,
+        updated_at: iso(now),
+      });
+      return { rows: [rowCopy(row)], rowCount: 1 };
+    }
+
+    if (normalized.startsWith("UPDATE collect_category_resolutions SET taxonomy_fingerprint=$3")) {
+      const [accountId, id, taxonomyFingerprint, credentialStoreId, validatedAt, now] = params;
+      const row = rows.find((candidate) => candidate.account_id === accountId && candidate.id === id);
+      if (!row || row.status !== "MATCHED"
+        || (credentialStoreId && !stores.has(`${accountId}:${credentialStoreId}`))) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(row, {
+        taxonomy_fingerprint: taxonomyFingerprint,
+        credential_store_id: credentialStoreId,
+        failure_code: null,
+        failure_detail_safe: null,
+        attempt_count: 0,
+        next_attempt_at: iso(now),
+        validated_at: iso(validatedAt),
+        updated_at: iso(now),
+      });
+      return { rows: [rowCopy(row)], rowCount: 1 };
+    }
+
+    if (normalized.startsWith("UPDATE collect_category_resolutions SET credential_store_id=$3")) {
+      const [accountId, id, credentialStoreId, failureCode, failureDetailSafe, nextAttemptAt, now] = params;
+      const row = rows.find((candidate) => candidate.account_id === accountId && candidate.id === id);
+      if (!row || row.status !== "MATCHED"
+        || (credentialStoreId && !stores.has(`${accountId}:${credentialStoreId}`))) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(row, {
+        credential_store_id: credentialStoreId,
+        failure_code: failureCode,
+        failure_detail_safe: failureDetailSafe,
+        attempt_count: row.attempt_count + 1,
+        next_attempt_at: iso(nextAttemptAt),
+        updated_at: iso(now),
+      });
+      return { rows: [rowCopy(row)], rowCount: 1 };
+    }
+
     if (normalized.startsWith("INSERT INTO collect_category_resolutions AS current") === false
       && normalized.startsWith("INSERT INTO collect_category_resolutions")) {
       maybeThrowForeignKey("saveManual");
@@ -391,6 +477,19 @@ function queued(overrides = {}) {
     credentialStoreId: "store-a",
     now: START,
     ...overrides,
+  };
+}
+
+function safeAudit(action = "COLLECT_CATEGORY_RESOLUTION_QUEUED") {
+  return {
+    action,
+    accountId: "account-a",
+    collectItemId: "collect-shared",
+    taxonomyScope: SCOPE,
+    sourceTypeId: 94405,
+    credentialStoreId: "store-a",
+    taxonomyFingerprint: "taxonomy-v1",
+    attempt: 0,
   };
 }
 
@@ -548,20 +647,12 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
     assert.equal(invalidManual.status, "INVALIDATED");
     assert.equal(invalidManual.method, "MANUAL");
     const requeued = await repository.enqueue(queued({ now: "2026-08-03T10:00:14.000Z" }));
-    assert.equal(requeued.status, "QUEUED");
-    assert.equal(requeued.method, null);
-    assert.equal((await repository.claimNext({
+    assert.equal(requeued.status, "INVALIDATED");
+    assert.equal(requeued.method, "MANUAL");
+    assert.equal(await repository.claimNext({
       accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "automatic-retry",
       leaseExpiresAt: "2026-08-03T10:02:00.000Z", now: "2026-08-03T10:00:14.000Z",
-    })).status, "MATCHING");
-    const rematched = await repository.completeMatched({
-      accountId: "account-a", id: record.id, leaseToken: "automatic-retry",
-      targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
-      method: "TYPE_ID_EXACT", taxonomyFingerprint: "taxonomy-v1",
-      credentialStoreId: "store-a", now: "2026-08-03T10:00:15.000Z",
-    });
-    assert.equal(rematched.status, "MATCHED");
-    assert.equal(rematched.method, "TYPE_ID_EXACT");
+    }), null);
   });
 
   test(`${adapterName} defer, release, review, and explicit invalidation preserve recoverable transitions`, async () => {
@@ -690,6 +781,142 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
       assertCredentialScopeError,
     );
     assert.equal((await repository.readForItem(queued())).status, "MATCHING");
+  });
+
+  test(`${adapterName} requeues the claimed record directly without a second account-global claim`, async () => {
+    const repository = createRepository();
+    const record = await repository.enqueue(queued());
+    await repository.claimNext({
+      accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "refresh-lease",
+      leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+    });
+
+    const requeued = await repository.requeueClaim({
+      accountId: "account-a",
+      id: record.id,
+      leaseToken: "refresh-lease",
+      sourceTypeId: 95555,
+      status: "QUEUED",
+      taxonomyFingerprint: "taxonomy-v2",
+      credentialStoreId: "store-a",
+      nextAttemptAt: "2026-08-03T10:00:01.000Z",
+      now: "2026-08-03T10:00:01.000Z",
+      auditEvent: safeAudit(),
+    });
+
+    assert.equal(requeued.id, record.id);
+    assert.equal(requeued.status, "QUEUED");
+    assert.equal(requeued.sourceTypeId, 95555);
+    assert.equal(requeued.taxonomyFingerprint, "taxonomy-v2");
+    assert.equal(requeued.attemptCount, 0);
+  });
+
+  test(`${adapterName} validation transitions preserve a manual target and persist restart-safe retry metadata`, async () => {
+    const repository = createRepository();
+    const manual = await repository.saveManual({
+      ...queued(),
+      targetDescriptionCategoryId: 17029999,
+      targetTypeId: 94405,
+      displayPath: { zh: ["人工类目"] },
+    });
+
+    const validated = await repository.validateMatched({
+      accountId: "account-a",
+      id: manual.id,
+      taxonomyFingerprint: "taxonomy-v2",
+      credentialStoreId: "store-a",
+      validatedAt: "2026-08-03T10:02:00.000Z",
+      now: "2026-08-03T10:02:00.000Z",
+      auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_VALIDATED"),
+    });
+    assert.equal(validated.status, "MATCHED");
+    assert.equal(validated.method, "MANUAL");
+    assert.equal(validated.targetDescriptionCategoryId, 17029999);
+    assert.equal(validated.taxonomyFingerprint, "taxonomy-v2");
+
+    const deferred = await repository.deferValidation({
+      accountId: "account-a",
+      id: manual.id,
+      credentialStoreId: "store-a",
+      failureCode: "HTTP_503",
+      nextAttemptAt: "2026-08-03T10:03:00.000Z",
+      now: "2026-08-03T10:02:01.000Z",
+      auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"),
+    });
+    assert.equal(deferred.status, "MATCHED");
+    assert.equal(deferred.method, "MANUAL");
+    assert.equal(deferred.targetDescriptionCategoryId, 17029999);
+    assert.equal(deferred.failureCode, "HTTP_503");
+    assert.equal(deferred.nextAttemptAt, "2026-08-03T10:03:00.000Z");
+    assert.equal(deferred.attemptCount, 1);
+  });
+}
+
+for (const [adapterName, setup] of Object.entries({
+  JSON() {
+    const state = {
+      caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
+      stores: [{ id: "store-a", ownerAccountId: "account-a" }],
+    };
+    const repository = jsonRepository({
+      state,
+      auditWriter: async ({ event }) => {
+        state.auditEvents = [...(state.auditEvents || []), structuredClone(event)];
+        throw new Error("audit unavailable");
+      },
+    });
+    return { repository, readAudit: () => state.auditEvents || [] };
+  },
+  PostgreSQL() {
+    const pool = statefulPostgresPool();
+    const repository = createPostgresCollectCategoryResolutionRepository({
+      pool,
+      auditWriter: async () => { throw new Error("audit unavailable"); },
+    });
+    return { repository, readAudit: () => [] };
+  },
+})) {
+  test(`${adapterName} rolls the domain transition back when its audit write fails`, async () => {
+    const { repository, readAudit } = setup();
+    await assert.rejects(
+      repository.enqueue({ ...queued(), auditEvent: safeAudit() }),
+      /audit unavailable/,
+    );
+    assert.equal(await repository.readForItem(queued()), null);
+    assert.deepEqual(readAudit(), []);
+  });
+}
+
+for (const [adapterName, setup] of Object.entries({
+  JSON() {
+    const state = {
+      caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
+      stores: [{ id: "store-a", ownerAccountId: "account-a" }],
+    };
+    let auditWrites = 0;
+    return {
+      repository: jsonRepository({ state, auditWriter: async () => { auditWrites += 1; } }),
+      auditWrites: () => auditWrites,
+    };
+  },
+  PostgreSQL() {
+    let auditWrites = 0;
+    return {
+      repository: createPostgresCollectCategoryResolutionRepository({
+        pool: statefulPostgresPool(),
+        auditWriter: async () => { auditWrites += 1; },
+      }),
+      auditWrites: () => auditWrites,
+    };
+  },
+})) {
+  test(`${adapterName} does not emit an audit when the domain write fails`, async () => {
+    const { repository, auditWrites } = setup();
+    await assert.rejects(
+      repository.enqueue({ ...queued({ credentialStoreId: "store-b" }), auditEvent: safeAudit() }),
+      assertCredentialScopeError,
+    );
+    assert.equal(auditWrites(), 0);
   });
 }
 

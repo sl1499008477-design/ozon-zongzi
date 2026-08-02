@@ -14,6 +14,19 @@ const ENQUEUE_STATUS = new Set(["WAITING_ENRICHMENT", "WAITING_STORE", "QUEUED",
 const CLAIMABLE_STATUS = new Set(["QUEUED", "RETRYABLE_ERROR", "INVALIDATED"]);
 const CREDENTIAL_STORE_FOREIGN_KEY =
   "collect_category_resolutions_credential_store_id_fkey";
+const AUDIT_EVENT_KEYS = new Set([
+  "action",
+  "accountId",
+  "collectItemId",
+  "taxonomyScope",
+  "sourceTypeId",
+  "targetDescriptionCategoryId",
+  "targetTypeId",
+  "credentialStoreId",
+  "taxonomyFingerprint",
+  "attempt",
+  "failureCode",
+]);
 
 function repositoryError(message, code = "COLLECT_CATEGORY_RESOLUTION_PERSISTENCE_FAILED", status = 500) {
   return Object.assign(new Error(message), { code, status });
@@ -210,16 +223,41 @@ function sameJsonValue(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function safeAuditEvent(value) {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw repositoryError(
+      "Collect category resolution audit event is invalid",
+      "COLLECT_CATEGORY_RESOLUTION_INPUT_INVALID",
+      400,
+    );
+  }
+  const event = copy(value);
+  if (!String(event.action ?? "").trim()
+    || Object.keys(event).some((key) => !AUDIT_EVENT_KEYS.has(key))) {
+    throw repositoryError(
+      "Collect category resolution audit event is invalid",
+      "COLLECT_CATEGORY_RESOLUTION_INPUT_INVALID",
+      400,
+    );
+  }
+  return event;
+}
+
 export function createJsonCollectCategoryResolutionRepository({
   state,
   persist = async () => {},
   stateTransaction,
+  auditWriter = async () => {},
 } = {}) {
   if (!state || typeof state !== "object") {
     throw new TypeError("Collect category resolution JSON state required");
   }
   if (typeof stateTransaction?.run !== "function") {
     throw new TypeError("Collect category resolution JSON state transaction required");
+  }
+  if (typeof auditWriter !== "function") {
+    throw new TypeError("Collect category resolution JSON audit writer required");
   }
 
   function records() {
@@ -246,10 +284,13 @@ export function createJsonCollectCategoryResolutionRepository({
     }
   }
 
-  async function mutate(operation) {
+  async function mutate(operation, requestedAuditEvent = null) {
+    const auditEvent = safeAuditEvent(requestedAuditEvent);
     return stateTransaction.run(async () => {
       const hadRecords = Object.hasOwn(state, "collectCategoryResolutions");
       const previousRecords = state.collectCategoryResolutions;
+      const hadAuditEvents = Object.hasOwn(state, "auditEvents");
+      const previousAuditEvents = state.auditEvents;
       const normalizedBefore = Array.isArray(previousRecords) ? previousRecords : [];
       const working = copy(normalizedBefore);
       const result = operation(working);
@@ -257,12 +298,15 @@ export function createJsonCollectCategoryResolutionRepository({
 
       state.collectCategoryResolutions = working;
       try {
+        if (auditEvent) await auditWriter({ state, event: copy(auditEvent) });
         await persist(state);
       } catch (error) {
         if (state.collectCategoryResolutions === working) {
           if (hadRecords) state.collectCategoryResolutions = previousRecords;
           else delete state.collectCategoryResolutions;
         }
+        if (hadAuditEvents) state.auditEvents = previousAuditEvents;
+        else delete state.auditEvents;
         throw error;
       }
 
@@ -278,7 +322,7 @@ export function createJsonCollectCategoryResolutionRepository({
       assertStoreScope(request.accountId, request.credentialStoreId);
       const existing = entries.find((record) => sameStableKey(record, request));
       if (existing && (
-        (existing.status === "MATCHED" && existing.method === "MANUAL")
+        existing.method === "MANUAL"
         || (["MATCHING", "MATCHED", "NEEDS_REVIEW", "RETRYABLE_ERROR"].includes(existing.status)
           && sameExecutionKey(existing, request))
         || (existing.status === request.status && sameExecutionKey(existing, request))
@@ -332,7 +376,7 @@ export function createJsonCollectCategoryResolutionRepository({
       };
       entries.push(created);
       return recordFromRow(created);
-    });
+    }, input.auditEvent);
   }
 
   async function readForItem(input) {
@@ -359,6 +403,7 @@ export function createJsonCollectCategoryResolutionRepository({
     return mutate((entries) => {
       const candidate = entries
         .filter((record) => record.accountId === accountId
+          && record.method !== "MANUAL"
           && (!taxonomyScope || record.taxonomyScope === taxonomyScope)
           && new Date(record.nextAttemptAt).getTime() <= now.getTime()
           && (CLAIMABLE_STATUS.has(record.status)
@@ -385,7 +430,7 @@ export function createJsonCollectCategoryResolutionRepository({
     });
   }
 
-  function fencedMutation(input, update, options) {
+  function fencedMutation(input, update, options, auditEvent = null) {
     const fence = fenceInput(input, options);
     return mutate((entries) => {
       const current = entries.find((record) => record.accountId === fence.accountId
@@ -393,7 +438,7 @@ export function createJsonCollectCategoryResolutionRepository({
         && (record.leaseToken ?? null) === fence.leaseToken);
       if (!current) return null;
       return update(current, fence);
-    });
+    }, auditEvent);
   }
 
   async function completeMatched(input = {}) {
@@ -444,7 +489,7 @@ export function createJsonCollectCategoryResolutionRepository({
         updatedAt: at.toISOString(),
       });
       return recordFromRow(current);
-    });
+    }, undefined, input.auditEvent);
   }
 
   async function completeNeedsReview(input = {}) {
@@ -469,7 +514,7 @@ export function createJsonCollectCategoryResolutionRepository({
         updatedAt: at.toISOString(),
       });
       return recordFromRow(current);
-    });
+    }, undefined, input.auditEvent);
   }
 
   async function deferRetry(input = {}) {
@@ -497,7 +542,7 @@ export function createJsonCollectCategoryResolutionRepository({
         updatedAt: at.toISOString(),
       });
       return recordFromRow(current);
-    });
+    }, undefined, input.auditEvent);
   }
 
   async function invalidate(input = {}) {
@@ -516,7 +561,7 @@ export function createJsonCollectCategoryResolutionRepository({
         updatedAt: at.toISOString(),
       });
       return recordFromRow(current);
-    }, { nullableToken: true });
+    }, { nullableToken: true }, input.auditEvent);
   }
 
   async function saveManual(input = {}) {
@@ -563,7 +608,102 @@ export function createJsonCollectCategoryResolutionRepository({
         updatedAt: request.now.toISOString(),
       });
       return recordFromRow(current);
-    });
+    }, input.auditEvent);
+  }
+
+  async function requeueClaim(input = {}) {
+    const at = requiredDate(input.now, "now");
+    const nextAttemptAt = requiredDate(input.nextAttemptAt ?? at, "nextAttemptAt");
+    const sourceTypeId = positiveId(input.sourceTypeId, "sourceTypeId", { optional: true });
+    const status = statusValue(input.status ?? "QUEUED", ENQUEUE_STATUS);
+    const taxonomyFingerprint = optionalText(input.taxonomyFingerprint, 240);
+    const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    const accountId = requiredText(input.accountId, "accountId");
+    assertStoreScope(accountId, credentialStoreId);
+    return fencedMutation(input, (current) => {
+      assertStoreScope(accountId, credentialStoreId);
+      if (current.status !== "MATCHING"
+        || current.method === "MANUAL"
+        || new Date(current.leaseExpiresAt || 0).getTime() <= at.getTime()) return null;
+      const executionChanged = Number(current.sourceTypeId || 0) !== Number(sourceTypeId || 0)
+        || (current.taxonomyFingerprint ?? null) !== taxonomyFingerprint;
+      Object.assign(current, {
+        sourceTypeId,
+        targetDescriptionCategoryId: null,
+        targetTypeId: null,
+        method: null,
+        status,
+        taxonomyFingerprint,
+        credentialStoreId,
+        displayPath: {},
+        failureCode: null,
+        failureDetailSafe: null,
+        attemptCount: executionChanged ? 0 : Number(current.attemptCount || 0),
+        nextAttemptAt: nextAttemptAt.toISOString(),
+        leaseToken: null,
+        leaseExpiresAt: null,
+        matchedAt: null,
+        validatedAt: null,
+        updatedAt: at.toISOString(),
+      });
+      return recordFromRow(current);
+    }, undefined, input.auditEvent);
+  }
+
+  async function validateMatched(input = {}) {
+    const accountId = requiredText(input.accountId, "accountId");
+    const id = requiredText(input.id, "id");
+    const at = requiredDate(input.now, "now");
+    const validatedAt = requiredDate(input.validatedAt ?? at, "validatedAt");
+    const taxonomyFingerprint = requiredText(input.taxonomyFingerprint, "taxonomyFingerprint");
+    const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    assertStoreScope(accountId, credentialStoreId);
+    return mutate((entries) => {
+      assertStoreScope(accountId, credentialStoreId);
+      const current = entries.find((record) => record.accountId === accountId && record.id === id);
+      if (!current || current.status !== "MATCHED") return null;
+      Object.assign(current, {
+        taxonomyFingerprint,
+        credentialStoreId,
+        failureCode: null,
+        failureDetailSafe: null,
+        attemptCount: 0,
+        nextAttemptAt: at.toISOString(),
+        validatedAt: validatedAt.toISOString(),
+        updatedAt: at.toISOString(),
+      });
+      return recordFromRow(current);
+    }, input.auditEvent);
+  }
+
+  async function deferValidation(input = {}) {
+    const accountId = requiredText(input.accountId, "accountId");
+    const id = requiredText(input.id, "id");
+    const at = requiredDate(input.now, "now");
+    const nextAttemptAt = requiredDate(input.nextAttemptAt, "nextAttemptAt");
+    if (nextAttemptAt.getTime() < at.getTime()) {
+      throw repositoryError(
+        "Collect category resolution nextAttemptAt is before now",
+        "COLLECT_CATEGORY_RESOLUTION_INPUT_INVALID",
+        400,
+      );
+    }
+    const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    assertStoreScope(accountId, credentialStoreId);
+    return mutate((entries) => {
+      assertStoreScope(accountId, credentialStoreId);
+      const current = entries.find((record) => record.accountId === accountId && record.id === id);
+      if (!current || current.status !== "MATCHED") return null;
+      Object.assign(current, {
+        credentialStoreId,
+        failureCode: requiredText(input.failureCode, "failureCode"),
+        failureDetailSafe: optionalText(input.failureDetailSafe),
+        attemptCount: Number(current.attemptCount || 0) + 1,
+        nextAttemptAt: nextAttemptAt.toISOString(),
+        updatedAt: at.toISOString(),
+      });
+      return recordFromRow(current);
+    }, input.auditEvent);
   }
 
   async function releaseLease(input = {}) {
@@ -591,12 +731,21 @@ export function createJsonCollectCategoryResolutionRepository({
     deferRetry,
     invalidate,
     saveManual,
+    requeueClaim,
+    validateMatched,
+    deferValidation,
     releaseLease,
   });
 }
 
-export function createPostgresCollectCategoryResolutionRepository({ pool } = {}) {
+export function createPostgresCollectCategoryResolutionRepository({
+  pool,
+  auditWriter = async () => {},
+} = {}) {
   if (!pool?.query) throw new TypeError("Collect category resolution PostgreSQL pool required");
+  if (typeof auditWriter !== "function") {
+    throw new TypeError("Collect category resolution PostgreSQL audit writer required");
+  }
 
   async function query(sql, params = [], executor = pool) {
     try {
@@ -610,7 +759,7 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
     }
   }
 
-  async function requireInputScope({ accountId, collectItemId, credentialStoreId }) {
+  async function requireInputScope({ accountId, collectItemId, credentialStoreId }, executor = pool) {
     const scoped = await query(
       `SELECT
          EXISTS (
@@ -620,26 +769,59 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
            SELECT 1 FROM stores WHERE id=$3 AND owner_account_id=$1
          )) AS credential_store_scoped`,
       [accountId, collectItemId, credentialStoreId],
+      executor,
     );
     if (scoped.rows[0]?.collect_item_scoped !== true) throw collectItemScopeError();
     if (scoped.rows[0]?.credential_store_scoped !== true) throw credentialStoreScopeError();
   }
 
-  async function requireCredentialStoreScope(accountId, credentialStoreId) {
+  async function requireCredentialStoreScope(accountId, credentialStoreId, executor = pool) {
     if (!credentialStoreId) return;
     const scoped = await query(
       `SELECT EXISTS (
          SELECT 1 FROM stores WHERE id=$2 AND owner_account_id=$1
        ) AS credential_store_scoped`,
       [accountId, credentialStoreId],
+      executor,
     );
     if (scoped.rows[0]?.credential_store_scoped !== true) throw credentialStoreScopeError();
+  }
+
+  async function transitionWithAudit(requestedAuditEvent, operation) {
+    const auditEvent = safeAuditEvent(requestedAuditEvent);
+    if (!auditEvent) return operation(pool);
+    if (typeof pool.connect !== "function") {
+      throw new TypeError("Collect category resolution PostgreSQL pool.connect required");
+    }
+    const client = await pool.connect();
+    let began = false;
+    try {
+      await query("BEGIN", [], client);
+      began = true;
+      const result = await operation(client);
+      if (result) await auditWriter({ executor: client, event: copy(auditEvent) });
+      await query("COMMIT", [], client);
+      began = false;
+      return result;
+    } catch (error) {
+      if (began) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // Keep the original domain or audit error.
+        }
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async function enqueue(input) {
     const request = enqueueInput(input);
     await requireInputScope(request);
-    const result = await query(
+    const inserted = await transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
       `INSERT INTO collect_category_resolutions AS current (
          id, account_id, collect_item_id, taxonomy_scope, source_type_id, status,
          taxonomy_fingerprint, credential_store_id, next_attempt_at, created_at, updated_at
@@ -668,7 +850,7 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
            matched_at=NULL,
            validated_at=NULL,
            updated_at=EXCLUDED.updated_at
-       WHERE NOT (current.status='MATCHED' AND current.method='MANUAL')
+       WHERE current.method IS DISTINCT FROM 'MANUAL'
          AND NOT (
            current.source_type_id IS NOT DISTINCT FROM EXCLUDED.source_type_id
            AND current.taxonomy_fingerprint IS NOT DISTINCT FROM EXCLUDED.taxonomy_fingerprint
@@ -683,8 +865,11 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         request.sourceTypeId, request.status, request.taxonomyFingerprint,
         request.credentialStoreId, request.nextAttemptAt, request.now,
       ],
-    );
-    if (result.rows[0]) return recordFromRow(result.rows[0]);
+      executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
+    if (inserted) return inserted;
     await requireInputScope(request);
     const stable = await query(
       `SELECT * FROM collect_category_resolutions
@@ -733,6 +918,7 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
            SELECT id
              FROM collect_category_resolutions
             WHERE account_id=$1
+              AND method IS DISTINCT FROM 'MANUAL'
               AND ($2::text IS NULL OR taxonomy_scope=$2)
               AND next_attempt_at<=$3
               AND (
@@ -812,7 +998,8 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         || claimed.rows[0].taxonomy_fingerprint !== completionFingerprint)) {
       throw executionMismatchError();
     }
-    const result = await query(
+    const record = await transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
       `UPDATE collect_category_resolutions
           SET status='MATCHED', target_description_category_id=$4, target_type_id=$5,
               method=$6, credential_store_id=$8,
@@ -833,15 +1020,124 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         credentialStoreId, JSON.stringify(displayPath(input.displayPath)),
         matchedAt, validatedAt, now,
       ],
-    );
-    if (!result.rows[0]) await requireCredentialStoreScope(fence.accountId, credentialStoreId);
-    return recordFromRow(result.rows[0] || null);
+      executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
+    if (!record) await requireCredentialStoreScope(fence.accountId, credentialStoreId);
+    return record;
+  }
+
+  async function requeueClaim(input = {}) {
+    const fence = fenceInput(input);
+    const now = requiredDate(input.now, "now");
+    const nextAttemptAt = requiredDate(input.nextAttemptAt ?? now, "nextAttemptAt");
+    const sourceTypeId = positiveId(input.sourceTypeId, "sourceTypeId", { optional: true });
+    const status = statusValue(input.status ?? "QUEUED", ENQUEUE_STATUS);
+    const taxonomyFingerprint = optionalText(input.taxonomyFingerprint, 240);
+    const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    await requireCredentialStoreScope(fence.accountId, credentialStoreId);
+    const record = await transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
+        `UPDATE collect_category_resolutions
+            SET source_type_id=$4, status=$5, taxonomy_fingerprint=$6,
+                credential_store_id=$7, target_description_category_id=NULL,
+                target_type_id=NULL, method=NULL, display_path_json='{}'::jsonb,
+                failure_code=NULL, failure_detail_safe=NULL,
+                attempt_count=CASE
+                  WHEN source_type_id IS DISTINCT FROM $4
+                    OR taxonomy_fingerprint IS DISTINCT FROM $6 THEN 0
+                  ELSE attempt_count END,
+                next_attempt_at=$8, lease_token=NULL, lease_expires_at=NULL,
+                matched_at=NULL, validated_at=NULL, updated_at=$9
+          WHERE account_id=$1 AND id=$2 AND lease_token=$3
+            AND status='MATCHING' AND method IS DISTINCT FROM 'MANUAL'
+            AND lease_expires_at>$9
+            AND ($7::text IS NULL OR EXISTS (
+              SELECT 1 FROM stores WHERE id=$7 AND owner_account_id=$1
+            ))
+          RETURNING *`,
+        [
+          fence.accountId, fence.id, fence.leaseToken, sourceTypeId, status,
+          taxonomyFingerprint, credentialStoreId, nextAttemptAt, now,
+        ],
+        executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
+    if (!record) await requireCredentialStoreScope(fence.accountId, credentialStoreId);
+    return record;
+  }
+
+  async function validateMatched(input = {}) {
+    const accountId = requiredText(input.accountId, "accountId");
+    const id = requiredText(input.id, "id");
+    const now = requiredDate(input.now, "now");
+    const validatedAt = requiredDate(input.validatedAt ?? now, "validatedAt");
+    const taxonomyFingerprint = requiredText(input.taxonomyFingerprint, "taxonomyFingerprint");
+    const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    await requireCredentialStoreScope(accountId, credentialStoreId);
+    const record = await transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
+        `UPDATE collect_category_resolutions
+            SET taxonomy_fingerprint=$3, credential_store_id=$4,
+                failure_code=NULL, failure_detail_safe=NULL, attempt_count=0,
+                next_attempt_at=$6, validated_at=$5, updated_at=$6
+          WHERE account_id=$1 AND id=$2 AND status='MATCHED'
+            AND ($4::text IS NULL OR EXISTS (
+              SELECT 1 FROM stores WHERE id=$4 AND owner_account_id=$1
+            ))
+          RETURNING *`,
+        [accountId, id, taxonomyFingerprint, credentialStoreId, validatedAt, now],
+        executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
+    if (!record) await requireCredentialStoreScope(accountId, credentialStoreId);
+    return record;
+  }
+
+  async function deferValidation(input = {}) {
+    const accountId = requiredText(input.accountId, "accountId");
+    const id = requiredText(input.id, "id");
+    const now = requiredDate(input.now, "now");
+    const nextAttemptAt = requiredDate(input.nextAttemptAt, "nextAttemptAt");
+    if (nextAttemptAt.getTime() < now.getTime()) {
+      throw repositoryError(
+        "Collect category resolution nextAttemptAt is before now",
+        "COLLECT_CATEGORY_RESOLUTION_INPUT_INVALID",
+        400,
+      );
+    }
+    const credentialStoreId = optionalText(input.credentialStoreId, 240);
+    await requireCredentialStoreScope(accountId, credentialStoreId);
+    const record = await transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
+        `UPDATE collect_category_resolutions
+            SET credential_store_id=$3, failure_code=$4, failure_detail_safe=$5,
+                attempt_count=attempt_count+1, next_attempt_at=$6, updated_at=$7
+          WHERE account_id=$1 AND id=$2 AND status='MATCHED'
+            AND ($3::text IS NULL OR EXISTS (
+              SELECT 1 FROM stores WHERE id=$3 AND owner_account_id=$1
+            ))
+          RETURNING *`,
+        [
+          accountId, id, credentialStoreId, requiredText(input.failureCode, "failureCode"),
+          optionalText(input.failureDetailSafe), nextAttemptAt, now,
+        ],
+        executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
+    if (!record) await requireCredentialStoreScope(accountId, credentialStoreId);
+    return record;
   }
 
   async function completeNeedsReview(input = {}) {
     const fence = fenceInput(input);
     const now = requiredDate(input.now, "now");
-    const result = await query(
+    return transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
       `UPDATE collect_category_resolutions
           SET status='NEEDS_REVIEW', target_description_category_id=NULL, target_type_id=NULL,
               method=NULL, display_path_json='{}'::jsonb, failure_code=$4,
@@ -855,8 +1151,10 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         fence.accountId, fence.id, fence.leaseToken,
         requiredText(input.failureCode, "failureCode"), optionalText(input.failureDetailSafe), now,
       ],
-    );
-    return recordFromRow(result.rows[0] || null);
+      executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
   }
 
   async function deferRetry(input = {}) {
@@ -870,7 +1168,8 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         400,
       );
     }
-    const result = await query(
+    return transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
       `UPDATE collect_category_resolutions
           SET status='RETRYABLE_ERROR', failure_code=$4, failure_detail_safe=$5,
               next_attempt_at=$6, lease_token=NULL, lease_expires_at=NULL, updated_at=$7
@@ -883,15 +1182,18 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         requiredText(input.failureCode, "failureCode"), optionalText(input.failureDetailSafe),
         nextAttemptAt, now,
       ],
-    );
-    return recordFromRow(result.rows[0] || null);
+      executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
   }
 
   async function invalidate(input = {}) {
     const fence = fenceInput(input, { nullableToken: true });
     const now = requiredDate(input.now, "now");
     const nextAttemptAt = requiredDate(input.nextAttemptAt ?? now, "nextAttemptAt");
-    const result = await query(
+    return transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
       `UPDATE collect_category_resolutions
           SET status='INVALIDATED', failure_code=$4, failure_detail_safe=$5,
               next_attempt_at=$6, lease_token=NULL, lease_expires_at=NULL, updated_at=$7
@@ -903,8 +1205,10 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         requiredText(input.failureCode, "failureCode"), optionalText(input.failureDetailSafe),
         nextAttemptAt, now,
       ],
-    );
-    return recordFromRow(result.rows[0] || null);
+      executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
   }
 
   async function saveManual(input = {}) {
@@ -917,7 +1221,8 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
     const targetTypeId = positiveId(input.targetTypeId, "targetTypeId");
     const matchedAt = requiredDate(input.matchedAt ?? request.now, "matchedAt");
     const validatedAt = requiredDate(input.validatedAt ?? request.now, "validatedAt");
-    const result = await query(
+    const record = await transitionWithAudit(input.auditEvent, async (executor) => {
+      const result = await query(
       `INSERT INTO collect_category_resolutions (
          id, account_id, collect_item_id, taxonomy_scope, source_type_id,
          target_description_category_id, target_type_id, method, status,
@@ -950,10 +1255,13 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
         request.taxonomyFingerprint, request.credentialStoreId,
         JSON.stringify(displayPath(input.displayPath)), matchedAt, validatedAt, request.now,
       ],
-    );
-    if (!result.rows[0]) await requireInputScope(request);
-    if (!result.rows[0]) throw collectItemScopeError();
-    return recordFromRow(result.rows[0]);
+      executor,
+      );
+      return recordFromRow(result.rows[0] || null);
+    });
+    if (!record) await requireInputScope(request);
+    if (!record) throw collectItemScopeError();
+    return record;
   }
 
   async function releaseLease(input = {}) {
@@ -980,6 +1288,9 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
     deferRetry,
     invalidate,
     saveManual,
+    requeueClaim,
+    validateMatched,
+    deferValidation,
     releaseLease,
   });
 }

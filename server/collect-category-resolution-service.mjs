@@ -6,7 +6,7 @@ import {
 const LEASE_MS = 2 * 60 * 1000;
 const RETRY_BASE_MS = 30 * 1000;
 const RETRY_MAX_MS = 30 * 60 * 1000;
-const RETRYABLE_CODES = new Set([
+const RETRYABLE_TRANSPORT_CODES = new Set([
   "NETWORK_ERROR",
   "FETCH_FAILED",
   "TIMEOUT",
@@ -14,11 +14,25 @@ const RETRYABLE_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
   "OZON_TIMEOUT",
-  "OZON_RATE_LIMITED",
-  "OZON_CATEGORY_TREE_UNAVAILABLE",
-  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
-  "OZON_CATEGORY_TAXONOMY_STALE",
+]);
+const NON_RETRYABLE_CATEGORY_CODES = new Set([
   "OZON_CATEGORY_DATA_INVALID",
+  "OZON_CATEGORY_TAXONOMY_STALE",
+  "TAXONOMY_SCOPE_MISMATCH",
+]);
+const TRANSIENT_VALIDATION_REASONS = new Set([
+  "TAXONOMY_UNAVAILABLE",
+  "TAXONOMY_STALE",
+  "ATTRIBUTES_UNAVAILABLE",
+]);
+const VERIFIED_TARGET_INVALID_REASONS = new Set([
+  "TARGET_INVALID",
+  "DESCRIPTION_CATEGORY_NOT_FOUND",
+  "DESCRIPTION_CATEGORY_DISABLED",
+  "TYPE_NOT_FOUND",
+  "TYPE_DISABLED",
+  "TYPE_NOT_IN_DESCRIPTION_CATEGORY",
+  "ATTRIBUTES_INVALID",
 ]);
 
 function serviceError(message, code, status) {
@@ -82,8 +96,17 @@ function credentialStoreUsable(store, accountId, requestedStoreId) {
   if (!store || String(store.id ?? "") !== requestedStoreId) return false;
   const ownerAccountId = String(store.ownerAccountId ?? store.accountId ?? "");
   if (ownerAccountId !== accountId) return false;
-  const status = String(store.status ?? "ACTIVE").toUpperCase();
-  if (!["ACTIVE", "ENABLED"].includes(status) || store.active === false || store.enabled === false) {
+  const status = String(store.status ?? "").toUpperCase();
+  const explicitlyEnabled = ["ACTIVE", "ENABLED"].includes(status)
+    || store.active === true
+    || store.enabled === true
+    || store.isActive === true
+    || store.is_active === true;
+  if (!explicitlyEnabled
+    || store.active === false
+    || store.enabled === false
+    || store.isActive === false
+    || store.is_active === false) {
     return false;
   }
   const explicitCredentialState = store.credentialed === true
@@ -99,8 +122,23 @@ function stableErrorCode(error) {
   return /^[A-Z][A-Z0-9_]{0,119}$/.test(code) ? code : "CATEGORY_RESOLUTION_FAILED";
 }
 
-function retryableCode(code) {
-  return RETRYABLE_CODES.has(code) || code === "HTTP_429" || /^HTTP_5\d\d$/.test(code);
+function failurePolicy(error) {
+  const status = Number(error?.status);
+  const numericStatus = Number.isInteger(status) ? status : 0;
+  const code = stableErrorCode(error);
+  const retryable = !NON_RETRYABLE_CATEGORY_CODES.has(code) && (
+    RETRYABLE_TRANSPORT_CODES.has(code)
+      || /^HTTP_(408|429|5\d\d)$/.test(code)
+      || numericStatus === 408
+      || numericStatus === 429
+      || numericStatus >= 500
+  );
+  return {
+    retryable,
+    failureCode: code === "CATEGORY_RESOLUTION_FAILED" && numericStatus
+      ? `HTTP_${numericStatus}`
+      : code,
+  };
 }
 
 function retryDelayMs(attemptCount) {
@@ -168,7 +206,9 @@ export function createCollectCategoryResolutionService({
     "deferRetry",
     "invalidate",
     "saveManual",
-    "releaseLease",
+    "requeueClaim",
+    "validateMatched",
+    "deferValidation",
   ];
   if (!repository || repositoryMethods.some((method) => typeof repository[method] !== "function")) {
     throw new TypeError("Collect category resolution repository contract required");
@@ -184,19 +224,15 @@ export function createCollectCategoryResolutionService({
   if (!storePort || typeof storePort.readCredentialStore !== "function") {
     throw new TypeError("Collect category resolution store port required");
   }
-  if (!auditPort || typeof auditPort.append !== "function") {
+  if (!auditPort || typeof auditPort.prepare !== "function") {
     throw new TypeError("Collect category resolution audit port required");
   }
   if (typeof now !== "function" || typeof randomUUID !== "function") {
     throw new TypeError("Collect category resolution clock and UUID ports required");
   }
 
-  async function writeAudit(event) {
-    try {
-      await auditPort.append(event);
-    } catch {
-      // Observability failure must not corrupt an already-persisted business transition.
-    }
+  function preparedAudit(action, record, overrides) {
+    return auditPort.prepare(auditEvent(action, record, overrides));
   }
 
   async function readCollectItem(accountId, collectItemId) {
@@ -211,16 +247,17 @@ export function createCollectCategoryResolutionService({
     return item;
   }
 
-  async function readUsableStore(accountId, credentialStoreId) {
+  async function readStore(accountId, credentialStoreId) {
     const storeId = String(credentialStoreId ?? "").trim();
-    if (!storeId) return null;
-    let store;
+    if (!storeId) return { kind: "UNAVAILABLE", store: null };
     try {
-      store = await storePort.readCredentialStore({ accountId, storeId });
-    } catch {
-      return null;
+      const store = await storePort.readCredentialStore({ accountId, storeId });
+      return credentialStoreUsable(store, accountId, storeId)
+        ? { kind: "AVAILABLE", store }
+        : { kind: "UNAVAILABLE", store: null };
+    } catch (error) {
+      return { kind: "ERROR", error };
     }
-    return credentialStoreUsable(store, accountId, storeId) ? store : null;
   }
 
   async function enqueueForState({
@@ -234,30 +271,60 @@ export function createCollectCategoryResolutionService({
   }) {
     const at = instant(now());
     const sourceTypeId = sourceTypeIdOf(item);
-    const store = await readUsableStore(accountId, credentialStoreId);
-    const status = requestedStatus
-      ?? (!enrichmentComplete(item) ? "WAITING_ENRICHMENT" : store ? "QUEUED" : "WAITING_STORE");
-    const current = await repository.readForItem({ accountId, collectItemId, taxonomyScope });
-    const record = await repository.enqueue({
+    const storeResult = await readStore(accountId, credentialStoreId);
+    const storeFailure = storeResult.kind === "ERROR" ? failurePolicy(storeResult.error) : null;
+    const status = requestedStatus ?? (
+      !enrichmentComplete(item)
+        ? "WAITING_ENRICHMENT"
+        : storeResult.kind === "AVAILABLE" || storeFailure?.retryable
+          ? "QUEUED"
+          : "WAITING_STORE"
+    );
+    const safeCredentialStoreId = storeResult.kind === "AVAILABLE"
+      ? storeResult.store.id
+      : storeFailure?.retryable
+        ? String(credentialStoreId ?? "").trim() || null
+        : null;
+    const eventRecord = {
       accountId,
       collectItemId,
       taxonomyScope,
       sourceTypeId,
-      status,
       taxonomyFingerprint,
-      credentialStoreId: store?.id ?? null,
-      nextAttemptAt: at,
-      now: at,
-    });
-    if (record?.status === "QUEUED" && (
-      current?.status !== "QUEUED"
-      || current?.sourceTypeId !== record.sourceTypeId
-      || current?.taxonomyFingerprint !== record.taxonomyFingerprint
-      || current?.credentialStoreId !== record.credentialStoreId
-    )) {
-      await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_QUEUED", record));
+      credentialStoreId: safeCredentialStoreId,
+      attemptCount: 0,
+      failureCode: storeFailure?.failureCode ?? null,
+    };
+    const audit = status === "QUEUED"
+      ? preparedAudit("COLLECT_CATEGORY_RESOLUTION_QUEUED", eventRecord)
+      : storeFailure
+        ? preparedAudit("COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW", eventRecord, {
+          failureCode: storeFailure.failureCode,
+        })
+        : null;
+    try {
+      return await repository.enqueue({
+        ...eventRecord,
+        status,
+        credentialStoreId: safeCredentialStoreId,
+        nextAttemptAt: at,
+        now: at,
+        auditEvent: audit,
+      });
+    } catch (error) {
+      if (error?.code !== "COLLECT_CATEGORY_RESOLUTION_CREDENTIAL_STORE_SCOPE") throw error;
+      return repository.enqueue({
+        ...eventRecord,
+        status: enrichmentComplete(item) ? "WAITING_STORE" : "WAITING_ENRICHMENT",
+        credentialStoreId: null,
+        nextAttemptAt: at,
+        now: at,
+        auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW", eventRecord, {
+          credentialStoreId: null,
+          failureCode: "STORE_UNAVAILABLE",
+        }),
+      });
     }
-    return record;
   }
 
   async function scheduleForCollect(input = {}) {
@@ -296,8 +363,9 @@ export function createCollectCategoryResolutionService({
   async function onOperatingStoreAvailable(input = {}) {
     const accountId = requiredText(input.accountId, "accountId");
     const storeId = requiredText(input.storeId, "storeId");
-    const store = await readUsableStore(accountId, storeId);
-    if (!store) return [];
+    const storeResult = await readStore(accountId, storeId);
+    if (storeResult.kind !== "AVAILABLE") return [];
+    const store = storeResult.store;
     const candidates = typeof collectItemPort.listForCategoryResolution === "function"
       ? await collectItemPort.listForCategoryResolution({ accountId })
       : [];
@@ -305,37 +373,54 @@ export function createCollectCategoryResolutionService({
     for (const candidate of Array.isArray(candidates) ? candidates : []) {
       const collectItemId = String(candidate?.collectItemId ?? candidate?.id ?? "").trim();
       if (!collectItemId) continue;
+      const taxonomyScope = String(candidate?.taxonomyScope ?? TAXONOMY_SCOPE_OZON_DEFAULT).trim()
+        || TAXONOMY_SCOPE_OZON_DEFAULT;
       const current = await repository.readForItem({
         accountId,
         collectItemId,
-        taxonomyScope: TAXONOMY_SCOPE_OZON_DEFAULT,
+        taxonomyScope,
       });
       if (current?.status === "WAITING_STORE") {
-        results.push(await scheduleForCollect({ accountId, collectItemId, credentialStoreId: store.id }));
+        results.push(await scheduleForCollect({ accountId, collectItemId, credentialStoreId: store.id, taxonomyScope }));
       } else if (current?.status === "MATCHED") {
-        results.push(await validateForStore({ accountId, collectItemId, storeId: store.id }));
+        results.push(await validateForStore({ accountId, collectItemId, storeId: store.id, taxonomyScope }));
       }
     }
     return results;
   }
 
-  async function releaseAndEnqueue(claimed, { item, status, credentialStoreId, taxonomyFingerprint }) {
+  async function requeueClaimed(claimed, {
+    item,
+    status,
+    credentialStoreId,
+    taxonomyFingerprint,
+    failureCode = null,
+  }) {
     const at = instant(now());
-    const released = await repository.releaseLease({
+    const eventRecord = {
+      ...claimed,
+      sourceTypeId: sourceTypeIdOf(item),
+      credentialStoreId,
+      taxonomyFingerprint,
+      failureCode,
+    };
+    return repository.requeueClaim({
       accountId: claimed.accountId,
       id: claimed.id,
       leaseToken: claimed.leaseToken,
-      now: at,
-    });
-    if (!released) return null;
-    return enqueueForState({
-      accountId: claimed.accountId,
-      collectItemId: claimed.collectItemId,
-      item,
+      sourceTypeId: sourceTypeIdOf(item),
       credentialStoreId,
-      taxonomyScope: claimed.taxonomyScope,
       taxonomyFingerprint,
-      requestedStatus: status,
+      status,
+      nextAttemptAt: at,
+      now: at,
+      auditEvent: preparedAudit(
+        status === "QUEUED"
+          ? "COLLECT_CATEGORY_RESOLUTION_QUEUED"
+          : "COLLECT_CATEGORY_RESOLUTION_WAITING",
+        eventRecord,
+        { failureCode: failureCode ?? status },
+      ),
     });
   }
 
@@ -347,17 +432,15 @@ export function createCollectCategoryResolutionService({
       leaseToken: claimed.leaseToken,
       failureCode,
       now: at,
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW", claimed, { failureCode }),
     });
-    if (record) {
-      await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW", record, { failureCode }));
-    }
     return record;
   }
 
   async function finishCategoryFailure(claimed, error) {
     const at = instant(now());
-    const failureCode = stableErrorCode(error);
-    if (!retryableCode(failureCode)) return finishReview(claimed, failureCode);
+    const { retryable, failureCode } = failurePolicy(error);
+    if (!retryable) return finishReview(claimed, failureCode);
     const nextAttemptAt = new Date(at.getTime() + retryDelayMs(claimed.attemptCount));
     const record = await repository.deferRetry({
       accountId: claimed.accountId,
@@ -366,10 +449,8 @@ export function createCollectCategoryResolutionService({
       failureCode,
       nextAttemptAt,
       now: at,
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED", claimed, { failureCode }),
     });
-    if (record) {
-      await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED", record, { failureCode }));
-    }
     return record;
   }
 
@@ -392,50 +473,35 @@ export function createCollectCategoryResolutionService({
         failureCode: "TAXONOMY_CHANGED",
         nextAttemptAt: at,
         now: at,
+        auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_INVALIDATED", claimed, {
+          failureCode: "TAXONOMY_CHANGED",
+          taxonomyFingerprint: fingerprint,
+        }),
       });
       if (!invalidated) return { record: null };
-      await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_INVALIDATED", invalidated, {
-        failureCode: "TAXONOMY_CHANGED",
-        taxonomyFingerprint: fingerprint,
-      }));
-    } else {
-      const released = await repository.releaseLease({
+      const queued = await repository.enqueue({
         accountId: claimed.accountId,
-        id: claimed.id,
-        leaseToken: claimed.leaseToken,
-        now: instant(now()),
-      });
-      if (!released) return { record: null };
-    }
-
-    const queued = await enqueueForState({
-      accountId: claimed.accountId,
-      collectItemId: claimed.collectItemId,
-      item,
-      credentialStoreId: store.id,
-      taxonomyScope: claimed.taxonomyScope,
-      taxonomyFingerprint: fingerprint,
-      requestedStatus: "QUEUED",
-    });
-    if (queued?.status !== "QUEUED") return { record: queued };
-    const claimAt = instant(now());
-    const refreshed = await repository.claimNext({
-      accountId: claimed.accountId,
-      taxonomyScope: claimed.taxonomyScope,
-      leaseToken: randomUUID(),
-      leaseExpiresAt: new Date(claimAt.getTime() + LEASE_MS),
-      now: claimAt,
-    });
-    if (refreshed && refreshed.id !== claimed.id) {
-      await repository.releaseLease({
-        accountId: refreshed.accountId,
-        id: refreshed.id,
-        leaseToken: refreshed.leaseToken,
-        now: instant(now()),
+        collectItemId: claimed.collectItemId,
+        taxonomyScope: claimed.taxonomyScope,
+        sourceTypeId: sourceTypeIdOf(item),
+        status: "QUEUED",
+        taxonomyFingerprint: fingerprint,
+        credentialStoreId: store.id,
+        nextAttemptAt: at,
+        now: at,
+        auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_QUEUED", invalidated, {
+          taxonomyFingerprint: fingerprint,
+          failureCode: null,
+        }),
       });
       return { record: queued };
     }
-    return { claimed: refreshed };
+    return { record: await requeueClaimed(claimed, {
+      item,
+      credentialStoreId: store.id,
+      taxonomyFingerprint: fingerprint,
+      status: "QUEUED",
+    }) };
   }
 
   async function resolveNext(input = {}) {
@@ -452,33 +518,40 @@ export function createCollectCategoryResolutionService({
     });
     if (!claimed) return null;
 
-    const item = await readCollectItem(accountId, claimed.collectItemId);
+    let item;
+    try {
+      item = await readCollectItem(accountId, claimed.collectItemId);
+    } catch (error) {
+      return finishCategoryFailure(claimed, error);
+    }
     if (!enrichmentComplete(item)) {
-      return releaseAndEnqueue(claimed, {
+      return requeueClaimed(claimed, {
         item,
         status: "WAITING_ENRICHMENT",
         credentialStoreId: claimed.credentialStoreId,
         taxonomyFingerprint: claimed.taxonomyFingerprint,
+        failureCode: "WAITING_ENRICHMENT",
       });
     }
-    const store = await readUsableStore(accountId, claimed.credentialStoreId);
-    if (!store) {
-      return releaseAndEnqueue(claimed, {
+    const storeResult = await readStore(accountId, claimed.credentialStoreId);
+    if (storeResult.kind === "ERROR") return finishCategoryFailure(claimed, storeResult.error);
+    if (storeResult.kind !== "AVAILABLE") {
+      return requeueClaimed(claimed, {
         item,
         status: "WAITING_STORE",
         credentialStoreId: null,
         taxonomyFingerprint: claimed.taxonomyFingerprint,
+        failureCode: "STORE_UNAVAILABLE",
       });
     }
+    const store = storeResult.store;
     if (claimed.sourceTypeId !== sourceTypeIdOf(item)) {
-      const refreshed = await releaseAndEnqueue(claimed, {
+      return requeueClaimed(claimed, {
         item,
         status: "QUEUED",
         credentialStoreId: store.id,
         taxonomyFingerprint: claimed.taxonomyFingerprint,
       });
-      if (refreshed?.status !== "QUEUED") return refreshed;
-      return resolveNext({ accountId, taxonomyScope });
     }
 
     let snapshot;
@@ -516,8 +589,13 @@ export function createCollectCategoryResolutionService({
       matchedAt: at,
       validatedAt: at,
       now: at,
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_MATCHED", claimed, {
+        targetDescriptionCategoryId: match.descriptionCategoryId,
+        targetTypeId: match.typeId,
+        credentialStoreId: store.id,
+        taxonomyFingerprint: snapshot.taxonomyFingerprint,
+      }),
     });
-    if (record) await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_MATCHED", record));
     return record;
   }
 
@@ -529,8 +607,40 @@ export function createCollectCategoryResolutionService({
       || TAXONOMY_SCOPE_OZON_DEFAULT;
     const resolution = await repository.readForItem({ accountId, collectItemId, taxonomyScope });
     if (!resolution || resolution.status !== "MATCHED") return { reused: false, resolution };
-    const store = await readUsableStore(accountId, storeId);
-    if (!store) return { reused: false, resolution, failureCode: "WAITING_STORE" };
+
+    async function persistValidationFailure(error, {
+      transient = null,
+      credentialStoreId = resolution.credentialStoreId,
+    } = {}) {
+      const classified = failurePolicy(error);
+      const retryable = transient ?? classified.retryable;
+      const failureCode = classified.failureCode;
+      const at = instant(now());
+      const delay = retryable ? retryDelayMs(Number(resolution.attemptCount || 0) + 1) : RETRY_MAX_MS;
+      const deferred = await repository.deferValidation({
+        accountId,
+        id: resolution.id,
+        credentialStoreId,
+        failureCode,
+        nextAttemptAt: new Date(at.getTime() + delay),
+        now: at,
+        auditEvent: preparedAudit(
+          retryable
+            ? "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED"
+            : "COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW",
+          resolution,
+          { failureCode, credentialStoreId },
+        ),
+      });
+      return { reused: false, deferred: retryable, resolution: deferred, failureCode };
+    }
+
+    const storeResult = await readStore(accountId, storeId);
+    if (storeResult.kind === "ERROR") return persistValidationFailure(storeResult.error);
+    if (storeResult.kind !== "AVAILABLE") {
+      return persistValidationFailure({ code: "STORE_UNAVAILABLE" }, { transient: false });
+    }
+    const store = storeResult.store;
 
     let validation;
     try {
@@ -542,25 +652,49 @@ export function createCollectCategoryResolutionService({
         },
       );
     } catch (error) {
-      return {
-        reused: false,
-        deferred: retryableCode(stableErrorCode(error)),
-        resolution,
-        failureCode: stableErrorCode(error),
-      };
+      return persistValidationFailure(error, { credentialStoreId: store.id });
     }
     const nextFingerprint = String(validation?.taxonomyFingerprint ?? "").trim() || null;
-    if (validation?.valid === true && nextFingerprint === resolution.taxonomyFingerprint) {
-      await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_VALIDATED", resolution, {
-        credentialStoreId: store.id,
+    const reasonCode = stableErrorCode({ code: validation?.reasonCode || "TARGET_VALIDATION_FAILED" });
+    if (validation?.valid !== true && TRANSIENT_VALIDATION_REASONS.has(reasonCode)) {
+      return persistValidationFailure(
+        { code: reasonCode, status: 503 },
+        { transient: true, credentialStoreId: store.id },
+      );
+    }
+    if (validation?.valid === true && (resolution.method === "MANUAL"
+      || nextFingerprint === resolution.taxonomyFingerprint)) {
+      if (!nextFingerprint) {
+        return persistValidationFailure(
+          { code: "TAXONOMY_FINGERPRINT_MISSING" },
+          { transient: false, credentialStoreId: store.id },
+        );
+      }
+      const at = instant(now());
+      const validated = await repository.validateMatched({
+        accountId,
+        id: resolution.id,
         taxonomyFingerprint: nextFingerprint,
-      }));
-      return { reused: true, resolution, validation };
+        credentialStoreId: store.id,
+        validatedAt: validation.validatedAt ?? at,
+        now: at,
+        auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_VALIDATED", resolution, {
+          credentialStoreId: store.id,
+          taxonomyFingerprint: nextFingerprint,
+        }),
+      });
+      return { reused: true, resolution: validated, validation };
     }
 
     const failureCode = validation?.valid === true
       ? "TAXONOMY_CHANGED"
-      : stableErrorCode({ code: validation?.reasonCode || "TARGET_VALIDATION_FAILED" });
+      : reasonCode;
+    if (resolution.method === "MANUAL" && !VERIFIED_TARGET_INVALID_REASONS.has(failureCode)) {
+      return persistValidationFailure(
+        { code: failureCode },
+        { transient: false, credentialStoreId: store.id },
+      );
+    }
     const at = instant(now());
     const invalidated = await repository.invalidate({
       accountId,
@@ -569,25 +703,32 @@ export function createCollectCategoryResolutionService({
       failureCode,
       nextAttemptAt: at,
       now: at,
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_INVALIDATED", resolution, {
+        credentialStoreId: store.id,
+        taxonomyFingerprint: nextFingerprint ?? resolution.taxonomyFingerprint,
+        failureCode,
+      }),
     });
     if (!invalidated) return { reused: false, resolution: null, failureCode };
-    await writeAudit(auditEvent("COLLECT_CATEGORY_RESOLUTION_INVALIDATED", invalidated, {
-      credentialStoreId: store.id,
-      taxonomyFingerprint: nextFingerprint ?? resolution.taxonomyFingerprint,
-      failureCode,
-    }));
     if (resolution.method === "MANUAL") {
       return { reused: false, resolution: invalidated, validation, failureCode };
     }
     const item = await readCollectItem(accountId, collectItemId);
-    const queued = await enqueueForState({
+    const queued = await repository.enqueue({
       accountId,
       collectItemId,
-      item,
+      sourceTypeId: sourceTypeIdOf(item),
+      status: "QUEUED",
       credentialStoreId: store.id,
       taxonomyScope,
       taxonomyFingerprint: nextFingerprint ?? resolution.taxonomyFingerprint,
-      requestedStatus: "QUEUED",
+      nextAttemptAt: at,
+      now: at,
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_QUEUED", invalidated, {
+        credentialStoreId: store.id,
+        taxonomyFingerprint: nextFingerprint ?? resolution.taxonomyFingerprint,
+        failureCode: null,
+      }),
     });
     return { reused: false, resolution: queued, validation, failureCode };
   }
@@ -597,14 +738,15 @@ export function createCollectCategoryResolutionService({
     const collectItemId = requiredText(input.collectItemId, "collectItemId");
     const credentialStoreId = requiredText(input.credentialStoreId, "credentialStoreId");
     const item = await readCollectItem(accountId, collectItemId);
-    const store = await readUsableStore(accountId, credentialStoreId);
-    if (!store) {
+    const storeResult = await readStore(accountId, credentialStoreId);
+    if (storeResult.kind !== "AVAILABLE") {
       throw serviceError(
         "Credential store is unavailable in this account",
         "COLLECT_CATEGORY_RESOLUTION_CREDENTIAL_STORE_UNAVAILABLE",
         409,
       );
     }
+    const store = storeResult.store;
     const at = instant(now());
     return repository.saveManual({
       accountId,
@@ -620,6 +762,18 @@ export function createCollectCategoryResolutionService({
       matchedAt: at,
       validatedAt: input.validatedAt ?? at,
       now: at,
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVED", {
+        accountId,
+        collectItemId,
+        taxonomyScope: String(input.taxonomyScope ?? TAXONOMY_SCOPE_OZON_DEFAULT).trim()
+          || TAXONOMY_SCOPE_OZON_DEFAULT,
+        sourceTypeId: sourceTypeIdOf(item),
+        targetDescriptionCategoryId: input.targetDescriptionCategoryId,
+        targetTypeId: input.targetTypeId,
+        taxonomyFingerprint: input.taxonomyFingerprint,
+        credentialStoreId: store.id,
+        attemptCount: 0,
+      }),
     });
   }
 

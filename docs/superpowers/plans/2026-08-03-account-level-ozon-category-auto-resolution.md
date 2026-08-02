@@ -390,6 +390,15 @@ git add server/collect-category-resolution-service.mjs server/tests/collect-cate
 git commit -m "feat: resolve collected item categories asynchronously"
 ```
 
+#### Task 4 修复报告（Round 1/5，2026-08-03）
+
+- 修复范围：保护全部 `MANUAL` 结果不被自动认领或覆盖；把生命周期审计并入 JSON 状态事务和 PostgreSQL 事务；补齐 `requeueClaim`、`validateMatched`、`deferValidation` 三个窄 Repository contract；持久化认领后读取故障和验证重试；按数值 HTTP 状态分类传输故障，同时让已知数据/陈旧 taxonomy 错误保持不可重试；店铺缺少显式启用状态时 fail closed，并保留非默认 taxonomy scope。
+- RED 证据：首批服务聚焦测试 14 个中 13 个失败，Repository 聚焦测试 10 个中 8 个失败；收尾的数据错误携带 503 边界测试 2/2 失败。失败分别证明了手工结果可被覆盖、审计非原子、验证错误未落库、认领后异常遗留 `MATCHING`、状态码分类和 scope/store 边界错误。
+- GREEN 证据：服务新增聚焦 16/16、Repository 新增聚焦 10/10、服务文件 37/37、Repository 文件 35/35；服务端全量回归 525 个测试中 521 通过、4 个按配置跳过、0 失败。
+- 未验证范围：未连接专用 PostgreSQL 数据库执行真实迁移/并发集成测试；本轮 PostgreSQL Repository 通过受控事务适配器验证，真实数据库专项留给 Task 8。
+- 回归风险：Task 5 Runtime 必须把 JSON 审计写入同一 `stateTransaction`，把 PostgreSQL 审计写入 Repository 提供的同一 `executor`；Service 的 `auditPort` 只负责准备 allowlist 事件，不再承担事务外写入。
+- 回滚方式：回退本轮独立修复提交即可恢复旧 Service/Repository contract；新增方法和审计参数均为加法式 contract，未修改迁移或已有数据结构。
+
 ---
 
 ### Task 5: 接入 JSON/PostgreSQL Runtime、采集入口和 Seller 补全完成事件

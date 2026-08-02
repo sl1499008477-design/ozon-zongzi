@@ -26,6 +26,12 @@ function createHarness({
   snapshot,
   snapshotError = null,
   validation,
+  validationError = null,
+  collectReadErrorAfter = Number.POSITIVE_INFINITY,
+  storeReadErrorAfter = Number.POSITIVE_INFINITY,
+  collectReadError = Object.assign(new Error("collect port unavailable"), { status: 503 }),
+  storeReadError = Object.assign(new Error("store port unavailable"), { status: 503 }),
+  candidateTaxonomyScope = SCOPE,
   state: existingState,
   repository: existingRepository,
   now: initialNow = START,
@@ -33,6 +39,8 @@ function createHarness({
 } = {}) {
   let nowMs = Date.parse(initialNow);
   let uuidSequence = 0;
+  let collectReadCount = 0;
+  let storeReadCount = 0;
   const item = {
     id: COLLECT_ITEM_ID,
     accountId: ACCOUNT_ID,
@@ -57,11 +65,12 @@ function createHarness({
     stores: stores.map(({ id, ownerAccountId }) => ({ id, ownerAccountId })),
     collectCategoryResolutions: [],
   };
+  const calls = { snapshots: [], validations: [], audits: [], storeReads: [] };
   const repository = existingRepository ?? createJsonCollectCategoryResolutionRepository({
     state,
     stateTransaction: createJsonStateTransactionBoundary(),
+    auditWriter: async ({ event }) => { calls.audits.push(structuredClone(event)); },
   });
-  const calls = { snapshots: [], validations: [], audits: [], storeReads: [] };
   const categoryPort = {
     async getCategorySnapshot(input) {
       calls.snapshots.push({ accountId: input.accountId, storeId: input.store?.id });
@@ -80,6 +89,7 @@ function createHarness({
         storeId: input.store?.id,
         target: structuredClone(target),
       });
+      if (validationError) throw validationError;
       return structuredClone(validation ?? {
         valid: true,
         reasonCode: "VALID",
@@ -90,6 +100,8 @@ function createHarness({
   };
   const collectItemPort = {
     async read({ accountId, collectItemId }) {
+      collectReadCount += 1;
+      if (collectReadCount > collectReadErrorAfter) throw collectReadError;
       const found = items.find((candidate) => candidate.accountId === accountId && candidate.id === collectItemId);
       return found
         ? structuredClone(found)
@@ -98,19 +110,21 @@ function createHarness({
     async listForCategoryResolution({ accountId }) {
       return items
         .filter((candidate) => candidate.accountId === accountId)
-        .map((candidate) => ({ collectItemId: candidate.id }));
+        .map((candidate) => ({ collectItemId: candidate.id, taxonomyScope: candidateTaxonomyScope }));
     },
   };
   const storePort = {
     async readCredentialStore({ accountId, storeId }) {
+      storeReadCount += 1;
       calls.storeReads.push({ accountId, storeId });
+      if (storeReadCount > storeReadErrorAfter) throw storeReadError;
       const store = stores.find((candidate) => candidate.id === storeId);
       return store ? structuredClone(store) : null;
     },
   };
   const auditPort = {
-    async append(event) {
-      calls.audits.push(structuredClone(event));
+    prepare(event) {
+      return structuredClone(event);
     },
   };
   const service = createCollectCategoryResolutionService({
@@ -140,6 +154,15 @@ async function readResolution(harness, collectItemId = COLLECT_ITEM_ID) {
     collectItemId,
     taxonomyScope: SCOPE,
   });
+}
+
+async function resolveUntilSettled(harness, maxAttempts = 4) {
+  let result = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    result = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+    if (!result || result.status !== "QUEUED") return result;
+  }
+  return result;
 }
 
 test("incomplete source evidence waits for enrichment without an Ozon call", async () => {
@@ -179,7 +202,7 @@ test("source 17033604 / 94405 resolves only by the unique type ID to 17028702 / 
     credentialStoreId: "store-a",
   });
 
-  const result = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+  const result = await resolveUntilSettled(harness);
 
   assert.deepEqual({
     status: result.status,
@@ -195,7 +218,7 @@ test("source 17033604 / 94405 resolves only by the unique type ID to 17028702 / 
     targetTypeId: 94405,
   });
   assert.equal(harness.item.sourceCategory.descriptionCategoryId, 17033604);
-  assert.equal(harness.calls.snapshots.length, 1);
+  assert.equal(harness.calls.snapshots.length, 2);
   assert.equal(harness.state.collectCategoryResolutions.length, 1);
   assert.equal(harness.calls.audits.some((event) => event.action === "COLLECT_CATEGORY_RESOLUTION_MATCHED"), true);
 });
@@ -218,7 +241,7 @@ test("execution refreshes the queued source type from the latest collected evide
   });
   harness.item.sourceCategory.typeIdCandidate = 94406;
 
-  const result = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+  const result = await resolveUntilSettled(harness);
 
   assert.equal(result.status, "MATCHED");
   assert.equal(result.sourceTypeId, 94406);
@@ -255,6 +278,7 @@ test("fingerprint refresh never completes a different account task with the firs
 
   const other = await readResolution(harness, otherCollectItemId);
   assert.equal(other.status, "QUEUED");
+  assert.equal(other.attemptCount, 0);
   assert.equal(other.targetTypeId, null);
   assert.equal(other.sourceTypeId, 12345);
 });
@@ -266,7 +290,7 @@ test("different Chinese and Russian labels share a structural result and store B
     collectItemId: COLLECT_ITEM_ID,
     credentialStoreId: "store-a",
   });
-  await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+  await resolveUntilSettled(harness);
   const snapshotCallsAfterMatch = harness.calls.snapshots.length;
 
   const result = await harness.service.validateForStore({
@@ -298,7 +322,7 @@ for (const [name, validation, expectedCode] of [
       collectItemId: COLLECT_ITEM_ID,
       credentialStoreId: "store-a",
     });
-    await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+    await resolveUntilSettled(harness);
 
     const result = await harness.service.validateForStore({
       accountId: ACCOUNT_ID,
@@ -371,7 +395,7 @@ for (const [name, itemOverrides, snapshot, expectedCode] of [
       collectItemId: COLLECT_ITEM_ID,
       credentialStoreId: "store-a",
     });
-    const result = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+    const result = await resolveUntilSettled(harness);
     assert.equal(result.status, "NEEDS_REVIEW");
     assert.equal(result.failureCode, expectedCode);
     assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW");
@@ -388,7 +412,7 @@ test("duplicate scheduling, completion notification, execution, and service rest
   harness.item.enrichmentComplete = true;
   await harness.service.onEnrichmentComplete({ accountId: ACCOUNT_ID, collectItemId: COLLECT_ITEM_ID });
   await harness.service.onEnrichmentComplete({ accountId: ACCOUNT_ID, collectItemId: COLLECT_ITEM_ID });
-  await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+  await resolveUntilSettled(harness);
   assert.equal(await harness.service.resolveNext({ accountId: ACCOUNT_ID }), null);
 
   const restarted = createHarness({ state: harness.state, repository: harness.repository });
@@ -423,6 +447,148 @@ test("valid manual results survive automatic scheduling and stale worker complet
   assert.equal(result.targetDescriptionCategoryId, 17029999);
 });
 
+test("successful validation with a changed fingerprint preserves and refreshes a manual result", async () => {
+  const harness = createHarness({
+    validation: {
+      valid: true,
+      reasonCode: "VALID",
+      taxonomyFingerprint: "taxonomy-v2",
+      validatedAt: "2026-08-03T10:05:00.000Z",
+    },
+  });
+  await harness.service.saveManual({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+    targetDescriptionCategoryId: 17029999,
+    targetTypeId: 94405,
+    taxonomyFingerprint: "taxonomy-v1",
+  });
+
+  const result = await harness.service.validateForStore({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    storeId: "store-b",
+  });
+
+  assert.equal(result.reused, true);
+  assert.equal(result.resolution.status, "MATCHED");
+  assert.equal(result.resolution.method, "MANUAL");
+  assert.equal(result.resolution.targetDescriptionCategoryId, 17029999);
+  assert.equal(result.resolution.taxonomyFingerprint, "taxonomy-v2");
+});
+
+test("transient manual validation unavailability persists retry metadata without invalidating the target", async () => {
+  const harness = createHarness({
+    validation: {
+      valid: false,
+      reasonCode: "TAXONOMY_UNAVAILABLE",
+      taxonomyFingerprint: null,
+      validatedAt: START,
+    },
+  });
+  await harness.service.saveManual({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+    targetDescriptionCategoryId: 17029999,
+    targetTypeId: 94405,
+    taxonomyFingerprint: "taxonomy-v1",
+  });
+
+  await harness.service.validateForStore({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    storeId: "store-b",
+  });
+
+  const persisted = await readResolution(harness);
+  assert.equal(persisted.status, "MATCHED");
+  assert.equal(persisted.method, "MANUAL");
+  assert.equal(persisted.targetDescriptionCategoryId, 17029999);
+  assert.equal(persisted.credentialStoreId, "store-b");
+  assert.equal(persisted.failureCode, "TAXONOMY_UNAVAILABLE");
+  assert.equal(Date.parse(persisted.nextAttemptAt) > Date.parse(START), true);
+  assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED");
+});
+
+test("a thrown status-only validation outage is persisted for restart-safe retry", async () => {
+  const harness = createHarness({
+    validationError: Object.assign(new Error("raw validation outage"), { status: 503 }),
+  });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+  await resolveUntilSettled(harness);
+
+  await harness.service.validateForStore({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    storeId: "store-b",
+  });
+
+  const persisted = await readResolution(harness);
+  assert.equal(persisted.status, "MATCHED");
+  assert.equal(persisted.targetTypeId, 94405);
+  assert.equal(persisted.credentialStoreId, "store-b");
+  assert.equal(persisted.failureCode, "HTTP_503");
+  assert.equal(Date.parse(persisted.nextAttemptAt) > Date.parse(START), true);
+  assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED");
+});
+
+for (const [name, snapshotError, expectedStatus] of [
+  ["status-only 429", Object.assign(new Error("rate limited"), { status: 429 }), "RETRYABLE_ERROR"],
+  ["status-only 503", Object.assign(new Error("unavailable"), { status: 503 }), "RETRYABLE_ERROR"],
+  ["request timeout 408", Object.assign(new Error("timeout"), { status: 408 }), "RETRYABLE_ERROR"],
+  ["data contract error", Object.assign(new Error("invalid tree"), { code: "OZON_CATEGORY_DATA_INVALID", status: 422 }), "NEEDS_REVIEW"],
+  ["stale taxonomy without transport failure", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 409 }), "NEEDS_REVIEW"],
+  ["data contract error carrying a 503", Object.assign(new Error("invalid tree"), { code: "OZON_CATEGORY_DATA_INVALID", status: 503 }), "NEEDS_REVIEW"],
+  ["stale taxonomy carrying a 503", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 503 }), "NEEDS_REVIEW"],
+]) {
+  test(`${name} follows the numeric transport retry boundary`, async () => {
+    const harness = createHarness({ snapshotError });
+    await harness.service.scheduleForCollect({
+      accountId: ACCOUNT_ID,
+      collectItemId: COLLECT_ITEM_ID,
+      credentialStoreId: "store-a",
+    });
+    assert.equal((await harness.service.resolveNext({ accountId: ACCOUNT_ID })).status, expectedStatus);
+  });
+}
+
+test("a post-claim collect-item outage is persisted instead of leaving MATCHING until lease expiry", async () => {
+  const harness = createHarness({ collectReadErrorAfter: 1 });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+
+  await resolveUntilSettled(harness);
+
+  const persisted = await readResolution(harness);
+  assert.equal(persisted.status, "RETRYABLE_ERROR");
+  assert.equal(persisted.failureCode, "HTTP_503");
+  assert.equal(persisted.leaseToken, null);
+});
+
+test("a post-claim credential-store outage is retryable and observable", async () => {
+  const harness = createHarness({ storeReadErrorAfter: 1 });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+
+  const result = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+
+  assert.equal(result.status, "RETRYABLE_ERROR");
+  assert.equal(result.failureCode, "HTTP_503");
+  assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED");
+});
+
 for (const [name, stores, credentialStoreId] of [
   ["foreign", undefined, "foreign-store"],
   ["disabled", [{ id: "store-a", ownerAccountId: ACCOUNT_ID, status: "DISABLED", clientId: "client-a", apiKey: "secret-a" }], "store-a"],
@@ -441,6 +607,18 @@ for (const [name, stores, credentialStoreId] of [
   });
 }
 
+test("a credential store with no explicit active status is unavailable", async () => {
+  const harness = createHarness({
+    stores: [{ id: "store-a", ownerAccountId: ACCOUNT_ID, clientId: "client-a", apiKey: "secret-a" }],
+  });
+  const result = await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+  assert.equal(result.status, "WAITING_STORE");
+});
+
 test("an available operating store wakes only account-scoped waiting items", async () => {
   const harness = createHarness();
   await harness.service.scheduleForCollect({
@@ -458,6 +636,30 @@ test("an available operating store wakes only account-scoped waiting items", asy
   assert.equal((await readResolution(harness)).status, "QUEUED");
 });
 
+test("operating-store wakeup preserves each waiting record's taxonomy scope", async () => {
+  const taxonomyScope = "OZON:RU";
+  const harness = createHarness({ candidateTaxonomyScope: taxonomyScope });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: null,
+    taxonomyScope,
+  });
+
+  const awakened = await harness.service.onOperatingStoreAvailable({
+    accountId: ACCOUNT_ID,
+    storeId: "store-a",
+  });
+
+  assert.equal(awakened.length, 1);
+  const persisted = await harness.repository.readForItem({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    taxonomyScope,
+  });
+  assert.equal(persisted.status, "QUEUED");
+});
+
 test("audit events contain stable resolution identifiers and never credentials or raw responses", async () => {
   const harness = createHarness();
   await harness.service.scheduleForCollect({
@@ -465,7 +667,7 @@ test("audit events contain stable resolution identifiers and never credentials o
     collectItemId: COLLECT_ITEM_ID,
     credentialStoreId: "store-a",
   });
-  await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+  await resolveUntilSettled(harness);
 
   const allowed = new Set([
     "action", "accountId", "collectItemId", "taxonomyScope", "sourceTypeId",
