@@ -111,6 +111,11 @@ import {
 } from "./dashboard-money.js";
 import { buildPrepareListingBody, collectAddReadiness, listingPreparationModel, listingSubmissionErrorIsDefinitive, listingSubmissionIntent, settleListingSubmissionIntent, targetStoreSelection } from "./collect-box-target-store.js";
 import {
+  collectEditDictionaryIdsOf,
+  resolveCollectEditDictionaryValue,
+  shouldApplyCollectEditDictionaryDefault,
+} from "./collect-edit-dictionary-match.js";
+import {
   collectEditEnrichmentBackfill,
   collectEditSourceCategorySnapshot,
   collectEditSourceCategoryVariant,
@@ -3992,7 +3997,7 @@ const collectEditRawComplexAttributes = (...sources) => {
 
 const collectEditAttributeRows = (...sources) => {
   const rows = [];
-  const seen = new Set();
+  const seen = new Map();
   const hiddenAttrIds = new Set(["4194", "4195", "11254"]);
   const pushList = (list = [], complexId = "") => {
     if (!Array.isArray(list)) return;
@@ -4004,16 +4009,23 @@ const collectEditAttributeRows = (...sources) => {
       if (!value) continue;
       const label = collectEditFirst(attr.name, attr.attribute_name, attr.attributeName, attr.title, attr.key) || (id ? `Ozon 属性 ${id}` : "Ozon 属性");
       const key = `${complexId || "attr"}:${id || label}:${value}`.slice(0, 240);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push({
+      const dictionaryIds = collectEditDictionaryIdsOf(attr);
+      const existing = seen.get(key);
+      if (existing) {
+        existing.dictionaryIds = [...new Set([...(existing.dictionaryIds || []), ...dictionaryIds])];
+        continue;
+      }
+      const row = {
         key,
         id,
         label,
         value: value.length > 180 ? `${value.slice(0, 180)}...` : value,
         rawValue: value,
+        dictionaryIds,
         required: attr.is_required === true || attr.required === true,
-      });
+      };
+      seen.set(key, row);
+      rows.push(row);
     }
   };
   const pushSource = (source = {}) => {
@@ -4821,12 +4833,24 @@ const collectEditTranslateAttributeDescription = (description = "", label = "", 
   return text;
 };
 
-const collectEditAttributeValueMap = (rows = []) => {
+const collectEditAttributeEvidenceMap = (rows = []) => {
   const map = new Map();
   for (const row of rows) {
     const id = collectEditFirst(row.id);
-    if (!id || map.has(String(id))) continue;
-    map.set(String(id), row.rawValue || row.value || "");
+    if (!id) continue;
+    const key = String(id);
+    const existing = map.get(key);
+    if (existing) {
+      existing.dictionaryIds = [...new Set([
+        ...(existing.dictionaryIds || []),
+        ...(Array.isArray(row.dictionaryIds) ? row.dictionaryIds : []),
+      ])];
+      continue;
+    }
+    map.set(key, {
+      value: row.rawValue || row.value || "",
+      dictionaryIds: Array.isArray(row.dictionaryIds) ? [...row.dictionaryIds] : [],
+    });
   }
   return map;
 };
@@ -5835,8 +5859,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     if (categoryDataError) loadCategoryTrees();
     if (categoryDictionaryError) retryCategoryDictionaryValues();
   };
-  const attributeRows = collectEditAttributeRows(scopedPreviewItem, currentDraft, item);
-  const sourceAttributeValueMap = collectEditAttributeValueMap(attributeRows);
+  const attributeRows = collectEditAttributeRows(
+    scopedPreviewItem,
+    currentDraft,
+    item,
+    collectEditSourceCategoryVariant(item),
+  );
+  const sourceAttributeEvidenceMap = collectEditAttributeEvidenceMap(attributeRows);
   const categoryAttributeInputRows = Array.isArray(categorySchema)
     ? categorySchema
         .map((schema) => {
@@ -5853,9 +5882,26 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
           const defaultValue = isBrandSchema
             ? collectEditDefaultBrandAttributeValue(options)
             : "";
-          const sourceValue = categoryAttributeValues[key] ?? (isBrandSchema ? defaultValue : sourceAttributeValueMap.get(key) ?? defaultValue);
+          const sourceEvidence = sourceAttributeEvidenceMap.get(key) || { value: "", dictionaryIds: [] };
+          const capturedSourceValue = isBrandSchema ? defaultValue : sourceEvidence.value || defaultValue;
+          const currentValue = categoryAttributeValues[key];
+          const idResolution = !isBrandSchema && controlType === "select"
+            ? resolveCollectEditDictionaryValue({
+                dictionaryIds: sourceEvidence.dictionaryIds,
+                options,
+                multiple,
+              })
+            : { matchedById: false, value: undefined };
+          const useIdValue = shouldApplyCollectEditDictionaryDefault({
+            currentValue,
+            sourceValue: capturedSourceValue,
+            matchedById: idResolution.matchedById,
+          });
+          const sourceValue = currentValue ?? capturedSourceValue;
           const value = controlType === "select"
-            ? collectEditResolveSelectControlValue(sourceValue, { multiple, options })
+            ? useIdValue
+              ? idResolution.value
+              : collectEditResolveSelectControlValue(sourceValue, { multiple, options })
             : sourceValue;
           return {
             key,
@@ -5923,6 +5969,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     }
     const next = {};
     const forcedDefaultKeys = new Set();
+    const idMatchedSourceValues = new Map();
     for (const schema of categorySchema) {
       const id = String(collectEditSchemaId(schema) || "").trim();
       const label = collectEditSchemaLabel(schema);
@@ -5937,7 +5984,15 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         next[key] = collectEditDefaultBrandAttributeValue(options);
         forcedDefaultKeys.add(key);
       } else {
-        next[key] = sourceAttributeValueMap.get(key) || "";
+        const sourceEvidence = sourceAttributeEvidenceMap.get(key) || { value: "", dictionaryIds: [] };
+        const multiple = collectEditSchemaIsMultiple(schema);
+        const idResolution = resolveCollectEditDictionaryValue({
+          dictionaryIds: sourceEvidence.dictionaryIds,
+          options,
+          multiple,
+        });
+        next[key] = idResolution.matchedById ? idResolution.value : sourceEvidence.value || "";
+        if (idResolution.matchedById) idMatchedSourceValues.set(key, sourceEvidence.value || "");
       }
     }
     const scope = `${categoryStoreId}:${itemId}:${categoryDescriptionId}:${categoryTypeId}`;
@@ -5946,6 +6001,18 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         let changed = false;
         const merged = { ...prev };
         for (const [key, value] of Object.entries(next)) {
+          if (idMatchedSourceValues.has(key)) {
+            const applyIdDefault = shouldApplyCollectEditDictionaryDefault({
+              currentValue: merged[key],
+              sourceValue: idMatchedSourceValues.get(key),
+              matchedById: true,
+            });
+            if (applyIdDefault && merged[key] !== value) {
+              merged[key] = value;
+              changed = true;
+            }
+            continue;
+          }
           if (!forcedDefaultKeys.has(key) && merged[key] !== undefined && !(collectEditText(merged[key]) === "" && collectEditText(value))) continue;
           if (forcedDefaultKeys.has(key) && merged[key] === value) continue;
           merged[key] = value;
