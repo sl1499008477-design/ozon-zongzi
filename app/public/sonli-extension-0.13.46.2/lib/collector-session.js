@@ -3,6 +3,7 @@
 
   const COLLECTOR_SESSION_STORAGE_KEY = 'sonliCollectorSession';
   const COLLECTOR_AUTH_GENERATION_STORAGE_KEY = 'sonliCollectorAuthGeneration';
+  const COLLECTOR_AUTH_INCARNATION_STORAGE_KEY = 'sonliCollectorAuthIncarnation';
   const PENDING_UPLOADS_STORAGE_KEY = 'sonliCollectorPendingUploads';
   const COLLECTOR_LAST_OWNER_KEY = 'sonliCollectorLastOwner';
   const COLLECTOR_PERMISSIONS = Object.freeze([
@@ -32,6 +33,7 @@
   const SENSITIVE_DIAGNOSTIC_KEY_PATTERN = /authorization|bearer|secret|ticket|token/i;
   const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,119}$/;
   const COLLECTOR_AUTH_GENERATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+  const COLLECTOR_AUTH_INCARNATION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
   const redactCollectorSecrets = (value, secrets = []) => {
     let text = String(value == null ? '' : value);
@@ -90,6 +92,12 @@
     }
     return generationId;
   };
+
+  const isCollectorAuthIncarnation = (value) =>
+    COLLECTOR_AUTH_INCARNATION_PATTERN.test(String(value || ''));
+
+  const defaultNewGenerationIncarnation = () =>
+    `collector_activation_${root.crypto.randomUUID()}`;
 
   const throwIfAborted = (signal) => {
     if (!signal?.aborted) return;
@@ -168,12 +176,16 @@
     backendUrl,
     fetchImpl = root.fetch?.bind(root),
     now = () => Date.now(),
+    newGenerationIncarnation = defaultNewGenerationIncarnation,
     logger = root.console || { warn() {}, error() {} },
   } = {}) {
     if (!chromeApi?.storage?.session || !chromeApi?.storage?.local) {
       throw new TypeError('collector session requires chrome.storage.session and chrome.storage.local');
     }
     if (typeof fetchImpl !== 'function') throw new TypeError('collector session requires fetch');
+    if (typeof newGenerationIncarnation !== 'function') {
+      throw new TypeError('collector session requires generation incarnation factory');
+    }
     const resolveBackendUrl = async () => {
       const value = typeof backendUrl === 'function' ? await backendUrl() : backendUrl;
       return String(value || '').replace(/\/+$/, '');
@@ -191,11 +203,28 @@
       sessionMutationTail = run.catch(() => {});
       return run;
     };
-    const assertStoredCollectorGeneration = async (generationId, secret) => {
-      const stored = await chromeApi.storage.session.get(
+    const captureStoredCollectorActivation = async (generationId, secret) => {
+      const stored = await chromeApi.storage.session.get([
         COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
-      );
-      if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] !== generationId) {
+        COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+      ]);
+      const incarnation = stored?.[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+      if (
+        stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] !== generationId
+        || !isCollectorAuthIncarnation(incarnation)
+      ) {
+        throw collectorError(
+          'COLLECTOR_AUTH_GENERATION_CHANGED',
+          409,
+          'COLLECTOR_AUTH_GENERATION_CHANGED',
+          [secret],
+        );
+      }
+      return incarnation;
+    };
+    const assertStoredCollectorActivation = async (generationId, incarnation, secret) => {
+      const storedIncarnation = await captureStoredCollectorActivation(generationId, secret);
+      if (storedIncarnation !== incarnation) {
         throw collectorError(
           'COLLECTOR_AUTH_GENERATION_CHANGED',
           409,
@@ -205,21 +234,40 @@
       }
     };
 
+    const createGenerationIncarnation = () => {
+      const incarnation = String(newGenerationIncarnation() || '');
+      if (!isCollectorAuthIncarnation(incarnation)) {
+        throw collectorError(
+          'COLLECTOR_AUTH_INCARNATION_INVALID',
+          0,
+          'COLLECTOR_AUTH_INCARNATION_INVALID',
+        );
+      }
+      return incarnation;
+    };
+
     async function activateCollectorGeneration(value) {
       const generationId = requireCollectorGenerationId(value);
       return serializeSessionMutation(async () => {
-        const stored = await chromeApi.storage.session.get(
+        const stored = await chromeApi.storage.session.get([
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
-        );
-        if (stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === generationId) {
+          COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+        ]);
+        if (
+          stored?.[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] === generationId
+          && isCollectorAuthIncarnation(stored?.[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY])
+        ) {
           return { changed: false };
         }
+        const incarnation = createGenerationIncarnation();
         await chromeApi.storage.session.remove([
           COLLECTOR_SESSION_STORAGE_KEY,
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+          COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
         ]);
         await chromeApi.storage.session.set({
           [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
+          [COLLECTOR_AUTH_INCARNATION_STORAGE_KEY]: incarnation,
         });
         return { changed: true };
       });
@@ -235,6 +283,7 @@
         await chromeApi.storage.session.remove([
           COLLECTOR_SESSION_STORAGE_KEY,
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+          COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
         ]);
         return true;
       });
@@ -245,6 +294,7 @@
         await chromeApi.storage.session.remove([
           COLLECTOR_SESSION_STORAGE_KEY,
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+          COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
         ]);
         return true;
       });
@@ -409,7 +459,9 @@
       const secret = String(ticket || '');
       if (!secret) throw collectorError('COLLECTOR_TICKET_REQUIRED', 400, 'COLLECTOR_TICKET_REQUIRED');
       const generationId = requireCollectorGenerationId(generationIdValue);
-      await serializeSessionMutation(() => assertStoredCollectorGeneration(generationId, secret));
+      const incarnation = await serializeSessionMutation(() => (
+        captureStoredCollectorActivation(generationId, secret)
+      ));
       const baseUrl = await resolveBackendUrl();
       let response;
       try {
@@ -453,7 +505,7 @@
         throw error;
       }
       return serializeSessionMutation(async () => {
-        await assertStoredCollectorGeneration(generationId, secret);
+        await assertStoredCollectorActivation(generationId, incarnation, secret);
         return writeCollectorSession(body?.data || body);
       });
     }
@@ -681,6 +733,7 @@
 
   const api = Object.freeze({
     COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+    COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
     COLLECTOR_PERMISSIONS,
     COLLECTOR_LAST_OWNER_KEY,
     COLLECTOR_SESSION_STORAGE_KEY,

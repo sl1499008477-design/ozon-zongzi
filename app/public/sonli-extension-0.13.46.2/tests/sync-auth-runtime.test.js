@@ -216,10 +216,10 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
     (value) => Object.assign(authoritativeResponse, value),
   ), false);
   assert.deepEqual(authoritativeResponse, { ok: true, requested: true });
-  assert.equal(posts.length, 5, 'authoritative recovery restarts current G3');
+  assert.equal(posts.length, 5, 'authoritative recovery discovers the current Web generation');
 
   const recoveryRequest = posts.at(-1).message;
-  const recoveryExchange = emit(response(recoveryRequest.requestId, G3, '4'));
+  const recoveryExchange = emit(response(recoveryRequest.requestId, G1, '4'));
   await tick();
   const blockedResponse = {};
   runtimeListeners[0](
@@ -228,7 +228,14 @@ vm.runInNewContext(syncAuthSource, sandbox, { filename: 'sync-auth-reinjected.js
     (value) => Object.assign(blockedResponse, value),
   );
   assert.deepEqual(blockedResponse, { ok: true, requested: false });
-  resolveRuntime('collector.auth.exchange', G3, { ok: true });
+  assert.ok(
+    findPendingRuntime('collector.auth.begin', G1),
+    'authoritative discovery begins the current Web G1 before exchange',
+  );
+  resolveRuntime('collector.auth.begin', G1, { ok: true });
+  await tick();
+  assert.ok(findPendingRuntime('collector.auth.exchange', G1));
+  resolveRuntime('collector.auth.exchange', G1, { ok: true });
   await recoveryExchange;
 
   assert.equal(maximumConcurrentExchanges, 1, 'runtime adapter never overlaps ticket exchanges');

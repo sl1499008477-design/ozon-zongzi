@@ -277,10 +277,15 @@
       if (pendingGenerationId && pendingGenerationId === desiredGenerationId) {
         return { requested: false };
       }
-      if (!desiredGenerationId) return startDiscovery();
-      return {
-        requested: restartRequestCycle(desiredGenerationId, false),
-      };
+      cancelRetry();
+      desiredGenerationId = '';
+      lastHandledGenerationId = '';
+      pendingGenerationId = '';
+      activeRequest = null;
+      attempts = 0;
+      requestCount = 0;
+      authenticated = false;
+      return startDiscovery();
     };
 
     return Object.freeze({

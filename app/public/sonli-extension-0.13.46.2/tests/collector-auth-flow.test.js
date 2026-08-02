@@ -259,18 +259,34 @@ test('stale logout is fenced in the background without resetting the desired gen
   assert.equal(harness.exchanges[0].generationId, G2);
 });
 
-test('authoritative recheck restarts the current generation or discovery', async () => {
+test('authoritative recheck rediscovers the current Web generation after authentication', async () => {
   const harness = createHarness();
 
   await harness.flow.handleReady({ generationId: G1 });
   await harness.flow.handleResponse(response('request-1', G1));
   assert.deepEqual(harness.flow.requestAuthoritatively(), { requested: true });
   assert.deepEqual(harness.requests, ['request-1', 'request-2']);
-  await harness.flow.handleResponse(response('request-2', G1, '2'));
+  await harness.flow.handleResponse(response('request-2', G2, '2'));
+
+  assert.deepEqual(harness.begins, [G1, G2]);
+  assert.deepEqual(harness.requests, ['request-1', 'request-2']);
+  assert.equal(harness.exchanges[1].generationId, G2);
 
   const discoveryHarness = createHarness();
   assert.deepEqual(discoveryHarness.flow.requestAuthoritatively(), { requested: true });
   assert.deepEqual(discoveryHarness.requests, ['request-1']);
+});
+
+test('authoritative recheck never reactivates or exchanges a stale cached generation', async () => {
+  const harness = createHarness();
+
+  await harness.flow.handleReady({ generationId: G1 });
+  assert.deepEqual(harness.flow.requestAuthoritatively(), { requested: true });
+  await harness.flow.handleResponse(response('request-2', G2, '2'));
+
+  assert.deepEqual(harness.begins, [G1, G2]);
+  assert.deepEqual(harness.requests, ['request-1', 'request-2']);
+  assert.deepEqual(harness.exchanges.map(({ generationId }) => generationId), [G2]);
 });
 
 test('request retries are bounded to ten requests at exactly one second', async () => {

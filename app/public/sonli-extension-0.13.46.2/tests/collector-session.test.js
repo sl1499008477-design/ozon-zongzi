@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+  COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
   PENDING_UPLOADS_STORAGE_KEY,
   COLLECTOR_PERMISSIONS,
   COLLECTOR_SESSION_STORAGE_KEY,
@@ -29,6 +30,9 @@ function storageArea(state, calls, name) {
     async get(key) {
       calls.push([name, 'get', key]);
       if (key == null) return { ...state };
+      if (Array.isArray(key)) {
+        return Object.fromEntries(key.map((item) => [item, state[item]]));
+      }
       return { [key]: state[key] };
     },
     async set(values) {
@@ -55,11 +59,13 @@ function createHarness({ now = Date.parse('2030-01-01T00:00:00.000Z'), fetchImpl
     },
   };
   const logs = [];
+  let incarnationSequence = 0;
   const manager = createCollectorSessionManager({
     chromeApi,
     backendUrl: async () => 'http://127.0.0.1:3000/api',
     fetchImpl: fetchImpl || (async () => jsonResponse(500, { code: 'UNEXPECTED_FETCH' })),
     now: () => now,
+    newGenerationIncarnation: () => `collector_activation_${++incarnationSequence}_1234`,
     logger: { warn: (...args) => logs.push(args), error: (...args) => logs.push(args) },
   });
   return { calls, chromeApi, localState, logs, manager, sessionState, syncState };
@@ -135,10 +141,89 @@ test('activating a new Collector generation clears the previous session and is i
     harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
     'generation_A_1234',
   );
+  assert.equal(
+    COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+    'sonliCollectorAuthIncarnation',
+  );
+  const firstIncarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+  assert.equal(firstIncarnation, 'collector_activation_1_1234');
   assert.deepEqual(
     await harness.manager.activateCollectorGeneration('generation_A_1234'),
     { changed: false },
   );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    firstIncarnation,
+  );
+});
+
+test('clearing and reactivating the same generation rotates its activation incarnation', async () => {
+  const harness = createHarness();
+
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  const firstIncarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+  assert.equal(await harness.manager.clearCollectorGeneration('generation_G1_1234'), true);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], undefined);
+
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_G1_1234'),
+    { changed: true },
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    'collector_activation_2_1234',
+  );
+  assert.notEqual(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    firstIncarnation,
+  );
+});
+
+test('internal logout invalidates session generation and activation incarnation together', async () => {
+  const harness = createHarness();
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  await harness.manager.setCollectorSession(validSession());
+
+  assert.equal(await harness.manager.logoutCollectorSession(), true);
+
+  assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], undefined);
+});
+
+test('missing or malformed legacy incarnation is inactive and is replaced on begin', async () => {
+  for (const legacyIncarnation of [undefined, 'short', 'incarnation has spaces']) {
+    let fetchCalls = 0;
+    const harness = createHarness({
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return jsonResponse(200, { data: validSession() });
+      },
+    });
+    harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY] = 'generation_G1_1234';
+    harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY] = validSession();
+    if (legacyIncarnation !== undefined) {
+      harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY] = legacyIncarnation;
+    }
+
+    await assert.rejects(
+      harness.manager.exchangeCollectorTicket({
+        ticket: 'ctt_legacy_incarnation_secret_123456789',
+        generationId: 'generation_G1_1234',
+      }),
+      (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_CHANGED',
+    );
+    assert.equal(fetchCalls, 0);
+    assert.deepEqual(
+      await harness.manager.activateCollectorGeneration('generation_G1_1234'),
+      { changed: true },
+    );
+    assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+    assert.equal(
+      harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+      'collector_activation_1_1234',
+    );
+  }
 });
 
 test('clearing a stale Collector generation cannot remove the active generation session', async () => {
@@ -163,6 +248,7 @@ test('clearing a stale Collector generation cannot remove the active generation 
   );
   assert.equal(await harness.manager.getCollectorSession(), null);
   assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], undefined);
   const generationWritesBeforeRetry = harness.calls.filter(
     ([area, method]) => area === 'session' && (method === 'set' || method === 'remove'),
   ).length;
@@ -218,11 +304,16 @@ test('failed G2 marker write leaves no active generation and held G1 exchange ca
     [[
       'session',
       'remove',
-      [COLLECTOR_SESSION_STORAGE_KEY, COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
+      [
+        COLLECTOR_SESSION_STORAGE_KEY,
+        COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+        COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+      ],
     ]],
   );
   assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
   assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], undefined);
 
   g1Response.resolve(jsonResponse(200, { data: validSession() }));
   await assert.rejects(
@@ -243,9 +334,10 @@ test('matching generation logout failure retains one coherent session and genera
   harness.chromeApi.storage.session.remove = async (keys) => {
     if (
       Array.isArray(keys)
-      && keys.length === 2
+      && keys.length === 3
       && keys[0] === COLLECTOR_SESSION_STORAGE_KEY
       && keys[1] === COLLECTOR_AUTH_GENERATION_STORAGE_KEY
+      && keys[2] === COLLECTOR_AUTH_INCARNATION_STORAGE_KEY
     ) {
       combinedInvalidations += 1;
       throw new Error('simulated generation clear failure');
@@ -265,6 +357,10 @@ test('matching generation logout failure retains one coherent session and genera
   assert.equal(
     harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY],
     'generation_G2_5678',
+  );
+  assert.equal(
+    harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
+    'collector_activation_1_1234',
   );
 });
 
@@ -365,6 +461,55 @@ test('a stale G1 exchange cannot write after G2 activates or after G2 installs i
   assert.deepEqual(await harness.manager.getCollectorSession(), g2Session);
 });
 
+test('same-generation reactivation fences an older exchange without locking the network request', async () => {
+  const oldResponse = deferred();
+  const newSession = validSession({
+    collectorToken: 'cst_reactivated_g1_secret_123456789',
+    account: { id: 'account-reactivated-g1', displayName: 'Reactivated G1' },
+  });
+  let exchangeCalls = 0;
+  const harness = createHarness({
+    fetchImpl: async () => {
+      exchangeCalls += 1;
+      return exchangeCalls === 1
+        ? oldResponse.promise
+        : jsonResponse(200, { data: newSession });
+    },
+  });
+
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  const oldIncarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+  const oldExchange = harness.manager.exchangeCollectorTicket({
+    ticket: 'ctt_old_g1_incarnation_secret_123456789',
+    generationId: 'generation_G1_1234',
+  });
+  while (exchangeCalls < 1) await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await harness.manager.logoutCollectorSession(), true);
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_G1_1234'),
+    { changed: true },
+  );
+  const newIncarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+
+  oldResponse.resolve(jsonResponse(200, { data: validSession() }));
+  await assert.rejects(
+    oldExchange,
+    (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_CHANGED',
+  );
+  assert.equal(await harness.manager.getCollectorSession(), null);
+  assert.notEqual(newIncarnation, oldIncarnation);
+
+  assert.deepEqual(
+    await harness.manager.exchangeCollectorTicket({
+      ticket: 'ctt_new_g1_incarnation_secret_123456789',
+      generationId: 'generation_G1_1234',
+    }),
+    newSession,
+  );
+  assert.deepEqual(await harness.manager.getCollectorSession(), newSession);
+});
+
 test('generation activation shares the final exchange session-mutation queue', async () => {
   const harness = createHarness({
     fetchImpl: async () => jsonResponse(200, { data: validSession() }),
@@ -377,7 +522,14 @@ test('generation activation shares the final exchange session-mutation queue', a
   let generationGets = 0;
   harness.chromeApi.storage.session.get = async (key) => {
     const captured = await originalGet(key);
-    if (key === COLLECTOR_AUTH_GENERATION_STORAGE_KEY) {
+    if (
+      key === COLLECTOR_AUTH_GENERATION_STORAGE_KEY
+      || (
+        Array.isArray(key)
+        && key.includes(COLLECTOR_AUTH_GENERATION_STORAGE_KEY)
+        && key.includes(COLLECTOR_AUTH_INCARNATION_STORAGE_KEY)
+      )
+    ) {
       generationGets += 1;
       if (generationGets === 2) return delayedFinalGenerationRead.promise;
     }
@@ -389,7 +541,10 @@ test('generation activation shares the final exchange session-mutation queue', a
     generationId: 'generation_G1_1234',
   });
   while (generationGets < 2) await new Promise((resolve) => setImmediate(resolve));
-  const capturedG1 = await originalGet(COLLECTOR_AUTH_GENERATION_STORAGE_KEY);
+  const capturedG1 = await originalGet([
+    COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
+    COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
+  ]);
   const activateG2 = harness.manager.activateCollectorGeneration('generation_G2_5678');
   await new Promise((resolve) => setImmediate(resolve));
   delayedFinalGenerationRead.resolve(capturedG1);

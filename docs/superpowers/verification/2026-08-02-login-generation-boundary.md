@@ -6,11 +6,11 @@ Verification date: 2026-08-02 (Asia/Shanghai)
 
 - Final-fix base: `8af97ad7f7fffb7e8c94f0a75a5c0f2cfebc475e`.
 - Four load-bearing final-review findings: **ADDRESSED** by source/test commit `d91b154` and release artifact commit `b8b4346`.
-- Focused cross-layer regression: **PASS**. Seven commands exited 0. The TAP commands reported **85 passed, 0 failed, 0 skipped**; four standalone policy/runtime/smoke commands also exited 0.
+- Focused cross-layer regression: **PASS**. Seven commands exited 0. The TAP commands reported **94 passed, 0 failed, 0 skipped**; four standalone policy/runtime/smoke commands also exited 0.
 - Web production build: **PASS**. Vite transformed 4,830 modules and exited 0. The existing large-chunk warning remains.
 - Extension packaging: **PASS**. The unpacked `0.13.46.2` tree and both ZIP files were regenerated.
 - Source/public parity: **PASS**. `diff -qr` exited 0 with no differences.
-- Public/dist ZIP equivalence: **PASS**. Both archives have SHA-256 `24629be6955661f9ae85e268f308ad283da18475811e9ae06f80f5eb86c91e78`; the ZIP parity gate also matched all 142 source files in each archive.
+- Public/dist ZIP equivalence: **PASS**. Both archives have SHA-256 `3d0f2a1774a4406f34c88deb0a60407c8fad5ded92abeb8a0f4b7d4ba29b5ab7`; the ZIP parity gate also matched all 142 source files in each archive.
 - Packaged runtime/security gates: **PASS**. Both ZIP smoke paths, plugin readiness, capture-only gate mutation tests, personal-data/credential scan, and `git diff --check` exited 0.
 - Complete repository verification: **FAIL (environment gates)**. `node scripts/verify.mjs` exited 1 with **5 failed checks and 14 passed checks**. The active suite reported **837 tests: 832 passed, 1 failed, 4 skipped**.
 - Real Chrome acceptance: **NOT RUN**. No fresh evidence proves that Chrome reloaded the exact regenerated unpacked release, so no live login, relogin, account-switch, recheck, or 15-second-idle result is claimed.
@@ -85,10 +85,10 @@ Commands and results:
 
 ```text
 node --test app/tests/collector-auth-bridge.test.mjs
-PASS: 12 passed, 0 failed, 0 skipped
+PASS: 13 passed, 0 failed, 0 skipped
 
 node --test extension/tests/collector-auth-flow.test.js extension/tests/collector-session.test.js extension/tests/sync-capability-removed.test.js
-PASS: 69 passed, 0 failed, 0 skipped
+PASS: 77 passed, 0 failed, 0 skipped
 
 node extension/tests/web-bridge-policy.test.js
 PASS: exit 0; web bridge policy gate passed
@@ -106,15 +106,15 @@ node --test scripts/extension-capture-only-policy.test.mjs
 PASS: 4 passed, 0 failed, 0 skipped
 ```
 
-Focused TAP total: **85 passed, 0 failed, 0 skipped**. The four standalone commands also exited 0.
+Focused TAP total: **94 passed, 0 failed, 0 skipped**. The four standalone commands also exited 0. This rerun specifically includes the recovery regressions for retiring an old Web generation when successor creation fails, and for keeping a held old-generation Collector exchange fail-closed after a successor storage write failure.
 
 ## Build, package, and release gates
 
 Web build from `app/`:
 
 ```text
-node node_modules/vite/bin/vite.js build
-PASS: exit 0; 4,830 modules transformed; build completed in 4.92 seconds
+pnpm --dir app build
+PASS: exit 0 with the prescribed Node runtime on PATH; 4,830 modules transformed; build completed in 5.60 seconds
 ```
 
 Vite emitted only its existing warning that a minified chunk exceeds 500 kB.
@@ -133,7 +133,7 @@ diff -qr extension app/public/sonli-extension-0.13.46.2
 PASS: exit 0; no output
 
 shasum -a 256 app/public/sonli-extension-0.13.46.2.zip app/dist/sonli-extension-0.13.46.2.zip
-PASS: both hashes 24629be6955661f9ae85e268f308ad283da18475811e9ae06f80f5eb86c91e78
+PASS: both hashes 3d0f2a1774a4406f34c88deb0a60407c8fad5ded92abeb8a0f4b7d4ba29b5ab7
 
 node scripts/check-extension-zip.mjs
 PASS: both ZIPs match all 142 source files
