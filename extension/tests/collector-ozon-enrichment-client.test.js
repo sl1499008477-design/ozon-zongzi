@@ -360,6 +360,44 @@ test('agent does not claim while trusted Seller context is unavailable and sleep
   assert.deepEqual(sleeps, [250]);
 });
 
+test('empty availability does not recover Seller or claim a job', async () => {
+  let sellerResolutions = 0;
+  let claims = 0;
+  let sleeps = 0;
+  const collectorOperation = operation();
+  let agent;
+  agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return collectorOperation; },
+      async collectorFetch() {
+        claims += 1;
+        throw new Error('empty availability must not claim');
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() {
+        sellerResolutions += 1;
+        throw new Error('empty availability must not recover Seller');
+      },
+    },
+    async canCapture(receivedOperation) {
+      assert.strictEqual(receivedOperation, collectorOperation);
+      return false;
+    },
+    async captureVariant() { throw new Error('empty availability must not capture'); },
+    async sleep() {
+      sleeps += 1;
+      agent.stop('__collectorOzonEnrichmentAvailable__');
+    },
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.equal(sellerResolutions, 0);
+  assert.equal(claims, 0);
+  assert.equal(sleeps, 0);
+});
+
 test('agent releases a resolved Seller lease when snapshot normalization fails', async () => {
   const malformedSnapshot = {
     status: 'READY',
