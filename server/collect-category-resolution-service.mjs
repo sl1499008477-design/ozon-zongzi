@@ -14,7 +14,11 @@ const RETRYABLE_TRANSPORT_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
   "OZON_TIMEOUT",
+  "OZON_RATE_LIMITED",
+  "OZON_CATEGORY_TREE_UNAVAILABLE",
+  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
 ]);
+const VALIDATION_RETRY_PENDING = "VALIDATION_RETRY_PENDING";
 const NON_RETRYABLE_CATEGORY_CODES = new Set([
   "OZON_CATEGORY_DATA_INVALID",
   "OZON_CATEGORY_TAXONOMY_STALE",
@@ -97,16 +101,15 @@ function credentialStoreUsable(store, accountId, requestedStoreId) {
   const ownerAccountId = String(store.ownerAccountId ?? store.accountId ?? "");
   if (ownerAccountId !== accountId) return false;
   const status = String(store.status ?? "").toUpperCase();
-  const explicitlyEnabled = ["ACTIVE", "ENABLED"].includes(status)
-    || store.active === true
-    || store.enabled === true
-    || store.isActive === true
-    || store.is_active === true;
-  if (!explicitlyEnabled
+  const explicitlyDisabled = ["DISABLED", "INACTIVE", "ARCHIVED"].includes(status)
     || store.active === false
     || store.enabled === false
     || store.isActive === false
-    || store.is_active === false) {
+    || store.is_active === false
+    || store.archived === true
+    || store.isArchived === true
+    || store.is_archived === true;
+  if (explicitlyDisabled) {
     return false;
   }
   const explicitCredentialState = store.credentialed === true
@@ -131,7 +134,7 @@ function failurePolicy(error) {
       || /^HTTP_(408|429|5\d\d)$/.test(code)
       || numericStatus === 408
       || numericStatus === 429
-      || numericStatus >= 500
+      || (numericStatus >= 500 && numericStatus < 600)
   );
   return {
     retryable,
@@ -186,6 +189,16 @@ function auditEvent(action, record = {}, overrides = {}) {
     ...overrides,
   };
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null && value !== undefined && value !== ""));
+}
+
+function resolutionIdentity(record = {}) {
+  return {
+    method: record.method ?? null,
+    targetDescriptionCategoryId: record.targetDescriptionCategoryId ?? null,
+    targetTypeId: record.targetTypeId ?? null,
+    taxonomyFingerprint: record.taxonomyFingerprint ?? null,
+    matchedAt: record.matchedAt ?? null,
+  };
 }
 
 export function createCollectCategoryResolutionService({
@@ -364,6 +377,14 @@ export function createCollectCategoryResolutionService({
     const accountId = requiredText(input.accountId, "accountId");
     const storeId = requiredText(input.storeId, "storeId");
     const storeResult = await readStore(accountId, storeId);
+    if (storeResult.kind === "ERROR") {
+      const classified = failurePolicy(storeResult.error);
+      throw serviceError(
+        "Credential store availability check failed",
+        classified.failureCode,
+        classified.retryable ? 503 : 409,
+      );
+    }
     if (storeResult.kind !== "AVAILABLE") return [];
     const store = storeResult.store;
     const candidates = typeof collectItemPort.listForCategoryResolution === "function"
@@ -470,6 +491,7 @@ export function createCollectCategoryResolutionService({
         accountId: claimed.accountId,
         id: claimed.id,
         leaseToken: claimed.leaseToken,
+        expectedResolution: resolutionIdentity(claimed),
         failureCode: "TAXONOMY_CHANGED",
         nextAttemptAt: at,
         now: at,
@@ -517,6 +539,21 @@ export function createCollectCategoryResolutionService({
       now: claimAt,
     });
     if (!claimed) return null;
+
+    if (claimed.failureDetailSafe === VALIDATION_RETRY_PENDING
+      && claimed.method
+      && claimed.targetDescriptionCategoryId
+      && claimed.targetTypeId) {
+      const continuation = await validateResolutionForStore({
+        accountId,
+        collectItemId: claimed.collectItemId,
+        storeId: claimed.credentialStoreId,
+        taxonomyScope: claimed.taxonomyScope,
+        resolution: claimed,
+        leaseToken: claimed.leaseToken,
+      });
+      return continuation.resolution;
+    }
 
     let item;
     try {
@@ -599,15 +636,14 @@ export function createCollectCategoryResolutionService({
     return record;
   }
 
-  async function validateForStore(input = {}) {
-    const accountId = requiredText(input.accountId, "accountId");
-    const collectItemId = requiredText(input.collectItemId, "collectItemId");
-    const storeId = requiredText(input.storeId, "storeId");
-    const taxonomyScope = String(input.taxonomyScope ?? TAXONOMY_SCOPE_OZON_DEFAULT).trim()
-      || TAXONOMY_SCOPE_OZON_DEFAULT;
-    const resolution = await repository.readForItem({ accountId, collectItemId, taxonomyScope });
-    if (!resolution || resolution.status !== "MATCHED") return { reused: false, resolution };
-
+  async function validateResolutionForStore({
+    accountId,
+    collectItemId,
+    storeId,
+    taxonomyScope,
+    resolution,
+    leaseToken = null,
+  }) {
     async function persistValidationFailure(error, {
       transient = null,
       credentialStoreId = resolution.credentialStoreId,
@@ -620,6 +656,9 @@ export function createCollectCategoryResolutionService({
       const deferred = await repository.deferValidation({
         accountId,
         id: resolution.id,
+        leaseToken,
+        expectedResolution: resolutionIdentity(resolution),
+        retryable,
         credentialStoreId,
         failureCode,
         nextAttemptAt: new Date(at.getTime() + delay),
@@ -674,6 +713,8 @@ export function createCollectCategoryResolutionService({
       const validated = await repository.validateMatched({
         accountId,
         id: resolution.id,
+        leaseToken,
+        expectedResolution: resolutionIdentity(resolution),
         taxonomyFingerprint: nextFingerprint,
         credentialStoreId: store.id,
         validatedAt: validation.validatedAt ?? at,
@@ -699,7 +740,8 @@ export function createCollectCategoryResolutionService({
     const invalidated = await repository.invalidate({
       accountId,
       id: resolution.id,
-      leaseToken: null,
+      leaseToken,
+      expectedResolution: resolutionIdentity(resolution),
       failureCode,
       nextAttemptAt: at,
       now: at,
@@ -731,6 +773,23 @@ export function createCollectCategoryResolutionService({
       }),
     });
     return { reused: false, resolution: queued, validation, failureCode };
+  }
+
+  async function validateForStore(input = {}) {
+    const accountId = requiredText(input.accountId, "accountId");
+    const collectItemId = requiredText(input.collectItemId, "collectItemId");
+    const storeId = requiredText(input.storeId, "storeId");
+    const taxonomyScope = String(input.taxonomyScope ?? TAXONOMY_SCOPE_OZON_DEFAULT).trim()
+      || TAXONOMY_SCOPE_OZON_DEFAULT;
+    const resolution = await repository.readForItem({ accountId, collectItemId, taxonomyScope });
+    if (!resolution || resolution.status !== "MATCHED") return { reused: false, resolution };
+    return validateResolutionForStore({
+      accountId,
+      collectItemId,
+      storeId,
+      taxonomyScope,
+      resolution,
+    });
   }
 
   async function saveManual(input = {}) {

@@ -90,7 +90,10 @@ function createHarness({
         target: structuredClone(target),
       });
       if (validationError) throw validationError;
-      return structuredClone(validation ?? {
+      const result = typeof validation === "function"
+        ? await validation(input, target)
+        : validation;
+      return structuredClone(result ?? {
         valid: true,
         reasonCode: "VALID",
         taxonomyFingerprint: "taxonomy-v1",
@@ -371,7 +374,15 @@ test("explicit transient failures use bounded exponential retry and never audit 
   assert.equal(Date.parse(current.nextAttemptAt) - Date.parse(current.updatedAt), 30 * 60 * 1000);
 });
 
-for (const code of ["NETWORK_ERROR", "TIMEOUT", "HTTP_429", "HTTP_500"]) {
+for (const code of [
+  "NETWORK_ERROR",
+  "TIMEOUT",
+  "HTTP_429",
+  "HTTP_500",
+  "OZON_RATE_LIMITED",
+  "OZON_CATEGORY_TREE_UNAVAILABLE",
+  "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+]) {
   test(`${code} is retryable by explicit stable code`, async () => {
     const harness = createHarness({ snapshotError: Object.assign(new Error("unsafe"), { code }) });
     await harness.service.scheduleForCollect({
@@ -512,6 +523,60 @@ test("transient manual validation unavailability persists retry metadata without
   assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED");
 });
 
+test("a held stale automatic validation cannot invalidate a newly saved manual resolution", async () => {
+  let releaseValidation;
+  let markValidationStarted;
+  const validationStarted = new Promise((resolve) => { markValidationStarted = resolve; });
+  const validationGate = new Promise((resolve) => { releaseValidation = resolve; });
+  const harness = createHarness({
+    validation: async () => {
+      markValidationStarted();
+      await validationGate;
+      return {
+        valid: false,
+        reasonCode: "TYPE_DISABLED",
+        taxonomyFingerprint: "taxonomy-v1",
+        validatedAt: START,
+      };
+    },
+  });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+  await resolveUntilSettled(harness);
+
+  const staleValidation = harness.service.validateForStore({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    storeId: "store-b",
+  });
+  await validationStarted;
+  harness.advance(1000);
+  const manual = await harness.service.saveManual({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+    targetDescriptionCategoryId: 17029999,
+    targetTypeId: 95555,
+    taxonomyFingerprint: "taxonomy-v2",
+    displayPath: { zh: ["新人工类目"] },
+  });
+  const auditCountAfterManual = harness.calls.audits.length;
+  releaseValidation();
+  await staleValidation;
+
+  const persisted = await readResolution(harness);
+  assert.equal(persisted.status, "MATCHED");
+  assert.equal(persisted.method, "MANUAL");
+  assert.equal(persisted.targetDescriptionCategoryId, 17029999);
+  assert.equal(persisted.targetTypeId, 95555);
+  assert.equal(persisted.taxonomyFingerprint, "taxonomy-v2");
+  assert.equal(persisted.matchedAt, manual.matchedAt);
+  assert.equal(harness.calls.audits.length, auditCountAfterManual);
+});
+
 test("a thrown status-only validation outage is persisted for restart-safe retry", async () => {
   const harness = createHarness({
     validationError: Object.assign(new Error("raw validation outage"), { status: 503 }),
@@ -538,6 +603,45 @@ test("a thrown status-only validation outage is persisted for restart-safe retry
   assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED");
 });
 
+test("a due manual validation retry resumes after service recreation without automatic rematching", async () => {
+  const harness = createHarness({
+    validationError: Object.assign(new Error("validation unavailable"), { status: 503 }),
+  });
+  await harness.service.saveManual({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+    targetDescriptionCategoryId: 17029999,
+    targetTypeId: 94405,
+    taxonomyFingerprint: "taxonomy-v1",
+  });
+  await harness.service.validateForStore({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    storeId: "store-b",
+  });
+  const deferred = await readResolution(harness);
+  assert.equal(deferred.status, "MATCHED");
+  assert.equal(deferred.failureCode, "HTTP_503");
+
+  const restarted = createHarness({
+    state: harness.state,
+    repository: harness.repository,
+    now: deferred.nextAttemptAt,
+  });
+  const result = await restarted.service.resolveNext({ accountId: ACCOUNT_ID });
+
+  assert.equal(result.status, "MATCHED");
+  assert.equal(result.method, "MANUAL");
+  assert.equal(result.targetDescriptionCategoryId, 17029999);
+  assert.equal(result.targetTypeId, 94405);
+  assert.equal(result.failureCode, null);
+  assert.equal(result.leaseToken, null);
+  assert.equal(restarted.calls.snapshots.length, 0);
+  assert.equal(restarted.calls.validations.length, 1);
+  assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_VALIDATED");
+});
+
 for (const [name, snapshotError, expectedStatus] of [
   ["status-only 429", Object.assign(new Error("rate limited"), { status: 429 }), "RETRYABLE_ERROR"],
   ["status-only 503", Object.assign(new Error("unavailable"), { status: 503 }), "RETRYABLE_ERROR"],
@@ -546,6 +650,8 @@ for (const [name, snapshotError, expectedStatus] of [
   ["stale taxonomy without transport failure", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 409 }), "NEEDS_REVIEW"],
   ["data contract error carrying a 503", Object.assign(new Error("invalid tree"), { code: "OZON_CATEGORY_DATA_INVALID", status: 503 }), "NEEDS_REVIEW"],
   ["stale taxonomy carrying a 503", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 503 }), "NEEDS_REVIEW"],
+  ["numeric status 600", Object.assign(new Error("not an HTTP server error"), { status: 600 }), "NEEDS_REVIEW"],
+  ["numeric status 999", Object.assign(new Error("not an HTTP server error"), { status: 999 }), "NEEDS_REVIEW"],
 ]) {
   test(`${name} follows the numeric transport retry boundary`, async () => {
     const harness = createHarness({ snapshotError });
@@ -607,7 +713,7 @@ for (const [name, stores, credentialStoreId] of [
   });
 }
 
-test("a credential store with no explicit active status is unavailable", async () => {
+test("a legacy credentialed store with no status remains available unless explicitly disabled", async () => {
   const harness = createHarness({
     stores: [{ id: "store-a", ownerAccountId: ACCOUNT_ID, clientId: "client-a", apiKey: "secret-a" }],
   });
@@ -616,8 +722,32 @@ test("a credential store with no explicit active status is unavailable", async (
     collectItemId: COLLECT_ITEM_ID,
     credentialStoreId: "store-a",
   });
-  assert.equal(result.status, "WAITING_STORE");
+  assert.equal(result.status, "QUEUED");
 });
+
+for (const [name, disabledFields] of [
+  ["inactive status", { status: "INACTIVE" }],
+  ["archived status", { status: "ARCHIVED" }],
+  ["explicit disabled flag", { enabled: false }],
+]) {
+  test(`${name} keeps a credentialed store unavailable`, async () => {
+    const harness = createHarness({
+      stores: [{
+        id: "store-a",
+        ownerAccountId: ACCOUNT_ID,
+        clientId: "client-a",
+        apiKey: "secret-a",
+        ...disabledFields,
+      }],
+    });
+    const result = await harness.service.scheduleForCollect({
+      accountId: ACCOUNT_ID,
+      collectItemId: COLLECT_ITEM_ID,
+      credentialStoreId: "store-a",
+    });
+    assert.equal(result.status, "WAITING_STORE");
+  });
+}
 
 test("an available operating store wakes only account-scoped waiting items", async () => {
   const harness = createHarness();
@@ -634,6 +764,26 @@ test("an available operating store wakes only account-scoped waiting items", asy
 
   assert.equal(awakened.length, 1);
   assert.equal((await readResolution(harness)).status, "QUEUED");
+});
+
+test("operating-store wakeup surfaces a safe retryable store outage and leaves waiting work intact", async () => {
+  const harness = createHarness({ storeReadErrorAfter: 0 });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: null,
+  });
+
+  await assert.rejects(
+    harness.service.onOperatingStoreAvailable({
+      accountId: ACCOUNT_ID,
+      storeId: "store-a",
+    }),
+    (error) => error?.code === "HTTP_503"
+      && error?.status === 503
+      && !error?.message.includes("store port unavailable"),
+  );
+  assert.equal((await readResolution(harness)).status, "WAITING_STORE");
 });
 
 test("operating-store wakeup preserves each waiting record's taxonomy scope", async () => {
@@ -680,4 +830,27 @@ test("audit events contain stable resolution identifiers and never credentials o
     assert.equal("apiKey" in event, false);
     assert.equal("leaseToken" in event, false);
   }
+});
+
+test("a configured Service transition fails closed when its Repository has no transaction audit writer", async () => {
+  const state = {
+    caches: { collectBox: [{ id: COLLECT_ITEM_ID, accountId: ACCOUNT_ID }] },
+    stores: [{ id: "store-a", ownerAccountId: ACCOUNT_ID }],
+    collectCategoryResolutions: [],
+  };
+  const repository = createJsonCollectCategoryResolutionRepository({
+    state,
+    stateTransaction: createJsonStateTransactionBoundary(),
+  });
+  const harness = createHarness({ state, repository });
+
+  await assert.rejects(
+    harness.service.scheduleForCollect({
+      accountId: ACCOUNT_ID,
+      collectItemId: COLLECT_ITEM_ID,
+      credentialStoreId: "store-a",
+    }),
+    (error) => error?.code === "COLLECT_CATEGORY_RESOLUTION_AUDIT_WRITER_REQUIRED",
+  );
+  assert.equal(await readResolution(harness), null);
 });
