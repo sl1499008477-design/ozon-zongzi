@@ -326,11 +326,13 @@ try {
   const createCollectorSellerContextLeaseBridge = ({
     runtime,
     readyStatus,
+    sessionManager,
   } = {}) => {
     if (
       typeof runtime?.acquireCurrentWithRecovery !== 'function'
       || typeof runtime?.isSnapshotCurrent !== 'function'
       || typeof runtime?.submitIfCurrent !== 'function'
+      || typeof sessionManager?.collectorFetch !== 'function'
     ) {
       throw new TypeError('collector Seller context lease dependencies are required');
     }
@@ -369,10 +371,50 @@ try {
       activeLeases.set(key, leases);
       return true;
     };
+    const preflightFailure = () => Object.assign(new Error('OZON_ENRICH_PREFLIGHT_FAILED'), {
+      code: 'OZON_ENRICH_PREFLIGHT_FAILED',
+    });
+    const exactAvailability = async (response) => {
+      if (!response?.ok) throw preflightFailure();
+      const text = await response.text?.().catch(() => '');
+      let body;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw preflightFailure();
+      }
+      if (
+        !body
+        || typeof body !== 'object'
+        || Array.isArray(body)
+        || Object.keys(body).length !== 2
+        || !Object.hasOwn(body, 'ok')
+        || !Object.hasOwn(body, 'available')
+        || body.ok !== true
+        || typeof body.available !== 'boolean'
+      ) throw preflightFailure();
+      return body.available;
+    };
     // The agent calls this immediately before resolving the Seller snapshot.
-    // Keep the preflight side-effect free: acquiring here can orphan a helper
-    // lease if the drain is cancelled between the two awaits.
-    const canCapture = async () => true;
+    // It must not acquire a Seller lease: cancellation between the two awaits
+    // would otherwise orphan a helper lease.
+    const canCapture = async (collectorOperation, { signal } = {}) => {
+      if (!collectorOperation?.permissions?.includes('collector.ozon.read')) {
+        throw preflightFailure();
+      }
+      const response = await sessionManager.collectorFetch(
+        '/collector/ozon/enrichment-jobs/available',
+        {
+          collectorOperation,
+          permission: 'collector.ozon.read',
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+          signal,
+        },
+      );
+      return exactAvailability(response);
+    };
     const sellerContextRuntime = Object.freeze({
       isSnapshotCurrent: (snapshot) => runtime.isSnapshotCurrent(snapshot),
       submitIfCurrent: (snapshot, submit) => runtime.submitIfCurrent(snapshot, submit),
@@ -421,6 +463,7 @@ try {
   const collectorSellerContextLeaseBridge = createCollectorSellerContextLeaseBridge({
     runtime: sellerCompanyContextRuntime,
     readyStatus: globalThis.JzSellerRecoveryTab.STATUS.READY,
+    sessionManager: collectorSessionManager,
   });
   const collectorOzonAgent = globalThis.JzCollectorOzonAgent.create({
     sessionManager: collectorSessionManager,

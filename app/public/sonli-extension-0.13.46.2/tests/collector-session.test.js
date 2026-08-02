@@ -17,6 +17,12 @@ const jsonResponse = (status, body) => ({
   async text() { return JSON.stringify(body); },
 });
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function storageArea(state, calls, name) {
   return {
     async get(key) {
@@ -140,6 +146,124 @@ test('collectorFetch owns the immutable Collector authorization header and clear
   assert.equal(Object.hasOwn(requests[0].options.headers, 'Authorization'), false);
   assert.equal(JSON.stringify(requests[0].options.headers).includes('caller-controlled'), false);
   assert.equal(await harness.manager.getCollectorSession(), null);
+});
+
+test('collectorFetch ignores a late 401 after its request signal is aborted', async () => {
+  const response = deferred();
+  let requestSignal;
+  const harness = createHarness({
+    fetchImpl: async (_url, options) => {
+      requestSignal = options.signal;
+      return response.promise;
+    },
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const collectorOperation = await harness.manager.beginCollectorOperation();
+  const controller = new AbortController();
+  const request = harness.manager.collectorFetch('/collector/ozon/enrichment-jobs/available', {
+    collectorOperation,
+    permission: 'collector.ozon.read',
+    method: 'POST',
+    signal: controller.signal,
+  });
+  while (!requestSignal) await new Promise((resolve) => setImmediate(resolve));
+
+  controller.abort();
+  assert.equal(requestSignal.aborted, true);
+  response.resolve(jsonResponse(401, { code: 'COLLECTOR_SESSION_REVOKED' }));
+
+  await assert.rejects(
+    request,
+    (error) => error?.name === 'AbortError' && error?.code === 'COLLECTOR_REQUEST_ABORTED',
+  );
+  assert.deepEqual(await harness.manager.getCollectorSession(), validSession());
+  assert.equal(
+    harness.calls.some(([area, method]) => area === 'session' && method === 'remove'),
+    false,
+  );
+});
+
+test('collectorFetch aborts when its post-response owner check is delayed before session clearing', async () => {
+  const harness = createHarness({
+    fetchImpl: async () => jsonResponse(401, { code: 'COLLECTOR_SESSION_REVOKED' }),
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const collectorOperation = await harness.manager.beginCollectorOperation();
+  const originalGet = harness.chromeApi.storage.session.get.bind(
+    harness.chromeApi.storage.session,
+  );
+  const delayedOwnerCheck = deferred();
+  let sessionGets = 0;
+  harness.chromeApi.storage.session.get = async (key) => {
+    const stored = await originalGet(key);
+    sessionGets += 1;
+    if (sessionGets === 2) return delayedOwnerCheck.promise;
+    return stored;
+  };
+  const controller = new AbortController();
+  const request = harness.manager.collectorFetch('/collector/ozon/enrichment-jobs/available', {
+    collectorOperation,
+    permission: 'collector.ozon.read',
+    method: 'POST',
+    signal: controller.signal,
+  });
+  while (sessionGets < 2) await new Promise((resolve) => setImmediate(resolve));
+
+  controller.abort();
+  delayedOwnerCheck.resolve(await originalGet(COLLECTOR_SESSION_STORAGE_KEY));
+
+  await assert.rejects(
+    request,
+    (error) => error?.name === 'AbortError' && error?.code === 'COLLECTOR_REQUEST_ABORTED',
+  );
+  assert.equal(
+    harness.calls.some(([area, method]) => area === 'session' && method === 'remove'),
+    false,
+  );
+  assert.deepEqual(await harness.manager.getCollectorSession(), validSession());
+});
+
+test('collectorFetch aborts when the conditional session-clear check is delayed', async () => {
+  const harness = createHarness({
+    fetchImpl: async () => jsonResponse(403, { code: 'COLLECTOR_SESSION_REVOKED' }),
+  });
+  await harness.manager.setCollectorSession(validSession());
+  const collectorOperation = await harness.manager.beginCollectorOperation();
+  const originalGet = harness.chromeApi.storage.session.get.bind(
+    harness.chromeApi.storage.session,
+  );
+  const delayedClearCheck = deferred();
+  let sessionGets = 0;
+  harness.chromeApi.storage.session.get = async (key) => {
+    const stored = await originalGet(key);
+    sessionGets += 1;
+    if (sessionGets === 3) return delayedClearCheck.promise;
+    return stored;
+  };
+  const controller = new AbortController();
+  const request = harness.manager.collectorFetch('/collector/ozon/enrichment-jobs/available', {
+    collectorOperation,
+    permission: 'collector.ozon.read',
+    method: 'POST',
+    signal: controller.signal,
+  });
+  for (let attempt = 0; attempt < 20 && sessionGets < 3; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(sessionGets, 3, 'conditional session-clear check must be in flight');
+
+  controller.abort();
+  delayedClearCheck.resolve(await originalGet(COLLECTOR_SESSION_STORAGE_KEY));
+
+  await assert.rejects(
+    request,
+    (error) => error?.name === 'AbortError' && error?.code === 'COLLECTOR_REQUEST_ABORTED',
+  );
+  assert.equal(
+    harness.calls.some(([area, method]) => area === 'session' && method === 'remove'),
+    false,
+  );
+  assert.deepEqual(await harness.manager.getCollectorSession(), validSession());
 });
 
 test('ticket expiry is retried exactly once and secret values are redacted', async () => {

@@ -77,6 +77,13 @@
     return error;
   };
 
+  const throwIfAborted = (signal) => {
+    if (!signal?.aborted) return;
+    const error = collectorError('COLLECTOR_REQUEST_ABORTED', 0, 'COLLECTOR_REQUEST_ABORTED');
+    error.name = 'AbortError';
+    throw error;
+  };
+
   const canonicalCollectorKey = (key) => String(key || '').replace(/[_-]/g, '').toLowerCase();
   const isRetiredCollectorScopeKey = (key) =>
     RETIRED_COLLECTOR_SCOPE_KEYS.has(canonicalCollectorKey(key));
@@ -236,9 +243,11 @@
       };
     };
 
-    const assertOperationOwnerIsCurrent = async (snapshot) => {
+    const assertOperationOwnerIsCurrent = async (snapshot, signal) => {
+      throwIfAborted(signal);
       const expiresAt = Date.parse(snapshot?.expiresAt || '');
       const current = await getCollectorSession();
+      throwIfAborted(signal);
       if (
         !Number.isFinite(expiresAt)
         || expiresAt <= now()
@@ -262,12 +271,16 @@
       && accountIdOf(session) === accountIdOf(snapshot)
       && sessionIdentityOf(session) === snapshot.sessionIdentity;
 
-    const clearCollectorSessionIfSnapshotCurrent = (snapshot) =>
+    const clearCollectorSessionIfSnapshotCurrent = (snapshot, signal) =>
       serializeSessionMutation(async () => {
+        throwIfAborted(signal);
         const stored = await chromeApi.storage.session.get(COLLECTOR_SESSION_STORAGE_KEY);
+        throwIfAborted(signal);
         const current = stored?.[COLLECTOR_SESSION_STORAGE_KEY] || null;
         if (!sessionMatchesSnapshot(current, snapshot)) return false;
+        throwIfAborted(signal);
         await chromeApi.storage.session.remove(COLLECTOR_SESSION_STORAGE_KEY);
+        throwIfAborted(signal);
         return true;
       });
 
@@ -395,20 +408,27 @@
       permission,
       ...options
     } = {}) {
+      throwIfAborted(options.signal);
       const resolved = await resolveCollectorOperation(collectorOperation);
+      throwIfAborted(options.signal);
       const { snapshot } = resolved;
       if (!snapshot.permissions.includes(permission)) {
         throw collectorError('COLLECTOR_PERMISSION_DENIED', 403, 'COLLECTOR_PERMISSION_DENIED');
       }
       const baseUrl = await resolveBackendUrl();
-      await assertOperationOwnerIsCurrent(snapshot);
+      throwIfAborted(options.signal);
+      await assertOperationOwnerIsCurrent(snapshot, options.signal);
+      throwIfAborted(options.signal);
       const response = await fetchImpl(`${baseUrl}${String(path || '')}`, {
         ...options,
         headers: safeHeaders(options.headers, snapshot.collectorToken),
       });
-      await assertOperationOwnerIsCurrent(snapshot);
+      throwIfAborted(options.signal);
+      await assertOperationOwnerIsCurrent(snapshot, options.signal);
+      throwIfAborted(options.signal);
       if (response.status === 401 || response.status === 403) {
-        await clearCollectorSessionIfSnapshotCurrent(snapshot);
+        await clearCollectorSessionIfSnapshotCurrent(snapshot, options.signal);
+        throwIfAborted(options.signal);
       }
       return response;
     }

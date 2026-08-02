@@ -360,6 +360,44 @@ test('agent does not claim while trusted Seller context is unavailable and sleep
   assert.deepEqual(sleeps, [250]);
 });
 
+test('empty availability does not recover Seller or claim a job', async () => {
+  let sellerResolutions = 0;
+  let claims = 0;
+  let sleeps = 0;
+  const collectorOperation = operation();
+  let agent;
+  agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return collectorOperation; },
+      async collectorFetch() {
+        claims += 1;
+        throw new Error('empty availability must not claim');
+      },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() {
+        sellerResolutions += 1;
+        throw new Error('empty availability must not recover Seller');
+      },
+    },
+    async canCapture(receivedOperation) {
+      assert.strictEqual(receivedOperation, collectorOperation);
+      return false;
+    },
+    async captureVariant() { throw new Error('empty availability must not capture'); },
+    async sleep() {
+      sleeps += 1;
+      agent.stop('__collectorOzonEnrichmentAvailable__');
+    },
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+
+  assert.equal(sellerResolutions, 0);
+  assert.equal(claims, 0);
+  assert.equal(sleeps, 0);
+});
+
 test('agent releases a resolved Seller lease when snapshot normalization fails', async () => {
   const malformedSnapshot = {
     status: 'READY',
@@ -899,6 +937,36 @@ test('autonomous drain parks operation-start failures until a later kick retries
       assert.equal(claims, 1);
     });
   }
+});
+
+test('autonomous drain parks a failed availability preflight until a later kick retries it', async () => {
+  let preflights = 0;
+  let claims = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch(path) {
+        assert.equal(path, '/collector/ozon/enrichment-jobs/next');
+        claims += 1;
+        return jsonResponse(200, { ok: true, job: null });
+      },
+    },
+    async canCapture() {
+      preflights += 1;
+      if (preflights === 1) throw new Error('availability unavailable');
+      return true;
+    },
+    async captureVariant() { throw new Error('empty drains must not capture'); },
+    async sleep() {},
+  });
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  assert.equal(preflights, 1);
+  assert.equal(claims, 0);
+
+  await agent.drainAvailable({ deadlineAt: Date.now() + 2_000 });
+  assert.equal(preflights, 2);
+  assert.equal(claims, 1);
 });
 
 test('autonomous drain retries an operation failure when a newer kick arrived during the attempt', async () => {
@@ -1500,6 +1568,100 @@ test('stopping a drain while canCapture is pending prevents every later side eff
 
   assert.equal(await settleWithin(drain), 'settled');
   assert.deepEqual(requests, []);
+  assert.equal(captures, 0);
+});
+
+test('last stop aborts a pending availability preflight before its late response can recover Seller', async () => {
+  const availability = deferred();
+  let preflightStarted = false;
+  let preflightSignal;
+  let sellerResolutions = 0;
+  let claims = 0;
+  let captures = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch() { claims += 1; throw new Error('must not claim'); },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() { sellerResolutions += 1; throw new Error('must not recover'); },
+    },
+    canCapture(_collectorOperation, { signal } = {}) {
+      preflightStarted = true;
+      preflightSignal = signal;
+      return availability.promise;
+    },
+    async captureVariant() { captures += 1; },
+    async sleep() {},
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-stop-preflight',
+    deadlineAt: Date.now() + 2_000,
+  });
+  while (!preflightStarted) await nextTurn();
+  assert.ok(preflightSignal, 'availability preflight must receive an AbortSignal');
+
+  agent.stop('request-stop-preflight');
+  assert.equal(preflightSignal.aborted, true);
+  availability.resolve(true);
+
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.equal(sellerResolutions, 0);
+  assert.equal(claims, 0);
+  assert.equal(captures, 0);
+});
+
+test('deadline aborts a pending availability preflight before its late response can recover Seller', async () => {
+  const availability = deferred();
+  const timers = new Map();
+  let clock = 1_000;
+  let nextTimerId = 1;
+  let preflightStarted = false;
+  let preflightSignal;
+  let sellerResolutions = 0;
+  let claims = 0;
+  let captures = 0;
+  const agent = createAgent({
+    sessionManager: {
+      async beginCollectorOperation() { return operation(); },
+      async collectorFetch() { claims += 1; throw new Error('must not claim'); },
+    },
+    sellerContextRuntime: {
+      async resolveCurrentWithRecovery() { sellerResolutions += 1; throw new Error('must not recover'); },
+    },
+    canCapture(_collectorOperation, { signal } = {}) {
+      preflightStarted = true;
+      preflightSignal = signal;
+      return availability.promise;
+    },
+    async captureVariant() { captures += 1; },
+    async sleep() {},
+    now: () => clock,
+    setTimer(callback) {
+      const id = nextTimerId;
+      nextTimerId += 1;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimer(id) { timers.delete(id); },
+  });
+
+  const drain = agent.drainUntil({
+    requestId: 'request-deadline-preflight',
+    deadlineAt: 1_050,
+  });
+  while (!preflightStarted) await nextTurn();
+  assert.ok(preflightSignal, 'availability preflight must receive an AbortSignal');
+
+  clock = 1_050;
+  for (const callback of timers.values()) callback();
+  assert.equal(preflightSignal.aborted, true);
+  availability.resolve(true);
+
+  assert.equal(await settleWithin(drain), 'settled');
+  assert.equal(sellerResolutions, 0);
+  assert.equal(claims, 0);
   assert.equal(captures, 0);
 });
 

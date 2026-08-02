@@ -956,10 +956,11 @@ test('Collector lease bridge acquires only while resolving so cancellation canno
   const bridge = createCollectorSellerContextLeaseBridge({
     runtime,
     readyStatus: 'READY',
+    sessionManager: {
+      async collectorFetch() { throw new Error('Seller lease test must not preflight'); },
+    },
   });
 
-  assert.equal(await bridge.canCapture(), true);
-  assert.equal(acquisitions, 0, 'the preflight gate must not acquire an ownerless lease');
   const resolved = await bridge.sellerContextRuntime.resolveCurrentWithRecovery();
   assert.strictEqual(resolved, retainedSnapshot);
   assert.equal(acquisitions, 1);
@@ -972,6 +973,135 @@ test('Collector lease bridge acquires only while resolving so cancellation canno
   assert.equal(await bridge.sellerContextRuntime.releaseSnapshot({ ...resolved }), true,
     'the agent normalizes the snapshot into a new object before release');
   assert.equal(releases, 1);
+});
+
+test('availability preflight uses the supplied Collector operation before Seller recovery', async () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const createCollectorSellerContextLeaseBridge = extractWorkerHelper(
+    source,
+    'const createCollectorSellerContextLeaseBridge = ({',
+    '\n\n  const collectorSessionManager',
+    'createCollectorSellerContextLeaseBridge',
+  );
+  const collectorOperation = Object.freeze({
+    permissions: Object.freeze(['collector.ozon.read']),
+  });
+  const controller = new AbortController();
+  const requests = [];
+  let acquisitions = 0;
+  const bridge = createCollectorSellerContextLeaseBridge({
+    runtime: {
+      async acquireCurrentWithRecovery() { acquisitions += 1; throw new Error('must not recover'); },
+      async isSnapshotCurrent() { return true; },
+      async submitIfCurrent(_snapshot, submit) { return submit(); },
+    },
+    readyStatus: 'READY',
+    sessionManager: {
+      async collectorFetch(route, options) {
+        requests.push({ route, options });
+        return {
+          ok: true,
+          async text() { return JSON.stringify({ ok: true, available: false }); },
+        };
+      },
+    },
+  });
+
+  assert.equal(await bridge.canCapture(collectorOperation, { signal: controller.signal }), false);
+  assert.equal(acquisitions, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].route, '/collector/ozon/enrichment-jobs/available');
+  assert.strictEqual(requests[0].options.collectorOperation, collectorOperation);
+  assert.equal(requests[0].options.permission, 'collector.ozon.read');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.deepEqual(requests[0].options.headers, { 'content-type': 'application/json' });
+  assert.equal(requests[0].options.body, JSON.stringify({}));
+  assert.strictEqual(requests[0].options.signal, controller.signal);
+  assert.equal(Object.hasOwn(requests[0].options, 'credentials'), false);
+  assert.equal(Object.hasOwn(requests[0].options, 'captureContext'), false);
+});
+
+test('availability preflight accepts only the exact available response envelope', async () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const createCollectorSellerContextLeaseBridge = extractWorkerHelper(
+    source,
+    'const createCollectorSellerContextLeaseBridge = ({',
+    '\n\n  const collectorSessionManager',
+    'createCollectorSellerContextLeaseBridge',
+  );
+  const collectorOperation = Object.freeze({
+    permissions: Object.freeze(['collector.ozon.read']),
+  });
+  const cases = [
+    { name: 'available', response: { ok: true, body: { ok: true, available: true } }, expected: true },
+    { name: 'non-OK', response: { ok: false, body: { ok: true, available: true } } },
+    { name: 'malformed keys', response: { ok: true, body: { ok: true, available: true, extra: true } } },
+    { name: 'malformed boolean', response: { ok: true, body: { ok: true, available: 'true' } } },
+  ];
+
+  for (const scenario of cases) {
+    const bridge = createCollectorSellerContextLeaseBridge({
+      runtime: {
+        async acquireCurrentWithRecovery() { throw new Error('must not recover'); },
+        async isSnapshotCurrent() { return true; },
+        async submitIfCurrent(_snapshot, submit) { return submit(); },
+      },
+      readyStatus: 'READY',
+      sessionManager: {
+        async collectorFetch() {
+          return {
+            ok: scenario.response.ok,
+            async text() { return JSON.stringify(scenario.response.body); },
+          };
+        },
+      },
+    });
+    if (Object.hasOwn(scenario, 'expected')) {
+      assert.equal(await bridge.canCapture(collectorOperation), scenario.expected);
+    } else {
+      await assert.rejects(
+        () => bridge.canCapture(collectorOperation),
+        (error) => error?.code === 'OZON_ENRICH_PREFLIGHT_FAILED',
+      );
+    }
+  }
+});
+
+test('availability preflight fails closed without the Collector read permission', async () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const createCollectorSellerContextLeaseBridge = extractWorkerHelper(
+    source,
+    'const createCollectorSellerContextLeaseBridge = ({',
+    '\n\n  const collectorSessionManager',
+    'createCollectorSellerContextLeaseBridge',
+  );
+  let fetches = 0;
+  const bridge = createCollectorSellerContextLeaseBridge({
+    runtime: {
+      async acquireCurrentWithRecovery() { throw new Error('must not recover'); },
+      async isSnapshotCurrent() { return true; },
+      async submitIfCurrent(_snapshot, submit) { return submit(); },
+    },
+    readyStatus: 'READY',
+    sessionManager: {
+      async collectorFetch() { fetches += 1; throw new Error('must not fetch'); },
+    },
+  });
+
+  await assert.rejects(
+    () => bridge.canCapture(Object.freeze({ permissions: Object.freeze([]) })),
+    (error) => error?.code === 'OZON_ENRICH_PREFLIGHT_FAILED',
+  );
+  assert.equal(fetches, 0);
 });
 
 test('Collector read-only capture fills real /search physical gaps from public PDP and never creates a bundle', async () => {

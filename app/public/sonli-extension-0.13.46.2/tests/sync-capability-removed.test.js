@@ -12,6 +12,23 @@ const extensionRoot = path.resolve(
 const manifest = JSON.parse(
   fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'),
 );
+const AVAILABILITY_PATH = '/api/collector/ozon/enrichment-jobs/available';
+
+function availabilityResponse(url, options, available) {
+  assert.equal(new URL(url).pathname, AVAILABILITY_PATH);
+  assert.equal(options.method, 'POST');
+  assert.deepEqual(JSON.parse(options.body), {});
+  assert.equal(Object.hasOwn(options, 'credentials'), false);
+  const headers = new Headers(options.headers);
+  assert.equal(headers.get('content-type'), 'application/json');
+  assert.match(headers.get('authorization') || '', /^Collector /);
+  assert.equal(headers.has('cookie'), false);
+  assert.doesNotMatch(options.body, /seller|company|store|cookie/i);
+  return new Response(JSON.stringify({ ok: true, available }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
 
 function createEvent() {
   const listeners = [];
@@ -376,8 +393,9 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
   const nextPath = '/api/collector/ozon/enrichment-jobs/next';
   const startupHarness = loadServiceWorker({
     sellerCapture: true,
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, options) => {
       const pathname = new URL(url).pathname;
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, true);
       if (pathname === nextPath) {
         return new Response(JSON.stringify({ ok: true, job: null }), {
           status: 200,
@@ -408,7 +426,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
 
   const uploadHarness = loadServiceWorker({
     sellerCapture: true,
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, options) => {
       const pathname = new URL(url).pathname;
       if (pathname === '/api/sources/ozon/collect') {
         return new Response(JSON.stringify({
@@ -422,6 +440,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, true);
       throw new Error(`unexpected upload path: ${pathname}`);
     },
   });
@@ -440,7 +459,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
 
   const exchangeHarness = loadServiceWorker({
     sellerCapture: true,
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, options) => {
       const pathname = new URL(url).pathname;
       if (pathname === '/api/extension/collector-auth/exchange') {
         return new Response(JSON.stringify({
@@ -458,6 +477,7 @@ test('autonomous enrichment drain runs every minute and kicks on startup, pendin
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, true);
       throw new Error(`unexpected exchange path: ${pathname}`);
     },
   });
@@ -539,12 +559,16 @@ test('Ozon enrichment runtime messages are exact, Collector-authenticated, and p
     cache: { hit: false, expiresAt: '2026-07-31T06:00:00.000Z' },
   };
   const successHarness = loadServiceWorker({
-    fetchImpl: async (url) => {
-      assert.equal(new URL(url).pathname, '/api/collector/ozon/enrich');
-      return new Response(JSON.stringify({ ok: true, data: completeResult }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      if (pathname === '/api/collector/ozon/enrich') {
+        return new Response(JSON.stringify({ ok: true, data: completeResult }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected runtime success path: ${pathname}`);
     },
   });
   const sender = {
@@ -572,27 +596,44 @@ test('Ozon enrichment runtime messages are exact, Collector-authenticated, and p
   }, sender);
   assert.equal(success.ok, true);
   assert.deepEqual(JSON.parse(JSON.stringify(success.data)), completeResult);
-  assert.equal(successHarness.fetchCalls.length, 1);
-  assert.deepEqual(JSON.parse(successHarness.fetchCalls[0].options.body), {
+  assert.deepEqual(successHarness.fetchCalls.map(({ url }) => new URL(url).pathname).sort(), [
+    '/api/collector/ozon/enrich',
+    AVAILABILITY_PATH,
+  ].sort());
+  const enrichCall = successHarness.fetchCalls.find(
+    ({ url }) => new URL(url).pathname === '/api/collector/ozon/enrich',
+  );
+  const availabilityCall = successHarness.fetchCalls.find(
+    ({ url }) => new URL(url).pathname === AVAILABILITY_PATH,
+  );
+  assert.deepEqual(JSON.parse(enrichCall.options.body), {
     requestId: 'runtime-success',
     sku: '4862904234',
   });
+  assert.deepEqual(JSON.parse(availabilityCall.options.body), {});
   assert.equal(
     successHarness.fetchCalls.some(({ url }) => /\/ozon\/sync|api-seller\.ozon\.ru/.test(url)),
     false,
   );
 
   const errorHarness = loadServiceWorker({
-    fetchImpl: async () => new Response(JSON.stringify({
-      ok: false,
-      code: 'OZON_ENRICH_INCOMPLETE',
-      message: 'missing cst_do-not-leak-runtime-secret',
-      missingFields: ['weightG'],
-      retryable: true,
-    }), {
-      status: 422,
-      headers: { 'content-type': 'application/json' },
-    }),
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      if (pathname === '/api/collector/ozon/enrich') {
+        return new Response(JSON.stringify({
+          ok: false,
+          code: 'OZON_ENRICH_INCOMPLETE',
+          message: 'missing cst_do-not-leak-runtime-secret',
+          missingFields: ['weightG'],
+          retryable: true,
+        }), {
+          status: 422,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected runtime error path: ${pathname}`);
+    },
   });
   const failed = await sendRuntimeMessage(errorHarness, {
     action: 'enrichOzonCollect',
@@ -651,6 +692,7 @@ test('held enrichment directly invokes the local visible Seller capture and post
     fetchImpl: async (url, options) => {
       const pathname = new URL(url).pathname;
       if (pathname === '/api/collector/ozon/enrich') return publicResponse;
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, true);
       if (pathname === '/api/collector/ozon/enrichment-jobs/next') {
         nextCalls += 1;
         return new Response(JSON.stringify({

@@ -575,18 +575,21 @@
       }
       if (!collectorOperation) return DRAIN_FAILED;
       while (isCurrent(entry, generation)) {
-        let trusted = stopWhenEmpty;
-        if (!stopWhenEmpty) {
-          try {
-            ensureCurrent(entry, generation);
-            trusted = await withLifecycle(canCapture(), entry, generation) === true;
-            ensureCurrent(entry, generation);
-          } catch {
-            trusted = false;
-          }
+        let canCaptureNow;
+        try {
+          ensureCurrent(entry, generation);
+          canCaptureNow = await withCollectorStage(
+            entry,
+            generation,
+            (signal) => canCapture(collectorOperation, { signal }),
+          ) === true;
+          ensureCurrent(entry, generation);
+        } catch {
+          return isCurrent(entry, generation) ? DRAIN_FAILED : DRAIN_CANCELLED;
         }
         if (!isCurrent(entry, generation)) break;
-        if (!trusted) {
+        if (!canCaptureNow) {
+          if (stopWhenEmpty) return DRAIN_COMPLETED;
           try {
             await withLifecycle(
               sleep(Math.min(POLL_MS, Math.max(0, entry.deadlineAt - now()))),
