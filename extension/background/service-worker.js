@@ -4093,6 +4093,24 @@ try {
           reloadOzonTabs();
           return { ok: true };
         }
+        case 'collector.auth.begin': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          const result = await collectorSessionManager.activateCollectorGeneration(
+            message.generationId,
+          );
+          return { ok: true, data: result };
+        }
+        case 'collector.auth.logout': {
+          if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
+            return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
+          }
+          const cleared = await collectorSessionManager.clearCollectorGeneration(
+            message.generationId,
+          );
+          return { ok: true, data: { cleared } };
+        }
         case 'collector.auth.exchange': {
           if (portalRoute !== 'SONLI_COLLECTOR_AUTH') {
             return { ok: false, error: 'PORTAL_BRIDGE_FORBIDDEN' };
@@ -4103,6 +4121,7 @@ try {
               ticket: message.ticket,
               deviceFingerprint: await getExtensionFingerprint(),
               extensionVersion: String(manifest.version || ''),
+              generationId: message.generationId,
             });
             kickCollectorOzonEnrichment();
             return {

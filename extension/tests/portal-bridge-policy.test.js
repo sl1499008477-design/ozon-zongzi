@@ -6,34 +6,68 @@ const {
 } = require('../lib/portal-bridge-policy.js');
 const fs = require('node:fs');
 const senderUrl = 'https://qh.jizhangerp.com/app';
-const collector = normalizePortalBridgeMessage({
-  protocol: 'SONLI_COLLECTOR_AUTH',
-  senderUrl,
-  message: {
-    action: 'collector.auth.exchange',
-    requestId: 'request-1',
-    ticket: 'ctt_ticket_secret_123456789',
-    expiresAt: '2030-01-01T00:01:00.000Z',
-    token: 'web-bearer',
-    storeId: 'store-1',
+const collectorMessages = [
+  {
+    input: { action: 'collector.auth.begin', generationId: 'generation_A_1234' },
+    expected: {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.begin',
+      generationId: 'generation_A_1234',
+    },
   },
-});
-assert.deepEqual(collector, {
-  protocol: 'SONLI_COLLECTOR_AUTH',
-  action: 'collector.auth.exchange',
-  requestId: 'request-1',
-  ticket: 'ctt_ticket_secret_123456789',
-  expiresAt: '2030-01-01T00:01:00.000Z',
-});
+  {
+    input: { action: 'collector.auth.logout', generationId: 'generation_A_1234' },
+    expected: {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.logout',
+      generationId: 'generation_A_1234',
+    },
+  },
+  {
+    input: {
+      action: 'collector.auth.exchange',
+      requestId: 'request-1',
+      generationId: 'generation_A_1234',
+      ticket: 'ctt_ticket_secret_123456789',
+      expiresAt: '2030-01-01T00:01:00.000Z',
+    },
+    expected: {
+      protocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.exchange',
+      requestId: 'request-1',
+      generationId: 'generation_A_1234',
+      ticket: 'ctt_ticket_secret_123456789',
+      expiresAt: '2030-01-01T00:01:00.000Z',
+    },
+  },
+];
+for (const { input, expected } of collectorMessages) {
+  assert.deepEqual(normalizePortalBridgeMessage({
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    senderUrl,
+    message: input,
+  }), expected);
+}
 assert.deepEqual(normalizePortalBridgeMessage({ protocol: 'JZ_ERP', senderUrl, message: { action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true, type: 'x' } }), { protocol: 'JZ_ERP', action: 'followSell', storeId: 's', items: [{ sku: '1' }], dryRun: true });
 for (const bad of [
   { protocol: 'SONLI_WEB_CONTROL', message: { action: 'syncAuthFromWeb', token: 't' } },
-  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: '', ticket: 't' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation_A_1234', token: 'web-bearer' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.logout', generationId: 'generation_A_1234', storeId: 'store-1' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.exchange', requestId: 'request-1', generationId: 'generation_A_1234', ticket: 'ctt_ticket_secret_123456789', expiresAt: '2030-01-01T00:01:00.000Z', accountId: 'account-attacker' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: '123456789012345' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'a'.repeat(129) } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.begin', generationId: 'generation/A_1234' } },
+  { protocol: 'SONLI_COLLECTOR_AUTH', message: { action: 'collector.auth.unknown', generationId: 'generation_A_1234' } },
   { protocol: 'JZ_ERP', message: { type: 'jzManualSync', storeId: 's', syncType: 'PRODUCTS' } },
   { protocol: 'JZ_ERP', message: { type: 'unknown' } },
   { protocol: 'JZ_ERP', message: { action: 'syncAuthFromWeb' } },
 ]) assert.throws(() => normalizePortalBridgeMessage({ ...bad, senderUrl }));
-assert.throws(() => normalizePortalBridgeMessage({ protocol: 'SONLI_COLLECTOR_AUTH', senderUrl: 'https://evil.test', message: collector }));
+assert.throws(() => normalizePortalBridgeMessage({
+  protocol: 'SONLI_COLLECTOR_AUTH',
+  senderUrl: 'https://evil.test',
+  message: collectorMessages[0].input,
+}));
 assert.deepEqual(sanitizePortalBridgeResponse({ data: { token: 'secret', ok: true } }), { data: { ok: true } });
 
 assert.equal(typeof routePortalRuntimeMessage, 'function', 'portal policy must expose executable runtime routing');
@@ -44,9 +78,9 @@ assert.deepEqual(
       portalProtocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.exchange',
       requestId: 'request-1',
+      generationId: 'generation_A_1234',
       ticket: 'ctt_ticket_secret_123456789',
       expiresAt: '2030-01-01T00:01:00.000Z',
-      token: 'web-bearer',
     },
   }),
   {
@@ -56,11 +90,25 @@ assert.deepEqual(
       protocol: 'SONLI_COLLECTOR_AUTH',
       action: 'collector.auth.exchange',
       requestId: 'request-1',
+      generationId: 'generation_A_1234',
       ticket: 'ctt_ticket_secret_123456789',
       expiresAt: '2030-01-01T00:01:00.000Z',
     },
   },
-  'a generic page message cannot smuggle a dedicated JZ discriminator',
+  'the routing-only portalProtocol discriminator must be removed before exact payload validation',
+);
+assert.throws(
+  () => routePortalRuntimeMessage({
+    senderUrl,
+    message: {
+      portalProtocol: 'SONLI_COLLECTOR_AUTH',
+      action: 'collector.auth.begin',
+      generationId: 'generation_A_1234',
+      token: 'web-bearer',
+    },
+  }),
+  /PORTAL_BRIDGE_FORBIDDEN/,
+  'Collector portal messages must reject rather than strip unexpected fields',
 );
 assert.throws(
   () => routePortalRuntimeMessage({
