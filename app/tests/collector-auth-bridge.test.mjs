@@ -194,6 +194,12 @@ test("posts the exact logout envelope through the origin-scoped send adapter", (
 });
 
 test("normalizes only an exact collector request envelope and bounded requestId", () => {
+  const arrayEnvelope = [];
+  arrayEnvelope.protocol = COLLECTOR_AUTH_PROTOCOL;
+  arrayEnvelope.action = COLLECTOR_AUTH_ACTIONS.request;
+  arrayEnvelope.requestId = "request-array";
+  assert.equal(normalizeCollectorAuthRequest(arrayEnvelope), null);
+
   assert.deepEqual(
     normalizeCollectorAuthRequest({
       protocol: COLLECTOR_AUTH_PROTOCOL,
