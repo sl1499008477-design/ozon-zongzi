@@ -12,7 +12,8 @@ const STATUS = new Set([
 ]);
 const ENQUEUE_STATUS = new Set(["WAITING_ENRICHMENT", "WAITING_STORE", "QUEUED", "INVALIDATED"]);
 const CLAIMABLE_STATUS = new Set(["QUEUED", "RETRYABLE_ERROR", "INVALIDATED"]);
-const jsonQueues = new WeakMap();
+const CREDENTIAL_STORE_FOREIGN_KEY =
+  "collect_category_resolutions_credential_store_id_fkey";
 
 function repositoryError(message, code = "COLLECT_CATEGORY_RESOLUTION_PERSISTENCE_FAILED", status = 500) {
   return Object.assign(new Error(message), { code, status });
@@ -209,21 +210,16 @@ function sameJsonValue(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function serializeJson(state, operation) {
-  const previous = jsonQueues.get(state) || Promise.resolve();
-  const flight = previous.catch(() => {}).then(operation);
-  jsonQueues.set(state, flight);
-  return flight.finally(() => {
-    if (jsonQueues.get(state) === flight) jsonQueues.delete(state);
-  });
-}
-
 export function createJsonCollectCategoryResolutionRepository({
   state,
   persist = async () => {},
+  stateTransaction,
 } = {}) {
   if (!state || typeof state !== "object") {
     throw new TypeError("Collect category resolution JSON state required");
+  }
+  if (typeof stateTransaction?.run !== "function") {
+    throw new TypeError("Collect category resolution JSON state transaction required");
   }
 
   function records() {
@@ -251,7 +247,7 @@ export function createJsonCollectCategoryResolutionRepository({
   }
 
   async function mutate(operation) {
-    return serializeJson(state, async () => {
+    return stateTransaction.run(async () => {
       const hadRecords = Object.hasOwn(state, "collectCategoryResolutions");
       const previousRecords = state.collectCategoryResolutions;
       const normalizedBefore = Array.isArray(previousRecords) ? previousRecords : [];
@@ -341,7 +337,7 @@ export function createJsonCollectCategoryResolutionRepository({
 
   async function readForItem(input) {
     const scope = scopeInput(input);
-    return serializeJson(state, () =>
+    return stateTransaction.run(() =>
       recordFromRow(records().find((record) => sameStableKey(record, scope)) || null));
   }
 
@@ -607,6 +603,9 @@ export function createPostgresCollectCategoryResolutionRepository({ pool } = {})
       return await executor.query(sql, params);
     } catch (error) {
       if (error?.code?.startsWith("COLLECT_CATEGORY_RESOLUTION_")) throw error;
+      if (error?.code === "23503" && error?.constraint === CREDENTIAL_STORE_FOREIGN_KEY) {
+        throw credentialStoreScopeError();
+      }
       throw repositoryError("Collect category resolution PostgreSQL operation failed");
     }
   }

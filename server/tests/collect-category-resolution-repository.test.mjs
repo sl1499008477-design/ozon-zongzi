@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   createJsonCollectCategoryResolutionRepository,
   createPostgresCollectCategoryResolutionRepository,
 } from "../collect-category-resolution-repository.mjs";
 import { removeAccountScope } from "../account-deletion.mjs";
+import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
+import { savePersistedState } from "../persistence.mjs";
 
 const START = "2026-08-03T10:00:00.000Z";
 const SCOPE = "OZON:DEFAULT";
@@ -25,11 +30,23 @@ function rowCopy(row) {
 function statefulPostgresPool() {
   let rows = [];
   let credentialStoreToInvalidateBeforeMatchedWrite = null;
+  let foreignKeyFailure = null;
   const collectItems = new Set(["account-a:collect-shared", "account-b:collect-b"]);
   const stores = new Set(["account-a:store-a", "account-b:store-b"]);
 
   function matchesFence(row, [accountId, id, leaseToken]) {
     return row.account_id === accountId && row.id === id && row.lease_token === leaseToken;
+  }
+
+  function maybeThrowForeignKey(operation) {
+    if (foreignKeyFailure?.operation !== operation) return;
+    const failure = foreignKeyFailure;
+    foreignKeyFailure = null;
+    throw Object.assign(new Error("insert or update violates foreign key with sensitive detail"), {
+      code: "23503",
+      constraint: failure.constraint,
+      detail: "sensitive database relation detail",
+    });
   }
 
   async function query(sql, params = []) {
@@ -61,6 +78,7 @@ function statefulPostgresPool() {
     }
 
     if (normalized.startsWith("INSERT INTO collect_category_resolutions AS current")) {
+      maybeThrowForeignKey("enqueue");
       const [id, accountId, collectItemId, taxonomyScope, sourceTypeId, status,
         taxonomyFingerprint, credentialStoreId, nextAttemptAt, now] = params;
       if (!collectItems.has(`${accountId}:${collectItemId}`)
@@ -178,6 +196,7 @@ function statefulPostgresPool() {
     }
 
     if (normalized.startsWith("UPDATE collect_category_resolutions SET status='MATCHED'")) {
+      maybeThrowForeignKey("completeMatched");
       if (credentialStoreToInvalidateBeforeMatchedWrite) {
         stores.delete(credentialStoreToInvalidateBeforeMatchedWrite);
         credentialStoreToInvalidateBeforeMatchedWrite = null;
@@ -279,6 +298,7 @@ function statefulPostgresPool() {
 
     if (normalized.startsWith("INSERT INTO collect_category_resolutions AS current") === false
       && normalized.startsWith("INSERT INTO collect_category_resolutions")) {
+      maybeThrowForeignKey("saveManual");
       const [id, accountId, collectItemId, taxonomyScope, sourceTypeId,
         targetDescriptionCategoryId, targetTypeId, taxonomyFingerprint,
         credentialStoreId, displayPathJson, matchedAt, validatedAt, now] = params;
@@ -325,10 +345,20 @@ function statefulPostgresPool() {
     invalidateCredentialStoreBeforeNextMatchedWrite(accountId, credentialStoreId) {
       credentialStoreToInvalidateBeforeMatchedWrite = `${accountId}:${credentialStoreId}`;
     },
+    failNextForeignKey(operation, constraint) {
+      foreignKeyFailure = { operation, constraint };
+    },
     async connect() {
       return { query, release() {} };
     },
   };
+}
+
+function jsonRepository(options) {
+  return createJsonCollectCategoryResolutionRepository({
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    ...options,
+  });
 }
 
 const adapters = {
@@ -343,7 +373,7 @@ const adapters = {
         { id: "store-b", ownerAccountId: "account-b" },
       ],
     };
-    return createJsonCollectCategoryResolutionRepository({ state });
+    return jsonRepository({ state });
   },
   PostgreSQL() {
     return createPostgresCollectCategoryResolutionRepository({ pool: statefulPostgresPool() });
@@ -668,7 +698,7 @@ test("JSON persistence failure rolls the category resolution mutation back", asy
     caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
     stores: [{ id: "store-a", ownerAccountId: "account-a" }],
   };
-  const repository = createJsonCollectCategoryResolutionRepository({
+  const repository = jsonRepository({
     state,
     persist: async () => { throw new Error("disk unavailable"); },
   });
@@ -686,7 +716,7 @@ test("JSON queued mutations recheck account scope after an account deletion wins
   let markFirstPersistStarted;
   const firstPersistStarted = new Promise((resolve) => { markFirstPersistStarted = resolve; });
   let persistCount = 0;
-  const repository = createJsonCollectCategoryResolutionRepository({
+  const repository = jsonRepository({
     state,
     persist: async () => {
       persistCount += 1;
@@ -723,7 +753,7 @@ test("JSON reads wait for an in-flight persistence failure instead of exposing p
   let rejectPersist;
   let markPersistStarted;
   const persistStarted = new Promise((resolve) => { markPersistStarted = resolve; });
-  const repository = createJsonCollectCategoryResolutionRepository({
+  const repository = jsonRepository({
     state,
     persist: async () => {
       markPersistStarted();
@@ -750,13 +780,13 @@ test("JSON no-op and stale-fence paths do not persist", async () => {
     caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
     stores: [{ id: "store-a", ownerAccountId: "account-a" }],
   };
-  const setup = createJsonCollectCategoryResolutionRepository({ state });
+  const setup = jsonRepository({ state });
   const record = await setup.enqueue(queued());
   await setup.claimNext({
     accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "owned-lease",
     leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
   });
-  const repository = createJsonCollectCategoryResolutionRepository({
+  const repository = jsonRepository({
     state,
     persist: async () => { throw new Error("persistence must not run"); },
   });
@@ -807,7 +837,7 @@ test("JSON failed persistence cannot resurrect records removed by concurrent acc
   let rejectPersist;
   let markPersistStarted;
   const persistStarted = new Promise((resolve) => { markPersistStarted = resolve; });
-  const repository = createJsonCollectCategoryResolutionRepository({
+  const repository = jsonRepository({
     state,
     persist: async () => {
       markPersistStarted();
@@ -840,7 +870,7 @@ test("JSON completion rechecks credential-store scope after waiting in the mutat
       { id: "store-b", ownerAccountId: "account-b" },
     ],
   };
-  const setup = createJsonCollectCategoryResolutionRepository({ state });
+  const setup = jsonRepository({ state });
   const record = await setup.enqueue(queued());
   await setup.claimNext({
     accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "store-race-lease",
@@ -851,7 +881,7 @@ test("JSON completion rechecks credential-store scope after waiting in the mutat
   let markFirstPersistStarted;
   let persistCount = 0;
   const firstPersistStarted = new Promise((resolve) => { markFirstPersistStarted = resolve; });
-  const repository = createJsonCollectCategoryResolutionRepository({
+  const repository = jsonRepository({
     state,
     persist: async () => {
       persistCount += 1;
@@ -898,4 +928,117 @@ test("PostgreSQL completion reclassifies a concurrent credential-store loss", as
     credentialStoreId: "store-a", now: "2026-08-03T10:00:01.000Z",
   }), assertCredentialScopeError);
   assert.equal((await repository.readForItem(queued())).status, "MATCHING");
+});
+
+test("PostgreSQL reclassifies only credential-store foreign-key races", async (t) => {
+  const credentialConstraint = "collect_category_resolutions_credential_store_id_fkey";
+
+  await t.test("enqueue", async () => {
+    const pool = statefulPostgresPool();
+    const repository = createPostgresCollectCategoryResolutionRepository({ pool });
+    pool.failNextForeignKey("enqueue", credentialConstraint);
+    await assert.rejects(repository.enqueue(queued()), assertCredentialScopeError);
+  });
+
+  await t.test("saveManual", async () => {
+    const pool = statefulPostgresPool();
+    const repository = createPostgresCollectCategoryResolutionRepository({ pool });
+    pool.failNextForeignKey("saveManual", credentialConstraint);
+    await assert.rejects(repository.saveManual({
+      ...queued(),
+      targetDescriptionCategoryId: 17028702,
+      targetTypeId: 94405,
+    }), assertCredentialScopeError);
+  });
+
+  await t.test("completeMatched", async () => {
+    const pool = statefulPostgresPool();
+    const repository = createPostgresCollectCategoryResolutionRepository({ pool });
+    const record = await repository.enqueue(queued());
+    await repository.claimNext({
+      accountId: "account-a", taxonomyScope: SCOPE, leaseToken: "fk-race-lease",
+      leaseExpiresAt: "2026-08-03T10:01:00.000Z", now: START,
+    });
+    pool.failNextForeignKey("completeMatched", credentialConstraint);
+    await assert.rejects(repository.completeMatched({
+      accountId: "account-a", id: record.id, leaseToken: "fk-race-lease",
+      targetDescriptionCategoryId: 17028702, targetTypeId: 94405,
+      method: "TYPE_ID_EXACT", taxonomyFingerprint: "taxonomy-v1",
+      credentialStoreId: "store-a", now: "2026-08-03T10:00:01.000Z",
+    }), assertCredentialScopeError);
+  });
+
+  await t.test("unrelated constraint remains a safe persistence error", async () => {
+    const pool = statefulPostgresPool();
+    const repository = createPostgresCollectCategoryResolutionRepository({ pool });
+    pool.failNextForeignKey(
+      "enqueue",
+      "collect_category_resolutions_collect_item_id_fkey",
+    );
+    await assert.rejects(repository.enqueue(queued()), (error) => {
+      assert.deepEqual({
+        code: error?.code,
+        status: error?.status,
+        message: error?.message,
+      }, {
+        code: "COLLECT_CATEGORY_RESOLUTION_PERSISTENCE_FAILED",
+        status: 500,
+        message: "Collect category resolution PostgreSQL operation failed",
+      });
+      assert.equal(String(error?.message).includes("sensitive"), false);
+      return true;
+    });
+  });
+});
+
+test("shared JSON transaction makes account deletion the final durable write", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "sonli-category-resolution-order-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const dataFile = path.join(dataDir, "local-state.json");
+  const state = {
+    accounts: [{ id: "account-a" }],
+    caches: { collectBox: [{ id: "collect-shared", accountId: "account-a" }] },
+    stores: [{ id: "store-a", ownerAccountId: "account-a" }],
+    collectCategoryResolutions: [],
+  };
+  await savePersistedState({ dataDir, dataFile, state });
+  const stateTransaction = createJsonStateTransactionBoundary({ enabled: () => true });
+  let releaseOldWrite;
+  let markOldSnapshotCaptured;
+  const oldSnapshotCaptured = new Promise((resolve) => { markOldSnapshotCaptured = resolve; });
+  const repository = jsonRepository({
+    state,
+    stateTransaction,
+    persist: async (nextState) => {
+      const captured = structuredClone(nextState);
+      markOldSnapshotCaptured();
+      await new Promise((resolve) => { releaseOldWrite = resolve; });
+      await savePersistedState({ dataDir, dataFile, state: captured });
+    },
+  });
+
+  const categoryWrite = repository.enqueue(queued());
+  await oldSnapshotCaptured;
+  let markDeletionEntered;
+  const deletionEntered = new Promise((resolve) => { markDeletionEntered = resolve; });
+  const accountDeletion = stateTransaction.run(async () => {
+    markDeletionEntered();
+    removeAccountScope(state, "account-a", { occurredAt: "2026-08-03T10:00:01.000Z" });
+    await savePersistedState({ dataDir, dataFile, state });
+  });
+
+  const deletionCouldOvertake = await Promise.race([
+    deletionEntered.then(() => true),
+    new Promise((resolve) => setImmediate(() => resolve(false))),
+  ]);
+  if (deletionCouldOvertake) await accountDeletion;
+  releaseOldWrite();
+  await categoryWrite;
+  await accountDeletion;
+
+  const reloaded = JSON.parse(await readFile(dataFile, "utf8"));
+  assert.deepEqual(state.accounts, []);
+  assert.deepEqual(state.collectCategoryResolutions, []);
+  assert.deepEqual(reloaded.accounts, []);
+  assert.deepEqual(reloaded.collectCategoryResolutions, []);
 });
