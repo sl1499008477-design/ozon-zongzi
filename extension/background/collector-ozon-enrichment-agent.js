@@ -578,7 +578,11 @@
         let canCaptureNow;
         try {
           ensureCurrent(entry, generation);
-          canCaptureNow = await withLifecycle(canCapture(collectorOperation), entry, generation) === true;
+          canCaptureNow = await withCollectorStage(
+            entry,
+            generation,
+            (signal) => canCapture(collectorOperation, { signal }),
+          ) === true;
           ensureCurrent(entry, generation);
         } catch {
           return isCurrent(entry, generation) ? DRAIN_FAILED : DRAIN_CANCELLED;

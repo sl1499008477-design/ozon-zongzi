@@ -77,6 +77,13 @@
     return error;
   };
 
+  const throwIfAborted = (signal) => {
+    if (!signal?.aborted) return;
+    const error = collectorError('COLLECTOR_REQUEST_ABORTED', 0, 'COLLECTOR_REQUEST_ABORTED');
+    error.name = 'AbortError';
+    throw error;
+  };
+
   const canonicalCollectorKey = (key) => String(key || '').replace(/[_-]/g, '').toLowerCase();
   const isRetiredCollectorScopeKey = (key) =>
     RETIRED_COLLECTOR_SCOPE_KEYS.has(canonicalCollectorKey(key));
@@ -395,17 +402,21 @@
       permission,
       ...options
     } = {}) {
+      throwIfAborted(options.signal);
       const resolved = await resolveCollectorOperation(collectorOperation);
       const { snapshot } = resolved;
       if (!snapshot.permissions.includes(permission)) {
         throw collectorError('COLLECTOR_PERMISSION_DENIED', 403, 'COLLECTOR_PERMISSION_DENIED');
       }
       const baseUrl = await resolveBackendUrl();
+      throwIfAborted(options.signal);
       await assertOperationOwnerIsCurrent(snapshot);
+      throwIfAborted(options.signal);
       const response = await fetchImpl(`${baseUrl}${String(path || '')}`, {
         ...options,
         headers: safeHeaders(options.headers, snapshot.collectorToken),
       });
+      throwIfAborted(options.signal);
       await assertOperationOwnerIsCurrent(snapshot);
       if (response.status === 401 || response.status === 403) {
         await clearCollectorSessionIfSnapshotCurrent(snapshot);

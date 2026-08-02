@@ -398,7 +398,7 @@ try {
     // The agent calls this immediately before resolving the Seller snapshot.
     // It must not acquire a Seller lease: cancellation between the two awaits
     // would otherwise orphan a helper lease.
-    const canCapture = async (collectorOperation) => {
+    const canCapture = async (collectorOperation, { signal } = {}) => {
       if (!collectorOperation?.permissions?.includes('collector.ozon.read')) {
         throw preflightFailure();
       }
@@ -410,6 +410,7 @@ try {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({}),
+          signal,
         },
       );
       return exactAvailability(response);

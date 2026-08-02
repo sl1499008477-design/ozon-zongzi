@@ -989,6 +989,7 @@ test('availability preflight uses the supplied Collector operation before Seller
   const collectorOperation = Object.freeze({
     permissions: Object.freeze(['collector.ozon.read']),
   });
+  const controller = new AbortController();
   const requests = [];
   let acquisitions = 0;
   const bridge = createCollectorSellerContextLeaseBridge({
@@ -1009,7 +1010,7 @@ test('availability preflight uses the supplied Collector operation before Seller
     },
   });
 
-  assert.equal(await bridge.canCapture(collectorOperation), false);
+  assert.equal(await bridge.canCapture(collectorOperation, { signal: controller.signal }), false);
   assert.equal(acquisitions, 0);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].route, '/collector/ozon/enrichment-jobs/available');
@@ -1018,6 +1019,7 @@ test('availability preflight uses the supplied Collector operation before Seller
   assert.equal(requests[0].options.method, 'POST');
   assert.deepEqual(requests[0].options.headers, { 'content-type': 'application/json' });
   assert.equal(requests[0].options.body, JSON.stringify({}));
+  assert.strictEqual(requests[0].options.signal, controller.signal);
   assert.equal(Object.hasOwn(requests[0].options, 'credentials'), false);
   assert.equal(Object.hasOwn(requests[0].options, 'captureContext'), false);
 });
