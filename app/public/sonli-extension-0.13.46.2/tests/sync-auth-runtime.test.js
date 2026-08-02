@@ -9,6 +9,7 @@ const runtimeListeners = [];
 const timers = [];
 const posts = [];
 const exchanges = [];
+let resolveExchange;
 
 const windowObject = {
   location: { origin: 'http://127.0.0.1:3000' },
@@ -30,7 +31,7 @@ const sandbox = {
       lastError: null,
       sendMessage(message, callback) {
         exchanges.push(message);
-        callback({ ok: true });
+        resolveExchange = () => callback({ ok: true });
       },
       onMessage: {
         addListener(listener) { runtimeListeners.push(listener); },
@@ -44,19 +45,47 @@ vm.runInNewContext(source, sandbox, { filename: 'sync-auth.js' });
 (async () => {
 assert.equal(posts.length, 1);
 assert.equal(posts[0].targetOrigin, 'http://127.0.0.1:3000');
-const firstRetry = timers.shift();
-assert.equal(firstRetry.milliseconds, 1000);
+for (let requestCallback = 1; requestCallback <= 10; requestCallback += 1) {
+  const retry = timers.shift();
+  assert.equal(retry?.milliseconds, 1000);
+  retry?.callback();
+  assert.equal(posts.length, Math.min(requestCallback + 1, 10));
+}
 
-firstRetry.callback();
-assert.equal(posts.length, 2);
-const secondRetry = timers.shift();
-assert.equal(secondRetry?.milliseconds, 1000);
+await windowListeners.get('message')({
+  source: windowObject,
+  origin: windowObject.location.origin,
+  data: {
+    protocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.ready',
+  },
+});
+assert.equal(posts.length, 11, 'ready must start a fresh bounded request cycle');
+assert.equal(posts.at(-1).message.action, 'collector.auth.request');
 
-secondRetry?.callback();
-assert.equal(posts.length, 3);
+for (const event of [
+  {
+    source: {},
+    origin: windowObject.location.origin,
+    data: { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
+  },
+  {
+    source: windowObject,
+    origin: 'https://evil.example',
+    data: { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
+  },
+  {
+    source: windowObject,
+    origin: windowObject.location.origin,
+    data: { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready', token: 'never' },
+  },
+]) {
+  await windowListeners.get('message')(event);
+  assert.equal(posts.length, 11);
+}
 
 const activeRequest = posts.at(-1).message;
-await windowListeners.get('message')({
+const exchangePending = windowListeners.get('message')({
   source: windowObject,
   origin: windowObject.location.origin,
   data: {
@@ -70,14 +99,31 @@ await windowListeners.get('message')({
 
 assert.equal(exchanges.length, 1);
 assert.equal(exchanges[0].ticket, 'ctt_runtime_test_ticket_123456789');
+await windowListeners.get('message')({
+  source: windowObject,
+  origin: windowObject.location.origin,
+  data: { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
+});
+assert.equal(posts.length, 11, 'ready must not restart while ticket exchange is in flight');
+assert.equal(exchanges.length, 1, 'ready must not start another exchange while one is in flight');
+
+resolveExchange();
+await exchangePending;
+await windowListeners.get('message')({
+  source: windowObject,
+  origin: windowObject.location.origin,
+  data: { protocol: 'SONLI_COLLECTOR_AUTH', action: 'collector.auth.ready' },
+});
+assert.equal(posts.length, 11, 'ready must not restart after authentication succeeds');
+assert.equal(exchanges.length, 1, 'ready must not exchange again after authentication succeeds');
 for (const timer of timers.splice(0)) timer.callback();
-assert.equal(posts.length, 3);
+assert.equal(posts.length, 11);
 
 assert.equal(runtimeListeners.length, 1);
 const response = {};
 runtimeListeners[0]({ action: 'collector.auth.request' }, null, (value) => Object.assign(response, value));
-assert.deepEqual(response, { ok: true, requested: true });
-assert.equal(posts.length, 4);
+assert.deepEqual(response, { ok: true, requested: false });
+assert.equal(posts.length, 11);
 
 console.log('sync auth runtime tests passed');
 })().catch((error) => {

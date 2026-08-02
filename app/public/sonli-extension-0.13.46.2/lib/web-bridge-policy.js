@@ -3,6 +3,7 @@
   const COLLECTOR_AUTH_PROTOCOL = 'SONLI_COLLECTOR_AUTH';
   const REQUEST_ACTION = 'collector.auth.request';
   const RESPONSE_ACTION = 'collector.auth.response';
+  const READY_ACTION = 'collector.auth.ready';
   const requestId = (value) => {
     const normalized = String(value || '').trim();
     return normalized && normalized.length <= 128 ? normalized : '';
@@ -22,6 +23,12 @@
       action: REQUEST_ACTION,
       requestId: normalized,
     };
+  };
+  const normalizeCollectorAuthReady = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (Object.keys(value).sort().join(',') !== 'action,protocol') return null;
+    if (value.protocol !== COLLECTOR_AUTH_PROTOCOL || value.action !== READY_ACTION) return null;
+    return { protocol: COLLECTOR_AUTH_PROTOCOL, action: READY_ACTION };
   };
   const normalizeCollectorAuthResponse = (value, expectedRequestId) => {
     if (!value || typeof value !== 'object') return null;
@@ -43,6 +50,7 @@
     COLLECTOR_AUTH_PROTOCOL,
     createCollectorAuthRequest,
     isTrustedWebBridgeSender,
+    normalizeCollectorAuthReady,
     normalizeCollectorAuthResponse,
   });
   root.JzWebBridgePolicy = api;
