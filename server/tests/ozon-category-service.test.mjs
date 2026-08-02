@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import { createOzonCategoryService } from "../ozon-category-service.mjs";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -455,3 +456,150 @@ await assert.rejects(
 );
 
 console.log("ozon category service tests passed");
+
+test("category snapshot fingerprints taxonomy structure instead of translated labels", async () => {
+  const snapshotService = createOzonCategoryService({
+    callOzonSellerApi: async (_store, apiPath, body) => {
+      assert.equal(apiPath, "/v1/description-category/tree");
+      return {
+        result: [{
+          description_category_id: 17028702,
+          category_name: body.language === "RU" ? "Дом" : "家居",
+          children: [{
+            type_id: 94405,
+            type_name: body.language === "RU" ? "Кружки" : "杯子",
+            children: [],
+          }],
+        }],
+      };
+    },
+  });
+  const store = input({ storeId: "snapshot-language-store" }).store;
+
+  const zh = await snapshotService.getCategorySnapshot(store, "ZH_HANS");
+  const ru = await snapshotService.getCategorySnapshot(store, "RU");
+
+  assert.equal(zh.taxonomyScope, "OZON:DEFAULT");
+  assert.equal(zh.taxonomyFingerprint, ru.taxonomyFingerprint);
+  assert.equal(zh.taxonomyFingerprint, "58218ce9e56381a387e00b9abc7f0c714a034d0eb57859ebbd3ae9ad95b8d371");
+  assert.equal(zh.stale, false);
+  assert.equal(ru.stale, false);
+});
+
+test("category snapshot keeps the last non-empty tree when a refresh is empty", async () => {
+  let snapshotNowMs = Date.parse("2026-07-28T00:00:00.000Z");
+  let replyWithEmptyTree = false;
+  const snapshotService = createOzonCategoryService({
+    now: () => snapshotNowMs,
+    callOzonSellerApi: async () => ({
+      result: replyWithEmptyTree
+        ? []
+        : [{ description_category_id: 17028702, children: [{ type_id: 94405, children: [] }] }],
+    }),
+  });
+  const store = input({ storeId: "snapshot-stale-store" }).store;
+  const first = await snapshotService.getCategorySnapshot(store, "ZH_HANS");
+
+  snapshotNowMs += CACHE_TTL_MS;
+  replyWithEmptyTree = true;
+  const stale = await snapshotService.getCategorySnapshot(store, "ZH_HANS");
+
+  assert.equal(stale.stale, true);
+  assert.deepEqual(stale.items, first.items);
+  assert.equal(stale.fetchedAt, first.fetchedAt);
+  assert.equal(stale.taxonomyFingerprint, first.taxonomyFingerprint);
+});
+
+test("category snapshot keeps the last non-empty tree when the refresh is unavailable", async () => {
+  let snapshotNowMs = Date.parse("2026-07-28T00:00:00.000Z");
+  let refreshUnavailable = false;
+  const snapshotService = createOzonCategoryService({
+    now: () => snapshotNowMs,
+    callOzonSellerApi: async () => {
+      if (refreshUnavailable) throw Object.assign(new Error("upstream secret"), { code: "OZON_TIMEOUT" });
+      return { result: [{ description_category_id: 17028702, children: [{ type_id: 94405, children: [] }] }] };
+    },
+  });
+  const store = input({ storeId: "snapshot-unavailable-store" }).store;
+  const first = await snapshotService.getCategorySnapshot(store, "ZH_HANS");
+
+  snapshotNowMs += CACHE_TTL_MS;
+  refreshUnavailable = true;
+  const stale = await snapshotService.getCategorySnapshot(store, "ZH_HANS");
+
+  assert.equal(stale.stale, true);
+  assert.deepEqual(stale.items, first.items);
+  assert.equal(stale.taxonomyFingerprint, first.taxonomyFingerprint);
+});
+
+test("target validation requires an enabled contained type and readable attributes", async () => {
+  let validationNowMs = Date.parse("2026-07-28T00:00:00.000Z");
+  let attributesReadable = true;
+  const validationService = createOzonCategoryService({
+    now: () => validationNowMs,
+    callOzonSellerApi: async (_store, apiPath) => {
+      if (apiPath.endsWith("/tree")) {
+        return {
+          result: [{
+            description_category_id: 17028702,
+            children: [{ type_id: 94405, children: [] }],
+          }, {
+            description_category_id: 17028703,
+            children: [{ type_id: 94406, disabled: true, children: [] }],
+          }, {
+            description_category_id: 17028704,
+            children: [{ type_id: 94407, children: [] }],
+          }, {
+            description_category_id: 17028705,
+            disabled: true,
+            children: [{ type_id: 94408, children: [] }],
+          }],
+        };
+      }
+      if (!attributesReadable) throw Object.assign(new Error("transient upstream failure"), { status: 503 });
+      return { result: [] };
+    },
+  });
+  const store = input({ storeId: "target-validation-store" }).store;
+
+  const valid = await validationService.validateTarget(store, {
+    descriptionCategoryId: 17028702,
+    typeId: 94405,
+  });
+  assert.equal(valid.valid, true);
+  assert.equal(valid.reasonCode, "VALID");
+  assert.equal(valid.taxonomyFingerprint, "ab78c17f42eddcbddc47bd20c76b67713a1b68dbaa3a5492ec72c69aa0a8cf9e");
+  assert.equal(valid.validatedAt, "2026-07-28T00:00:00.000Z");
+
+  const disabled = await validationService.validateTarget(store, {
+    descriptionCategoryId: 17028703,
+    typeId: 94406,
+  });
+  assert.equal(disabled.valid, false);
+  assert.equal(disabled.reasonCode, "TYPE_DISABLED");
+  assert.equal(disabled.taxonomyFingerprint, valid.taxonomyFingerprint);
+
+  const wrongCategory = await validationService.validateTarget(store, {
+    descriptionCategoryId: 17028702,
+    typeId: 94407,
+  });
+  assert.equal(wrongCategory.valid, false);
+  assert.equal(wrongCategory.reasonCode, "TYPE_NOT_IN_DESCRIPTION_CATEGORY");
+
+  const disabledCategory = await validationService.validateTarget(store, {
+    descriptionCategoryId: 17028705,
+    typeId: 94408,
+  });
+  assert.equal(disabledCategory.valid, false);
+  assert.equal(disabledCategory.reasonCode, "DESCRIPTION_CATEGORY_DISABLED");
+
+  validationNowMs += CACHE_TTL_MS;
+  attributesReadable = false;
+  const attributesUnavailable = await validationService.validateTarget(store, {
+    descriptionCategoryId: 17028702,
+    typeId: 94405,
+  });
+  assert.equal(attributesUnavailable.valid, false);
+  assert.equal(attributesUnavailable.reasonCode, "ATTRIBUTES_UNAVAILABLE");
+  assert.equal(attributesUnavailable.taxonomyFingerprint, valid.taxonomyFingerprint);
+});

@@ -1,4 +1,8 @@
 import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs";
+import {
+  TAXONOMY_SCOPE_OZON_DEFAULT,
+  taxonomyFingerprint,
+} from "./collect-category-resolution-policy.mjs";
 
 export const DEFAULT_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -36,6 +40,11 @@ function positiveIdOf(value) {
   return Number.isFinite(id) && id > 0 ? id : 0;
 }
 
+function positiveIntegerIdOf(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : 0;
+}
+
 function requiredPositiveIdOf(value) {
   const id = Number(value);
   if (!Number.isInteger(id) || id <= 0) {
@@ -66,12 +75,71 @@ function findDescriptionCategoryIdByTypeId(tree, typeId) {
   return 0;
 }
 
+function nodeEnabled(node) {
+  return node?.disabled !== true
+    && node?.is_disabled !== true
+    && node?.isDisabled !== true
+    && node?.enabled !== false
+    && node?.is_enabled !== false
+    && node?.isEnabled !== false;
+}
+
+function descriptionCategoryIdOf(node) {
+  return positiveIdOf(node?.description_category_id) || positiveIdOf(node?.descriptionCategoryId);
+}
+
+function typeIdOf(node) {
+  return positiveIdOf(node?.type_id) || positiveIdOf(node?.typeId);
+}
+
+function targetInTree(tree, descriptionCategoryId, typeId) {
+  const categoryNodes = [];
+  let typeExists = false;
+
+  function findType(node, inheritedEnabled) {
+    if (!node || typeof node !== "object") return { found: false, enabled: false };
+    const enabled = inheritedEnabled && nodeEnabled(node);
+    const foundHere = typeIdOf(node) === typeId;
+    typeExists ||= foundHere;
+    const children = Array.isArray(node.children) ? node.children : [];
+    const childResult = children.reduce((result, child) => {
+      const candidate = findType(child, enabled);
+      return {
+        found: result.found || candidate.found,
+        enabled: result.enabled || candidate.enabled,
+      };
+    }, { found: foundHere, enabled: foundHere && enabled });
+    return childResult;
+  }
+
+  function visit(node, inheritedEnabled = true) {
+    if (!node || typeof node !== "object") return;
+    const enabled = inheritedEnabled && nodeEnabled(node);
+    if (typeIdOf(node) === typeId) typeExists = true;
+    if (descriptionCategoryIdOf(node) === descriptionCategoryId) {
+      categoryNodes.push({ enabled, type: findType(node, inheritedEnabled) });
+      return;
+    }
+    for (const child of Array.isArray(node.children) ? node.children : []) visit(child, enabled);
+  }
+
+  for (const node of Array.isArray(tree) ? tree : []) visit(node);
+  if (categoryNodes.length === 0) return "DESCRIPTION_CATEGORY_NOT_FOUND";
+  if (categoryNodes.some((candidate) => candidate.enabled && candidate.type.enabled)) return "VALID";
+  if (categoryNodes.some((candidate) => candidate.enabled && candidate.type.found)) return "TYPE_DISABLED";
+  if (categoryNodes.some((candidate) => candidate.enabled)) {
+    return typeExists ? "TYPE_NOT_IN_DESCRIPTION_CATEGORY" : "TYPE_NOT_FOUND";
+  }
+  return "DESCRIPTION_CATEGORY_DISABLED";
+}
+
 export function createOzonCategoryService({
   callOzonSellerApi = defaultCallOzonSellerApi,
   now = () => Date.now(),
   cacheTtlMs = DEFAULT_CATEGORY_CACHE_TTL_MS,
 } = {}) {
   const cache = new Map();
+  const snapshotCache = new Map();
   const requestedCacheTtlMs = Number(cacheTtlMs);
   const effectiveCacheTtlMs = Number.isFinite(requestedCacheTtlMs) && requestedCacheTtlMs > 0
     ? Math.min(requestedCacheTtlMs, DEFAULT_CATEGORY_CACHE_TTL_MS)
@@ -114,6 +182,31 @@ export function createOzonCategoryService({
     };
     cache.set(key, entry);
     return { items: structuredClone(entry.items), meta: { ...entry.meta } };
+  }
+
+  function snapshotInputOf(storeOrInput, language) {
+    if (storeOrInput?.store) {
+      return {
+        accountId: storeOrInput.accountId,
+        store: storeOrInput.store,
+        language: storeOrInput.language ?? language,
+      };
+    }
+    return {
+      accountId: storeOrInput?.ownerAccountId ?? storeOrInput?.accountId,
+      store: storeOrInput,
+      language,
+    };
+  }
+
+  function snapshotResult(snapshot, stale) {
+    return {
+      items: structuredClone(snapshot.items),
+      taxonomyScope: TAXONOMY_SCOPE_OZON_DEFAULT,
+      taxonomyFingerprint: snapshot.taxonomyFingerprint,
+      fetchedAt: snapshot.fetchedAt,
+      stale,
+    };
   }
 
   async function getCategoryTree({ accountId, store, language } = {}) {
@@ -287,10 +380,96 @@ export function createOzonCategoryService({
     return descriptionCategoryId;
   }
 
+  async function getCategorySnapshot(storeOrInput, language = "ZH_HANS") {
+    const input = snapshotInputOf(storeOrInput, language);
+    const normalizedLanguage = normalizedLanguageOf(input.language);
+    const key = cacheKey(scopeOf(input), "snapshot", normalizedLanguage);
+    const previous = snapshotCache.get(key);
+    try {
+      const { items, meta } = await getCategoryTree({ ...input, language: normalizedLanguage });
+      const snapshot = {
+        items: structuredClone(items),
+        taxonomyFingerprint: taxonomyFingerprint(items),
+        fetchedAt: meta.fetchedAt,
+      };
+      snapshotCache.set(key, snapshot);
+      return snapshotResult(snapshot, false);
+    } catch (error) {
+      if (previous) return snapshotResult(previous, true);
+      throw error;
+    }
+  }
+
+  function validationResult({ valid, reasonCode, taxonomyFingerprint: fingerprint = null }) {
+    return {
+      valid,
+      reasonCode,
+      taxonomyFingerprint: fingerprint,
+      validatedAt: new Date(now()).toISOString(),
+    };
+  }
+
+  async function validateTarget(storeOrInput, target) {
+    const input = snapshotInputOf(storeOrInput, "ZH_HANS");
+    const requestedTarget = target ?? (storeOrInput?.store ? storeOrInput : {});
+    const descriptionCategoryId = positiveIntegerIdOf(requestedTarget?.descriptionCategoryId);
+    const typeId = positiveIntegerIdOf(requestedTarget?.typeId);
+    if (!descriptionCategoryId || !typeId) {
+      return validationResult({ valid: false, reasonCode: "TARGET_INVALID" });
+    }
+
+    let snapshot;
+    try {
+      snapshot = await getCategorySnapshot(input, input.language);
+    } catch {
+      return validationResult({ valid: false, reasonCode: "TAXONOMY_UNAVAILABLE" });
+    }
+    if (snapshot.stale) {
+      return validationResult({
+        valid: false,
+        reasonCode: "TAXONOMY_STALE",
+        taxonomyFingerprint: snapshot.taxonomyFingerprint,
+      });
+    }
+
+    const targetState = targetInTree(snapshot.items, descriptionCategoryId, typeId);
+    if (targetState !== "VALID") {
+      return validationResult({
+        valid: false,
+        reasonCode: targetState,
+        taxonomyFingerprint: snapshot.taxonomyFingerprint,
+      });
+    }
+
+    try {
+      await getCategoryAttributes({
+        ...input,
+        descriptionCategoryId,
+        typeId,
+        language: input.language,
+      });
+    } catch (error) {
+      return validationResult({
+        valid: false,
+        reasonCode: error?.code === "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE"
+          ? "ATTRIBUTES_UNAVAILABLE"
+          : "ATTRIBUTES_INVALID",
+        taxonomyFingerprint: snapshot.taxonomyFingerprint,
+      });
+    }
+    return validationResult({
+      valid: true,
+      reasonCode: "VALID",
+      taxonomyFingerprint: snapshot.taxonomyFingerprint,
+    });
+  }
+
   return {
     getCategoryTree,
     getCategoryAttributes,
     getCategoryAttributeValues,
     resolveDescriptionCategoryId,
+    getCategorySnapshot,
+    validateTarget,
   };
 }
