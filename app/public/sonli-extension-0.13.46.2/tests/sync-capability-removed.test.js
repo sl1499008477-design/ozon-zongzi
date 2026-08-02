@@ -482,12 +482,12 @@ function sendRuntimeMessageUntilResponse(harness, message, sender = {}) {
   });
 }
 
-async function loadCollectorAuthContent(workerHarness) {
+async function loadCollectorAuthContent(workerHarness, sender = trustedWebSender) {
   const webTab = createInjectedWebTabHarness({
     runtimeSendMessageImpl: (message) => sendRuntimeMessageUntilResponse(
       workerHarness,
       message,
-      trustedWebSender,
+      sender,
     ),
   });
   await webTab.executeScript({
@@ -670,6 +670,162 @@ test('Collector auth routes query HTTPS brand pages plus the explicit local HTTP
         'http://store.localhost:3000/*',
       ],
     ],
+  );
+});
+
+test('requestCollectorAuth chooses one authoritative trusted Web tab deterministically', async (t) => {
+  const cases = [
+    {
+      name: 'active tab before a more recently accessed inactive tab',
+      tabs: [
+        { id: 17, active: false, lastAccessed: 900 },
+        { id: 19, active: true, lastAccessed: 100 },
+      ],
+      selectedTabId: 19,
+    },
+    {
+      name: 'greatest finite lastAccessed when active state ties',
+      tabs: [
+        { id: 17, active: false, lastAccessed: 100 },
+        { id: 19, active: false, lastAccessed: 900 },
+      ],
+      selectedTabId: 19,
+    },
+    {
+      name: 'finite lastAccessed before a non-finite value',
+      tabs: [
+        { id: 17, active: false, lastAccessed: Number.POSITIVE_INFINITY },
+        { id: 19, active: false, lastAccessed: 100 },
+      ],
+      selectedTabId: 19,
+    },
+    {
+      name: 'lowest tab ID as the stable final tie-break',
+      tabs: [
+        { id: 19, active: false, lastAccessed: 900 },
+        { id: 17, active: false, lastAccessed: 900 },
+      ],
+      selectedTabId: 17,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const harness = loadServiceWorker({
+        tabQueryImpl: async () => scenario.tabs,
+        tabSendMessageImpl: async () => ({ ok: true, requested: true }),
+      });
+
+      const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+      assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+        ok: true,
+        data: { requested: 1 },
+      });
+      assert.deepEqual(
+        harness.sentTabMessages.map(({ tabId }) => tabId),
+        [scenario.selectedTabId],
+      );
+    });
+  }
+});
+
+test('requestCollectorAuth does not fall through when the authoritative tab has no receiver', async () => {
+  const harness = loadServiceWorker({
+    tabQueryImpl: async () => [
+      { id: 19, active: true, lastAccessed: 100 },
+      { id: 17, active: false, lastAccessed: 900 },
+    ],
+    tabSendMessageImpl: async (tabId) => {
+      if (tabId === 19) {
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }
+      return { ok: true, requested: true };
+    },
+  });
+
+  const response = await sendRuntimeMessage(harness, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 0 },
+  });
+  assert.deepEqual(harness.sentTabMessages.map(({ tabId }) => tabId), [19]);
+});
+
+test('production requestCollectorAuth routes recovery through only one real content flow', async () => {
+  const tabUrl = 'http://127.0.0.1:3000/ozon/dashboard';
+  const tabSenders = new Map([
+    [17, { url: tabUrl, tab: { id: 17, url: tabUrl } }],
+    [19, { url: tabUrl, tab: { id: 19, url: tabUrl } }],
+  ]);
+  const webTabs = new Map();
+  const worker = loadServiceWorker({
+    tabQueryImpl: async () => [
+      { id: 17, url: tabUrl, active: false, lastAccessed: 900 },
+      { id: 19, url: tabUrl, active: true, lastAccessed: 100 },
+    ],
+    tabSendMessageImpl: (tabId, message) => webTabs.get(tabId).sendRuntimeMessage(message),
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        assert.equal(JSON.parse(options.body).ticket, 'ctt_real_flow_ticket_selected_123456789');
+        return new Response(JSON.stringify({
+          data: {
+            collectorToken: 'csess_authoritative_selected_123456789',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            account: { id: 'account-authoritative-selected', displayName: 'Selected' },
+            permissions: ['collector.upload', 'collector.ozon.read'],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === AVAILABILITY_PATH) return availabilityResponse(url, options, false);
+      throw new Error(`unexpected authoritative selection path: ${pathname}`);
+    },
+  });
+  webTabs.set(17, await loadCollectorAuthContent(worker, tabSenders.get(17)));
+  webTabs.set(19, await loadCollectorAuthContent(worker, tabSenders.get(19)));
+  const unselectedRequestsBefore = webTabs.get(17).posts.length;
+  const selectedRequestsBefore = webTabs.get(19).posts.length;
+
+  const response = await sendRuntimeMessage(worker, { action: 'requestCollectorAuth' });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    ok: true,
+    data: { requested: 1 },
+  });
+  assert.equal(webTabs.get(17).posts.length, unselectedRequestsBefore);
+  assert.equal(webTabs.get(19).posts.length, selectedRequestsBefore + 1);
+  assert.deepEqual(webTabs.get(17).sentRuntimeMessages, []);
+
+  const selectedRequest = webTabs.get(19).posts.at(-1).message;
+  await webTabs.get(19).emitWebMessage(collectorResponse(
+    selectedRequest.requestId,
+    G2,
+    'selected',
+  ));
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(webTabs.get(19).sentRuntimeMessages.map((message) => ({
+      action: message.action,
+      generationId: message.generationId,
+    })))),
+    [
+      { action: 'collector.auth.begin', generationId: G2 },
+      { action: 'collector.auth.exchange', generationId: G2 },
+    ],
+  );
+  assert.deepEqual(webTabs.get(17).sentRuntimeMessages, []);
+  assert.equal(worker.session.state[COLLECTOR_GENERATION_KEY], G2);
+  assert.equal(
+    worker.session.state[COLLECTOR_SESSION_KEY].account.id,
+    'account-authoritative-selected',
+  );
+  assert.equal(
+    worker.fetchCalls.filter(({ url }) => (
+      new URL(url).pathname === '/api/extension/collector-auth/exchange'
+    )).length,
+    1,
   );
 });
 

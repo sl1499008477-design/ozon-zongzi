@@ -46,7 +46,11 @@ function storageArea(state, calls, name) {
   };
 }
 
-function createHarness({ now = Date.parse('2030-01-01T00:00:00.000Z'), fetchImpl } = {}) {
+function createHarness({
+  now = Date.parse('2030-01-01T00:00:00.000Z'),
+  fetchImpl,
+  newGenerationIncarnation,
+} = {}) {
   const calls = [];
   const sessionState = {};
   const localState = {};
@@ -65,7 +69,8 @@ function createHarness({ now = Date.parse('2030-01-01T00:00:00.000Z'), fetchImpl
     backendUrl: async () => 'http://127.0.0.1:3000/api',
     fetchImpl: fetchImpl || (async () => jsonResponse(500, { code: 'UNEXPECTED_FETCH' })),
     now: () => now,
-    newGenerationIncarnation: () => `collector_activation_${++incarnationSequence}_1234`,
+    newGenerationIncarnation: newGenerationIncarnation
+      || (() => `collector_activation_${++incarnationSequence}_1234`),
     logger: { warn: (...args) => logs.push(args), error: (...args) => logs.push(args) },
   });
   return { calls, chromeApi, localState, logs, manager, sessionState, syncState };
@@ -155,6 +160,101 @@ test('activating a new Collector generation clears the previous session and is i
     harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY],
     firstIncarnation,
   );
+});
+
+async function assertFailedSuccessorIncarnationFencesOldExchange({
+  createSuccessorIncarnation,
+  expectedActivationError,
+}) {
+  const oldExchangeResponse = deferred();
+  const oldSession = validSession({
+    collectorToken: 'cst_old_activation_must_not_restore_123456789',
+    account: { id: 'account-old-activation', displayName: 'Old Activation' },
+  });
+  let exchangeCalls = 0;
+  let incarnationCalls = 0;
+  const harness = createHarness({
+    fetchImpl: async () => {
+      exchangeCalls += 1;
+      return oldExchangeResponse.promise;
+    },
+    newGenerationIncarnation: () => {
+      incarnationCalls += 1;
+      if (incarnationCalls === 1) return 'collector_activation_initial_1234';
+      return createSuccessorIncarnation();
+    },
+  });
+
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  const oldExchange = harness.manager.exchangeCollectorTicket({
+    ticket: 'ctt_old_activation_secret_123456789',
+    generationId: 'generation_G1_1234',
+  });
+  while (exchangeCalls < 1) await new Promise((resolve) => setImmediate(resolve));
+
+  await assert.rejects(
+    harness.manager.activateCollectorGeneration('generation_G2_5678'),
+    expectedActivationError,
+  );
+  assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], undefined);
+
+  oldExchangeResponse.resolve(jsonResponse(200, { data: oldSession }));
+  await assert.rejects(
+    oldExchange,
+    (error) => error?.code === 'COLLECTOR_AUTH_GENERATION_CHANGED',
+  );
+  assert.equal(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], undefined);
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], undefined);
+  assert.equal(
+    harness.calls.some(([area, operation, values]) => (
+      area === 'session'
+      && operation === 'set'
+      && values?.[COLLECTOR_SESSION_STORAGE_KEY]?.account?.id === 'account-old-activation'
+    )),
+    false,
+  );
+}
+
+test('successor activation clears the old activation before its incarnation factory throws', async () => {
+  await assertFailedSuccessorIncarnationFencesOldExchange({
+    createSuccessorIncarnation() {
+      throw new Error('INCARNATION_FACTORY_FAILED');
+    },
+    expectedActivationError: /INCARNATION_FACTORY_FAILED/,
+  });
+});
+
+test('successor activation clears the old activation before rejecting an invalid incarnation', async () => {
+  await assertFailedSuccessorIncarnationFencesOldExchange({
+    createSuccessorIncarnation: () => 'invalid',
+    expectedActivationError: (error) => error?.code === 'COLLECTOR_AUTH_INCARNATION_INVALID',
+  });
+});
+
+test('duplicate active generation remains idempotent when the successor incarnation factory would fail', async () => {
+  let incarnationCalls = 0;
+  const harness = createHarness({
+    newGenerationIncarnation: () => {
+      incarnationCalls += 1;
+      if (incarnationCalls === 1) return 'collector_activation_initial_1234';
+      throw new Error('DUPLICATE_MUST_NOT_CREATE_INCARNATION');
+    },
+  });
+  await harness.manager.activateCollectorGeneration('generation_G1_1234');
+  await harness.manager.setCollectorSession(validSession());
+  const incarnation = harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY];
+
+  assert.deepEqual(
+    await harness.manager.activateCollectorGeneration('generation_G1_1234'),
+    { changed: false },
+  );
+  assert.equal(incarnationCalls, 1);
+  assert.deepEqual(harness.sessionState[COLLECTOR_SESSION_STORAGE_KEY], validSession());
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_GENERATION_STORAGE_KEY], 'generation_G1_1234');
+  assert.equal(harness.sessionState[COLLECTOR_AUTH_INCARNATION_STORAGE_KEY], incarnation);
 });
 
 test('clearing and reactivating the same generation rotates its activation incarnation', async () => {

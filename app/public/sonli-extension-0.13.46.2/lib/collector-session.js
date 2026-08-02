@@ -259,12 +259,12 @@
         ) {
           return { changed: false };
         }
-        const incarnation = createGenerationIncarnation();
         await chromeApi.storage.session.remove([
           COLLECTOR_SESSION_STORAGE_KEY,
           COLLECTOR_AUTH_GENERATION_STORAGE_KEY,
           COLLECTOR_AUTH_INCARNATION_STORAGE_KEY,
         ]);
+        const incarnation = createGenerationIncarnation();
         await chromeApi.storage.session.set({
           [COLLECTOR_AUTH_GENERATION_STORAGE_KEY]: generationId,
           [COLLECTOR_AUTH_INCARNATION_STORAGE_KEY]: incarnation,
