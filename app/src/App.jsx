@@ -127,8 +127,9 @@ import {
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
 import {
-  createCollectorAuthReadyGate,
+  createCollectorAuthGenerationController,
   installCollectorAuthBridge,
+  postCollectorAuthLogout,
 } from "./collector-auth-bridge.js";
 import {
   emptyLocalRuntimeData,
@@ -620,11 +621,11 @@ export function AppShell({ initialState = null }) {
   const [form] = Form.useForm();
   const applyLocalStateRef = useRef(null);
   const localStateRefreshRef = useRef(null);
-  const collectorAuthReadyGateRef = useRef(null);
+  const collectorAuthGenerationRef = useRef(null);
   const messageRef = useRef(message);
   messageRef.current = message;
-  if (!collectorAuthReadyGateRef.current) {
-    collectorAuthReadyGateRef.current = createCollectorAuthReadyGate();
+  if (!collectorAuthGenerationRef.current) {
+    collectorAuthGenerationRef.current = createCollectorAuthGenerationController();
   }
 
   const hasStore = Boolean(binding?.storeName);
@@ -707,16 +708,20 @@ export function AppShell({ initialState = null }) {
 
   const collectorAuthAccountId = String(account?.id || "").trim();
   useEffect(() => {
-    const announceReady = collectorAuthReadyGateRef.current.shouldAnnounce(
+    const transition = collectorAuthGenerationRef.current.update(
       authChecked ? collectorAuthAccountId : "",
     );
-    if (!authChecked || !collectorAuthAccountId) return undefined;
+    if (transition.logoutGenerationId) {
+      postCollectorAuthLogout({ generationId: transition.logoutGenerationId });
+    }
+    if (!transition.generationId) return undefined;
     return installCollectorAuthBridge({
+      generationId: transition.generationId,
       isLoggedIn: () => true,
       requestTicket: () => apiRequest("/extension/collector-auth/ticket", {
         method: "POST",
       }),
-      announceReady,
+      announceReady: transition.announceReady,
     });
   }, [authChecked, collectorAuthAccountId]);
 
