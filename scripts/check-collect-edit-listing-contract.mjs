@@ -8,6 +8,27 @@ const requirePattern = (pattern, message) => {
   assert.match(appSource, pattern, message);
 };
 
+assert.doesNotMatch(
+  appSource,
+  /React\.useEffect\(function\(\) \{[\s\S]*?runCollectPreview\(\{ silent: true \}\);/,
+  "opening a collect editor must not silently re-run category matching",
+);
+
+requirePattern(
+  /import \{ categoryResolutionView \} from "\.\/collect-category-resolution-view\.js";/,
+  "collect UI must use the pure saved-category status adapter",
+);
+
+requirePattern(
+  /const categoryResolutionViewState = categoryResolutionView\(item\.categoryResolution\);[\s\S]*_categoryResolutionView: categoryResolutionViewState,[\s\S]*title: "类目匹配"[\s\S]*row\._categoryResolutionView/,
+  "collect box must render the saved category summary separately from collection enrichment",
+);
+
+requirePattern(
+  /categoryResolutionView\(categoryResolution\)[\s\S]*SELECT_MANUALLY[\s\S]*manualCategoryResolution\(/,
+  "review and invalidated category summaries must keep the existing manual category save path",
+);
+
 const productListSource = appSource.match(/function ProductListPage[\s\S]*?function CollectPage/)?.[0] || "";
 assert.doesNotMatch(
   productListSource,

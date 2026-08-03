@@ -130,6 +130,7 @@ import {
   runCollectEnrichmentRetry,
   startCollectEnrichmentPolling,
 } from "./collect-enrichment-view.js";
+import { categoryResolutionView } from "./collect-category-resolution-view.js";
 import { STORE_SYNC_TYPES, runBackendStoreSync } from "./store-sync-coordinator.js";
 import { storeSyncDetailText } from "./store-sync-presentation.js";
 import {
@@ -155,6 +156,7 @@ const { Header, Sider, Content } = Layout;
 const STORAGE_KEY = "qh-local-binding-v1";
 const SETTINGS_KEY = "qh-local-settings-v1";
 const collectEnrichmentTagColors = Object.freeze({
+  default: "default",
   processing: "processing",
   warning: "warning",
   danger: "error",
@@ -3397,12 +3399,14 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
     const id = item.id || "collect-" + index;
     const enrichment = collectEnrichmentEffectiveSummary(item, retryEnrichmentOverrides[id]);
     const enrichmentView = collectEnrichmentView(enrichment);
+    const categoryResolutionViewState = categoryResolutionView(item.categoryResolution);
     return {
       id,
       _image: item.image || item.primaryImage || (item.images || [])[0] || "",
       _title: item.name || item.title || item.productUrl || "—",
       _enrichment: enrichment,
       _enrichmentView: enrichmentView,
+      _categoryResolutionView: categoryResolutionViewState,
       sku: item.sku || item.id || "",
       "商品信息": item.name || item.title || item.productUrl || "—",
       "采集价格": item.price || item.priceText || "—",
@@ -3688,6 +3692,15 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
                 );
               },
             },
+            {
+              title: "类目匹配",
+              dataIndex: "类目匹配",
+              width: 174,
+              render: (_value, row) => {
+                const view = row._categoryResolutionView;
+                return <Tag color={collectEnrichmentTagColors[view.tone]}>{view.label}</Tag>;
+              },
+            },
             { title: "操作", dataIndex: "操作", width: 230, ellipsis: false, render: (value, row) => (
               <Space size={6} wrap={false}>
                 <Button type="link" size="small" onClick={() => navigate(`/ozon/products/collect/edit/?id=${encodeURIComponent(row.id)}`)}>{value}</Button>
@@ -3707,12 +3720,14 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
           ]}
           empty="暂无采集商品，请在上方添加"
           sourceEmpty
-          scrollX={1260}
+          scrollX={1434}
         />
       </div>
     </div>
   );
 }
+
+export { CollectPage };
 
 const collectEditText = (value) => {
   if (value === null || value === undefined) return "";
@@ -5090,6 +5105,20 @@ export const collectEditCategoryPreviewSeed = ({
   };
 };
 
+const collectEditManualFallbackResolution = ({
+  resolution,
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+} = {}) => {
+  if (resolution?.method !== "MANUAL") return null;
+  return categoryResolutionForCollectionTarget({
+    listingDraft: { categoryResolution: resolution },
+  }, {
+    targetStoreId,
+    taxonomyScope,
+  });
+};
+
 export const collectEditDraftVariantCategory = ({
   item = {},
   row = {},
@@ -5097,7 +5126,11 @@ export const collectEditDraftVariantCategory = ({
   taxonomyScope = "OZON:DEFAULT",
   fallbackResolution = null,
 } = {}) => {
-  const categoryResolution = categoryResolutionForCollectionTarget(item, {
+  const categoryResolution = collectEditManualFallbackResolution({
+    resolution: fallbackResolution,
+    targetStoreId,
+    taxonomyScope,
+  }) || categoryResolutionForCollectionTarget(item, {
     targetStoreId,
     taxonomyScope,
     legacyResolution: row.categoryResolution || item.listingDraft?.categoryResolution,
@@ -5149,7 +5182,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const [categoryAttributeValues, setCategoryAttributeValues] = useState({});
   const [enrichmentRetrying, setEnrichmentRetrying] = useState(false);
   const [enrichmentRetryOverride, setEnrichmentRetryOverride] = useState(null);
-  const categoryAutoPreviewKeyRef = useRef("");
   const collectEditInitScopeRef = useRef("");
   const collectEditDimensionDirtyRef = useRef(new Set());
   const collectEditActiveItemIdRef = useRef("");
@@ -5241,7 +5273,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     if (listingSubmissionIntentRef.current) listingSubmissionIntentRef.current = listingSubmissionIntent(listingSubmissionIntentRef.current, { collectItemId: itemId, targetStoreId: next });
     setPreviewItem(null);
     setCategoryAutoError("");
-    categoryAutoPreviewKeyRef.current = "";
     setTargetStoreId(next);
   };
   const storeCurrencyCode = preparationModel.currencyCode;
@@ -5296,7 +5327,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setCategorySchema([]);
       setCategorySchemaError("");
       setCategoryAttributeValues({});
-      categoryAutoPreviewKeyRef.current = "";
       const nextSku = String(draft.sku || item.sku || item.product_id || item.offer_id || item.id || "");
       const nextTitle = collectEditFirst(draft.title, item.name, item.title, item.offer_id);
       const nextPrice = collectEditFirst(draft.price, item.price?.price, item.price, item.priceText, item.marketing_price);
@@ -5361,7 +5391,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setCategorySchema([]);
       setCategorySchemaError("");
       setCategoryAttributeValues({});
-      categoryAutoPreviewKeyRef.current = "";
     }
   }, [itemId, item, itemScopeCurrent, storeCurrencyCode, categoryStoreId, categoryTaxonomyScope, listingWarehouseOptionKey]);
 
@@ -5802,11 +5831,20 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     await saveListingDraft({ silent: false }).catch(function() {});
   };
   const currentDraft = item?.listingDraft || {};
-  const categoryResolution = categoryResolutionForCollectionTarget(item, {
+  const manualPreviewResolution = collectEditManualFallbackResolution({
+    resolution: scopedPreviewItem?.categoryResolution,
+    targetStoreId: categoryStoreId,
+    taxonomyScope: categoryTaxonomyScope,
+  });
+  const categoryResolution = manualPreviewResolution || categoryResolutionForCollectionTarget(item, {
     targetStoreId: categoryStoreId,
     taxonomyScope: categoryTaxonomyScope,
     legacyResolution: scopedPreviewItem?.categoryResolution || currentDraft.categoryResolution,
   });
+  const categoryResolutionViewState = categoryResolution
+    ? categoryResolutionView(categoryResolution)
+    : null;
+  const categoryNeedsManualSelection = categoryResolutionViewState?.action === "SELECT_MANUALLY";
   const categoryTargetFields = listingTargetCategoryFieldsForStore(
     categoryResolution,
     categoryStoreId,
@@ -6112,38 +6150,6 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     });
   }, [categoryStoreId, itemId, categoryDescriptionId, categoryTypeId, categorySchema, categoryAttributeOptions, previewItem, item, brand]);
 
-  React.useEffect(function() {
-    if (!item || preparationModel.listingBlocked || !categoryStoreId || !categoryTreeReady || !categoryDictionaryReady || categoryMatched || categoryAutoLoading) return;
-    if (!sku || !numberFromMoney(price) || !productImageList.length) return;
-    const key = [
-      itemId,
-      categoryStoreId,
-      sku,
-      price,
-      productImageList.length,
-      variantRows.length,
-      storeCurrencyCode || currencyCode,
-    ].join("|");
-    if (categoryAutoPreviewKeyRef.current === key) return;
-    categoryAutoPreviewKeyRef.current = key;
-    runCollectPreview({ silent: true });
-  }, [
-    item,
-    itemId,
-    preparationModel.listingBlocked,
-    categoryStoreId,
-    categoryTreeReady,
-    categoryDictionaryReady,
-    categoryMatched,
-    categoryAutoLoading,
-    sku,
-    price,
-    productImageList.length,
-    variantRows.length,
-    storeCurrencyCode,
-    currencyCode,
-  ]);
-
   const hasPackageDimensions = [packageWeight, packageLength, packageWidth, packageHeight]
     .every((value) => numberFromMoney(value) > 0);
   const activeCurrencyCode = storeCurrencyCode || currencyCode;
@@ -6222,7 +6228,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   });
   const sectionNav = [
     { title: "店铺与基础", note: hasStore ? "已选 1" : "未绑定" },
-    { title: "产品类目", note: categoryMatched ? "已匹配" : categoryAutoLoading ? "匹配中" : "AI 自动匹配" },
+    { title: "产品类目", note: categoryMatched ? "已匹配" : categoryResolutionViewState?.label || (categoryAutoLoading ? "类目匹配中" : "待匹配") },
     { title: "标题与文案", note: title ? "已填写" : "待填写" },
     { title: "物流尺寸", note: packageWeight && packageLength && packageWidth && packageHeight ? "已填写" : "待填写" },
     { title: "类目属性", note: categoryAttributeInputRows.length ? `${categoryAttributeInputRows.length} 项` : categorySchemaLoading ? "加载中" : "待匹配" },
@@ -6457,10 +6463,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             <div className="collect-edit-section-head">
               <div>
                 <h2>产品类目</h2>
-                <p>{categoryMatched ? (categoryResolution?.method === "MANUAL" ? "已人工选择目标店铺类目" : "已按采集数据核验目标店铺类目") : categoryAutoLoading ? "正在核验目标店铺类目" : "来源类目已保留，目标店铺类目待核验"}</p>
+                <p>{categoryMatched ? (categoryResolution?.method === "MANUAL" ? "已人工选择目标店铺类目" : "已按采集数据核验目标店铺类目") : categoryNeedsManualSelection ? "当前类目需要人工选择，请从下方类目树选择最末级商品类型" : categoryResolutionViewState?.label || (categoryAutoLoading ? "正在核验目标店铺类目" : "来源类目已保留，目标店铺类目待核验")}</p>
               </div>
-              <Tooltip rootClassName="prototype-overlay" title={categoryMatched ? "已拿到可用于 Ozon 上架的类目和类型 ID" : "系统会优先使用采集到的类目、类型和属性自动匹配"}>
-                <Tag color={categoryMatched ? "green" : categoryAutoLoading ? "processing" : "default"}>{categoryMatched ? "已匹配" : categoryAutoLoading ? "匹配中" : "待匹配"}</Tag>
+              <Tooltip rootClassName="prototype-overlay" title={categoryMatched ? "已拿到可用于 Ozon 上架的类目和类型 ID" : categoryResolutionViewState?.label || "等待后台类目匹配结果"}>
+                <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{categoryMatched ? "类目已匹配" : categoryResolutionViewState?.label || (categoryAutoLoading ? "类目匹配中" : "待匹配")}</Tag>
               </Tooltip>
             </div>
             {categoryVisibleError ? (
@@ -6483,7 +6489,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 notFoundContent={categoryTreeLoading ? "正在加载类目..." : "暂无类目"}
                 onChange={handleCategoryChange}
                 options={categoryTreeOptionsZh}
-                placeholder={categoryAutoLoading && !categoryMatched ? "正在根据采集数据自动匹配类目..." : categoryLabel}
+                placeholder={categoryAutoLoading && !categoryMatched ? "正在根据采集数据自动匹配类目..." : categoryResolutionViewState?.label || categoryLabel}
                 showSearch={{
                   filter: (inputValue, path) => path.some((option) =>
                     collectEditText(option.label).toLowerCase().includes(String(inputValue || "").toLowerCase()),
@@ -6500,10 +6506,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
             </div>
             <div className="collect-edit-attr-strip">
               <span title={`description_category_id: ${categoryDescriptionId || "—"} / type_id: ${categoryTypeId || "—"}`}>
-                目标店铺：{categoryMatched ? `${categoryRussianLabel}（${categoryDescriptionId} / ${categoryTypeId}）` : categoryAutoLoading ? "正在核验" : "待手动选择或自动核验"}
+                目标店铺：{categoryMatched ? `${categoryRussianLabel}（${categoryDescriptionId} / ${categoryTypeId}）` : categoryNeedsManualSelection ? "请选择目标类目" : categoryResolutionViewState?.label || (categoryAutoLoading ? "正在核验" : "待手动选择或自动核验")}
               </span>
             </div>
-            {categoryAutoError ? <div className="collect-edit-empty-note">目标类目待处理：{categoryAutoError}</div> : null}
+            {categoryAutoError || categoryNeedsManualSelection ? <div className="collect-edit-empty-note">目标类目待处理：{categoryAutoError || "请手动选择类目后保存草稿，系统会按 MANUAL 记录该选择。"}</div> : null}
           </section>
 
           <section className="collect-edit-section" id="标题与文案">
