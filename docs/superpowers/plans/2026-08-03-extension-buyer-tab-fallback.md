@@ -26,6 +26,7 @@
 - Modify: `extension/background/service-worker.js`
 
 **Interfaces:**
+- Produces: `resolveSellerPortalPreference({ sellerContext, sender }) -> { preferTabId, strictPreferredSellerTab }`.
 - Consumes: `resolveSellerPortalTargetTab({ preferTabId, strictPreferredSellerTab, tabsApi, identityPolicy, ensureTab })`.
 - Produces: non-strict buyer-tab fallback through `ensureTab()` and strict frozen-Seller failure with code `SELLER_CONTEXT_CHANGED`.
 - Preserves: `searchVariantsLocal(input) -> Promise<{ ok, data? , error?, message? }>`.
@@ -56,10 +57,23 @@ await assert.rejects(resolveSellerPortalTargetTab({
 }), (error) => error?.code === 'SELLER_CONTEXT_CHANGED');
 ```
 
-Add a source-contract assertion that `searchVariantsLocal()` derives strictness only from its trusted runtime input:
+Add a behavior test for the focused preference resolver. It must treat the content-script sender as a non-strict performance hint and a trusted runtime snapshot as strict:
 
 ```js
-assert.match(searchVariantsSource, /strictPreferredSellerTab:\s*Boolean\(input\.sellerContext\)/);
+assert.deepEqual(resolveSellerPortalPreference({
+  sellerContext: null,
+  sender: { tab: { id: 71 } },
+}), {
+  preferTabId: 71,
+  strictPreferredSellerTab: false,
+});
+assert.deepEqual(resolveSellerPortalPreference({
+  sellerContext: { companyId: '2681910', sellerTabId: 70 },
+  sender: { tab: { id: 71 } },
+}), {
+  preferTabId: 70,
+  strictPreferredSellerTab: true,
+});
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -70,7 +84,7 @@ Run:
 node extension/tests/seller-company-context-contract.test.js
 ```
 
-Expected: FAIL because the resolver still throws for a buyer tab whenever `preferTabId` is present, and the strict propagation contract is absent.
+Expected: FAIL because the resolver still throws for a buyer tab whenever `preferTabId` is present and `resolveSellerPortalPreference()` does not exist.
 
 - [ ] **Step 3: Implement the minimal resolver behavior**
 
@@ -98,13 +112,16 @@ const resolveSellerPortalTargetTab = async ({
 };
 ```
 
-Pass `opts.strictPreferredSellerTab` from `fetchSellerPortal()` to the resolver. In `searchVariantsLocal()`, derive one local value:
+Add the focused preference resolver next to the Seller portal resolver:
 
 ```js
-const strictPreferredSellerTab = Boolean(input.sellerContext);
+const resolveSellerPortalPreference = ({ sellerContext, sender } = {}) => ({
+  preferTabId: sellerContext?.sellerTabId || sender?.tab?.id || null,
+  strictPreferredSellerTab: Boolean(sellerContext),
+});
 ```
 
-Pass it through `readSellerSearchVariants(...requestOptions)`, `enrichSellerSearchItems()`, `fetchBundleByVariantId()` and finally `fetchSellerPortal()`. Do not accept this value from the content-script message object.
+Pass `opts.strictPreferredSellerTab` from `fetchSellerPortal()` to the resolver. In `searchVariantsLocal()`, use `resolveSellerPortalPreference({ sellerContext: input.sellerContext, sender })`, then pass the returned strict flag through `readSellerSearchVariants(...requestOptions)`, `enrichSellerSearchItems()`, `fetchBundleByVariantId()` and finally `fetchSellerPortal()`. Do not accept this value from the content-script message object.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 
