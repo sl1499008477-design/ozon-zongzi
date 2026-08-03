@@ -144,10 +144,7 @@ import {
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
-import {
-  assertListingWarehouseEligible,
-  listingWarehouseEligibility,
-} from "./listing-warehouse-eligibility.mjs";
+import { assertListingStockSelectionEligible, listingEligibilityCaches } from "./listing-warehouse-eligibility.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
 const rootDir = path.resolve(__dirname, "..");
@@ -805,30 +802,11 @@ function localStatePayload(state, options = {}) {
     .filter((item) => String(item?.accountId || "") === String(account.id))
     .map(publicPersistedCollectionItem);
   const visibleFiles = ensureFilesCache(state).filter((file) => canAccessLocalFile(file, account));
-  const visibleProducts = accountScopedCache(state.caches.products, account, accountStoreIds);
-  const visibleWarehouses = accountScopedCache(state.caches.warehouses, account, accountStoreIds)
-    .map((warehouse) => {
-      const targetStoreId = String(
-        warehouse?.storeId
-        || warehouse?.store_id
-        || warehouse?.localStoreId
-        || warehouse?.local_store_id
-        || "",
-      ).trim();
-      return {
-        ...warehouse,
-        listingEligibility: listingWarehouseEligibility({
-          warehouse,
-          products: visibleProducts,
-          targetStoreId,
-          accountId: account.id,
-        }),
-      };
-    });
+  const listingCaches = listingEligibilityCaches({ products: accountScopedCache(state.caches.products, account, accountStoreIds), warehouses: accountScopedCache(state.caches.warehouses, account, accountStoreIds), accountId: account.id });
   const visibleCaches = {
-    products: visibleProducts,
+    products: listingCaches.products,
     postings: accountScopedCache(state.caches.postings, account, accountStoreIds),
-    warehouses: visibleWarehouses,
+    warehouses: listingCaches.warehouses,
     collectBox: visibleCollectBox,
     favorites: accountScopedCache(state.caches.favorites, account, accountStoreIds),
     promotions: accountScopedCache(state.caches.promotions, account, accountStoreIds),
@@ -858,7 +836,6 @@ function localStatePayload(state, options = {}) {
     updatedAt: state.updatedAt,
   };
 }
-
 function upsertById(list, id, value) {
   const key = String(id || "");
   if (!key) return false;
@@ -2228,31 +2205,6 @@ function listingStockRowsFromDraft(draft = {}, item = {}, listingItems = []) {
   });
 }
 
-function assertCollectListingWarehousesEligible(state, {
-  account,
-  targetStoreId,
-  stocks = [],
-} = {}) {
-  const warehouseIds = [...new Set(
-    (Array.isArray(stocks) ? stocks : [])
-      .map((stock) => String(stock?.warehouse_id ?? stock?.warehouseId ?? "").trim())
-      .filter(Boolean),
-  )];
-  const warehouses = cacheItemsForAccount(state, "warehouses", account);
-  const products = cacheItemsForAccount(state, "products", account);
-  for (const warehouseId of warehouseIds) {
-    const warehouse = warehouses.find((row) =>
-      String(row?.warehouse_id ?? row?.warehouseId ?? "").trim() === warehouseId) || null;
-    assertListingWarehouseEligible({
-      warehouse,
-      products,
-      targetStoreId,
-      accountId: account?.id,
-    });
-  }
-  return true;
-}
-
 function buildCollectBoxListingItems(item = {}, targetStoreId = "") {
   const draft = item.listingDraft && typeof item.listingDraft === "object" ? item.listingDraft : {};
   const draftSourceCategory = listingSourceCategoryEvidence(
@@ -2486,11 +2438,7 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     err.body = { ok: false, errors };
     throw err;
   }
-  assertCollectListingWarehousesEligible(state, {
-    account,
-    targetStoreId: requestedTargetStoreId,
-    stocks,
-  });
+  assertListingStockSelectionEligible({ warehouses: cacheItemsForAccount(state, "warehouses", account), products: cacheItemsForAccount(state, "products", account), targetStoreId: requestedTargetStoreId, accountId: account?.id, stocks });
   const payload = {
     ...body,
     storeId: requestedTargetStoreId,

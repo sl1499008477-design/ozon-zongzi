@@ -191,3 +191,46 @@ export function assertListingWarehouseEligible(input = {}) {
     body: { reason: eligibility.code },
   });
 }
+
+export function annotateListingWarehouseEligibility({
+  warehouses = [],
+  products = [],
+  accountId,
+} = {}) {
+  return (Array.isArray(warehouses) ? warehouses : []).map((warehouse) => ({
+    ...warehouse,
+    listingEligibility: listingWarehouseEligibility({
+      warehouse,
+      products,
+      targetStoreId: warehouseStoreId(warehouse),
+      accountId,
+    }),
+  }));
+}
+
+export function listingEligibilityCaches({ products = [], warehouses = [], accountId } = {}) {
+  return {
+    products,
+    warehouses: annotateListingWarehouseEligibility({ warehouses, products, accountId }),
+  };
+}
+
+export function assertListingStockSelectionEligible({
+  warehouses = [],
+  products = [],
+  stocks = [],
+  targetStoreId,
+  accountId,
+} = {}) {
+  const warehouseIds = [...new Set(
+    (Array.isArray(stocks) ? stocks : [])
+      .map((stock) => firstText(stock?.warehouse_id, stock?.warehouseId))
+      .filter(Boolean),
+  )];
+  for (const warehouseId of warehouseIds) {
+    const warehouse = (Array.isArray(warehouses) ? warehouses : []).find((row) =>
+      platformWarehouseId(row) === warehouseId) || null;
+    assertListingWarehouseEligible({ warehouse, products, targetStoreId, accountId });
+  }
+  return true;
+}
