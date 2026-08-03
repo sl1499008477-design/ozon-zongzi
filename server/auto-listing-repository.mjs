@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { assertAutoListingTransition, nextAutoListingStatus } from "./auto-listing-state-machine.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
+import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
+import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
 
@@ -89,6 +91,7 @@ function eventDetails(item) {
     sourceHash: item.snapshotHash,
     strategyId: item.strategyId,
     strategyVersionId: item.strategyVersionId,
+    ruleId: item.ruleId,
     style: item.style,
     matchedBy: item.matchedBy,
     ...(item.price ? { price: item.price } : {}),
@@ -127,6 +130,7 @@ function mapJob(row, items, events) {
         sourceHash: item.snapshot_hash,
         strategyId: audit.strategyId || null,
         strategyVersionId: audit.strategyVersionId || row.strategy_version_id || null,
+        ruleId: audit.ruleId || null,
         style: audit.style || null,
         matchedBy: audit.matchedBy || null,
         ...(audit.price ? { price: audit.price } : {}),
@@ -198,7 +202,7 @@ function assertGraph(graph) {
       || captured.snapshot.identity.sourceType !== item.sourceType) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
-    if (item.rawResponseRef !== captured.rawResponseRef
+    if (item.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
       || item.targetStoreId !== graph.configSnapshot.targetStoreId
       || item.targetWarehouseId !== graph.configSnapshot.targetWarehouseId
       || (item.status === "SOURCE_READY" && captured.snapshot.targetCategory.targetStoreId !== item.targetStoreId)) {
@@ -206,9 +210,13 @@ function assertGraph(graph) {
     }
     if (item.status === "SOURCE_READY") {
       if (item.failureCode || item.strategyVersionId !== graph.strategyVersionId || !requiredText(item.strategyId)
-        || !requiredText(item.style) || !requiredText(item.matchedBy)
-        || !item.price || item.price.currency !== "RUB" || !requiredText(item.price.branch)
-        || !["blackKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"].every((key) => /^[-+]?\d+$/.test(item.price[key] || ""))) {
+        || !(item.ruleId === null || requiredText(item.ruleId))
+        || !["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"].includes(item.style)
+        || !["EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"].includes(item.matchedBy)
+        || !item.price || item.price.currency !== "RUB" || !["BLACK_GTE_80", "BLACK_LT_80"].includes(item.price.branch)
+        || !["blackKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"].every((key) => /^[-+]?\d+$/.test(item.price[key] || ""))
+        || (item.price.branch === "BLACK_GTE_80" && !/^[-+]?\d+$/.test(item.price.greenKopecks || ""))
+        || (item.price.branch === "BLACK_LT_80" && item.price.greenKopecks !== undefined)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
     } else if (!/^AUTO_LISTING_[A-Z0-9_]+$|^PRICE_[A-Z0-9_]+$/.test(requiredText(item.failureCode))) {
@@ -220,6 +228,19 @@ function assertGraph(graph) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   return { ...graph, accountId, idempotencyKey, items };
+}
+
+function samePrice(left, right) {
+  const keys = ["currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
+  return keys.every((key) => left?.[key] === right?.[key]);
+}
+
+function publishedRules(rows) {
+  return rows.map((rule) => ({
+    ruleId: rule.id, ruleOrder: Number(rule.rule_order), matchType: rule.rule_kind,
+    categoryId: rule.rule_kind === "ANCESTOR_CATEGORY" ? rule.ancestor_category_id : rule.category_id,
+    productStyle: rule.product_style, style: rule.rule?.style, textDensityByRole: rule.rule?.textDensityByRole,
+  }));
 }
 
 export function createAutoListingRepository({ pool, idFactory = defaultIdFactory, now = () => new Date() } = {}) {
@@ -358,6 +379,12 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           [graph.strategyVersionId, graph.accountId],
         );
         if (!strategy.rows[0]) throw repositoryError("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+        const rules = await client.query(
+          `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
+             FROM ai_content_strategy_rules WHERE account_id=$1 AND strategy_version_id=$2
+             ORDER BY rule_order ASC,id ASC`,
+          [graph.accountId, graph.strategyVersionId],
+        );
         for (const item of graph.items) {
           const source = await client.query(
             `SELECT 1 FROM collect_items
@@ -368,10 +395,33 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           if (item.status === "SOURCE_READY" && item.strategyId !== strategy.rows[0].strategy_key) {
             throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
           }
+          if (item.status === "SOURCE_READY") {
+            const resolved = resolveAiContentStrategy({
+              strategyVersion: { strategyId: strategy.rows[0].strategy_key, strategyVersionId: graph.strategyVersionId },
+              rules: publishedRules(rules.rows),
+              product: { descriptionCategoryId: item.snapshot.targetCategory.descriptionCategoryId,
+                categoryAncestors: item.snapshot.targetCategory.ancestorCategoryIds.map((categoryId, index) => ({ categoryId, distance: index + 1 })),
+                productStyle: item.snapshot.source.productStyle },
+            });
+            if (item.strategyId !== resolved.strategyId || item.strategyVersionId !== resolved.strategyVersionId
+              || item.ruleId !== resolved.ruleId || item.style !== resolved.style || item.matchedBy !== resolved.matchedBy) {
+              throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+            }
+            const price = calculateAutoListingPrice({ ...item.snapshot.priceEvidence,
+              adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks });
+            if (!samePrice(item.price, price)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+          }
           const target = await loadWarehouseWithClient(client, {
             accountId: graph.accountId, targetStoreId: item.targetStoreId, targetWarehouseId: item.targetWarehouseId,
           });
           if (!target.warehouse) throw repositoryError("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+          const platformWarehouseId = typeof target.warehouse.warehouse_id === "string"
+            ? target.warehouse.warehouse_id.trim() : "";
+          if (!platformWarehouseId || platformWarehouseId.toLowerCase().startsWith("wh_")) {
+            const failure = repositoryError("LISTING_WAREHOUSE_NOT_ELIGIBLE", 422);
+            failure.body = { reason: "WAREHOUSE_ID_MISSING" };
+            throw failure;
+          }
           assertListingStockSelectionEligible({
             warehouses: [target.warehouse], products: target.products,
             stocks: [{ warehouse_id: target.warehouse.warehouse_id }],

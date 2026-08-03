@@ -70,7 +70,7 @@ function strategyFor(snapshot, source, published) {
     product: {
       descriptionCategoryId: snapshot.targetCategory.descriptionCategoryId,
       categoryAncestors: categoryAncestors(snapshot.targetCategory.ancestorCategoryIds),
-      productStyle: text(source.productStyle || source.collectItem?.productStyle) || "UNKNOWN",
+      productStyle: snapshot.source.productStyle,
     },
   });
 }
@@ -208,10 +208,10 @@ export function createAutoListingService({ repository } = {}) {
         }
         const strategy = strategyFor(captured.snapshot, source, published);
         try {
-          return { ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId, style: strategy.style, matchedBy: strategy.matchedBy,
+          return { ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId, ruleId: strategy.ruleId, style: strategy.style, matchedBy: strategy.matchedBy,
             status: "SOURCE_READY", price: calculateAutoListingPrice(priceInput(captured.snapshot, config.priceAdjustmentKopecks)) };
         } catch (caught) {
-          return { ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId, style: strategy.style, matchedBy: strategy.matchedBy,
+          return { ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId, ruleId: strategy.ruleId, style: strategy.style, matchedBy: strategy.matchedBy,
             status: "BLOCKED", failureCode: text(caught?.code) || "AUTO_LISTING_ITEM_BLOCKED" };
         }
       });

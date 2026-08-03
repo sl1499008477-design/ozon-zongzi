@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAutoListingService } from "../auto-listing-service.mjs";
+import { createAutoListingRepository } from "../auto-listing-repository.mjs";
+import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 const actor = { id: "account-a", role: "user" };
 const config = {
@@ -210,4 +212,44 @@ test("never exposes nested objects through job and item scalar DTO slots", async
   assert.equal(result.jobId, null);
   assert.equal(result.items[0].targetStoreId, null);
   assert.equal("failureCode" in result.items[0], false);
+});
+
+test("repository rejects an empty platform warehouse ID before the shared eligibility policy", async () => {
+  const captured = buildAutoListingSourceSnapshot({
+    accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-warehouse", sourceVersion: "1",
+    rawResponseRef: "raw-warehouse", rawResponseHash: "raw-hash",
+    collectItem: source("collect-warehouse").collectItem,
+  });
+  const client = {
+    async query(sql) {
+      if (/^(BEGIN|ROLLBACK)$/.test(sql)) return { rows: [] };
+      if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
+      if (/FROM warehouses w JOIN stores/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "", owner_account_id: "account-a", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
+      if (/FROM product_stocks ps/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() {},
+  };
+  const repository = createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) } });
+  const item = {
+    sourceType: "COLLECT_BOX", sourceRecordId: "collect-warehouse", sourceVersion: "1",
+    snapshot: captured.snapshot, snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef,
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0, status: "SOURCE_READY",
+    strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null, style: "BALANCED_DEFAULT", matchedBy: "DEFAULT",
+    price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+  };
+  const graphInput = {
+    accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "warehouse-empty", correlationId: "corr",
+    configSnapshot: { targetStoreId: "store-a", targetWarehouseId: "warehouse-a", priceAdjustmentKopecks: "0" }, configHash: "config", strategyVersionId: "version-a", items: [item],
+  };
+  await assert.rejects(
+    repository.createJobGraph({ ...graphInput, idempotencyKey: "raw-mismatch", items: [{ ...item, rawResponseRef: "another-raw" }] }),
+    (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID",
+  );
+  await assert.rejects(repository.createJobGraph({
+    ...graphInput,
+  }), (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE" && error?.body?.reason === "WAREHOUSE_ID_MISSING");
 });

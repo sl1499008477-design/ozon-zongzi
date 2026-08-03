@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
-import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import { buildAutoListingSourceSnapshot, canonicalAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
@@ -42,7 +42,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     sourceType: "COLLECT_BOX",
     idempotencyKey,
     correlationId: `corr-${suffix}`,
-    configSnapshot: { targetStoreId: `store-${accountId}`, targetWarehouseId: `warehouse-${accountId}` },
+    configSnapshot: { targetStoreId: `store-${accountId}`, targetWarehouseId: `warehouse-${accountId}`, priceAdjustmentKopecks: "0" },
     configHash: `config-${suffix}`,
     strategyVersionId: `strategy-version-${accountId}`,
     items: [{
@@ -58,11 +58,43 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       status: "SOURCE_READY",
       strategyId: `strategy-${accountId}`,
       strategyVersionId: `strategy-version-${accountId}`,
+      ruleId: null,
       style: "BALANCED_DEFAULT",
       matchedBy: "DEFAULT",
       price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
     }],
     ...overrides,
+  };
+}
+
+function withChangedSourceHash(input) {
+  const changed = structuredClone(input);
+  changed.items[0].snapshot.rawEvidence.rawResponseHash = "different-raw-hash";
+  changed.items[0].snapshotHash = crypto.createHash("sha256")
+    .update(canonicalAutoListingSourceSnapshot(changed.items[0].snapshot)).digest("hex");
+  return changed;
+}
+
+function twoConnectionSnapshotBarrier(scopedPool) {
+  let arrivals = 0;
+  let releaseBarrier;
+  const barrier = new Promise((resolve) => { releaseBarrier = resolve; });
+  return {
+    query: (...args) => scopedPool.query(...args),
+    async connect() {
+      const connection = await scopedPool.connect();
+      return {
+        async query(sql, params) {
+          if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) {
+            arrivals += 1;
+            if (arrivals === 2) releaseBarrier();
+            await barrier;
+          }
+          return connection.query(sql, params);
+        },
+        release: () => connection.release(),
+      };
+    },
   };
 }
 
@@ -228,6 +260,58 @@ if (!enabled) {
       assert.deepEqual(scoped.events.map((event) => event.eventType), ["CREATED", "SOURCE_CAPTURED", "START_PLANNING"]);
       assert.equal(await repository.getJob({ accountId: accountB, jobId: created.id }), null);
       assert.deepEqual((await repository.listJobs({ accountId: accountB, limit: 10 })).map((job) => job.id), [other.id]);
+
+      const sharedLeft = graph(accountA, "race-same-left", "race-same");
+      const sharedRight = graph(accountA, "race-same-right", "race-same");
+      await registerGraphSources(client, sharedLeft);
+      const sameHashRepository = createAutoListingRepository({ pool: twoConnectionSnapshotBarrier(scopedPool) });
+      const [sharedOne, sharedTwo] = await Promise.all([
+        sameHashRepository.createJobGraph(sharedLeft), sameHashRepository.createJobGraph(sharedRight),
+      ]);
+      assert.notEqual(sharedOne.id, sharedTwo.id);
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id='collect-race-same'",
+        [accountA],
+      )).rows[0].count), 1);
+
+      const conflictLeft = graph(accountA, "race-conflict-left", "race-conflict");
+      const conflictRight = withChangedSourceHash(graph(accountA, "race-conflict-right", "race-conflict"));
+      await registerGraphSources(client, conflictLeft);
+      const conflictRepository = createAutoListingRepository({ pool: twoConnectionSnapshotBarrier(scopedPool) });
+      const conflictResults = await Promise.allSettled([
+        conflictRepository.createJobGraph(conflictLeft), conflictRepository.createJobGraph(conflictRight),
+      ]);
+      assert.equal(conflictResults.filter((result) => result.status === "fulfilled").length, 1);
+      assert.equal(conflictResults.find((result) => result.status === "rejected")?.reason?.code, "AUTO_LISTING_SOURCE_VERSION_CONFLICT");
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key IN ('race-conflict-left','race-conflict-right')",
+        [accountA],
+      )).rows[0].count), 1);
+
+      const eventFailure = graph(accountA, "event-failure", "event-failure");
+      await registerGraphSources(client, eventFailure);
+      const eventJob = await repository.createJobGraph(eventFailure);
+      const eventItem = eventJob.items[0];
+      const eventCountBefore = Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [eventItem.id],
+      )).rows[0].count);
+      await client.query(`CREATE OR REPLACE FUNCTION ${schemaSql}.fail_task4_status_event()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.event_type = 'START_PLANNING' THEN RAISE EXCEPTION 'forced event failure'; END IF;
+          RETURN NEW;
+        END; $$`);
+      await client.query(`CREATE TRIGGER fail_task4_status_event BEFORE INSERT ON auto_listing_events
+        FOR EACH ROW EXECUTE FUNCTION ${schemaSql}.fail_task4_status_event()`);
+      await assert.rejects(
+        repository.updateItemStatus({ accountId: accountA, itemId: eventItem.id, expectedStatusVersion: 1, eventType: "START_PLANNING", actorAccountId: accountA, correlationId: "event-failure" }),
+      );
+      const afterEventFailure = (await client.query(
+        "SELECT status,status_version,failure_code FROM auto_listing_job_items WHERE id=$1", [eventItem.id],
+      )).rows[0];
+      assert.deepEqual(afterEventFailure, { status: "SOURCE_READY", status_version: 1, failure_code: null });
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [eventItem.id],
+      )).rows[0].count), eventCountBefore);
     } finally {
       await client.query("RESET search_path").catch(() => {});
       await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
