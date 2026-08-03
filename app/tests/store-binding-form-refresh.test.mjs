@@ -45,6 +45,12 @@ function localState(store) {
   };
 }
 
+async function settleReact(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+  }));
+}
+
 test("background refresh never replaces values in an open add or edit store form", async () => {
   const initialStore = {
     id: "store-current",
@@ -133,6 +139,8 @@ test("background refresh never replaces values in an open add or edit store form
     const label = page.locator('input[placeholder="可选，例如：主店"]');
     const createdAt = page.locator('input[type="date"]');
 
+    await settleReact(page);
+
     assert.equal(await clientId.inputValue(), "");
     assert.equal(await apiKey.inputValue(), "");
     assert.equal(await label.inputValue(), "");
@@ -152,6 +160,7 @@ test("background refresh never replaces values in an open add or edit store form
 
     await page.getByRole("button", { name: /取\s*消/ }).click();
     await page.getByRole("button", { name: "新增", exact: true }).click();
+    await settleReact(page);
     assert.equal(await clientId.inputValue(), "");
     assert.equal(await apiKey.inputValue(), "");
     assert.equal(await label.inputValue(), "");
@@ -159,6 +168,7 @@ test("background refresh never replaces values in an open add or edit store form
     await page.getByRole("button", { name: /取\s*消/ }).click();
 
     await page.getByRole("button", { name: "修改", exact: true }).click();
+    await settleReact(page);
     assert.equal(await clientId.inputValue(), refreshedStore.clientId);
     assert.equal(await apiKey.inputValue(), "");
     assert.equal(await label.inputValue(), refreshedStore.label);

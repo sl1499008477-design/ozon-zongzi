@@ -807,7 +807,8 @@ export function AppShell({ initialState = null }) {
   };
 
   const openBindModal = (store = null) => {
-    setEditingBindingStore(store || null);
+    const selectedStore = store && (store.id || store.storeId) ? store : null;
+    setEditingBindingStore(selectedStore);
     setBindOpen(true);
   };
 
@@ -929,12 +930,13 @@ export function AppShell({ initialState = null }) {
   useEffect(() => {
     if (!bindOpen) return;
     form.setFieldsValue({
-      clientId: editingBindingStore?.clientId || binding?.clientId || "",
+      clientId: editingBindingStore?.clientId || "",
       apiKey: "",
-      label: editingBindingStore?.label || editingBindingStore?.companyName || binding?.storeName || "",
-      apiKeyCreatedAt: dateInputValue(editingBindingStore?.apiKeyCreatedAt || binding?.apiKeyCreatedAt) || (editingBindingStore ? "" : todayDateOnly()),
+      label: editingBindingStore?.label || editingBindingStore?.companyName || "",
+      apiKeyCreatedAt: dateInputValue(editingBindingStore?.apiKeyCreatedAt)
+        || (editingBindingStore ? "" : todayDateOnly()),
     });
-  }, [bindOpen, editingBindingStore, binding, form]);
+  }, [bindOpen, editingBindingStore, form]);
 
   const saveBinding = async (values) => {
     try {
@@ -1293,10 +1295,10 @@ export function AppShell({ initialState = null }) {
           layout="vertical"
           onFinish={saveBinding}
           initialValues={{
-            clientId: binding?.clientId || "",
+            clientId: "",
             apiKey: "",
-            label: binding?.storeName || "",
-            apiKeyCreatedAt: dateInputValue(binding?.apiKeyCreatedAt) || todayDateOnly(),
+            label: "",
+            apiKeyCreatedAt: todayDateOnly(),
           }}
         >
           <Form.Item
