@@ -124,6 +124,15 @@ test("rejects authority-bearing client configuration fields", () => {
   }
 });
 
+test("rejects authority-bearing fields in nested objects and arrays", () => {
+  expectConfigError(baseConfig({
+    metadata: { strategyVersionId: "strategy-client-controlled" },
+  }), "AUTO_LISTING_CONFIG_FORBIDDEN_FIELD");
+  expectConfigError(baseConfig({
+    metadata: [{ uploadMode: "DIRECT" }],
+  }), "AUTO_LISTING_CONFIG_FORBIDDEN_FIELD");
+});
+
 test("exports the closed image-role and item-status vocabularies", () => {
   assert.deepEqual(AUTO_LISTING_IMAGE_ROLES, [
     "main",

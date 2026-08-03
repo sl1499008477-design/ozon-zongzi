@@ -28,6 +28,9 @@ const roundHalfUp = (numerator, denominator) =>
   (numerator + denominator / 2n) / denominator;
 
 export function calculateAutoListingPrice(input = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw priceError(PRICE_INPUT_INVALID);
+  }
   if (isMissing(input.currency)) throw priceError(PRICE_INPUT_MISSING);
   if (input.currency !== "RUB") throw priceError(PRICE_CURRENCY_NOT_RUB);
 
@@ -40,6 +43,7 @@ export function calculateAutoListingPrice(input = {}) {
   if (blackKopecks >= 8_000n) {
     branch = "BLACK_GTE_80";
     greenKopecks = parseIntegerKopecks(input.greenKopecks, { required: true, positive: true });
+    if (greenKopecks > blackKopecks) throw priceError(PRICE_INPUT_INVALID);
     realPriceKopecks = roundHalfUp((blackKopecks - greenKopecks) * 225n, 100n) + blackKopecks;
   } else {
     branch = "BLACK_LT_80";

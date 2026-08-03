@@ -55,6 +55,27 @@ test("uses the below-80 formula at 79.99 RUB and the discount formula at 80 RUB"
   });
 });
 
+test("rejects inverted high-branch price evidence while allowing no discount", () => {
+  assert.deepEqual(calculateAutoListingPrice({
+    blackKopecks: "8000",
+    greenKopecks: "8000",
+    currency: "RUB",
+  }), {
+    currency: "RUB",
+    branch: "BLACK_GTE_80",
+    blackKopecks: "8000",
+    greenKopecks: "8000",
+    realPriceKopecks: "8000",
+    adjustmentKopecks: "0",
+    finalPriceKopecks: "8000",
+  });
+  expectPriceError({
+    blackKopecks: "8000",
+    greenKopecks: "9000",
+    currency: "RUB",
+  }, "PRICE_INPUT_INVALID");
+});
+
 test("rounds a half kopeck upward using exact integer arithmetic", () => {
   assert.deepEqual(calculateAutoListingPrice({
     blackKopecks: "8002",
@@ -104,6 +125,13 @@ test("rejects missing, malformed, and nonpositive source prices", () => {
     greenKopecks: "0",
     currency: "RUB",
   }, "PRICE_INPUT_INVALID");
+});
+
+test("rejects invalid input containers while preserving empty-object missing-field semantics", () => {
+  expectPriceError(null, "PRICE_INPUT_INVALID");
+  expectPriceError([], "PRICE_INPUT_INVALID");
+  expectPriceError("price", "PRICE_INPUT_INVALID");
+  expectPriceError({}, "PRICE_INPUT_MISSING");
 });
 
 test("rejects malformed adjustments and nonpositive final prices", () => {

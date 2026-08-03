@@ -77,13 +77,19 @@ const contractError = (code) => {
 const isPlainObject = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-const assertNoForbiddenFields = (value) => {
+const assertNoForbiddenFields = (value, visited = new Set()) => {
+  if (value === null || typeof value !== "object" || visited.has(value)) return;
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const nested of value) assertNoForbiddenFields(nested, visited);
+    return;
+  }
   if (!isPlainObject(value)) return;
   for (const [key, nested] of Object.entries(value)) {
     if (FORBIDDEN_CLIENT_FIELDS.has(key)) {
       throw contractError("AUTO_LISTING_CONFIG_FORBIDDEN_FIELD");
     }
-    assertNoForbiddenFields(nested);
+    assertNoForbiddenFields(nested, visited);
   }
 };
 
