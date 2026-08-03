@@ -5120,6 +5120,15 @@ const collectEditCategoryStatus = (resolution) => String(
   resolution?.status || "",
 ).trim().toUpperCase();
 
+const collectEditPositiveCategoryId = (value) => {
+  const id = Number(value);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+};
+
+const collectEditTargetStoreMatches = (resolution, targetStoreId) => String(
+  resolution?.target?.storeId || "",
+) === String(targetStoreId || "");
+
 const collectEditScopeRecordIsCurrent = ({
   record = null,
   itemId = "",
@@ -5179,6 +5188,10 @@ const collectEditScopedRecoveryResolution = ({
     taxonomyScope,
   })) return null;
   if (method && recovery?.resolution?.method !== method) return null;
+  if (
+    recovery?.resolution?.method === "MANUAL"
+    && !collectEditTargetStoreMatches(recovery.resolution, targetStoreId)
+  ) return null;
   return collectEditCurrentMatchedResolution({
     resolution: recovery?.resolution,
     targetStoreId,
@@ -5188,13 +5201,16 @@ const collectEditScopedRecoveryResolution = ({
 
 const collectEditSavedManualRecoveryResolution = ({
   item = {},
+  itemId = "",
   targetStoreId = "",
   taxonomyScope = "OZON:DEFAULT",
 } = {}) => {
   const saved = item?.listingDraft?.categoryResolution;
   if (
     saved?.method !== "MANUAL"
+    || String(saved?.itemId || "") !== String(itemId || "")
     || String(saved?.taxonomyScope || "") !== String(taxonomyScope || "")
+    || !collectEditTargetStoreMatches(saved, targetStoreId)
   ) return null;
   return collectEditCurrentMatchedResolution({
     resolution: saved,
@@ -5225,6 +5241,82 @@ const collectEditLegacyCategoryResolution = ({
     targetStoreId,
     taxonomyScope,
   });
+};
+
+const collectCategoryPreviewRecoveryMethods = new Set([
+  "AUTO",
+  "MANUAL",
+  "DIRECT_TYPE_ID",
+  "DICTIONARY_VALUE_ID",
+  "TYPE_ID_EXACT",
+  "EXACT_TYPE_ID",
+  "TYPE_NAME_EXACT",
+  "TYPE_NAME_NORMALIZED",
+]);
+
+export const normalizeCollectCategoryPreviewRecovery = ({
+  item = {},
+  itemId = "",
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  request = {},
+  responseItems = [],
+} = {}) => {
+  const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
+  const requestOfferId = String(request?.offerId || "");
+  const requestSku = String(request?.sku || "");
+  if (!currentItemId || !requestOfferId || !requestSku || !Array.isArray(responseItems) || responseItems.length !== 1) return null;
+  const response = responseItems[0];
+  if (!response || typeof response !== "object") return null;
+  if (String(response.offer_id || response.offerId || "") !== requestOfferId) return null;
+  if (String(response.sku || response.scraped_sku || "") !== requestSku) return null;
+
+  const currentItemIds = new Set([
+    item?.id,
+    item?.collectItemId,
+    itemId,
+  ].map((value) => String(value || "")).filter(Boolean));
+  const declaredItemIds = [
+    response.collectItemId,
+    response.collect_item_id,
+    response.id,
+  ].map((value) => String(value || "")).filter(Boolean);
+  if (declaredItemIds.length && !declaredItemIds.some((value) => currentItemIds.has(value))) return null;
+
+  const resolution = response.categoryResolution;
+  const method = String(resolution?.method || "").trim();
+  const descriptionCategoryId = collectEditPositiveCategoryId(response.description_category_id);
+  const typeId = collectEditPositiveCategoryId(response.type_id);
+  if (
+    !resolution
+    || collectEditCategoryStatus(resolution) !== "MATCHED"
+    || !collectCategoryPreviewRecoveryMethods.has(method)
+    || String(resolution.offerId || "") !== requestOfferId
+    || !collectEditTargetStoreMatches(resolution, targetStoreId)
+    || (resolution.taxonomyScope && String(resolution.taxonomyScope) !== String(taxonomyScope || ""))
+    || !descriptionCategoryId
+    || !typeId
+    || collectEditPositiveCategoryId(resolution.target?.descriptionCategoryId) !== descriptionCategoryId
+    || collectEditPositiveCategoryId(resolution.target?.typeId) !== typeId
+  ) return null;
+
+  return {
+    itemId: currentItemId,
+    targetStoreId: String(targetStoreId || ""),
+    taxonomyScope: String(taxonomyScope || ""),
+    resolution: {
+      status: "MATCHED",
+      method,
+      taxonomyScope: String(taxonomyScope || ""),
+      targetDescriptionCategoryId: descriptionCategoryId,
+      targetTypeId: typeId,
+      target: {
+        storeId: String(targetStoreId || ""),
+        descriptionCategoryId,
+        typeId,
+      },
+    },
+  };
 };
 
 export const collectEditEffectiveCategoryResolution = ({
@@ -5268,6 +5360,7 @@ export const collectEditEffectiveCategoryResolution = ({
       if (manual) return manual;
       const savedManual = collectEditSavedManualRecoveryResolution({
         item,
+        itemId: currentItemId,
         targetStoreId,
         taxonomyScope,
       });
@@ -5819,52 +5912,38 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         },
       });
       if (!requestIsCurrent()) return null;
-      const first = Array.isArray(result?.items) ? result.items[0] : null;
-      if (first) {
-        const previewResolution = {
-          ...(first.categoryResolution || {}),
-          status: "MATCHED",
-          method: first.categoryResolution?.method || "AUTO",
-          taxonomyScope: categoryTaxonomyScope,
-          targetDescriptionCategoryId: first.description_category_id,
-          targetTypeId: first.type_id,
-          target: {
-            ...(first.categoryResolution?.target || {}),
-            storeId: categoryStoreId,
-            descriptionCategoryId: first.description_category_id,
-            typeId: first.type_id,
-          },
-        };
-        setPreviewItem({
-          ...first,
-          categoryPreviewOverride: {
-            itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
-            targetStoreId: categoryStoreId,
-            taxonomyScope: categoryTaxonomyScope,
-            resolution: previewResolution,
-          },
-        });
-      }
-      if (!first?.description_category_id || !first?.type_id) {
-        const reason = first?.categoryResolution?.reason;
-        const detail = reason === "TARGET_TYPE_AMBIGUOUS"
-          ? "目标店铺存在多个同名商品类型，请手动选择"
-          : reason === "SOURCE_TYPE_MISSING"
-            ? "采集来源缺少可核验的商品类型，请手动选择"
-            : "目标店铺未找到唯一对应类型，请手动选择";
+      const recovery = normalizeCollectCategoryPreviewRecovery({
+        item,
+        itemId,
+        targetStoreId: categoryStoreId,
+        taxonomyScope: categoryTaxonomyScope,
+        request: {
+          offerId: payload.offer_id,
+          sku: payload.scraped_sku,
+        },
+        responseItems: result?.items,
+      });
+      if (!recovery) {
+        const detail = "CATEGORY_PREVIEW_RESPONSE_REJECTED";
         setCategoryAutoError(detail);
         if (!silent) message.warning({ content: detail, key: "collect-category-preview", duration: 4 });
         return null;
       }
+      setPreviewItem({
+        description_category_id: recovery.resolution.targetDescriptionCategoryId,
+        type_id: recovery.resolution.targetTypeId,
+        categoryResolution: recovery.resolution,
+        categoryPreviewOverride: recovery,
+      });
       setCategoryAutoError("");
       if (!silent) {
         message.success({
-          content: `已匹配类目：${first.description_category_id} / ${first.type_id}`,
+          content: `已匹配类目：${recovery.resolution.targetDescriptionCategoryId} / ${recovery.resolution.targetTypeId}`,
           key: "collect-category-preview",
           duration: 4,
         });
       }
-      return first;
+      return recovery;
     } catch (error) {
       if (!requestIsCurrent()) return null;
       const detail = error?.message || String(error);
@@ -6192,6 +6271,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     });
     const manualResolution = {
       ...manualSelection,
+      itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
       taxonomyScope: categoryTaxonomyScope,
       targetDescriptionCategoryId: nextDescriptionId,
       targetTypeId: nextTypeId,

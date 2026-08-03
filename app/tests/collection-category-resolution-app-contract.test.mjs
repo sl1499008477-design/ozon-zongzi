@@ -313,7 +313,10 @@ test("effective editor resolution lets an interactive current match recover NEED
 
 test("real editor preview, seed, draft, and variants reload a scoped saved MANUAL recovery", () => {
   for (const status of ["NEEDS_REVIEW", "INVALIDATED"]) {
-    const item = unresolvedSharedItem(status, { categoryResolution: recoveryManual });
+    const item = unresolvedSharedItem(status);
+    item.listingDraft = {
+      categoryResolution: { ...recoveryManual, itemId: item.id },
+    };
     const preview = appModule.collectEditPreviewPayload({
       item,
       sku: item.sku,
@@ -441,4 +444,143 @@ test("effective editor resolution isolates recovery records and retains Task 6 l
     descriptionCategoryId: 333,
     typeId: 444,
   });
+});
+
+test("saved and session MANUAL recoveries reject a matching scope record whose target belongs to another store", () => {
+  const item = unresolvedSharedItem("NEEDS_REVIEW", {
+    categoryResolution: {
+      ...recoveryManual,
+      target: { storeId: "store-other", descriptionCategoryId: 333, typeId: 444 },
+    },
+  });
+  const saved = appModule.collectEditEffectiveCategoryResolution({
+    item,
+    itemId: item.id,
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+  });
+  assert.equal(saved.status, "NEEDS_REVIEW");
+
+  const session = appModule.collectEditEffectiveCategoryResolution({
+    item: unresolvedSharedItem("INVALIDATED"),
+    itemId: "collect-invalidated",
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+    manualOverride: {
+      itemId: "collect-invalidated",
+      targetStoreId: "store-b",
+      taxonomyScope: "OZON:DEFAULT",
+      resolution: {
+        ...recoveryManual,
+        target: { storeId: "store-other", descriptionCategoryId: 333, typeId: 444 },
+      },
+    },
+  });
+  assert.equal(session.status, "INVALIDATED");
+
+  const savedOtherItem = appModule.collectEditEffectiveCategoryResolution({
+    item: unresolvedSharedItem("NEEDS_REVIEW", {
+      categoryResolution: { ...recoveryManual, itemId: "other-collect-item" },
+    }),
+    itemId: "collect-needs-review",
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+  });
+  assert.equal(savedOtherItem.status, "NEEDS_REVIEW");
+});
+
+const previewRecoveryFixture = ({
+  itemId = "collect-preview-a",
+  responseItem = {},
+} = {}) => ({
+  item: {
+    id: itemId,
+    sku: "sku-preview-a",
+    offer_id: "source-offer-a",
+  },
+  itemId,
+  targetStoreId: "store-b",
+  taxonomyScope: "OZON:DEFAULT",
+  request: {
+    offerId: "listing-offer-a",
+    sku: "sku-preview-a",
+  },
+  responseItems: [{
+    offer_id: "listing-offer-a",
+    sku: "sku-preview-a",
+    description_category_id: 555,
+    type_id: 666,
+    attributes: [{ id: 4180, values: [{ value: "must not persist" }] }],
+    complex_attributes: [{ id: 1, attributes: [{ id: 2 }] }],
+    categoryResolution: {
+      offerId: "listing-offer-a",
+      status: "MATCHED",
+      method: "DICTIONARY_VALUE_ID",
+      source: { typeName: "untrusted source" },
+      target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 },
+    },
+    ...responseItem,
+  }],
+});
+
+test("preview recovery normalizes the server's one-item offer and SKU correlation without retaining raw preview fields", () => {
+  assert.equal(typeof appModule.normalizeCollectCategoryPreviewRecovery, "function");
+  const recovery = appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture());
+  assert.deepEqual(recovery, {
+    itemId: "collect-preview-a",
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+    resolution: {
+      status: "MATCHED",
+      method: "DICTIONARY_VALUE_ID",
+      taxonomyScope: "OZON:DEFAULT",
+      targetDescriptionCategoryId: 555,
+      targetTypeId: 666,
+      target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 },
+    },
+  });
+  assert.equal("attributes" in recovery, false);
+  assert.equal("complex_attributes" in recovery, false);
+  assert.equal("source" in recovery.resolution, false);
+
+  const item = unresolvedSharedItem("NEEDS_REVIEW");
+  const currentRecovery = { ...recovery, itemId: item.id };
+  const resolved = appModule.collectEditEffectiveCategoryResolution({
+    item,
+    itemId: item.id,
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+    interactivePreview: currentRecovery,
+  });
+  const draft = appModule.collectEditDraftVariantCategory({
+    item,
+    itemId: item.id,
+    row: { sku: item.sku },
+    targetStoreId: "store-b",
+    interactivePreview: currentRecovery,
+  });
+  assert.deepEqual(categoryIds(resolved), { descriptionCategoryId: 555, typeId: 666 });
+  assert.deepEqual(
+    { descriptionCategoryId: draft.descriptionCategoryId, typeId: draft.typeId },
+    { descriptionCategoryId: 555, typeId: 666 },
+  );
+});
+
+test("preview recovery rejects mismatched identity, store, taxonomy, status, and target IDs", () => {
+  for (const responseItem of [
+    { offer_id: "other-offer" },
+    { sku: "other-sku" },
+    { collectItemId: "other-collect-item" },
+    { categoryResolution: { offerId: "listing-offer-a", status: "MATCHED", method: "DICTIONARY_VALUE_ID", target: { storeId: "store-other", descriptionCategoryId: 555, typeId: 666 } } },
+    { categoryResolution: { offerId: "listing-offer-a", status: "MATCHED", method: "DICTIONARY_VALUE_ID", taxonomyScope: "OZON:RU", target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 } } },
+    { description_category_id: 0 },
+    { type_id: 0 },
+    { categoryResolution: { offerId: "listing-offer-a", status: "INVALIDATED", method: "DICTIONARY_VALUE_ID", target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 } } },
+  ]) {
+    assert.equal(
+      appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture({ responseItem })),
+      null,
+      JSON.stringify(responseItem),
+    );
+  }
 });
