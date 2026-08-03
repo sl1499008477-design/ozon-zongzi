@@ -655,13 +655,6 @@ async function resolveTypeId(item, descriptionCategoryId, ctx, tree) {
   return matched?.typeId || 0;
 }
 
-async function allowedAttributeIds(descriptionCategoryId, typeId, ctx) {
-  if (!descriptionCategoryId || !typeId || typeof ctx.getCategoryAttributes !== "function") return null;
-  const attrs = await ctx.getCategoryAttributes(descriptionCategoryId, typeId);
-  if (!asArray(attrs).length) return null;
-  return new Set(attrs.map((attr) => Number(attr.id)).filter(Boolean));
-}
-
 async function categoryAttributeContext(descriptionCategoryId, typeId, ctx) {
   if (!descriptionCategoryId || !typeId || typeof ctx.getCategoryAttributes !== "function") {
     return { allowedIds: null, metaById: new Map() };

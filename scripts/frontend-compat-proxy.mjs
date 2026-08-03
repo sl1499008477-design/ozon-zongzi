@@ -2,8 +2,16 @@ import http from "node:http";
 import net from "node:net";
 
 const host = "127.0.0.1";
-const port = 3000;
-const target = "http://127.0.0.1:5173";
+const configuredPort = Number(process.env.SONLI_FRONTEND_PROXY_PORT ?? 3000);
+if (!Number.isInteger(configuredPort) || configuredPort < 0 || configuredPort > 65_535) {
+  throw new Error("SONLI_FRONTEND_PROXY_PORT must be an integer between 0 and 65535");
+}
+const port = configuredPort;
+const targetUrl = new URL(process.env.SONLI_FRONTEND_TARGET || "http://127.0.0.1:5173");
+if (targetUrl.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(targetUrl.hostname)) {
+  throw new Error("SONLI_FRONTEND_TARGET must be a local HTTP URL");
+}
+const target = targetUrl.toString();
 
 const server = http.createServer((request, response) => {
   const targetUrl = new URL(request.url ?? "/", target);
@@ -55,7 +63,8 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Frontend compatibility proxy listening on http://${host}:${port}`);
+  const address = server.address();
+  console.log(`Frontend compatibility proxy listening on http://${host}:${address.port}`);
 });
 
 function shutdown() {

@@ -11,7 +11,7 @@ async function source(relativePath) {
   return readFile(path.join(repositoryDirectory, relativePath), "utf8");
 }
 
-test("the app dev server and compatibility proxy use distinct fixed ports", async () => {
+test("the app dev server and compatibility proxy keep fixed defaults with isolated test overrides", async () => {
   const packageJson = JSON.parse(await readFile(path.join(appDirectory, "package.json"), "utf8"));
   const viteConfig = await source("app/vite.config.mjs");
   const compatibilityProxy = await source("scripts/frontend-compat-proxy.mjs");
@@ -22,8 +22,8 @@ test("the app dev server and compatibility proxy use distinct fixed ports", asyn
   assert.match(viteConfig, /port:\s*5173/);
   assert.match(viteConfig, /strictPort:\s*true/);
   assert.match(compatibilityProxy, /const host = "127\.0\.0\.1"/);
-  assert.match(compatibilityProxy, /const port = 3000/);
-  assert.match(compatibilityProxy, /const target = "http:\/\/127\.0\.0\.1:5173"/);
+  assert.match(compatibilityProxy, /SONLI_FRONTEND_PROXY_PORT \?\? 3000/);
+  assert.match(compatibilityProxy, /SONLI_FRONTEND_TARGET \|\| "http:\/\/127\.0\.0\.1:5173"/);
   assert.match(devScript, /\["frontend-compat-proxy", "node", \["scripts\/frontend-compat-proxy\.mjs"\]\]/);
   assert.match(devScript, /\["app", "pnpm", \["--dir", "app", "dev"\]\]/);
 });

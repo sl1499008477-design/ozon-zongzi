@@ -15,7 +15,7 @@ import {
   listCollectItemsV3,
   mirrorCollectItemV3,
   prepareCollectItemForListing,
-  softDeleteCollectItemsV3,
+  softDeleteCollectItemsForAccountV4,
 } from "../listing-pipeline.mjs";
 
 if (!postgresEnabled()) {
@@ -536,7 +536,7 @@ try {
       if (!listingBlocked) await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.equal(listingBlocked, true, "listing preparation must reach the held idempotency lock");
-    raceDeletePromise = softDeleteCollectItemsV3(accountId, [raceCollectId]);
+    raceDeletePromise = softDeleteCollectItemsForAccountV4(accountId, [raceCollectId]);
     let deleteBlockedByListing = false;
     for (let attempt = 0; attempt < 100 && !deleteBlockedByListing; attempt += 1) {
       const blocked = await pool.query(
@@ -876,7 +876,7 @@ try {
   assert.equal(duplicateRetry.duplicate, true);
   assert.equal(duplicateRetry.job.id, retry.job.id);
 
-  assert.equal(await softDeleteCollectItemsV3(accountId, [collectId]), 1);
+  assert.equal(await softDeleteCollectItemsForAccountV4(accountId, [collectId]), 1);
   const deleted = await pool.query("SELECT deleted_at FROM collect_items WHERE id=$1", [collectId]);
   assert.ok(deleted.rows[0].deleted_at);
   console.log("listing pipeline v3 integration passed");

@@ -430,11 +430,6 @@ async function validateAccountWithClient(client, accountId) {
   };
 }
 
-export async function validateCollectorScope(input) {
-  const pool = await poolReady();
-  return validateAccountWithClient(pool, input?.accountId);
-}
-
 async function insertEvent(client, {
   taskId,
   runId = null,

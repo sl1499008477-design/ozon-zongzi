@@ -275,10 +275,6 @@ export function preflightCollectRequestsV4(options = {}) {
   return preflightCollectRequests({ ...options, prepare: prepareCollectRequestV4 });
 }
 
-export function preflightCompleteCollectRequestsV4(options = {}) {
-  return preflightCollectRequests({ ...options, prepare: prepareCompleteCollectRequestV4 });
-}
-
 async function transaction(callback) {
   const pool = await poolReady();
   const client = await pool.connect();

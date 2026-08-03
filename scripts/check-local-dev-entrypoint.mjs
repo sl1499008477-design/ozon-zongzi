@@ -16,8 +16,6 @@ assert.match(
 );
 
 const host = "127.0.0.1";
-const upstreamPort = 5173;
-const proxyPort = 3000;
 let upgradeReceived = false;
 let clientFramePayload = null;
 const upstreamSockets = new Set();
@@ -55,14 +53,20 @@ upstream.on("upgrade", (request, socket) => {
   });
 });
 
-await new Promise((resolve) => upstream.listen(upstreamPort, host, resolve));
+await new Promise((resolve) => upstream.listen(0, host, resolve));
+const upstreamPort = upstream.address().port;
 
 const proxy = spawn(process.execPath, [fileURLToPath(new URL("./frontend-compat-proxy.mjs", import.meta.url))], {
   stdio: ["ignore", "pipe", "pipe"],
+  env: {
+    ...process.env,
+    SONLI_FRONTEND_PROXY_PORT: "0",
+    SONLI_FRONTEND_TARGET: `http://${host}:${upstreamPort}`,
+  },
 });
 
 try {
-  await waitForProxy(proxy);
+  const proxyPort = await waitForProxy(proxy);
 
   const httpBody = await requestBody(`http://${host}:${proxyPort}/health`);
   assert.equal(httpBody, "upstream /health", "the proxy must forward ordinary HTTP requests");
@@ -93,9 +97,10 @@ function waitForProxy(child) {
     child.once("error", reject);
     child.once("exit", (code) => reject(new Error(`compatibility proxy exited with code ${code}`)));
     child.stdout.on("data", (chunk) => {
-      if (chunk.toString().includes("listening on")) {
+      const match = chunk.toString().match(/listening on http:\/\/127\.0\.0\.1:(\d+)/);
+      if (match) {
         clearTimeout(timeout);
-        resolve();
+        resolve(Number(match[1]));
       }
     });
   });

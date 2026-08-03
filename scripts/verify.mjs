@@ -10,6 +10,7 @@ const checks = [
     ["node_modules/vite/bin/vite.js", "build"],
     { cwd: "app" },
   ],
+  ["Local development entrypoint", "node", ["scripts/check-local-dev-entrypoint.mjs"]],
   ["Extension source parity", "node", ["scripts/check-extension-source-parity.mjs"]],
   ["Extension UI parity", "node", ["scripts/check-extension-ui-parity.mjs"]],
   ["Extension diff contract", "node", ["scripts/check-extension-diff-contract.mjs"]],

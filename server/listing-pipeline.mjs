@@ -1120,10 +1120,6 @@ export async function softDeleteCollectItemsForAccountV4(accountId, ids = []) {
   return result.rowCount;
 }
 
-export async function softDeleteCollectItemsV3(accountId, ids = []) {
-  return softDeleteCollectItemsForAccountV4(accountId, ids);
-}
-
 function publicJob(row = {}) {
   const itemRows = Array.isArray(row.items) ? row.items : [];
   return {

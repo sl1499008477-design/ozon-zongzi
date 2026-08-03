@@ -2141,18 +2141,6 @@ function listingSourceAttribute(source = {}, attributeId) {
   );
 }
 
-function listingSourceAttributeText(source = {}, attributeId) {
-  const attr = listingSourceAttribute(source, attributeId);
-  if (!attr) return "";
-  if (attr.value !== undefined && attr.value !== null && String(attr.value).trim()) {
-    return String(attr.value).trim();
-  }
-  const first = Array.isArray(attr.collection)
-    ? attr.collection.find((value) => cleanText(typeof value === "object" ? value?.value || value?.name || value?.title : value))
-    : null;
-  return cleanText(typeof first === "object" ? first?.value || first?.name || first?.title : first);
-}
-
 function listingSourceImages(source = {}) {
   const primary = listingSourceAttribute(source, 4194);
   const gallery = listingSourceAttribute(source, 4195);

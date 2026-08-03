@@ -98,13 +98,6 @@ function assertPlainObject(value, message = "补全请求格式无效") {
   }
 }
 
-function assertExactKeys(value, allowed) {
-  assertPlainObject(value);
-  if (Object.keys(value).some((key) => !allowed.includes(key))) {
-    throw routeError("补全请求包含不允许的字段");
-  }
-}
-
 function assertRequiredExactKeys(value, required, message) {
   assertPlainObject(value, message);
   if (
