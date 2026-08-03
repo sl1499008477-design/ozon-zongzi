@@ -533,9 +533,30 @@ async function main() {
       "attempt",
       "failureCode",
     ]);
-    for (const event of persisted.auditEvents.filter((candidate) => candidate.source === "collect-category-resolution")) {
+    const categoryAudits = persisted.auditEvents.filter(
+      (candidate) => candidate.source === "collect-category-resolution",
+    );
+    assert.ok(categoryAudits.length > 0, "category audit coverage must not be empty");
+    const categoryAuditActions = new Set(categoryAudits.map((event) => event.action));
+    for (const requiredAction of [
+      "COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED",
+      "COLLECT_CATEGORY_RESOLUTION_MATCHED",
+      "COLLECT_CATEGORY_RESOLUTION_VALIDATED",
+      "COLLECT_CATEGORY_RESOLUTION_INVALIDATED",
+    ]) {
+      assert.equal(
+        categoryAuditActions.has(requiredAction),
+        true,
+        `category audit must include ${requiredAction}`,
+      );
+    }
+    for (const event of categoryAudits) {
       assert.equal(event.accountId, ACCOUNT_A);
       assert.equal(Object.keys(event.metadata).every((key) => allowedAuditKeys.has(key)), true);
+      assertNoSensitiveMarkersDeep(
+        event.metadata,
+        [RAW_FAILURE_MARKER, PRIVATE_STORE_MARKER],
+      );
     }
     const publicAndObservability = JSON.stringify({
       list: listRead.body,
