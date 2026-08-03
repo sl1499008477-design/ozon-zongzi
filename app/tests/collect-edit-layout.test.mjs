@@ -124,21 +124,172 @@ test("manual selection overrides an unresolved shared category summary while the
     typeId: 94_405,
     resolvedAt: "2026-08-03T12:00:00.000Z",
   });
+  for (const status of ["NEEDS_REVIEW", "INVALIDATED"]) {
+    const selected = appModule.collectEditDraftVariantCategory({
+      item: {
+        id: `collect-${status}`,
+        categoryResolution: { status, taxonomyScope: "OZON:DEFAULT" },
+      },
+      itemId: `collect-${status}`,
+      row: { sku: "sku-manual" },
+      targetStoreId: "store-a",
+      manualOverride: {
+        itemId: `collect-${status}`,
+        targetStoreId: "store-a",
+        taxonomyScope: "OZON:DEFAULT",
+        resolution: manual,
+      },
+    });
+
+    assert.equal(selected.categoryResolution.method, "MANUAL", status);
+    assert.deepEqual(
+      { descriptionCategoryId: selected.descriptionCategoryId, typeId: selected.typeId },
+      { descriptionCategoryId: 17_028_702, typeId: 94_405 },
+      status,
+    );
+  }
+});
+
+test("a session MANUAL choice cannot replace a current shared MATCHED target", () => {
+  const manual = manualCategoryResolution({
+    source: { descriptionCategoryId: 17_033_604, typeIdCandidate: 94_405 },
+    targetStoreId: "store-a",
+    descriptionCategoryId: 333,
+    typeId: 444,
+    resolvedAt: "2026-08-03T12:00:00.000Z",
+  });
   const selected = appModule.collectEditDraftVariantCategory({
     item: {
+      id: "collect-matched",
       categoryResolution: {
-        status: "NEEDS_REVIEW",
+        status: "MATCHED",
         taxonomyScope: "OZON:DEFAULT",
+        targetDescriptionCategoryId: 111,
+        targetTypeId: 222,
+        method: "AUTO",
       },
     },
-    row: { sku: "sku-manual", categoryResolution: manual },
+    itemId: "collect-matched",
+    row: { sku: "sku-matched" },
     targetStoreId: "store-a",
     fallbackResolution: manual,
+    manualOverride: {
+      itemId: "collect-matched",
+      targetStoreId: "store-a",
+      taxonomyScope: "OZON:DEFAULT",
+      resolution: manual,
+    },
   });
 
-  assert.equal(selected.categoryResolution.method, "MANUAL");
+  assert.equal(selected.categoryResolution.method, "AUTO");
   assert.deepEqual(
     { descriptionCategoryId: selected.descriptionCategoryId, typeId: selected.typeId },
-    { descriptionCategoryId: 17_028_702, typeId: 94_405 },
+    { descriptionCategoryId: 111, typeId: 222 },
   );
+});
+
+test("session MANUAL overrides are isolated by item, target store, and taxonomy scope", () => {
+  assert.equal(typeof appModule.collectEditManualResolutionOverride, "function");
+  const manual = manualCategoryResolution({
+    targetStoreId: "store-a",
+    descriptionCategoryId: 333,
+    typeId: 444,
+    resolvedAt: "2026-08-03T12:00:00.000Z",
+  });
+  const item = {
+    id: "collect-a",
+    categoryResolution: { status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT" },
+  };
+  const validOverride = {
+    itemId: "collect-a",
+    targetStoreId: "store-a",
+    taxonomyScope: "OZON:DEFAULT",
+    resolution: manual,
+  };
+
+  assert.equal(
+    appModule.collectEditManualResolutionOverride({
+      item,
+      itemId: "collect-a",
+      targetStoreId: "store-a",
+      taxonomyScope: "OZON:DEFAULT",
+      manualOverride: validOverride,
+    }).method,
+    "MANUAL",
+  );
+  for (const mismatch of [
+    { itemId: "collect-b" },
+    { targetStoreId: "store-b" },
+    { taxonomyScope: "OZON:RU" },
+  ]) {
+    assert.equal(
+      appModule.collectEditManualResolutionOverride({
+        item,
+        itemId: "collect-a",
+        targetStoreId: "store-a",
+        taxonomyScope: "OZON:DEFAULT",
+        manualOverride: { ...validOverride, ...mismatch },
+      }),
+      null,
+      JSON.stringify(mismatch),
+    );
+  }
+});
+
+test("the visible category action calls the existing interactive preview handler", () => {
+  assert.equal(typeof appModule.collectEditCategoryPreviewAction, "function");
+  const calls = [];
+  appModule.collectEditCategoryPreviewAction((options) => calls.push(options))();
+  assert.deepEqual(calls, [{ silent: false }]);
+});
+
+test("editor keeps the manual category preview button clickable for review, invalidation, and missing categories", () => {
+  assert.equal(typeof appModule.CollectEditPage, "function");
+  const priorWindow = globalThis.window;
+  const priorStorage = globalThis.localStorage;
+  globalThis.window = { location: { search: "?id=collect-needs-review" } };
+  globalThis.localStorage = { getItem: () => "" };
+  try {
+    for (const categoryResolution of [
+      { status: "NEEDS_REVIEW", taxonomyScope: "OZON:DEFAULT" },
+      { status: "INVALIDATED", taxonomyScope: "OZON:DEFAULT" },
+      null,
+    ]) {
+      const markup = renderToStaticMarkup(
+        React.createElement(
+          ConfigProvider,
+          null,
+          React.createElement(
+            AntApp,
+            null,
+            React.createElement(appModule.CollectEditPage, {
+              binding: { id: "store-a" },
+              hasStore: true,
+              localData: {
+                currentStoreId: "store-a",
+                caches: {
+                  collectBox: [{
+                    id: "collect-needs-review",
+                    sku: "sku-needs-review",
+                    ...(categoryResolution ? { categoryResolution } : {}),
+                  }],
+                },
+              },
+              onBind: () => {},
+              onRefresh: () => {},
+              navigate: () => {},
+            }),
+          ),
+        ),
+      );
+      assert.match(markup, /aria-label="手动匹配类目"/);
+      assert.doesNotMatch(
+        markup,
+        /<button[^>]*(?:disabled[^>]*aria-label="手动匹配类目"|aria-label="手动匹配类目"[^>]*disabled)[^>]*>/,
+      );
+    }
+  } finally {
+    globalThis.window = priorWindow;
+    globalThis.localStorage = priorStorage;
+  }
 });

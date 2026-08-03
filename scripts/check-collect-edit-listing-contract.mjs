@@ -29,6 +29,11 @@ requirePattern(
   "review and invalidated category summaries must keep the existing manual category save path",
 );
 
+requirePattern(
+  /const handleCategoryPreview = collectEditCategoryPreviewAction\(runCollectPreview\);[\s\S]*disabled=\{categoryAutoLoading\}[\s\S]*aria-label="手动匹配类目"[\s\S]*onClick=\{handleCategoryPreview\}/,
+  "category matching must be available only through a visible, duplicate-safe user action",
+);
+
 const productListSource = appSource.match(/function ProductListPage[\s\S]*?function CollectPage/)?.[0] || "";
 assert.doesNotMatch(
   productListSource,

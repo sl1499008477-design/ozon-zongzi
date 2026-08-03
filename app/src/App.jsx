@@ -5119,17 +5119,54 @@ const collectEditManualFallbackResolution = ({
   });
 };
 
+const manualOverrideEligibleStatuses = new Set([
+  "NEEDS_REVIEW",
+  "INVALIDATED",
+]);
+
+export const collectEditManualResolutionOverride = ({
+  item = {},
+  itemId = "",
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  manualOverride = null,
+} = {}) => {
+  const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
+  const sharedResolution = item?.categoryResolution;
+  const sharedStatus = String(sharedResolution?.status || "").trim().toUpperCase();
+  const sharedUsesCurrentTaxonomy = String(sharedResolution?.taxonomyScope || "") === String(taxonomyScope || "");
+  if (sharedUsesCurrentTaxonomy && !manualOverrideEligibleStatuses.has(sharedStatus)) return null;
+  if (
+    !manualOverride
+    || String(manualOverride.itemId || "") !== String(currentItemId || "")
+    || String(manualOverride.targetStoreId || "") !== String(targetStoreId || "")
+    || String(manualOverride.taxonomyScope || "") !== String(taxonomyScope || "")
+  ) return null;
+  return collectEditManualFallbackResolution({
+    resolution: manualOverride.resolution,
+    targetStoreId,
+    taxonomyScope,
+  });
+};
+
+export const collectEditCategoryPreviewAction = (runPreview) => () =>
+  typeof runPreview === "function" ? runPreview({ silent: false }) : null;
+
 export const collectEditDraftVariantCategory = ({
   item = {},
+  itemId = "",
   row = {},
   targetStoreId = "",
   taxonomyScope = "OZON:DEFAULT",
   fallbackResolution = null,
+  manualOverride = null,
 } = {}) => {
-  const categoryResolution = collectEditManualFallbackResolution({
-    resolution: fallbackResolution,
+  const categoryResolution = collectEditManualResolutionOverride({
+    item,
+    itemId,
     targetStoreId,
     taxonomyScope,
+    manualOverride,
   }) || categoryResolutionForCollectionTarget(item, {
     targetStoreId,
     taxonomyScope,
@@ -5655,9 +5692,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     }
   };
 
-  const handleCategoryPreview = function() {
-    runCollectPreview({ silent: false });
-  };
+  const handleCategoryPreview = collectEditCategoryPreviewAction(runCollectPreview);
 
   const handlePreview = function() {
     runListingRequest({ dryRun: true });
@@ -5703,10 +5738,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       } = row;
       const rowCategory = collectEditDraftVariantCategory({
         item,
+        itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
         row,
         targetStoreId: categoryStoreId,
         taxonomyScope: categoryTaxonomyScope,
         fallbackResolution: categoryResolution,
+        manualOverride: scopedPreviewItem?.categoryManualOverride,
       });
       const rowResolution = rowCategory.categoryResolution;
       const rowTarget = rowCategory;
@@ -5831,10 +5868,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     await saveListingDraft({ silent: false }).catch(function() {});
   };
   const currentDraft = item?.listingDraft || {};
-  const manualPreviewResolution = collectEditManualFallbackResolution({
-    resolution: scopedPreviewItem?.categoryResolution,
+  const manualPreviewResolution = collectEditManualResolutionOverride({
+    item,
+    itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
     targetStoreId: categoryStoreId,
     taxonomyScope: categoryTaxonomyScope,
+    manualOverride: scopedPreviewItem?.categoryManualOverride,
   });
   const categoryResolution = manualPreviewResolution || categoryResolutionForCollectionTarget(item, {
     targetStoreId: categoryStoreId,
@@ -5963,6 +6002,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     const nextRuPath = collectEditCategoryDisplayPath(
       collectEditFindCategoryOptionPath(categoryTreeOptionsRu, nextDescriptionId, nextTypeId),
     ) || nextZhPath;
+    const manualResolution = manualCategoryResolution({
+      source: sourceCategory,
+      targetStoreId: categoryStoreId,
+      descriptionCategoryId: nextDescriptionId,
+      typeId: nextTypeId,
+    });
     setPreviewItem((prev) => ({
       ...(prev || {}),
       description_category_id: nextDescriptionId,
@@ -5972,12 +6017,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       categoryPathRu: nextRuPath,
       category_name: nextZhPath,
       type_name: collectEditText(leaf?.label),
-      categoryResolution: manualCategoryResolution({
-        source: sourceCategory,
+      categoryResolution: manualResolution,
+      categoryManualOverride: {
+        itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
         targetStoreId: categoryStoreId,
-        descriptionCategoryId: nextDescriptionId,
-        typeId: nextTypeId,
-      }),
+        taxonomyScope: categoryTaxonomyScope,
+        resolution: manualResolution,
+      },
     }));
     setCategoryAutoError("");
   };
@@ -6465,9 +6511,20 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 <h2>产品类目</h2>
                 <p>{categoryMatched ? (categoryResolution?.method === "MANUAL" ? "已人工选择目标店铺类目" : "已按采集数据核验目标店铺类目") : categoryNeedsManualSelection ? "当前类目需要人工选择，请从下方类目树选择最末级商品类型" : categoryResolutionViewState?.label || (categoryAutoLoading ? "正在核验目标店铺类目" : "来源类目已保留，目标店铺类目待核验")}</p>
               </div>
-              <Tooltip rootClassName="prototype-overlay" title={categoryMatched ? "已拿到可用于 Ozon 上架的类目和类型 ID" : categoryResolutionViewState?.label || "等待后台类目匹配结果"}>
-                <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{categoryMatched ? "类目已匹配" : categoryResolutionViewState?.label || (categoryAutoLoading ? "类目匹配中" : "待匹配")}</Tag>
-              </Tooltip>
+              <Space size={8}>
+                <Button
+                  size="small"
+                  loading={categoryAutoLoading}
+                  disabled={categoryAutoLoading}
+                  aria-label="手动匹配类目"
+                  onClick={handleCategoryPreview}
+                >
+                  {categoryMatched ? "重新匹配类目" : "手动匹配类目"}
+                </Button>
+                <Tooltip rootClassName="prototype-overlay" title={categoryMatched ? "已拿到可用于 Ozon 上架的类目和类型 ID" : categoryResolutionViewState?.label || "等待后台类目匹配结果"}>
+                  <Tag color={categoryMatched ? "green" : collectEnrichmentTagColors[categoryResolutionViewState?.tone || (categoryAutoLoading ? "processing" : "default")]}>{categoryMatched ? "类目已匹配" : categoryResolutionViewState?.label || (categoryAutoLoading ? "类目匹配中" : "待匹配")}</Tag>
+                </Tooltip>
+              </Space>
             </div>
             {categoryVisibleError ? (
               <Alert
@@ -6742,6 +6799,8 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     </div>
   );
 }
+
+export { CollectEditPage };
 
 function ImportHistoryPage({ binding, hasStore, localData, onRefresh }) {
   const { message } = AntApp.useApp();
