@@ -1060,6 +1060,7 @@ try {
         pageType: 'products',
         ...captureOptions,
         preferTabId: opts.preferTabId,
+        strictPreferredSellerTab: opts.strictPreferredSellerTab === true,
         companyId,
       },
     );
@@ -1911,8 +1912,14 @@ try {
     return r.data;
   };
 
+  const resolveSellerPortalPreference = ({ sellerContext, sender } = {}) => ({
+    preferTabId: sellerContext?.sellerTabId || sender?.tab?.id || null,
+    strictPreferredSellerTab: Boolean(sellerContext),
+  });
+
   const resolveSellerPortalTargetTab = async ({
     preferTabId,
+    strictPreferredSellerTab = false,
     tabsApi = chrome.tabs,
     identityPolicy = globalThis.JzSellerIdentityPolicy,
     ensureTab = ensureSellerTab,
@@ -1926,6 +1933,7 @@ try {
         return preferred;
       }
     } catch {}
+    if (!strictPreferredSellerTab) return ensureTab();
     throw Object.assign(new Error('SELLER_CONTEXT_CHANGED'), {
       code: 'SELLER_CONTEXT_CHANGED',
     });
@@ -1957,7 +1965,10 @@ try {
 
     // 1. Find or auto-open seller.ozon.ru tab —— 直接用 ensureSellerTab 返回的
     // status=complete 的 tab,不再 query+find,避免选到 loading 中的 active tab。
-    const targetTab = await resolveSellerPortalTargetTab({ preferTabId: opts.preferTabId });
+    const targetTab = await resolveSellerPortalTargetTab({
+      preferTabId: opts.preferTabId,
+      strictPreferredSellerTab: opts.strictPreferredSellerTab === true,
+    });
 
     console.log(`[fetchSellerPortal] tab=${targetTab.id} url=${targetTab.url} path=${path}`);
 
@@ -3391,6 +3402,7 @@ try {
     companyId,
     forceRefresh,
     preferTabId,
+    strictPreferredSellerTab = false,
     deadlineAt,
     fetchBundle = fetchBundleByVariantId,
     fetchPublicPhysicals = fetchReadOnlyOzonPublicPhysicals,
@@ -3430,6 +3442,7 @@ try {
       const bundleItem = await fetchBundle(sku, variantId, companyId, {
         forceRefresh,
         preferTabId,
+        strictPreferredSellerTab,
         deadlineAt,
       });
       if (!bundleItem) return items;
@@ -3506,7 +3519,10 @@ try {
       ? globalThis.JzSellerIdentityPolicy.normalizeCompanyId(input.sellerContext.companyId)
       : '';
     // 跟卖时用户本就在 www 商品页 → 用来源标签走跨域快路,免依赖 seller 专用标签
-    const senderTabId = input.sellerContext?.sellerTabId || sender?.tab?.id || null;
+    const sellerPortalPreference = resolveSellerPortalPreference({
+      sellerContext: input.sellerContext,
+      sender,
+    });
     // 灰度:服务端 collect(search→bundle 链式;命中走俄罗斯 VPS,失败/未命中回落老路)
     if (!message.readOnly && await isFleetServerSide(backendUrl, token)) {
       const _ck = `${_FLEET_COLLECT_CACHE_PREFIX}${String(sku)}`;
@@ -3623,8 +3639,11 @@ try {
         const { response: resp, items } = await readSellerSearchVariants({
           sku,
           companyId,
-          preferTabId: senderTabId,
-          requestOptions: captureOptions,
+          preferTabId: sellerPortalPreference.preferTabId,
+          requestOptions: {
+            ...captureOptions,
+            strictPreferredSellerTab: sellerPortalPreference.strictPreferredSellerTab,
+          },
         });
         if (items.length === 0) {
           if (attempt === 1) {
@@ -3642,7 +3661,8 @@ try {
           sku,
           companyId,
           forceRefresh,
-          preferTabId: senderTabId,
+          preferTabId: sellerPortalPreference.preferTabId,
+          strictPreferredSellerTab: sellerPortalPreference.strictPreferredSellerTab,
           deadlineAt: message.deadlineAt,
         });
 
