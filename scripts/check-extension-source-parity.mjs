@@ -8,14 +8,16 @@ import {
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
 } from "./extension-capture-only-policy.mjs";
-import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
+import {
+  assertCompatibleExtensionVersions,
+  requireExtensionUpstreamDir,
+} from "./extension-upstream-config.mjs";
 
 const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-source-parity.mjs");
 if (!sourceDir) process.exit(2);
 const localDir = process.env.QH_LOCAL_EXTENSION_DIR || "extension";
 
 const allowedDiffs = new Set([
-  "background/agent/listing-actions.js",
   "background/service-worker.js",
   "batch-upload/index.html",
   "batch-upload/index.js",
@@ -64,8 +66,10 @@ const allowedLocalOnly = new Set([
   "icons/sonli-logo.png",
   "lib/category-readiness.js",
   "lib/chrome-storage-promises.js",
+  "lib/collector-auth-flow.js",
   "lib/collector-capture-deadline.js",
   "lib/collector-session.js",
+  "lib/frontend-tab-opener.js",
   "lib/ozon-collect-coordinator.js",
   "lib/ozon-enrichment-contract.js",
   "lib/fx-probe.js",
@@ -84,6 +88,7 @@ const allowedLocalOnly = new Set([
   "popup/__tests__/popup-collector-session.runtime.test.js",
   "tests/category-readiness.test.js",
   "tests/chrome-storage-promises.test.js",
+  "tests/collector-auth-flow.test.js",
   "tests/collector-capture-deadline.test.js",
   "tests/collector-session.test.js",
   "tests/collector-ozon-enrichment-client.test.js",
@@ -92,6 +97,7 @@ const allowedLocalOnly = new Set([
   "tests/data-panel-logistics.test.js",
   "tests/data-panel-visual-browser.test.js",
   "tests/fixtures/data-panel-visual-browser.fixture.html",
+  "tests/frontend-tab-opener.test.js",
   "tests/fx-observation-replay.test.js",
   "tests/jizhangerp-bridge-follow-sell.test.js",
   "tests/manifest-security-contract.test.js",
@@ -119,6 +125,11 @@ const allowedLocalOnly = new Set([
 
 const intentionallyRetiredFiles = new Set([
   "background/__tests__/dedupe.smoke.test.js",
+  "background/__tests__/agent-actions.smoke.test.js",
+  "background/agent/actions.js",
+  "background/agent/agent-runtime.js",
+  "background/agent/collect-actions.js",
+  "background/agent/listing-actions.js",
   "background/sync/backend-client.js",
   "background/sync/diff-index.js",
   "background/sync/lease-client.js",
@@ -240,7 +251,7 @@ if (!upstreamAvailable) {
   }
 
   const sourceManifest = JSON.parse(readFileSync(path.join(sourceDir, "manifest.json"), "utf8"));
-  assert.equal(localManifest.version, sourceManifest.version);
+  assertCompatibleExtensionVersions(localManifest.version, sourceManifest.version);
   assertCaptureOnlyPermissionPolicy(localManifest, sourceManifest);
   console.log(`extension upstream parity ok against ${sourceDir}`);
 }

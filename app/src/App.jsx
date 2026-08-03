@@ -3068,100 +3068,6 @@ function PromotionStatusButtons({ items, active, onChange }) {
   );
 }
 
-function SourceFilterDrawer({
-  title = "筛选",
-  open,
-  onClose,
-  fields = [],
-  onSubmit,
-  onReset,
-}) {
-  const [form] = Form.useForm();
-  return (
-    <Drawer
-      rootClassName="prototype-overlay"
-      title={title}
-      open={open}
-      onClose={onClose}
-      size="large"
-      extra={
-        <Space>
-          <Button
-            onClick={() => {
-              form.resetFields();
-              onReset?.();
-            }}
-          >
-            重置
-          </Button>
-          <Button
-            type="primary"
-            onClick={() => {
-              onSubmit?.(form.getFieldsValue());
-              onClose?.();
-            }}
-          >
-            查询
-          </Button>
-        </Space>
-      }
-    >
-      <Form form={form} layout="vertical" className="source-filter-form">
-        {fields.map((field) => (
-          <Form.Item label={field.label} name={field.name} key={field.name}>
-            {field.type === "dateRange" ? (
-              <DatePicker.RangePicker className="full-control" />
-            ) : field.type === "select" ? (
-              <Select
-                placeholder={field.placeholder || "请选择"}
-                options={field.options || []}
-                allowClear
-              />
-            ) : field.type === "textarea" ? (
-              <Input.TextArea
-                rows={4}
-                placeholder={field.placeholder}
-                allowClear
-              />
-            ) : field.type === "numberRange" ? (
-              <Space.Compact className="full-control">
-                <Input placeholder="最小" />
-                <Input placeholder="最大" />
-              </Space.Compact>
-            ) : (
-              <Input placeholder={field.placeholder || field.label} allowClear />
-            )}
-          </Form.Item>
-        ))}
-      </Form>
-    </Drawer>
-  );
-}
-
-function ProductStatusFilters({ reshelf = false }) {
-  return (
-    <div className="product-filters">
-      <StatusChips
-        items={[
-          { label: "全部" },
-          { label: "销售中", count: reshelf ? 0 : undefined },
-          { label: "准备出售", count: 0 },
-          { label: "错误", count: 0 },
-          { label: "待修改", count: 0 },
-          { label: "已下架", count: 0 },
-          { label: "已归档", count: reshelf ? 0 : undefined },
-        ]}
-      />
-      <div className="price-index">
-        <span>价格指数</span>
-        {["全部", "超值", "有利", "中等", "不利"].map((item) => (
-          <button className={item === "全部" ? "active" : ""} key={item}>{item}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
   const { message } = AntApp.useApp();
   const [query, setQuery] = useState("");
@@ -7953,26 +7859,6 @@ function SourceQueryBar({
         </Space>
       </div>
     </Card>
-  );
-}
-
-function SourcePager({ current = 1, total = 1, pageSize = 20 }) {
-  return (
-    <div className="source-pager">
-      <span>共 0 条 · 第 {current} / {total} 页</span>
-      <Space size={4}>
-        <Button size="small">‹</Button>
-        <Button size="small" type="primary">{current}</Button>
-        <Button size="small">›</Button>
-      </Space>
-      <span>每页</span>
-      <Select
-        size="small"
-        value={pageSize}
-        options={[10, 20, 50, 100].map((value) => ({ value, label: `${value}` }))}
-      />
-      <span>条</span>
-    </div>
   );
 }
 

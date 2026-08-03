@@ -8,14 +8,16 @@ import {
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
 } from "./extension-capture-only-policy.mjs";
-import { requireExtensionUpstreamDir } from "./extension-upstream-config.mjs";
+import {
+  assertCompatibleExtensionVersions,
+  requireExtensionUpstreamDir,
+} from "./extension-upstream-config.mjs";
 
 const sourceDir = requireExtensionUpstreamDir("scripts/check-extension-diff-contract.mjs");
 if (!sourceDir) process.exit(2);
 const localDir = "extension";
 
 const reviewedChangedFiles = new Set([
-  "background/agent/listing-actions.js",
   "background/service-worker.js",
   "batch-upload/index.html",
   "batch-upload/index.js",
@@ -119,7 +121,7 @@ const localManifest = JSON.parse(
 const sourceManifest = JSON.parse(
   readFileSync(path.join(sourceDir, "manifest.json"), "utf8"),
 );
-assert.equal(localManifest.version, sourceManifest.version);
+assertCompatibleExtensionVersions(localManifest.version, sourceManifest.version);
 assertCaptureOnlyPermissionPolicy(localManifest, sourceManifest);
 assertCaptureOnlyFileSet(localFiles);
 assertCaptureOnlyServiceWorker(

@@ -30,7 +30,7 @@ const REVIEWED_LOCAL_HOST_PERMISSIONS = new Set([
   "https://www.ozon.kz/*",
 ]);
 
-const RETIRED_SYNC_FILE = /^(?:background\/sync\/|tests\/(?:postings-manual-sync-window|sync-state-watermark)\.test\.js$)/;
+const RETIRED_SYNC_FILE = /^(?:background\/(?:sync|agent)\/|background\/__tests__\/agent-actions\.smoke\.test\.js$|tests\/(?:postings-manual-sync-window|sync-state-watermark)\.test\.js$)/;
 const RETIRED_SYNC_REFERENCE = /(?:sync\/(?:backend-client|diff-index|lease-client|opi-client|sync-engine|sync-state)\.js|api-seller\.ozon\.ru|\/ozon\/sync\/|\/local\/sync\/|sync-credentials|cache\/import-with-hash)/i;
 
 export function chromeMatchPatternCovers(pattern, input) {
