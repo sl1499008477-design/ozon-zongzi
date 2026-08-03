@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
-import { buildAutoListingSourceSnapshot, canonicalAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import {
+  buildAutoListingBlockedSourceEvidence,
+  buildAutoListingSourceSnapshot,
+  canonicalAutoListingSourceSnapshot,
+} from "../auto-listing-source-snapshot.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
@@ -219,7 +223,7 @@ async function registerGraphSources(client, graphInput) {
     await client.query(
       `INSERT INTO collect_items (id,account_id,source,identity_key,source_sku,summary)
        VALUES ($1,$2,'test',$3,$4,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`,
-      [item.sourceRecordId, graphInput.accountId, `identity-${item.sourceRecordId}`, item.snapshot.identity.primarySku],
+      [item.sourceRecordId, graphInput.accountId, `identity-${item.sourceRecordId}`, item.snapshot?.identity?.primarySku || `blocked-${item.sourceRecordId}`],
     );
   }
 }
@@ -439,6 +443,46 @@ if (!enabled) {
       assert.equal(replay.id, created.id);
       assert.notEqual(other.id, created.id);
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_jobs")).rows[0].count), 2);
+
+      const mixedSourceBusiness = graph(accountA, "source-business-siblings", "source-business-good");
+      const blockedSourceEvidence = buildAutoListingBlockedSourceEvidence({
+        accountId: accountA,
+        sourceType: "COLLECT_BOX",
+        sourceRecordId: `collect-source-business-blocked-${suffix}`,
+        sourceVersion: "1",
+        productDraft: { id: `draft-source-business-blocked-${suffix}`, version: 1 },
+        rawCollectedAt: "2026-08-04T00:00:00.000Z",
+        rawResponseRef: `raw-source-business-blocked-${suffix}`,
+        rawResponseHash: `hash-source-business-blocked-${suffix}`,
+        failureCode: "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+      });
+      mixedSourceBusiness.items.push({
+        sourceType: "COLLECT_BOX",
+        sourceRecordId: blockedSourceEvidence.blockedEvidence.sourceRecordId,
+        sourceVersion: "1",
+        blockedEvidence: blockedSourceEvidence.blockedEvidence,
+        snapshotHash: blockedSourceEvidence.snapshotHash,
+        rawResponseRef: blockedSourceEvidence.rawResponseRef,
+        targetStoreId: mixedSourceBusiness.configSnapshot.targetStoreId,
+        targetWarehouseId: mixedSourceBusiness.configSnapshot.targetWarehouseId,
+        sourceOrder: 1,
+        status: "BLOCKED",
+        failureCode: "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+      });
+      await registerGraphSources(client, mixedSourceBusiness);
+      const mixedCreated = await repository.createJobGraph(mixedSourceBusiness);
+      assert.deepEqual(mixedCreated.items.map((entry) => [entry.status, entry.failureCode || null]), [
+        ["SOURCE_READY", null], ["BLOCKED", "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB"],
+      ]);
+      const persistedBlockedEvidence = (await client.query(
+        "SELECT snapshot,snapshot_hash FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id=$2",
+        [accountA, blockedSourceEvidence.blockedEvidence.sourceRecordId],
+      )).rows[0];
+      assert.deepEqual(persistedBlockedEvidence, {
+        snapshot: blockedSourceEvidence.blockedEvidence,
+        snapshot_hash: blockedSourceEvidence.snapshotHash,
+      });
+      assert.doesNotMatch(JSON.stringify(mixedCreated), /raw-source-business-blocked|rawPayload|credential/);
 
       const item = created.items[0];
       const snapshotBefore = await client.query(

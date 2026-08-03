@@ -308,7 +308,7 @@ Every repository method requires accountId. Job, snapshots, items, initial event
 
 - [ ] **Step 6: Implement the orchestration service**
 
-It must: assert TENANT_OPERATE; load sources under actor.id; validate target store and active FBS warehouse; normalize/hash config; freeze current published strategy version; calculate price/build snapshots; create valid SOURCE_READY and invalid BLOCKED siblings; return a safe DTO without raw payloads or credentials.
+It must: assert TENANT_OPERATE; load sources under actor.id; validate target store and active FBS warehouse; normalize/hash config; freeze current published strategy version; calculate price/build snapshots; create valid SOURCE_READY and invalid BLOCKED siblings; return a safe DTO without raw payloads or credentials. The closed source-business failures `AUTO_LISTING_SOURCE_CATEGORY_REQUIRED`, `AUTO_LISTING_SOURCE_SKU_REQUIRED`, and `AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB` become per-item `BLOCKED` results backed by separate immutable blocked-source evidence, never a fabricated complete snapshot. Scope, provenance, malformed/cyclic/dangerous JSON, invalid raw references, and other integrity failures reject the entire request.
 
 - [ ] **Step 7: Add PostgreSQL integration coverage**
 

@@ -130,6 +130,42 @@ test("routes inject only authenticated actor and reject client scope or sensitiv
   }
 });
 
+test("create route returns a safe 201 DTO for blocked source siblings", async () => {
+  const service = {
+    createAutoListingJob: async () => ({
+      id: "job_1",
+      sourceType: "COLLECT_BOX",
+      status: "CREATED",
+      items: [{
+        id: "item_1",
+        status: "BLOCKED",
+        sourceRecordId: "collect_1",
+        sourceVersion: "7",
+        sourceHash: "a".repeat(64),
+        failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+        blockedEvidence: { rawPayload: { credential: "never" } },
+        rawResponseRef: "raw-secret",
+      }],
+    }),
+  };
+  const { handler, replies } = harness({ runtime: { getService: async () => service } });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], {
+    status: 201,
+    payload: {
+      ok: true,
+      correlationId: "corr_1",
+      data: {
+        jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED",
+        items: [{
+          itemId: "item_1", status: "BLOCKED", sourceRecordId: "collect_1", sourceVersion: "7",
+          sourceHash: "a".repeat(64), failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+        }],
+      },
+    },
+  });
+});
+
 test("invalid create payloads never initialize the runtime", async () => {
   let initialized = 0;
   const { handler, replies } = harness({

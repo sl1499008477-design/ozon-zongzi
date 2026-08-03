@@ -3,7 +3,7 @@ import test from "node:test";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
-import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import { buildAutoListingBlockedSourceEvidence, buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 function transitionFixture({
   status, recoveryPoint = null, failureCode = "AUTO_LISTING_TRANSIENT", legacyCurrentEvent = null,
@@ -365,4 +365,43 @@ test("sibling items sharing a target lock and validate its evidence once", async
   assert.equal(calls.filter(({ sql }) => /FROM store_credentials/.test(sql)).length, 1);
   assert.equal(calls.filter(({ sql }) => /FROM warehouses w/.test(sql)).length, 1);
   assert.equal(calls.filter(({ sql }) => /FROM product_stocks ps/.test(sql)).length, 1);
+});
+
+test("repository accepts only canonical blocked-source evidence before connecting", async () => {
+  const { config, configHash } = normalizeAndHashAutoListingConfig({
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", stock: 1, priceAdjustmentKopecks: "0",
+  });
+  const evidence = buildAutoListingBlockedSourceEvidence({
+    accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-blocked", sourceVersion: "1",
+    productDraft: { id: "draft-blocked", version: 1 }, rawResponseRef: "raw-blocked", rawResponseHash: "hash-blocked",
+    rawCollectedAt: "2026-08-04T00:00:00.000Z", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+  });
+  const graph = {
+    accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "blocked-source",
+    correlationId: "corr", configSnapshot: config, configHash, strategyVersionId: "version-a",
+    items: [{
+      sourceType: "COLLECT_BOX", sourceRecordId: "collect-blocked", sourceVersion: "1",
+      blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
+      targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0,
+      status: "BLOCKED", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+    }],
+  };
+  let connections = 0;
+  const connected = new Error("connected after graph validation");
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => { connections += 1; throw connected; }, query: async () => ({ rows: [] }),
+  } });
+  await assert.rejects(repository.createJobGraph(graph), (error) => error === connected);
+  assert.equal(connections, 1);
+  for (const item of [
+    { ...graph.items[0], snapshot: { identity: "fake" } },
+    { ...graph.items[0], failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" },
+    { ...graph.items[0], strategyId: "strategy-a" },
+    { ...graph.items[0], price: { currency: "RUB" } },
+    { ...graph.items[0], effectiveImageConfig: {} },
+    { ...graph.items[0], status: "SOURCE_READY" },
+  ]) {
+    await assert.rejects(repository.createJobGraph({ ...graph, idempotencyKey: `invalid-${connections}`, items: [item] }), (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID");
+    assert.equal(connections, 1);
+  }
 });

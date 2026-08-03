@@ -4,13 +4,21 @@ import {
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
-import { buildAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
+import {
+  buildAutoListingBlockedSourceEvidence,
+  buildAutoListingSourceSnapshot,
+} from "./auto-listing-source-snapshot.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
 import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
 const REQUEST_KEYS = new Set(["actor", "collectItemIds", "idempotencyKey", "config", "correlationId"]);
 const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
+const BLOCKED_SOURCE_FAILURE_CODES = new Set([
+  "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+  "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+  "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+]);
 
 function error(code, status = 422) {
   const result = new Error(code);
@@ -173,17 +181,47 @@ export function createAutoListingService({ repository } = {}) {
         throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
       }
       const items = sources.map((source, sourceOrder) => {
-        const captured = buildAutoListingSourceSnapshot({
-          accountId,
-          sourceType: "COLLECT_BOX",
-          sourceRecordId: source.id,
-          sourceVersion: source.sourceVersion,
-          collectItem: source.collectItem,
-          productDraft: source.productDraft,
-          rawResponseRef: source.rawResponseRef,
-          rawResponseHash: source.rawResponseHash,
-          rawCollectedAt: source.rawCollectedAt,
-        });
+        let captured;
+        try {
+          captured = buildAutoListingSourceSnapshot({
+            accountId,
+            sourceType: "COLLECT_BOX",
+            sourceRecordId: source.id,
+            sourceVersion: source.sourceVersion,
+            collectItem: source.collectItem,
+            productDraft: source.productDraft,
+            rawResponseRef: source.rawResponseRef,
+            rawResponseHash: source.rawResponseHash,
+            rawCollectedAt: source.rawCollectedAt,
+          });
+        } catch (caught) {
+          const failureCode = text(caught?.code);
+          if (!BLOCKED_SOURCE_FAILURE_CODES.has(failureCode)) throw caught;
+          const blocked = buildAutoListingBlockedSourceEvidence({
+            accountId,
+            sourceType: "COLLECT_BOX",
+            sourceRecordId: source.id,
+            sourceVersion: source.sourceVersion,
+            productDraft: source.productDraft,
+            rawResponseRef: source.rawResponseRef,
+            rawResponseHash: source.rawResponseHash,
+            rawCollectedAt: source.rawCollectedAt,
+            failureCode,
+          });
+          return {
+            sourceType: "COLLECT_BOX",
+            sourceRecordId: source.id,
+            sourceVersion: source.sourceVersion,
+            blockedEvidence: blocked.blockedEvidence,
+            snapshotHash: blocked.snapshotHash,
+            rawResponseRef: blocked.rawResponseRef,
+            targetStoreId: targetStore.id,
+            targetWarehouseId: config.targetWarehouseId,
+            sourceOrder,
+            status: "BLOCKED",
+            failureCode,
+          };
+        }
         const base = {
           sourceType: "COLLECT_BOX",
           sourceRecordId: source.id,

@@ -4,7 +4,10 @@ import {
   nextAutoListingStatus,
   recoveryPointForRetryableFailure,
 } from "./auto-listing-state-machine.mjs";
-import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
+import {
+  verifyAutoListingBlockedSourceEvidence,
+  verifyAutoListingSourceSnapshot,
+} from "./auto-listing-source-snapshot.mjs";
 import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
@@ -15,6 +18,11 @@ import {
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
+const BLOCKED_SOURCE_FAILURE_CODES = new Set([
+  "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+  "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+  "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+]);
 
 function repositoryError(code, status = 422) {
   const error = new Error(code);
@@ -342,16 +350,34 @@ function assertGraph(graph) {
       || !["SOURCE_READY", "BLOCKED"].includes(item.status)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
-    const captured = verifyAutoListingSourceSnapshot(item);
+    if (item.targetStoreId !== configSnapshot.targetStoreId || item.targetWarehouseId !== configSnapshot.targetWarehouseId) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    const sourceBusinessBlocked = item.status === "BLOCKED" && BLOCKED_SOURCE_FAILURE_CODES.has(item.failureCode);
+    if (sourceBusinessBlocked) {
+      if (Object.hasOwn(item, "snapshot") || !Object.hasOwn(item, "blockedEvidence")
+        || ["strategyId", "strategyVersionId", "ruleId", "style", "matchedBy", "price", "effectiveImageConfig"].some((key) => Object.hasOwn(item, key))) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      let captured;
+      try { captured = verifyAutoListingBlockedSourceEvidence(item); } catch { throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID"); }
+      if (captured.blockedEvidence.accountId !== accountId
+        || captured.blockedEvidence.sourceRecordId !== item.sourceRecordId
+        || captured.blockedEvidence.sourceVersion !== item.sourceVersion
+        || captured.blockedEvidence.sourceType !== item.sourceType
+        || captured.blockedEvidence.failureCode !== item.failureCode) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      return { ...item, ...captured };
+    }
+    if (Object.hasOwn(item, "blockedEvidence")) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    let captured;
+    try { captured = verifyAutoListingSourceSnapshot(item); } catch { throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID"); }
     if (captured.snapshot.identity.accountId !== accountId
       || captured.snapshot.identity.sourceRecordId !== item.sourceRecordId
       || captured.snapshot.identity.sourceVersion !== item.sourceVersion
-      || captured.snapshot.identity.sourceType !== item.sourceType) {
-      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-    }
-    if (captured.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
-      || item.targetStoreId !== configSnapshot.targetStoreId
-      || item.targetWarehouseId !== configSnapshot.targetWarehouseId
+      || captured.snapshot.identity.sourceType !== item.sourceType
+      || captured.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
       || (item.status === "SOURCE_READY" && captured.snapshot.targetCategory.targetStoreId !== item.targetStoreId)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
@@ -609,7 +635,7 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
              ON CONFLICT (account_id,source_type,source_record_id,source_version) DO NOTHING
              RETURNING id,snapshot_hash`,
             [proposedSnapshotId, graph.accountId, item.sourceType, item.sourceRecordId, item.sourceVersion,
-              json(item.snapshot), item.snapshotHash, item.rawResponseRef],
+              json(item.snapshot ?? item.blockedEvidence), item.snapshotHash, item.rawResponseRef],
           );
           const persistedSnapshot = insertedSnapshot.rows[0] || (await client.query(
             `SELECT id,snapshot_hash FROM auto_listing_source_snapshots

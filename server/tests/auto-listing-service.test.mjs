@@ -140,6 +140,60 @@ test("keeps numeric source price facts immutable while blocking only that siblin
   assert.equal(graph.items[1].snapshot.variants[0].priceEvidence.greenKopecks, 8_000);
 });
 
+test("isolates only closed source-business failures with separate blocked evidence", async () => {
+  const missingCategory = source("collect-no-category");
+  missingCategory.collectItem.listingDraft.categoryResolution.target.descriptionCategoryId = "";
+  const missingSku = source("collect-no-sku");
+  missingSku.collectItem.listingDraft.variants = [{ sku: "" }];
+  const foreignCurrency = source("collect-usd");
+  foreignCurrency.collectItem.listingDraft.currency = "USD";
+  foreignCurrency.collectItem.listingDraft.variants[0].currency = "USD";
+  const repository = fakeRepository({ sources: [source("collect-good"), missingCategory, missingSku, foreignCurrency] });
+
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor,
+    collectItemIds: ["collect-good", "collect-no-category", "collect-no-sku", "collect-usd"],
+    idempotencyKey: "source-fact-isolation",
+    correlationId: "corr",
+    config,
+  });
+
+  assert.deepEqual(result.items.map((item) => [item.status, item.failureCode || null]), [
+    ["SOURCE_READY", null],
+    ["BLOCKED", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"],
+    ["BLOCKED", "AUTO_LISTING_SOURCE_SKU_REQUIRED"],
+    ["BLOCKED", "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /raw-collect|listingDraft|currency.*USD/);
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  for (const item of graph.items.slice(1)) {
+    assert.equal(Object.hasOwn(item, "snapshot"), false);
+    assert.equal(Object.hasOwn(item, "strategyId"), false);
+    assert.equal(Object.hasOwn(item, "price"), false);
+    assert.equal(Object.hasOwn(item, "effectiveImageConfig"), false);
+    assert.equal(item.blockedEvidence.failureCode, item.failureCode);
+  }
+});
+
+test("keeps malformed source inputs as whole-request failures even when a source fact is missing", async () => {
+  const malformed = source("collect-malformed");
+  malformed.collectItem.listingDraft.categoryResolution.target.descriptionCategoryId = "";
+  malformed.collectItem.listingDraft.attributes = [{ self: malformed.collectItem }];
+  const malformedDraft = source("collect-malformed-draft");
+  malformedDraft.collectItem.listingDraft.categoryResolution.target.descriptionCategoryId = "";
+  Object.defineProperty(malformedDraft.productDraft, "__proto__", { value: { polluted: true }, enumerable: true });
+  for (const invalidSource of [malformed, malformedDraft]) {
+    const repository = fakeRepository({ sources: [source("collect-good"), invalidSource] });
+    await assert.rejects(
+      createAutoListingService({ repository }).createAutoListingJob({
+        actor, collectItemIds: ["collect-good", invalidSource.id], idempotencyKey: `source-integrity-${invalidSource.id}`, correlationId: "corr", config,
+      }),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
+    );
+    assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  }
+});
+
 test("rejects missing or foreign formal warehouses before any graph insert", async () => {
   for (const evidence of [
     { warehouse: null, products: [] },

@@ -6,6 +6,16 @@ const SNAPSHOT_KEYS = [
   "identity", "source", "targetCategory", "attributes", "logistics", "productMeasurements",
   "priceEvidence", "variants", "media", "richContent", "rawEvidence",
 ];
+const BLOCKED_EVIDENCE_KEYS = [
+  "accountId", "collectedAt", "failureCode", "kind", "productDraftId", "productDraftVersion",
+  "rawResponseHash", "rawResponseRef", "sourceRecordId", "sourceType", "sourceVersion", "version",
+];
+const BLOCKED_EVIDENCE_KIND = "AUTO_LISTING_BLOCKED_SOURCE_EVIDENCE";
+const BLOCKED_SOURCE_FAILURE_CODES = new Set([
+  "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+  "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+  "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+]);
 
 function sourceError(code) {
   const error = new Error(code);
@@ -155,6 +165,16 @@ function normalizedSnapshot(snapshot) {
   return jsonSafe(snapshot);
 }
 
+function normalizedBlockedEvidence(evidence) {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const keys = Object.keys(evidence).sort();
+  if (keys.length !== BLOCKED_EVIDENCE_KEYS.length
+    || keys.some((key, index) => key !== BLOCKED_EVIDENCE_KEYS[index])) {
+    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  }
+  return jsonSafe(evidence);
+}
+
 const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const stringOrNull = (value) => value === null || typeof value === "string";
@@ -192,6 +212,20 @@ function assertSemanticSnapshot(snapshot) {
   if (!variants.some((variant) => variant.sku === identity.primarySku)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
 }
 
+function assertBlockedEvidence(evidence) {
+  if (evidence.kind !== BLOCKED_EVIDENCE_KIND || evidence.version !== 1
+    || !requiredString(evidence.accountId)
+    || !["COLLECT_BOX", "EXCEL_SKU"].includes(evidence.sourceType)
+    || !requiredString(evidence.sourceRecordId) || !requiredString(evidence.sourceVersion)
+    || !stringOrNull(evidence.productDraftId)
+    || !(evidence.productDraftVersion === null || (Number.isInteger(evidence.productDraftVersion) && evidence.productDraftVersion > 0))
+    || !nonemptyStringOrNull(evidence.collectedAt)
+    || !nonemptyStringOrNull(evidence.rawResponseRef) || !nonemptyStringOrNull(evidence.rawResponseHash)
+    || !BLOCKED_SOURCE_FAILURE_CODES.has(evidence.failureCode)) {
+    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  }
+}
+
 export function canonicalAutoListingSourceSnapshot(snapshot) {
   return JSON.stringify(normalizedSnapshot(snapshot));
 }
@@ -209,6 +243,49 @@ export function verifyAutoListingSourceSnapshot(value = {}) {
   };
 }
 
+export function verifyAutoListingBlockedSourceEvidence(value = {}) {
+  const blockedEvidence = normalizedBlockedEvidence(value.blockedEvidence);
+  assertBlockedEvidence(blockedEvidence);
+  const snapshotHash = scalar(value.snapshotHash);
+  const expected = crypto.createHash("sha256").update(JSON.stringify(blockedEvidence)).digest("hex");
+  if (snapshotHash !== expected) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const rawResponseRef = scalar(value.rawResponseRef, { allowNull: true });
+  if (rawResponseRef !== blockedEvidence.rawResponseRef) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  return { blockedEvidence, snapshotHash, rawResponseRef };
+}
+
+export function buildAutoListingBlockedSourceEvidence(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const accountId = scalar(input.accountId);
+  const sourceType = scalar(input.sourceType);
+  const sourceRecordId = scalar(input.sourceRecordId);
+  const sourceVersion = scalar(input.sourceVersion);
+  if (!["COLLECT_BOX", "EXCEL_SKU"].includes(sourceType)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const productDraft = input.productDraft;
+  if (!(productDraft === undefined || productDraft === null || plainObject(productDraft))) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const productDraftId = scalar(productDraft?.id, { allowNull: true });
+  const productDraftVersion = productDraft?.version ?? null;
+  const blockedEvidence = normalizedBlockedEvidence({
+    kind: BLOCKED_EVIDENCE_KIND,
+    version: 1,
+    accountId,
+    sourceType,
+    sourceRecordId,
+    sourceVersion,
+    productDraftId,
+    productDraftVersion,
+    collectedAt: scalar(input.rawCollectedAt, { allowNull: true }),
+    rawResponseRef: scalar(input.rawResponseRef, { allowNull: true }),
+    rawResponseHash: scalar(input.rawResponseHash, { allowNull: true }),
+    failureCode: input.failureCode,
+  });
+  return verifyAutoListingBlockedSourceEvidence({
+    blockedEvidence,
+    snapshotHash: crypto.createHash("sha256").update(JSON.stringify(blockedEvidence)).digest("hex"),
+    rawResponseRef: blockedEvidence.rawResponseRef,
+  });
+}
+
 export function buildAutoListingSourceSnapshot(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   const accountId = text(input.accountId);
@@ -221,6 +298,11 @@ export function buildAutoListingSourceSnapshot(input = {}) {
     || text(collectItem.accountId) !== accountId || text(collectItem.id) !== sourceRecordId) {
     throw sourceError("AUTO_LISTING_SOURCE_SCOPE");
   }
+  jsonSafe(collectItem);
+  if (!(input.productDraft === undefined || input.productDraft === null || plainObject(input.productDraft))) {
+    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  }
+  if (input.productDraft) jsonSafe(input.productDraft);
   const rawResponseRef = scalar(input.rawResponseRef, { allowNull: true });
   const rawResponseHash = scalar(input.rawResponseHash, { allowNull: true });
   let draft;

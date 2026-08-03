@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import {
+  buildAutoListingBlockedSourceEvidence,
   buildAutoListingSourceSnapshot,
+  verifyAutoListingBlockedSourceEvidence,
   verifyAutoListingSourceSnapshot,
 } from "../auto-listing-source-snapshot.mjs";
 
@@ -261,4 +263,63 @@ test("rejects cycles, dangerous keys and non-json source values", () => {
   for (const input of [cyclic, dangerous, nonFinite]) {
     assert.throws(() => buildAutoListingSourceSnapshot(input), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
   }
+});
+
+test("builds independently verifiable canonical evidence for a blocked source fact", () => {
+  const blocked = buildAutoListingBlockedSourceEvidence({
+    accountId: "account-a",
+    sourceType: "COLLECT_BOX",
+    sourceRecordId: "collect-1",
+    sourceVersion: "7",
+    productDraft: { id: "draft-1", version: 7 },
+    rawCollectedAt: "2026-08-04T01:02:03.000Z",
+    rawResponseRef: "raw-response-1",
+    rawResponseHash: "raw-hash-1",
+    failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+  });
+
+  assert.deepEqual(verifyAutoListingBlockedSourceEvidence(blocked), blocked);
+  assert.throws(() => verifyAutoListingSourceSnapshot({
+    snapshot: blocked.blockedEvidence,
+    snapshotHash: blocked.snapshotHash,
+    rawResponseRef: blocked.rawResponseRef,
+  }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
+
+  const reordered = structuredClone(blocked.blockedEvidence);
+  const reverse = Object.fromEntries(Object.entries(reordered).reverse());
+  assert.equal(verifyAutoListingBlockedSourceEvidence({
+    blockedEvidence: reverse,
+    snapshotHash: blocked.snapshotHash,
+    rawResponseRef: "raw-response-1",
+  }).snapshotHash, blocked.snapshotHash);
+
+  for (const mutate of [
+    (evidence) => { evidence.failureCode = "AUTO_LISTING_SOURCE_SKU_REQUIRED"; },
+    (evidence) => { evidence.rawResponseRef = "raw-response-2"; },
+    (evidence) => { evidence.accountId = "account-b"; },
+  ]) {
+    const malformed = structuredClone(blocked.blockedEvidence);
+    mutate(malformed);
+    const snapshotHash = crypto.createHash("sha256").update(JSON.stringify(malformed)).digest("hex");
+    assert.notEqual(verifyAutoListingBlockedSourceEvidence({
+      blockedEvidence: malformed,
+      snapshotHash,
+      rawResponseRef: malformed.rawResponseRef,
+    }).snapshotHash, blocked.snapshotHash);
+  }
+  const unknown = { ...blocked.blockedEvidence, guessedSku: "never" };
+  const unknownHash = crypto.createHash("sha256").update(JSON.stringify(unknown)).digest("hex");
+  assert.throws(() => verifyAutoListingBlockedSourceEvidence({
+    blockedEvidence: unknown, snapshotHash: unknownHash, rawResponseRef: unknown.rawResponseRef,
+  }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
+  const cyclic = structuredClone(blocked.blockedEvidence);
+  cyclic.extra = cyclic;
+  assert.throws(() => verifyAutoListingBlockedSourceEvidence({
+    blockedEvidence: cyclic, snapshotHash: blocked.snapshotHash, rawResponseRef: cyclic.rawResponseRef,
+  }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
+  const dangerous = JSON.parse(JSON.stringify(blocked.blockedEvidence));
+  Object.defineProperty(dangerous, "__proto__", { value: { polluted: true }, enumerable: true });
+  assert.throws(() => verifyAutoListingBlockedSourceEvidence({
+    blockedEvidence: dangerous, snapshotHash: blocked.snapshotHash, rawResponseRef: dangerous.rawResponseRef,
+  }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
 });
