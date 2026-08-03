@@ -10,6 +10,7 @@ import {
 } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import {
+  createCollectorEnrichmentRepositoryForTransaction,
   ingestCollectRequestV4,
   prepareCollectRequestV4,
   prepareCompleteCollectRequestV4,
@@ -126,6 +127,39 @@ test("incomplete Ozon payload is collectible but pending enrichment", () => {
     nextAttemptAt: "",
     lastErrorCode: "",
   });
+});
+
+test("PostgreSQL collection reuses its caller-owned transaction client without reconnecting", async () => {
+  let connectCalls = 0;
+  const statements = [];
+  const transactionClient = {
+    async connect() {
+      connectCalls += 1;
+      throw new Error("an already-connected pg.Client must not reconnect");
+    },
+    async query(sql) {
+      statements.push(String(sql).replace(/\s+/g, " ").trim());
+      return { rows: [], rowCount: 0 };
+    },
+    release() {
+      throw new Error("the outer collection transaction owns this client");
+    },
+  };
+  const repository = createCollectorEnrichmentRepositoryForTransaction(transactionClient);
+
+  await assert.rejects(
+    repository.enqueueForCollect({
+      accountId: "account-a",
+      collectItemId: "collect-a",
+      requestId: "request-a",
+      sku: "sku-a",
+      refreshBundle: {},
+      now: new Date("2026-08-03T00:00:00.000Z"),
+    }),
+    (error) => error?.code === "OZON_ENRICHMENT_COLLECT_ITEM_NOT_FOUND",
+  );
+  assert.equal(connectCalls, 0);
+  assert.equal(statements.some((sql) => /^(BEGIN|COMMIT|ROLLBACK)/.test(sql)), false);
 });
 
 test("batch preflight accepts missing enrichment fields but rejects invalid payload shape", () => {

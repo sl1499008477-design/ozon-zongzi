@@ -295,6 +295,13 @@ async function transaction(callback) {
   }
 }
 
+export function createCollectorEnrichmentRepositoryForTransaction(client) {
+  return createPostgresCollectorOzonEnrichmentRepository({
+    pool: client,
+    transactionOwner: "caller",
+  });
+}
+
 function bearerToken(req) {
   const header = String(req?.headers?.authorization || "");
   return header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
@@ -516,7 +523,7 @@ export async function ingestCollectRequestV4(options = {}) {
         changeReason: "PREPROCESSED",
       });
       if (effectiveEnrichment) {
-        const repository = createPostgresCollectorOzonEnrichmentRepository({ pool: client });
+        const repository = createCollectorEnrichmentRepositoryForTransaction(client);
         if (effectiveEnrichment.status === "PENDING_ENRICHMENT") {
           await repository.enqueueForCollect({
             accountId,
