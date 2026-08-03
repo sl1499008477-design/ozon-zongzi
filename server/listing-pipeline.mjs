@@ -1006,19 +1006,18 @@ export async function retryCollectItemEnrichmentV4(input = {}) {
   return transaction((client) => retryCollectItemEnrichmentWithClientV4(client, input));
 }
 
-export async function updateCollectItemDraftV4({
+export async function updateCollectItemDraftWithClientV4(client, {
   collectItemId,
   accountId,
   patch = {},
   expectedVersion = null,
   beforeCommit = null,
-}) {
-  if (!listingPipelineEnabled()) return null;
+} = {}) {
+  if (!client?.query) throw new TypeError("collect draft transaction client is required");
   if (beforeCommit !== null && typeof beforeCommit !== "function") {
     throw new TypeError("collect draft beforeCommit callback must be a function");
   }
-  return transaction(async (client) => {
-    const result = await client.query(
+  const result = await client.query(
       `SELECT c.*,d.data AS draft_data,d.version AS draft_version,raw.payload AS raw_payload
        FROM collect_items c
        LEFT JOIN product_drafts d ON d.id=c.current_draft_id
@@ -1031,52 +1030,56 @@ export async function updateCollectItemDraftV4({
        FOR UPDATE OF c`,
       [clean(collectItemId, 240), clean(accountId, 240)],
     );
-    const row = result.rows[0];
-    if (!row) return null;
-    const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
-    const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
-    const currentDraft = row.draft_data && typeof row.draft_data === "object" ? row.draft_data : {};
-    const enrichment = resolveCollectItemEnrichmentSummary(row.summary, normalized.enrichment);
-    const safePatch = withoutCollectionScope(patch);
-    const requestedDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
-      ? safePatch.listingDraft
-      : { ...currentDraft, ...safePatch };
-    const listingDraft = preserveOzonSourceCategoryEvidence(currentDraft, requestedDraft);
-    const item = publicPersistedCollectionItem({
-      ...withoutCollectionScope(normalized),
-      ...safePatch,
-      ...(enrichment ? { enrichment } : {}),
-      id: row.id,
-      accountId: row.account_id,
-      storeId: row.store_id || "",
-      dataCollectionStoreId: row.data_collection_store_id || "",
-      sku: safePatch.sku || row.source_sku || normalized.sku || "",
-      productUrl: safePatch.productUrl || row.source_url || normalized.productUrl || "",
-      status: row.status,
-      listingDraft,
-    });
-    if (beforeCommit) await beforeCommit({
-      client,
-      item,
-      accountId: String(row.account_id || ""),
-    });
-    const mirrored = await mirrorCollectItemV3(item, {
-      client,
-      collectId: row.id,
-      accountId: row.account_id,
-      source: row.source || "ozon",
-      identityKey: row.identity_key || "",
-      expectedVersion: expectedVersion === null ? Number(row.draft_version || 0) : expectedVersion,
-      captureRaw: false,
-      changeReason: "USER_EDIT",
-    });
-    return {
-      ...item,
-      draftVersion: mirrored?.version || Number(row.draft_version || 1),
-      pipelineVersion: "v4",
-      updatedAt: new Date().toISOString(),
-    };
+  const row = result.rows[0];
+  if (!row) return null;
+  const raw = row.raw_payload && typeof row.raw_payload === "object" ? row.raw_payload : {};
+  const normalized = raw.normalized && typeof raw.normalized === "object" ? raw.normalized : {};
+  const currentDraft = row.draft_data && typeof row.draft_data === "object" ? row.draft_data : {};
+  const enrichment = resolveCollectItemEnrichmentSummary(row.summary, normalized.enrichment);
+  const safePatch = withoutCollectionScope(patch);
+  const requestedDraft = safePatch.listingDraft && typeof safePatch.listingDraft === "object"
+    ? safePatch.listingDraft
+    : { ...currentDraft, ...safePatch };
+  const listingDraft = preserveOzonSourceCategoryEvidence(currentDraft, requestedDraft);
+  const item = publicPersistedCollectionItem({
+    ...withoutCollectionScope(normalized),
+    ...safePatch,
+    ...(enrichment ? { enrichment } : {}),
+    id: row.id,
+    accountId: row.account_id,
+    storeId: row.store_id || "",
+    dataCollectionStoreId: row.data_collection_store_id || "",
+    sku: safePatch.sku || row.source_sku || normalized.sku || "",
+    productUrl: safePatch.productUrl || row.source_url || normalized.productUrl || "",
+    status: row.status,
+    listingDraft,
   });
+  if (beforeCommit) await beforeCommit({
+    client,
+    item,
+    accountId: String(row.account_id || ""),
+  });
+  const mirrored = await mirrorCollectItemV3(item, {
+    client,
+    collectId: row.id,
+    accountId: row.account_id,
+    source: row.source || "ozon",
+    identityKey: row.identity_key || "",
+    expectedVersion: expectedVersion === null ? Number(row.draft_version || 0) : expectedVersion,
+    captureRaw: false,
+    changeReason: "USER_EDIT",
+  });
+  return {
+    ...item,
+    draftVersion: mirrored?.version || Number(row.draft_version || 1),
+    pipelineVersion: "v4",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function updateCollectItemDraftV4(input = {}) {
+  if (!listingPipelineEnabled()) return null;
+  return transaction((client) => updateCollectItemDraftWithClientV4(client, input));
 }
 
 export async function softDeleteCollectItemsForAccountV4(accountId, ids = []) {

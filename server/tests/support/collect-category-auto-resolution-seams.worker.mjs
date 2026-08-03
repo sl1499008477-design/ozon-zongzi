@@ -247,8 +247,9 @@ async function runFastCollect() {
   return { status: res.status, snapshotCalls, scheduleCalls };
 }
 
-async function runFastManual() {
+async function runFastManual({ persistedAccountId = ACCOUNT_ID, canonicalFailure = false } = {}) {
   let draftUpdates = 0;
+  let draftCommitted = false;
   let canonicalSaves = 0;
   let sharedExecutor = false;
   const transactionClient = { kind: "controlled-transaction-client" };
@@ -261,6 +262,12 @@ async function runFastManual() {
         "canonical manual save receives backend-only account context");
       assert.equal(input.collectItemId, "collect-manual-seam");
       assert.equal(input.categoryResolution.method, "MANUAL");
+      if (canonicalFailure) {
+        throw Object.assign(new Error("controlled canonical save failure"), {
+          status: 503,
+          code: "CONTROLLED_CANONICAL_FAILURE",
+        });
+      }
     },
   };
   const manualResolution = {
@@ -291,12 +298,21 @@ async function runFastManual() {
           id: "collect-manual-seam",
           listingDraft: { categoryResolution: manualResolution },
         };
-        await beforeCommit({ client: transactionClient, item, accountId: ACCOUNT_ID });
+        await beforeCommit({ client: transactionClient, item, accountId: persistedAccountId });
+        draftCommitted = true;
         return item;
       },
     },
   );
-  return { status: res.status, draftUpdates, canonicalSaves, sharedExecutor };
+  return {
+    status: res.status,
+    errorCode: res.body?.code || null,
+    draftUpdates,
+    draftCommitted,
+    canonicalSaves,
+    sharedExecutor,
+    responseHasAccountId: Object.hasOwn(res.body || {}, "accountId"),
+  };
 }
 
 async function runCredentialInvalidate() {
@@ -372,6 +388,11 @@ let result;
 if (mode === "store-wake") result = await runStoreWake();
 else if (mode === "fast-collect") result = await runFastCollect();
 else if (mode === "fast-manual") result = await runFastManual();
+else if (mode === "fast-manual-scope-mismatch") {
+  result = await runFastManual({ persistedAccountId: "account-other" });
+} else if (mode === "fast-manual-canonical-failure") {
+  result = await runFastManual({ canonicalFailure: true });
+}
 else if (mode === "credential-invalidate") result = await runCredentialInvalidate();
 else if (mode === "override-validation") result = await runOverrideValidation();
 else throw new Error(`unknown seam worker mode: ${mode}`);

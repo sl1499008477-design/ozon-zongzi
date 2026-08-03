@@ -75,9 +75,36 @@ test("PostgreSQL-facing collection capture and scheduling use the injected categ
 test("PostgreSQL-facing manual draft save is delegated inside the draft transaction", async (t) => {
   await assertWorker(t, "fast-manual", {
     status: 200,
+    errorCode: null,
     draftUpdates: 1,
+    draftCommitted: true,
     canonicalSaves: 1,
     sharedExecutor: true,
+    responseHasAccountId: false,
+  });
+});
+
+test("PostgreSQL-facing manual draft save rejects a persisted account mismatch before canonical write", async (t) => {
+  await assertWorker(t, "fast-manual-scope-mismatch", {
+    status: 403,
+    errorCode: "COLLECT_ITEM_ACCOUNT_SCOPE_MISMATCH",
+    draftUpdates: 1,
+    draftCommitted: false,
+    canonicalSaves: 0,
+    sharedExecutor: false,
+    responseHasAccountId: false,
+  });
+});
+
+test("PostgreSQL-facing canonical or audit failure leaves the draft transaction uncommitted", async (t) => {
+  await assertWorker(t, "fast-manual-canonical-failure", {
+    status: 503,
+    errorCode: "CONTROLLED_CANONICAL_FAILURE",
+    draftUpdates: 1,
+    draftCommitted: false,
+    canonicalSaves: 1,
+    sharedExecutor: true,
+    responseHasAccountId: false,
   });
 });
 
