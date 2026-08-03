@@ -359,17 +359,27 @@ async function saveState(state) {
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
 const ozonCategoryService = createOzonCategoryService();
-export function createServerCollectCategoryAutoResolutionComposition({
-  categoryService = ozonCategoryService,
-  currentCredentialStoreForAccount = async (accountId) => jsonStateTransaction.run(async () => (
-    currentStoreIdForAccount(await loadState(), accountId)
-  )),
-  now,
-  randomUUID,
-  sleep,
-  logger = console,
-  timers,
-} = {}) {
+function requiredOptionalFunctionOverride(overrides, name) {
+  if (!Object.hasOwn(overrides, name)) return {};
+  if (typeof overrides[name] !== "function") {
+    throw new TypeError(`${name} override must be a function`);
+  }
+  return { [name]: overrides[name] };
+}
+
+export function createServerCollectCategoryAutoResolutionComposition(overrides = {}) {
+  const categoryService = Object.hasOwn(overrides, "categoryService")
+    ? overrides.categoryService
+    : ozonCategoryService;
+  const currentCredentialStoreForAccount = Object.hasOwn(overrides, "currentCredentialStoreForAccount")
+    ? overrides.currentCredentialStoreForAccount
+    : async (accountId) => jsonStateTransaction.run(async () => (
+        currentStoreIdForAccount(await loadState(), accountId)
+      ));
+  const logger = Object.hasOwn(overrides, "logger") ? overrides.logger : console;
+  const timersOverride = Object.hasOwn(overrides, "timers")
+    ? { timers: overrides.timers }
+    : {};
   return createCollectCategoryAutoResolutionComposition({
     loadState,
     saveState,
@@ -387,11 +397,11 @@ export function createServerCollectCategoryAutoResolutionComposition({
     sendError,
     normalizeItem: normalizeCollectItem,
     countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
-    now,
-    randomUUID,
-    sleep,
+    ...requiredOptionalFunctionOverride(overrides, "now"),
+    ...requiredOptionalFunctionOverride(overrides, "randomUUID"),
+    ...requiredOptionalFunctionOverride(overrides, "sleep"),
     logger,
-    timers,
+    ...timersOverride,
   });
 }
 const defaultCollectCategoryAutoResolutionComposition =
@@ -410,24 +420,26 @@ const objectCleanupWorker = createObjectCleanupWorker({
   stateTransaction: jsonStateTransaction,
 });
 
-async function notifyOperatingStoreAvailable({ accountId, storeId }) {
-  try {
-    await collectCategoryResolutionRuntime.onOperatingStoreAvailable({ accountId, storeId });
-  } catch (error) {
-    const code = String(error?.code || "CATEGORY_RESOLUTION_STORE_WAKE_FAILED")
-      .trim().toUpperCase();
+function createOperatingStoreNotifier(categoryResolutionRuntime, logger = console) {
+  return async function notifyOperatingStoreAvailable({ accountId, storeId }) {
     try {
-      console.error("collect category store wake failed", {
-        accountId: String(accountId || ""),
-        storeId: String(storeId || ""),
-        code: /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
-          ? code
-          : "CATEGORY_RESOLUTION_STORE_WAKE_FAILED",
-      });
-    } catch {
-      // Store persistence is already committed and reconciliation can retry.
+      await categoryResolutionRuntime.onOperatingStoreAvailable({ accountId, storeId });
+    } catch (error) {
+      const code = String(error?.code || "CATEGORY_RESOLUTION_STORE_WAKE_FAILED")
+        .trim().toUpperCase();
+      try {
+        logger?.error?.("collect category store wake failed", {
+          accountId: String(accountId || ""),
+          storeId: String(storeId || ""),
+          code: /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
+            ? code
+            : "CATEGORY_RESOLUTION_STORE_WAKE_FAILED",
+        });
+      } catch {
+        // Store persistence is already committed and reconciliation can retry.
+      }
     }
-  }
+  };
 }
 
 function sendJson(res, status, data, extraHeaders = {}) {
@@ -2468,8 +2480,17 @@ async function mutateLatestStateWithRetry(mutator, maxAttempts = 4) {
   throw lastError || new Error("本地状态并发更新失败");
 }
 
-async function handleFastCollectionRoute(req, res, url) {
-  if (!listingPipelineEnabled()) return false;
+export async function handleFastCollectionRoute(req, res, url, {
+  categoryResolutionPort,
+  pipelineEnabled = listingPipelineEnabled,
+  authenticateRequest = collectorAuthRuntime.authenticateRequest,
+  captureStoreSnapshot = captureCategoryResolutionStoreSnapshot,
+  ingestCollectRequest = ingestCollectRequestV4,
+} = {}) {
+  if (typeof categoryResolutionPort !== "object" || categoryResolutionPort === null) {
+    throw new TypeError("fast collection category resolution port is required");
+  }
+  if (!pipelineEnabled()) return false;
   const sourceCollectMatch = url.pathname.match(/^\/sources\/([^/]+)\/collect(?:\/batch)?$/);
   const collectRequestMatch = url.pathname.match(/^\/local\/collect-requests\/([^/]+)$/);
   const collectItemMatch = url.pathname.match(/^\/ozon\/collect-box\/([^/]+)$/);
@@ -2479,13 +2500,13 @@ async function handleFastCollectionRoute(req, res, url) {
 
   try {
     const account = sourceCollectMatch
-      ? await collectorAuthRuntime.authenticateRequest(req, "collector.upload")
+      ? await authenticateRequest(req, "collector.upload")
       : collectRequestMatch
         ? await collectorAuthRuntime.authenticateRequest(req, "collector.job.read")
         : await authenticateCollectionRequest(req);
     const credentialStoreSnapshot = sourceCollectMatch && req.method === "POST"
-      ? await captureCategoryResolutionStoreSnapshot({
-          categoryResolutionPort: collectCategoryResolutionRuntime,
+      ? await captureStoreSnapshot({
+          categoryResolutionPort,
           accountId: account.id,
           logger: console,
         })
@@ -2547,10 +2568,10 @@ async function handleFastCollectionRoute(req, res, url) {
       for (let index = 0; index < preparedInputs.length; index += 1) {
         const { input } = preparedInputs[index];
         try {
-          const result = await ingestCollectRequestV4({
+          const result = await ingestCollectRequest({
             authenticatedAccount: account,
             input: { ...input, source: input.source || sourceId },
-            categoryResolutionPort: collectCategoryResolutionRuntime,
+            categoryResolutionPort,
             credentialStoreSnapshot,
             logger: console,
           });
@@ -2611,10 +2632,14 @@ export function createHttpHandler({
   if (
     typeof composition?.collectorOzonEnrichmentRuntime?.handleHttpRoute !== "function"
     || typeof composition?.handleJsonAccountScopedCollectionRoute !== "function"
+    || typeof composition?.collectCategoryResolutionRuntime?.onOperatingStoreAvailable !== "function"
     || typeof categoryResolutionReadPort?.readForItems !== "function"
   ) {
     throw new TypeError("server category auto-resolution HTTP composition is required");
   }
+  const notifyOperatingStoreAvailable = createOperatingStoreNotifier(
+    composition.collectCategoryResolutionRuntime,
+  );
   return async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (handleRemovedDataCollectionStoreRoute(req, res, url, { sendJson })) return;
@@ -2636,7 +2661,9 @@ export function createHttpHandler({
     sendError,
   })) return;
   if (await handleCollectorHttpRoute(req, res)) return;
-  if (await handleFastCollectionRoute(req, res, url)) return;
+  if (await handleFastCollectionRoute(req, res, url, {
+    categoryResolutionPort: composition.collectCategoryResolutionRuntime,
+  })) return;
   return jsonStateTransaction.run(async () => {
   const state = await loadState();
   if (await handleCollectorPricingRoute(req, res, url, {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { isolateCollectCategoryE2EEnvironment } from "./collect-category-e2e-environment.mjs";
+import { assertNoSensitiveMarkersDeep } from "./safe-observability-scanner.mjs";
 
 const ACCOUNT_A = "account-e2e-a";
 const ACCOUNT_B = "account-e2e-b";
@@ -127,6 +128,55 @@ function publicCategoryOutcome(item) {
   };
 }
 
+function assertPublicLogistics(item) {
+  assert.deepEqual({
+    weightG: item?.listingDraft?.logistics?.weightG,
+    lengthMm: item?.listingDraft?.logistics?.lengthMm,
+    widthMm: item?.listingDraft?.logistics?.widthMm,
+    heightMm: item?.listingDraft?.logistics?.heightMm,
+  }, {
+    weightG: 500,
+    lengthMm: 300,
+    widthMm: 200,
+    heightMm: 100,
+  });
+}
+
+function createControlledTimers() {
+  let nextId = 0;
+  const pending = [];
+  const timers = {
+    setTimeout(callback) {
+      const timer = {
+        id: ++nextId,
+        callback,
+        cancelled: false,
+        unref() {},
+      };
+      pending.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      if (timer) timer.cancelled = true;
+    },
+    setInterval(callback) {
+      return { id: ++nextId, callback, cancelled: false, unref() {} };
+    },
+    clearInterval(timer) {
+      if (timer) timer.cancelled = true;
+    },
+  };
+  return {
+    timers,
+    async drainTimeouts() {
+      while (pending.length) {
+        const timer = pending.shift();
+        if (!timer.cancelled) await timer.callback();
+      }
+    },
+  };
+}
+
 async function main() {
   const dataDir = process.env.E2E_TEMP_DATA_DIR;
   isolateCollectCategoryE2EEnvironment({ dataDir });
@@ -154,6 +204,7 @@ async function main() {
   let lease = 0;
   const validationCalls = [];
   const operationalLogs = [];
+  const controlledTimers = createControlledTimers();
   const categoryService = {
     async getCategorySnapshot({ accountId, store }) {
       assert.equal(accountId, ACCOUNT_A);
@@ -200,7 +251,8 @@ async function main() {
     now: () => new Date(nowMs),
     randomUUID: () => `category-e2e-lease-${++lease}`,
     sleep: async () => {},
-    logger: { error: (...values) => operationalLogs.push(structuredClone(values)) },
+    logger: { error: (...values) => operationalLogs.push(values) },
+    timers: controlledTimers.timers,
   });
   const readMetrics = { batch: 0, single: 0, singlePersistenceReads: 0 };
   const categoryResolutionReadPort = {
@@ -225,9 +277,23 @@ async function main() {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
+  const nativeFetch = globalThis.fetch;
   try {
     const address = server.address();
     const origin = `http://127.0.0.1:${address.port}`;
+    let controlledProfileCalls = 0;
+    globalThis.fetch = async (input, init) => {
+      const target = String(input?.url || input || "");
+      if (target.includes("api-seller.ozon.ru")) {
+        controlledProfileCalls += 1;
+        return new Response(JSON.stringify({ result: { company: { name: "Controlled E2E fixture" } } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (!target.startsWith(origin)) throw new Error("unexpected external E2E request");
+      return nativeFetch(input, init);
+    };
     const health = await requestJson(origin, "GET", "/health");
     assert.equal(health.status, 200);
     assert.equal(health.body.persistence, "json");
@@ -315,6 +381,7 @@ async function main() {
       ));
       assert.equal(collectItem.status, "COMPLETE");
       assert.equal(collectItem.enrichment.status, "COMPLETE");
+      assertPublicLogistics(collectItem);
       assert.equal(resolution.status, "QUEUED", "the real completion hook must schedule immediately");
 
       if (indexOfJob === 0) {
@@ -354,20 +421,49 @@ async function main() {
     )), true);
     const snapshotCallsAfterMatch = categorySnapshotCalls;
 
-    persisted.currentStoreIdsByAccount[ACCOUNT_A] = STORE_B;
-    await savePersistedState({ dataDir, dataFile, state: persisted });
-    await composition.collectCategoryResolutionRuntime.resolveDue({ accountId: ACCOUNT_A });
+    const validationsBeforeStoreSwitch = validationCalls.length;
+    const profileCallsBeforeStoreSwitch = controlledProfileCalls;
+    const [firstStoreSwitch, duplicateStoreWake] = await Promise.all([
+      requestJson(origin, "POST", "/local/current-store", {
+        token: WEB_TOKEN_A,
+        body: { storeId: STORE_B },
+      }),
+      requestJson(origin, "POST", "/local/current-store", {
+        token: WEB_TOKEN_A,
+        body: { storeId: STORE_B },
+      }),
+    ]);
+    assert.equal(firstStoreSwitch.status, 200, JSON.stringify(firstStoreSwitch.body));
+    assert.equal(duplicateStoreWake.status, 200, JSON.stringify(duplicateStoreWake.body));
+    await controlledTimers.drainTimeouts();
     persisted = await loadPersistedState({ dataFile });
+    assert.equal(persisted.currentStoreIdsByAccount[ACCOUNT_A], STORE_B);
     assert.equal(persisted.collectCategoryResolutions.every((record) => record.credentialStoreId === STORE_B), true);
-    assert.equal(categorySnapshotCalls, snapshotCallsAfterMatch);
-    assert.equal(validationCalls.some((call) => call.storeId === STORE_B), true);
+    assert.equal(categorySnapshotCalls - snapshotCallsAfterMatch, 0);
+    assert.equal(validationCalls.length - validationsBeforeStoreSwitch, 2);
+    assert.equal(controlledProfileCalls - profileCallsBeforeStoreSwitch, 2);
+    assert.deepEqual(
+      validationCalls.slice(validationsBeforeStoreSwitch).map((call) => call.storeId),
+      [STORE_B, STORE_B],
+    );
 
     nowMs += 60_000;
     currentFingerprint = "taxonomy-e2e-v2";
-    persisted.stores.find((store) => store.id === STORE_B).updatedAt = new Date(nowMs).toISOString();
-    await savePersistedState({ dataDir, dataFile, state: persisted });
-    await composition.collectCategoryResolutionRuntime.resolveDue({ accountId: ACCOUNT_A });
-    await composition.collectCategoryResolutionRuntime.resolveDue({ accountId: ACCOUNT_A });
+    const credentialRefresh = await requestJson(
+      origin,
+      "PATCH",
+      `/local/stores/${encodeURIComponent(STORE_B)}`,
+      { token: WEB_TOKEN_A, body: { apiKey: `${PRIVATE_STORE_MARKER}-b-v2` } },
+    );
+    assert.equal(credentialRefresh.status, 200, JSON.stringify(credentialRefresh.body));
+    await controlledTimers.drainTimeouts();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await composition.collectCategoryResolutionRuntime.resolveDue({ accountId: ACCOUNT_A });
+      persisted = await loadPersistedState({ dataFile });
+      if (persisted.collectCategoryResolutions.every((record) => (
+        record.status === "MATCHED" && record.taxonomyFingerprint === "taxonomy-e2e-v2"
+      ))) break;
+    }
     persisted = await loadPersistedState({ dataFile });
     assert.equal(persisted.collectCategoryResolutions.every((record) => (
       record.status === "MATCHED" && record.taxonomyFingerprint === "taxonomy-e2e-v2"
@@ -380,17 +476,31 @@ async function main() {
     const listRead = await requestJson(origin, "GET", "/ozon/collect-box", { token: WEB_TOKEN_A });
     assert.equal(listRead.status, 200);
     assert.equal(listRead.body.data.length, 2);
+    listRead.body.data.forEach(assertPublicLogistics);
     assert.deepEqual(readMetrics, { batch: 1, single: 0, singlePersistenceReads: 0 });
     const listReadMetrics = structuredClone(readMetrics);
     const listOutcomeById = new Map(listRead.body.data.map((item) => [item.id, publicCategoryOutcome(item)]));
 
     const editStateRead = await requestJson(origin, "GET", "/local/state", { token: WEB_TOKEN_A });
     const foreignRead = await requestJson(origin, "GET", "/ozon/collect-box", { token: WEB_TOKEN_B });
+    const foreignStateRead = await requestJson(origin, "GET", "/local/state", { token: WEB_TOKEN_B });
     assert.equal(editStateRead.status, 200);
     assert.equal(foreignRead.status, 200);
+    assert.equal(foreignStateRead.status, 200);
     assert.equal(editStateRead.body.caches.collectBox.length, 2);
     assert.equal(foreignRead.body.data.length, 0);
+    assert.equal(foreignStateRead.body.caches.collectBox.length, 0);
+    const foreignPublicState = JSON.stringify({
+      list: foreignRead.body,
+      localState: foreignStateRead.body,
+    });
+    for (const collectItemId of uploaded) assert.equal(foreignPublicState.includes(collectItemId), false);
+    for (const resolution of persisted.collectCategoryResolutions) {
+      assert.equal(foreignPublicState.includes(resolution.id), false);
+    }
+    assert.equal(foreignPublicState.includes(PRIVATE_STORE_MARKER), false);
     for (const item of editStateRead.body.caches.collectBox) {
+      assertPublicLogistics(item);
       assert.deepEqual(publicCategoryOutcome(item), listOutcomeById.get(item.id));
       assert.deepEqual(item.sourceCategory, {
         descriptionCategoryId: SOURCE_DESCRIPTION_CATEGORY_ID,
@@ -409,6 +519,10 @@ async function main() {
     for (const [, context = {}] of operationalLogs) {
       assert.equal(Object.keys(context).every((key) => allowedLogKeys.has(key)), true);
     }
+    assertNoSensitiveMarkersDeep(
+      operationalLogs,
+      [RAW_FAILURE_MARKER, PRIVATE_STORE_MARKER],
+    );
     const allowedAuditKeys = new Set([
       "collectItemId",
       "taxonomyScope",
@@ -426,7 +540,6 @@ async function main() {
     const publicAndObservability = JSON.stringify({
       list: listRead.body,
       localState: editStateRead.body,
-      operationalLogs,
       auditEvents: persisted.auditEvents,
     });
     assert.equal(publicAndObservability.includes(RAW_FAILURE_MARKER), false);
@@ -445,6 +558,7 @@ async function main() {
       operationalLogs: operationalLogs.length,
     };
   } finally {
+    globalThis.fetch = nativeFetch;
     composition.collectCategoryResolutionRuntime.stop();
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

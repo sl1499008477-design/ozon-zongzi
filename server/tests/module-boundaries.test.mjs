@@ -115,7 +115,7 @@ for (const [name, source, expectedSpecifier] of [
 const collectorAuthRouteIndex = serverEntry.indexOf("collectorAuthRuntime.handleHttpRoute(req, res, url)");
 const enrichmentRouteIndex = serverEntry.indexOf("collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)");
 const fastCollectionRouteIndex = serverEntry.indexOf(
-  "handleFastCollectionRoute(req, res, url)",
+  "handleFastCollectionRoute(req, res, url, {",
   enrichmentRouteIndex,
 );
 const broadJsonTransactionIndex = serverEntry.indexOf("return jsonStateTransaction.run(async () =>", enrichmentRouteIndex);

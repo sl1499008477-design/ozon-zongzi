@@ -2,26 +2,50 @@ import { createJsonAccountScopedCollectionHandler } from "./account-scoped-colle
 import { createCollectCategoryResolutionRuntime } from "./collect-category-resolution-runtime.mjs";
 import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
 
-export function createCollectCategoryAutoResolutionComposition({
-  loadState,
-  saveState,
-  persistenceMode,
-  stateTransaction,
-  categoryService,
-  currentCredentialStoreForAccount,
-  collectorAuthRuntime,
-  authenticateAccount,
-  readJson,
-  sendJson,
-  sendError,
-  normalizeItem,
-  countAccountItems,
-  now,
-  randomUUID,
-  sleep,
-  logger = console,
-  timers,
-} = {}) {
+function optionalFunctionPort(options, name) {
+  if (!Object.hasOwn(options, name)) return {};
+  if (typeof options[name] !== "function") {
+    throw new TypeError(`${name} override must be a function`);
+  }
+  return { [name]: options[name] };
+}
+
+function optionalTimersPort(options) {
+  if (!Object.hasOwn(options, "timers")) return {};
+  const timers = options.timers;
+  if (
+    !timers
+    || typeof timers.setTimeout !== "function"
+    || typeof timers.clearTimeout !== "function"
+    || typeof timers.setInterval !== "function"
+    || typeof timers.clearInterval !== "function"
+  ) {
+    throw new TypeError("timers override must provide timeout and interval functions");
+  }
+  return { timers };
+}
+
+export function createCollectCategoryAutoResolutionComposition(options = {}) {
+  const {
+    loadState,
+    saveState,
+    persistenceMode,
+    stateTransaction,
+    categoryService,
+    currentCredentialStoreForAccount,
+    collectorAuthRuntime,
+    authenticateAccount,
+    readJson,
+    sendJson,
+    sendError,
+    normalizeItem,
+    countAccountItems,
+    logger = console,
+  } = options;
+  const nowOverride = optionalFunctionPort(options, "now");
+  const randomUUIDOverride = optionalFunctionPort(options, "randomUUID");
+  const sleepOverride = optionalFunctionPort(options, "sleep");
+  const timersOverride = optionalTimersPort(options);
   if (
     typeof loadState !== "function"
     || typeof saveState !== "function"
@@ -49,9 +73,9 @@ export function createCollectCategoryAutoResolutionComposition({
     stateTransaction,
     categoryService,
     currentCredentialStoreForAccount,
-    ...(now ? { now } : {}),
-    ...(randomUUID ? { randomUUID } : {}),
-    ...(timers ? { timers } : {}),
+    ...nowOverride,
+    ...randomUUIDOverride,
+    ...timersOverride,
     logger,
   });
   const collectorOzonEnrichmentRuntime = createCollectorOzonEnrichmentRuntime({
@@ -64,9 +88,9 @@ export function createCollectCategoryAutoResolutionComposition({
     readJson,
     sendJson,
     categoryResolutionPort: collectCategoryResolutionRuntime,
-    ...(now ? { now } : {}),
-    ...(randomUUID ? { randomUUID } : {}),
-    ...(sleep ? { sleep } : {}),
+    ...nowOverride,
+    ...randomUUIDOverride,
+    ...sleepOverride,
     logger,
   });
   const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollectionHandler({
@@ -84,7 +108,7 @@ export function createCollectCategoryAutoResolutionComposition({
     countAccountItems,
     categoryResolutionPort: collectCategoryResolutionRuntime,
     logger,
-    ...(now ? { now } : {}),
+    ...nowOverride,
   });
 
   return Object.freeze({
