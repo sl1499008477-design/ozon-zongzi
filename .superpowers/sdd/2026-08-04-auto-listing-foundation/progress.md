@@ -26,5 +26,7 @@ Task 4: fix round 5/5 (numeric price facts isolate to BLOCKED siblings and resol
 Task 4: complete (commits 73d76fc..a05daf7, independent final re-review PASS)
 Task 4: verification — 30 Task 4 always-on tests passed, 42 Task 2/3/warehouse regressions passed, syntax and diff checks passed; one gated PostgreSQL test skipped.
 Task 4: unverified range — real PostgreSQL migrations, two-connection snapshot race, post-write rollback, draft/raw linkage, trigger rollback, FK behavior and client release were not dynamically executed because AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL are not configured. No production database fallback was used.
-Task 5: fix round 1/5 (6 Important + 2 Minor addressed — exact route methods, disabled short-circuit, public error/status/item DTOs, target/query bounds, route import/SQL/AI/Ozon guard, and retryable shared PostgreSQL initialization; pending commit)
-Task 5: verification — focused routes/boundaries/connection 20/20; Task 1–5 foundation 87/87; persistence/listing/store regression 38/38; one gated PostgreSQL fixture skipped without SONLI_MIGRATION_TEST_DATABASE_URL.
+Task 5: fix round 1/5 (6 Important + 2 Minor addressed — exact route methods, disabled short-circuit, public error/status/item DTOs, target/query bounds, route import/SQL/AI/Ozon guard, and retryable shared PostgreSQL initialization; commit fb61f4e)
+Task 5: round 1 verification correction — focused routes/boundaries/connection 21/21; Task 1–5 foundation 87/87; historical named persistence/listing/store command 38/38; independent expanded regression 35 pass/1 PostgreSQL-config skip.
+Task 5: fix round 2/5 (1 Important + 3 Minor addressed — auth-stage error isolation, Acorn import/query boundary, single-flight pool close, and evidence counts; pending commit)
+Task 5: round 2 verification — focused 24/24; Task 1–5 foundation 90/90; permissions/persistence/listing/store regression 42/42; gated PostgreSQL 1 pass/1 dedicated-DB skip.

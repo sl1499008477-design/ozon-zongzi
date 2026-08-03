@@ -296,6 +296,43 @@ test("known service and authentication failures keep safe status, code, and boun
   });
 });
 
+test("service status never overrides the closed public error map or impersonates authentication", async () => {
+  const cases = [
+    ["TARGET_STORE_NOT_FOUND", 401, 404, "TARGET_STORE_NOT_FOUND"],
+    ["AUTO_LISTING_SOURCE_VERSION_CONFLICT", 403, 409, "AUTO_LISTING_SOURCE_VERSION_CONFLICT"],
+    ["UNKNOWN_SERVICE_FAILURE", 401, 500, "AUTO_LISTING_INTERNAL_ERROR"],
+    ["UNKNOWN_SERVICE_FAILURE", 403, 500, "AUTO_LISTING_INTERNAL_ERROR"],
+  ];
+  for (const [code, thrownStatus, status, expectedCode] of cases) {
+    const local = harness({ runtime: { getService: async () => ({
+      createAutoListingJob: async () => {
+        throw Object.assign(new Error("untrusted status"), { code, status: thrownStatus });
+      },
+    }) } });
+    await local.handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+    assert.deepEqual(local.replies[0], {
+      status,
+      payload: { ok: false, code: expectedCode, message: "自动上架请求处理失败", correlationId: "corr_1" },
+    });
+  }
+});
+
+test("only authentication-stage 401 and 403 receive fixed authentication envelopes", async () => {
+  for (const [status, code, message] of [
+    [401, "AUTO_LISTING_UNAUTHENTICATED", "请先登录"],
+    [403, "AUTO_LISTING_FORBIDDEN", "没有该操作权限"],
+  ]) {
+    const local = harness({
+      authenticate: async () => { throw Object.assign(new Error("untrusted auth message"), { status }); },
+    });
+    await local.handler(request(), {}, new URL("http://local/auto-listing/jobs"));
+    assert.deepEqual(local.replies[0], {
+      status,
+      payload: { ok: false, code, message, correlationId: "" },
+    });
+  }
+});
+
 test("error item details use a closed scalar allowlist and a hard limit", async () => {
   const items = Array.from({ length: 99 }, (_, index) => ({
     itemId: `item_${index}`,

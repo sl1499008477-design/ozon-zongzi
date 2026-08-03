@@ -184,11 +184,6 @@ function messageFor(code) {
 }
 
 function errorEnvelope(error, correlationId) {
-  const status = Number(error?.status);
-  if (status === 401) return { status: 401, payload: { ok: false, code: "AUTO_LISTING_UNAUTHENTICATED", message: "请先登录", correlationId } };
-  if (status === 403 && error?.code !== "PERMISSION_FORBIDDEN") {
-    return { status: 403, payload: { ok: false, code: "AUTO_LISTING_FORBIDDEN", message: "没有该操作权限", correlationId } };
-  }
   const code = typeof error?.code === "string" && Object.hasOwn(PUBLIC_ERRORS, error.code)
     ? error.code
     : "AUTO_LISTING_INTERNAL_ERROR";
@@ -196,6 +191,16 @@ function errorEnvelope(error, correlationId) {
   const items = code === "AUTO_LISTING_INTERNAL_ERROR" ? undefined : safeErrorItems(error?.items);
   if (items) payload.items = items;
   return { status: code === "AUTO_LISTING_INTERNAL_ERROR" ? 500 : PUBLIC_ERRORS[code], payload };
+}
+
+function authenticationEnvelope(error, correlationId) {
+  if (Number(error?.status) === 401) {
+    return { status: 401, payload: { ok: false, code: "AUTO_LISTING_UNAUTHENTICATED", message: "请先登录", correlationId } };
+  }
+  if (Number(error?.status) === 403) {
+    return { status: 403, payload: { ok: false, code: "AUTO_LISTING_FORBIDDEN", message: "没有该操作权限", correlationId } };
+  }
+  return errorEnvelope(error, correlationId);
 }
 
 function routeFor(pathname) {
@@ -220,8 +225,15 @@ export function createAutoListingHttpHandler({
     const route = routeFor(url.pathname);
     if (!route) return false;
     let correlationId = "";
+    let actor;
     try {
-      const actor = await authenticate(req);
+      actor = await authenticate(req);
+    } catch (caught) {
+      const response = authenticationEnvelope(caught, correlationId);
+      sendJson(res, response.status, response.payload);
+      return true;
+    }
+    try {
       if (!((req.method === "POST" && route.kind === "create")
         || (req.method === "GET" && route.kind === "list")
         || (req.method === "GET" && route.kind === "detail"))) {

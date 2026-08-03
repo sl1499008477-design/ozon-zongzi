@@ -79,3 +79,39 @@ test("closing an old pool never closes a replacement created during its shutdown
     restoreEnvironment(saved);
   }
 });
+
+test("concurrent close is single-flight, preserves replacements after end failure, and retries", async () => {
+  const saved = saveEnvironment();
+  try {
+    Object.assign(process.env, {
+      POSTGRES_HOST: "localhost",
+      POSTGRES_DB: "concurrent_close_test",
+      POSTGRES_USER: "close_user",
+      POSTGRES_PASSWORD: "close_password",
+    });
+    delete process.env.DATABASE_URL;
+    const connection = await freshConnection();
+    const first = await connection.getPostgresPool();
+    let releaseFirstEnd;
+    let firstEndCalls = 0;
+    first.end = () => new Promise((resolve, reject) => {
+      firstEndCalls += 1;
+      releaseFirstEnd = () => reject(new Error("close failed"));
+    });
+    const left = connection.closePostgresPool();
+    const right = connection.closePostgresPool();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(firstEndCalls, 1);
+    releaseFirstEnd();
+    await assert.rejects(left, /close failed/);
+    await assert.rejects(right, /close failed/);
+
+    const replacement = await connection.getPostgresPool();
+    let replacementEndCalls = 0;
+    replacement.end = async () => { replacementEndCalls += 1; };
+    await connection.closePostgresPool();
+    assert.equal(replacementEndCalls, 1);
+  } finally {
+    restoreEnvironment(saved);
+  }
+});

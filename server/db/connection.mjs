@@ -1,4 +1,6 @@
 let poolPromise = null;
+const closingByInitialization = new Map();
+let closingWithoutPoolPromise = null;
 
 export function postgresEnabled() {
   return Boolean(process.env.DATABASE_URL || process.env.POSTGRES_HOST);
@@ -46,16 +48,28 @@ export async function getPostgresPool() {
   return poolPromise;
 }
 
-export async function closePostgresPool() {
+export function closePostgresPool() {
   const initialization = poolPromise;
-  if (!initialization) return;
-  let pool;
-  try {
-    pool = await initialization;
-  } catch {
+  if (!initialization) return closingWithoutPoolPromise || Promise.resolve();
+  const existing = closingByInitialization.get(initialization);
+  if (existing) return existing;
+  const closing = (async () => {
+    let pool;
+    try {
+      pool = await initialization;
+    } catch {
+      if (poolPromise === initialization) poolPromise = null;
+      return;
+    }
     if (poolPromise === initialization) poolPromise = null;
-    return;
-  }
-  if (poolPromise === initialization) poolPromise = null;
-  await pool.end();
+    await pool.end();
+  })();
+  closingByInitialization.set(initialization, closing);
+  closingWithoutPoolPromise = closing;
+  const clearClosing = () => {
+    if (closingByInitialization.get(initialization) === closing) closingByInitialization.delete(initialization);
+    if (closingWithoutPoolPromise === closing) closingWithoutPoolPromise = null;
+  };
+  closing.then(clearClosing, clearClosing);
+  return closing;
 }

@@ -48,8 +48,8 @@ No Task 1–4 domain, snapshot, repository, service, migration, external gateway
 ### RED / GREEN
 
 - RED: the expanded focused route/connection command had **19 tests, 7 failures**. It reproduced GET-create dispatching to detail, disabled POST body consumption, missing identifier/query bounds, dropped public domain errors/items, and rejected-pool retention. A final closed-error-item regression then failed because `<script>` status and newline failure codes survived the error DTO allowlist.
-- GREEN: route, module-boundary, and connection retry tests passed with **20 tests passed, 0 failed**.
-- Full foundation gate: **87 tests passed, 0 failed**. Persistence/listing/store regression: **38 tests passed, 0 failed**. The dedicated auto-listing PostgreSQL suite passed its local barrier test and skipped one dedicated-database fixture because `SONLI_MIGRATION_TEST_DATABASE_URL` remains unset; no production fallback was used.
+- GREEN: route, module-boundary, and connection retry tests passed with **21 tests passed, 0 failed**.
+- Full foundation gate: **87 tests passed, 0 failed**. The historical **38/38** persistence/listing/store command was `persistence-atomicity`, `formal-persistence-legacy-store`, `listing-warehouse-eligibility`, `listing-submission-policy`, `listing-pipeline-warehouse-boundary`, `listing-pipeline-v3.integration`, and `account-store-isolation`. The independent review's expanded command recorded **35 passed, 0 failed, 1 skipped** because its account-scoped collection integration had no PostgreSQL configuration. The dedicated auto-listing PostgreSQL suite passed its local barrier test and skipped one dedicated-database fixture because `SONLI_MIGRATION_TEST_DATABASE_URL` remains unset; no production fallback was used.
 - `node --check` passed for the route, runtime, and connection modules; `git diff --check` passed.
 
 ### Review finding closure
@@ -67,3 +67,24 @@ No Task 1–4 domain, snapshot, repository, service, migration, external gateway
 
 - Live listener/auth composition and disposable PostgreSQL integration remain unverified. Keep the feature disabled until the dedicated database and production-auth smoke path are available.
 - Runtime rollback remains `AUTO_LISTING_ENABLED=0`. The connection retry change can be reverted independently only if it causes unrelated pool lifecycle regression; it preserves all existing configuration semantics and public interfaces.
+
+## Fix round 2 — review closure
+
+### RED / GREEN
+
+- RED: the expanded focused command had **24 tests, 2 failures**. It proved service-owned `401` could override the closed target-store map and two simultaneous close calls invoked one pool's `end()` twice. The Acorn dynamic-import fixtures are executable boundary checks and the current route passed them.
+- GREEN: routes, connection retry, and module boundaries passed **24/24**. The full foundation gate passed **90/90**.
+- Regression: **42/42** passed for `permissions`, `external-write-safety`, `persistence-atomicity`, `formal-persistence-legacy-store`, `listing-warehouse-eligibility`, `listing-submission-policy`, `listing-pipeline-warehouse-boundary`, `listing-pipeline-v3.integration`, and `account-store-isolation`. The pipeline integration reports its intentional no-PostgreSQL internal skip/no-op while its test file completes successfully.
+- Gated auto-listing PostgreSQL coverage: **1 passed, 1 skipped** without `SONLI_MIGRATION_TEST_DATABASE_URL`; no production fallback was used. Route and connection syntax checks plus `git diff --check` passed.
+
+### Review finding closure
+
+- **R1-I1:** authentication has its own catch and fixed envelope. Only failures thrown by `authenticate` may produce public 401/403 auth responses; all later failures select their fixed status solely from `PUBLIC_ERRORS`, and unknown service errors remain a safe 500 even if they carry 401/403.
+- **R1-M1:** the route-boundary test now parses with Acorn. It permits only literal `./runtime-config.mjs` imports, rejects every other static or dynamic import, rejects computed dynamic imports, and independently rejects executable `.query()` syntax without treating comments or strings as imports.
+- **R1-M2:** shared connection cleanup is keyed by the captured initialization promise. Concurrent close calls share one shutdown promise, rejected initialization closes safely, end failures preserve replacement pools, and a subsequent replacement can be closed normally.
+- **R1-M3:** the round-1 evidence above now records the correct 21-test focused count, the committed `fb61f4e` state, and the named historical 38/38 versus review 35+skip regression scopes.
+
+### Remaining verification / rollback
+
+- A live HTTP listener/authentication smoke test and real disposable PostgreSQL transaction coverage remain unavailable. Keep `AUTO_LISTING_ENABLED=0` until those environments are supplied.
+- Roll back route exposure with `AUTO_LISTING_ENABLED=0`. Reverting this commit restores previous error/close behavior; preserve migration 026 and all immutable job, snapshot, and audit history.

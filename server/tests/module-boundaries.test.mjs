@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parse } from "acorn";
 import { readFile } from "node:fs/promises";
 import { assertCategoryResolutionPortBoundary } from "../module-import-boundary.mjs";
 
@@ -62,23 +63,43 @@ assert.doesNotMatch(
   /(?:getPostgresPool|createJsonCollectorOzonEnrichmentRepository|loadState|saveState)/,
   "Ozon enrichment routes must not own persistence",
 );
+function walk(node, visit) {
+  if (!node || typeof node !== "object") return;
+  visit(node);
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) value.forEach((child) => walk(child, visit));
+    else if (value && typeof value.type === "string") walk(value, visit);
+  }
+}
+
 function assertAutoListingRouteBoundary(source) {
-  assert.deepEqual(
-    [...source.matchAll(/\bimport\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]),
-    ["./runtime-config.mjs"],
-    "auto-listing routes may import only feature configuration",
-  );
-  assert.doesNotMatch(
-    source,
-    /(?:getPostgresPool|createAutoListingRepository|\b(?:SELECT|INSERT|UPDATE|DELETE|WITH)\b|\.query\s*\(|ozonCall|callOzonSellerApi|sub2api)/i,
-    "auto-listing routes must only parse HTTP and delegate through the runtime",
-  );
+  const imports = [];
+  let hasQueryCall = false;
+  const program = parse(source, { ecmaVersion: "latest", sourceType: "module" });
+  walk(program, (node) => {
+    if (node.type === "ImportDeclaration") imports.push(node.source.value);
+    if (node.type === "ImportExpression") {
+      if (node.source?.type !== "Literal" || typeof node.source.value !== "string") {
+        throw new Error("auto-listing routes must not use computed dynamic imports");
+      }
+      imports.push(node.source.value);
+    }
+    if (node.type === "CallExpression" && node.callee?.type === "MemberExpression"
+      && node.callee.property?.type === "Identifier" && node.callee.property.name === "query") {
+      hasQueryCall = true;
+    }
+  });
+  assert.deepEqual(imports, ["./runtime-config.mjs"], "auto-listing routes may import only feature configuration");
+  assert.equal(hasQueryCall, false, "auto-listing routes must not execute SQL query calls");
 }
 
 assert.doesNotThrow(() => assertAutoListingRouteBoundary(autoListingRoutes));
 for (const source of [
   'import { callOzonSellerApi } from "./ozon-client.mjs";',
   'import { createOpenAI } from "./ai-client.mjs";',
+  'await import("./ai-client.mjs");',
+  'await import("./ozon-client.mjs");',
+  'await import("./" + moduleName);',
   'const rows = await executor.query("UPDATE auto_listing_jobs SET status=1");',
   'const rows = await executor.query("SELECT * FROM auto_listing_jobs");',
 ]) {
