@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertAutoListingTransition,
+  assertAutoListingRetryEvent,
+  recoveryPointForRetryableFailure,
   nextAutoListingStatus,
 } from "../auto-listing-state-machine.mjs";
 
@@ -91,6 +93,42 @@ test("allows retry recovery only through its explicit recovery event", () => {
   assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_UPLOAD"), "UPLOAD_QUEUED");
   expectForbidden("RETRYABLE_ERROR", "RETRYABLE_FAILURE");
   expectForbidden("RETRYABLE_ERROR", "BLOCK");
+});
+
+test("derives one closed recovery point for every retryable failure stage", () => {
+  assert.equal(recoveryPointForRetryableFailure("PLANNING"), "PLANNING");
+  assert.equal(recoveryPointForRetryableFailure("GENERATING"), "GENERATION");
+  assert.equal(recoveryPointForRetryableFailure("UPLOAD_QUEUED"), "UPLOAD");
+  assert.equal(recoveryPointForRetryableFailure("UPLOADING"), "UPLOAD");
+
+  for (const [point, allowed, rejected] of [
+    ["PLANNING", "RETRY_PLANNING", ["RETRY_GENERATION", "RETRY_UPLOAD"]],
+    ["GENERATION", "RETRY_GENERATION", ["RETRY_PLANNING", "RETRY_UPLOAD"]],
+    ["UPLOAD", "RETRY_UPLOAD", ["RETRY_PLANNING", "RETRY_GENERATION"]],
+  ]) {
+    assert.doesNotThrow(() => assertAutoListingRetryEvent(point, allowed));
+    for (const eventType of rejected) {
+      assert.throws(
+        () => assertAutoListingRetryEvent(point, eventType),
+        (error) => error?.code === "AUTO_LISTING_RECOVERY_POINT_INVALID",
+      );
+    }
+  }
+});
+
+test("rejects failure sources and persisted recovery points outside the closed mapping", () => {
+  for (const status of ["SOURCE_READY", "READY_FOR_REVIEW", "RETRYABLE_ERROR", "SUCCEEDED"]) {
+    assert.throws(
+      () => recoveryPointForRetryableFailure(status),
+      (error) => error?.code === "AUTO_LISTING_RECOVERY_POINT_INVALID",
+    );
+  }
+  for (const point of [null, "", "UNKNOWN", "UPLOAD_QUEUED", {}]) {
+    assert.throws(
+      () => assertAutoListingRetryEvent(point, "RETRY_UPLOAD"),
+      (error) => error?.code === "AUTO_LISTING_RECOVERY_POINT_INVALID",
+    );
+  }
 });
 
 test("rejects every event from terminal states", () => {

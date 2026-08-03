@@ -297,6 +297,35 @@ if (!enabled) {
         repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 1, eventType: "PLAN_READY", actorAccountId: accountA, correlationId: "stale" }),
         (error) => error?.code === "AUTO_LISTING_VERSION_CONFLICT",
       );
+      await repository.updateItemStatus({
+        accountId: accountA, itemId: item.id, expectedStatusVersion: 2, eventType: "RETRYABLE_FAILURE",
+        actorAccountId: accountA, correlationId: "planning-failure", details: { failureCode: "AUTO_LISTING_TRANSIENT" },
+      });
+      const failureState = (await client.query(
+        "SELECT status,status_version,failure_code,recovery_point FROM auto_listing_job_items WHERE id=$1", [item.id],
+      )).rows[0];
+      assert.deepEqual(failureState, {
+        status: "RETRYABLE_ERROR", status_version: 3, failure_code: "AUTO_LISTING_TRANSIENT", recovery_point: "PLANNING",
+      });
+      const retryEventCount = Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [item.id],
+      )).rows[0].count);
+      await assert.rejects(
+        repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 3, eventType: "RETRY_GENERATION", actorAccountId: accountA, correlationId: "wrong-retry" }),
+        (error) => error?.code === "AUTO_LISTING_RECOVERY_POINT_INVALID",
+      );
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [item.id],
+      )).rows[0].count), retryEventCount);
+      await repository.updateItemStatus({
+        accountId: accountA, itemId: item.id, expectedStatusVersion: 3, eventType: "RETRY_PLANNING",
+        actorAccountId: accountA, correlationId: "correct-retry",
+      });
+      assert.deepEqual((await client.query(
+        "SELECT status,status_version,failure_code,recovery_point FROM auto_listing_job_items WHERE id=$1", [item.id],
+      )).rows[0], {
+        status: "PLANNING", status_version: 4, failure_code: null, recovery_point: null,
+      });
       const snapshotAfter = await client.query(
         `SELECT snapshot,snapshot_hash FROM auto_listing_source_snapshots
           WHERE account_id=$1 AND source_record_id='collect-a'`, [accountA],
@@ -305,7 +334,9 @@ if (!enabled) {
       assert.equal(typeof repository.updateSnapshot, "undefined");
 
       const scoped = await repository.getJob({ accountId: accountA, jobId: created.id });
-      assert.deepEqual(scoped.events.map((event) => event.eventType), ["CREATED", "SOURCE_CAPTURED", "START_PLANNING"]);
+      assert.deepEqual(scoped.events.map((event) => event.eventType), [
+        "CREATED", "SOURCE_CAPTURED", "START_PLANNING", "RETRYABLE_FAILURE", "RETRY_PLANNING",
+      ]);
       assert.equal(await repository.getJob({ accountId: accountB, jobId: created.id }), null);
       assert.deepEqual((await repository.listJobs({ accountId: accountB, limit: 10 })).map((job) => job.id), [other.id]);
 

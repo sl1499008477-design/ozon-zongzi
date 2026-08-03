@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import { assertAutoListingTransition, nextAutoListingStatus } from "./auto-listing-state-machine.mjs";
+import {
+  assertAutoListingRetryEvent,
+  assertAutoListingTransition,
+  nextAutoListingStatus,
+  recoveryPointForRetryableFailure,
+} from "./auto-listing-state-machine.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
@@ -42,6 +47,10 @@ function plainJsonObject(value) {
 
 function eventDetailsError() {
   return repositoryError("AUTO_LISTING_EVENT_DETAILS_INVALID");
+}
+
+function recoveryPointMismatchError() {
+  return repositoryError("AUTO_LISTING_RECOVERY_POINT_MISMATCH");
 }
 
 function safeEventDetails(value = {}) {
@@ -590,12 +599,16 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       if (["BLOCK", "RETRYABLE_FAILURE"].includes(eventType) && !safeDetails.failureCode) {
         throw eventDetailsError();
       }
+      if (["RETRY_PLANNING", "RETRY_GENERATION", "RETRY_UPLOAD"].includes(eventType)
+        && (safeDetails.failureCode || safeDetails.recoveryPoint)) {
+        throw eventDetailsError();
+      }
       const client = await pool.connect();
       let committed = false;
       try {
         await client.query("BEGIN");
         const current = await client.query(
-          `SELECT id,job_id,status,status_version FROM auto_listing_job_items
+          `SELECT id,job_id,status,status_version,recovery_point FROM auto_listing_job_items
             WHERE id=$1 AND account_id=$2 FOR UPDATE`,
           [id, scope],
         );
@@ -604,22 +617,48 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
         if (row.status_version !== expectedStatusVersion) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
         const nextStatus = nextAutoListingStatus(row.status, eventType);
         assertAutoListingTransition(row.status, eventType, nextStatus);
+        const isRetryableFailure = eventType === "RETRYABLE_FAILURE";
+        const isRetry = ["RETRY_PLANNING", "RETRY_GENERATION", "RETRY_UPLOAD"].includes(eventType);
+        let recoveryPoint = null;
+        if (isRetryableFailure) {
+          recoveryPoint = recoveryPointForRetryableFailure(row.status);
+          if (safeDetails.recoveryPoint && safeDetails.recoveryPoint !== recoveryPoint) {
+            throw recoveryPointMismatchError();
+          }
+        } else if (isRetry) {
+          recoveryPoint = row.recovery_point;
+          if (!recoveryPoint) {
+            const legacyFailure = await client.query(
+              `SELECT from_status FROM auto_listing_events
+                WHERE account_id=$1 AND item_id=$2 AND event_type='RETRYABLE_FAILURE'
+                ORDER BY created_at DESC,id DESC LIMIT 1`,
+              [scope, id],
+            );
+            const sourceStatus = legacyFailure.rows[0]?.from_status;
+            recoveryPoint = recoveryPointForRetryableFailure(sourceStatus);
+          }
+          assertAutoListingRetryEvent(recoveryPoint, eventType);
+        }
         const failureCode = ["BLOCK", "RETRYABLE_FAILURE"].includes(eventType)
           ? safeDetails.failureCode : null;
+        const persistedRecoveryPoint = isRetryableFailure ? recoveryPoint : null;
+        const persistedDetails = isRetryableFailure
+          ? { ...safeDetails, recoveryPoint }
+          : safeDetails;
         const updated = await client.query(
           `UPDATE auto_listing_job_items SET status=$1,status_version=status_version+1,
-                  failure_code=$2,failure_detail_safe=$2,updated_at=NOW()
-            WHERE id=$3 AND account_id=$4 AND status_version=$5
+                  failure_code=$2,failure_detail_safe=$2,recovery_point=$3,updated_at=NOW()
+            WHERE id=$4 AND account_id=$5 AND status_version=$6
             RETURNING id,status,status_version`,
-          [nextStatus, failureCode, id, scope, expectedStatusVersion],
+          [nextStatus, failureCode, persistedRecoveryPoint, id, scope, expectedStatusVersion],
         );
         if (!updated.rows[0]) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
         await client.query(
           `INSERT INTO auto_listing_events (
              id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,correlation_id,details
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
           [`${id}_${String(expectedStatusVersion + 2).padStart(2, "0")}`, scope, row.job_id, id,
-            actorAccountId, row.status, nextStatus, eventType, correlationId, json(safeDetails)],
+            actorAccountId, row.status, nextStatus, eventType, correlationId, json(persistedDetails)],
         );
         await client.query("COMMIT");
         committed = true;

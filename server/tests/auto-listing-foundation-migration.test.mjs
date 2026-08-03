@@ -3,9 +3,14 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const migrationUrl = new URL("../db/migrations/026_auto_listing_foundation.sql", import.meta.url);
+const recoveryMigrationUrl = new URL("../db/migrations/026_auto_listing_recovery_point.sql", import.meta.url);
 
 async function migrationSql() {
   return readFile(migrationUrl, "utf8");
+}
+
+async function recoveryMigrationSql() {
+  return readFile(recoveryMigrationUrl, "utf8");
 }
 
 function tableBlock(sql, table) {
@@ -143,4 +148,14 @@ test("auto-listing foundation migration remains additive and indexed", async () 
   }
 
   assert.doesNotMatch(sql, /DROP\s+(TABLE|COLUMN)/i);
+});
+
+test("recovery-point migration is additive, idempotent, and constrains only closed values", async () => {
+  const sql = await recoveryMigrationSql();
+
+  assert.match(sql, /ALTER TABLE auto_listing_job_items\s+ADD COLUMN IF NOT EXISTS recovery_point TEXT/i);
+  assert.match(sql, /CHECK\s*\(recovery_point IS NULL OR recovery_point IN \('PLANNING', 'GENERATION', 'UPLOAD'\)\)/i);
+  assert.match(sql, /IF NOT EXISTS[\s\S]*?pg_constraint[\s\S]*?auto_listing_job_items_recovery_point_check/i);
+  assert.doesNotMatch(sql, /\bDROP\s+(TABLE|COLUMN)\b/i);
+  assert.doesNotMatch(sql, /\b(?:UPDATE|DELETE\s+FROM)\s+auto_listing_events\b/i);
 });
