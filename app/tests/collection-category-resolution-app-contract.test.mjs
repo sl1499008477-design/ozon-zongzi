@@ -259,3 +259,186 @@ test("Collect edit draft-row preparation retains the selected non-default taxono
     { descriptionCategoryId: 33, typeId: 44 },
   );
 });
+
+const recoveryManual = {
+  status: "MATCHED",
+  method: "MANUAL",
+  taxonomyScope: "OZON:DEFAULT",
+  targetDescriptionCategoryId: 333,
+  targetTypeId: 444,
+  target: { storeId: "store-b", descriptionCategoryId: 333, typeId: 444 },
+};
+
+const recoveryAuto = {
+  status: "MATCHED",
+  method: "AUTO",
+  target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 },
+};
+
+const unresolvedSharedItem = (status, listingDraft = {}) => ({
+  id: `collect-${status.toLowerCase()}`,
+  sku: `sku-${status.toLowerCase()}`,
+  categoryResolution: { status, taxonomyScope: "OZON:DEFAULT" },
+  listingDraft,
+});
+
+const categoryIds = (resolution) => ({
+  descriptionCategoryId: resolution?.targetDescriptionCategoryId ?? resolution?.target?.descriptionCategoryId,
+  typeId: resolution?.targetTypeId ?? resolution?.target?.typeId,
+});
+
+test("effective editor resolution lets an interactive current match recover NEEDS_REVIEW and INVALIDATED", () => {
+  assert.equal(typeof appModule.collectEditEffectiveCategoryResolution, "function");
+  for (const status of ["NEEDS_REVIEW", "INVALIDATED"]) {
+    const item = unresolvedSharedItem(status, { categoryResolution: recoveryManual });
+    const resolved = appModule.collectEditEffectiveCategoryResolution({
+      item,
+      itemId: item.id,
+      targetStoreId: "store-b",
+      taxonomyScope: "OZON:DEFAULT",
+      interactivePreview: {
+        itemId: item.id,
+        targetStoreId: "store-b",
+        taxonomyScope: "OZON:DEFAULT",
+        resolution: recoveryAuto,
+      },
+    });
+    assert.equal(resolved.method, "AUTO", status);
+    assert.deepEqual(categoryIds(resolved), {
+      descriptionCategoryId: 555,
+      typeId: 666,
+    }, status);
+  }
+});
+
+test("real editor preview, seed, draft, and variants reload a scoped saved MANUAL recovery", () => {
+  for (const status of ["NEEDS_REVIEW", "INVALIDATED"]) {
+    const item = unresolvedSharedItem(status, { categoryResolution: recoveryManual });
+    const preview = appModule.collectEditPreviewPayload({
+      item,
+      sku: item.sku,
+      title: "Reloaded manual category",
+      price: "100",
+      targetStoreId: "store-b",
+    });
+    const seed = appModule.collectEditCategoryPreviewSeed({
+      item,
+      targetStoreId: "store-b",
+      collectCandidate: true,
+    });
+    const rows = appModule.collectEditVariantRows({
+      item,
+      sku: item.sku,
+      title: "Reloaded manual category",
+      price: "100",
+      targetStoreId: "store-b",
+    });
+    const draftRow = appModule.collectEditDraftVariantCategory({
+      item,
+      itemId: item.id,
+      row: { sku: item.sku },
+      targetStoreId: "store-b",
+    });
+
+    assert.deepEqual(
+      { descriptionCategoryId: preview.description_category_id, typeId: preview.type_id },
+      { descriptionCategoryId: 333, typeId: 444 },
+      `${status} preview`,
+    );
+    assert.deepEqual(
+      { descriptionCategoryId: seed.descriptionCategoryId, typeId: seed.typeId },
+      { descriptionCategoryId: "333", typeId: "444" },
+      `${status} seed`,
+    );
+    assert.deepEqual(
+      { descriptionCategoryId: rows[0].descriptionCategoryId, typeId: rows[0].typeId },
+      { descriptionCategoryId: 333, typeId: 444 },
+      `${status} variants`,
+    );
+    assert.deepEqual(
+      { descriptionCategoryId: draftRow.descriptionCategoryId, typeId: draftRow.typeId },
+      { descriptionCategoryId: 333, typeId: 444 },
+      `${status} draft`,
+    );
+    assert.equal(draftRow.categoryResolution.method, "MANUAL", `${status} draft method`);
+  }
+});
+
+test("effective editor resolution keeps a valid shared MATCHED target ahead of stale preview and MANUAL", () => {
+  const item = {
+    id: "collect-shared-matched",
+    categoryResolution: {
+      status: "MATCHED",
+      method: "AUTO",
+      taxonomyScope: "OZON:DEFAULT",
+      targetDescriptionCategoryId: 111,
+      targetTypeId: 222,
+    },
+    listingDraft: { categoryResolution: recoveryManual },
+  };
+  const resolved = appModule.collectEditEffectiveCategoryResolution({
+    item,
+    itemId: item.id,
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+    interactivePreview: {
+      itemId: item.id,
+      targetStoreId: "store-b",
+      taxonomyScope: "OZON:DEFAULT",
+      resolution: recoveryAuto,
+    },
+    manualOverride: {
+      itemId: item.id,
+      targetStoreId: "store-b",
+      taxonomyScope: "OZON:DEFAULT",
+      resolution: recoveryManual,
+    },
+  });
+  assert.equal(resolved.method, "AUTO");
+  assert.deepEqual(categoryIds(resolved), {
+    descriptionCategoryId: 111,
+    typeId: 222,
+  });
+});
+
+test("effective editor resolution isolates recovery records and retains Task 6 legacy fallback after a taxonomy mismatch", () => {
+  const item = unresolvedSharedItem("NEEDS_REVIEW", {
+    categoryResolution: {
+      status: "MATCHED",
+      method: "MANUAL",
+      target: { storeId: "store-b", descriptionCategoryId: 333, typeId: 444 },
+    },
+  });
+  const validPreview = {
+    itemId: item.id,
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+    resolution: recoveryAuto,
+  };
+  for (const mismatch of [
+    { itemId: "other-item" },
+    { targetStoreId: "store-other" },
+    { taxonomyScope: "OZON:RU" },
+  ]) {
+    const resolved = appModule.collectEditEffectiveCategoryResolution({
+      item,
+      itemId: item.id,
+      targetStoreId: "store-b",
+      taxonomyScope: "OZON:DEFAULT",
+      interactivePreview: { ...validPreview, ...mismatch },
+    });
+    assert.equal(resolved.status, "NEEDS_REVIEW", JSON.stringify(mismatch));
+  }
+
+  const legacy = appModule.collectEditEffectiveCategoryResolution({
+    item,
+    itemId: item.id,
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:RU",
+  });
+  assert.equal(legacy.method, "MANUAL");
+  assert.deepEqual(categoryIds(legacy), {
+    descriptionCategoryId: 333,
+    typeId: 444,
+  });
+});

@@ -4146,7 +4146,9 @@ export const collectEditPreviewPayload = ({
   const firstVariant = variantRows[0] || {};
   const offerId = collectEditFirst(firstVariant.offerId, firstVariant.offer_id) || `${offerPrefix || "jz-"}${sku || item.sku || Date.now()}`;
   const sourceCategory = collectEditSourceCategorySnapshot(item);
-  const targetResolution = categoryResolutionForCollectionTarget(item, {
+  const targetResolution = collectEditEffectiveCategoryResolution({
+    item,
+    itemId: collectEditFirst(item?.id, item?.collectItemId),
     targetStoreId,
     taxonomyScope,
   });
@@ -5028,7 +5030,9 @@ export const collectEditVariantRows = ({
     const legacyResolution = variant !== item && !variant.categoryResolution?.taxonomyScope
       ? variant.categoryResolution
       : item.listingDraft?.categoryResolution;
-    const targetResolution = categoryResolutionForCollectionTarget(item, {
+    const targetResolution = collectEditEffectiveCategoryResolution({
+      item,
+      itemId: collectEditFirst(item?.id, item?.collectItemId),
       targetStoreId,
       taxonomyScope,
       legacyResolution,
@@ -5077,7 +5081,9 @@ export const collectEditCategoryPreviewSeed = ({
   collectCandidate = false,
 } = {}) => {
   const draft = item?.listingDraft || {};
-  const categoryResolution = categoryResolutionForCollectionTarget(item, {
+  const categoryResolution = collectEditEffectiveCategoryResolution({
+    item,
+    itemId: collectEditFirst(item?.id, item?.collectItemId),
     targetStoreId,
     taxonomyScope,
   });
@@ -5105,13 +5111,35 @@ export const collectEditCategoryPreviewSeed = ({
   };
 };
 
-const collectEditManualFallbackResolution = ({
-  resolution,
+const manualOverrideEligibleStatuses = new Set([
+  "NEEDS_REVIEW",
+  "INVALIDATED",
+]);
+
+const collectEditCategoryStatus = (resolution) => String(
+  resolution?.status || "",
+).trim().toUpperCase();
+
+const collectEditScopeRecordIsCurrent = ({
+  record = null,
+  itemId = "",
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+} = {}) => Boolean(
+  record
+  && String(record.itemId || "") === String(itemId || "")
+  && String(record.targetStoreId || "") === String(targetStoreId || "")
+  && String(record.taxonomyScope || "") === String(taxonomyScope || ""),
+);
+
+const collectEditCurrentTargetResolution = ({
+  resolution = null,
   targetStoreId = "",
   taxonomyScope = "OZON:DEFAULT",
 } = {}) => {
-  if (resolution?.method !== "MANUAL") return null;
+  if (!resolution || typeof resolution !== "object") return null;
   return categoryResolutionForCollectionTarget({
+    categoryResolution: resolution,
     listingDraft: { categoryResolution: resolution },
   }, {
     targetStoreId,
@@ -5119,10 +5147,146 @@ const collectEditManualFallbackResolution = ({
   });
 };
 
-const manualOverrideEligibleStatuses = new Set([
-  "NEEDS_REVIEW",
-  "INVALIDATED",
-]);
+const collectEditCurrentMatchedResolution = ({
+  resolution = null,
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+} = {}) => {
+  const current = collectEditCurrentTargetResolution({
+    resolution,
+    targetStoreId,
+    taxonomyScope,
+  });
+  const target = listingTargetCategoryFieldsForStore(current, targetStoreId, {
+    taxonomyScope,
+  });
+  return current?.status === "MATCHED" && target.descriptionCategoryId && target.typeId
+    ? current
+    : null;
+};
+
+const collectEditScopedRecoveryResolution = ({
+  recovery = null,
+  itemId = "",
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  method = "",
+} = {}) => {
+  if (!collectEditScopeRecordIsCurrent({
+    record: recovery,
+    itemId,
+    targetStoreId,
+    taxonomyScope,
+  })) return null;
+  if (method && recovery?.resolution?.method !== method) return null;
+  return collectEditCurrentMatchedResolution({
+    resolution: recovery?.resolution,
+    targetStoreId,
+    taxonomyScope,
+  });
+};
+
+const collectEditSavedManualRecoveryResolution = ({
+  item = {},
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+} = {}) => {
+  const saved = item?.listingDraft?.categoryResolution;
+  if (
+    saved?.method !== "MANUAL"
+    || String(saved?.taxonomyScope || "") !== String(taxonomyScope || "")
+  ) return null;
+  return collectEditCurrentMatchedResolution({
+    resolution: saved,
+    targetStoreId,
+    taxonomyScope,
+  });
+};
+
+const collectEditLegacyCategoryResolution = ({
+  item = {},
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  legacyResolution,
+} = {}) => {
+  const requestedLegacy = legacyResolution === undefined
+    ? item?.listingDraft?.categoryResolution
+    : legacyResolution;
+  const legacy = requestedLegacy?.taxonomyScope
+    && String(requestedLegacy.taxonomyScope) !== String(taxonomyScope || "")
+    ? item?.listingDraft?.categoryResolution
+    : requestedLegacy;
+  if (
+    legacy?.taxonomyScope
+    && String(legacy.taxonomyScope) !== String(taxonomyScope || "")
+  ) return null;
+  return collectEditCurrentTargetResolution({
+    resolution: legacy,
+    targetStoreId,
+    taxonomyScope,
+  });
+};
+
+export const collectEditEffectiveCategoryResolution = ({
+  item = {},
+  itemId = "",
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  interactivePreview = null,
+  manualOverride = null,
+  legacyResolution,
+  fallbackResolution = null,
+} = {}) => {
+  const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
+  const shared = item?.categoryResolution;
+  const sharedCurrent = String(shared?.taxonomyScope || "") === String(taxonomyScope || "")
+    ? collectEditCurrentTargetResolution({ resolution: shared, targetStoreId, taxonomyScope })
+    : null;
+  const sharedMatched = collectEditCurrentMatchedResolution({
+    resolution: sharedCurrent,
+    targetStoreId,
+    taxonomyScope,
+  });
+  if (sharedMatched) return sharedMatched;
+
+  if (sharedCurrent) {
+    if (manualOverrideEligibleStatuses.has(collectEditCategoryStatus(sharedCurrent))) {
+      const interactive = collectEditScopedRecoveryResolution({
+        recovery: interactivePreview,
+        itemId: currentItemId,
+        targetStoreId,
+        taxonomyScope,
+      });
+      if (interactive) return interactive;
+      const manual = collectEditScopedRecoveryResolution({
+        recovery: manualOverride,
+        itemId: currentItemId,
+        targetStoreId,
+        taxonomyScope,
+        method: "MANUAL",
+      });
+      if (manual) return manual;
+      const savedManual = collectEditSavedManualRecoveryResolution({
+        item,
+        targetStoreId,
+        taxonomyScope,
+      });
+      if (savedManual) return savedManual;
+    }
+    return sharedCurrent;
+  }
+
+  return collectEditLegacyCategoryResolution({
+    item,
+    targetStoreId,
+    taxonomyScope,
+    legacyResolution,
+  }) || collectEditCurrentTargetResolution({
+    resolution: fallbackResolution,
+    targetStoreId,
+    taxonomyScope,
+  });
+};
 
 export const collectEditManualResolutionOverride = ({
   item = {},
@@ -5133,19 +5297,15 @@ export const collectEditManualResolutionOverride = ({
 } = {}) => {
   const currentItemId = collectEditFirst(item?.id, item?.collectItemId, itemId);
   const sharedResolution = item?.categoryResolution;
-  const sharedStatus = String(sharedResolution?.status || "").trim().toUpperCase();
+  const sharedStatus = collectEditCategoryStatus(sharedResolution);
   const sharedUsesCurrentTaxonomy = String(sharedResolution?.taxonomyScope || "") === String(taxonomyScope || "");
   if (sharedUsesCurrentTaxonomy && !manualOverrideEligibleStatuses.has(sharedStatus)) return null;
-  if (
-    !manualOverride
-    || String(manualOverride.itemId || "") !== String(currentItemId || "")
-    || String(manualOverride.targetStoreId || "") !== String(targetStoreId || "")
-    || String(manualOverride.taxonomyScope || "") !== String(taxonomyScope || "")
-  ) return null;
-  return collectEditManualFallbackResolution({
-    resolution: manualOverride.resolution,
+  return collectEditScopedRecoveryResolution({
+    recovery: manualOverride,
+    itemId: currentItemId,
     targetStoreId,
     taxonomyScope,
+    method: "MANUAL",
   });
 };
 
@@ -5160,18 +5320,18 @@ export const collectEditDraftVariantCategory = ({
   taxonomyScope = "OZON:DEFAULT",
   fallbackResolution = null,
   manualOverride = null,
+  interactivePreview = null,
 } = {}) => {
-  const categoryResolution = collectEditManualResolutionOverride({
+  const categoryResolution = collectEditEffectiveCategoryResolution({
     item,
     itemId,
     targetStoreId,
     taxonomyScope,
+    interactivePreview,
     manualOverride,
-  }) || categoryResolutionForCollectionTarget(item, {
-    targetStoreId,
-    taxonomyScope,
     legacyResolution: row.categoryResolution || item.listingDraft?.categoryResolution,
-  }) || fallbackResolution;
+    fallbackResolution,
+  });
   const targetFields = listingTargetCategoryFieldsForStore(
     categoryResolution,
     targetStoreId,
@@ -5660,7 +5820,31 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       });
       if (!requestIsCurrent()) return null;
       const first = Array.isArray(result?.items) ? result.items[0] : null;
-      if (first) setPreviewItem(first);
+      if (first) {
+        const previewResolution = {
+          ...(first.categoryResolution || {}),
+          status: "MATCHED",
+          method: first.categoryResolution?.method || "AUTO",
+          taxonomyScope: categoryTaxonomyScope,
+          targetDescriptionCategoryId: first.description_category_id,
+          targetTypeId: first.type_id,
+          target: {
+            ...(first.categoryResolution?.target || {}),
+            storeId: categoryStoreId,
+            descriptionCategoryId: first.description_category_id,
+            typeId: first.type_id,
+          },
+        };
+        setPreviewItem({
+          ...first,
+          categoryPreviewOverride: {
+            itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
+            targetStoreId: categoryStoreId,
+            taxonomyScope: categoryTaxonomyScope,
+            resolution: previewResolution,
+          },
+        });
+      }
       if (!first?.description_category_id || !first?.type_id) {
         const reason = first?.categoryResolution?.reason;
         const detail = reason === "TARGET_TYPE_AMBIGUOUS"
@@ -5744,6 +5928,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         taxonomyScope: categoryTaxonomyScope,
         fallbackResolution: categoryResolution,
         manualOverride: scopedPreviewItem?.categoryManualOverride,
+        interactivePreview: scopedPreviewItem?.categoryPreviewOverride,
       });
       const rowResolution = rowCategory.categoryResolution;
       const rowTarget = rowCategory;
@@ -5868,16 +6053,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     await saveListingDraft({ silent: false }).catch(function() {});
   };
   const currentDraft = item?.listingDraft || {};
-  const manualPreviewResolution = collectEditManualResolutionOverride({
+  const categoryResolution = collectEditEffectiveCategoryResolution({
     item,
     itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
     targetStoreId: categoryStoreId,
     taxonomyScope: categoryTaxonomyScope,
+    interactivePreview: scopedPreviewItem?.categoryPreviewOverride,
     manualOverride: scopedPreviewItem?.categoryManualOverride,
-  });
-  const categoryResolution = manualPreviewResolution || categoryResolutionForCollectionTarget(item, {
-    targetStoreId: categoryStoreId,
-    taxonomyScope: categoryTaxonomyScope,
     legacyResolution: scopedPreviewItem?.categoryResolution || currentDraft.categoryResolution,
   });
   const categoryResolutionViewState = categoryResolution
@@ -6002,12 +6184,18 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     const nextRuPath = collectEditCategoryDisplayPath(
       collectEditFindCategoryOptionPath(categoryTreeOptionsRu, nextDescriptionId, nextTypeId),
     ) || nextZhPath;
-    const manualResolution = manualCategoryResolution({
+    const manualSelection = manualCategoryResolution({
       source: sourceCategory,
       targetStoreId: categoryStoreId,
       descriptionCategoryId: nextDescriptionId,
       typeId: nextTypeId,
     });
+    const manualResolution = {
+      ...manualSelection,
+      taxonomyScope: categoryTaxonomyScope,
+      targetDescriptionCategoryId: nextDescriptionId,
+      targetTypeId: nextTypeId,
+    };
     setPreviewItem((prev) => ({
       ...(prev || {}),
       description_category_id: nextDescriptionId,
@@ -6019,6 +6207,12 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       type_name: collectEditText(leaf?.label),
       categoryResolution: manualResolution,
       categoryManualOverride: {
+        itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
+        targetStoreId: categoryStoreId,
+        taxonomyScope: categoryTaxonomyScope,
+        resolution: manualResolution,
+      },
+      categoryPreviewOverride: {
         itemId: collectEditFirst(item?.id, item?.collectItemId, itemId),
         targetStoreId: categoryStoreId,
         taxonomyScope: categoryTaxonomyScope,
