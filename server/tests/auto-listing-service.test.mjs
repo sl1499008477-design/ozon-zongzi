@@ -92,6 +92,21 @@ test("keeps low-branch and missing-price source evidence isolated per sibling", 
   assert.equal(graph.items[2].snapshot.priceEvidence.blackKopecks, "");
 });
 
+test("keeps numeric source price facts immutable while blocking only that sibling", async () => {
+  const repository = fakeRepository({ sources: [
+    source("collect-valid"),
+    source("collect-numeric", { blackKopecks: 10_000, greenKopecks: 8_000 }),
+  ] });
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-valid", "collect-numeric"], idempotencyKey: "numeric-price", correlationId: "corr", config,
+  });
+  assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "BLOCKED"]);
+  assert.equal(result.items[1].failureCode, "PRICE_INPUT_INVALID");
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.items[1].snapshot.priceEvidence.blackKopecks, 10_000);
+  assert.equal(graph.items[1].snapshot.variants[0].priceEvidence.greenKopecks, 8_000);
+});
+
 test("rejects missing or foreign formal warehouses before any graph insert", async () => {
   for (const evidence of [
     { warehouse: null, products: [] },

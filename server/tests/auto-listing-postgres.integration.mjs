@@ -78,14 +78,15 @@ function withChangedSourceHash(input) {
 function twoConnectionSnapshotBarrier(scopedPool, timeoutMs = 5_000) {
   let arrivals = 0;
   let settled = false;
+  let abortCause = null;
   let resolveBarrier;
-  let rejectBarrier;
-  const barrier = new Promise((resolve, reject) => { resolveBarrier = resolve; rejectBarrier = reject; });
+  const barrier = new Promise((resolve) => { resolveBarrier = resolve; });
   const abort = (cause = new Error("snapshot insertion barrier aborted")) => {
     if (settled) return;
     settled = true;
+    abortCause = cause;
     clearTimeout(timeout);
-    rejectBarrier(cause);
+    resolveBarrier();
   };
   const timeout = setTimeout(() => abort(new Error(`snapshot insertion barrier timed out after ${timeoutMs}ms (arrivals=${arrivals})`)), timeoutMs);
   const release = () => {
@@ -97,7 +98,7 @@ function twoConnectionSnapshotBarrier(scopedPool, timeoutMs = 5_000) {
   return {
     query: (...args) => scopedPool.query(...args),
     abort,
-    dispose: () => { clearTimeout(timeout); },
+    dispose: () => abort(new Error("snapshot insertion barrier disposed")),
     async connect() {
       const connection = await scopedPool.connect();
       return {
@@ -106,6 +107,7 @@ function twoConnectionSnapshotBarrier(scopedPool, timeoutMs = 5_000) {
             arrivals += 1;
             if (arrivals === 2) release();
             await barrier;
+            if (abortCause) throw abortCause;
           }
           return connection.query(sql, params);
         },
@@ -136,6 +138,23 @@ async function registerGraphSources(client, graphInput) {
     );
   }
 }
+
+test("snapshot insertion barrier aborts a waiting peer without an internal rejected promise", async () => {
+  const barrier = twoConnectionSnapshotBarrier({
+    query: async () => ({ rows: [] }),
+    connect: async () => ({ query: async () => ({ rows: [] }), release() {} }),
+  }, 100);
+  const connection = await barrier.connect();
+  const waiting = connection.query("INSERT INTO auto_listing_source_snapshots (id) VALUES ('one')");
+  const cause = new Error("pre-barrier worker failed");
+  barrier.abort(cause);
+  await assert.rejects(waiting, (error) => error === cause);
+  barrier.dispose();
+
+  const noParticipant = twoConnectionSnapshotBarrier({ query: async () => ({ rows: [] }), connect: async () => ({}) }, 100);
+  noParticipant.abort(new Error("no participants"));
+  noParticipant.dispose();
+});
 
 if (!enabled) {
   test("auto listing PostgreSQL integration is explicitly gated to a dedicated migration database", {

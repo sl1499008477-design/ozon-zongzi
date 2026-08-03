@@ -223,6 +223,20 @@ test("hashes equivalent key orders equally and business changes differently", ()
   assert.notEqual(first.snapshotHash, changed.snapshotHash);
 });
 
+test("preserves numeric source price facts and hashes their JSON type", () => {
+  const strings = buildAutoListingSourceSnapshot(source());
+  const numeric = buildAutoListingSourceSnapshot(source({
+    collectItem: collectItem({ listingDraft: {
+      ...collectItem().listingDraft,
+      blackKopecks: 10_000, greenKopecks: 8_000,
+      variants: [{ ...collectItem().listingDraft.variants[0], blackKopecks: 10_000, greenKopecks: 8_000 }],
+    } }),
+  }));
+  assert.equal(numeric.snapshot.priceEvidence.blackKopecks, 10_000);
+  assert.equal(numeric.snapshot.variants[0].priceEvidence.greenKopecks, 8_000);
+  assert.notEqual(numeric.snapshotHash, strings.snapshotHash);
+});
+
 test("rejects untrusted scope and missing required source facts with stable codes", () => {
   for (const [input, code] of [
     [source({ accountId: "account-b" }), "AUTO_LISTING_SOURCE_SCOPE"],

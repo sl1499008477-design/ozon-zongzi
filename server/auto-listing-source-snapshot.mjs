@@ -101,6 +101,7 @@ function priceEvidence(record, fallback, collectItem) {
     const value = values.find((candidate) => candidate !== undefined);
     if (value === undefined) return "";
     if (value === null || typeof value === "string") return value;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
     throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   };
   return {
@@ -159,8 +160,9 @@ const plainObject = (value) => value !== null && typeof value === "object" && !A
 const stringOrNull = (value) => value === null || typeof value === "string";
 const requiredString = (value) => typeof value === "string" && value.trim().length > 0;
 const nonemptyStringOrNull = (value) => value === null || requiredString(value);
+const priceFact = (value) => value === null || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 const rubPrice = (value) => plainObject(value) && value.currency === "RUB"
-  && stringOrNull(value.blackKopecks) && stringOrNull(value.greenKopecks);
+  && priceFact(value.blackKopecks) && priceFact(value.greenKopecks);
 
 function assertSemanticSnapshot(snapshot) {
   const { identity, source, targetCategory, attributes, logistics, productMeasurements, priceEvidence, variants, media, richContent, rawEvidence } = snapshot;
