@@ -72,6 +72,22 @@ test("PostgreSQL-facing collection capture and scheduling use the injected categ
   });
 });
 
+test("PostgreSQL-facing manual draft save is delegated inside the draft transaction", async (t) => {
+  await assertWorker(t, "fast-manual", {
+    status: 200,
+    draftUpdates: 1,
+    canonicalSaves: 1,
+    sharedExecutor: true,
+  });
+});
+
+test("credential updates invalidate the matching category cache before waking reconciliation", async (t) => {
+  await assertWorker(t, "credential-invalidate", {
+    status: 200,
+    events: ["invalidate:account-seam:store-seam-a", "wake:account-seam:store-seam-a"],
+  });
+});
+
 test("production composition overrides are own-property validated and the default path remains usable", async (t) => {
   await assertWorker(t, "override-validation", {
     invalidOverrides: 6,

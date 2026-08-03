@@ -508,6 +508,7 @@ test("category snapshot keeps the last non-empty tree when a refresh is empty", 
   assert.deepEqual(stale.items, first.items);
   assert.equal(stale.fetchedAt, first.fetchedAt);
   assert.equal(stale.taxonomyFingerprint, first.taxonomyFingerprint);
+  assert.equal(stale.staleReasonCode, "OZON_CATEGORY_DATA_INVALID");
 });
 
 test("category snapshot keeps the last non-empty tree when the refresh is unavailable", async () => {
@@ -530,6 +531,46 @@ test("category snapshot keeps the last non-empty tree when the refresh is unavai
   assert.equal(stale.stale, true);
   assert.deepEqual(stale.items, first.items);
   assert.equal(stale.taxonomyFingerprint, first.taxonomyFingerprint);
+  assert.equal(stale.staleReasonCode, "OZON_CATEGORY_TREE_UNAVAILABLE");
+});
+
+test("credential rotation invalidates only the matching account-store category cache", async () => {
+  let invalidationNowMs = Date.parse("2026-07-28T00:00:00.000Z");
+  const treeCalls = [];
+  const invalidationService = createOzonCategoryService({
+    now: () => invalidationNowMs,
+    callOzonSellerApi: async (store, apiPath) => {
+      assert.match(apiPath, /\/tree$/);
+      treeCalls.push(store.id);
+      return {
+        result: [{
+          description_category_id: treeCalls.length,
+          children: [{ type_id: 94_405, children: [] }],
+        }],
+      };
+    },
+  });
+  const accountAStoreA = input({ accountId: "invalidate-a", storeId: "store-a" });
+  const accountAStoreB = input({ accountId: "invalidate-a", storeId: "store-b" });
+  const accountBStoreA = input({ accountId: "invalidate-b", storeId: "store-a" });
+
+  const before = await invalidationService.getCategorySnapshot(accountAStoreA);
+  await invalidationService.getCategorySnapshot(accountAStoreB);
+  await invalidationService.getCategorySnapshot(accountBStoreA);
+  assert.equal(treeCalls.length, 3);
+
+  const removed = invalidationService.invalidateStore({
+    accountId: "invalidate-a",
+    storeId: "store-a",
+  });
+  assert.equal(removed > 0, true);
+
+  const after = await invalidationService.getCategorySnapshot(accountAStoreA);
+  await invalidationService.getCategorySnapshot(accountAStoreB);
+  await invalidationService.getCategorySnapshot(accountBStoreA);
+  assert.equal(treeCalls.length, 4);
+  assert.notEqual(after.taxonomyFingerprint, before.taxonomyFingerprint);
+  invalidationNowMs += 1;
 });
 
 test("target validation requires an enabled contained type and readable attributes", async () => {

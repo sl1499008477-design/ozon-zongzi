@@ -25,6 +25,37 @@ function optionalTimersPort(options) {
   return { timers };
 }
 
+export function createOperatingStoreNotifier(
+  categoryResolutionRuntime,
+  categoryService,
+  logger = console,
+) {
+  return async function notifyOperatingStoreAvailable({
+    accountId,
+    storeId,
+    invalidateCategoryCache = false,
+  }) {
+    try {
+      if (invalidateCategoryCache) categoryService?.invalidateStore?.({ accountId, storeId });
+      await categoryResolutionRuntime.onOperatingStoreAvailable({ accountId, storeId });
+    } catch (error) {
+      const code = String(error?.code || "CATEGORY_RESOLUTION_STORE_WAKE_FAILED")
+        .trim().toUpperCase();
+      try {
+        logger?.error?.("collect category store wake failed", {
+          accountId: String(accountId || ""),
+          storeId: String(storeId || ""),
+          code: /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
+            ? code
+            : "CATEGORY_RESOLUTION_STORE_WAKE_FAILED",
+        });
+      } catch {
+        // Store persistence is committed; periodic reconciliation remains the recovery path.
+      }
+    }
+  };
+}
+
 export function createCollectCategoryAutoResolutionComposition(options = {}) {
   const {
     loadState,
@@ -112,6 +143,7 @@ export function createCollectCategoryAutoResolutionComposition(options = {}) {
   });
 
   return Object.freeze({
+    categoryService,
     collectCategoryResolutionRuntime,
     collectorOzonEnrichmentRuntime,
     handleJsonAccountScopedCollectionRoute,

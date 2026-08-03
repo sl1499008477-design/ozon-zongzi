@@ -281,17 +281,18 @@ function statefulPostgresPool() {
     if (normalized.startsWith("UPDATE collect_category_resolutions SET status='RETRYABLE_ERROR'")) {
       const row = rows.find((candidate) => matchesFence(candidate, params));
       if (!row || row.status !== "MATCHING" || row.method === "MANUAL"
-        || new Date(row.lease_expires_at).getTime() <= new Date(params[6]).getTime()) {
+        || new Date(row.lease_expires_at).getTime() <= new Date(params[7]).getTime()) {
         return { rows: [], rowCount: 0 };
       }
       Object.assign(row, {
         status: "RETRYABLE_ERROR",
         failure_code: params[3],
         failure_detail_safe: params[4],
-        next_attempt_at: iso(params[5]),
+        taxonomy_fingerprint: params[5] || row.taxonomy_fingerprint,
+        next_attempt_at: iso(params[6]),
         lease_token: null,
         lease_expires_at: null,
-        updated_at: iso(params[6]),
+        updated_at: iso(params[7]),
       });
       return { rows: [rowCopy(row)], rowCount: 1 };
     }
@@ -1260,6 +1261,43 @@ for (const [adapterName, setup] of Object.entries({
     }), null);
   });
 }
+
+test("PostgreSQL manual save joins an existing draft transaction and writes its audit there", async () => {
+  const transactionClient = statefulPostgresPool();
+  let poolQueries = 0;
+  let connects = 0;
+  let auditWrites = 0;
+  const repository = createPostgresCollectCategoryResolutionRepository({
+    pool: {
+      async query(...args) {
+        poolQueries += 1;
+        return transactionClient.query(...args);
+      },
+      async connect() {
+        connects += 1;
+        throw new Error("must not open a nested transaction");
+      },
+    },
+    transactionExecutor: transactionClient,
+    auditWriter: async ({ executor }) => {
+      assert.equal(executor, transactionClient);
+      auditWrites += 1;
+    },
+  });
+
+  const manual = await repository.saveManual({
+    ...queued(),
+    targetDescriptionCategoryId: 17029999,
+    targetTypeId: 95555,
+    auditEvent: safeAudit("COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVED"),
+  });
+
+  assert.equal(manual.method, "MANUAL");
+  assert.equal(manual.status, "MATCHED");
+  assert.equal(poolQueries, 0);
+  assert.equal(connects, 0);
+  assert.equal(auditWrites, 1);
+});
 
 for (const [adapterName, setup] of Object.entries({
   JSON() {

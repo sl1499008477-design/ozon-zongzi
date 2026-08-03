@@ -75,7 +75,10 @@ function createHarness({
     async getCategorySnapshot(input) {
       calls.snapshots.push({ accountId: input.accountId, storeId: input.store?.id });
       if (snapshotError) throw snapshotError;
-      return structuredClone(snapshot ?? {
+      const resolvedSnapshot = typeof snapshot === "function"
+        ? await snapshot(input, calls.snapshots.length)
+        : snapshot;
+      return structuredClone(resolvedSnapshot ?? {
         items: categoryTree(),
         taxonomyScope: SCOPE,
         taxonomyFingerprint: "taxonomy-v1",
@@ -760,9 +763,9 @@ for (const [name, snapshotError, expectedStatus] of [
   ["status-only 503", Object.assign(new Error("unavailable"), { status: 503 }), "RETRYABLE_ERROR"],
   ["request timeout 408", Object.assign(new Error("timeout"), { status: 408 }), "RETRYABLE_ERROR"],
   ["data contract error", Object.assign(new Error("invalid tree"), { code: "OZON_CATEGORY_DATA_INVALID", status: 422 }), "NEEDS_REVIEW"],
-  ["stale taxonomy without transport failure", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 409 }), "NEEDS_REVIEW"],
+  ["stale taxonomy without transport failure", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 409 }), "RETRYABLE_ERROR"],
   ["data contract error carrying a 503", Object.assign(new Error("invalid tree"), { code: "OZON_CATEGORY_DATA_INVALID", status: 503 }), "NEEDS_REVIEW"],
-  ["stale taxonomy carrying a 503", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 503 }), "NEEDS_REVIEW"],
+  ["stale taxonomy carrying a 503", Object.assign(new Error("stale"), { code: "OZON_CATEGORY_TAXONOMY_STALE", status: 503 }), "RETRYABLE_ERROR"],
   ["numeric status 600", Object.assign(new Error("not an HTTP server error"), { status: 600 }), "NEEDS_REVIEW"],
   ["numeric status 999", Object.assign(new Error("not an HTTP server error"), { status: 999 }), "NEEDS_REVIEW"],
 ]) {
@@ -776,6 +779,44 @@ for (const [name, snapshotError, expectedStatus] of [
     assert.equal((await harness.service.resolveNext({ accountId: ACCOUNT_ID })).status, expectedStatus);
   });
 }
+
+test("a stale last-known-good snapshot retries and later resolves without losing source evidence", async () => {
+  let stale = true;
+  const harness = createHarness({
+    snapshot: async () => ({
+      items: categoryTree(),
+      taxonomyScope: SCOPE,
+      taxonomyFingerprint: "taxonomy-lkg-v1",
+      fetchedAt: START,
+      stale,
+      staleReasonCode: stale ? "OZON_CATEGORY_TREE_UNAVAILABLE" : null,
+    }),
+  });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+
+  const deferred = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+  assert.equal(deferred.status, "RETRYABLE_ERROR");
+  assert.equal(deferred.failureCode, "OZON_CATEGORY_TAXONOMY_STALE");
+  assert.equal(deferred.taxonomyFingerprint, "taxonomy-lkg-v1");
+  assert.deepEqual(harness.item.sourceCategory, {
+    descriptionCategoryId: 17033604,
+    typeIdCandidate: 94405,
+    typeName: "杯子",
+    path: ["旧家居", "旧杯子"],
+  });
+
+  stale = false;
+  harness.setNow(deferred.nextAttemptAt);
+  const matched = await resolveUntilSettled(harness);
+  assert.equal(matched.status, "MATCHED");
+  assert.equal(matched.targetDescriptionCategoryId, 17028702);
+  assert.equal(matched.targetTypeId, 94405);
+  assert.equal(matched.taxonomyFingerprint, "taxonomy-lkg-v1");
+});
 
 test("a post-claim collect-item outage is persisted instead of leaving MATCHING until lease expiry", async () => {
   const harness = createHarness({ collectReadErrorAfter: 1 });

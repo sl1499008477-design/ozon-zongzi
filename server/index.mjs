@@ -131,7 +131,10 @@ import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
-import { createCollectCategoryAutoResolutionComposition } from "./collect-category-auto-resolution-composition.mjs";
+import {
+  createCollectCategoryAutoResolutionComposition,
+  createOperatingStoreNotifier,
+} from "./collect-category-auto-resolution-composition.mjs";
 import {
   assertOzonListingReady,
   explicitOzonListingTarget,
@@ -419,28 +422,6 @@ const objectCleanupWorker = createObjectCleanupWorker({
   loadState, saveState, removeObject,
   stateTransaction: jsonStateTransaction,
 });
-
-function createOperatingStoreNotifier(categoryResolutionRuntime, logger = console) {
-  return async function notifyOperatingStoreAvailable({ accountId, storeId }) {
-    try {
-      await categoryResolutionRuntime.onOperatingStoreAvailable({ accountId, storeId });
-    } catch (error) {
-      const code = String(error?.code || "CATEGORY_RESOLUTION_STORE_WAKE_FAILED")
-        .trim().toUpperCase();
-      try {
-        logger?.error?.("collect category store wake failed", {
-          accountId: String(accountId || ""),
-          storeId: String(storeId || ""),
-          code: /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
-            ? code
-            : "CATEGORY_RESOLUTION_STORE_WAKE_FAILED",
-        });
-      } catch {
-        // Store persistence is already committed and reconciliation can retry.
-      }
-    }
-  };
-}
 
 function sendJson(res, status, data, extraHeaders = {}) {
   res.writeHead(status, {
@@ -748,12 +729,8 @@ function stableCategorySummaryReadCode(error) {
     : "CATEGORY_RESOLUTION_SUMMARY_READ_FAILED";
 }
 
-function taxonomyScopeForCollectionItem(item = {}) {
-  return String(
-    item?.taxonomyScope
-      ?? item?.listingDraft?.categoryResolution?.taxonomyScope
-      ?? "OZON:DEFAULT",
-  ).trim() || "OZON:DEFAULT";
+function taxonomyScopeForCollectionItem() {
+  return "OZON:DEFAULT";
 }
 
 async function publicCollectBoxItemsForAccount(
@@ -895,7 +872,10 @@ async function saveCollectBoxItemAtomic(item, { account }) {
   return { item: scopedItem, state: latest };
 }
 
-async function updateCollectBoxItemAtomic(id, patch, { account }) {
+async function updateCollectBoxItemAtomic(id, patch, {
+  account,
+  saveManualFromDraft = null,
+} = {}) {
   const latest = await loadState();
   const index = (latest.caches.collectBox || []).findIndex((item) =>
     String(item.id) === String(id) && cacheItemBelongsToAccount(latest, item, account),
@@ -950,6 +930,21 @@ async function updateCollectBoxItemAtomic(id, patch, { account }) {
     createdBy: current.createdBy || account.id,
     updatedAt: new Date().toISOString(),
   });
+  const categoryResolution = patch?.listingDraft?.categoryResolution;
+  if (String(categoryResolution?.method || "").trim().toUpperCase() === "MANUAL") {
+    if (typeof saveManualFromDraft !== "function") {
+      throw Object.assign(new Error("人工类目保存服务不可用"), {
+        status: 503,
+        code: "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVE_UNAVAILABLE",
+      });
+    }
+    await saveManualFromDraft({
+      accountId: account.id,
+      collectItemId: String(id),
+      categoryResolution,
+      state: latest,
+    });
+  }
   await saveState(latest);
   await mirrorCollectItemV3(latest.caches.collectBox[index], {
     accountId: account.id,
@@ -2484,8 +2479,10 @@ export async function handleFastCollectionRoute(req, res, url, {
   categoryResolutionPort,
   pipelineEnabled = listingPipelineEnabled,
   authenticateRequest = collectorAuthRuntime.authenticateRequest,
+  authenticateMutationRequest = authenticateCollectionRequest,
   captureStoreSnapshot = captureCategoryResolutionStoreSnapshot,
   ingestCollectRequest = ingestCollectRequestV4,
+  updateCollectItemDraft = updateCollectItemDraftV4,
 } = {}) {
   if (typeof categoryResolutionPort !== "object" || categoryResolutionPort === null) {
     throw new TypeError("fast collection category resolution port is required");
@@ -2503,7 +2500,7 @@ export async function handleFastCollectionRoute(req, res, url, {
       ? await authenticateRequest(req, "collector.upload")
       : collectRequestMatch
         ? await collectorAuthRuntime.authenticateRequest(req, "collector.job.read")
-        : await authenticateCollectionRequest(req);
+        : await authenticateMutationRequest(req);
     const credentialStoreSnapshot = sourceCollectMatch && req.method === "POST"
       ? await captureStoreSnapshot({
           categoryResolutionPort,
@@ -2523,11 +2520,28 @@ export async function handleFastCollectionRoute(req, res, url, {
       const body = await readBody(req);
       const ifMatch = String(req.headers["if-match"] || "").replace(/[^\d]/g, "");
       const expectedVersion = body.expectedVersion ?? (ifMatch ? Number(ifMatch) : null);
-      const item = await updateCollectItemDraftV4({
+      const item = await updateCollectItemDraft({
         collectItemId: decodeURIComponent(collectItemMatch[1]),
         accountId: account.id,
         patch: body,
         expectedVersion,
+        beforeCommit: async ({ client, item: updatedItem }) => {
+          const categoryResolution = body?.listingDraft?.categoryResolution;
+          if (String(categoryResolution?.method || "").trim().toUpperCase() !== "MANUAL") return;
+          if (typeof categoryResolutionPort.saveManualFromDraft !== "function") {
+            throw Object.assign(new Error("人工类目保存服务不可用"), {
+              status: 503,
+              code: "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVE_UNAVAILABLE",
+            });
+          }
+          await categoryResolutionPort.saveManualFromDraft({
+            accountId: account.id,
+            collectItemId: decodeURIComponent(collectItemMatch[1]),
+            categoryResolution,
+            postgresExecutor: client,
+            collectItem: updatedItem,
+          });
+        },
       });
       if (!item) sendError(res, 404, "采集箱条目不存在");
       else sendJson(res, 200, item);
@@ -2639,6 +2653,7 @@ export function createHttpHandler({
   }
   const notifyOperatingStoreAvailable = createOperatingStoreNotifier(
     composition.collectCategoryResolutionRuntime,
+    composition.categoryService,
   );
   return async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -3109,7 +3124,11 @@ export function createHttpHandler({
       },
     });
     await saveState(state);
-    await notifyOperatingStoreAvailable({ accountId: account.id, storeId: store.id });
+    await notifyOperatingStoreAvailable({
+      accountId: account.id,
+      storeId: store.id,
+      invalidateCategoryCache: true,
+    });
     sendJson(res, 200, { ok: true, token: state.token, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -3204,7 +3223,11 @@ export function createHttpHandler({
     store.updatedAt = new Date().toISOString();
     await saveState(state);
     if (nextApiKey) {
-      await notifyOperatingStoreAvailable({ accountId: account.id, storeId: store.id });
+      await notifyOperatingStoreAvailable({
+        accountId: account.id,
+        storeId: store.id,
+        invalidateCategoryCache: true,
+      });
     }
     sendJson(res, 200, { ok: true, store: publicStore(store, state), state: localStatePayload(state) });
     return;
@@ -4358,7 +4381,10 @@ export function createHttpHandler({
     const account = requireAuth(req, state);
     const id = decodeURIComponent(collectItemMatch[1]);
     const body = await readBody(req);
-    const item = await updateCollectBoxItemAtomic(id, body, { account });
+    const item = await updateCollectBoxItemAtomic(id, body, {
+      account,
+      saveManualFromDraft: composition.collectCategoryResolutionRuntime.saveManualFromDraft,
+    });
     if (!item) {
       sendError(res, 404, "采集箱条目不存在");
       return;

@@ -1006,8 +1006,17 @@ export async function retryCollectItemEnrichmentV4(input = {}) {
   return transaction((client) => retryCollectItemEnrichmentWithClientV4(client, input));
 }
 
-export async function updateCollectItemDraftV4({ collectItemId, accountId, patch = {}, expectedVersion = null }) {
+export async function updateCollectItemDraftV4({
+  collectItemId,
+  accountId,
+  patch = {},
+  expectedVersion = null,
+  beforeCommit = null,
+}) {
   if (!listingPipelineEnabled()) return null;
+  if (beforeCommit !== null && typeof beforeCommit !== "function") {
+    throw new TypeError("collect draft beforeCommit callback must be a function");
+  }
   return transaction(async (client) => {
     const result = await client.query(
       `SELECT c.*,d.data AS draft_data,d.version AS draft_version,raw.payload AS raw_payload
@@ -1046,6 +1055,7 @@ export async function updateCollectItemDraftV4({ collectItemId, accountId, patch
       status: row.status,
       listingDraft,
     });
+    if (beforeCommit) await beforeCommit({ client, item });
     const mirrored = await mirrorCollectItemV3(item, {
       client,
       collectId: row.id,

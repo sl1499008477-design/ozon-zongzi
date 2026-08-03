@@ -19,6 +19,8 @@ const DEFAULT_BATCH_LIMIT = 8;
 const MAX_BATCH_LIMIT = 16;
 const DEFAULT_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_INTERVAL_MS = 15_000;
+const DEFAULT_MATCHED_REVALIDATION_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_MATCHED_REVALIDATION_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_READ_FOR_ITEMS = 200;
 const AUDIT_EVENT_KEYS = new Set([
   "action",
@@ -107,6 +109,45 @@ function validInstantMillis(value) {
   return Number.isFinite(milliseconds) ? milliseconds : null;
 }
 
+function manualResolutionFromDraft(value, { strict = false } = {}) {
+  const resolution = value && typeof value === "object" ? value : null;
+  if (!resolution || text(resolution.method).toUpperCase() !== "MANUAL") return null;
+  const target = resolution.target && typeof resolution.target === "object"
+    ? resolution.target
+    : resolution;
+  const targetDescriptionCategoryId = Number(
+    target.descriptionCategoryId ?? target.description_category_id
+      ?? resolution.targetDescriptionCategoryId,
+  );
+  const targetTypeId = Number(
+    target.typeId ?? target.type_id ?? resolution.targetTypeId,
+  );
+  const credentialStoreId = text(
+    target.storeId ?? target.store_id ?? resolution.credentialStoreId,
+  );
+  const valid = text(resolution.status).toUpperCase() === "MATCHED"
+    && Number.isSafeInteger(targetDescriptionCategoryId)
+    && targetDescriptionCategoryId > 0
+    && Number.isSafeInteger(targetTypeId)
+    && targetTypeId > 0;
+  if (!valid) {
+    if (!strict) return null;
+    throw Object.assign(new Error("人工类目选择数据无效"), {
+      status: 400,
+      code: "COLLECT_CATEGORY_RESOLUTION_MANUAL_INVALID",
+    });
+  }
+  return {
+    taxonomyScope: TAXONOMY_SCOPE_OZON_DEFAULT,
+    taxonomyFingerprint: text(resolution.taxonomyFingerprint),
+    credentialStoreId,
+    targetDescriptionCategoryId,
+    targetTypeId,
+    displayPath: resolution.displayPath ?? target.displayPath ?? target.path ?? {},
+    validatedAt: resolution.validatedAt,
+  };
+}
+
 export function createCollectCategoryResolutionRuntime({
   loadState,
   saveState,
@@ -127,6 +168,7 @@ export function createCollectCategoryResolutionRuntime({
   randomUUID = crypto.randomUUID,
   logger = console,
   timers = globalThis,
+  matchedRevalidationTtlMs = DEFAULT_MATCHED_REVALIDATION_TTL_MS,
 } = {}) {
   if (
     typeof loadState !== "function"
@@ -146,6 +188,11 @@ export function createCollectCategoryResolutionRuntime({
   }
 
   const log = safeLogger(logger);
+  const requestedMatchedRevalidationTtlMs = Number(matchedRevalidationTtlMs);
+  const effectiveMatchedRevalidationTtlMs = Number.isFinite(requestedMatchedRevalidationTtlMs)
+    && requestedMatchedRevalidationTtlMs > 0
+    ? Math.min(requestedMatchedRevalidationTtlMs, MAX_MATCHED_REVALIDATION_TTL_MS)
+    : DEFAULT_MATCHED_REVALIDATION_TTL_MS;
   let postgresRepositoryPromise = null;
   let drainPromise = null;
   let initialTimer = null;
@@ -395,6 +442,113 @@ export function createCollectCategoryResolutionRuntime({
         : await backendCredentialStoreId(accountId),
       taxonomyScope: input.taxonomyScope,
     });
+  }
+
+  async function saveManualFromDraft(input = {}) {
+    const accountId = text(input.accountId);
+    const collectItemId = text(input.collectItemId);
+    const manual = manualResolutionFromDraft(input.categoryResolution, {
+      strict: input.strict !== false,
+    });
+    if (!manual) return null;
+    const request = {
+      accountId,
+      collectItemId,
+      ...manual,
+      credentialStoreId: manual.credentialStoreId
+        || await backendCredentialStoreId(accountId),
+    };
+    if (input.postgresExecutor?.query) {
+      const executor = input.postgresExecutor;
+      const localRepository = createPostgresRepository({
+        pool: executor,
+        transactionExecutor: executor,
+        auditWriter: ({ executor: auditExecutor, event }) => persistPostgresAuditEvent(
+          auditExecutor,
+          categoryAuditEvent(event),
+        ),
+      });
+      const localService = createCollectCategoryResolutionService({
+        repository: localRepository,
+        categoryPort: categoryService,
+        collectItemPort: {
+          async read({ accountId: scopedAccountId, collectItemId: scopedCollectItemId }) {
+            const item = input.collectItem;
+            return text(item?.accountId) === text(scopedAccountId)
+              && text(item?.id) === text(scopedCollectItemId)
+              ? structuredClone(item)
+              : null;
+          },
+        },
+        storePort: {
+          async readCredentialStore({ accountId: scopedAccountId, storeId }) {
+            const result = await executor.query(
+              `SELECT s.id,s.owner_account_id,s.client_id,s.status,s.updated_at,
+                      EXISTS (
+                        SELECT 1 FROM store_credentials credentials
+                         WHERE credentials.store_id=s.id
+                           AND credentials.encrypted_api_key<>''
+                           AND credentials.iv<>''
+                           AND credentials.auth_tag<>''
+                      ) AS credentials_saved
+                 FROM stores s
+                WHERE s.id=$1 AND s.owner_account_id=$2
+                LIMIT 1`,
+              [text(storeId), text(scopedAccountId)],
+            );
+            const row = result.rows[0];
+            return row ? {
+              id: text(row.id),
+              ownerAccountId: text(row.owner_account_id),
+              clientId: text(row.client_id),
+              status: text(row.status),
+              updatedAt: row.updated_at,
+              credentialsSaved: row.credentials_saved === true,
+            } : null;
+          },
+        },
+        auditPort,
+        now,
+        randomUUID,
+      });
+      return localService.saveManual(request);
+    }
+    if (input.state && typeof input.state === "object") {
+      const state = input.state;
+      const localRepository = createJsonCollectCategoryResolutionRepository({
+        state,
+        persist: async () => {},
+        stateTransaction,
+        auditWriter: async ({ state: transactionState, event }) => {
+          await appendAudit(transactionState, categoryAuditEvent(event));
+        },
+      });
+      const localService = createCollectCategoryResolutionService({
+        repository: localRepository,
+        categoryPort: categoryService,
+        collectItemPort: {
+          async read({ accountId: scopedAccountId, collectItemId: scopedCollectItemId }) {
+            const found = (Array.isArray(state?.caches?.collectBox) ? state.caches.collectBox : [])
+              .find((candidate) => text(candidate?.accountId) === text(scopedAccountId)
+                && text(candidate?.id) === text(scopedCollectItemId));
+            return found ? structuredClone(found) : null;
+          },
+        },
+        storePort: {
+          async readCredentialStore({ accountId: scopedAccountId, storeId }) {
+            const found = (Array.isArray(state?.stores) ? state.stores : [])
+              .find((candidate) => text(candidate?.ownerAccountId) === text(scopedAccountId)
+                && text(candidate?.id) === text(storeId));
+            return found ? structuredClone(found) : null;
+          },
+        },
+        auditPort,
+        now,
+        randomUUID,
+      });
+      return localService.saveManual(request);
+    }
+    return service.saveManual(request);
   }
 
   async function onEnrichmentComplete(input = {}) {
@@ -743,6 +897,21 @@ export function createCollectCategoryResolutionRuntime({
           if (result) processed += 1;
         } else {
           const current = await readForItem({ accountId, collectItemId, taxonomyScope });
+          const item = await readCollectItem({ accountId, collectItemId });
+          const legacyManual = manualResolutionFromDraft(
+            item?.listingDraft?.categoryResolution,
+          );
+          if (legacyManual && current?.method !== "MANUAL") {
+            await service.saveManual({
+              accountId,
+              collectItemId,
+              ...legacyManual,
+              credentialStoreId: legacyManual.credentialStoreId
+                || await storeIdForAccount(accountId),
+            });
+            scheduled += 1;
+            continue;
+          }
           if (!current) {
             await service.scheduleForCollect({
               accountId,
@@ -776,8 +945,11 @@ export function createCollectCategoryResolutionRuntime({
               const storeChanged = text(current.credentialStoreId) !== text(storeContext.id);
               const storeUpdatedAt = validInstantMillis(storeContext.updatedAt);
               const validatedAt = validInstantMillis(current.validatedAt);
+              const periodicRevalidationDue = validatedAt === null
+                || validatedAt + effectiveMatchedRevalidationTtlMs <= now().getTime();
               if (storeChanged || (storeUpdatedAt !== null
-                && (validatedAt === null || validatedAt < storeUpdatedAt))) {
+                && (validatedAt === null || validatedAt < storeUpdatedAt))
+                || periodicRevalidationDue) {
                 await service.validateForStore({
                   accountId,
                   collectItemId,
@@ -856,6 +1028,7 @@ export function createCollectCategoryResolutionRuntime({
   return Object.freeze({
     captureCredentialStoreSnapshot,
     scheduleForCollect,
+    saveManualFromDraft,
     onEnrichmentComplete,
     onOperatingStoreAvailable,
     resolveDue,

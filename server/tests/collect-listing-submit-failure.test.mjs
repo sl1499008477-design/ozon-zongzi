@@ -139,6 +139,7 @@ await writeFile(dataFile, `${JSON.stringify({
     }, {
       id: sourceOnlyCollectId,
       accountId: "acct_submit_test",
+      taxonomyScope: "OZON:COLLECTOR_FORGED",
       sku: "4260049341",
       status: "COMPLETE",
       sourceCategory: { descriptionCategoryId: 123, typeIdCandidate: 456 },
@@ -346,9 +347,40 @@ try {
   assert.equal(patchedTarget.body.type_id, undefined);
   assert.equal(patchedTarget.body.sourceCategory.descriptionCategoryId, 123);
   assert.equal(patchedTarget.body.sourceCategory.typeIdCandidate, 456);
-  const persistedTarget = JSON.parse(await readFile(dataFile, "utf8")).caches.collectBox
+  const persistedAfterManualSave = JSON.parse(await readFile(dataFile, "utf8"));
+  const persistedTarget = persistedAfterManualSave.caches.collectBox
     .find((row) => row.id === sourceOnlyCollectId).listingDraft.categoryResolution;
   assert.equal(persistedTarget.target.storeId, storeId);
+  const canonicalManual = persistedAfterManualSave.collectCategoryResolutions
+    .find((row) => row.accountId === "acct_submit_test"
+      && row.collectItemId === sourceOnlyCollectId
+      && row.taxonomyScope === "OZON:DEFAULT");
+  assert.equal(canonicalManual.status, "MATCHED");
+  assert.equal(canonicalManual.method, "MANUAL");
+  assert.equal(canonicalManual.targetDescriptionCategoryId, 17028941);
+  assert.equal(canonicalManual.targetTypeId, 91670);
+  assert.equal(canonicalManual.credentialStoreId, storeId);
+  assert.equal(
+    persistedAfterManualSave.auditEvents.some((event) =>
+      event.action === "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVED"
+      && event.accountId === "acct_submit_test"
+      && event.entityId === sourceOnlyCollectId),
+    true,
+  );
+
+  const publicStateAfterManualSave = await requestJson(
+    handle,
+    "/local/state",
+    {},
+    token,
+    storeId,
+    "GET",
+  );
+  const publicManual = publicStateAfterManualSave.body.caches.collectBox
+    .find((row) => row.id === sourceOnlyCollectId).categoryResolution;
+  assert.equal(publicManual.method, "MANUAL");
+  assert.equal(publicManual.targetDescriptionCategoryId, 17028941);
+  assert.equal(publicManual.targetTypeId, 91670);
 
   const completePreview = await requestJson(
     handle,

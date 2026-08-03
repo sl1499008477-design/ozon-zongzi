@@ -5208,7 +5208,7 @@ const collectEditSavedManualRecoveryResolution = ({
   const saved = item?.listingDraft?.categoryResolution;
   if (
     saved?.method !== "MANUAL"
-    || String(saved?.itemId || "") !== String(itemId || "")
+    || (saved?.itemId && String(saved.itemId) !== String(itemId || ""))
     || String(saved?.taxonomyScope || "") !== String(taxonomyScope || "")
     || !collectEditTargetStoreMatches(saved, targetStoreId)
   ) return null;
@@ -5354,7 +5354,23 @@ export const collectEditEffectiveCategoryResolution = ({
     targetStoreId,
     taxonomyScope,
   });
-  if (sharedMatched) return sharedMatched;
+  if (sharedMatched) {
+    const manual = collectEditScopedRecoveryResolution({
+      recovery: manualOverride,
+      itemId: currentItemId,
+      targetStoreId,
+      taxonomyScope,
+      method: "MANUAL",
+    });
+    if (manual) return manual;
+    const savedManual = collectEditSavedManualRecoveryResolution({
+      item,
+      itemId: currentItemId,
+      targetStoreId,
+      taxonomyScope,
+    });
+    return savedManual || sharedMatched;
+  }
 
   if (sharedCurrent) {
     if (manualOverrideEligibleStatuses.has(collectEditCategoryStatus(sharedCurrent))) {

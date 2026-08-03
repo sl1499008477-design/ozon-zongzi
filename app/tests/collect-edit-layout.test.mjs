@@ -150,7 +150,7 @@ test("manual selection overrides an unresolved shared category summary while the
   }
 });
 
-test("a session MANUAL choice cannot replace a current shared MATCHED target", () => {
+test("a scoped session MANUAL choice replaces an older shared automatic match", () => {
   const manual = manualCategoryResolution({
     source: { descriptionCategoryId: 17_033_604, typeIdCandidate: 94_405 },
     targetStoreId: "store-a",
@@ -181,10 +181,10 @@ test("a session MANUAL choice cannot replace a current shared MATCHED target", (
     },
   });
 
-  assert.equal(selected.categoryResolution.method, "AUTO");
+  assert.equal(selected.categoryResolution.method, "MANUAL");
   assert.deepEqual(
     { descriptionCategoryId: selected.descriptionCategoryId, typeId: selected.typeId },
-    { descriptionCategoryId: 111, typeId: 222 },
+    { descriptionCategoryId: 333, typeId: 444 },
   );
 });
 

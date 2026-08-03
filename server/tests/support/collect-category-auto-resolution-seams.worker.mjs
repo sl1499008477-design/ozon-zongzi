@@ -247,6 +247,94 @@ async function runFastCollect() {
   return { status: res.status, snapshotCalls, scheduleCalls };
 }
 
+async function runFastManual() {
+  let draftUpdates = 0;
+  let canonicalSaves = 0;
+  let sharedExecutor = false;
+  const transactionClient = { kind: "controlled-transaction-client" };
+  const categoryResolutionPort = {
+    async saveManualFromDraft(input) {
+      canonicalSaves += 1;
+      sharedExecutor = input.postgresExecutor === transactionClient;
+      assert.equal(input.accountId, ACCOUNT_ID);
+      assert.equal(input.collectItemId, "collect-manual-seam");
+      assert.equal(input.categoryResolution.method, "MANUAL");
+    },
+  };
+  const manualResolution = {
+    status: "MATCHED",
+    method: "MANUAL",
+    target: {
+      storeId: STORE_A,
+      descriptionCategoryId: 17_028_702,
+      typeId: 94_405,
+    },
+  };
+  const req = Readable.from([JSON.stringify({ listingDraft: { categoryResolution: manualResolution } })]);
+  req.method = "PATCH";
+  req.url = "/ozon/collect-box/collect-manual-seam";
+  req.headers = { "content-type": "application/json" };
+  const res = responseRecorder();
+  await index.handleFastCollectionRoute(
+    req,
+    res,
+    new URL("http://local.test/ozon/collect-box/collect-manual-seam"),
+    {
+      categoryResolutionPort,
+      pipelineEnabled: () => true,
+      authenticateMutationRequest: async () => ({ id: ACCOUNT_ID }),
+      updateCollectItemDraft: async ({ beforeCommit }) => {
+        draftUpdates += 1;
+        const item = {
+          id: "collect-manual-seam",
+          accountId: ACCOUNT_ID,
+          listingDraft: { categoryResolution: manualResolution },
+        };
+        await beforeCommit({ client: transactionClient, item });
+        return item;
+      },
+    },
+  );
+  return { status: res.status, draftUpdates, canonicalSaves, sharedExecutor };
+}
+
+async function runCredentialInvalidate() {
+  await persistence.savePersistedState({ dataDir, dataFile, state: seedState() });
+  const events = [];
+  const composition = compositionWithWakeSink([]);
+  composition.categoryService = {
+    invalidateStore({ accountId, storeId }) {
+      events.push(`invalidate:${accountId}:${storeId}`);
+    },
+  };
+  composition.collectCategoryResolutionRuntime.onOperatingStoreAvailable = async ({ accountId, storeId }) => {
+    events.push(`wake:${accountId}:${storeId}`);
+    return [];
+  };
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const target = String(input?.url || input || "");
+    if (target.includes("api-seller.ozon.ru")) {
+      return new Response(JSON.stringify({ result: { company: { name: "Controlled fixture" } } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return nativeFetch(input, init);
+  };
+  const server = await startServer(index.createHttpHandler({ composition }));
+  try {
+    const response = await requestJson(server.origin, "PATCH", `/local/stores/${STORE_A}`, {
+      token: WEB_TOKEN,
+      body: { apiKey: "rotated-controlled-key" },
+    });
+    return { status: response.status, events };
+  } finally {
+    globalThis.fetch = nativeFetch;
+    await server.close();
+  }
+}
+
 async function runOverrideValidation() {
   const invalidOverrideCases = [
     { now: null },
@@ -282,6 +370,8 @@ async function runOverrideValidation() {
 let result;
 if (mode === "store-wake") result = await runStoreWake();
 else if (mode === "fast-collect") result = await runFastCollect();
+else if (mode === "fast-manual") result = await runFastManual();
+else if (mode === "credential-invalidate") result = await runCredentialInvalidate();
 else if (mode === "override-validation") result = await runOverrideValidation();
 else throw new Error(`unknown seam worker mode: ${mode}`);
 

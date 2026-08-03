@@ -643,6 +643,9 @@ export function createJsonCollectCategoryResolutionRepository({
         status: "RETRYABLE_ERROR",
         failureCode,
         failureDetailSafe: optionalText(input.failureDetailSafe),
+        ...(optionalText(input.taxonomyFingerprint, 240)
+          ? { taxonomyFingerprint: optionalText(input.taxonomyFingerprint, 240) }
+          : {}),
         nextAttemptAt: nextAttemptAt.toISOString(),
         leaseToken: null,
         leaseExpiresAt: null,
@@ -872,10 +875,14 @@ export function createJsonCollectCategoryResolutionRepository({
 export function createPostgresCollectCategoryResolutionRepository({
   pool,
   auditWriter = null,
+  transactionExecutor = null,
 } = {}) {
   if (!pool?.query) throw new TypeError("Collect category resolution PostgreSQL pool required");
   if (auditWriter !== null && typeof auditWriter !== "function") {
     throw new TypeError("Collect category resolution PostgreSQL audit writer required");
+  }
+  if (transactionExecutor !== null && typeof transactionExecutor?.query !== "function") {
+    throw new TypeError("Collect category resolution PostgreSQL transaction executor required");
   }
 
   async function query(sql, params = [], executor = pool) {
@@ -890,7 +897,10 @@ export function createPostgresCollectCategoryResolutionRepository({
     }
   }
 
-  async function requireInputScope({ accountId, collectItemId, credentialStoreId }, executor = pool) {
+  async function requireInputScope(
+    { accountId, collectItemId, credentialStoreId },
+    executor = transactionExecutor || pool,
+  ) {
     const scoped = await query(
       `SELECT
          EXISTS (
@@ -906,7 +916,11 @@ export function createPostgresCollectCategoryResolutionRepository({
     if (scoped.rows[0]?.credential_store_scoped !== true) throw credentialStoreScopeError();
   }
 
-  async function requireCredentialStoreScope(accountId, credentialStoreId, executor = pool) {
+  async function requireCredentialStoreScope(
+    accountId,
+    credentialStoreId,
+    executor = transactionExecutor || pool,
+  ) {
     if (!credentialStoreId) return;
     const scoped = await query(
       `SELECT EXISTS (
@@ -920,6 +934,14 @@ export function createPostgresCollectCategoryResolutionRepository({
 
   async function transitionWithAudit(requestedAuditEvent, operation) {
     const auditEvent = safeAuditEvent(requestedAuditEvent);
+    if (transactionExecutor) {
+      const result = await operation(transactionExecutor);
+      if (result && auditEvent) {
+        if (typeof auditWriter !== "function") throw auditWriterRequiredError();
+        await auditWriter({ executor: transactionExecutor, event: copy(auditEvent) });
+      }
+      return result;
+    }
     if (!auditEvent) return operation(pool);
     if (typeof auditWriter !== "function") throw auditWriterRequiredError();
     if (typeof pool.connect !== "function") {
@@ -1370,15 +1392,16 @@ export function createPostgresCollectCategoryResolutionRepository({
       const result = await query(
       `UPDATE collect_category_resolutions
           SET status='RETRYABLE_ERROR', failure_code=$4, failure_detail_safe=$5,
-              next_attempt_at=$6, lease_token=NULL, lease_expires_at=NULL, updated_at=$7
+              taxonomy_fingerprint=COALESCE($6,taxonomy_fingerprint),
+              next_attempt_at=$7, lease_token=NULL, lease_expires_at=NULL, updated_at=$8
         WHERE account_id=$1 AND id=$2 AND lease_token=$3
           AND status='MATCHING' AND method IS DISTINCT FROM 'MANUAL'
-          AND lease_expires_at>$7
+          AND lease_expires_at>$8
         RETURNING *`,
       [
         fence.accountId, fence.id, fence.leaseToken,
         requiredText(input.failureCode, "failureCode"), optionalText(input.failureDetailSafe),
-        nextAttemptAt, now,
+        optionalText(input.taxonomyFingerprint, 240), nextAttemptAt, now,
       ],
       executor,
       );

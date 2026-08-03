@@ -4,6 +4,7 @@ import test from "node:test";
 import { appendAuditEvent } from "../audit-event.mjs";
 import { createCollectCategoryResolutionRuntime } from "../collect-category-resolution-runtime.mjs";
 import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
+import { createOzonCategoryService } from "../ozon-category-service.mjs";
 
 const ACCOUNT_ID = "account-runtime";
 const COLLECT_ITEM_ID = "collect-runtime";
@@ -92,6 +93,116 @@ test("JSON runtime ignores caller store scope and atomically queues with the bac
   assert.equal(saves, 1);
   assert.equal("credentialStoreId" in item, false);
   assert.equal(JSON.stringify(item).includes(STORE_ID), false);
+});
+
+test("runtime saves a manual draft as the canonical resolution and auto reconciliation preserves it", async () => {
+  const item = completeItem();
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{
+      id: STORE_ID,
+      ownerAccountId: ACCOUNT_ID,
+      clientId: "client-runtime",
+      apiKey: "secret-runtime",
+    }],
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  let snapshots = 0;
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: {
+      ...categoryService(),
+      async getCategorySnapshot() {
+        snapshots += 1;
+        return categoryService().getCategorySnapshot();
+      },
+    },
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "runtime-manual",
+  });
+
+  const saved = await runtime.saveManualFromDraft({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    categoryResolution: {
+      status: "MATCHED",
+      method: "MANUAL",
+      taxonomyScope: "OZON:COLLECTOR_FORGED",
+      taxonomyFingerprint: "taxonomy-runtime-v1",
+      target: {
+        storeId: STORE_ID,
+        descriptionCategoryId: 17_028_799,
+        typeId: 94_499,
+      },
+    },
+  });
+
+  assert.equal(saved.method, "MANUAL");
+  assert.equal(saved.taxonomyScope, "OZON:DEFAULT");
+  assert.equal(saved.targetDescriptionCategoryId, 17_028_799);
+  assert.equal(saved.targetTypeId, 94_499);
+  assert.equal(state.auditEvents.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVED");
+
+  await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+  const canonical = await runtime.readForItem({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+  });
+  assert.equal(canonical.method, "MANUAL");
+  assert.equal(canonical.targetDescriptionCategoryId, 17_028_799);
+  assert.equal(snapshots, 0);
+});
+
+test("restart reconciles a valid legacy manual draft before auto scheduling", async () => {
+  const item = completeItem({
+    listingDraft: {
+      sourceCategory: { descriptionCategoryId: 17_033_604, typeIdCandidate: 94_405 },
+      categoryResolution: {
+        status: "MATCHED",
+        method: "MANUAL",
+        target: {
+          storeId: STORE_ID,
+          descriptionCategoryId: 17_028_799,
+          typeId: 94_499,
+        },
+      },
+    },
+  });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{ id: STORE_ID, ownerAccountId: ACCOUNT_ID, clientId: "client", apiKey: "secret" }],
+    collectCategoryResolutions: [],
+    auditEvents: [],
+  };
+  let snapshots = 0;
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: {
+      ...categoryService(),
+      async getCategorySnapshot() { snapshots += 1; return categoryService().getCategorySnapshot(); },
+    },
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    appendAudit: appendAuditEvent,
+    now: () => new Date(NOW),
+    randomUUID: () => "legacy-manual",
+  });
+
+  await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+
+  const canonical = await runtime.readForItem({ accountId: ACCOUNT_ID, collectItemId: item.id });
+  assert.equal(canonical.status, "MATCHED");
+  assert.equal(canonical.method, "MANUAL");
+  assert.equal(canonical.targetDescriptionCategoryId, 17_028_799);
+  assert.equal(snapshots, 0);
 });
 
 test("a trusted acceptance snapshot freezes the current store across a concurrent switch", async () => {
@@ -1254,6 +1365,162 @@ test("restart reconciliation revalidates a matched record after the operating st
   assert.equal(result.processed, 1);
   assert.equal(matched.status, "MATCHED");
   assert.equal(matched.credentialStoreId, STORE_ID);
+});
+
+test("matched records are revalidated after a bounded TTL even when store metadata is unchanged", async () => {
+  let nowMs = NOW.getTime();
+  let validations = 0;
+  const item = completeItem({ id: `${COLLECT_ITEM_ID}-ttl-revalidate` });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [{
+      id: STORE_ID,
+      ownerAccountId: ACCOUNT_ID,
+      clientId: "client-runtime",
+      apiKey: "secret-runtime",
+      updatedAt: "2026-08-03T11:00:00.000Z",
+    }],
+    collectCategoryResolutions: [{
+      id: "ttl-revalidate-resolution",
+      accountId: ACCOUNT_ID,
+      collectItemId: item.id,
+      taxonomyScope: "OZON:DEFAULT",
+      sourceTypeId: 94_405,
+      targetDescriptionCategoryId: 17_028_702,
+      targetTypeId: 94_405,
+      method: "TYPE_ID_EXACT",
+      status: "MATCHED",
+      taxonomyFingerprint: "taxonomy-runtime-v1",
+      credentialStoreId: STORE_ID,
+      displayPath: {},
+      attemptCount: 0,
+      nextAttemptAt: NOW.toISOString(),
+      matchedAt: NOW.toISOString(),
+      validatedAt: NOW.toISOString(),
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: {
+      ...categoryService(),
+      async validateTarget() {
+        validations += 1;
+        return {
+          valid: true,
+          reasonCode: "VALID",
+          taxonomyFingerprint: "taxonomy-runtime-v1",
+          validatedAt: new Date(nowMs).toISOString(),
+        };
+      },
+    },
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    appendAudit: appendAuditEvent,
+    matchedRevalidationTtlMs: 60_000,
+    now: () => new Date(nowMs),
+    randomUUID: () => "runtime-ttl",
+  });
+
+  nowMs += 59_999;
+  await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+  assert.equal(validations, 0);
+
+  nowMs += 1;
+  await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 1 });
+  assert.equal(validations, 1);
+  assert.equal(state.collectCategoryResolutions[0].validatedAt, new Date(nowMs).toISOString());
+});
+
+test("production category cache expiry discovers an Ozon-only taxonomy move and rematches", async () => {
+  const ttlMs = 60_000;
+  let nowMs = NOW.getTime();
+  let moved = false;
+  let treeCalls = 0;
+  const store = {
+    id: STORE_ID,
+    ownerAccountId: ACCOUNT_ID,
+    clientId: "client-runtime",
+    apiKey: "secret-runtime",
+    updatedAt: "2026-08-03T11:00:00.000Z",
+  };
+  const realCategoryService = createOzonCategoryService({
+    now: () => nowMs,
+    cacheTtlMs: ttlMs,
+    callOzonSellerApi: async (_store, apiPath) => {
+      if (apiPath.endsWith("/tree")) {
+        treeCalls += 1;
+        return {
+          result: [{
+            description_category_id: moved ? 17_028_799 : 17_028_702,
+            children: [{ type_id: 94_405, children: [] }],
+          }],
+        };
+      }
+      return { result: [] };
+    },
+  });
+  const initialSnapshot = await realCategoryService.getCategorySnapshot({
+    accountId: ACCOUNT_ID,
+    store,
+    language: "ZH_HANS",
+  });
+  const item = completeItem({ id: `${COLLECT_ITEM_ID}-real-cache-ttl` });
+  const state = {
+    caches: { collectBox: [item] },
+    stores: [store],
+    collectCategoryResolutions: [{
+      id: "real-cache-ttl-resolution",
+      accountId: ACCOUNT_ID,
+      collectItemId: item.id,
+      taxonomyScope: "OZON:DEFAULT",
+      sourceTypeId: 94_405,
+      targetDescriptionCategoryId: 17_028_702,
+      targetTypeId: 94_405,
+      method: "TYPE_ID_EXACT",
+      status: "MATCHED",
+      taxonomyFingerprint: initialSnapshot.taxonomyFingerprint,
+      credentialStoreId: STORE_ID,
+      displayPath: {},
+      attemptCount: 0,
+      nextAttemptAt: NOW.toISOString(),
+      matchedAt: NOW.toISOString(),
+      validatedAt: NOW.toISOString(),
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    }],
+    auditEvents: [],
+  };
+  const runtime = createCollectCategoryResolutionRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    categoryService: realCategoryService,
+    currentCredentialStoreForAccount: async () => STORE_ID,
+    appendAudit: appendAuditEvent,
+    matchedRevalidationTtlMs: ttlMs,
+    now: () => new Date(nowMs),
+    randomUUID: () => "runtime-real-cache",
+  });
+
+  moved = true;
+  nowMs += ttlMs;
+  await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 2 });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await runtime.resolveDue({ accountId: ACCOUNT_ID, limit: 2 });
+  }
+
+  const rematched = await runtime.readForItem({ accountId: ACCOUNT_ID, collectItemId: item.id });
+  assert.equal(treeCalls, 2);
+  assert.equal(rematched.status, "MATCHED");
+  assert.equal(rematched.targetDescriptionCategoryId, 17_028_799);
+  assert.equal(rematched.targetTypeId, 94_405);
+  assert.notEqual(rematched.taxonomyFingerprint, initialSnapshot.taxonomyFingerprint);
 });
 
 test("worker timer is stoppable and timer callback failures stay process-safe", async () => {

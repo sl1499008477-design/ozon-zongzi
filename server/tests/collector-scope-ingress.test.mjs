@@ -28,6 +28,19 @@ const retiredKeys = [
   "dataCollectionStoreId",
 ];
 
+const serverOwnedCategoryResolutionKeys = [
+  "taxonomyScope",
+  "category_resolution",
+  "targetDescriptionCategoryId",
+  "target_type_id",
+  "taxonomyFingerprint",
+  "credentialStoreId",
+  "failureCode",
+  "nextAttemptAt",
+  "leaseToken",
+  "validatedAt",
+];
+
 test("V4 ingress rejects every canonical retired scope key at nested array/object depth", () => {
   for (const key of retiredKeys) {
     const input = {
@@ -67,6 +80,29 @@ test("V4 ingress accepts a store-neutral nested payload", () => {
   });
   assert.equal(prepared.identity.accountId, "account-authoritative");
   assert.deepEqual(prepared.normalizedItem.nested, [{ keep: "safe" }]);
+});
+
+test("V4 ingress rejects server-owned taxonomy and resolution fields at every depth", () => {
+  for (const key of serverOwnedCategoryResolutionKeys) {
+    assert.throws(
+      () => prepareCollectRequestV4({
+        authenticatedAccount: { id: "account-authoritative" },
+        input: {
+          source: "ozon",
+          sourceSku: `sku-resolution-${key}`,
+          requestId: `request-resolution-${key}`,
+          payload: {
+            title: "safe",
+            variants: [{ evidence: { [key]: "collector-controlled" } }],
+          },
+        },
+      }),
+      (error) => error?.status === 400
+        && error?.code === "COLLECTOR_RESOLUTION_FIELD_FORBIDDEN"
+        && !String(error?.message || "").includes("collector-controlled"),
+      key,
+    );
+  }
 });
 
 test("post-commit category scheduling sends only backend account/item identity and preserves success on failure", async () => {
@@ -355,6 +391,30 @@ test("JSON ingress rejects sensitive raw evidence before normalization or persis
 
   assert.equal(harness.response.status, 400);
   assert.equal(harness.response.body.code, "COLLECT_PAYLOAD_SENSITIVE");
+  assert.equal(harness.normalized, 0);
+  assert.equal(harness.saved, 0);
+  assert.deepEqual(harness.state.caches.collectBox, []);
+  assert.deepEqual(harness.state.collectRequests, []);
+});
+
+test("JSON ingress rejects collector-controlled taxonomy state before normalization or persistence", async () => {
+  const harness = jsonIngressHarness(completeJsonInput({
+    sku: "json-forged-resolution",
+    variants: [{
+      categoryResolution: {
+        status: "MATCHED",
+        method: "MANUAL",
+        taxonomyScope: "OZON:FORGED",
+        targetDescriptionCategoryId: 1,
+        targetTypeId: 2,
+      },
+    }],
+  }));
+
+  await harness.invoke();
+
+  assert.equal(harness.response.status, 400);
+  assert.equal(harness.response.body.code, "COLLECTOR_RESOLUTION_FIELD_FORBIDDEN");
   assert.equal(harness.normalized, 0);
   assert.equal(harness.saved, 0);
   assert.deepEqual(harness.state.caches.collectBox, []);

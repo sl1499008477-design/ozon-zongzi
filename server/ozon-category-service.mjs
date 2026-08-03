@@ -199,14 +199,44 @@ export function createOzonCategoryService({
     };
   }
 
-  function snapshotResult(snapshot, stale) {
+  function snapshotResult(snapshot, stale, staleReasonCode = null) {
     return {
       items: structuredClone(snapshot.items),
       taxonomyScope: TAXONOMY_SCOPE_OZON_DEFAULT,
       taxonomyFingerprint: snapshot.taxonomyFingerprint,
       fetchedAt: snapshot.fetchedAt,
       stale,
+      staleReasonCode,
     };
+  }
+
+  function cacheKeyMatchesStore(key, accountId, storeId) {
+    try {
+      const [scope] = JSON.parse(key);
+      return Array.isArray(scope)
+        && String(scope[0] || "") === accountId
+        && String(scope[1] || "") === storeId;
+    } catch {
+      return false;
+    }
+  }
+
+  function invalidateStore({ accountId, storeId } = {}) {
+    const normalizedAccountId = String(accountId || "").trim();
+    const normalizedStoreId = String(storeId || "").trim();
+    if (!normalizedAccountId || !normalizedStoreId) return 0;
+    let removed = 0;
+    for (const key of cache.keys()) {
+      if (!cacheKeyMatchesStore(key, normalizedAccountId, normalizedStoreId)) continue;
+      cache.delete(key);
+      removed += 1;
+    }
+    for (const key of snapshotCache.keys()) {
+      if (!cacheKeyMatchesStore(key, normalizedAccountId, normalizedStoreId)) continue;
+      snapshotCache.delete(key);
+      removed += 1;
+    }
+    return removed;
   }
 
   async function getCategoryTree({ accountId, store, language } = {}) {
@@ -395,7 +425,14 @@ export function createOzonCategoryService({
       snapshotCache.set(key, snapshot);
       return snapshotResult(snapshot, false);
     } catch (error) {
-      if (previous) return snapshotResult(previous, true);
+      if (previous) {
+        return snapshotResult(
+          previous,
+          true,
+          String(error?.code || "OZON_CATEGORY_TREE_UNAVAILABLE").trim()
+            || "OZON_CATEGORY_TREE_UNAVAILABLE",
+        );
+      }
       throw error;
     }
   }
@@ -471,5 +508,6 @@ export function createOzonCategoryService({
     resolveDescriptionCategoryId,
     getCategorySnapshot,
     validateTarget,
+    invalidateStore,
   };
 }

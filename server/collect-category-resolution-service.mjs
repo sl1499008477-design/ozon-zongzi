@@ -17,11 +17,11 @@ const RETRYABLE_TRANSPORT_CODES = new Set([
   "OZON_RATE_LIMITED",
   "OZON_CATEGORY_TREE_UNAVAILABLE",
   "OZON_CATEGORY_ATTRIBUTES_UNAVAILABLE",
+  "OZON_CATEGORY_TAXONOMY_STALE",
 ]);
 const VALIDATION_RETRY_PENDING = "VALIDATION_RETRY_PENDING";
 const NON_RETRYABLE_CATEGORY_CODES = new Set([
   "OZON_CATEGORY_DATA_INVALID",
-  "OZON_CATEGORY_TAXONOMY_STALE",
   "TAXONOMY_SCOPE_MISMATCH",
 ]);
 const TRANSIENT_VALIDATION_REASONS = new Set([
@@ -484,6 +484,7 @@ export function createCollectCategoryResolutionService({
       id: claimed.id,
       leaseToken: claimed.leaseToken,
       failureCode,
+      taxonomyFingerprint: error?.taxonomyFingerprint,
       nextAttemptAt,
       now: at,
       auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_RETRY_DEFERRED", claimed, { failureCode }),
@@ -613,7 +614,12 @@ export function createCollectCategoryResolutionService({
       if (!Array.isArray(snapshot?.items) || snapshot.items.length === 0) {
         throw { code: "OZON_CATEGORY_DATA_INVALID" };
       }
-      if (snapshot.stale) throw { code: "OZON_CATEGORY_TAXONOMY_STALE" };
+      if (snapshot.stale) {
+        throw {
+          code: "OZON_CATEGORY_TAXONOMY_STALE",
+          taxonomyFingerprint: snapshot.taxonomyFingerprint,
+        };
+      }
       if (String(snapshot.taxonomyScope ?? "") !== claimed.taxonomyScope) {
         throw { code: "TAXONOMY_SCOPE_MISMATCH" };
       }

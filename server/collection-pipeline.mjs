@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import { mirrorCollectItemV3 } from "./listing-pipeline.mjs";
-import { findRetiredCollectorScopePath } from "./collector-scope-sanitizer.mjs";
+import {
+  findRetiredCollectorScopePath,
+  findServerOwnedCategoryResolutionPath,
+} from "./collector-scope-sanitizer.mjs";
 import { assertCompleteOzonCollectPayload } from "./collector-ozon-enrichment-contract.mjs";
 import {
   buildOzonEnrichmentSummary,
@@ -149,6 +152,14 @@ function rejectCollectorScopeFields(input = {}) {
       `采集请求不能指定账号或店铺范围：${forbidden}`,
       400,
       "COLLECTOR_SCOPE_FIELD_FORBIDDEN",
+    );
+  }
+  const serverOwnedResolution = findServerOwnedCategoryResolutionPath(input);
+  if (serverOwnedResolution) {
+    throw collectorError(
+      `采集请求不能指定服务端类目解析字段：${serverOwnedResolution}`,
+      400,
+      "COLLECTOR_RESOLUTION_FIELD_FORBIDDEN",
     );
   }
 }

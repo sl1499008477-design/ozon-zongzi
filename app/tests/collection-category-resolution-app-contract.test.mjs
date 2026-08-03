@@ -367,7 +367,7 @@ test("real editor preview, seed, draft, and variants reload a scoped saved MANUA
   }
 });
 
-test("effective editor resolution keeps a valid shared MATCHED target ahead of stale preview and MANUAL", () => {
+test("effective editor resolution keeps a saved MANUAL selection ahead of an older shared automatic match", () => {
   const item = {
     id: "collect-shared-matched",
     categoryResolution: {
@@ -397,10 +397,10 @@ test("effective editor resolution keeps a valid shared MATCHED target ahead of s
       resolution: recoveryManual,
     },
   });
-  assert.equal(resolved.method, "AUTO");
+  assert.equal(resolved.method, "MANUAL");
   assert.deepEqual(categoryIds(resolved), {
-    descriptionCategoryId: 111,
-    typeId: 222,
+    descriptionCategoryId: 333,
+    typeId: 444,
   });
 });
 
