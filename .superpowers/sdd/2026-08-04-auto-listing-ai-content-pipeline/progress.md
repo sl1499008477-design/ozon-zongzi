@@ -1,0 +1,11 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-08-04-auto-listing-ai-content-pipeline.md
+
+Workspace: /Users/songliang/Documents/sonli ozon3.0/.worktrees/auto-listing-ai
+
+Task 1: complete pending commit. Added additive migration `027_auto_listing_ai_content.sql` and its contract test. The five new tables retain only safe AI-gateway references and immutable business evidence. Cross-account and cross-job joins are blocked with composite account/job/item/profile/plan foreign keys. Plans are immutable; accepted image and rich-content evidence is immutable; failed/rejected attempts remain traceable. The outbox is mutable and has unique dedupe plus pending/lease claim indexes.
+
+TDD: initial RED was 5/5 expected failures because migration 027 did not exist. A later boundary RED was 3 failures after adding the requirement that an item must belong to the exact referenced job; GREEN adds `auto_listing_job_items(account_id, job_id, id)` and uses it from plans, assets, results, and outbox.
+
+Verification: focused AI + foundation migration contracts 12/12 passed. Broader migration regressions 23 passed with 2 explicitly gated dedicated-DB skips. Full auto-listing foundation regression 115 passed with 1 explicitly gated dedicated-DB skip. Safe migration invocation returned `{ ok: true, skipped: true, applied: [] }` with dotenv and ordinary database configuration disabled.
+
+Unverified: no `SONLI_MIGRATION_TEST_DATABASE_URL` is configured, so the live PostgreSQL application, foreign-key rejection, and trigger execution were intentionally not attempted. No production database fallback was used.
