@@ -140,6 +140,7 @@ export function createOzonCategoryService({
 } = {}) {
   const cache = new Map();
   const snapshotCache = new Map();
+  const scopeEpochs = new Map();
   const requestedCacheTtlMs = Number(cacheTtlMs);
   const effectiveCacheTtlMs = Number.isFinite(requestedCacheTtlMs) && requestedCacheTtlMs > 0
     ? Math.min(requestedCacheTtlMs, DEFAULT_CATEGORY_CACHE_TTL_MS)
@@ -157,6 +158,18 @@ export function createOzonCategoryService({
     return JSON.stringify(parts);
   }
 
+  function scopeEpochKey(scope) {
+    return JSON.stringify(scope);
+  }
+
+  function scopeEpoch(scope) {
+    return Number(scopeEpochs.get(scopeEpochKey(scope)) || 0);
+  }
+
+  function scopeEpochMatches(scope, expectedEpoch) {
+    return scopeEpoch(scope) === expectedEpoch;
+  }
+
   function readCache(key) {
     const entry = cache.get(key);
     if (!entry || now() >= entry.expiresAtMs) {
@@ -169,7 +182,7 @@ export function createOzonCategoryService({
     };
   }
 
-  function writeCache(key, items) {
+  function writeCache(key, items, { scope, epoch } = {}) {
     const fetchedAtMs = now();
     const entry = {
       items: structuredClone(items),
@@ -180,7 +193,7 @@ export function createOzonCategoryService({
         expiresAt: new Date(fetchedAtMs + effectiveCacheTtlMs).toISOString(),
       },
     };
-    cache.set(key, entry);
+    if (!scope || scopeEpochMatches(scope, epoch)) cache.set(key, entry);
     return { items: structuredClone(entry.items), meta: { ...entry.meta } };
   }
 
@@ -225,6 +238,8 @@ export function createOzonCategoryService({
     const normalizedAccountId = String(accountId || "").trim();
     const normalizedStoreId = String(storeId || "").trim();
     if (!normalizedAccountId || !normalizedStoreId) return 0;
+    const scope = [normalizedAccountId, normalizedStoreId];
+    scopeEpochs.set(scopeEpochKey(scope), scopeEpoch(scope) + 1);
     let removed = 0;
     for (const key of cache.keys()) {
       if (!cacheKeyMatchesStore(key, normalizedAccountId, normalizedStoreId)) continue;
@@ -241,7 +256,9 @@ export function createOzonCategoryService({
 
   async function getCategoryTree({ accountId, store, language } = {}) {
     const normalizedLanguage = normalizedLanguageOf(language);
-    const key = cacheKey(scopeOf({ accountId, store }), "tree", normalizedLanguage);
+    const scope = scopeOf({ accountId, store });
+    const epoch = scopeEpoch(scope);
+    const key = cacheKey(scope, "tree", normalizedLanguage);
     const cached = readCache(key);
     if (cached) return cached;
 
@@ -259,7 +276,7 @@ export function createOzonCategoryService({
     if (!Array.isArray(data?.result) || data.result.length === 0) {
       throw categoryError("TREE", 502, "OZON_CATEGORY_DATA_INVALID");
     }
-    return writeCache(key, data.result);
+    return writeCache(key, data.result, { scope, epoch });
   }
 
   async function getCategoryAttributes({
@@ -272,8 +289,10 @@ export function createOzonCategoryService({
     const normalizedDescriptionCategoryId = requiredPositiveIdOf(descriptionCategoryId);
     const normalizedTypeId = requiredPositiveIdOf(typeId);
     const normalizedLanguage = normalizedLanguageOf(language);
+    const scope = scopeOf({ accountId, store });
+    const epoch = scopeEpoch(scope);
     const key = cacheKey(
-      scopeOf({ accountId, store }),
+      scope,
       "attributes",
       normalizedLanguage,
       normalizedDescriptionCategoryId,
@@ -300,7 +319,7 @@ export function createOzonCategoryService({
     if (!Array.isArray(data?.result)) {
       throw categoryError("ATTRIBUTES", 502, "OZON_CATEGORY_DATA_INVALID");
     }
-    return writeCache(key, data.result);
+    return writeCache(key, data.result, { scope, epoch });
   }
 
   async function getCategoryAttributeValues({
@@ -320,8 +339,10 @@ export function createOzonCategoryService({
     const safeLimit = Number.isFinite(requestedLimit)
       ? Math.min(Math.max(Math.floor(requestedLimit), 1), 5000)
       : 1000;
+    const scope = scopeOf({ accountId, store });
+    const epoch = scopeEpoch(scope);
     const key = cacheKey(
-      scopeOf({ accountId, store }),
+      scope,
       "values",
       normalizedLanguage,
       normalizedDescriptionCategoryId,
@@ -397,7 +418,7 @@ export function createOzonCategoryService({
       }
       if (!hasNext || values.length === safeLimit) break;
     }
-    return writeCache(key, values);
+    return writeCache(key, values, { scope, epoch });
   }
 
   async function resolveDescriptionCategoryId({ accountId, store, typeId, language } = {}) {
@@ -413,7 +434,9 @@ export function createOzonCategoryService({
   async function getCategorySnapshot(storeOrInput, language = "ZH_HANS") {
     const input = snapshotInputOf(storeOrInput, language);
     const normalizedLanguage = normalizedLanguageOf(input.language);
-    const key = cacheKey(scopeOf(input), "snapshot", normalizedLanguage);
+    const scope = scopeOf(input);
+    const epoch = scopeEpoch(scope);
+    const key = cacheKey(scope, "snapshot", normalizedLanguage);
     const previous = snapshotCache.get(key);
     try {
       const { items, meta } = await getCategoryTree({ ...input, language: normalizedLanguage });
@@ -422,7 +445,7 @@ export function createOzonCategoryService({
         taxonomyFingerprint: taxonomyFingerprint(items),
         fetchedAt: meta.fetchedAt,
       };
-      snapshotCache.set(key, snapshot);
+      if (scopeEpochMatches(scope, epoch)) snapshotCache.set(key, snapshot);
       return snapshotResult(snapshot, false);
     } catch (error) {
       if (previous) {

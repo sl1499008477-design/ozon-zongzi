@@ -573,6 +573,111 @@ test("credential rotation invalidates only the matching account-store category c
   invalidationNowMs += 1;
 });
 
+test("credential rotation fences a late old-credential response from repopulating category caches", async () => {
+  let treeCalls = 0;
+  let resolveOldRequest;
+  let markOldRequestStarted;
+  const oldRequestStarted = new Promise((resolve) => {
+    markOldRequestStarted = resolve;
+  });
+  const raceService = createOzonCategoryService({
+    callOzonSellerApi: async (_store, apiPath) => {
+      assert.match(apiPath, /\/tree$/);
+      treeCalls += 1;
+      if (treeCalls === 1) {
+        markOldRequestStarted();
+        return new Promise((resolve) => {
+          resolveOldRequest = resolve;
+        });
+      }
+      return {
+        result: [{
+          description_category_id: 17_028_702,
+          children: [{ type_id: 94_405, children: [] }],
+        }],
+      };
+    },
+  });
+  const scopedStore = input({ accountId: "race-account", storeId: "race-store" });
+
+  const oldSnapshotPromise = raceService.getCategorySnapshot(scopedStore);
+  await oldRequestStarted;
+  raceService.invalidateStore({ accountId: "race-account", storeId: "race-store" });
+  resolveOldRequest({
+    result: [{
+      description_category_id: 17_033_604,
+      children: [{ type_id: 94_405, children: [] }],
+    }],
+  });
+  const oldSnapshot = await oldSnapshotPromise;
+
+  const currentSnapshot = await raceService.getCategorySnapshot(scopedStore);
+  const cachedCurrentSnapshot = await raceService.getCategorySnapshot(scopedStore);
+
+  assert.equal(treeCalls, 2, "the post-rotation read must call Ozon instead of reusing the late old response");
+  assert.notEqual(currentSnapshot.taxonomyFingerprint, oldSnapshot.taxonomyFingerprint);
+  assert.equal(cachedCurrentSnapshot.taxonomyFingerprint, currentSnapshot.taxonomyFingerprint);
+});
+
+for (const cacheCase of [{
+  name: "category attributes",
+  read: (targetService, scopedStore) => targetService.getCategoryAttributes({
+    ...scopedStore,
+    descriptionCategoryId: 17_028_702,
+    typeId: 94_405,
+  }),
+  response: (id) => ({ result: [{ id, name: `attribute-${id}` }] }),
+}, {
+  name: "category attribute values",
+  read: (targetService, scopedStore) => targetService.getCategoryAttributeValues({
+    ...scopedStore,
+    descriptionCategoryId: 17_028_702,
+    typeId: 94_405,
+    attributeId: 85,
+    limit: 1,
+  }),
+  response: (id) => ({ result: [{ id, value: `value-${id}` }], has_next: false }),
+}]) {
+  test(`credential rotation fences late old-credential ${cacheCase.name} responses`, async () => {
+    let apiCalls = 0;
+    let resolveOldRequest;
+    let markOldRequestStarted;
+    const oldRequestStarted = new Promise((resolve) => {
+      markOldRequestStarted = resolve;
+    });
+    const raceService = createOzonCategoryService({
+      callOzonSellerApi: async () => {
+        apiCalls += 1;
+        if (apiCalls === 1) {
+          markOldRequestStarted();
+          return new Promise((resolve) => {
+            resolveOldRequest = resolve;
+          });
+        }
+        return cacheCase.response(2);
+      },
+    });
+    const scopedStore = input({ accountId: `race-${cacheCase.name}`, storeId: "race-store" });
+
+    const oldResultPromise = cacheCase.read(raceService, scopedStore);
+    await oldRequestStarted;
+    raceService.invalidateStore({
+      accountId: scopedStore.accountId,
+      storeId: scopedStore.store.id,
+    });
+    resolveOldRequest(cacheCase.response(1));
+    const oldResult = await oldResultPromise;
+    const currentResult = await cacheCase.read(raceService, scopedStore);
+    const cachedCurrentResult = await cacheCase.read(raceService, scopedStore);
+
+    assert.equal(apiCalls, 2);
+    assert.equal(oldResult.items[0].id, 1);
+    assert.equal(currentResult.items[0].id, 2);
+    assert.equal(cachedCurrentResult.items[0].id, 2);
+    assert.equal(cachedCurrentResult.meta.source, "OZON_CACHE");
+  });
+}
+
 test("target validation requires an enabled contained type and readable attributes", async () => {
   let validationNowMs = Date.parse("2026-07-28T00:00:00.000Z");
   let attributesReadable = true;
