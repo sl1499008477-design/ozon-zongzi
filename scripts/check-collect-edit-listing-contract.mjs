@@ -2,11 +2,36 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const appSource = readFileSync("app/src/App.jsx", "utf8");
+const targetStoreSource = readFileSync("app/src/collect-box-target-store.js", "utf8");
 const extensionProductSource = readFileSync("extension/content/ozon-product.js", "utf8");
 
 const requirePattern = (pattern, message) => {
   assert.match(appSource, pattern, message);
 };
+
+assert.match(
+  targetStoreSource,
+  /\.filter\(\(warehouse\) => warehouse\?\.listingEligibility\?\.eligible === true\)/,
+  "collect listing warehouses must consume the backend eligibility contract",
+);
+
+const collectEditWarehouseSource = appSource.match(
+  /const listingWarehouseOptions = preparationModel\.warehouses[\s\S]*?const listingWarehouseOptionKey/,
+)?.[0] || "";
+assert.match(
+  collectEditWarehouseSource,
+  /const id = warehouse\.warehouse_id \|\| warehouse\.warehouseId;/,
+  "collect listing must submit the Ozon platform warehouse ID",
+);
+assert.doesNotMatch(
+  collectEditWarehouseSource,
+  /warehouseIsActive|warehouseIsWritableFbs|warehouse_type|warehouseType|warehouseDisplayName\([^)]*name/,
+  "collect listing must not re-infer backend eligibility from type, status, or warehouse names",
+);
+requirePattern(
+  /notFoundContent="当前店铺暂无活跃 FBS 仓库，请先完成商品同步"/,
+  "collect listing must explain when the target store has no eligible FBS warehouse",
+);
 
 assert.doesNotMatch(
   appSource,

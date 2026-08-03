@@ -59,7 +59,8 @@ export function listingPreparationModel({
       if (storeId) return storeId === targetId;
       const clientId = String(warehouse?.clientId || warehouse?.client_id || "").trim();
       return Boolean(targetClientId && clientId === targetClientId);
-    });
+    })
+    .filter((warehouse) => warehouse?.listingEligibility?.eligible === true);
   const listingBlocked = collectEnrichmentView(collectItem?.enrichment).listingBlocked;
   return {
     itemReady: Boolean(collectItem?.id && targetStore && !listingBlocked),

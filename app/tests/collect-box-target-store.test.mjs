@@ -147,7 +147,12 @@ test("listing preparation accepts a store-neutral collection item and scopes dep
       caches: {
         warehouses: [
           { id: "warehouse-a", storeId: "store-a", clientId: "client-a" },
-          { id: "warehouse-b", storeId: "store-b", clientId: "client-b" },
+          {
+            id: "warehouse-b",
+            storeId: "store-b",
+            clientId: "client-b",
+            listingEligibility: { eligible: true, code: "ELIGIBLE_ACTIVE_FBS" },
+          },
         ],
       },
     },
@@ -160,9 +165,89 @@ test("listing preparation accepts a store-neutral collection item and scopes dep
     categoryStoreId: "store-b",
     currencyCode: "RUB",
     warehouses: [
-      { id: "warehouse-b", storeId: "store-b", clientId: "client-b" },
+      {
+        id: "warehouse-b",
+        storeId: "store-b",
+        clientId: "client-b",
+        listingEligibility: { eligible: true, code: "ELIGIBLE_ACTIVE_FBS" },
+      },
     ],
   });
+});
+
+test("listing preparation exposes only target-store warehouses explicitly approved by the backend", () => {
+  const eligibleWarehouse = {
+    id: "warehouse-active-fbs",
+    warehouse_id: "1020003087687000",
+    storeId: "store-a",
+    warehouse_type: "fbs",
+    listingEligibility: { eligible: true, code: "ELIGIBLE_ACTIVE_FBS" },
+  };
+  const model = listingPreparationModel({
+    targetStoreId: "store-a",
+    collectItem: { id: "collect-a" },
+    localData: {
+      stores: [{
+        id: "store-a",
+        clientId: "client-a",
+        status: "active",
+        credentialsSaved: true,
+      }],
+      caches: {
+        warehouses: [
+          eligibleWarehouse,
+          {
+            id: "warehouse-fbo",
+            warehouse_id: "fbo-a",
+            storeId: "store-a",
+            warehouse_type: "fbo",
+            listingEligibility: { eligible: false, code: "TYPE_NOT_FBS" },
+          },
+          {
+            id: "warehouse-archived-only",
+            warehouse_id: "fbs-archive-a",
+            storeId: "store-a",
+            warehouse_type: "fbs",
+            listingEligibility: { eligible: false, code: "NO_ACTIVE_PRODUCT_ASSOCIATION" },
+          },
+          {
+            id: "warehouse-foreign",
+            warehouse_id: "fbs-b",
+            storeId: "store-b",
+            listingEligibility: { eligible: true, code: "ELIGIBLE_ACTIVE_FBS" },
+          },
+          {
+            id: "warehouse-legacy-unclassified",
+            warehouse_id: "legacy-a",
+            storeId: "store-a",
+            warehouse_type: "fbs",
+          },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(model.warehouses, [eligibleWarehouse]);
+});
+
+test("listing preparation returns no warehouses when the backend approved none", () => {
+  const model = listingPreparationModel({
+    targetStoreId: "store-a",
+    collectItem: { id: "collect-a" },
+    localData: {
+      stores: [{ id: "store-a", status: "active", credentialsSaved: true }],
+      caches: {
+        warehouses: [{
+          id: "warehouse-ineligible",
+          warehouse_id: "fbs-ineligible",
+          storeId: "store-a",
+          listingEligibility: { eligible: false, code: "WAREHOUSE_DISABLED" },
+        }],
+      },
+    },
+  });
+
+  assert.deepEqual(model.warehouses, []);
 });
 
 test("selecting an eligible target store cannot make incomplete enrichment listing-ready", () => {

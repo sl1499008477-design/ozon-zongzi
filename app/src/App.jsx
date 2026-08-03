@@ -5604,10 +5604,8 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const { scopedTrees, categoryTreeLoading, categoryDataError, categoryTreeReady, loadCategoryTrees,
     categoryAutoLoading, beginCategoryAutoRequest, categoryAutoRequestIsCurrent, finishCategoryAutoRequest } = categoryTree;
   const listingWarehouseOptions = preparationModel.warehouses
-    .filter(warehouseIsActive)
-    .filter(warehouseIsWritableFbs)
     .map((warehouse) => {
-      const id = warehouse.id || warehouse.warehouse_id || warehouse.warehouseId;
+      const id = warehouse.warehouse_id || warehouse.warehouseId;
       if (!id) return null;
       return {
         value: String(id),
@@ -6793,7 +6791,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                   value={listingWarehouseId || undefined}
                   options={listingWarehouseOptions}
                   placeholder="选择上架库存仓库"
-                  notFoundContent="当前店铺暂无可写 FBS 仓库"
+                  notFoundContent="当前店铺暂无活跃 FBS 仓库，请先完成商品同步"
                   optionFilterProp="label"
                   onChange={(value) => setListingWarehouseId(value || "")}
                 />
