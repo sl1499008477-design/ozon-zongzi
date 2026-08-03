@@ -887,6 +887,94 @@ test('install and startup never reload or remove user-owned Seller tabs', async 
   assert.deepEqual(harness.removedTabs, []);
 });
 
+test('successful Collector exchange refreshes only open Ozon buyer pages', async () => {
+  const buyerPatterns = [
+    'https://ozon.ru/*',
+    'https://www.ozon.ru/*',
+    'https://ozon.kz/*',
+    'https://www.ozon.kz/*',
+  ];
+  const harness = loadServiceWorker({
+    tabQueryImpl: async (query) => (
+      JSON.stringify(query.url) === JSON.stringify(buyerPatterns)
+        ? [{ id: 31 }, { id: 32 }]
+        : []
+    ),
+    fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/api/extension/collector-auth/exchange') {
+        return new Response(JSON.stringify({
+          data: {
+            collectorToken: 'csess_refresh_success_123456789',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            account: { id: 'account-refresh', displayName: 'Refresh' },
+            permissions: ['collector.upload', 'collector.ozon.read'],
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (pathname === AVAILABILITY_PATH) {
+        return availabilityResponse(url, options, false);
+      }
+      throw new Error(`unexpected refresh path: ${pathname}`);
+    },
+  });
+
+  await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: G1,
+  }, trustedWebSender);
+  const exchanged = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-refresh-success',
+    generationId: G1,
+    ticket: 'ctt_refresh_success_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender);
+  await settle();
+
+  assert.equal(exchanged.ok, true);
+  assert.deepEqual(harness.reloadedTabs, [31, 32]);
+  assert.ok(harness.tabQueryCalls.some(({ url }) => (
+    JSON.stringify(url) === JSON.stringify(buyerPatterns)
+  )));
+  assert.equal(harness.tabQueryCalls.some(({ url }) => (
+    JSON.stringify(url).includes('seller.ozon.ru')
+  )), false);
+});
+
+test('failed Collector exchange never refreshes an Ozon page', async () => {
+  const harness = loadServiceWorker({
+    collectorExchangeImpl: async () => {
+      throw Object.assign(new Error('expired'), {
+        status: 401,
+        code: 'COLLECTOR_TICKET_EXPIRED',
+      });
+    },
+    tabQueryImpl: async () => [{ id: 31 }],
+  });
+
+  await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.begin',
+    generationId: G1,
+  }, trustedWebSender);
+  const exchanged = await sendRuntimeMessage(harness, {
+    portalProtocol: 'SONLI_COLLECTOR_AUTH',
+    action: 'collector.auth.exchange',
+    requestId: 'exchange-refresh-failure',
+    generationId: G1,
+    ticket: 'ctt_refresh_failure_123456789',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }, trustedWebSender);
+  await settle();
+
+  assert.equal(exchanged.ok, false);
+  assert.equal(exchanged.code, 'COLLECTOR_TICKET_EXPIRED');
+  assert.deepEqual(harness.reloadedTabs, []);
+});
+
 test('autonomous enrichment drain runs every minute and kicks on startup, pending upload, and session exchange', async () => {
   const nextPath = '/api/collector/ozon/enrichment-jobs/next';
   const startupHarness = loadServiceWorker({

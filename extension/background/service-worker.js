@@ -4128,6 +4128,7 @@ try {
               generationId: message.generationId,
             });
             kickCollectorOzonEnrichment();
+            reloadOzonTabs();
             return {
               ok: true,
               data: {
