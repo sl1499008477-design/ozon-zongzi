@@ -19,6 +19,7 @@ const DEFAULT_BATCH_LIMIT = 8;
 const MAX_BATCH_LIMIT = 16;
 const DEFAULT_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_INTERVAL_MS = 15_000;
+const MAX_READ_FOR_ITEMS = 200;
 const AUDIT_EVENT_KEYS = new Set([
   "action",
   "accountId",
@@ -41,6 +42,20 @@ function boundedLimit(value) {
   const requested = Number(value);
   if (!Number.isInteger(requested) || requested <= 0) return DEFAULT_BATCH_LIMIT;
   return Math.min(requested, MAX_BATCH_LIMIT);
+}
+
+function batchCollectItemIds(value) {
+  const candidates = Array.isArray(value) ? value : [];
+  const collectItemIds = [];
+  const seen = new Set();
+  const scanLimit = Math.min(candidates.length, MAX_READ_FOR_ITEMS * 4);
+  for (let index = 0; index < scanLimit && collectItemIds.length < MAX_READ_FOR_ITEMS; index += 1) {
+    const collectItemId = text(candidates[index]);
+    if (!collectItemId || collectItemId.length > 240 || seen.has(collectItemId)) continue;
+    seen.add(collectItemId);
+    collectItemIds.push(collectItemId);
+  }
+  return collectItemIds;
 }
 
 function stableErrorCode(error) {
@@ -190,6 +205,7 @@ export function createCollectCategoryResolutionRuntime({
     [
       "enqueue",
       "readForItem",
+      "readForItems",
       "claimNext",
       "completeMatched",
       "completeNeedsReview",
@@ -492,6 +508,13 @@ export function createCollectCategoryResolutionRuntime({
       accountId: input.accountId,
       collectItemId: input.collectItemId,
       taxonomyScope: text(input.taxonomyScope) || TAXONOMY_SCOPE_OZON_DEFAULT,
+    });
+  }
+
+  async function readForItems(input = {}) {
+    return repository.readForItems({
+      accountId: input.accountId,
+      collectItemIds: batchCollectItemIds(input.collectItemIds),
     });
   }
 
@@ -837,6 +860,7 @@ export function createCollectCategoryResolutionRuntime({
     onOperatingStoreAvailable,
     resolveDue,
     readForItem,
+    readForItems,
     start,
     stop,
   });

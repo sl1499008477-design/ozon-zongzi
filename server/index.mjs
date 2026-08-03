@@ -729,6 +729,57 @@ function cacheItemsForAccount(state, cacheKey, account) {
   return accountScopedCache(state.caches?.[cacheKey], account, storeIds);
 }
 
+function stableCategorySummaryReadCode(error) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
+    ? code
+    : "CATEGORY_RESOLUTION_SUMMARY_READ_FAILED";
+}
+
+function taxonomyScopeForCollectionItem(item = {}) {
+  return String(
+    item?.taxonomyScope
+      ?? item?.listingDraft?.categoryResolution?.taxonomyScope
+      ?? "OZON:DEFAULT",
+  ).trim() || "OZON:DEFAULT";
+}
+
+async function publicCollectBoxItemsForAccount(state, account) {
+  const items = cacheItemsForAccount(state, "collectBox", account);
+  const accountId = String(account?.id || "").trim();
+  const requestedScopes = new Map(items.map((item) => [
+    String(item?.id || ""),
+    taxonomyScopeForCollectionItem(item),
+  ]).filter(([collectItemId]) => collectItemId));
+  if (!accountId || !requestedScopes.size) return items.map(publicPersistedCollectionItem);
+
+  let resolutions = [];
+  try {
+    resolutions = await collectCategoryResolutionRuntime.readForItems({
+      accountId,
+      collectItemIds: [...requestedScopes.keys()],
+    });
+  } catch (error) {
+    console.error("collect category summary read failed", {
+      accountId,
+      code: stableCategorySummaryReadCode(error),
+    });
+  }
+  const byCollectItemId = new Map();
+  for (const resolution of Array.isArray(resolutions) ? resolutions : []) {
+    const collectItemId = String(resolution?.collectItemId || "");
+    if (
+      String(resolution?.accountId || "") !== accountId
+      || requestedScopes.get(collectItemId) !== String(resolution?.taxonomyScope || "")
+      || byCollectItemId.has(collectItemId)
+    ) continue;
+    byCollectItemId.set(collectItemId, resolution);
+  }
+  return items.map((item) => publicPersistedCollectionItem(item, {
+    categoryResolution: byCollectItemId.get(String(item?.id || "")) || null,
+  }));
+}
+
 function cacheItemBelongsToAccount(state, item, account) {
   return cacheItemsForAccount({ ...state, caches: { scoped: [item] } }, "scoped", account).length === 1;
 }
@@ -2628,12 +2679,14 @@ async function handle(req, res) {
   if (req.method === "GET" && url.pathname === "/local/state") {
     const token = bearerToken(req);
     const account = optionalAuth(req, state);
-    sendJson(res, 200, localStatePayload(state, {
+    const payload = localStatePayload(state, {
       authenticated: Boolean(account),
       account,
       token,
       includeAccounts: false,
-    }));
+    });
+    if (account) payload.caches.collectBox = await publicCollectBoxItemsForAccount(state, account);
+    sendJson(res, 200, payload);
     return;
   }
 
@@ -4138,7 +4191,7 @@ async function handle(req, res) {
     sendJson(
       res,
       200,
-      emptyPage(url, cacheItemsForAccount(state, "collectBox", account).map(publicPersistedCollectionItem)),
+      emptyPage(url, await publicCollectBoxItemsForAccount(state, account)),
     );
     return;
   }

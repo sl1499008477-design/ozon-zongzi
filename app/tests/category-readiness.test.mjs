@@ -13,6 +13,7 @@ import {
   loadRealCategoryTrees,
   requireCategoryReadiness,
   sourceCategoryEvidenceOf,
+  categoryResolutionForTarget,
   categoryResolutionForStore,
   listingTargetCategoryFieldsForStore,
   manualCategoryResolution,
@@ -292,6 +293,84 @@ test("uses a matched resolution only for the currently selected target store", (
     source: { descriptionCategoryId: 123, typeIdCandidate: 456 },
     target: { storeId: "store-a", descriptionCategoryId: 999, typeId: 1000 },
   }, "store-a"), {}, "an incomplete marker cannot turn source or historical roots into a target");
+});
+
+test("uses taxonomy-scoped shared matches before legacy store-bound drafts", () => {
+  const shared = {
+    status: "MATCHED",
+    taxonomyScope: "OZON:DEFAULT",
+    targetDescriptionCategoryId: 17_028_702,
+    targetTypeId: 94_405,
+    displayPath: { zh: ["运动与休闲", "捞鱼网"], ru: ["Спорт и отдых", "Подсачек"] },
+    method: "TYPE_ID_EXACT",
+    matchedAt: "2026-08-03T10:00:00.000Z",
+    validatedAt: "2026-08-03T10:00:00.000Z",
+    action: "NONE",
+    message: "类目已匹配",
+  };
+
+  const matchedForStoreB = categoryResolutionForTarget(shared, {
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+  });
+  assert.deepEqual(matchedForStoreB, shared);
+  assert.notStrictEqual(matchedForStoreB, shared);
+  assert.deepEqual(listingTargetCategoryFieldsForStore(shared, "store-b"), {
+    descriptionCategoryId: 17_028_702,
+    typeId: 94_405,
+  });
+  assert.deepEqual(listingTargetCategoryFieldsForStore({
+    status: "MATCHED",
+    taxonomyScope: "OZON:DEFAULT",
+    targetDescriptionCategoryId: 17_028_702,
+    targetTypeId: 94_405,
+    method: "",
+  }, "store-b"), {
+    descriptionCategoryId: 17_028_702,
+    typeId: 94_405,
+  }, "shared taxonomy results do not require a legacy method marker");
+  assert.equal(categoryResolutionForTarget(shared, {
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:RU",
+  }), null);
+
+  const legacy = {
+    status: "MATCHED",
+    method: "MANUAL",
+    target: { storeId: "store-a", descriptionCategoryId: 30, typeId: 40 },
+  };
+  assert.deepEqual(categoryResolutionForTarget(legacy, { targetStoreId: "store-a" }), legacy);
+  assert.equal(categoryResolutionForTarget(legacy, { targetStoreId: "store-b" }), null);
+});
+
+test("does not mark any non-matched or non-positive summary target ready for listing", () => {
+  for (const status of [
+    "WAITING_ENRICHMENT",
+    "WAITING_STORE",
+    "QUEUED",
+    "MATCHING",
+    "RETRYABLE_ERROR",
+    "NEEDS_REVIEW",
+    "INVALIDATED",
+  ]) {
+    assert.deepEqual(listingTargetCategoryFieldsForStore({
+      status,
+      taxonomyScope: "OZON:DEFAULT",
+      targetDescriptionCategoryId: 17_028_702,
+      targetTypeId: 94_405,
+      method: "TYPE_ID_EXACT",
+    }, "store-b"), {}, status);
+  }
+
+  for (const [targetDescriptionCategoryId, targetTypeId] of [[0, 94_405], [17_028_702, 0], [-1, 94_405]]) {
+    assert.deepEqual(listingTargetCategoryFieldsForStore({
+      status: "MATCHED",
+      taxonomyScope: "OZON:DEFAULT",
+      targetDescriptionCategoryId,
+      targetTypeId,
+      method: "TYPE_ID_EXACT",
+    }, "store-b"), {});
+  }
 });
 
 test("records a manual target-store category selection with its source evidence", () => {

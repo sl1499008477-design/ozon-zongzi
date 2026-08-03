@@ -83,12 +83,31 @@ export function categoryResolutionForStore(resolution, targetStoreId) {
   return structuredClone(resolution);
 }
 
+export function categoryResolutionForTarget(
+  resolution,
+  { targetStoreId, taxonomyScope = "OZON:DEFAULT" } = {},
+) {
+  if (resolution?.taxonomyScope) {
+    return resolution.taxonomyScope === taxonomyScope ? structuredClone(resolution) : null;
+  }
+  return categoryResolutionForStore(resolution, targetStoreId);
+}
+
 export function listingTargetCategoryFieldsForStore(resolution, targetStoreId) {
-  const matched = categoryResolutionForStore(resolution, targetStoreId);
+  const matched = categoryResolutionForTarget(resolution, { targetStoreId });
   if (!matched || matched.status !== "MATCHED") return {};
+  if (!matched.taxonomyScope && !cleanText(matched.method)) return {};
+  const target = matched.taxonomyScope
+    ? matched
+    : matched.target || {};
+  const descriptionCategoryId = positiveNumber(
+    target.targetDescriptionCategoryId ?? target.descriptionCategoryId,
+  );
+  const typeId = positiveNumber(target.targetTypeId ?? target.typeId);
+  if (!descriptionCategoryId || !typeId) return {};
   return {
-    descriptionCategoryId: positiveNumber(matched.target?.descriptionCategoryId),
-    typeId: positiveNumber(matched.target?.typeId),
+    descriptionCategoryId,
+    typeId,
   };
 }
 

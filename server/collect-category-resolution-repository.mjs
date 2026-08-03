@@ -14,6 +14,7 @@ const ENQUEUE_STATUS = new Set(["WAITING_ENRICHMENT", "WAITING_STORE", "QUEUED",
 const CLAIMABLE_STATUS = new Set(["QUEUED", "RETRYABLE_ERROR", "INVALIDATED"]);
 const VALIDATION_RETRY_PENDING = "VALIDATION_RETRY_PENDING";
 const VALIDATION_REVIEW_REQUIRED = "VALIDATION_REVIEW_REQUIRED";
+const MAX_READ_FOR_ITEMS = 200;
 const CREDENTIAL_STORE_FOREIGN_KEY =
   "collect_category_resolutions_credential_store_id_fkey";
 const AUDIT_EVENT_KEYS = new Set([
@@ -198,6 +199,21 @@ function scopeInput(input = {}) {
     collectItemId: requiredText(input.collectItemId, "collectItemId"),
     taxonomyScope: requiredText(input.taxonomyScope, "taxonomyScope"),
   };
+}
+
+function readItemsInput(input = {}) {
+  const accountId = requiredText(input.accountId, "accountId");
+  const candidates = Array.isArray(input.collectItemIds) ? input.collectItemIds : [];
+  const collectItemIds = [];
+  const seen = new Set();
+  const scanLimit = Math.min(candidates.length, MAX_READ_FOR_ITEMS * 4);
+  for (let index = 0; index < scanLimit && collectItemIds.length < MAX_READ_FOR_ITEMS; index += 1) {
+    const collectItemId = String(candidates[index] ?? "").trim();
+    if (!collectItemId || collectItemId.length > 240 || seen.has(collectItemId)) continue;
+    seen.add(collectItemId);
+    collectItemIds.push(collectItemId);
+  }
+  return { accountId, collectItemIds };
 }
 
 function fenceInput(input = {}, { nullableToken = false } = {}) {
@@ -456,6 +472,20 @@ export function createJsonCollectCategoryResolutionRepository({
     const scope = scopeInput(input);
     return stateTransaction.run(() =>
       recordFromRow(records().find((record) => sameStableKey(record, scope)) || null));
+  }
+
+  async function readForItems(input = {}) {
+    const request = readItemsInput(input);
+    if (!request.collectItemIds.length) return [];
+    const itemIds = new Set(request.collectItemIds);
+    return stateTransaction.run(() => records()
+      .filter((record) => record?.accountId === request.accountId
+        && itemIds.has(record?.collectItemId))
+      .sort((left, right) => String(left.collectItemId).localeCompare(String(right.collectItemId))
+        || String(left.taxonomyScope).localeCompare(String(right.taxonomyScope))
+        || String(left.id).localeCompare(String(right.id)))
+      .map((record) => recordFromRow(record))
+      .filter(Boolean));
   }
 
   async function claimNext(input = {}) {
@@ -825,6 +855,7 @@ export function createJsonCollectCategoryResolutionRepository({
   return Object.freeze({
     enqueue,
     readForItem,
+    readForItems,
     claimNext,
     completeMatched,
     completeNeedsReview,
@@ -994,6 +1025,18 @@ export function createPostgresCollectCategoryResolutionRepository({
       [scope.accountId, scope.collectItemId, scope.taxonomyScope],
     );
     return recordFromRow(result.rows[0] || null);
+  }
+
+  async function readForItems(input = {}) {
+    const request = readItemsInput(input);
+    if (!request.collectItemIds.length) return [];
+    const result = await query(
+      `SELECT * FROM collect_category_resolutions
+        WHERE account_id=$1 AND collect_item_id = ANY($2::text[])
+        ORDER BY collect_item_id,taxonomy_scope,id`,
+      [request.accountId, request.collectItemIds],
+    );
+    return result.rows.map((row) => recordFromRow(row)).filter(Boolean);
   }
 
   async function claimNext(input = {}) {
@@ -1445,6 +1488,7 @@ export function createPostgresCollectCategoryResolutionRepository({
   return Object.freeze({
     enqueue,
     readForItem,
+    readForItems,
     claimNext,
     completeMatched,
     completeNeedsReview,

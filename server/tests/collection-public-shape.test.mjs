@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   publicCollectionItem,
+  publicCategoryResolutionSummary,
   publicPersistedCollectionItem,
 } from "../collection-public-shape.mjs";
 
@@ -237,4 +238,95 @@ test("persisted Ozon projection separates historical source aliases from explici
     typeIdCandidate: 2999,
   });
   assert.deepEqual(publicItem.raw, raw);
+});
+
+test("projects an account-scoped category record as a stable public summary", () => {
+  const record = {
+    id: "private-resolution-id",
+    accountId: "private-account",
+    collectItemId: "collect-public-summary",
+    taxonomyScope: "OZON:DEFAULT",
+    status: "MATCHED",
+    sourceTypeId: 94_405,
+    targetDescriptionCategoryId: 17_028_702,
+    targetTypeId: 94_405,
+    displayPath: {
+      zh: ["运动与休闲", "捞鱼网"],
+      ru: ["Спорт и отдых", "Подсачек"],
+      internal: ["must not be public"],
+    },
+    method: "TYPE_ID_EXACT",
+    matchedAt: "2026-08-03T10:00:00.000Z",
+    validatedAt: "2026-08-03T10:00:00.000Z",
+    credentialStoreId: "credential-store-private",
+    leaseToken: "lease-private",
+    leaseExpiresAt: "2026-08-03T10:02:00.000Z",
+    attemptCount: 9,
+    failureCode: "UPSTREAM_PRIVATE",
+    failureDetailSafe: "database failure detail must not be public",
+    target_description_category_id: 17_028_703,
+    failure_detail_safe: "database column must not be public",
+  };
+
+  assert.deepEqual(publicCategoryResolutionSummary(record), {
+    status: "MATCHED",
+    taxonomyScope: "OZON:DEFAULT",
+    targetDescriptionCategoryId: 17_028_702,
+    targetTypeId: 94_405,
+    displayPath: {
+      zh: ["运动与休闲", "捞鱼网"],
+      ru: ["Спорт и отдых", "Подсачек"],
+    },
+    method: "TYPE_ID_EXACT",
+    matchedAt: "2026-08-03T10:00:00.000Z",
+    validatedAt: "2026-08-03T10:00:00.000Z",
+    action: "NONE",
+    message: "类目已匹配",
+  });
+
+  const item = publicCollectionItem({
+    id: "collect-public-summary",
+    sourceCategory: { descriptionCategoryId: 17_033_604, typeIdCandidate: 94_405 },
+    categoryResolution: record,
+    listingDraft: {
+      categoryResolution: {
+        status: "MATCHED",
+        method: "MANUAL",
+        target: { storeId: "legacy-store", descriptionCategoryId: 99, typeId: 100 },
+        credentialStoreId: "legacy-credential-private",
+        leaseToken: "legacy-lease-private",
+        attemptCount: 5,
+        failureDetailSafe: "legacy raw failure private",
+        failure_detail_safe: "legacy database column private",
+        source_type_id: 94_405,
+        target_description_category_id: 17_028_702,
+        target_type_id: 94_405,
+        display_path_json: { internal: ["legacy database path private"] },
+        next_attempt_at: "2026-08-03T10:02:00.000Z",
+      },
+    },
+  }, { categoryResolution: record });
+
+  assert.deepEqual(item.sourceCategory, {
+    descriptionCategoryId: 17_033_604,
+    typeIdCandidate: 94_405,
+  });
+  assert.equal(item.listingDraft.categoryResolution.target.storeId, "legacy-store");
+  assert.deepEqual(item.categoryResolution, publicCategoryResolutionSummary(record));
+  for (const forbidden of [
+    "credentialStoreId",
+    "leaseToken",
+    "leaseExpiresAt",
+    "attemptCount",
+    "failureCode",
+    "failureDetailSafe",
+    "target_description_category_id",
+    "target_type_id",
+    "source_type_id",
+    "display_path_json",
+    "next_attempt_at",
+    "failure_detail_safe",
+  ]) {
+    assert.equal(JSON.stringify(item).includes(forbidden), false, forbidden);
+  }
 });
