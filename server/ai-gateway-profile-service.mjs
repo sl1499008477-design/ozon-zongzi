@@ -1,0 +1,179 @@
+import crypto from "node:crypto";
+import { assertPermission, PERMISSIONS } from "./permissions.mjs";
+
+const REQUIRED_FEATURES = new Set(["STRUCTURED_TEXT", "IMAGE_GENERATION"]);
+const DECODE_FEATURES = new Set(["IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE_DECODE_WEBP"]);
+const ALLOWED_FEATURES = new Set([...REQUIRED_FEATURES, ...DECODE_FEATURES]);
+const SAFE_GATEWAY_ERROR_CODES = new Set([
+  "AI_GATEWAY_PROFILE_INVALID",
+  "AI_GATEWAY_REQUEST_INVALID",
+  "AI_GATEWAY_SECRET_MISSING",
+  "AI_GATEWAY_PROTOCOL_UNSUPPORTED",
+  "AI_GATEWAY_MODEL_MISMATCH",
+  "AI_GATEWAY_INPUT_UNSUPPORTED",
+  "GATEWAY_REDIRECT_BLOCKED",
+  "GATEWAY_TIMEOUT",
+  "GATEWAY_CANCELLED",
+  "RETRYABLE_GATEWAY",
+  "NON_RETRYABLE_AUTH",
+  "NON_RETRYABLE_GATEWAY",
+  "INVALID_GATEWAY_RESPONSE",
+]);
+
+function clean(value, max = 240) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function serviceError(code, status = 422, retryable = false) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = status;
+  error.retryable = retryable;
+  return error;
+}
+
+function requireDependencies(repository, gateway) {
+  if (!repository || typeof repository.loadProfileForCapabilityTest !== "function"
+    || typeof repository.recordCapabilityResult !== "function") {
+    throw new TypeError("AI gateway profile repository is required");
+  }
+  if (!gateway || typeof gateway.testCapabilities !== "function") {
+    throw new TypeError("AI gateway port is required");
+  }
+}
+
+function normalizedProfile(row) {
+  const result = {
+    id: clean(row?.id),
+    accountId: clean(row?.accountId ?? row?.account_id),
+    configVersion: Number(row?.configVersion ?? row?.config_version),
+    baseUrl: clean(row?.baseUrl ?? row?.base_url, 2048),
+    apiKeyEnvName: clean(row?.apiKeyEnvName ?? row?.api_key_env_name),
+    textProtocol: clean(row?.textProtocol ?? row?.text_protocol),
+    imageProtocol: clean(row?.imageProtocol ?? row?.image_protocol),
+    textModel: clean(row?.textModel ?? row?.text_model),
+    imageModel: clean(row?.imageModel ?? row?.image_model),
+    enabled: row?.enabled === true,
+  };
+  if (!result.id || !result.accountId || !Number.isInteger(result.configVersion) || result.configVersion < 1
+    || !result.baseUrl || !result.apiKeyEnvName || !result.textModel || !result.imageModel) {
+    throw serviceError("AI_GATEWAY_PROFILE_INVALID");
+  }
+  return result;
+}
+
+function validateCapabilityResult(result, profile) {
+  const features = Array.isArray(result?.features) ? [...new Set(result.features.map((value) => clean(value)))] : [];
+  const validFeatures = features.length === 3
+    && features.every((feature) => ALLOWED_FEATURES.has(feature))
+    && [...REQUIRED_FEATURES].every((feature) => features.includes(feature))
+    && features.some((feature) => DECODE_FEATURES.has(feature));
+  const latencyMs = result?.latencyMs;
+  const models = result?.models;
+  if (!validFeatures || !Number.isFinite(latencyMs) || latencyMs < 0
+    || clean(models?.text) !== profile.textModel || clean(models?.image) !== profile.imageModel) {
+    throw serviceError("INVALID_GATEWAY_RESPONSE");
+  }
+  return {
+    features,
+    latencyMs: Math.round(latencyMs),
+    models: { text: profile.textModel, image: profile.imageModel },
+  };
+}
+
+function requestKey(accountId, profileId, configVersion) {
+  return crypto.createHash("sha256")
+    .update(`ai-gateway-capability\0${accountId}\0${profileId}\0${configVersion}`)
+    .digest("hex");
+}
+
+function safeErrorCode(error) {
+  const code = clean(error?.code);
+  return SAFE_GATEWAY_ERROR_CODES.has(code) ? code : "AI_GATEWAY_CAPABILITY_FAILED";
+}
+
+function safeLog(logger, event, fields) {
+  if (typeof logger?.info !== "function") return;
+  logger.info(event, {
+    accountId: clean(fields.accountId),
+    profileId: clean(fields.profileId),
+    configVersion: Number(fields.configVersion) || null,
+    outcome: clean(fields.outcome),
+    errorCode: clean(fields.errorCode),
+  });
+}
+export function createAiGatewayProfileService({ repository, gateway, now = () => new Date(), logger = null } = {}) {
+  requireDependencies(repository, gateway);
+  return Object.freeze({
+    async testGatewayCapabilities(input = {}) {
+      assertPermission(input.actor, PERMISSIONS.AI_CONTENT_MANAGE);
+      const accountId = clean(input.actor.id);
+      const profileId = clean(input.profileId);
+      const configVersion = Number(input.configVersion);
+      const correlationId = clean(input.correlationId);
+      if (!accountId || !profileId || !Number.isInteger(configVersion) || configVersion < 1 || !correlationId) {
+        throw serviceError("AI_GATEWAY_CAPABILITY_REQUEST_INVALID");
+      }
+      const row = await repository.loadProfileForCapabilityTest({ accountId, profileId, configVersion });
+      if (!row) throw serviceError("AI_GATEWAY_PROFILE_NOT_FOUND", 404);
+      const profile = normalizedProfile(row);
+      if (profile.accountId !== accountId || profile.id !== profileId || profile.configVersion !== configVersion) {
+        throw serviceError("AI_GATEWAY_PROFILE_NOT_FOUND", 404);
+      }
+
+      const checkedAt = now().toISOString();
+      let capabilityResult;
+      let enabled = false;
+      try {
+        const raw = await gateway.testCapabilities({
+          profile,
+          correlationId,
+          requestKey: requestKey(accountId, profileId, configVersion),
+          timeoutMs: 120_000,
+        });
+        const verified = validateCapabilityResult(raw, profile);
+        capabilityResult = {
+          outcome: "PASSED",
+          ...verified,
+          checkedAt,
+          errorCode: null,
+        };
+        enabled = true;
+      } catch (error) {
+        capabilityResult = {
+          outcome: "FAILED",
+          features: [],
+          latencyMs: null,
+          models: { text: profile.textModel, image: profile.imageModel },
+          checkedAt,
+          errorCode: safeErrorCode(error),
+        };
+      }
+
+      const saved = await repository.recordCapabilityResult({
+        accountId,
+        profileId,
+        expectedConfigVersion: configVersion,
+        capabilityResult,
+        capabilityCheckedAt: checkedAt,
+        enabled,
+      });
+      if (saved?.updated !== true) {
+        throw serviceError("AI_GATEWAY_PROFILE_VERSION_CONFLICT", 409, false);
+      }
+      safeLog(logger, "ai_gateway.capability_test_completed", {
+        accountId,
+        profileId,
+        configVersion,
+        outcome: capabilityResult.outcome,
+        errorCode: capabilityResult.errorCode,
+      });
+      return {
+        profileId,
+        configVersion,
+        ...capabilityResult,
+        enabled,
+      };
+    },
+  });
+}
