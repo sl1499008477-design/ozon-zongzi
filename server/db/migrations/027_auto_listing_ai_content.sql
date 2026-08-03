@@ -103,7 +103,9 @@ CREATE TABLE IF NOT EXISTS ai_generation_assets (
     NULLIF(BTRIM(object_key), '') IS NOT NULL
     AND NULLIF(BTRIM(content_hash), '') IS NOT NULL
     AND NULLIF(BTRIM(content_type), '') IS NOT NULL
+    AND width IS NOT NULL
     AND width > 0
+    AND height IS NOT NULL
     AND height > 0
     AND jsonb_typeof(checker_result) = 'object'
     AND checker_result <> '{}'::JSONB

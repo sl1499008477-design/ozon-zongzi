@@ -185,6 +185,16 @@ if (!enabled) {
       await assert.rejects(insertAsset({ id: `asset-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertResult({ id: `rich-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertAsset({ id: `asset-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
+      await assert.rejects(insertAsset({
+        id: `asset-width-null-${suffix}`, status: "ACCEPTED", objectKey: "objects/width-null.png",
+        contentHash: "width-null-hash", contentType: "image/png", width: null, height: 1024,
+        checkerResult: { ok: true }, acceptedAt: new Date(),
+      }), { code: "23514" });
+      await assert.rejects(insertAsset({
+        id: `asset-height-null-${suffix}`, status: "ACCEPTED", objectKey: "objects/height-null.png",
+        contentHash: "height-null-hash", contentType: "image/png", width: 768, height: null,
+        checkerResult: { ok: true }, acceptedAt: new Date(),
+      }), { code: "23514" });
       await insertAsset({ id: `asset-failed-${suffix}`, status: "FAILED", errorCode: "GATEWAY", errorRetryable: true });
       await assert.rejects(client.query("UPDATE ai_generation_assets SET status='PENDING' WHERE id=$1", [`asset-failed-${suffix}`]), /terminal AI generation assets are immutable/i);
       await assert.rejects(client.query("DELETE FROM ai_generation_assets WHERE id=$1", [`asset-failed-${suffix}`]), /terminal AI generation assets are immutable/i);

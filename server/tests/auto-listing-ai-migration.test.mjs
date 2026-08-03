@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const migrationUrl = new URL("../db/migrations/027_auto_listing_ai_content.sql", import.meta.url);
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
-const secretValueColumnPattern = /\b(?:api_key|access_token|refresh_token|secret_value|credential(?:_value)?|cookie(?:_value)?|bearer(?:_value)?)\s+(?:TEXT|JSONB|BYTEA|VARCHAR(?:\s*\(\s*\d+\s*\))?|CHARACTER\s+VARYING(?:\s*\(\s*\d+\s*\))?)/i;
+const secretValueColumnPattern = /\b(?:api_key|access_token|refresh_token|token|credential(?:_value)?|secret(?:_value)?|cookie(?:_value)?|bearer(?:_value)?)\s+(?:TEXT|JSONB|BYTEA|VARCHAR(?:\s*\(\s*\d+\s*\))?|CHARACTER\s+VARYING(?:\s*\(\s*\d+\s*\))?)/i;
 
 function stripSqlComments(sql) {
   return sql
@@ -52,6 +52,12 @@ test("AI content persistence keeps profiles non-secret, versioned, and account-s
   assert.doesNotMatch(profiles, secretValueColumnPattern);
   assert.match("api_key VARCHAR(255)", secretValueColumnPattern);
   assert.match("refresh_token CHARACTER VARYING ( 512 )", secretValueColumnPattern);
+  for (const name of ["token", "credential", "secret", "cookie", "bearer"]) {
+    for (const type of ["TEXT", "VARCHAR", "VARCHAR(255)", "CHARACTER VARYING", "JSONB", "BYTEA"]) {
+      assert.match(`${name} ${type}`, secretValueColumnPattern, `expected to reject ${name} ${type}`);
+    }
+  }
+  assert.doesNotMatch("api_key_env_name TEXT", secretValueColumnPattern);
 
   const protection = functionBlock(sql, "auto_listing_protect_referenced_ai_gateway_profile");
   assert.match(protection, /FROM ai_content_plans[\s\S]*?profile_id = OLD\.id[\s\S]*?profile_version = OLD\.config_version/i);
@@ -124,7 +130,7 @@ test("accepted artifacts require complete storage and checker evidence", async (
   const assets = tableBlock(sql, "ai_generation_assets");
   const results = tableBlock(sql, "ai_rich_content_results");
 
-  assert.match(assets, /CHECK \(status <> 'ACCEPTED' OR \([\s\S]*?NULLIF\(BTRIM\(object_key\), ''\) IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(content_hash\), ''\) IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(content_type\), ''\) IS NOT NULL[\s\S]*?width > 0[\s\S]*?height > 0[\s\S]*?checker_result <> '\{\}'::JSONB[\s\S]*?accepted_at IS NOT NULL[\s\S]*?\)\)/i);
+  assert.match(assets, /CHECK \(status <> 'ACCEPTED' OR \([\s\S]*?NULLIF\(BTRIM\(object_key\), ''\) IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(content_hash\), ''\) IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(content_type\), ''\) IS NOT NULL[\s\S]*?width IS NOT NULL[\s\S]*?width > 0[\s\S]*?height IS NOT NULL[\s\S]*?height > 0[\s\S]*?checker_result <> '\{\}'::JSONB[\s\S]*?accepted_at IS NOT NULL[\s\S]*?\)\)/i);
   assert.match(results, /CHECK \(status <> 'ACCEPTED' OR \([\s\S]*?rich_content <> '\{\}'::JSONB[\s\S]*?NULLIF\(BTRIM\(output_hash\), ''\) IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(source_hash\), ''\) IS NOT NULL[\s\S]*?NULLIF\(BTRIM\(asset_hash\), ''\) IS NOT NULL[\s\S]*?checker_result <> '\{\}'::JSONB[\s\S]*?accepted_at IS NOT NULL[\s\S]*?\)\)/i);
 });
 

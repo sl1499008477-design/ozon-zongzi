@@ -50,3 +50,11 @@ The independent review found seven persistence boundaries that the initial contr
 - comment-stripped static contracts, VARCHAR/CHARACTER VARYING secret detection, and a double-gated real PostgreSQL behavior fixture.
 
 Fix RED was 6 expected static failures with the new PostgreSQL behavior test safely skipped because its dedicated URL was absent. Focused GREEN was 6 passed and 1 dedicated-DB skip. Migration regressions were 24 passed and 3 dedicated-DB skips; the full auto-listing regression was 116 passed and 2 dedicated-DB skips. The PostgreSQL fixture is designed to apply all migrations in its own random schema and verify cross-job/snapshot/strategy/profile-version rejection, terminal triggers, accepted checks, leases, retry uniqueness, accepted uniqueness, and outbox dedupe. It did not execute because `SONLI_MIGRATION_TEST_DATABASE_URL` is not configured, and it has no ordinary database fallback.
+
+## Fix round 2
+
+- The accepted asset constraint now uses `width IS NOT NULL AND width > 0` and the equivalent height condition. This prevents PostgreSQL from accepting an otherwise complete row when a nullable dimension makes the CHECK expression evaluate to null.
+- The dedicated PostgreSQL fixture covers width-null and height-null independently with every other accepted-image field valid.
+- Static secret-column detection covers direct `token`, `credential`, `secret`, `cookie`, and `bearer` names against TEXT, sized/unsized VARCHAR, CHARACTER VARYING, JSONB, and BYTEA. A positive allow-case proves `api_key_env_name TEXT` remains permitted.
+
+TDD RED was 2 targeted static failures plus 1 dedicated-DB skip. Focused GREEN was 6 passed and 1 skip. Full auto-listing regression was 116 passed and 2 dedicated-DB skips. Node syntax, `git diff --check`, and the safe migration gate passed; the migration runner reported `skipped: true` and applied nothing. The live dimension checks remain unexecuted because the dedicated migration database URL is absent; no ordinary or production database fallback is available in the fixture.
