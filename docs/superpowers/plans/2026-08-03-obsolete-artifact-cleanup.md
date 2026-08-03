@@ -59,8 +59,7 @@ Commit message: `chore(extension): remove obsolete 0.13.46.1 release`
 ### Task 2: Remove unreachable extension modules and Web components
 
 **Files:**
-- Modify: `extension/tests/sync-capability-removed.test.js`
-- Modify: `app/tests/removed-selection-watermark-ui.test.mjs`
+- Modify: `scripts/extension-capture-only-policy.mjs`
 - Modify: `scripts/check-extension-source-parity.mjs`
 - Modify: `scripts/check-extension-diff-contract.mjs`
 - Delete: `extension/background/agent/agent-runtime.js`
@@ -74,15 +73,15 @@ Commit message: `chore(extension): remove obsolete 0.13.46.1 release`
 - Consumes: manifest/service-worker runtime reachability, extension parity allowlists, and the current App route tree.
 - Produces: a packaged extension without the unregistered browser-agent runtime and an App source without three unrendered component definitions.
 
-- [ ] **Step 1: Add failing negative contracts**
+- [ ] **Step 1: Expand the shipped-file contract and verify RED**
 
-In `sync-capability-removed.test.js`, assert that the five retired agent/runtime test files do not exist. In the App UI contract, assert that `SourceFilterDrawer`, `ProductStatusFilters`, and `SourcePager` are absent.
+Extend `RETIRED_SYNC_FILE` in `extension-capture-only-policy.mjs` so the packaged capture-only extension rejects `background/agent/` and `background/__tests__/agent-actions.smoke.test.js`.
 
 - [ ] **Step 2: Verify RED**
 
-Run: `node --test extension/tests/sync-capability-removed.test.js app/tests/removed-selection-watermark-ui.test.mjs`
+Run: `node scripts/check-plugin-readiness-gate.mjs`
 
-Expected: FAIL on the existing files and definitions.
+Expected: FAIL because the old Agent runtime is still part of the shipped extension tree.
 
 - [ ] **Step 3: Delete the unreachable files and definitions**
 
@@ -94,7 +93,7 @@ Move the four upstream agent modules plus the upstream smoke test into the expli
 
 - [ ] **Step 5: Verify GREEN**
 
-Run the two focused tests, `pnpm --dir app build`, `node scripts/check-plugin-readiness-gate.mjs`, and the extension parity checks with `QH_SOURCE_EXTENSION_DIR=/Users/songliang/Downloads/0.13.88.1`.
+Run `node --test app/tests/removed-selection-watermark-ui.test.mjs`, `pnpm --dir app build`, `node scripts/check-plugin-readiness-gate.mjs`, and the extension parity checks with `QH_SOURCE_EXTENSION_DIR=/Users/songliang/Downloads/0.13.88.1`.
 
 - [ ] **Step 6: Commit**
 
@@ -105,24 +104,24 @@ Commit message: `refactor: remove unreachable extension and web code`
 ### Task 3: Remove retired service-worker actions
 
 **Files:**
-- Create: `extension/tests/obsolete-runtime-boundary.test.js`
+- Modify: `extension/tests/sync-capability-removed.test.js`
 - Modify: `extension/background/service-worker.js`
 
 **Interfaces:**
 - Consumes: the current message senders in popup, content scripts, Web bridge, tests, and application bridge.
 - Produces: a service-worker dispatch table without handlers that have no current sender.
 
-- [ ] **Step 1: Write the failing action-boundary test**
+- [ ] **Step 1: Write the failing retired-action behavior test**
 
-Read the real service worker and assert it has no `case` for exactly:
+Start the real service worker in the existing controlled Chrome harness. Send exactly these retired actions:
 
 `addFavorite`, `aiListingDraftConfirm`, `aiListingDraftCreate`, `aiListingDraftPublish`, `aiOptimize`, `checkSellerCookies`, `checkUpdate`, `collectBatch`, `collectProduct`, `fetchOzonPublicProduct`, `focusSellerRecoveryTab`, `getFavCount`, `importStock`, `pushToCollectBox`, `refreshBackend`, `savePricingSnapshot`.
 
-Also scan the current production extension, App, server and script sources excluding the service worker, generated distributions, tests, historical evidence, and comments; fail if a sender for one of these retired actions is introduced later.
+For every message, assert that the response is the stable unknown-message rejection and that no fetch, tab mutation, cookie read, storage write, or other privileged side effect occurs. This test catches accidental restoration of the retired handlers by behavior rather than by searching source text.
 
 - [ ] **Step 2: Verify RED**
 
-Run: `node --test extension/tests/obsolete-runtime-boundary.test.js`
+Run: `node --test extension/tests/sync-capability-removed.test.js`
 
 Expected: FAIL because all sixteen handlers still exist.
 
@@ -136,7 +135,7 @@ Use exact identifier searches after the branch deletion. A helper is removed onl
 
 - [ ] **Step 5: Verify GREEN**
 
-Run the new test, service-worker syntax check, sync-capability test, popup runtime test, plugin readiness gate, package the extension, and run both ZIP checks.
+Run the sync-capability test, service-worker syntax check, popup runtime test, plugin readiness gate, package the extension, and run both ZIP checks.
 
 - [ ] **Step 6: Commit**
 
