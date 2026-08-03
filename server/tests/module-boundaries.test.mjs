@@ -62,11 +62,28 @@ assert.doesNotMatch(
   /(?:getPostgresPool|createJsonCollectorOzonEnrichmentRepository|loadState|saveState)/,
   "Ozon enrichment routes must not own persistence",
 );
-assert.doesNotMatch(
-  autoListingRoutes,
-  /(?:getPostgresPool|createAutoListingRepository|SELECT\s+|FROM\s+auto_listing|ozonCall|sub2api)/i,
-  "auto-listing routes must only parse HTTP and delegate through the runtime",
-);
+function assertAutoListingRouteBoundary(source) {
+  assert.deepEqual(
+    [...source.matchAll(/\bimport\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]),
+    ["./runtime-config.mjs"],
+    "auto-listing routes may import only feature configuration",
+  );
+  assert.doesNotMatch(
+    source,
+    /(?:getPostgresPool|createAutoListingRepository|\b(?:SELECT|INSERT|UPDATE|DELETE|WITH)\b|\.query\s*\(|ozonCall|callOzonSellerApi|sub2api)/i,
+    "auto-listing routes must only parse HTTP and delegate through the runtime",
+  );
+}
+
+assert.doesNotThrow(() => assertAutoListingRouteBoundary(autoListingRoutes));
+for (const source of [
+  'import { callOzonSellerApi } from "./ozon-client.mjs";',
+  'import { createOpenAI } from "./ai-client.mjs";',
+  'const rows = await executor.query("UPDATE auto_listing_jobs SET status=1");',
+  'const rows = await executor.query("SELECT * FROM auto_listing_jobs");',
+]) {
+  assert.throws(() => assertAutoListingRouteBoundary(source), /auto-listing routes|may import only/);
+}
 assert.match(
   autoListingRuntime,
   /createAutoListingRepository/,

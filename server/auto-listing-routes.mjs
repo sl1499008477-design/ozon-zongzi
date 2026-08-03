@@ -4,11 +4,27 @@ const CREATE_PATH = "/auto-listing/jobs/from-collect-box";
 const LIST_PATH = "/auto-listing/jobs";
 const JOB_PATTERN = /^\/auto-listing\/jobs\/([^/]+)$/;
 const CREATE_KEYS = new Set(["collectItemIds", "idempotencyKey", "config", "correlationId"]);
-const SAFE_CODES = new Set([
-  "AUTO_LISTING_DISABLED", "AUTO_LISTING_REQUEST_INVALID", "AUTO_LISTING_JOB_NOT_FOUND",
-  "AUTO_LISTING_SOURCE_NOT_FOUND", "AUTO_LISTING_WAREHOUSE_NOT_FOUND", "AUTO_LISTING_STRATEGY_NOT_PUBLISHED",
-  "AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH", "AUTO_LISTING_VERSION_CONFLICT", "PERMISSION_FORBIDDEN",
-  "AUTO_LISTING_CONFIG_INVALID", "AUTO_LISTING_CONFIG_FORBIDDEN_FIELD",
+const PUBLIC_ERRORS = Object.freeze({
+  AUTO_LISTING_REQUEST_INVALID: 400,
+  AUTO_LISTING_JOB_NOT_FOUND: 404,
+  AUTO_LISTING_SOURCE_NOT_FOUND: 404,
+  AUTO_LISTING_WAREHOUSE_NOT_FOUND: 404,
+  AUTO_LISTING_STRATEGY_NOT_PUBLISHED: 409,
+  AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH: 422,
+  AUTO_LISTING_VERSION_CONFLICT: 409,
+  AUTO_LISTING_SOURCE_VERSION_CONFLICT: 409,
+  AUTO_LISTING_CONFIG_INVALID: 422,
+  AUTO_LISTING_CONFIG_FORBIDDEN_FIELD: 422,
+  TARGET_STORE_NOT_FOUND: 404,
+  TARGET_STORE_DISABLED: 409,
+  TARGET_STORE_CREDENTIALS_REQUIRED: 409,
+  LISTING_WAREHOUSE_NOT_ELIGIBLE: 422,
+  PERMISSION_FORBIDDEN: 403,
+});
+const ERROR_ITEM_LIMIT = 100;
+const AUTO_LISTING_ITEM_STATUSES = new Set([
+  "CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "READY_FOR_REVIEW",
+  "UPLOAD_QUEUED", "UPLOADING", "SUCCEEDED", "RETRYABLE_ERROR", "BLOCKED", "CANCELLED",
 ]);
 const SENSITIVE_KEY = /(?:account|actor|owner|raw(?:response|body|evidence)?|credential|secret|api.?key|authorization|token|password)/i;
 
@@ -62,6 +78,9 @@ function parseCreateBody(value) {
     || !value.config || typeof value.config !== "object" || Array.isArray(value.config)) {
     throw routeError("AUTO_LISTING_REQUEST_INVALID");
   }
+  if (!text(value.config.targetStoreId) || !text(value.config.targetWarehouseId)) {
+    throw routeError("AUTO_LISTING_REQUEST_INVALID");
+  }
   return {
     collectItemIds: collectItemIds.map((item) => text(item)),
     idempotencyKey: text(value.idempotencyKey),
@@ -77,6 +96,17 @@ function parseLimit(url) {
   const limit = Number(raw);
   if (limit < 1 || limit > 100) throw routeError("AUTO_LISTING_REQUEST_INVALID");
   return limit;
+}
+
+function assertQuery(url, route) {
+  const keys = [...url.searchParams.keys()];
+  if (route !== "list") {
+    if (keys.length) throw routeError("AUTO_LISTING_REQUEST_INVALID");
+    return;
+  }
+  if (keys.some((key) => key !== "limit") || url.searchParams.getAll("limit").length > 1) {
+    throw routeError("AUTO_LISTING_REQUEST_INVALID");
+  }
 }
 
 function parseJobId(match) {
@@ -127,6 +157,24 @@ function safeJob(job = {}) {
   return output;
 }
 
+function safeErrorItems(value) {
+  if (!Array.isArray(value)) return undefined;
+  const items = [];
+  for (const candidate of value.slice(0, ERROR_ITEM_LIMIT)) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
+      || (Object.getPrototypeOf(candidate) !== Object.prototype && Object.getPrototypeOf(candidate) !== null)) continue;
+    const item = {};
+    const itemId = text(candidate.itemId || candidate.id);
+    const status = text(candidate.status, 80);
+    const failureCode = text(candidate.failureCode || candidate.failure_code, 160);
+    if (/^[A-Za-z0-9._:-]{1,240}$/.test(itemId)) item.itemId = itemId;
+    if (AUTO_LISTING_ITEM_STATUSES.has(status)) item.status = status;
+    if (/^[A-Z0-9_:-]{1,160}$/.test(failureCode)) item.failureCode = failureCode;
+    if (Object.keys(item).length) items.push(item);
+  }
+  return items.length ? items : undefined;
+}
+
 function messageFor(code) {
   if (code === "AUTO_LISTING_DISABLED") return "自动上架功能暂未启用";
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
@@ -138,13 +186,23 @@ function messageFor(code) {
 function errorEnvelope(error, correlationId) {
   const status = Number(error?.status);
   if (status === 401) return { status: 401, payload: { ok: false, code: "AUTO_LISTING_UNAUTHENTICATED", message: "请先登录", correlationId } };
-  const code = typeof error?.code === "string" && SAFE_CODES.has(error.code) ? error.code : "AUTO_LISTING_INTERNAL_ERROR";
-  const safeStatus = code === "AUTO_LISTING_INTERNAL_ERROR" ? 500 : (Number.isInteger(status) && status >= 400 && status <= 599 ? status : 422);
-  return { status: safeStatus, payload: { ok: false, code, message: messageFor(code), correlationId } };
+  if (status === 403 && error?.code !== "PERMISSION_FORBIDDEN") {
+    return { status: 403, payload: { ok: false, code: "AUTO_LISTING_FORBIDDEN", message: "没有该操作权限", correlationId } };
+  }
+  const code = typeof error?.code === "string" && Object.hasOwn(PUBLIC_ERRORS, error.code)
+    ? error.code
+    : "AUTO_LISTING_INTERNAL_ERROR";
+  const payload = { ok: false, code, message: messageFor(code), correlationId };
+  const items = code === "AUTO_LISTING_INTERNAL_ERROR" ? undefined : safeErrorItems(error?.items);
+  if (items) payload.items = items;
+  return { status: code === "AUTO_LISTING_INTERNAL_ERROR" ? 500 : PUBLIC_ERRORS[code], payload };
 }
 
-function namespace(pathname) {
-  return pathname === CREATE_PATH || pathname === LIST_PATH || JOB_PATTERN.test(pathname);
+function routeFor(pathname) {
+  if (pathname === CREATE_PATH) return { kind: "create" };
+  if (pathname === LIST_PATH) return { kind: "list" };
+  const jobMatch = pathname.match(JOB_PATTERN);
+  return jobMatch ? { kind: "detail", jobMatch } : null;
 }
 
 export function createAutoListingHttpHandler({
@@ -159,19 +217,24 @@ export function createAutoListingHttpHandler({
     throw new TypeError("Auto listing route dependencies are required");
   }
   return async function handleAutoListingRoute(req, res, url) {
-    if (!namespace(url.pathname)) return false;
+    const route = routeFor(url.pathname);
+    if (!route) return false;
     let correlationId = "";
     try {
       const actor = await authenticate(req);
-      const jobMatch = url.pathname.match(JOB_PATTERN);
-      if (!((req.method === "POST" && url.pathname === CREATE_PATH)
-        || (req.method === "GET" && url.pathname === LIST_PATH)
-        || (req.method === "GET" && jobMatch))) {
+      if (!((req.method === "POST" && route.kind === "create")
+        || (req.method === "GET" && route.kind === "list")
+        || (req.method === "GET" && route.kind === "detail"))) {
         sendJson(res, 405, { ok: false, code: "AUTO_LISTING_METHOD_NOT_ALLOWED", message: "不支持的自动上架请求方法", correlationId });
         return true;
       }
+      if (!isEnabled()) {
+        sendJson(res, 503, { ok: false, code: "AUTO_LISTING_DISABLED", message: messageFor("AUTO_LISTING_DISABLED"), correlationId });
+        return true;
+      }
+      assertQuery(url, route.kind);
       let body;
-      if (req.method === "POST" && url.pathname === CREATE_PATH) {
+      if (route.kind === "create") {
         try {
           body = await readJson(req);
         } catch {
@@ -179,17 +242,13 @@ export function createAutoListingHttpHandler({
         }
         correlationId = safeCorrelation(body?.correlationId);
       }
-      if (!isEnabled()) {
-        sendJson(res, 503, { ok: false, code: "AUTO_LISTING_DISABLED", message: messageFor("AUTO_LISTING_DISABLED"), correlationId });
-        return true;
-      }
       if (req.method === "POST") {
         const input = parseCreateBody(body);
         const service = await runtime.getService();
         const data = await service.createAutoListingJob({ actor, ...input });
         sendJson(res, 201, { ok: true, data: safeJob(data), correlationId: input.correlationId });
-      } else if (jobMatch) {
-        const jobId = parseJobId(jobMatch);
+      } else if (route.kind === "detail") {
+        const jobId = parseJobId(route.jobMatch);
         const service = await runtime.getService();
         const data = await service.getAutoListingJob({ actor, jobId });
         sendJson(res, 200, { ok: true, data: safeJob(data), correlationId });

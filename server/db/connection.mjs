@@ -33,18 +33,29 @@ export function postgresConfig() {
 
 export async function getPostgresPool() {
   if (!poolPromise) {
-    poolPromise = import("pg")
+    const initialization = import("pg")
       .then(({ Pool }) => new Pool(postgresConfig()))
       .catch((error) => {
         throw new Error(`PostgreSQL 依赖未安装或不可用，请先执行 pnpm install。原始错误: ${error.message}`);
       });
+    poolPromise = initialization;
+    initialization.catch(() => {
+      if (poolPromise === initialization) poolPromise = null;
+    });
   }
   return poolPromise;
 }
 
 export async function closePostgresPool() {
-  if (!poolPromise) return;
-  const pool = await poolPromise;
-  poolPromise = null;
+  const initialization = poolPromise;
+  if (!initialization) return;
+  let pool;
+  try {
+    pool = await initialization;
+  } catch {
+    if (poolPromise === initialization) poolPromise = null;
+    return;
+  }
+  if (poolPromise === initialization) poolPromise = null;
   await pool.end();
 }
