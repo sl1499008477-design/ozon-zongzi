@@ -10,6 +10,10 @@ const TEST_ROOTS = [
   "desktop/tests",
 ];
 
+export const requiredActiveTestFiles = Object.freeze([
+  "server/tests/collect-category-auto-resolution.integration.mjs",
+]);
+
 export const historicalTestExclusions = {
   "server/tests/account-scoped-collection-migration.integration.mjs": "会创建临时 schema、执行迁移并验证失败关闭行为，只能在明确指定的专用 PostgreSQL 测试库中手工运行",
   "server/tests/account-deletion-postgres.integration.mjs": "会读取数据库配置并执行迁移、写入和删除，只能在明确指定的专用 PostgreSQL 测试库中手工运行",
@@ -43,3 +47,9 @@ export function discoverTestFiles() {
 
 export const activeTestFiles = discoverTestFiles()
   .filter((file) => !historicalTestExclusions[file]);
+
+for (const file of requiredActiveTestFiles) {
+  if (!activeTestFiles.includes(file)) {
+    throw new Error(`必跑测试未纳入现行门禁：${file}`);
+  }
+}
