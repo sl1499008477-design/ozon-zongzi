@@ -307,6 +307,12 @@ if (!enabled) {
       assert.deepEqual(failureState, {
         status: "RETRYABLE_ERROR", status_version: 3, failure_code: "AUTO_LISTING_TRANSIENT", recovery_point: "PLANNING",
       });
+      assert.deepEqual((await client.query(
+        "SELECT transition_version,details FROM auto_listing_events WHERE item_id=$1 AND event_type='RETRYABLE_FAILURE'", [item.id],
+      )).rows[0], {
+        transition_version: 3,
+        details: { failureCode: "AUTO_LISTING_TRANSIENT", recoveryPoint: "PLANNING" },
+      });
       const retryEventCount = Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [item.id],
       )).rows[0].count);
@@ -339,6 +345,33 @@ if (!enabled) {
       ]);
       assert.equal(await repository.getJob({ accountId: accountB, jobId: created.id }), null);
       assert.deepEqual((await repository.listJobs({ accountId: accountB, limit: 10 })).map((job) => job.id), [other.id]);
+
+      const duplicateEvent = graph(accountA, "duplicate-transition-event", "duplicate-transition-event");
+      await registerGraphSources(client, duplicateEvent);
+      const duplicateJob = await repository.createJobGraph(duplicateEvent);
+      const duplicateItem = duplicateJob.items[0];
+      await client.query(
+        `INSERT INTO auto_listing_events (
+           id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,correlation_id,transition_version,details
+         ) VALUES ($1,$2,$3,$4,$5,'SOURCE_READY','PLANNING','TEST_DUPLICATE',$6,2,'{}'::jsonb)`,
+        [`duplicate-transition-${suffix}`, accountA, duplicateJob.id, duplicateItem.id, accountA, `duplicate-${suffix}`],
+      );
+      const duplicateEventCount = Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [duplicateItem.id],
+      )).rows[0].count);
+      await assert.rejects(
+        repository.updateItemStatus({
+          accountId: accountA, itemId: duplicateItem.id, expectedStatusVersion: 1, eventType: "START_PLANNING",
+          actorAccountId: accountA, correlationId: "duplicate-transition",
+        }),
+        (error) => error?.code === "23505",
+      );
+      assert.deepEqual((await client.query(
+        "SELECT status,status_version FROM auto_listing_job_items WHERE id=$1", [duplicateItem.id],
+      )).rows[0], { status: "SOURCE_READY", status_version: 1 });
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [duplicateItem.id],
+      )).rows[0].count), duplicateEventCount);
 
       const sharedLeft = graph(accountA, "race-same-left", "race-same");
       const sharedRight = graph(accountA, "race-same-right", "race-same");

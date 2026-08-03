@@ -56,11 +56,21 @@ function recoveryPointEvidenceError() {
   return repositoryError("AUTO_LISTING_RECOVERY_POINT_INVALID");
 }
 
-function recoveryPointFromLatestLegacyFailure(event, row, accountId) {
+function transitionEventId(itemId, transitionVersion) {
+  if (!Number.isInteger(transitionVersion) || transitionVersion < 1) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return `${itemId}_${String(transitionVersion + 1).padStart(2, "0")}`;
+}
+
+function recoveryPointFromLegacyFailure(event, row, accountId, { legacyNullVersion = false } = {}) {
   if (!plainJsonObject(event) || event.account_id !== accountId || event.job_id !== row.job_id
     || event.item_id !== row.id || event.event_type !== "RETRYABLE_FAILURE"
     || event.to_status !== "RETRYABLE_ERROR" || !plainJsonObject(event.details)
     || typeof row.failure_code !== "string" || !row.failure_code
+    || (legacyNullVersion
+      ? event.id !== transitionEventId(row.id, row.status_version) || event.transition_version !== null
+      : event.transition_version !== row.status_version)
     || event.details.failureCode !== row.failure_code) {
     throw recoveryPointEvidenceError();
   }
@@ -648,14 +658,27 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           recoveryPoint = row.recovery_point;
           if (!recoveryPoint) {
             const legacyFailure = await client.query(
-              `SELECT e.account_id,e.job_id,e.item_id,e.event_type,e.from_status,e.to_status,e.details
+              `SELECT e.id,e.account_id,e.job_id,e.item_id,e.event_type,e.from_status,e.to_status,e.transition_version,e.details
                  FROM auto_listing_events e
                  JOIN auto_listing_jobs j ON j.id=e.job_id AND j.account_id=e.account_id
                 WHERE e.account_id=$1 AND e.item_id=$2 AND e.job_id=$3 AND j.account_id=$1
-                ORDER BY e.created_at DESC,e.id DESC LIMIT 1`,
-              [scope, id, row.job_id],
+                  AND e.transition_version=$4`,
+              [scope, id, row.job_id, row.status_version],
             );
-            recoveryPoint = recoveryPointFromLatestLegacyFailure(legacyFailure.rows[0], row, scope);
+            const versionedFailure = legacyFailure.rows[0];
+            if (versionedFailure) {
+              recoveryPoint = recoveryPointFromLegacyFailure(versionedFailure, row, scope);
+            } else {
+              const legacyById = await client.query(
+                `SELECT e.id,e.account_id,e.job_id,e.item_id,e.event_type,e.from_status,e.to_status,e.transition_version,e.details
+                   FROM auto_listing_events e
+                   JOIN auto_listing_jobs j ON j.id=e.job_id AND j.account_id=e.account_id
+                  WHERE e.account_id=$1 AND e.item_id=$2 AND e.job_id=$3 AND j.account_id=$1
+                    AND e.id=$4 AND e.transition_version IS NULL`,
+                [scope, id, row.job_id, transitionEventId(id, row.status_version)],
+              );
+              recoveryPoint = recoveryPointFromLegacyFailure(legacyById.rows[0], row, scope, { legacyNullVersion: true });
+            }
           }
         }
         const nextStatus = nextAutoListingStatus(row.status, eventType, recoveryPoint);
@@ -673,13 +696,17 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
             RETURNING id,status,status_version`,
           [nextStatus, failureCode, persistedRecoveryPoint, id, scope, expectedStatusVersion],
         );
-        if (!updated.rows[0]) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
+        const updatedItem = updated.rows[0];
+        const transitionVersion = expectedStatusVersion + 1;
+        if (!updatedItem || updatedItem.status_version !== transitionVersion) {
+          throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
+        }
         await client.query(
           `INSERT INTO auto_listing_events (
-             id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,correlation_id,details
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
-          [`${id}_${String(expectedStatusVersion + 2).padStart(2, "0")}`, scope, row.job_id, id,
-            actorAccountId, row.status, nextStatus, eventType, correlationId, json(persistedDetails)],
+             id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,correlation_id,transition_version,details
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+          [transitionEventId(id, transitionVersion), scope, row.job_id, id,
+            actorAccountId, row.status, nextStatus, eventType, correlationId, transitionVersion, json(persistedDetails)],
         );
         await client.query("COMMIT");
         committed = true;

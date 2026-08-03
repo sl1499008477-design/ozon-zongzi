@@ -3,7 +3,8 @@ import test from "node:test";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 
 function transitionFixture({
-  status, recoveryPoint = null, failureCode = "AUTO_LISTING_TRANSIENT", legacyEvent = null, insertError = null,
+  status, recoveryPoint = null, failureCode = "AUTO_LISTING_TRANSIENT", legacyCurrentEvent = null,
+  legacyFallbackEvent = null, insertError = null, statusVersion = 3, updatedStatusVersion = null,
 } = {}) {
   const calls = [];
   const client = {
@@ -11,15 +12,18 @@ function transitionFixture({
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_job_items/.test(sql) && /FOR UPDATE/.test(sql)) {
-        const row = { id: "item-a", job_id: "job-a", status, status_version: 3,
+        const row = { id: "item-a", job_id: "job-a", status, status_version: statusVersion,
           recovery_point: recoveryPoint, failure_code: failureCode };
         if (!/failure_code/.test(sql)) delete row.failure_code;
         return { rows: [row] };
       }
-      if (/FROM auto_listing_events e/.test(sql) && /ORDER BY e\.created_at DESC,e\.id DESC LIMIT 1/.test(sql)) {
-        return { rows: legacyEvent ? [legacyEvent] : [] };
+      if (/FROM auto_listing_events e/.test(sql) && /e\.transition_version=\$4/.test(sql)) {
+        return { rows: legacyCurrentEvent ? [legacyCurrentEvent] : [] };
       }
-      if (/UPDATE auto_listing_job_items/.test(sql)) return { rows: [{ id: "item-a", status: "PLANNING", status_version: 4 }] };
+      if (/FROM auto_listing_events e/.test(sql) && /e\.id=\$4 AND e\.transition_version IS NULL/.test(sql)) {
+        return { rows: legacyFallbackEvent ? [legacyFallbackEvent] : [] };
+      }
+      if (/UPDATE auto_listing_job_items/.test(sql)) return { rows: [{ id: "item-a", status: "PLANNING", status_version: updatedStatusVersion ?? statusVersion + 1 }] };
       if (/INSERT INTO auto_listing_events/.test(sql)) {
         if (insertError) throw insertError;
         return { rows: [] };
@@ -31,9 +35,9 @@ function transitionFixture({
   return { calls, repository: createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) } }) };
 }
 
-async function update(repository, eventType, details = {}) {
+async function update(repository, eventType, details = {}, expectedStatusVersion = 3) {
   return repository.updateItemStatus({
-    accountId: "account-a", itemId: "item-a", expectedStatusVersion: 3,
+    accountId: "account-a", itemId: "item-a", expectedStatusVersion,
     eventType, actorAccountId: "account-a", correlationId: "corr-a", details,
   });
 }
@@ -49,6 +53,7 @@ test("retryable failure derives and atomically persists the locked recovery poin
   assert.deepEqual(JSON.parse(eventCall.params.at(-1)), {
     failureCode: "AUTO_LISTING_TRANSIENT", recoveryPoint: "GENERATION",
   });
+  assert.equal(eventCall.params.at(-2), 4);
 });
 
 test("a mismatched caller recovery point is rejected before item or event writes", async () => {
@@ -101,20 +106,22 @@ test("missing persisted recovery point fails closed before any update or event",
   assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_job_items|INSERT INTO auto_listing_events/.test(sql)), false);
 });
 
-test("a legacy retry uses only its latest complete failure event as recovery evidence", async () => {
+test("a legacy retry uses its exact transition version even when a newer timestamp is unrelated", async () => {
   const { repository, calls } = transitionFixture({
     status: "RETRYABLE_ERROR",
-    legacyEvent: {
+    legacyCurrentEvent: {
       account_id: "account-a", job_id: "job-a", item_id: "item-a", event_type: "RETRYABLE_FAILURE",
       from_status: "UPLOADING", to_status: "RETRYABLE_ERROR",
+      transition_version: 3, created_at: "2000-01-01T00:00:00.000Z",
       details: { failureCode: "AUTO_LISTING_TRANSIENT", recoveryPoint: "UPLOAD" },
     },
   });
   await update(repository, "RETRY_UPLOAD");
   assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_job_items/.test(sql)), true);
+  assert.equal(calls.some(({ sql }) => /FROM auto_listing_events e/.test(sql) && /created_at/.test(sql)), false);
 });
 
-test("legacy recovery rejects stale, cross-boundary, and incomplete latest-event evidence before writes", async () => {
+test("legacy recovery rejects cross-boundary and incomplete exact-version evidence before writes", async () => {
   const base = {
     account_id: "account-a", job_id: "job-a", item_id: "item-a", event_type: "RETRYABLE_FAILURE",
     from_status: "PLANNING", to_status: "RETRYABLE_ERROR",
@@ -129,13 +136,65 @@ test("legacy recovery rejects stale, cross-boundary, and incomplete latest-event
     { ...base, details: { failureCode: "AUTO_LISTING_TRANSIENT", recoveryPoint: "UPLOAD" } },
     { ...base, details: { failureCode: "OTHER_FAILURE", recoveryPoint: "PLANNING" } },
   ]) {
-    const { repository, calls } = transitionFixture({ status: "RETRYABLE_ERROR", legacyEvent });
+    const { repository, calls } = transitionFixture({ status: "RETRYABLE_ERROR", legacyCurrentEvent: legacyEvent });
     await assert.rejects(
       update(repository, "RETRY_PLANNING"),
       (error) => error?.code === "AUTO_LISTING_RECOVERY_POINT_INVALID",
     );
     assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_job_items|INSERT INTO auto_listing_events/.test(sql)), false);
   }
+});
+
+test("a migration-era null event may use only the exact deterministic event ID", async () => {
+  const { repository, calls } = transitionFixture({
+    status: "RETRYABLE_ERROR",
+    legacyFallbackEvent: {
+      id: "item-a_04", account_id: "account-a", job_id: "job-a", item_id: "item-a", event_type: "RETRYABLE_FAILURE",
+      from_status: "PLANNING", to_status: "RETRYABLE_ERROR", transition_version: null,
+      details: { failureCode: "AUTO_LISTING_TRANSIENT", recoveryPoint: "PLANNING" },
+    },
+  });
+  await update(repository, "RETRY_PLANNING");
+  assert.equal(calls.some(({ sql }) => /e\.transition_version=\$4/.test(sql)), true);
+  assert.equal(calls.some(({ sql }) => /e\.id=\$4 AND e\.transition_version IS NULL/.test(sql)), true);
+});
+
+test("versions over 99 use one deterministic event-ID rule for legacy lookup and new writes", async () => {
+  const { repository, calls } = transitionFixture({
+    status: "RETRYABLE_ERROR", statusVersion: 100,
+    legacyFallbackEvent: {
+      id: "item-a_101", account_id: "account-a", job_id: "job-a", item_id: "item-a", event_type: "RETRYABLE_FAILURE",
+      from_status: "PLANNING", to_status: "RETRYABLE_ERROR", transition_version: null,
+      details: { failureCode: "AUTO_LISTING_TRANSIENT", recoveryPoint: "PLANNING" },
+    },
+  });
+  await update(repository, "RETRY_PLANNING", {}, 100);
+  const fallback = calls.find(({ sql }) => /e\.id=\$4 AND e\.transition_version IS NULL/.test(sql));
+  const event = calls.find(({ sql }) => /INSERT INTO auto_listing_events/.test(sql));
+  assert.equal(fallback.params.at(-1), "item-a_101");
+  assert.equal(event.params[0], "item-a_102");
+  assert.equal(event.params.at(-2), 101);
+});
+
+test("a mismatched CAS status version rolls back before it can append a causal event", async () => {
+  const { repository, calls } = transitionFixture({ status: "PLANNING", updatedStatusVersion: 9 });
+  await assert.rejects(
+    update(repository, "RETRYABLE_FAILURE", { failureCode: "AUTO_LISTING_TRANSIENT" }),
+    (error) => error?.code === "AUTO_LISTING_VERSION_CONFLICT",
+  );
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_events/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("duplicate transition versions roll back the status update without commit", async () => {
+  const duplicate = Object.assign(new Error("duplicate transition version"), { code: "23505" });
+  const { repository, calls } = transitionFixture({ status: "PLANNING", insertError: duplicate });
+  await assert.rejects(
+    update(repository, "RETRYABLE_FAILURE", { failureCode: "AUTO_LISTING_TRANSIENT" }),
+    (error) => error === duplicate,
+  );
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
 });
 
 test("event insertion failure rolls back the status and recovery-point write", async () => {

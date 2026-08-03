@@ -159,3 +159,11 @@ test("recovery-point migration is additive, idempotent, and constrains only clos
   assert.doesNotMatch(sql, /\bDROP\s+(TABLE|COLUMN)\b/i);
   assert.doesNotMatch(sql, /\b(?:UPDATE|DELETE\s+FROM)\s+auto_listing_events\b/i);
 });
+
+test("recovery migration binds non-legacy item events to one positive transition version", async () => {
+  const sql = await recoveryMigrationSql();
+
+  assert.match(sql, /ALTER TABLE auto_listing_events\s+ADD COLUMN IF NOT EXISTS transition_version INTEGER CHECK \(transition_version > 0\)/i);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS auto_listing_events_item_transition_version_key[\s\S]*?ON auto_listing_events\(item_id, transition_version\)[\s\S]*?WHERE item_id IS NOT NULL AND transition_version IS NOT NULL/i);
+  assert.doesNotMatch(sql, /\bDROP\s+(TABLE|COLUMN)\b/i);
+});
