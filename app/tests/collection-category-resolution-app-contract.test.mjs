@@ -491,6 +491,7 @@ test("saved and session MANUAL recoveries reject a matching scope record whose t
 
 const previewRecoveryFixture = ({
   itemId = "collect-preview-a",
+  taxonomyScope,
   responseItem = {},
 } = {}) => ({
   item: {
@@ -500,7 +501,7 @@ const previewRecoveryFixture = ({
   },
   itemId,
   targetStoreId: "store-b",
-  taxonomyScope: "OZON:DEFAULT",
+  ...(taxonomyScope === undefined ? {} : { taxonomyScope }),
   request: {
     offerId: "listing-offer-a",
     sku: "sku-preview-a",
@@ -523,7 +524,7 @@ const previewRecoveryFixture = ({
   }],
 });
 
-test("preview recovery normalizes the server's one-item offer and SKU correlation without retaining raw preview fields", () => {
+test("preview recovery accepts the real scope-less DEFAULT server contract without retaining raw preview fields", () => {
   assert.equal(typeof appModule.normalizeCollectCategoryPreviewRecovery, "function");
   const recovery = appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture());
   assert.deepEqual(recovery, {
@@ -563,6 +564,76 @@ test("preview recovery normalizes the server's one-item offer and SKU correlatio
   assert.deepEqual(
     { descriptionCategoryId: draft.descriptionCategoryId, typeId: draft.typeId },
     { descriptionCategoryId: 555, typeId: 666 },
+  );
+});
+
+test("preview recovery rejects the real scope-less DEFAULT server contract for an RU request", () => {
+  assert.equal(
+    appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture({
+      taxonomyScope: "OZON:RU",
+    })),
+    null,
+  );
+});
+
+test("preview recovery accepts an explicit RU response only for the exact RU request", () => {
+  const recovery = appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture({
+    taxonomyScope: "OZON:RU",
+    responseItem: {
+      categoryResolution: {
+        offerId: "listing-offer-a",
+        status: "MATCHED",
+        method: "DICTIONARY_VALUE_ID",
+        taxonomyScope: "OZON:RU",
+        target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 },
+      },
+    },
+  }));
+  assert.deepEqual({
+    taxonomyScope: recovery?.taxonomyScope,
+    resolutionTaxonomyScope: recovery?.resolution?.taxonomyScope,
+    descriptionCategoryId: recovery?.resolution?.targetDescriptionCategoryId,
+    typeId: recovery?.resolution?.targetTypeId,
+  }, {
+    taxonomyScope: "OZON:RU",
+    resolutionTaxonomyScope: "OZON:RU",
+    descriptionCategoryId: 555,
+    typeId: 666,
+  });
+});
+
+test("preview recovery rejects an explicit response scope that mismatches the RU request", () => {
+  assert.equal(
+    appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture({
+      taxonomyScope: "OZON:RU",
+      responseItem: {
+        categoryResolution: {
+          offerId: "listing-offer-a",
+          status: "MATCHED",
+          method: "DICTIONARY_VALUE_ID",
+          taxonomyScope: "OZON:DEFAULT",
+          target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 },
+        },
+      },
+    })),
+    null,
+  );
+});
+
+test("preview recovery rejects an explicitly present empty response scope", () => {
+  assert.equal(
+    appModule.normalizeCollectCategoryPreviewRecovery(previewRecoveryFixture({
+      responseItem: {
+        categoryResolution: {
+          offerId: "listing-offer-a",
+          status: "MATCHED",
+          method: "DICTIONARY_VALUE_ID",
+          taxonomyScope: "",
+          target: { storeId: "store-b", descriptionCategoryId: 555, typeId: 666 },
+        },
+      },
+    })),
+    null,
   );
 });
 

@@ -5254,11 +5254,13 @@ const collectCategoryPreviewRecoveryMethods = new Set([
   "TYPE_NAME_NORMALIZED",
 ]);
 
+const collectCategoryPreviewDefaultTaxonomyScope = "OZON:DEFAULT";
+
 export const normalizeCollectCategoryPreviewRecovery = ({
   item = {},
   itemId = "",
   targetStoreId = "",
-  taxonomyScope = "OZON:DEFAULT",
+  taxonomyScope = collectCategoryPreviewDefaultTaxonomyScope,
   request = {},
   responseItems = [],
 } = {}) => {
@@ -5285,6 +5287,19 @@ export const normalizeCollectCategoryPreviewRecovery = ({
 
   const resolution = response.categoryResolution;
   const method = String(resolution?.method || "").trim();
+  const requestedTaxonomyScope = String(taxonomyScope || "");
+  const responseHasTaxonomyScope = Object.prototype.hasOwnProperty.call(
+    resolution || {},
+    "taxonomyScope",
+  );
+  const responseTaxonomyScope = String(resolution?.taxonomyScope || "");
+  const validatedTaxonomyScope = responseHasTaxonomyScope
+    ? (responseTaxonomyScope && responseTaxonomyScope === requestedTaxonomyScope
+      ? responseTaxonomyScope
+      : "")
+    : (requestedTaxonomyScope === collectCategoryPreviewDefaultTaxonomyScope
+      ? collectCategoryPreviewDefaultTaxonomyScope
+      : "");
   const descriptionCategoryId = collectEditPositiveCategoryId(response.description_category_id);
   const typeId = collectEditPositiveCategoryId(response.type_id);
   if (
@@ -5293,7 +5308,7 @@ export const normalizeCollectCategoryPreviewRecovery = ({
     || !collectCategoryPreviewRecoveryMethods.has(method)
     || String(resolution.offerId || "") !== requestOfferId
     || !collectEditTargetStoreMatches(resolution, targetStoreId)
-    || (resolution.taxonomyScope && String(resolution.taxonomyScope) !== String(taxonomyScope || ""))
+    || !validatedTaxonomyScope
     || !descriptionCategoryId
     || !typeId
     || collectEditPositiveCategoryId(resolution.target?.descriptionCategoryId) !== descriptionCategoryId
@@ -5303,11 +5318,11 @@ export const normalizeCollectCategoryPreviewRecovery = ({
   return {
     itemId: currentItemId,
     targetStoreId: String(targetStoreId || ""),
-    taxonomyScope: String(taxonomyScope || ""),
+    taxonomyScope: validatedTaxonomyScope,
     resolution: {
       status: "MATCHED",
       method,
-      taxonomyScope: String(taxonomyScope || ""),
+      taxonomyScope: validatedTaxonomyScope,
       targetDescriptionCategoryId: descriptionCategoryId,
       targetTypeId: typeId,
       target: {
