@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS auto_listing_job_items (
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   snapshot_id TEXT NOT NULL REFERENCES auto_listing_source_snapshots(id) ON DELETE RESTRICT,
   target_store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE RESTRICT,
-  target_warehouse_id TEXT REFERENCES warehouses(id) ON DELETE SET NULL,
+  target_warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
   status TEXT NOT NULL DEFAULT 'CREATED'
     CHECK (status IN ('CREATED', 'SOURCE_READY', 'PLANNING', 'GENERATING', 'READY_FOR_REVIEW', 'UPLOAD_QUEUED', 'UPLOADING', 'SUCCEEDED', 'RETRYABLE_ERROR', 'BLOCKED', 'CANCELLED')),
   status_version INTEGER NOT NULL DEFAULT 1 CHECK (status_version > 0),
@@ -86,6 +86,67 @@ CREATE TABLE IF NOT EXISTS auto_listing_events (
   details JSONB NOT NULL DEFAULT '{}'::JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_version_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.status = 'PUBLISHED' THEN
+    RAISE EXCEPTION 'published strategy versions are immutable';
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER ai_content_strategy_versions_published_immutable
+BEFORE UPDATE OR DELETE ON ai_content_strategy_versions
+FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_published_strategy_version_mutation();
+
+CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_rule_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP IN ('UPDATE', 'DELETE') AND EXISTS (
+    SELECT 1
+    FROM ai_content_strategy_versions
+    WHERE id = OLD.strategy_version_id
+      AND status = 'PUBLISHED'
+  ) THEN
+    RAISE EXCEPTION 'published strategy rules are immutable';
+  END IF;
+
+  IF TG_OP IN ('INSERT', 'UPDATE') AND EXISTS (
+    SELECT 1
+    FROM ai_content_strategy_versions
+    WHERE id = NEW.strategy_version_id
+      AND status = 'PUBLISHED'
+  ) THEN
+    RAISE EXCEPTION 'published strategy rules are immutable';
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER ai_content_strategy_rules_published_immutable
+BEFORE INSERT OR UPDATE OR DELETE ON ai_content_strategy_rules
+FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_published_strategy_rule_mutation();
+
+CREATE OR REPLACE FUNCTION auto_listing_reject_event_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'auto-listing events are append-only';
+END;
+$$;
+
+CREATE TRIGGER auto_listing_events_append_only
+BEFORE UPDATE OR DELETE ON auto_listing_events
+FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_event_mutation();
 
 CREATE INDEX IF NOT EXISTS auto_listing_jobs_account_status_idx
   ON auto_listing_jobs(account_id, status, created_at DESC);
