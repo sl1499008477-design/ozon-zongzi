@@ -800,7 +800,7 @@ test("a stale last-known-good snapshot retries and later resolves without losing
 
   const deferred = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
   assert.equal(deferred.status, "RETRYABLE_ERROR");
-  assert.equal(deferred.failureCode, "OZON_CATEGORY_TAXONOMY_STALE");
+  assert.equal(deferred.failureCode, "OZON_CATEGORY_TREE_UNAVAILABLE");
   assert.equal(deferred.taxonomyFingerprint, "taxonomy-lkg-v1");
   assert.deepEqual(harness.item.sourceCategory, {
     descriptionCategoryId: 17033604,
@@ -816,6 +816,40 @@ test("a stale last-known-good snapshot retries and later resolves without losing
   assert.equal(matched.targetDescriptionCategoryId, 17028702);
   assert.equal(matched.targetTypeId, 94405);
   assert.equal(matched.taxonomyFingerprint, "taxonomy-lkg-v1");
+});
+
+test("a stale last-known-good snapshot caused by invalid Ozon data requires review without retrying", async () => {
+  const harness = createHarness({
+    snapshot: async () => ({
+      items: categoryTree(),
+      taxonomyScope: SCOPE,
+      taxonomyFingerprint: "taxonomy-invalid-lkg-v1",
+      fetchedAt: START,
+      stale: true,
+      staleReasonCode: "OZON_CATEGORY_DATA_INVALID",
+    }),
+  });
+  await harness.service.scheduleForCollect({
+    accountId: ACCOUNT_ID,
+    collectItemId: COLLECT_ITEM_ID,
+    credentialStoreId: "store-a",
+  });
+
+  const reviewed = await harness.service.resolveNext({ accountId: ACCOUNT_ID });
+
+  assert.equal(reviewed.status, "NEEDS_REVIEW");
+  assert.equal(reviewed.failureCode, "OZON_CATEGORY_DATA_INVALID");
+  assert.equal(reviewed.taxonomyFingerprint, "taxonomy-invalid-lkg-v1");
+  assert.equal(harness.calls.audits.at(-1).action, "COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW");
+  assert.deepEqual(harness.item.sourceCategory, {
+    descriptionCategoryId: 17033604,
+    typeIdCandidate: 94405,
+    typeName: "杯子",
+    path: ["旧家居", "旧杯子"],
+  });
+  harness.setNow("2026-08-04T10:00:00.000Z");
+  assert.equal(await harness.service.resolveNext({ accountId: ACCOUNT_ID }), null);
+  assert.equal((await readResolution(harness)).attemptCount, 1);
 });
 
 test("a post-claim collect-item outage is persisted instead of leaving MATCHING until lease expiry", async () => {

@@ -264,16 +264,17 @@ function statefulPostgresPool() {
     if (normalized.startsWith("UPDATE collect_category_resolutions SET status='NEEDS_REVIEW'")) {
       const row = rows.find((candidate) => matchesFence(candidate, params));
       if (!row || row.status !== "MATCHING" || row.method === "MANUAL"
-        || new Date(row.lease_expires_at).getTime() <= new Date(params[5]).getTime()) {
+        || new Date(row.lease_expires_at).getTime() <= new Date(params[6]).getTime()) {
         return { rows: [], rowCount: 0 };
       }
       Object.assign(row, {
         status: "NEEDS_REVIEW",
         failure_code: params[3],
         failure_detail_safe: params[4],
+        taxonomy_fingerprint: params[5] || row.taxonomy_fingerprint,
         lease_token: null,
         lease_expires_at: null,
-        updated_at: iso(params[5]),
+        updated_at: iso(params[6]),
       });
       return { rows: [rowCopy(row)], rowCount: 1 };
     }
@@ -862,9 +863,11 @@ for (const [adapterName, createRepository] of Object.entries(adapters)) {
     const review = await repository.completeNeedsReview({
       accountId: "account-a", id: record.id, leaseToken: "lease-3",
       failureCode: "TYPE_AMBIGUOUS", failureDetailSafe: "2 candidates",
+      taxonomyFingerprint: "taxonomy-review-v1",
       now: "2026-08-03T10:05:02.000Z",
     });
     assert.equal(review.status, "NEEDS_REVIEW");
+    assert.equal(review.taxonomyFingerprint, "taxonomy-review-v1");
     const invalidated = await repository.invalidate({
       accountId: "account-a", id: record.id, leaseToken: null,
       expectedResolution: resolutionIdentity(review),

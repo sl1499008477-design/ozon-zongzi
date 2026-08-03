@@ -614,6 +614,9 @@ export function createJsonCollectCategoryResolutionRepository({
         displayPath: {},
         failureCode,
         failureDetailSafe: optionalText(input.failureDetailSafe),
+        ...(optionalText(input.taxonomyFingerprint, 240)
+          ? { taxonomyFingerprint: optionalText(input.taxonomyFingerprint, 240) }
+          : {}),
         leaseToken: null,
         leaseExpiresAt: null,
         matchedAt: null,
@@ -1361,15 +1364,18 @@ export function createPostgresCollectCategoryResolutionRepository({
       `UPDATE collect_category_resolutions
           SET status='NEEDS_REVIEW', target_description_category_id=NULL, target_type_id=NULL,
               method=NULL, display_path_json='{}'::jsonb, failure_code=$4,
-              failure_detail_safe=$5, matched_at=NULL, validated_at=NULL,
-              lease_token=NULL, lease_expires_at=NULL, updated_at=$6
+              failure_detail_safe=$5,
+              taxonomy_fingerprint=COALESCE($6,taxonomy_fingerprint),
+              matched_at=NULL, validated_at=NULL,
+              lease_token=NULL, lease_expires_at=NULL, updated_at=$7
         WHERE account_id=$1 AND id=$2 AND lease_token=$3
           AND status='MATCHING' AND method IS DISTINCT FROM 'MANUAL'
-          AND lease_expires_at>$6
+          AND lease_expires_at>$7
         RETURNING *`,
       [
         fence.accountId, fence.id, fence.leaseToken,
-        requiredText(input.failureCode, "failureCode"), optionalText(input.failureDetailSafe), now,
+        requiredText(input.failureCode, "failureCode"), optionalText(input.failureDetailSafe),
+        optionalText(input.taxonomyFingerprint, 240), now,
       ],
       executor,
       );

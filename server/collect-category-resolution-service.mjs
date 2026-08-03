@@ -461,15 +461,19 @@ export function createCollectCategoryResolutionService({
     });
   }
 
-  async function finishReview(claimed, failureCode) {
+  async function finishReview(claimed, failureCode, { taxonomyFingerprint = null } = {}) {
     const at = instant(now());
     const record = await repository.completeNeedsReview({
       accountId: claimed.accountId,
       id: claimed.id,
       leaseToken: claimed.leaseToken,
       failureCode,
+      taxonomyFingerprint,
       now: at,
-      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW", claimed, { failureCode }),
+      auditEvent: preparedAudit("COLLECT_CATEGORY_RESOLUTION_NEEDS_REVIEW", claimed, {
+        failureCode,
+        taxonomyFingerprint,
+      }),
     });
     return record;
   }
@@ -477,7 +481,11 @@ export function createCollectCategoryResolutionService({
   async function finishCategoryFailure(claimed, error) {
     const at = instant(now());
     const { retryable, failureCode } = failurePolicy(error);
-    if (!retryable) return finishReview(claimed, failureCode);
+    if (!retryable) {
+      return finishReview(claimed, failureCode, {
+        taxonomyFingerprint: error?.taxonomyFingerprint,
+      });
+    }
     const nextAttemptAt = new Date(at.getTime() + retryDelayMs(claimed.attemptCount));
     const record = await repository.deferRetry({
       accountId: claimed.accountId,
@@ -615,8 +623,11 @@ export function createCollectCategoryResolutionService({
         throw { code: "OZON_CATEGORY_DATA_INVALID" };
       }
       if (snapshot.stale) {
+        const staleReasonCode = stableErrorCode({ code: snapshot.staleReasonCode });
         throw {
-          code: "OZON_CATEGORY_TAXONOMY_STALE",
+          code: staleReasonCode === "CATEGORY_RESOLUTION_FAILED"
+            ? "OZON_CATEGORY_TAXONOMY_STALE"
+            : staleReasonCode,
           taxonomyFingerprint: snapshot.taxonomyFingerprint,
         };
       }
