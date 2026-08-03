@@ -37,3 +37,9 @@ The gated two-connection fixture pauses A immediately after the product-stock lo
 ## Unverified range and rollback
 
 The real two-connection PostgreSQL race is ready but not dynamically exercised in this workspace without the explicitly configured disposable migration database. Keep `AUTO_LISTING_ENABLED=0`; to roll back, revert this task commit. No database migration or persisted history is changed.
+
+## Fix round 1 — contention proof and barrier cleanup
+
+- RED: the new always-on barrier contract failed because the target-evidence barrier had no explicit abort path (`abort is not a function`). A second RED failed because the lock observer helper did not yet exist.
+- GREEN: the helper gate now reports **3 passed, 1 dedicated-DB skip**. The barrier owns an independently rejectable `waitForLock`; abort, timeout, and dispose release a waiting participant and reject an unreached lock waiter, while an internal rejection handler prevents unhandled failures for zero-participant and early-failure paths. The unit test covers abort, timeout, dispose, and one participant reaching/releasing the evidence barrier.
+- The PostgreSQL race no longer relies on an 80 ms promise race. B first records its `pg_backend_pid()` and sends a uniquely commented mutation. A separate observer connection polls only that PID for at most five seconds and requires both `wait_event_type = 'Lock'` and the exact marker in `query` before releasing A. The warehouse-disable and product-stock-delete mutations share this proof path. Cleanup aborts/releases the barrier, awaits/catches A and B, sends a harmless rollback to B, releases both auxiliary connections, and retains the schema/pool cleanup in the outer `finally`.

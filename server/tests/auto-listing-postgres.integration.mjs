@@ -142,22 +142,30 @@ async function runBarrierRace(repository, barrier, inputs) {
 
 function twoConnectionTargetEvidenceBarrier(scopedPool, timeoutMs = 5_000) {
   let settled = false;
+  let locked = false;
   let abortCause = null;
   let resolveLocked;
+  let rejectLocked;
   let resolveProceed;
-  const locked = new Promise((resolve) => { resolveLocked = resolve; });
+  const lockReached = new Promise((resolve, reject) => {
+    resolveLocked = resolve;
+    rejectLocked = reject;
+  });
+  lockReached.catch(() => {});
   const proceed = new Promise((resolve) => { resolveProceed = resolve; });
   const finish = (cause = null) => {
     if (settled) return;
     settled = true;
     abortCause = cause;
     clearTimeout(timeout);
+    if (cause && !locked) rejectLocked(cause);
     resolveProceed();
   };
   const timeout = setTimeout(() => finish(new Error(`target evidence barrier timed out after ${timeoutMs}ms`)), timeoutMs);
   return {
     query: (...args) => scopedPool.query(...args),
-    waitForLock: () => locked,
+    waitForLock: () => lockReached,
+    abort: (cause = new Error("target evidence barrier aborted")) => finish(cause),
     release: () => finish(),
     dispose: () => finish(new Error("target evidence barrier disposed")),
     async connect() {
@@ -166,7 +174,10 @@ function twoConnectionTargetEvidenceBarrier(scopedPool, timeoutMs = 5_000) {
         async query(sql, params) {
           const result = await connection.query(sql, params);
           if (/FROM product_stocks ps/.test(sql) && /FOR SHARE OF p,ps/.test(sql)) {
-            resolveLocked();
+            if (!locked) {
+              locked = true;
+              resolveLocked();
+            }
             await proceed;
             if (abortCause) throw abortCause;
           }
@@ -178,12 +189,29 @@ function twoConnectionTargetEvidenceBarrier(scopedPool, timeoutMs = 5_000) {
   };
 }
 
-async function assertStillWaiting(promise, timeoutMs = 80) {
-  const state = await Promise.race([
-    promise.then(() => "settled", () => "settled"),
-    new Promise((resolve) => setTimeout(() => resolve("waiting"), timeoutMs)),
-  ]);
-  assert.equal(state, "waiting");
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function waitForBackendLock({ observer, backendPid, marker, timeoutMs = 5_000, pollMs = 25 } = {}) {
+  if (!observer || typeof observer.query !== "function" || !Number.isInteger(backendPid)
+    || backendPid <= 0 || typeof marker !== "string" || !marker) {
+    throw new TypeError("lock observer requires a backend PID and marker");
+  }
+  const deadline = Date.now() + timeoutMs;
+  let lastRow = null;
+  while (Date.now() <= deadline) {
+    const result = await observer.query(
+      "SELECT wait_event_type,query FROM pg_stat_activity WHERE pid=$1",
+      [backendPid],
+    );
+    const row = result?.rows?.[0] || null;
+    lastRow = row;
+    if (row?.wait_event_type === "Lock" && typeof row.query === "string" && row.query.includes(marker)) {
+      return row;
+    }
+    if (Date.now() >= deadline) break;
+    await delay(pollMs);
+  }
+  throw new Error(`backend ${backendPid} did not enter marked lock wait (${marker}); last=${JSON.stringify(lastRow)}`);
 }
 
 async function registerGraphSources(client, graphInput) {
@@ -211,6 +239,74 @@ test("snapshot insertion barrier aborts a waiting peer without an internal rejec
   const noParticipant = twoConnectionSnapshotBarrier({ query: async () => ({ rows: [] }), connect: async () => ({}) }, 100);
   noParticipant.abort(new Error("no participants"));
   noParticipant.dispose();
+});
+
+test("target evidence barrier rejects independent waiters on abort, timeout, and dispose without hanging participants", async () => {
+  const connection = { query: async () => ({ rows: [] }), release() {} };
+  const pool = { query: async () => ({ rows: [] }), connect: async () => connection };
+  const aborted = twoConnectionTargetEvidenceBarrier(pool, 100);
+  const abortCause = new Error("worker failed before target evidence lock");
+  aborted.abort(abortCause);
+  await assert.rejects(aborted.waitForLock(), (error) => error === abortCause);
+  aborted.dispose();
+
+  const timedOut = twoConnectionTargetEvidenceBarrier(pool, 20);
+  await assert.rejects(timedOut.waitForLock(), /timed out/);
+  timedOut.dispose();
+
+  const participantTimedOut = twoConnectionTargetEvidenceBarrier(pool, 20);
+  const timedOutConnection = await participantTimedOut.connect();
+  const timedOutQuery = timedOutConnection.query("SELECT * FROM product_stocks ps FOR SHARE OF p,ps");
+  await participantTimedOut.waitForLock();
+  await assert.rejects(timedOutQuery, /timed out/);
+  participantTimedOut.dispose();
+
+  const participantAborted = twoConnectionTargetEvidenceBarrier(pool, 100);
+  const abortedConnection = await participantAborted.connect();
+  const abortedQuery = abortedConnection.query("SELECT * FROM product_stocks ps FOR SHARE OF p,ps");
+  await participantAborted.waitForLock();
+  const participantCause = new Error("target evidence worker failed");
+  participantAborted.abort(participantCause);
+  await assert.rejects(abortedQuery, (error) => error === participantCause);
+  participantAborted.dispose();
+
+  const disposed = twoConnectionTargetEvidenceBarrier(pool, 100);
+  disposed.dispose();
+  await assert.rejects(disposed.waitForLock(), /disposed/);
+
+  const released = twoConnectionTargetEvidenceBarrier(pool, 100);
+  const lockedConnection = await released.connect();
+  const waiting = lockedConnection.query("SELECT * FROM product_stocks ps FOR SHARE OF p,ps");
+  await released.waitForLock();
+  released.release();
+  await waiting;
+  released.dispose();
+});
+
+test("lock observer accepts only the mutation backend's marked lock wait", async () => {
+  const marker = "auto-listing-task8-observer";
+  const rows = [
+    { wait_event_type: null, query: `/* ${marker} */ UPDATE warehouses` },
+    { wait_event_type: "Lock", query: "UPDATE warehouses" },
+    { wait_event_type: "Lock", query: `/* ${marker} */ UPDATE warehouses` },
+  ];
+  const queries = [];
+  const observed = await waitForBackendLock({
+    observer: {
+      async query(sql, params) {
+        queries.push({ sql, params });
+        return { rows: [rows.shift()] };
+      },
+    },
+    backendPid: 4242,
+    marker,
+    timeoutMs: 100,
+    pollMs: 1,
+  });
+  assert.equal(observed.wait_event_type, "Lock");
+  assert.match(observed.query, new RegExp(marker));
+  assert.equal(queries.length, 3);
+  assert.deepEqual(queries[0].params, [4242]);
 });
 
 if (!enabled) {
@@ -562,22 +658,30 @@ if (!enabled) {
         const barrier = twoConnectionTargetEvidenceBarrier(scopedPool);
         const repository = createAutoListingRepository({ pool: barrier });
         const invalidator = await pool.connect();
+        let observer;
         let creation;
         let invalidating;
         try {
+          observer = await pool.connect();
           await invalidator.query(`SET search_path TO ${schemaSql}, public`);
+          const backendPid = Number((await invalidator.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid);
+          const marker = `auto-listing-task8-${suffix}-${graphSuffix}`;
           creation = repository.createJobGraph(input);
+          creation.catch(() => {});
           await barrier.waitForLock();
-          invalidating = invalidator.query(sql, params);
-          await assertStillWaiting(invalidating);
+          invalidating = invalidator.query(`/* ${marker} */ ${sql}`, params);
+          invalidating.catch(() => {});
+          await waitForBackendLock({ observer, backendPid, marker });
           barrier.release();
           const created = await creation;
           await invalidating;
           return created;
         } finally {
-          barrier.dispose();
+          barrier.abort(new Error("target evidence race cleanup"));
           await creation?.catch(() => {});
           await invalidating?.catch(() => {});
+          await invalidator.query("ROLLBACK").catch(() => {});
+          observer?.release();
           invalidator.release();
         }
       };
