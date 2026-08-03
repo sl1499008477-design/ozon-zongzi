@@ -606,15 +606,6 @@
     return null;
   }
 
-  function moneyFromSelectors(selectors) {
-    for (const selector of selectors || []) {
-      for (const el of document.querySelectorAll(selector)) {
-        const value = moneyFromText(el?.textContent);
-        if (value) return value;
-      }
-    }
-    return null;
-  }
 
   function normalizeCurrencyCode(value) {
     const text = cleanText(value)?.toUpperCase();

@@ -1085,28 +1085,8 @@
     return desc;
   }
   // 收集所有叶子类目（带完整路径），供粗筛/候选用
-  function collectLeaves() {
-    const out = [];
-    const dfs = (node, path) => {
-      const p = [...path, node];
-      if (isLeaf(node)) out.push({ node, path: p, leafTitle: node.title, fullName: p.map((n) => n.title).join('/') });
-      (node.children || []).forEach((c) => dfs(c, p));
-    };
-    ((W.catTree && W.catTree.children) || []).forEach((n) => dfs(n, []));
-    return out;
-  }
-  // 商品信息 vs 类目名 的粗筛打分：叶子名整出现强加分 + 2-gram 字重叠
-  function overlapScore(name, query) {
-    if (!name || !query) return 0;
-    let s = 0;
-    const leaf = name.split('/').pop();
-    if (leaf && leaf.length >= 2 && query.includes(leaf)) s += 50;
-    const grams = (str) => { const g = new Set(); for (let i = 0; i < str.length - 1; i++) g.add(str.slice(i, i + 2)); return g; };
-    const ng = grams(name), qg = grams(query);
-    let hit = 0; ng.forEach((g) => { if (qg.has(g)) hit++; });
-    return s + hit * 6;
-  }
-  function autoCategoryScopeIsCurrent(scope) {
+    // 商品信息 vs 类目名 的粗筛打分：叶子名整出现强加分 + 2-gram 字重叠
+    function autoCategoryScopeIsCurrent(scope) {
     return window.SonliCategoryReadiness.asyncCategoryScopeIsCurrent({
       expectedStoreId: scope?.storeId,
       currentStoreId: String(W.opts.storeId || ''),

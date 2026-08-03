@@ -1,11 +1,12 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import {
-  assertCaptureOnlyFileSet,
+  assertCaptureOnlyRuntimeFileSet,
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
   assertReviewedCaptureOnlyPermissionPolicy,
@@ -25,7 +26,6 @@ const zipPaths = configuredZipPaths
       .map((entry) => path.resolve(entry))
   : [
       path.join(rootDir, "app", "public", fileName),
-      path.join(rootDir, "app", "dist", fileName),
     ];
 
 let failed = false;
@@ -39,6 +39,12 @@ async function listFiles(dir, prefix = "") {
     else if (entry.isFile()) files.push(rel);
   }
   return files.sort();
+}
+
+function isTestArtifact(relativePath) {
+  return relativePath.startsWith("tests/")
+    || relativePath.startsWith("background/__tests__/")
+    || relativePath.startsWith("popup/__tests__/");
 }
 
 for (const zipPath of zipPaths) {
@@ -56,10 +62,15 @@ for (const zipPath of zipPaths) {
     }
 
     const packagedFiles = await listFiles(tmpDir);
+    assert.deepEqual(
+      packagedFiles.filter(isTestArtifact),
+      [],
+      "production extension ZIP must not contain test files",
+    );
     const packagedManifest = JSON.parse(
       await readFile(path.join(tmpDir, "manifest.json"), "utf8"),
     );
-    assertCaptureOnlyFileSet(packagedFiles);
+    assertCaptureOnlyRuntimeFileSet(packagedFiles);
     assertReviewedCaptureOnlyPermissionPolicy(packagedManifest);
     const packagedServiceWorkerSource = await readFile(
       path.join(tmpDir, "background", "service-worker.js"),
@@ -71,6 +82,14 @@ for (const zipPath of zipPaths) {
       await readFile(path.join(tmpDir, "popup", "popup.js"), "utf8"),
       packagedServiceWorkerSource,
     );
+
+    for (const relativeDirectory of ["tests", "background/__tests__", "popup/__tests__"]) {
+      await cp(
+        path.join(rootDir, "extension", relativeDirectory),
+        path.join(tmpDir, relativeDirectory),
+        { recursive: true },
+      );
+    }
 
     const tests = [
       ["collector service-worker startup", path.join(scriptsDir, "check-packaged-collector-runtime.mjs"), tmpDir],

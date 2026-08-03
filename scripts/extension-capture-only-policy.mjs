@@ -5,7 +5,7 @@ import {
   REVIEWED_CAPTURE_ONLY_CAPABILITIES,
 } from "./extension-capture-only-baseline.mjs";
 
-export const REQUIRED_CAPTURE_ONLY_FILES = Object.freeze([
+export const REQUIRED_CAPTURE_ONLY_RUNTIME_FILES = Object.freeze([
   "background/collector-client.js",
   "background/collector-ozon-enrichment-agent.js",
   "background/collector-ozon-enrichment-client.js",
@@ -14,10 +14,18 @@ export const REQUIRED_CAPTURE_ONLY_FILES = Object.freeze([
   "lib/ozon-enrichment-contract.js",
   "popup/popup.html",
   "popup/popup.js",
+]);
+
+export const REQUIRED_CAPTURE_ONLY_TEST_FILES = Object.freeze([
   "tests/collector-ozon-enrichment-client.test.js",
   "tests/collector-session.test.js",
   "tests/ozon-enrichment-contract.test.js",
   "tests/sync-capability-removed.test.js",
+]);
+
+export const REQUIRED_CAPTURE_ONLY_FILES = Object.freeze([
+  ...REQUIRED_CAPTURE_ONLY_RUNTIME_FILES,
+  ...REQUIRED_CAPTURE_ONLY_TEST_FILES,
 ]);
 
 const SELLER_API_URLS = Object.freeze([
@@ -141,13 +149,21 @@ export function assertReviewedCaptureOnlyPermissionPolicy(candidateManifest) {
   }
 }
 
-export function assertCaptureOnlyFileSet(files) {
+export function assertCaptureOnlyRuntimeFileSet(files) {
   const fileSet = new Set(files);
-  for (const required of REQUIRED_CAPTURE_ONLY_FILES) {
+  for (const required of REQUIRED_CAPTURE_ONLY_RUNTIME_FILES) {
     assert.ok(fileSet.has(required), `required capture-only file missing: ${required}`);
   }
   for (const file of fileSet) {
     assert.doesNotMatch(file, RETIRED_SYNC_FILE, `retired sync module packaged: ${file}`);
+  }
+}
+
+export function assertCaptureOnlyFileSet(files) {
+  assertCaptureOnlyRuntimeFileSet(files);
+  const fileSet = new Set(files);
+  for (const required of REQUIRED_CAPTURE_ONLY_TEST_FILES) {
+    assert.ok(fileSet.has(required), `required capture-only file missing: ${required}`);
   }
 }
 

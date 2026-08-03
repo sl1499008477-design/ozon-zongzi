@@ -636,23 +636,8 @@
     }
   }
 
-  function collectVariantItems(response) {
-    const items = response?.items || response?.data?.items;
-    return Array.isArray(items) ? items : [];
-  }
 
-  function matchingPanelVariant(response, productId) {
-    return collectVariantItems(response).find((item) =>
-      window.JzOzonCollectCoordinator.matchesSku(item, productId)) || null;
-  }
 
-  function invalidPanelVariantResponseError() {
-    return Object.assign(new Error("Ozon 商品变体数据无效"), {
-      code: "OZON_ENRICH_CONTRACT_MISMATCH",
-      status: 422,
-      retryable: true,
-    });
-  }
 
   async function panelDataForCollect(productId) {
     const cached = panelDataCache.get(productId);
@@ -683,99 +668,7 @@
     }
   }
 
-  function startPanelVariantRetry(productId, cachedPanelData) {
-    const existing = panelVariantRetryStates.get(productId);
-    if (existing?.status === "pending") {
-      projectSharedPanelVariantState(productId, cachedPanelData);
-      return existing.promise;
-    }
-    if (existing?.status === "fulfilled") {
-      projectSharedPanelVariantState(productId, cachedPanelData);
-      return Promise.resolve(existing.value);
-    }
-    const state = { status: "pending", promise: null, value: null, error: null };
-    const retryPromise = Promise.resolve()
-      .then(() => window.sendMessage("searchVariants", { sku: productId }))
-      .then((response) => {
-        if (!matchingPanelVariant(response, productId)) {
-          throw invalidPanelVariantResponseError();
-        }
-        state.status = "fulfilled";
-        state.value = response;
-        state.error = null;
-        projectSharedPanelVariantState(productId, cachedPanelData);
-        return response;
-      })
-      .catch((error) => {
-        state.status = "rejected";
-        state.value = null;
-        state.error = error;
-        projectSharedPanelVariantState(productId, cachedPanelData);
-        throw error;
-      });
-    state.promise = retryPromise;
-    panelVariantRetryStates.set(productId, state);
-    projectSharedPanelVariantState(productId, cachedPanelData);
-    return retryPromise;
-  }
 
-  async function panelVariantState(productId, cachedPanelData, { retryRejected = false } = {}) {
-    const sharedState = panelVariantRetryStates.get(productId);
-    if (sharedState) {
-      if (sharedState.status === "fulfilled") {
-        const variant = matchingPanelVariant(sharedState.value, productId);
-        projectSharedPanelVariantState(productId, cachedPanelData);
-        return { attempted: true, rejected: false, variant };
-      }
-      if (sharedState.status === "pending") {
-        let response = null;
-        let rejected = false;
-        try {
-          response = await sharedState.promise;
-        } catch {
-          rejected = true;
-        }
-        const variant = matchingPanelVariant(response, productId);
-        return { attempted: true, rejected, variant };
-      }
-      if (sharedState.status === "rejected") {
-        if (!retryRejected) return { attempted: true, rejected: true, variant: null };
-        let response = null;
-        let rejected = false;
-        try {
-          response = await startPanelVariantRetry(productId, cachedPanelData);
-        } catch {
-          rejected = true;
-        }
-        const variant = matchingPanelVariant(response, productId);
-        return { attempted: true, rejected, variant };
-      }
-    }
-    let slot = cachedPanelData?.preFetched?.variant;
-    let response = null;
-    let rejected = slot?.status === "rejected";
-    if (slot?.status === "fulfilled") {
-      response = slot.value;
-    } else if (slot && typeof slot.then === "function") {
-      try {
-        response = await slot;
-      } catch {
-        rejected = true;
-      }
-    }
-    if (retryRejected && rejected) {
-      slot = startPanelVariantRetry(productId, cachedPanelData);
-      try {
-        response = await slot;
-        rejected = false;
-      } catch {
-        response = null;
-        rejected = true;
-      }
-    }
-    const variant = matchingPanelVariant(response, productId);
-    return { attempted: Boolean(slot), rejected, variant };
-  }
 
   function buildPanelCollectRaw(productId, info, data) {
     return {

@@ -7,10 +7,13 @@ const rootDir = process.cwd();
 const extensionDir = path.join(rootDir, "extension");
 const manifest = JSON.parse(await readFile(path.join(extensionDir, "manifest.json"), "utf8"));
 const fileName = `sonli-extension-${manifest.version}.zip`;
-const zipPaths = [
-  path.join(rootDir, "app", "public", fileName),
-  path.join(rootDir, "app", "dist", fileName),
-];
+const zipPaths = [path.join(rootDir, "app", "public", fileName)];
+
+function isTestArtifact(relativePath) {
+  return relativePath.startsWith("tests/")
+    || relativePath.startsWith("background/__tests__/")
+    || relativePath.startsWith("popup/__tests__/");
+}
 
 async function listFiles(dir, prefix = "") {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -54,13 +57,11 @@ function readZipEntry(zipPath, entry) {
   return result.stdout;
 }
 
-const expected = await listFiles(extensionDir);
+const expected = (await listFiles(extensionDir)).filter((file) => !isTestArtifact(file));
 for (const required of [
   "background/collector-client.js",
   "background/service-worker.js",
   "lib/collector-session.js",
-  "tests/collector-session.test.js",
-  "tests/sync-capability-removed.test.js",
 ]) {
   if (!expected.includes(required)) {
     throw new Error(`required collector package source missing: ${required}`);
@@ -71,11 +72,13 @@ let failed = false;
 for (const zipPath of zipPaths) {
   const label = path.relative(rootDir, zipPath);
   const entries = zipEntries(zipPath);
+  const shippedTests = entries.filter(isTestArtifact);
   const missing = expected.filter((file) => !entries.includes(file));
   const extra = entries.filter((file) => !expected.includes(file));
-  if (missing.length || extra.length) {
+  if (missing.length || extra.length || shippedTests.length) {
     failed = true;
     console.error(`${label} file list mismatch`);
+    if (shippedTests.length) console.error(`  shipped tests: ${shippedTests.slice(0, 20).join(", ")}`);
     if (missing.length) console.error(`  missing: ${missing.slice(0, 20).join(", ")}`);
     if (extra.length) console.error(`  extra: ${extra.slice(0, 20).join(", ")}`);
     continue;
@@ -90,7 +93,7 @@ for (const zipPath of zipPaths) {
       break;
     }
   }
-  if (!failed) console.log(`${label} matches extension tree (${expected.length} files)`);
+  if (!failed) console.log(`${label} matches production extension tree (${expected.length} files)`);
 }
 
 if (failed) process.exit(1);

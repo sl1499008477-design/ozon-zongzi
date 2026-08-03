@@ -152,6 +152,10 @@ function fixtureHtml(mode) {
         ],
       });
       const runtimeMessages = [];
+      let calcMountCalls = 0;
+      window.__jzcMountPanel = () => { calcMountCalls += 1; };
+      window.__jzcIsMounted = () => false;
+      window.__jzcUnmountPanel = () => {};
       window.sendMessage = async (action, payload) => {
         runtimeMessages.push({ action, payload: structuredClone(payload || {}) });
         if (action === 'searchVariants') {
@@ -297,6 +301,7 @@ function fixtureHtml(mode) {
         collectCalls: structuredClone(collectCalls),
         runtimeMessages: structuredClone(runtimeMessages),
         skuCollectCalls: structuredClone(skuCollectCalls),
+        calcMountCalls,
         label: document.querySelector('[aria-label="一键采集"] .ozon-helper-action-label')?.textContent
           || document.querySelector('[aria-label="一键采集"]')?.textContent?.trim()
           || '',
@@ -355,6 +360,11 @@ test('product page delegates public-first single and multivariant collection wit
     let state = await successPage.evaluate(() => window.__getProductFixtureState());
     assert.deepEqual(state.prefetchCalls, []);
     assert.equal(state.runtimeMessages.some(({ action }) => action === 'pushSourceCollect'), false);
+
+    await successPage.click('[aria-label$="算价"]');
+    state = await successPage.evaluate(() => window.__getProductFixtureState());
+    assert.equal(state.calcMountCalls, 1, 'the product action must delegate to jzc-calc.js');
+    assert.equal(await successPage.locator('.ozon-helper-profit-panel').count(), 0);
 
     await successPage.click('[aria-label="一键采集"]');
     await successPage.waitForFunction(() => window.__getProductFixtureState().collectCalls.length === 1);

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   REQUIRED_CAPTURE_ONLY_FILES,
   assertCaptureOnlyFileSet,
+  assertCaptureOnlyRuntimeFileSet,
   assertCaptureOnlyPermissionPolicy,
   assertCaptureOnlyServiceWorker,
   assertPopupWebLoginGuidance,
@@ -144,6 +145,9 @@ test("capture-only package requires Collector dependencies and rejects retired s
     assert.equal(REQUIRED_CAPTURE_ONLY_FILES.includes(file), true, file);
   }
   assert.doesNotThrow(() => assertCaptureOnlyFileSet(requiredFiles));
+  assert.doesNotThrow(() => assertCaptureOnlyRuntimeFileSet(
+    requiredFiles.filter((file) => !file.includes("/__tests__/") && !file.startsWith("tests/")),
+  ));
   assert.throws(
     () => assertCaptureOnlyFileSet(
       requiredFiles.filter((file) => file !== "background/collector-ozon-enrichment-agent.js"),
