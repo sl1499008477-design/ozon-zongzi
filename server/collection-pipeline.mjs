@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
-import { mirrorCollectItemV3 } from "./listing-pipeline.mjs";
+import { buildCollectItemDraftV4, mirrorCollectItemV3 } from "./listing-pipeline.mjs";
 import {
   findRetiredCollectorScopePath,
   findServerOwnedCategoryResolutionPath,
@@ -302,6 +302,13 @@ export function createCollectorEnrichmentRepositoryForTransaction(client) {
   });
 }
 
+export function prepareCollectedItemForMirror(item = {}) {
+  return {
+    ...item,
+    listingDraft: buildCollectItemDraftV4(item),
+  };
+}
+
 function bearerToken(req) {
   const header = String(req?.headers?.authorization || "");
   return header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
@@ -510,6 +517,7 @@ export async function ingestCollectRequestV4(options = {}) {
         : null;
       if (effectiveEnrichment) normalizedItem.enrichment = structuredClone(effectiveEnrichment);
       if (effectiveEnrichment?.status === "COMPLETE") normalizedItem.status = "COMPLETE";
+      normalizedItem = prepareCollectedItemForMirror(normalizedItem);
       const mirrored = await mirrorCollectItemV3(normalizedItem, {
         client,
         collectId,

@@ -12,6 +12,7 @@ import { runMigrations } from "../db/migrate.mjs";
 import {
   createCollectorEnrichmentRepositoryForTransaction,
   ingestCollectRequestV4,
+  prepareCollectedItemForMirror,
   prepareCollectRequestV4,
   prepareCompleteCollectRequestV4,
   preflightCollectRequestsV4,
@@ -160,6 +161,26 @@ test("PostgreSQL collection reuses its caller-owned transaction client without r
   );
   assert.equal(connectCalls, 0);
   assert.equal(statements.some((sql) => /^(BEGIN|COMMIT|ROLLBACK)/.test(sql)), false);
+});
+
+test("PostgreSQL collection returns the same enriched draft that it mirrors", () => {
+  const prepared = prepareCollectedItemForMirror({
+    id: "collect-a",
+    listingDraft: {
+      title: "Manual title survives enrichment",
+      logistics: { weightG: 777, lengthMm: "", widthMm: "", heightMm: "" },
+    },
+    logistics: { weightG: 500, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    sourceCategory: { descriptionCategoryId: 17_000_001 },
+  });
+
+  assert.deepEqual(prepared.listingDraft, {
+    title: "Manual title survives enrichment",
+    logistics: { weightG: 777, lengthMm: 300, widthMm: 200, heightMm: 100 },
+    sourceCategory: { descriptionCategoryId: 17_000_001 },
+    descriptionCategoryId: "",
+    typeId: "",
+  });
 });
 
 test("batch preflight accepts missing enrichment fields but rejects invalid payload shape", () => {
@@ -1140,6 +1161,9 @@ if (!postgresEnabled()) {
       const completed = await ingestCollectRequestV4({
         authenticatedAccount: { id: accountId },
         categoryResolutionPort: {
+          async captureCredentialStoreSnapshot() {
+            return Object.freeze({});
+          },
           async scheduleForCollect(input) {
             categoryScheduleCalls.push(structuredClone(input));
           },
@@ -1158,6 +1182,7 @@ if (!postgresEnabled()) {
       assert.deepEqual(categoryScheduleCalls, [{
         accountId,
         collectItemId: first.collectItemId,
+        credentialStoreSnapshot: {},
       }]);
       assert.deepEqual(completed.enrichment, {
         status: "COMPLETE",
