@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -59,4 +59,24 @@ test("0.13.46.2 release metadata and download endpoint stay aligned", async (con
     latestVersion: manifest.version,
     downloadUrl: `/sonli-extension-${manifest.version}.zip`,
   });
+
+  for (const currentReleasePath of [
+    `app/public/sonli-extension-${manifest.version}`,
+    `app/public/sonli-extension-${manifest.version}.zip`,
+    `app/dist/sonli-extension-${manifest.version}.zip`,
+  ]) {
+    await access(path.join(rootDir, currentReleasePath));
+  }
+
+  for (const retiredReleasePath of [
+    "app/public/sonli-extension-0.13.46.1",
+    "app/public/sonli-extension-0.13.46.1.zip",
+    "app/dist/sonli-extension-0.13.46.1.zip",
+  ]) {
+    await assert.rejects(
+      access(path.join(rootDir, retiredReleasePath)),
+      (error) => error?.code === "ENOENT",
+      `retired extension release must not ship: ${retiredReleasePath}`,
+    );
+  }
 });
