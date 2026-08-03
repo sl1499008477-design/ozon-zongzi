@@ -6,6 +6,7 @@ import {
 } from "./auto-listing-state-machine.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
+import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import {
@@ -128,6 +129,99 @@ async function loadWarehouseWithClient(client, { accountId, targetStoreId, targe
     products: associations.rows.map((association) => ({ accountId, storeId: targetStoreId,
       warehouse_stocks: [{ warehouse_id: row.warehouse_id, source: association.source }] })),
   };
+}
+
+async function lockTargetWarehouseEvidenceWithClient(client, { accountId, targetStoreId, targetWarehouseId }) {
+  const storeResult = await client.query(
+    `SELECT s.id,s.owner_account_id,s.label,s.company_name,s.client_id,s.currency_code,s.status
+       FROM stores s
+      WHERE s.id=$1 AND s.owner_account_id=$2
+      FOR SHARE OF s`,
+    [targetStoreId, accountId],
+  );
+  const storeRow = storeResult.rows[0];
+  const credentialResult = storeRow
+    ? await client.query(
+      `SELECT sc.store_id
+         FROM store_credentials sc
+         JOIN stores s ON s.id=sc.store_id AND s.owner_account_id=$2
+        WHERE sc.store_id=$1
+        FOR SHARE OF sc`,
+      [storeRow.id, accountId],
+    )
+    : { rows: [] };
+  const store = storeRow && {
+    id: storeRow.id,
+    ownerAccountId: storeRow.owner_account_id,
+    label: storeRow.label,
+    companyName: storeRow.company_name,
+    clientId: storeRow.client_id,
+    currencyCode: storeRow.currency_code,
+    status: storeRow.status,
+    credentialsSaved: credentialResult.rows.length > 0,
+  };
+  validateTargetStoreRecord({ accountId, targetStoreId, store });
+
+  const warehouseResult = await client.query(
+    `SELECT w.id,w.store_id,w.warehouse_id,w.name,w.warehouse_type,w.status,w.is_active,w.is_archived
+       FROM warehouses w
+       JOIN stores s ON s.id=w.store_id AND s.owner_account_id=$3
+      WHERE w.id=$1 AND w.store_id=$2
+      FOR SHARE OF w`,
+    [targetWarehouseId, targetStoreId, accountId],
+  );
+  const warehouseRow = warehouseResult.rows[0];
+  if (!warehouseRow) throw repositoryError("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+  const associationResult = await client.query(
+    `SELECT p.id AS product_id,p.store_id AS product_store_id,p.status AS product_status,
+            p.is_archived AS product_is_archived,
+            COALESCE(p.raw->>'is_archived','false') = 'true' AS product_raw_is_archived,
+            ps.warehouse_id,ps.source
+       FROM product_stocks ps
+       JOIN products p ON p.id=ps.product_id AND p.store_id=$2
+       JOIN stores s ON s.id=p.store_id AND s.owner_account_id=$3
+      WHERE ps.warehouse_id=$1 AND ps.store_id=$2
+      ORDER BY p.id ASC,ps.source ASC
+      FOR SHARE OF p,ps`,
+    [warehouseRow.id, targetStoreId, accountId],
+  );
+  const productsById = new Map();
+  for (const row of associationResult.rows) {
+    const product = productsById.get(row.product_id) || {
+      accountId,
+      storeId: row.product_store_id,
+      status: row.product_status,
+      is_archived: row.product_is_archived === true || row.product_raw_is_archived === true,
+      warehouse_stocks: [],
+    };
+    product.warehouse_stocks.push({ warehouse_id: warehouseRow.warehouse_id, source: row.source });
+    productsById.set(row.product_id, product);
+  }
+  const warehouse = {
+    id: warehouseRow.id,
+    storeId: warehouseRow.store_id,
+    accountId,
+    warehouse_id: warehouseRow.warehouse_id,
+    name: warehouseRow.name,
+    warehouse_type: warehouseRow.warehouse_type,
+    status: warehouseRow.status,
+    is_active: warehouseRow.is_active,
+    is_archived: warehouseRow.is_archived,
+  };
+  const platformWarehouseId = typeof warehouse.warehouse_id === "string" ? warehouse.warehouse_id.trim() : "";
+  if (!platformWarehouseId || platformWarehouseId.toLowerCase().startsWith("wh_")) {
+    const failure = repositoryError("LISTING_WAREHOUSE_NOT_ELIGIBLE", 422);
+    failure.body = { reason: "WAREHOUSE_ID_MISSING" };
+    throw failure;
+  }
+  assertListingStockSelectionEligible({
+    warehouses: [warehouse],
+    products: [...productsById.values()],
+    stocks: [{ warehouse_id: platformWarehouseId }],
+    targetStoreId,
+    accountId,
+  });
+  return { warehouse, products: [...productsById.values()] };
 }
 
 function defaultIdFactory(prefix) {
@@ -453,6 +547,11 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           committed = true;
           return { ...existing, duplicate: true };
         }
+        await lockTargetWarehouseEvidenceWithClient(client, {
+          accountId: graph.accountId,
+          targetStoreId: graph.configSnapshot.targetStoreId,
+          targetWarehouseId: graph.configSnapshot.targetWarehouseId,
+        });
         const strategy = await client.query(
           `SELECT strategy_key FROM ai_content_strategy_versions
             WHERE id=$1 AND account_id=$2 AND status='PUBLISHED' FOR SHARE`,
@@ -491,22 +590,6 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
               adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks });
             if (!samePrice(item.price, price)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
           }
-          const target = await loadWarehouseWithClient(client, {
-            accountId: graph.accountId, targetStoreId: item.targetStoreId, targetWarehouseId: item.targetWarehouseId,
-          });
-          if (!target.warehouse) throw repositoryError("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
-          const platformWarehouseId = typeof target.warehouse.warehouse_id === "string"
-            ? target.warehouse.warehouse_id.trim() : "";
-          if (!platformWarehouseId || platformWarehouseId.toLowerCase().startsWith("wh_")) {
-            const failure = repositoryError("LISTING_WAREHOUSE_NOT_ELIGIBLE", 422);
-            failure.body = { reason: "WAREHOUSE_ID_MISSING" };
-            throw failure;
-          }
-          assertListingStockSelectionEligible({
-            warehouses: [target.warehouse], products: target.products,
-            stocks: [{ warehouse_id: target.warehouse.warehouse_id }],
-            targetStoreId: item.targetStoreId, accountId: graph.accountId,
-          });
         }
         const jobId = newId("auto_listing_job");
         await client.query(

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
+import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
+import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
+import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 function transitionFixture({
   status, recoveryPoint = null, failureCode = "AUTO_LISTING_TRANSIENT", legacyCurrentEvent = null,
@@ -207,4 +210,159 @@ test("event insertion failure rolls back the status and recovery-point write", a
   assert.equal(calls.some(({ sql }) => /UPDATE auto_listing_job_items/.test(sql)), true);
   assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
   assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
+});
+
+function warehouseGraph({ itemCount = 1 } = {}) {
+  const { config, configHash } = normalizeAndHashAutoListingConfig({
+    targetStoreId: "store-a",
+    targetWarehouseId: "warehouse-a",
+    stock: 1,
+    priceAdjustmentKopecks: "0",
+  });
+  const items = Array.from({ length: itemCount }, (_, sourceOrder) => {
+    const sourceRecordId = `collect-lock-${sourceOrder}`;
+    const captured = buildAutoListingSourceSnapshot({
+      accountId: "account-a",
+      sourceType: "COLLECT_BOX",
+      sourceRecordId,
+      sourceVersion: "1",
+      rawResponseRef: `raw-lock-${sourceOrder}`,
+      rawResponseHash: `hash-lock-${sourceOrder}`,
+      collectItem: {
+        id: sourceRecordId,
+        accountId: "account-a",
+        sku: `sku-lock-${sourceOrder}`,
+        listingDraft: {
+          sku: `sku-lock-${sourceOrder}`,
+          offerId: `offer-lock-${sourceOrder}`,
+          title: "Locked evidence product",
+          currency: "RUB",
+          blackKopecks: "10000",
+          greenKopecks: "8000",
+          images: [],
+          variants: [{ sku: `sku-lock-${sourceOrder}`, offerId: `offer-lock-${sourceOrder}` }],
+          categoryResolution: {
+            status: "MATCHED", method: "test",
+            target: { storeId: "store-a", descriptionCategoryId: "123", typeId: "456" },
+            source: { path: [] },
+          },
+        },
+      },
+    });
+    return {
+      sourceType: "COLLECT_BOX",
+      sourceRecordId,
+      sourceVersion: "1",
+      snapshot: captured.snapshot,
+      snapshotHash: captured.snapshotHash,
+      rawResponseRef: captured.rawResponseRef,
+      targetStoreId: config.targetStoreId,
+      targetWarehouseId: config.targetWarehouseId,
+      sourceOrder,
+      status: "SOURCE_READY",
+      strategyId: "strategy-a",
+      strategyVersionId: "strategy-version-a",
+      ruleId: null,
+      style: "BALANCED_DEFAULT",
+      matchedBy: "DEFAULT",
+      price: {
+        currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000",
+        realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500",
+      },
+      effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
+        configSnapshot: config, configHash, sourceCapture: captured,
+      }),
+    };
+  });
+  return {
+    accountId: "account-a",
+    actorAccountId: "account-a",
+    sourceType: "COLLECT_BOX",
+    idempotencyKey: "lock-evidence-key",
+    correlationId: "lock-evidence-correlation",
+    configSnapshot: config,
+    configHash,
+    strategyVersionId: "strategy-version-a",
+    items,
+  };
+}
+
+function warehouseEvidenceFixture({ store = {}, credential = true, warehouse = {}, associations = true } = {}) {
+  const calls = [];
+  const stop = Object.assign(new Error("stop after evidence"), { code: "STOP_AFTER_EVIDENCE" });
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
+      if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
+      if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM collect_items/.test(sql)) return { rows: [{ ok: 1 }] };
+      if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
+        id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
+        client_id: "client-a", currency_code: "RUB", status: "active", ...store,
+      }] };
+      if (/FROM store_credentials/.test(sql)) return { rows: credential ? [{ store_id: "store-a" }] : [] };
+      if (/FROM warehouses w/.test(sql)) return { rows: [{
+        id: "warehouse-a", store_id: "store-a", warehouse_id: "platform-a", name: "Warehouse A",
+        warehouse_type: "FBS", status: "active", is_active: true, is_archived: false, owner_account_id: "account-a", ...warehouse,
+      }] };
+      if (/FROM product_stocks ps/.test(sql)) return { rows: associations ? [{
+        product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false,
+        product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs",
+      }] : [] };
+      if (/INSERT INTO auto_listing_jobs/.test(sql)) throw stop;
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() { calls.push({ sql: "RELEASE" }); },
+  };
+  return {
+    calls,
+    stop,
+    repository: createAutoListingRepository({
+      pool: { connect: async () => client, query: async () => ({ rows: [] }) },
+      idFactory: (prefix) => `${prefix}-id`,
+    }),
+  };
+}
+
+test("job creation locks scoped store, credential, warehouse, product, and stock evidence without selecting a secret", async () => {
+  const { repository, calls, stop } = warehouseEvidenceFixture();
+  await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
+
+  const evidenceCalls = calls.filter(({ sql }) => /FROM (stores s|store_credentials|warehouses w|product_stocks ps)/.test(sql));
+  assert.equal(evidenceCalls.length, 4);
+  assert.match(evidenceCalls[0].sql, /FOR SHARE OF s/i);
+  assert.match(evidenceCalls[1].sql, /FOR SHARE OF sc/i);
+  assert.match(evidenceCalls[2].sql, /FOR SHARE OF w/i);
+  assert.match(evidenceCalls[3].sql, /FOR SHARE OF p,ps/i);
+  assert.match(evidenceCalls[3].sql, /ORDER BY p\.id ASC,ps\.source ASC/i);
+  assert.equal(evidenceCalls.every(({ sql }) => !/encrypted_api_key|auth_tag|\biv\b/i.test(sql)), true);
+  assert.equal(evidenceCalls.every(({ sql }) => !/LOCK TABLE/i.test(sql)), true);
+  assert.deepEqual(evidenceCalls[0].params, ["store-a", "account-a"]);
+  assert.deepEqual(evidenceCalls[1].params, ["store-a", "account-a"]);
+  assert.deepEqual(evidenceCalls[2].params, ["warehouse-a", "store-a", "account-a"]);
+  assert.deepEqual(evidenceCalls[3].params, ["warehouse-a", "store-a", "account-a"]);
+});
+
+test("locked target evidence rejects invalid store, credential, or active association before a job insert", async () => {
+  for (const [{ store, credential, associations }, expectedCode] of [
+    [{ store: { status: "disabled" } }, "TARGET_STORE_DISABLED"],
+    [{ credential: false }, "TARGET_STORE_CREDENTIALS_REQUIRED"],
+    [{ associations: false }, "LISTING_WAREHOUSE_NOT_ELIGIBLE"],
+  ]) {
+    const { repository, calls } = warehouseEvidenceFixture({ store, credential, associations });
+    await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error?.code === expectedCode);
+    assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql)), false);
+    assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+  }
+});
+
+test("sibling items sharing a target lock and validate its evidence once", async () => {
+  const { repository, calls, stop } = warehouseEvidenceFixture();
+  await assert.rejects(repository.createJobGraph(warehouseGraph({ itemCount: 2 })), (error) => error === stop);
+  assert.equal(calls.filter(({ sql }) => /FROM stores s/.test(sql)).length, 1);
+  assert.equal(calls.filter(({ sql }) => /FROM store_credentials/.test(sql)).length, 1);
+  assert.equal(calls.filter(({ sql }) => /FROM warehouses w/.test(sql)).length, 1);
+  assert.equal(calls.filter(({ sql }) => /FROM product_stocks ps/.test(sql)).length, 1);
 });

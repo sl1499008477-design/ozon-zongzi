@@ -289,10 +289,12 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     async query(sql) {
       if (/^(BEGIN|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
+      if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
       if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
-      if (/FROM warehouses w JOIN stores/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "", owner_account_id: "account-a", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
+      if (/FROM warehouses w/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
       if (/FROM product_stocks ps/.test(sql)) return { rows: [] };
       throw new Error(`unexpected query: ${sql}`);
     },
@@ -387,11 +389,13 @@ test("repository persists only a canonical recomputed price with a non-default s
       calls.push([sql, params]);
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || /INSERT INTO auto_listing_(jobs|job_items|events)/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
+      if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [{ id: "rule-modern", rule_order: 1, rule_kind: "PRODUCT_STYLE", category_id: null, ancestor_category_id: null, product_style: "MODERN", rule: { style: "VISUAL_FIRST", textDensityByRole: {} } }] };
       if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
-      if (/FROM warehouses w JOIN stores/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "1001", owner_account_id: "account-a", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
-      if (/FROM product_stocks ps/.test(sql)) return { rows: [{ source: "fbs" }] };
+      if (/FROM warehouses w/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
+      if (/FROM product_stocks ps/.test(sql)) return { rows: [{ product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false, product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs" }] };
       if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [{ id: "snapshot-a", snapshot_hash: captured.snapshotHash }] };
       if (/FROM auto_listing_jobs WHERE id/.test(sql)) return { rows: [{ id: "auto_listing_job-id", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED", strategy_version_id: "version-a", correlation_id: "corr", created_at: null, updated_at: null }] };
       if (/JOIN auto_listing_source_snapshots/.test(sql)) return { rows: [] };

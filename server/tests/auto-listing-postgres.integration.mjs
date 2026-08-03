@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
+import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
+import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
 import { buildAutoListingSourceSnapshot, canonicalAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
@@ -16,6 +18,12 @@ const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 function graph(accountId, idempotencyKey, suffix, overrides = {}) {
   const sourceRecordId = `collect-${suffix}`;
   const sourceVersion = "1";
+  const { config, configHash } = normalizeAndHashAutoListingConfig({
+    targetStoreId: `store-${accountId}`,
+    targetWarehouseId: `warehouse-${accountId}`,
+    stock: 1,
+    priceAdjustmentKopecks: "0",
+  });
   const captured = buildAutoListingSourceSnapshot({
     accountId,
     sourceType: "COLLECT_BOX",
@@ -42,8 +50,8 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     sourceType: "COLLECT_BOX",
     idempotencyKey,
     correlationId: `corr-${suffix}`,
-    configSnapshot: { targetStoreId: `store-${accountId}`, targetWarehouseId: `warehouse-${accountId}`, priceAdjustmentKopecks: "0" },
-    configHash: `config-${suffix}`,
+    configSnapshot: config,
+    configHash,
     strategyVersionId: `strategy-version-${accountId}`,
     items: [{
       sourceType: "COLLECT_BOX",
@@ -62,6 +70,9 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       style: "BALANCED_DEFAULT",
       matchedBy: "DEFAULT",
       price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+      effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
+        configSnapshot: config, configHash, sourceCapture: captured,
+      }),
     }],
     ...overrides,
   };
@@ -129,6 +140,52 @@ async function runBarrierRace(repository, barrier, inputs) {
   }
 }
 
+function twoConnectionTargetEvidenceBarrier(scopedPool, timeoutMs = 5_000) {
+  let settled = false;
+  let abortCause = null;
+  let resolveLocked;
+  let resolveProceed;
+  const locked = new Promise((resolve) => { resolveLocked = resolve; });
+  const proceed = new Promise((resolve) => { resolveProceed = resolve; });
+  const finish = (cause = null) => {
+    if (settled) return;
+    settled = true;
+    abortCause = cause;
+    clearTimeout(timeout);
+    resolveProceed();
+  };
+  const timeout = setTimeout(() => finish(new Error(`target evidence barrier timed out after ${timeoutMs}ms`)), timeoutMs);
+  return {
+    query: (...args) => scopedPool.query(...args),
+    waitForLock: () => locked,
+    release: () => finish(),
+    dispose: () => finish(new Error("target evidence barrier disposed")),
+    async connect() {
+      const connection = await scopedPool.connect();
+      return {
+        async query(sql, params) {
+          const result = await connection.query(sql, params);
+          if (/FROM product_stocks ps/.test(sql) && /FOR SHARE OF p,ps/.test(sql)) {
+            resolveLocked();
+            await proceed;
+            if (abortCause) throw abortCause;
+          }
+          return result;
+        },
+        release: () => connection.release(),
+      };
+    },
+  };
+}
+
+async function assertStillWaiting(promise, timeoutMs = 80) {
+  const state = await Promise.race([
+    promise.then(() => "settled", () => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("waiting"), timeoutMs)),
+  ]);
+  assert.equal(state, "waiting");
+}
+
 async function registerGraphSources(client, graphInput) {
   for (const item of graphInput.items) {
     await client.query(
@@ -185,6 +242,10 @@ if (!enabled) {
           `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id)
            VALUES ($1,$2,$2,$3,'active',$4)`,
           [`store-${accountId}`, `Store ${accountId}`, `client-${accountId}`, accountId],
+        );
+        await client.query(
+          "INSERT INTO store_credentials (store_id,client_id,encrypted_api_key,iv,auth_tag) VALUES ($1,$2,'ciphertext','iv','tag')",
+          [`store-${accountId}`, `client-${accountId}`],
         );
         await client.query(
           `INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
@@ -431,6 +492,124 @@ if (!enabled) {
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [eventItem.id],
       )).rows[0].count), eventCountBefore);
+    } finally {
+      await client.query("RESET search_path").catch(() => {});
+      await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
+      client.release();
+      await pool.end();
+    }
+  });
+
+  test("PostgreSQL target evidence locks invalidating warehouse and stock writes until a job commits", { timeout: 20_000 }, async () => {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: databaseUrl });
+    const client = await pool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `auto_listing_task8_${suffix}`;
+    const schemaSql = quoteIdentifier(schema);
+    const accountId = `account-task8-${suffix}`;
+    const storeId = `store-${accountId}`;
+    const warehouseId = `warehouse-${accountId}`;
+    const productId = `product-${accountId}`;
+    const scopedPool = {
+      async connect() {
+        const connection = await pool.connect();
+        await connection.query(`SET search_path TO ${schemaSql}, public`);
+        return connection;
+      },
+      async query(sql, params) {
+        return client.query(sql, params);
+      },
+    };
+    try {
+      await client.query(`CREATE SCHEMA ${schemaSql}`);
+      await client.query(`SET search_path TO ${schemaSql}, public`);
+      for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/.test(file)).sort()) {
+        await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      }
+      await client.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'user','active')",
+        [accountId, `user-${accountId}`],
+      );
+      await client.query(
+        "INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)",
+        [storeId, `Store ${accountId}`, `client-${accountId}`, accountId],
+      );
+      await client.query(
+        "INSERT INTO store_credentials (store_id,client_id,encrypted_api_key,iv,auth_tag) VALUES ($1,$2,'ciphertext','iv','tag')",
+        [storeId, `client-${accountId}`],
+      );
+      await client.query(
+        "INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived) VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)",
+        [warehouseId, storeId, `platform-${accountId}`],
+      );
+      await client.query(
+        "INSERT INTO products (id,store_id,product_id,sku,status,raw) VALUES ($1,$2,$3,$4,'active','{}'::jsonb)",
+        [productId, storeId, productId, `sku-${accountId}`],
+      );
+      await client.query(
+        "INSERT INTO product_stocks (product_id,warehouse_id,store_id,source) VALUES ($1,$2,$3,'fbs')",
+        [productId, warehouseId, storeId],
+      );
+      await client.query(
+        "INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)",
+        [`strategy-version-${accountId}`, accountId, `strategy-${accountId}`, `strategy-hash-${accountId}`],
+      );
+
+      const runInvalidationRace = async ({ suffix: graphSuffix, sql, params }) => {
+        const input = graph(accountId, `task8-${graphSuffix}`, graphSuffix);
+        await registerGraphSources(client, input);
+        const barrier = twoConnectionTargetEvidenceBarrier(scopedPool);
+        const repository = createAutoListingRepository({ pool: barrier });
+        const invalidator = await pool.connect();
+        let creation;
+        let invalidating;
+        try {
+          await invalidator.query(`SET search_path TO ${schemaSql}, public`);
+          creation = repository.createJobGraph(input);
+          await barrier.waitForLock();
+          invalidating = invalidator.query(sql, params);
+          await assertStillWaiting(invalidating);
+          barrier.release();
+          const created = await creation;
+          await invalidating;
+          return created;
+        } finally {
+          barrier.dispose();
+          await creation?.catch(() => {});
+          await invalidating?.catch(() => {});
+          invalidator.release();
+        }
+      };
+
+      const warehouseJob = await runInvalidationRace({
+        suffix: "warehouse-update",
+        sql: "UPDATE warehouses SET is_active=FALSE WHERE id=$1 AND store_id=$2",
+        params: [warehouseId, storeId],
+      });
+      assert.ok(warehouseJob.id);
+      assert.equal((await client.query("SELECT is_active FROM warehouses WHERE id=$1", [warehouseId])).rows[0].is_active, false);
+      await client.query("UPDATE warehouses SET is_active=TRUE WHERE id=$1", [warehouseId]);
+
+      const stockJob = await runInvalidationRace({
+        suffix: "stock-delete",
+        sql: "DELETE FROM product_stocks WHERE product_id=$1 AND warehouse_id=$2 AND store_id=$3 AND source='fbs'",
+        params: [productId, warehouseId, storeId],
+      });
+      assert.ok(stockJob.id);
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM product_stocks WHERE product_id=$1 AND warehouse_id=$2", [productId, warehouseId],
+      )).rows[0].count), 0);
+
+      const invalidFirst = graph(accountId, "task8-invalid-first", "invalid-first");
+      await registerGraphSources(client, invalidFirst);
+      await assert.rejects(
+        createAutoListingRepository({ pool: scopedPool }).createJobGraph(invalidFirst),
+        (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE",
+      );
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1", [accountId],
+      )).rows[0].count), 2);
     } finally {
       await client.query("RESET search_path").catch(() => {});
       await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
