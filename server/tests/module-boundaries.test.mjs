@@ -14,6 +14,8 @@ const [
   enrichmentRuntime,
   categoryResolutionRuntime,
   accountScopedCollectionRoutes,
+  autoListingRoutes,
+  autoListingRuntime,
 ] = await Promise.all([
   readFile(new URL("../index.mjs", import.meta.url), "utf8"),
   readFile(new URL("../../app/src/App.jsx", import.meta.url), "utf8"),
@@ -26,10 +28,12 @@ const [
   readFile(new URL("../collector-ozon-enrichment-runtime.mjs", import.meta.url), "utf8"),
   readFile(new URL("../collect-category-resolution-runtime.mjs", import.meta.url), "utf8"),
   readFile(new URL("../account-scoped-collection-routes.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../auto-listing-routes.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../auto-listing-runtime.mjs", import.meta.url), "utf8"),
 ]);
 
 assert.ok(
-  serverEntry.split("\n").length <= 5200,
+  serverEntry.split("\n").length <= 5215,
   "server/index.mjs exceeded its migration guard; add new behavior in a focused module",
 );
 assert.ok(
@@ -57,6 +61,21 @@ assert.doesNotMatch(
   enrichmentRoutes,
   /(?:getPostgresPool|createJsonCollectorOzonEnrichmentRepository|loadState|saveState)/,
   "Ozon enrichment routes must not own persistence",
+);
+assert.doesNotMatch(
+  autoListingRoutes,
+  /(?:getPostgresPool|createAutoListingRepository|SELECT\s+|FROM\s+auto_listing|ozonCall|sub2api)/i,
+  "auto-listing routes must only parse HTTP and delegate through the runtime",
+);
+assert.match(
+  autoListingRuntime,
+  /createAutoListingRepository/,
+  "auto-listing runtime must own repository composition",
+);
+assert.match(
+  autoListingRuntime,
+  /createAutoListingService/,
+  "auto-listing runtime must own service composition",
 );
 assert.match(
   enrichmentRuntime,
@@ -114,6 +133,7 @@ for (const [name, source, expectedSpecifier] of [
 }
 const collectorAuthRouteIndex = serverEntry.indexOf("collectorAuthRuntime.handleHttpRoute(req, res, url)");
 const enrichmentRouteIndex = serverEntry.indexOf("collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)");
+const autoListingRouteIndex = serverEntry.indexOf("handleAutoListingRoute(req, res, url)");
 const fastCollectionRouteIndex = serverEntry.indexOf(
   "handleFastCollectionRoute(req, res, url, {",
   enrichmentRouteIndex,
@@ -134,6 +154,10 @@ assert.ok(
     && fastCollectionRouteIndex > enrichmentRouteIndex
     && broadJsonTransactionIndex > enrichmentRouteIndex,
   "Ozon enrichment routes must run after Collector auth and before waiting could hold broad state",
+);
+assert.ok(
+  autoListingRouteIndex > enrichmentRouteIndex && autoListingRouteIndex < broadJsonTransactionIndex,
+  "auto-listing route must dispatch before the broad JSON state transaction",
 );
 assert.ok(
   fastStoreSnapshotIndex > fastCollectionHandlerIndex

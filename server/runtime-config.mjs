@@ -2,6 +2,11 @@ function configured(name) {
   return Boolean(String(process.env[name] || "").trim());
 }
 
+export function autoListingEnabled(env = process.env) {
+  const value = String(env?.AUTO_LISTING_ENABLED || "").trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
 function secureSecret(name, minimumLength) {
   const value = String(process.env[name] || "");
   return value.length >= minimumLength

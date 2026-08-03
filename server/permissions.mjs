@@ -2,6 +2,7 @@ export const PERMISSIONS = Object.freeze({
   ACCOUNT_MANAGE: "account.manage",
   PRICING_MANAGE: "pricing.manage",
   ANNOUNCEMENT_MANAGE: "announcement.manage",
+  AI_CONTENT_MANAGE: "ai-content.manage",
   TENANT_OPERATE: "tenant.operate",
 });
 
@@ -20,6 +21,11 @@ export const permissionMatrix = Object.freeze({
     roles: Object.freeze(["admin"]),
     scope: "GLOBAL_ADMIN",
     label: "全局公告管理",
+  }),
+  [PERMISSIONS.AI_CONTENT_MANAGE]: Object.freeze({
+    roles: Object.freeze(["admin"]),
+    scope: "GLOBAL_ADMIN",
+    label: "AI 内容策略管理",
   }),
   [PERMISSIONS.TENANT_OPERATE]: Object.freeze({
     roles: Object.freeze(["admin", "user"]),

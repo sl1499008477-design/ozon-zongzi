@@ -1,5 +1,7 @@
 import "./env.mjs";
 import { assertProductionConfiguration } from "./runtime-config.mjs";
+import { createAutoListingRuntime } from "./auto-listing-runtime.mjs";
+import { createAutoListingHttpHandler } from "./auto-listing-routes.mjs";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
@@ -362,6 +364,16 @@ async function saveState(state) {
 
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
+const autoListingRuntime = createAutoListingRuntime();
+const handleAutoListingRoute = createAutoListingHttpHandler({
+  authenticate: async (req) => {
+    if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
+    return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
+  },
+  runtime: autoListingRuntime,
+  readJson: readBody,
+  sendJson,
+});
 const ozonCategoryService = createOzonCategoryService();
 function requiredOptionalFunctionOverride(overrides, name) {
   if (!Object.hasOwn(overrides, name)) return {};
@@ -2665,6 +2677,7 @@ export function createHttpHandler({
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
   if (await composition.collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
+  if (await handleAutoListingRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: (request) => collectorAuthRuntime.authenticateRequest(
       request,

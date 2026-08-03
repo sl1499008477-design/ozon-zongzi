@@ -1,0 +1,200 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { PERMISSIONS, hasPermission } from "../permissions.mjs";
+import { autoListingEnabled } from "../runtime-config.mjs";
+import { createAutoListingRuntime } from "../auto-listing-runtime.mjs";
+import { createAutoListingHttpHandler } from "../auto-listing-routes.mjs";
+
+function request({ method = "GET", path = "/auto-listing/jobs", body } = {}) {
+  return { method, body, headers: {} , url: path };
+}
+
+function harness({ enabled = true, authenticate, runtime, readJson } = {}) {
+  const replies = [];
+  const handler = createAutoListingHttpHandler({
+    isEnabled: () => enabled,
+    authenticate: authenticate || (async () => ({ id: "account_a", role: "user" })),
+    runtime: runtime || { getService: async () => ({}) },
+    readJson: readJson || (async (req) => req.body),
+    sendJson: (_res, status, payload) => replies.push({ status, payload }),
+  });
+  return { handler, replies };
+}
+
+const createBody = Object.freeze({
+  collectItemIds: ["collect_1"],
+  idempotencyKey: "idem_1",
+  correlationId: "corr_1",
+  config: { targetStoreId: "store_1", targetWarehouseId: "warehouse_1" },
+});
+
+test("auto-listing feature flag is opt-in only", () => {
+  assert.equal(autoListingEnabled({}), false);
+  assert.equal(autoListingEnabled({ AUTO_LISTING_ENABLED: "0" }), false);
+  assert.equal(autoListingEnabled({ AUTO_LISTING_ENABLED: " true " }), true);
+  assert.equal(autoListingEnabled({ AUTO_LISTING_ENABLED: "1" }), true);
+  assert.equal(autoListingEnabled({ AUTO_LISTING_ENABLED: "yes" }), false);
+});
+
+test("AI content management permission is admin-only", () => {
+  assert.equal(PERMISSIONS.AI_CONTENT_MANAGE, "ai-content.manage");
+  assert.equal(hasPermission({ id: "admin", role: "admin" }, PERMISSIONS.AI_CONTENT_MANAGE), true);
+  assert.equal(hasPermission({ id: "user", role: "user" }, PERMISSIONS.AI_CONTENT_MANAGE), false);
+});
+
+test("matching unauthenticated requests return 401 before feature state", async () => {
+  let initialized = 0;
+  const { handler, replies } = harness({
+    enabled: false,
+    authenticate: async () => { throw Object.assign(new Error("unauthenticated"), { status: 401, code: "AUTH_REQUIRED" }); },
+    runtime: { getService: async () => { initialized += 1; } },
+  });
+  assert.equal(await handler(request(), {}, new URL("http://local/auto-listing/jobs")), true);
+  assert.equal(replies[0].status, 401);
+  assert.equal(replies[0].payload.code, "AUTO_LISTING_UNAUTHENTICATED");
+  assert.equal(initialized, 0);
+});
+
+test("disabled feature rejects authenticated calls without initializing runtime", async () => {
+  let initialized = 0;
+  const { handler, replies } = harness({
+    enabled: false,
+    runtime: { getService: async () => { initialized += 1; throw new Error("must not run"); } },
+  });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], {
+    status: 503,
+    payload: { ok: false, code: "AUTO_LISTING_DISABLED", message: "自动上架功能暂未启用", correlationId: "corr_1" },
+  });
+  assert.equal(initialized, 0);
+});
+
+test("matching unsupported methods remain 405 after authentication even while disabled", async () => {
+  const { handler, replies } = harness({ enabled: false });
+  await handler(request({ method: "DELETE" }), {}, new URL("http://local/auto-listing/jobs"));
+  assert.deepEqual(replies[0], {
+    status: 405,
+    payload: { ok: false, code: "AUTO_LISTING_METHOD_NOT_ALLOWED", message: "不支持的自动上架请求方法", correlationId: "" },
+  });
+});
+
+test("routes inject only authenticated actor and reject client scope or sensitive fields", async () => {
+  const received = [];
+  const service = { createAutoListingJob: async (input) => { received.push(input); return { id: "job_1", accountId: "leak", rawResponse: { secret: "x" }, items: [] }; } };
+  const { handler, replies } = harness({ runtime: { getService: async () => service } });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.equal(received[0].actor.id, "account_a");
+  assert.equal(Object.hasOwn(received[0], "accountId"), false);
+  assert.deepEqual(replies[0].payload.data, { jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [] });
+
+  for (const badBody of [
+    { ...createBody, accountId: "account_b" },
+    { ...createBody, actor: { id: "account_b" } },
+    { ...createBody, config: { ...createBody.config, credentials: "x" } },
+  ]) {
+    const local = harness({ runtime: { getService: async () => service } });
+    await local.handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: badBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+    assert.equal(local.replies[0].status, 400);
+    assert.equal(local.replies[0].payload.code, "AUTO_LISTING_REQUEST_INVALID");
+  }
+});
+
+test("invalid create payloads never initialize the runtime", async () => {
+  let initialized = 0;
+  const { handler, replies } = harness({
+    runtime: { getService: async () => { initialized += 1; return {}; } },
+  });
+  await handler(request({
+    method: "POST",
+    path: "/auto-listing/jobs/from-collect-box",
+    body: { ...createBody, accountId: "account_b" },
+  }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.equal(replies[0].status, 400);
+  assert.equal(initialized, 0);
+
+  await handler(request({ path: "/auto-listing/jobs/%" }), {}, new URL("http://local/auto-listing/jobs/%"));
+  assert.equal(replies[1].status, 400);
+  assert.equal(initialized, 0);
+});
+
+test("malformed JSON maps to a safe invalid-request response without initialization", async () => {
+  let initialized = 0;
+  const { handler, replies } = harness({
+    runtime: { getService: async () => { initialized += 1; return {}; } },
+    readJson: async () => { throw Object.assign(new Error("unexpected body fragment"), { status: 400 }); },
+  });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box" }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], {
+    status: 400,
+    payload: { ok: false, code: "AUTO_LISTING_REQUEST_INVALID", message: "自动上架请求无效", correlationId: "" },
+  });
+  assert.equal(initialized, 0);
+});
+
+test("list and detail are actor-scoped, validate input, and never leak events or secrets", async () => {
+  const calls = [];
+  const service = {
+    listAutoListingJobs: async (input) => { calls.push(["list", input]); return [{ id: "job_1", accountId: "account_b", events: [{ details: { rawResponse: "no" } }], items: [] }]; },
+    getAutoListingJob: async (input) => { calls.push(["get", input]); return { id: "job_1", accountId: "account_b", sub2apiKey: "no", items: [{ id: "item_1", status: "SOURCE_READY", rawResponseRef: "no" }] }; },
+  };
+  const { handler, replies } = harness({ runtime: { getService: async () => service } });
+  await handler(request({ path: "/auto-listing/jobs?limit=20" }), {}, new URL("http://local/auto-listing/jobs?limit=20"));
+  await handler(request({ path: "/auto-listing/jobs/job_1" }), {}, new URL("http://local/auto-listing/jobs/job_1"));
+  assert.deepEqual(calls, [
+    ["list", { actor: { id: "account_a", role: "user" }, limit: 20 }],
+    ["get", { actor: { id: "account_a", role: "user" }, jobId: "job_1" }],
+  ]);
+  assert.deepEqual(replies.map((reply) => reply.payload.data), [
+    [{ jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [] }],
+    { jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [{ itemId: "item_1", status: "SOURCE_READY" }] },
+  ]);
+
+  const invalid = harness({ runtime: { getService: async () => service } });
+  await invalid.handler(request({ path: "/auto-listing/jobs?limit=101" }), {}, new URL("http://local/auto-listing/jobs?limit=101"));
+  await invalid.handler(request({ method: "DELETE", path: "/auto-listing/jobs" }), {}, new URL("http://local/auto-listing/jobs"));
+  assert.deepEqual(invalid.replies.map((reply) => [reply.status, reply.payload.code]), [[400, "AUTO_LISTING_REQUEST_INVALID"], [405, "AUTO_LISTING_METHOD_NOT_ALLOWED"]]);
+});
+
+test("unknown failures use a safe 500 envelope and unrelated paths are not handled", async () => {
+  const { handler, replies } = harness({ runtime: { getService: async () => ({ listAutoListingJobs: async () => { throw new Error("postgres password=secret"); } }) } });
+  assert.equal(await handler(request(), {}, new URL("http://local/auto-listing/jobs")), true);
+  assert.deepEqual(replies[0], { status: 500, payload: { ok: false, code: "AUTO_LISTING_INTERNAL_ERROR", message: "自动上架请求处理失败", correlationId: "" } });
+  assert.equal(await handler(request({ path: "/unrelated" }), {}, new URL("http://local/unrelated")), false);
+});
+
+test("known service failures preserve only safe codes and messages", async () => {
+  const { handler, replies } = harness({
+    runtime: {
+      getService: async () => ({
+        createAutoListingJob: async () => {
+          throw Object.assign(new Error("target warehouse account_b secret"), {
+            status: 422,
+            code: "AUTO_LISTING_CONFIG_INVALID",
+          });
+        },
+      }),
+    },
+  });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], {
+    status: 422,
+    payload: { ok: false, code: "AUTO_LISTING_CONFIG_INVALID", message: "自动上架请求处理失败", correlationId: "corr_1" },
+  });
+});
+
+test("runtime initializes once concurrently and retries after failure", async () => {
+  let pools = 0;
+  let repositories = 0;
+  let services = 0;
+  const runtime = createAutoListingRuntime({
+    getPostgresPool: async () => { pools += 1; if (pools === 1) throw new Error("temporary"); return { id: "pool" }; },
+    createRepository: ({ pool }) => { repositories += 1; return { pool }; },
+    createService: ({ repository }) => { services += 1; return { repository }; },
+  });
+  await assert.rejects(runtime.getService(), /temporary/);
+  const [left, right] = await Promise.all([runtime.getService(), runtime.getService()]);
+  assert.equal(left, right);
+  assert.equal(pools, 2);
+  assert.equal(repositories, 1);
+  assert.equal(services, 1);
+});
