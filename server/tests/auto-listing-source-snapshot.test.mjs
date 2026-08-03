@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import {
   buildAutoListingSourceSnapshot,
@@ -148,6 +149,28 @@ test("keeps matched target-store and reliable ancestor IDs separate from display
   assert.deepEqual(result.snapshot.targetCategory.ancestorCategoryIds, ["ancestor-1", "ancestor-2"]);
   assert.deepEqual(verifyAutoListingSourceSnapshot(result), result);
   assert.throws(() => verifyAutoListingSourceSnapshot({ snapshot: { identity: {} }, snapshotHash: "bad" }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
+});
+
+test("rejects semantically incomplete snapshots even when the supplied hash matches", () => {
+  const valid = buildAutoListingSourceSnapshot(source());
+  const malformed = structuredClone(valid.snapshot);
+  malformed.variants = null;
+  const snapshotHash = crypto.createHash("sha256").update(JSON.stringify(malformed)).digest("hex");
+  assert.throws(
+    () => verifyAutoListingSourceSnapshot({ ...valid, snapshot: malformed, snapshotHash }),
+    (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
+  );
+});
+
+test("rejects non-scalar nested source versions even when canonical hashing succeeds", () => {
+  const valid = buildAutoListingSourceSnapshot(source());
+  const malformed = structuredClone(valid.snapshot);
+  malformed.source.productDraftVersion = [];
+  const snapshotHash = crypto.createHash("sha256").update(JSON.stringify(malformed)).digest("hex");
+  assert.throws(
+    () => verifyAutoListingSourceSnapshot({ ...valid, snapshot: malformed, snapshotHash }),
+    (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
+  );
 });
 
 test("hashes equivalent key orders equally and business changes differently", () => {

@@ -87,36 +87,46 @@ function safePrice(value) {
   return price;
 }
 
+function safeString(value, max = 512) {
+  return typeof value === "string" && value.length <= max ? value : null;
+}
+
+function safeTimestamp(value) {
+  if (typeof value === "string" && value.length <= 80) return value;
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
+  return null;
+}
+
 function safeItem(item = {}) {
   const source = item.source || item;
   return {
-    itemId: source.id || source.itemId || null,
-    status: source.status || null,
-    createdAt: source.createdAt || source.created_at || null,
-    updatedAt: source.updatedAt || source.updated_at || null,
-    targetStoreId: source.targetStoreId || source.target_store_id || null,
-    targetWarehouseId: source.targetWarehouseId || source.target_warehouse_id || null,
-    sourceRecordId: source.sourceRecordId || source.source_record_id || null,
-    sourceVersion: source.sourceVersion || source.source_version || null,
-    sourceHash: source.sourceHash || source.source_hash || source.snapshotHash || source.snapshot_hash || null,
-    strategyId: source.strategyId || source.strategy_id || null,
-    strategyVersionId: source.strategyVersionId || source.strategy_version_id || null,
-    style: source.style || null,
-    matchedBy: source.matchedBy || source.matched_by || null,
+    itemId: safeString(source.id) || safeString(source.itemId),
+    status: safeString(source.status),
+    createdAt: safeTimestamp(source.createdAt) || safeTimestamp(source.created_at),
+    updatedAt: safeTimestamp(source.updatedAt) || safeTimestamp(source.updated_at),
+    targetStoreId: safeString(source.targetStoreId) || safeString(source.target_store_id),
+    targetWarehouseId: safeString(source.targetWarehouseId) || safeString(source.target_warehouse_id),
+    sourceRecordId: safeString(source.sourceRecordId) || safeString(source.source_record_id),
+    sourceVersion: safeString(source.sourceVersion) || safeString(source.source_version),
+    sourceHash: safeString(source.sourceHash) || safeString(source.source_hash) || safeString(source.snapshotHash) || safeString(source.snapshot_hash),
+    strategyId: safeString(source.strategyId) || safeString(source.strategy_id),
+    strategyVersionId: safeString(source.strategyVersionId) || safeString(source.strategy_version_id),
+    style: safeString(source.style),
+    matchedBy: safeString(source.matchedBy) || safeString(source.matched_by),
     ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
-    ...(source.failureCode || source.failure_code ? { failureCode: source.failureCode || source.failure_code } : {}),
+    ...(safeString(source.failureCode) || safeString(source.failure_code) ? { failureCode: safeString(source.failureCode) || safeString(source.failure_code) } : {}),
   };
 }
 
 function safeJob(row = {}) {
   if (!row) return null;
   return {
-    jobId: row.id || row.jobId || null,
-    sourceType: row.sourceType || row.source_type || "COLLECT_BOX",
-    status: row.status || "CREATED",
-    correlationId: row.correlationId || row.correlation_id || null,
-    createdAt: row.createdAt || row.created_at || null,
-    updatedAt: row.updatedAt || row.updated_at || null,
+    jobId: safeString(row.id) || safeString(row.jobId),
+    sourceType: safeString(row.sourceType) || safeString(row.source_type) || "COLLECT_BOX",
+    status: safeString(row.status) || "CREATED",
+    correlationId: safeString(row.correlationId) || safeString(row.correlation_id),
+    createdAt: safeTimestamp(row.createdAt) || safeTimestamp(row.created_at),
+    updatedAt: safeTimestamp(row.updatedAt) || safeTimestamp(row.updated_at),
     items: (Array.isArray(row.items) ? row.items : []).map(safeItem),
   };
 }

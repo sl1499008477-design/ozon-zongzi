@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { assertAutoListingTransition, nextAutoListingStatus } from "./auto-listing-state-machine.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
+import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
 
@@ -25,6 +26,56 @@ function requiredText(value, code = "AUTO_LISTING_REPOSITORY_INVALID") {
 
 function json(value) {
   return JSON.stringify(value ?? null);
+}
+
+function eventDetailsError() {
+  return repositoryError("AUTO_LISTING_EVENT_DETAILS_INVALID");
+}
+
+function safeEventDetails(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) throw eventDetailsError();
+  const allowed = new Set(["failureCode", "recoveryPoint", "attempt"]);
+  const output = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (!allowed.has(key) || ["__proto__", "constructor", "prototype"].includes(key)) throw eventDetailsError();
+    if (key === "attempt") {
+      if (!Number.isInteger(nested) || nested < 0 || nested > 1_000_000) throw eventDetailsError();
+      output.attempt = nested;
+    } else {
+      if (typeof nested !== "string" || !/^[A-Z0-9_:-]{1,160}$/.test(nested)) throw eventDetailsError();
+      output[key] = nested;
+    }
+  }
+  return output;
+}
+
+async function loadWarehouseWithClient(client, { accountId, targetStoreId, targetWarehouseId }) {
+  const warehouseResult = await client.query(
+    `SELECT w.id,w.store_id,w.warehouse_id,w.name,w.warehouse_type,w.status,w.is_active,w.is_archived,
+            s.owner_account_id
+       FROM warehouses w JOIN stores s ON s.id=w.store_id
+      WHERE w.id=$1 AND w.store_id=$2 AND s.owner_account_id=$3`,
+    [targetWarehouseId, targetStoreId, accountId],
+  );
+  const row = warehouseResult.rows[0];
+  if (!row) return { warehouse: null, products: [] };
+  const associations = await client.query(
+    `SELECT ps.source
+       FROM product_stocks ps
+       JOIN products p ON p.id=ps.product_id AND p.store_id=$2
+       JOIN stores s ON s.id=p.store_id AND s.owner_account_id=$3
+      WHERE ps.warehouse_id=$1 AND ps.store_id=$2
+        AND COALESCE(p.status,'') <> 'ARCHIVED'
+        AND COALESCE(p.raw->>'is_archived','false') <> 'true'`,
+    [row.id, targetStoreId, accountId],
+  );
+  return {
+    warehouse: { id: row.id, storeId: row.store_id, accountId: row.owner_account_id, warehouse_id: row.warehouse_id,
+      name: row.name, warehouse_type: row.warehouse_type, status: row.status, is_active: row.is_active, is_archived: row.is_archived },
+    products: associations.rows.map((association) => ({ accountId, storeId: targetStoreId,
+      warehouse_stocks: [{ warehouse_id: row.warehouse_id, source: association.source }] })),
+  };
 }
 
 function defaultIdFactory(prefix) {
@@ -128,6 +179,10 @@ function assertGraph(graph) {
   const idempotencyKey = requiredText(graph.idempotencyKey);
   if (requiredText(graph.actorAccountId) !== accountId || !requiredText(graph.strategyVersionId)
     || !Array.isArray(graph.items) || !graph.items.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  if (!graph.configSnapshot || typeof graph.configSnapshot !== "object"
+    || requiredText(graph.configSnapshot.targetStoreId) === "" || requiredText(graph.configSnapshot.targetWarehouseId) === "") {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
   const items = graph.items.map((item) => {
     if (!item || typeof item !== "object" || item.sourceType !== graph.sourceType
       || !requiredText(item.sourceRecordId) || !requiredText(item.sourceVersion)
@@ -141,6 +196,22 @@ function assertGraph(graph) {
       || captured.snapshot.identity.sourceRecordId !== item.sourceRecordId
       || captured.snapshot.identity.sourceVersion !== item.sourceVersion
       || captured.snapshot.identity.sourceType !== item.sourceType) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    if (item.rawResponseRef !== captured.rawResponseRef
+      || item.targetStoreId !== graph.configSnapshot.targetStoreId
+      || item.targetWarehouseId !== graph.configSnapshot.targetWarehouseId
+      || (item.status === "SOURCE_READY" && captured.snapshot.targetCategory.targetStoreId !== item.targetStoreId)) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    if (item.status === "SOURCE_READY") {
+      if (item.failureCode || item.strategyVersionId !== graph.strategyVersionId || !requiredText(item.strategyId)
+        || !requiredText(item.style) || !requiredText(item.matchedBy)
+        || !item.price || item.price.currency !== "RUB" || !requiredText(item.price.branch)
+        || !["blackKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"].every((key) => /^[-+]?\d+$/.test(item.price[key] || ""))) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+    } else if (!/^AUTO_LISTING_[A-Z0-9_]+$|^PRICE_[A-Z0-9_]+$/.test(requiredText(item.failureCode))) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     return { ...item, ...captured };
@@ -231,43 +302,7 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       const scope = requiredAccountId(accountId);
       const storeId = requiredText(targetStoreId);
       const warehouseId = requiredText(targetWarehouseId);
-      const warehouseResult = await pool.query(
-        `SELECT w.id,w.store_id,w.warehouse_id,w.name,w.warehouse_type,w.status,w.is_active,w.is_archived,
-                s.owner_account_id
-           FROM warehouses w JOIN stores s ON s.id=w.store_id
-          WHERE w.id=$1 AND w.store_id=$2 AND s.owner_account_id=$3`,
-        [warehouseId, storeId, scope],
-      );
-      const row = warehouseResult.rows[0];
-      if (!row) return { warehouse: null, products: [] };
-      const associations = await pool.query(
-        `SELECT ps.source
-           FROM product_stocks ps
-           JOIN products p ON p.id=ps.product_id AND p.store_id=$2
-           JOIN stores s ON s.id=p.store_id AND s.owner_account_id=$3
-          WHERE ps.warehouse_id=$1 AND ps.store_id=$2
-            AND COALESCE(p.status,'') <> 'ARCHIVED'
-            AND COALESCE(p.raw->>'is_archived','false') <> 'true'`,
-        [row.id, storeId, scope],
-      );
-      return {
-        warehouse: {
-          id: row.id,
-          storeId: row.store_id,
-          accountId: row.owner_account_id,
-          warehouse_id: row.warehouse_id,
-          name: row.name,
-          warehouse_type: row.warehouse_type,
-          status: row.status,
-          is_active: row.is_active,
-          is_archived: row.is_archived,
-        },
-        products: associations.rows.map((association) => ({
-          accountId: scope,
-          storeId,
-          warehouse_stocks: [{ warehouse_id: row.warehouse_id, source: association.source }],
-        })),
-      };
+      return loadWarehouseWithClient(pool, { accountId: scope, targetStoreId: storeId, targetWarehouseId: warehouseId });
     },
 
     async loadPublishedStrategy({ accountId } = {}) {
@@ -318,7 +353,7 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           return { ...existing, duplicate: true };
         }
         const strategy = await client.query(
-          `SELECT 1 FROM ai_content_strategy_versions
+          `SELECT strategy_key FROM ai_content_strategy_versions
             WHERE id=$1 AND account_id=$2 AND status='PUBLISHED' FOR SHARE`,
           [graph.strategyVersionId, graph.accountId],
         );
@@ -330,14 +365,18 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
             [item.sourceRecordId, graph.accountId],
           );
           if (!source.rows[0]) throw repositoryError("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
-          const target = await client.query(
-            `SELECT 1 FROM stores s
-              JOIN warehouses w ON w.id=$3 AND w.store_id=s.id
-             WHERE s.id=$2 AND s.owner_account_id=$1
-               AND NULLIF(BTRIM(w.warehouse_id),'') IS NOT NULL FOR SHARE`,
-            [graph.accountId, item.targetStoreId, item.targetWarehouseId],
-          );
-          if (!target.rows[0]) throw repositoryError("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+          if (item.status === "SOURCE_READY" && item.strategyId !== strategy.rows[0].strategy_key) {
+            throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+          }
+          const target = await loadWarehouseWithClient(client, {
+            accountId: graph.accountId, targetStoreId: item.targetStoreId, targetWarehouseId: item.targetWarehouseId,
+          });
+          if (!target.warehouse) throw repositoryError("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+          assertListingStockSelectionEligible({
+            warehouses: [target.warehouse], products: target.products,
+            stocks: [{ warehouse_id: target.warehouse.warehouse_id }],
+            targetStoreId: item.targetStoreId, accountId: graph.accountId,
+          });
         }
         const jobId = newId("auto_listing_job");
         await client.query(
@@ -349,26 +388,25 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
             graph.strategyVersionId, graph.actorAccountId, graph.correlationId],
         );
         for (const item of graph.items) {
-          const existingSnapshot = await client.query(
+          const proposedSnapshotId = newId("auto_listing_snapshot");
+          const insertedSnapshot = await client.query(
+            `INSERT INTO auto_listing_source_snapshots (
+               id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref
+             ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
+             ON CONFLICT (account_id,source_type,source_record_id,source_version) DO NOTHING
+             RETURNING id,snapshot_hash`,
+            [proposedSnapshotId, graph.accountId, item.sourceType, item.sourceRecordId, item.sourceVersion,
+              json(item.snapshot), item.snapshotHash, item.rawResponseRef],
+          );
+          const persistedSnapshot = insertedSnapshot.rows[0] || (await client.query(
             `SELECT id,snapshot_hash FROM auto_listing_source_snapshots
               WHERE account_id=$1 AND source_type=$2 AND source_record_id=$3 AND source_version=$4 FOR SHARE`,
             [graph.accountId, item.sourceType, item.sourceRecordId, item.sourceVersion],
-          );
-          let snapshotId = existingSnapshot.rows[0]?.id;
-          if (snapshotId) {
-            if (existingSnapshot.rows[0].snapshot_hash !== item.snapshotHash) {
-              throw repositoryError("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
-            }
-          } else {
-            snapshotId = newId("auto_listing_snapshot");
-            await client.query(
-              `INSERT INTO auto_listing_source_snapshots (
-                 id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref
-               ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`,
-              [snapshotId, graph.accountId, item.sourceType, item.sourceRecordId, item.sourceVersion,
-                json(item.snapshot), item.snapshotHash, item.rawResponseRef],
-            );
+          )).rows[0];
+          if (!persistedSnapshot || persistedSnapshot.snapshot_hash !== item.snapshotHash) {
+            throw repositoryError("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
           }
+          const snapshotId = persistedSnapshot.id;
           const itemId = `${jobId}_item_${String(item.sourceOrder).padStart(3, "0")}`;
           await client.query(
             `INSERT INTO auto_listing_job_items (
@@ -458,6 +496,10 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
         || !requiredText(eventType) || requiredText(actorAccountId) !== scope || !requiredText(correlationId)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
+      const safeDetails = safeEventDetails(details);
+      if (["BLOCK", "RETRYABLE_FAILURE"].includes(eventType) && !safeDetails.failureCode) {
+        throw eventDetailsError();
+      }
       const client = await pool.connect();
       let committed = false;
       try {
@@ -472,12 +514,14 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
         if (row.status_version !== expectedStatusVersion) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
         const nextStatus = nextAutoListingStatus(row.status, eventType);
         assertAutoListingTransition(row.status, eventType, nextStatus);
-        const safeDetails = JSON.parse(JSON.stringify(details));
+        const failureCode = ["BLOCK", "RETRYABLE_FAILURE"].includes(eventType)
+          ? safeDetails.failureCode : null;
         const updated = await client.query(
-          `UPDATE auto_listing_job_items SET status=$1,status_version=status_version+1,updated_at=NOW()
-            WHERE id=$2 AND account_id=$3 AND status_version=$4
+          `UPDATE auto_listing_job_items SET status=$1,status_version=status_version+1,
+                  failure_code=$2,failure_detail_safe=$2,updated_at=NOW()
+            WHERE id=$3 AND account_id=$4 AND status_version=$5
             RETURNING id,status,status_version`,
-          [nextStatus, id, scope, expectedStatusVersion],
+          [nextStatus, failureCode, id, scope, expectedStatusVersion],
         );
         if (!updated.rows[0]) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
         await client.query(

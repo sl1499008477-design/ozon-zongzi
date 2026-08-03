@@ -148,12 +148,43 @@ function normalizedSnapshot(snapshot) {
   return jsonSafe(snapshot);
 }
 
+const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
+  && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+const stringOrNull = (value) => value === null || typeof value === "string";
+const rubPrice = (value) => plainObject(value) && value.currency === "RUB"
+  && typeof value.blackKopecks === "string" && typeof value.greenKopecks === "string";
+
+function assertSemanticSnapshot(snapshot) {
+  const { identity, source, targetCategory, attributes, logistics, productMeasurements, priceEvidence, variants, media, richContent, rawEvidence } = snapshot;
+  if (!plainObject(identity) || !["accountId", "sourceType", "sourceRecordId", "sourceVersion", "primarySku", "primaryOfferId", "primaryName", "brand"].every((key) => typeof identity[key] === "string")
+    || !plainObject(source) || !["sourceType", "sourceRecordId", "sourceVersion"].every((key) => typeof source[key] === "string")
+    || !stringOrNull(source.productDraftId) || !(source.productDraftVersion === null || Number.isInteger(source.productDraftVersion))
+    || !stringOrNull(source.collectedAt)
+    || !plainObject(targetCategory) || !["descriptionCategoryId", "typeId", "targetStoreId"].every((key) => typeof targetCategory[key] === "string")
+    || !Array.isArray(targetCategory.ancestorCategoryIds) || targetCategory.ancestorCategoryIds.some((id) => typeof id !== "string")
+    || !Array.isArray(attributes) || !plainObject(logistics) || !plainObject(productMeasurements)
+    || !rubPrice(priceEvidence) || !Array.isArray(variants) || variants.length < 1
+    || !plainObject(media) || !Array.isArray(media.images) || !Array.isArray(media.videos)
+    || !(richContent === null || typeof richContent === "string" || plainObject(richContent) || Array.isArray(richContent))
+    || !plainObject(rawEvidence) || !stringOrNull(rawEvidence.rawResponseRef) || !stringOrNull(rawEvidence.rawResponseHash)) {
+    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  }
+  for (const variant of variants) {
+    if (!plainObject(variant) || !["sku", "offerId", "name"].every((key) => typeof variant[key] === "string")
+      || !rubPrice(variant.priceEvidence) || !Array.isArray(variant.media)
+      || !stringOrNull(variant.groupId) || !(variant.relation === null || plainObject(variant.relation) || Array.isArray(variant.relation))) {
+      throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+    }
+  }
+}
+
 export function canonicalAutoListingSourceSnapshot(snapshot) {
   return JSON.stringify(normalizedSnapshot(snapshot));
 }
 
 export function verifyAutoListingSourceSnapshot(value = {}) {
   const snapshot = normalizedSnapshot(value.snapshot);
+  assertSemanticSnapshot(snapshot);
   const snapshotHash = scalar(value.snapshotHash);
   const expected = crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
   if (snapshotHash !== expected) throw sourceError("AUTO_LISTING_SOURCE_INVALID");

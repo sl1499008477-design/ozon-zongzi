@@ -60,7 +60,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       strategyVersionId: `strategy-version-${accountId}`,
       style: "BALANCED_DEFAULT",
       matchedBy: "DEFAULT",
-      price: { currency: "RUB", finalPriceKopecks: "14500" },
+      price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
     }],
     ...overrides,
   };
@@ -112,6 +112,14 @@ if (!enabled) {
           [`warehouse-${accountId}`, `store-${accountId}`, `platform-${accountId}`],
         );
         await client.query(
+          "INSERT INTO products (id,store_id,product_id,sku,status,raw) VALUES ($1,$2,$3,$4,'active','{}'::jsonb)",
+          [`product-${accountId}`, `store-${accountId}`, `product-${accountId}`, `sku-${accountId}`],
+        );
+        await client.query(
+          "INSERT INTO product_stocks (product_id,warehouse_id,store_id,source) VALUES ($1,$2,$3,'fbs')",
+          [`product-${accountId}`, `warehouse-${accountId}`, `store-${accountId}`],
+        );
+        await client.query(
           `INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash)
            VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)`,
           [`strategy-version-${accountId}`, accountId, `strategy-${accountId}`, `strategy-hash-${accountId}`],
@@ -129,20 +137,56 @@ if (!enabled) {
       };
       const repository = createAutoListingRepository({ pool: scopedPool });
 
+      const linkedCollect = `collect-linked-${suffix}`;
+      const rawOne = `raw-one-${suffix}`;
+      const rawTwo = `raw-two-${suffix}`;
+      const linkedDraft = `draft-linked-${suffix}`;
+      await client.query(
+        `INSERT INTO collect_items (id,account_id,source,identity_key,source_sku,summary)
+         VALUES ($1,$2,'test',$3,'sku-linked','{}'::jsonb)`,
+        [linkedCollect, accountA, `identity-linked-${suffix}`],
+      );
+      for (const [id, payloadHash, collectedAt] of [[rawOne, "payload-one", "2026-08-04T00:00:00.000Z"], [rawTwo, "payload-two", "2026-08-05T00:00:00.000Z"]]) {
+        await client.query(
+          `INSERT INTO collect_raw_payloads (id,collect_item_id,account_id,source_sku,payload_hash,payload,collected_at)
+           VALUES ($1,$2,$3,'sku-linked',$4,'{"normalized":{"name":"linked"}}'::jsonb,$5::timestamptz)`,
+          [id, linkedCollect, accountA, payloadHash, collectedAt],
+        );
+      }
+      await client.query(
+        `INSERT INTO product_drafts (id,collect_item_id,source_payload_id,version,data_hash,data)
+         VALUES ($1,$2,$3,7,'draft-hash','{}'::jsonb)`,
+        [linkedDraft, linkedCollect, rawOne],
+      );
+      await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2 AND account_id=$3", [linkedDraft, linkedCollect, accountA]);
+      const linked = await repository.loadCollectSources({ accountId: accountA, collectItemIds: [linkedCollect] });
+      assert.equal(linked[0].rawResponseRef, rawOne);
+      assert.equal(linked[0].rawResponseHash, "payload-one");
+      assert.equal(linked[0].rawCollectedAt, "2026-08-04T00:00:00.000Z");
+
       const bad = graph(accountA, "rollback-key", "rollback", {
         items: [
           graph(accountA, "x", "rollback-one").items[0],
-          { ...graph(accountA, "x", "rollback-two").items[0], targetStoreId: "missing-store", sourceOrder: 1 },
+          { ...graph(accountA, "x", "rollback-two").items[0], sourceOrder: 1 },
         ],
       });
       await registerGraphSources(client, bad);
+      await client.query(
+        `INSERT INTO auto_listing_source_snapshots (
+           id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref
+         ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`,
+        [
+          `baseline-conflict-${suffix}`, accountA, bad.items[1].sourceType, bad.items[1].sourceRecordId,
+          bad.items[1].sourceVersion, JSON.stringify(bad.items[1].snapshot), "different-existing-hash", bad.items[1].rawResponseRef,
+        ],
+      );
       const malformed = graph(accountA, "malformed-key", "malformed");
       await registerGraphSources(client, malformed);
       malformed.items[0].snapshot = { identity: { accountId: accountA } };
       await assert.rejects(repository.createJobGraph(malformed), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
       await assert.rejects(repository.createJobGraph(bad));
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_jobs")).rows[0].count), 0);
-      assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_source_snapshots")).rows[0].count), 0);
+      assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_source_snapshots")).rows[0].count), 1);
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_events")).rows[0].count), 0);
 
       const createdInput = graph(accountA, "shared-key", "a");

@@ -196,3 +196,18 @@ test("reads and lists only within actor account and sanitizes persistence rows",
   assert.doesNotMatch(JSON.stringify(one), /secret|rawResponseRef|credentials|rules/);
   await assert.rejects(service.getAutoListingJob({ actor: { id: "account-b", role: "user" }, jobId: "job-safe" }), (error) => error?.code === "AUTO_LISTING_JOB_NOT_FOUND");
 });
+
+test("never exposes nested objects through job and item scalar DTO slots", async () => {
+  const secret = { rawPayload: { token: "secret" } };
+  const repository = fakeRepository({ existing: {
+    id: secret, sourceType: secret, status: secret, correlationId: secret, createdAt: secret,
+    items: [{ id: secret, status: secret, targetStoreId: secret, targetWarehouseId: secret,
+      sourceRecordId: secret, sourceVersion: secret, sourceHash: secret, strategyId: secret,
+      strategyVersionId: secret, style: secret, matchedBy: secret, failureCode: secret }],
+  } });
+  const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "safe" });
+  assert.doesNotMatch(JSON.stringify(result), /secret|rawPayload|token/);
+  assert.equal(result.jobId, null);
+  assert.equal(result.items[0].targetStoreId, null);
+  assert.equal("failureCode" in result.items[0], false);
+});
