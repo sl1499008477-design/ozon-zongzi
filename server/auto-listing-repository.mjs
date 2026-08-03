@@ -223,7 +223,7 @@ function assertGraph(graph) {
     }
     let effectiveImageConfig;
     try {
-      effectiveImageConfig = deriveEffectiveAutoListingImageConfig(configSnapshot, captured);
+      effectiveImageConfig = deriveEffectiveAutoListingImageConfig({ configSnapshot, configHash, sourceCapture: captured });
     } catch {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }

@@ -7,13 +7,32 @@ function hasReliableProductDimensions(productMeasurements) {
     || typeof productMeasurements.unit !== "string" || !productMeasurements.unit.trim()
     || typeof productMeasurements.source !== "string" || !productMeasurements.source.trim()) return false;
   return Object.entries(productMeasurements).some(([key, value]) => (
-    !["reliable", "unit", "source"].includes(key) && typeof value === "number" && Number.isFinite(value) && value > 0
+    PRODUCT_MEASUREMENT_FIELDS.has(key) && typeof value === "number" && Number.isFinite(value) && value > 0
   ));
 }
 
-export function deriveEffectiveAutoListingImageConfig(configSnapshot, verifiedSourceSnapshot) {
-  const { config } = verifyAutoListingFrozenConfig(configSnapshot);
-  const { snapshot } = verifyAutoListingSourceSnapshot(verifiedSourceSnapshot);
+const PRODUCT_MEASUREMENT_FIELDS = new Set([
+  "length", "width", "height", "depth", "diameter",
+  "lengthMm", "widthMm", "heightMm", "depthMm", "diameterMm",
+  "lengthCm", "widthCm", "heightCm", "depthCm", "diameterCm",
+  "productLength", "productWidth", "productHeight", "productDepth", "productDiameter",
+]);
+const INPUT_KEYS = new Set(["configSnapshot", "configHash", "sourceCapture"]);
+
+function inputError() {
+  const error = new Error("AUTO_LISTING_CONFIG_INVALID");
+  error.code = "AUTO_LISTING_CONFIG_INVALID";
+  return error;
+}
+
+export function deriveEffectiveAutoListingImageConfig(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.getPrototypeOf(input) !== Object.prototype
+    || Object.keys(input).length !== INPUT_KEYS.size
+    || Object.keys(input).some((key) => !INPUT_KEYS.has(key))) throw inputError();
+  const { configSnapshot, configHash, sourceCapture } = input;
+  const { config } = verifyAutoListingFrozenConfig(configSnapshot, configHash);
+  const { snapshot } = verifyAutoListingSourceSnapshot(sourceCapture);
   const reliable = hasReliableProductDimensions(snapshot.productMeasurements);
   const roles = {
     ...config.image.roles,

@@ -4,7 +4,7 @@ import { createAutoListingService } from "../auto-listing-service.mjs";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import {
-  normalizeAutoListingConfig,
+  normalizeAndHashAutoListingConfig,
   verifyAutoListingFrozenConfig,
 } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
@@ -45,9 +45,14 @@ const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => 
 });
 
 const frozenGraphConfig = () => {
-  const snapshot = normalizeAutoListingConfig(config);
-  return verifyAutoListingFrozenConfig(snapshot);
+  return normalizeAndHashAutoListingConfig(config);
 };
+
+const effectiveImageConfig = (frozen, captured) => deriveEffectiveAutoListingImageConfig({
+  configSnapshot: frozen.config,
+  configHash: frozen.configHash,
+  sourceCapture: captured,
+});
 
 function fakeRepository({ sources = [source("collect-1")], existing = null } = {}) {
   const calls = [];
@@ -304,7 +309,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
   const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "warehouse-empty", correlationId: "corr",
-    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: deriveEffectiveAutoListingImageConfig(frozen.config, captured) }],
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
   };
   await assert.rejects(
     repository.createJobGraph({ ...graphInput, idempotencyKey: "raw-mismatch", items: [{ ...graphInput.items[0], rawResponseRef: "another-raw" }] }),
@@ -325,7 +330,7 @@ test("repository rejects malformed frozen configuration before connecting", asyn
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-config", sourceVersion: "1", snapshot: captured.snapshot,
     snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef, targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
     sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null,
-    style: "BALANCED_DEFAULT", matchedBy: "DEFAULT", effectiveImageConfig: deriveEffectiveAutoListingImageConfig(frozen.config, captured),
+    style: "BALANCED_DEFAULT", matchedBy: "DEFAULT", effectiveImageConfig: effectiveImageConfig(frozen, captured),
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
   };
   const graph = {
@@ -339,6 +344,10 @@ test("repository rejects malformed frozen configuration before connecting", asyn
   } });
   const malformed = [
     { configSnapshot: { targetStoreId: "store-a" }, configHash: frozen.configHash },
+    { configSnapshot: frozen.config, configHash: undefined },
+    { configSnapshot: frozen.config, configHash: "" },
+    { configSnapshot: frozen.config, configHash: "f".repeat(63) },
+    { configSnapshot: frozen.config, configHash: "z".repeat(64) },
     { configSnapshot: { ...frozen.config, unknown: "no" }, configHash: frozen.configHash },
     { configSnapshot: { ...frozen.config, modelCredentials: "secret" }, configHash: frozen.configHash },
     { configSnapshot: { ...frozen.config, stock: 0 }, configHash: frozen.configHash },
@@ -370,7 +379,7 @@ test("repository persists only a canonical recomputed price with a non-default s
   const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "rule-key", correlationId: "corr",
-    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: deriveEffectiveAutoListingImageConfig(frozen.config, captured) }],
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
   };
   const calls = [];
   const client = {

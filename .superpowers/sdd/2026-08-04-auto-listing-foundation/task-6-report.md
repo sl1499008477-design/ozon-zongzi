@@ -7,7 +7,9 @@
 - `server/auto-listing-service.mjs`
 - `server/auto-listing-repository.mjs`
 - `server/auto-listing-routes.mjs`
-- focused contract, service/repository, and route tests
+- `server/tests/auto-listing-contract.test.mjs`
+- `server/tests/auto-listing-service.test.mjs`
+- `server/tests/auto-listing-routes.test.mjs`
 - `docs/superpowers/plans/2026-08-04-auto-listing-foundation.md`
 
 No migration, state-machine, warehouse SQL, UI, extension, AI, or Ozon implementation changed.
@@ -20,20 +22,23 @@ No migration, state-machine, warehouse SQL, UI, extension, AI, or Ozon implement
 - GREEN 2: the same focused command passed 49/49 after the minimal route, service, and repository changes.
 - RED 3: the review hardening test required a verified source capture, and failed while the new aggregate helper module was absent.
 - GREEN 3: the helper first verifies both the frozen config and the full source capture, then reads the canonical snapshot; focused coverage again passed 49/49.
+- Round 1 RED: contract and service tests failed at module linkage because the requested normalize-and-hash creator export did not exist.
+- Round 1 GREEN: configuration creation and verification are separate; focused coverage passed 50/50 after required-hash, closed-helper-input, and measurement-allowlist coverage was added.
 
 ## Contract and safety evidence
 
 - Browser configuration cannot submit `hasReliableProductDimensions`; both contract and route reject it.
-- Job configuration freezes the requested roles only. `deriveEffectiveAutoListingImageConfig` first verifies a complete source capture, then derives the per-item result only from its canonical `snapshot.productMeasurements`, carries `PRODUCT_DIMENSIONS_UNAVAILABLE` on downgrade, and never reads logistics.
-- Service and repository share `verifyAutoListingFrozenConfig`. It canonicalizes the exact frozen configuration and computes/verifies its SHA-256 hash.
+- Job configuration freezes the requested roles only. `deriveEffectiveAutoListingImageConfig` accepts exactly `{ configSnapshot, configHash, sourceCapture }`, first verifies both hashes, then derives the per-item result only from canonical `snapshot.productMeasurements`; it never reads logistics.
+- `normalizeAndHashAutoListingConfig` is the service-only creation path. `verifyAutoListingFrozenConfig` requires an exact lower-case 64-hex SHA-256 hash, including in repository and per-item-helper paths; missing, blank, malformed, and mismatched hashes fail safely.
+- Product measurements are allowlisted to product dimension fields (`length`, `width`, `height`, `depth`, `diameter`) and their `Mm`/`Cm` and `product*` aliases. Arbitrary numeric fields such as `confidence`, `sampleCount`, and `foo` never qualify.
 - Repository verifies the complete canonical configuration, total, roles, stock, signed money adjustment, unknown/sensitive fields, hash, snapshots, and per-item effective config before acquiring a PostgreSQL client.
 - Existing same-account idempotent replay remains before current store, warehouse, source, and strategy checks.
 
 ## Verification
 
-- Focused contract/service/repository/route: **49 passed, 0 failed**.
-- Foundation suite: **91 passed, 0 failed**.
-- Historical permissions/persistence/listing/store regression: **41 passed, 0 failed**.
+- Focused contract/service/repository/route: **50 passed, 0 failed**.
+- Foundation suite: **92 passed, 0 failed**.
+- Controller's exact nine-file permissions/persistence/listing/store command: **42 passed, 0 failed, 0 skipped** using bundled Node v24.14.0.
 - Gated PostgreSQL suite: **1 passed, 1 skipped**. The dedicated database fixture correctly skipped because `SONLI_MIGRATION_TEST_DATABASE_URL` is not configured; no production database fallback was used.
 - Syntax checks passed for the four changed server modules; `git diff --check` passed.
 

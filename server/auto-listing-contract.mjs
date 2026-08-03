@@ -189,12 +189,19 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
   };
 }
 
-export function verifyAutoListingFrozenConfig(configSnapshot, configHash) {
+const configHashFor = (config) => crypto.createHash("sha256").update(JSON.stringify(canonical(config))).digest("hex");
+
+export function normalizeAndHashAutoListingConfig(rawConfig = {}) {
+  const config = normalizeAutoListingConfig(rawConfig);
+  return { config, configHash: configHashFor(config) };
+}
+
+export function verifyAutoListingFrozenConfig(configSnapshot, requiredConfigHash) {
   const config = normalizeAutoListingConfig(configSnapshot);
   if (!sameCanonicalJson(configSnapshot, config)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
-  const computedHash = crypto.createHash("sha256").update(JSON.stringify(canonical(config))).digest("hex");
-  if (configHash !== undefined && (typeof configHash !== "string" || configHash !== computedHash)) {
+  const configHash = configHashFor(config);
+  if (typeof requiredConfigHash !== "string" || !/^[a-f0-9]{64}$/.test(requiredConfigHash) || requiredConfigHash !== configHash) {
     throw contractError("AUTO_LISTING_CONFIG_INVALID");
   }
-  return { config, configHash: computedHash };
+  return { config, configHash };
 }

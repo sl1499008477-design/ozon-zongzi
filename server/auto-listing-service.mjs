@@ -1,6 +1,5 @@
 import {
-  normalizeAutoListingConfig,
-  verifyAutoListingFrozenConfig,
+  normalizeAndHashAutoListingConfig,
 } from "./auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
@@ -140,8 +139,7 @@ export function createAutoListingService({ repository } = {}) {
       const { collectItemIds, idempotencyKey, correlationId } = assertRequest(input);
       const accountId = text(input.actor.id);
       if (!accountId) throw error("AUTO_LISTING_REQUEST_INVALID");
-      const normalizedConfig = normalizeAutoListingConfig(input.config);
-      const { config, configHash } = verifyAutoListingFrozenConfig(normalizedConfig);
+      const { config, configHash } = normalizeAndHashAutoListingConfig(input.config);
       const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey });
       if (replay) return safeJob(replay);
       const store = await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
@@ -196,7 +194,7 @@ export function createAutoListingService({ repository } = {}) {
           targetStoreId: targetStore.id,
           targetWarehouseId: config.targetWarehouseId,
           sourceOrder,
-          effectiveImageConfig: deriveEffectiveAutoListingImageConfig(config, captured),
+          effectiveImageConfig: deriveEffectiveAutoListingImageConfig({ configSnapshot: config, configHash, sourceCapture: captured }),
         };
         if (captured.snapshot.targetCategory.targetStoreId !== config.targetStoreId) {
           return { ...base, status: "BLOCKED", failureCode: "AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH" };

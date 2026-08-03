@@ -4,7 +4,9 @@ import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.
 import {
   AUTO_LISTING_IMAGE_ROLES,
   AUTO_LISTING_ITEM_STATUSES,
+  normalizeAndHashAutoListingConfig,
   normalizeAutoListingConfig,
+  verifyAutoListingFrozenConfig,
 } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
 
@@ -105,9 +107,11 @@ test("allows the declared image option values and derives total from role counts
 });
 
 test("removes specification images when reliable product dimensions are absent", () => {
-  const frozen = normalizeAutoListingConfig(baseConfig());
-  const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig(frozen, {
-    ...verifiedSnapshot(productMeasurements, logistics),
+  const frozen = normalizeAndHashAutoListingConfig(baseConfig());
+  const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig({
+    configSnapshot: frozen.config,
+    configHash: frozen.configHash,
+    sourceCapture: verifiedSnapshot(productMeasurements, logistics),
   });
   assert.deepEqual(effective({ reliable: true, length: 28, unit: "cm", source: "manufacturer" }), {
     ratio: "3:4",
@@ -138,11 +142,37 @@ test("removes specification images when reliable product dimensions are absent",
     assert.deepEqual(effective(measurements).reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
   }
   assert.equal(effective({}, { length: 999, unit: "cm", source: "warehouse" }).roles.specification, 0);
+  assert.equal(effective({ reliable: true, lengthMm: 280, unit: "mm", source: "manufacturer" }).roles.specification, 1);
+  assert.equal(effective({ reliable: true, productDiameter: 28, unit: "cm", source: "manufacturer" }).roles.specification, 1);
+  assert.equal(effective({ reliable: true, foo: 28, confidence: 0.99, sampleCount: 1, unit: "cm", source: "manufacturer" }).roles.specification, 0);
   expectConfigError(baseConfig({ image: { total: 7 } }), "AUTO_LISTING_CONFIG_INVALID");
   assert.throws(
-    () => deriveEffectiveAutoListingImageConfig(frozen, { productMeasurements: { reliable: true, length: 28, unit: "cm", source: "forged" } }),
+    () => deriveEffectiveAutoListingImageConfig({
+      configSnapshot: frozen.config,
+      configHash: frozen.configHash,
+      sourceCapture: { productMeasurements: { reliable: true, length: 28, unit: "cm", source: "forged" } },
+    }),
     (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
   );
+  assert.throws(
+    () => deriveEffectiveAutoListingImageConfig({
+      configSnapshot: frozen.config,
+      configHash: undefined,
+      sourceCapture: verifiedSnapshot({ reliable: true, length: 28, unit: "cm", source: "manufacturer" }),
+    }),
+    (error) => error?.code === "AUTO_LISTING_CONFIG_INVALID",
+  );
+});
+
+test("requires an exact SHA-256 hash for every frozen config verification", () => {
+  const frozen = normalizeAndHashAutoListingConfig(baseConfig());
+  assert.deepEqual(verifyAutoListingFrozenConfig(frozen.config, frozen.configHash), frozen);
+  for (const invalidHash of [undefined, "", "f".repeat(63), "z".repeat(64), "0".repeat(64)]) {
+    assert.throws(
+      () => verifyAutoListingFrozenConfig(frozen.config, invalidHash),
+      (error) => error?.code === "AUTO_LISTING_CONFIG_INVALID",
+    );
+  }
 });
 
 test("keeps the requested specification count frozen independently of source evidence", () => {
