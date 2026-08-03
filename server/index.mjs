@@ -144,7 +144,10 @@ import {
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
-import { listingWarehouseEligibility } from "./listing-warehouse-eligibility.mjs";
+import {
+  assertListingWarehouseEligible,
+  listingWarehouseEligibility,
+} from "./listing-warehouse-eligibility.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
 const rootDir = path.resolve(__dirname, "..");
@@ -2225,6 +2228,31 @@ function listingStockRowsFromDraft(draft = {}, item = {}, listingItems = []) {
   });
 }
 
+function assertCollectListingWarehousesEligible(state, {
+  account,
+  targetStoreId,
+  stocks = [],
+} = {}) {
+  const warehouseIds = [...new Set(
+    (Array.isArray(stocks) ? stocks : [])
+      .map((stock) => String(stock?.warehouse_id ?? stock?.warehouseId ?? "").trim())
+      .filter(Boolean),
+  )];
+  const warehouses = cacheItemsForAccount(state, "warehouses", account);
+  const products = cacheItemsForAccount(state, "products", account);
+  for (const warehouseId of warehouseIds) {
+    const warehouse = warehouses.find((row) =>
+      String(row?.warehouse_id ?? row?.warehouseId ?? "").trim() === warehouseId) || null;
+    assertListingWarehouseEligible({
+      warehouse,
+      products,
+      targetStoreId,
+      accountId: account?.id,
+    });
+  }
+  return true;
+}
+
 function buildCollectBoxListingItems(item = {}, targetStoreId = "") {
   const draft = item.listingDraft && typeof item.listingDraft === "object" ? item.listingDraft : {};
   const draftSourceCategory = listingSourceCategoryEvidence(
@@ -2458,6 +2486,11 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
     err.body = { ok: false, errors };
     throw err;
   }
+  assertCollectListingWarehousesEligible(state, {
+    account,
+    targetStoreId: requestedTargetStoreId,
+    stocks,
+  });
   const payload = {
     ...body,
     storeId: requestedTargetStoreId,

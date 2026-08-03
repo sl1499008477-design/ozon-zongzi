@@ -38,6 +38,10 @@ const collectId = "collect-submit-failure";
 const completeCollectId = "collect-preview-complete";
 const enrichedCollectId = "collect-preview-enriched-logistics";
 const sourceOnlyCollectId = "collect-source-only-category";
+const eligibleWarehouseId = "1020003087687000";
+const fboWarehouseId = "1020003087687001";
+const archivedOnlyWarehouseId = "1020003087687002";
+const foreignWarehouseId = "1020003087687999";
 
 await writeFile(dataFile, `${JSON.stringify({
   token,
@@ -73,6 +77,61 @@ await writeFile(dataFile, `${JSON.stringify({
     status: "active",
   }],
   caches: {
+    products: [{
+      id: "active-fbs-product",
+      accountId: "acct_submit_test",
+      storeId,
+      is_archived: false,
+      warehouse_stocks: [{ warehouse_id: eligibleWarehouseId, source: "fbs", present: 0 }],
+    }, {
+      id: "archived-fbs-product",
+      accountId: "acct_submit_test",
+      storeId,
+      is_archived: true,
+      warehouse_stocks: [{ warehouse_id: archivedOnlyWarehouseId, source: "fbs", present: 5 }],
+    }, {
+      id: "foreign-fbs-product",
+      accountId: "acct_foreign",
+      storeId: "foreign-submit-store",
+      is_archived: false,
+      warehouse_stocks: [{ warehouse_id: foreignWarehouseId, source: "fbs", present: 5 }],
+    }],
+    warehouses: [{
+      id: "wh_eligible",
+      accountId: "acct_submit_test",
+      storeId,
+      warehouse_id: eligibleWarehouseId,
+      warehouse_type: "fbs",
+      status: "active",
+    }, {
+      id: "wh_fbo",
+      accountId: "acct_submit_test",
+      storeId,
+      warehouse_id: fboWarehouseId,
+      warehouse_type: "fbo",
+      status: "active",
+    }, {
+      id: "wh_archived_only",
+      accountId: "acct_submit_test",
+      storeId,
+      warehouse_id: archivedOnlyWarehouseId,
+      warehouse_type: "fbs",
+      status: "active",
+    }, {
+      id: "wh_placeholder",
+      accountId: "acct_submit_test",
+      storeId,
+      warehouse_id: "",
+      warehouse_type: "fbs",
+      status: "active",
+    }, {
+      id: "wh_foreign",
+      accountId: "acct_foreign",
+      storeId: "foreign-submit-store",
+      warehouse_id: foreignWarehouseId,
+      warehouse_type: "fbs",
+      status: "active",
+    }],
     collectBox: [{
       id: collectId,
       accountId: "acct_submit_test",
@@ -381,6 +440,41 @@ try {
   assert.equal(publicManual.method, "MANUAL");
   assert.equal(publicManual.targetDescriptionCategoryId, 17028941);
   assert.equal(publicManual.targetTypeId, 91670);
+
+  const ineligibleWarehouseCases = [
+    { warehouseId: fboWarehouseId, reason: "TYPE_NOT_FBS" },
+    { warehouseId: archivedOnlyWarehouseId, reason: "NO_ACTIVE_PRODUCT_ASSOCIATION" },
+    { warehouseId: foreignWarehouseId, reason: "STORE_SCOPE_MISMATCH" },
+    { warehouseId: "wh_placeholder", reason: "STORE_SCOPE_MISMATCH" },
+  ];
+  for (const { warehouseId, reason } of ineligibleWarehouseCases) {
+    for (const action of ["preview", "submit"]) {
+      const latestState = JSON.parse(await readFile(dataFile, "utf8"));
+      const completeItem = latestState.caches.collectBox.find((row) => row.id === completeCollectId);
+      completeItem.listingDraft.listingWarehouseId = warehouseId;
+      await writeFile(dataFile, `${JSON.stringify(latestState, null, 2)}\n`, "utf8");
+      const beforeExternalWrites = externalWriteCalls;
+      const response = await requestJson(
+        handle,
+        `/ozon/collect-box/${completeCollectId}/listing/${action}`,
+        { targetStoreId: storeId, idempotencyKey: `warehouse-${reason}-${action}` },
+        token,
+        storeId,
+      );
+      assert.equal(response.status, 422, JSON.stringify(response.body));
+      assert.equal(response.body.code, "LISTING_WAREHOUSE_NOT_ELIGIBLE");
+      assert.equal(response.body.message, "请选择当前店铺的活跃 FBS 仓库");
+      assert.equal(response.body.reason, reason);
+      assert.equal(externalWriteCalls, beforeExternalWrites);
+      const rejectedState = JSON.parse(await readFile(dataFile, "utf8"));
+      assert.deepEqual(rejectedState.jobs || {}, {});
+    }
+  }
+
+  const stateBeforeEligiblePreview = JSON.parse(await readFile(dataFile, "utf8"));
+  stateBeforeEligiblePreview.caches.collectBox
+    .find((row) => row.id === completeCollectId).listingDraft.listingWarehouseId = eligibleWarehouseId;
+  await writeFile(dataFile, `${JSON.stringify(stateBeforeEligiblePreview, null, 2)}\n`, "utf8");
 
   const completePreview = await requestJson(
     handle,
