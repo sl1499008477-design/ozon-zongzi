@@ -128,7 +128,6 @@
   const FLAT_TABLES   = { EUB: EUB_FREIGHT, EBP: EBP_FREIGHT };
   const TIERED_CHANNELS = Object.keys(TIERED_TABLES);
   const FLAT_CHANNELS   = Object.keys(FLAT_TABLES);
-  const ALL_CHANNELS    = [...TIERED_CHANNELS, ...FLAT_CHANNELS];
 
   const CHANNEL_LABELS = {
     CEL:  { short: 'CEL',   full: 'CEL 物流' },
@@ -174,12 +173,6 @@
     if (channelName === 'XY')   return xyConfig;
     if (channelName === 'ZTO')  return ztoConfig;
     return null;
-  }
-  function setChannelCfg(channelName, next) {
-    if (channelName === 'CEL')  celConfig = next;
-    if (channelName === 'GUOO') guooConfig = next;
-    if (channelName === 'XY')   xyConfig = next;
-    if (channelName === 'ZTO')  ztoConfig = next;
   }
 
   // 升档表：任何档尺寸超限都尝试升到该渠道更大尺寸的档（big/pBig 自带 vol:true，自然按计抛计费）

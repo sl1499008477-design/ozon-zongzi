@@ -45,12 +45,14 @@ const reviewedChangedFiles = new Set([
   "icons/ozon-zongzi-logo-white.svg",
   "icons/ozon-zongzi-symbol.svg",
   "lib/cn-source-panel.js",
+  "lib/cn-source-scraper.js",
   "lib/store-picker.js",
   "manifest.json",
   "popup/popup.css",
   "popup/popup.html",
   "popup/popup.js",
   "tests/fleet-collect-attrs-merge.test.js",
+  "tests/no-unreachable-local-functions.test.js",
 ]);
 
 const walk = (root, current = "") => {
