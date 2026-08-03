@@ -14,6 +14,7 @@ import {
   requireCategoryReadiness,
   sourceCategoryEvidenceOf,
   categoryResolutionForTarget,
+  categoryResolutionForCollectionTarget,
   categoryResolutionForStore,
   listingTargetCategoryFieldsForStore,
   manualCategoryResolution,
@@ -341,6 +342,40 @@ test("uses taxonomy-scoped shared matches before legacy store-bound drafts", () 
   };
   assert.deepEqual(categoryResolutionForTarget(legacy, { targetStoreId: "store-a" }), legacy);
   assert.equal(categoryResolutionForTarget(legacy, { targetStoreId: "store-b" }), null);
+});
+
+test("uses a shared summary before a legacy draft only when its taxonomy matches", () => {
+  const shared = {
+    status: "MATCHED",
+    taxonomyScope: "OZON:DEFAULT",
+    targetDescriptionCategoryId: 11,
+    targetTypeId: 22,
+    method: "",
+  };
+  const legacy = {
+    status: "MATCHED",
+    method: "MANUAL",
+    target: { storeId: "store-b", descriptionCategoryId: 33, typeId: 44 },
+  };
+  const item = {
+    categoryResolution: shared,
+    listingDraft: { categoryResolution: legacy },
+  };
+
+  assert.deepEqual(categoryResolutionForCollectionTarget(item, {
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+  }), shared, "the account-level match must be reusable by another store in the same taxonomy");
+  assert.deepEqual(categoryResolutionForCollectionTarget(item, {
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:RU",
+  }), legacy, "a taxonomy mismatch must fall back to the compatible legacy draft");
+  assert.deepEqual(categoryResolutionForCollectionTarget({
+    listingDraft: { categoryResolution: legacy },
+  }, {
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:DEFAULT",
+  }), legacy, "existing store-bound drafts remain readable");
 });
 
 test("does not mark any non-matched or non-positive summary target ready for listing", () => {

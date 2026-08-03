@@ -93,6 +93,24 @@ export function categoryResolutionForTarget(
   return categoryResolutionForStore(resolution, targetStoreId);
 }
 
+export function categoryResolutionForCollectionTarget(
+  item,
+  { targetStoreId, taxonomyScope = "OZON:DEFAULT", legacyResolution } = {},
+) {
+  const sharedResolution = item?.categoryResolution;
+  if (sharedResolution?.taxonomyScope) {
+    const sharedMatch = categoryResolutionForTarget(sharedResolution, {
+      targetStoreId,
+      taxonomyScope,
+    });
+    if (sharedMatch) return sharedMatch;
+  }
+  const legacy = legacyResolution === undefined
+    ? item?.listingDraft?.categoryResolution
+    : legacyResolution;
+  return categoryResolutionForStore(legacy, targetStoreId);
+}
+
 export function listingTargetCategoryFieldsForStore(resolution, targetStoreId) {
   const matched = categoryResolutionForTarget(resolution, { targetStoreId });
   if (!matched || matched.status !== "MATCHED") return {};

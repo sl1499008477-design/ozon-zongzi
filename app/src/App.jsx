@@ -69,7 +69,7 @@ import zhCN from "antd/locale/zh_CN";
 import "antd/dist/reset.css";
 import {
   CATEGORY_DATA_ERROR_MESSAGE,
-  categoryResolutionForStore,
+  categoryResolutionForCollectionTarget,
   listingTargetCategoryFieldsForStore,
   categoryItemScopeIsCurrent,
   categoryReadiness,
@@ -4101,7 +4101,7 @@ const collectEditSourceVariant = (item = {}, sku = "") => {
   };
 };
 
-const collectEditPreviewPayload = ({
+export const collectEditPreviewPayload = ({
   item = {},
   sku = "",
   title = "",
@@ -4122,6 +4122,7 @@ const collectEditPreviewPayload = ({
   warehouseId = "",
   stock = "",
   targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
 }) => {
   const sourceVariant = collectEditSourceVariant(item, sku);
   const attributes = collectEditRawAttributeList(sourceVariant, item);
@@ -4130,10 +4131,10 @@ const collectEditPreviewPayload = ({
   const firstVariant = variantRows[0] || {};
   const offerId = collectEditFirst(firstVariant.offerId, firstVariant.offer_id) || `${offerPrefix || "jz-"}${sku || item.sku || Date.now()}`;
   const sourceCategory = collectEditSourceCategorySnapshot(item);
-  const targetResolution = categoryResolutionForStore(
-    item.listingDraft?.categoryResolution || item.categoryResolution,
+  const targetResolution = categoryResolutionForCollectionTarget(item, {
     targetStoreId,
-  );
+    taxonomyScope,
+  });
   const targetFields = listingTargetCategoryFieldsForStore(targetResolution, targetStoreId);
   const payload = {
     offer_id: offerId,
@@ -4978,7 +4979,16 @@ const collectEditContentRating = ({
   };
 };
 
-const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", images = [], offerPrefix = "jz-", targetStoreId = "" }) => {
+export const collectEditVariantRows = ({
+  item = {},
+  sku = "",
+  title = "",
+  price = "",
+  images = [],
+  offerPrefix = "jz-",
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+}) => {
   const sourceRows = collectEditVariantSourceRows(item);
   const rows = sourceRows.length ? sourceRows : [item];
   return rows.map((variant, index) => {
@@ -4996,10 +5006,11 @@ const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", i
     const rowSku = commercialFields.sku;
     const sourceVariant = collectEditVariantSourceSnapshot(item, variant, rowSku);
     const rowImages = collectEditImages({ ...sourceVariant, ...variant }, images[index] || images[0] || "");
-    const targetResolution = categoryResolutionForStore(
-      variant.categoryResolution || item.listingDraft?.categoryResolution || item.categoryResolution,
+    const targetResolution = categoryResolutionForCollectionTarget(item, {
       targetStoreId,
-    );
+      taxonomyScope,
+      legacyResolution: variant.categoryResolution || item.listingDraft?.categoryResolution,
+    });
     const targetFields = listingTargetCategoryFieldsForStore(
       targetResolution,
       targetStoreId,
@@ -5034,6 +5045,40 @@ const collectEditVariantRows = ({ item = {}, sku = "", title = "", price = "", i
       bundleComplexAttrs: variant.bundleComplexAttrs || sourceVariant._bundleComplexAttrs || undefined,
     };
   });
+};
+
+export const collectEditCategoryPreviewSeed = ({
+  item = {},
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  collectCandidate = false,
+} = {}) => {
+  const draft = item?.listingDraft || {};
+  const categoryResolution = categoryResolutionForCollectionTarget(item, {
+    targetStoreId,
+    taxonomyScope,
+  });
+  const categoryFields = listingTargetCategoryFieldsForStore(
+    categoryResolution,
+    targetStoreId,
+  );
+  return {
+    categoryResolution,
+    descriptionCategoryId: collectEditFirst(
+      categoryFields.descriptionCategoryId,
+      collectCandidate ? "" : draft.descriptionCategoryId,
+      collectCandidate ? "" : draft.description_category_id,
+      collectCandidate ? "" : item.description_category_id,
+      collectCandidate ? "" : item.descriptionCategoryId,
+    ),
+    typeId: collectEditFirst(
+      categoryFields.typeId,
+      collectCandidate ? "" : draft.typeId,
+      collectCandidate ? "" : draft.type_id,
+      collectCandidate ? "" : item.type_id,
+      collectCandidate ? "" : item.typeId,
+    ),
+  };
 };
 
 function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navigate }) {
@@ -5196,24 +5241,14 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       if (collectEditInitScopeRef.current === itemScope) return;
       collectEditInitScopeRef.current = itemScope;
       collectEditDimensionDirtyRef.current = new Set();
-      const storedCategoryResolution = categoryResolutionForStore(
-        draft.categoryResolution || item.categoryResolution,
-        categoryStoreId,
-      );
-      const seededDescriptionCategoryId = collectEditFirst(
-        storedCategoryResolution?.target?.descriptionCategoryId,
-        collectCandidate ? "" : draft.descriptionCategoryId,
-        collectCandidate ? "" : draft.description_category_id,
-        collectCandidate ? "" : item.description_category_id,
-        collectCandidate ? "" : item.descriptionCategoryId,
-      );
-      const seededTypeId = collectEditFirst(
-        storedCategoryResolution?.target?.typeId,
-        collectCandidate ? "" : draft.typeId,
-        collectCandidate ? "" : draft.type_id,
-        collectCandidate ? "" : item.type_id,
-        collectCandidate ? "" : item.typeId,
-      );
+      const categorySeed = collectEditCategoryPreviewSeed({
+        item,
+        targetStoreId: categoryStoreId,
+        collectCandidate: Boolean(collectCandidate),
+      });
+      const storedCategoryResolution = categorySeed.categoryResolution;
+      const seededDescriptionCategoryId = categorySeed.descriptionCategoryId;
+      const seededTypeId = categorySeed.typeId;
       setPreviewItem(storedCategoryResolution || (seededDescriptionCategoryId && seededTypeId) ? {
         description_category_id: seededDescriptionCategoryId || "",
         type_id: seededTypeId || "",
@@ -5599,10 +5634,10 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         type_id: _historicalTypeIdSnake,
         ...rowWithoutCategoryRoots
       } = row;
-      const rowResolution = categoryResolutionForStore(
-        row.categoryResolution,
-        categoryStoreId,
-      ) || categoryResolution;
+      const rowResolution = categoryResolutionForCollectionTarget(item, {
+        targetStoreId: categoryStoreId,
+        legacyResolution: row.categoryResolution || currentDraft.categoryResolution,
+      }) || categoryResolution;
       const rowTarget = listingTargetCategoryFieldsForStore(rowResolution, categoryStoreId);
       const normalizedRow = {
         ...rowWithoutCategoryRoots,
@@ -5725,12 +5760,16 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     await saveListingDraft({ silent: false }).catch(function() {});
   };
   const currentDraft = item?.listingDraft || {};
-  const categoryResolution = categoryResolutionForStore(
-    scopedPreviewItem?.categoryResolution || currentDraft.categoryResolution,
+  const categoryResolution = categoryResolutionForCollectionTarget(item, {
+    targetStoreId: categoryStoreId,
+    legacyResolution: scopedPreviewItem?.categoryResolution || currentDraft.categoryResolution,
+  });
+  const categoryTargetFields = listingTargetCategoryFieldsForStore(
+    categoryResolution,
     categoryStoreId,
   );
   const categoryDescriptionId = collectEditFirst(
-    categoryResolution?.target?.descriptionCategoryId,
+    categoryTargetFields.descriptionCategoryId,
     isCollectItem ? "" : scopedPreviewItem?.description_category_id,
     isCollectItem ? "" : item?.description_category_id,
     isCollectItem ? "" : item?.descriptionCategoryId,
@@ -5738,7 +5777,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     isCollectItem ? "" : currentDraft.description_category_id,
   );
   const categoryTypeId = collectEditFirst(
-    categoryResolution?.target?.typeId,
+    categoryTargetFields.typeId,
     isCollectItem ? "" : scopedPreviewItem?.type_id,
     isCollectItem ? "" : item?.type_id,
     isCollectItem ? "" : item?.typeId,

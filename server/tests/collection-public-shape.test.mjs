@@ -330,3 +330,75 @@ test("projects an account-scoped category record as a stable public summary", ()
     assert.equal(JSON.stringify(item).includes(forbidden), false, forbidden);
   }
 });
+
+test("projects every legacy category-resolution location through a minimal whitelist", () => {
+  const forbiddenCategoryField = (value) => {
+    if (Array.isArray(value)) return value.find(forbiddenCategoryField);
+    if (!value || typeof value !== "object") return null;
+    for (const [key, nested] of Object.entries(value)) {
+      if (new Set([
+        "credentialstoreid", "leasetoken", "lease", "attemptcount", "retryat",
+        "failuredetailsafe", "failure", "taxonomyfingerprint", "targetdescriptioncategoryid",
+        "failuredetailraw", "failureraw", "targettypeid", "sourcetypeid", "nextattemptat",
+        "failurecode", "accountid", "collectitemid",
+      ]).has(String(key).replace(/[_-]/g, "").toLowerCase())) return key;
+      const found = forbiddenCategoryField(nested);
+      if (found) return found;
+    }
+    return null;
+  };
+  const legacyResolution = {
+    status: "MATCHED",
+    method: "MANUAL",
+    source: {
+      descriptionCategoryId: 101,
+      typeName: "Source type",
+      typeIdCandidate: 202,
+      path: ["Root", "Source type"],
+      credential_store_id: "source-credential",
+      raw: { lease: "source-lease" },
+    },
+    target: {
+      storeId: "legacy-store",
+      descriptionCategoryId: 303,
+      typeId: 404,
+      credentialStoreId: "target-credential",
+      history: { retryAt: "2026-08-03T00:00:00.000Z" },
+    },
+    resolvedAt: "2026-08-03T00:00:00.000Z",
+    history: { attemptCount: 9 },
+    raw: { failure_detail_safe: "do not expose", failure_detail_raw: "do not expose" },
+    taxonomyFingerprint: "private-fingerprint",
+    account_id: "private-account",
+    collect_item_id: "private-item",
+    source_type_id: 202,
+    target_description_category_id: 303,
+    target_type_id: 404,
+    next_attempt_at: "2026-08-03T00:00:00.000Z",
+  };
+  const item = publicPersistedCollectionItem({
+    id: "legacy-category-whitelist",
+    listingDraft: {
+      categoryResolution: legacyResolution,
+      variants: [{ sku: "v-1", categoryResolution: legacyResolution }],
+    },
+    raw: { categoryResolution: legacyResolution },
+  });
+
+  assert.deepEqual(item.listingDraft.categoryResolution, {
+    status: "MATCHED",
+    method: "MANUAL",
+    source: {
+      descriptionCategoryId: 101,
+      typeName: "Source type",
+      typeIdCandidate: 202,
+      path: ["Root", "Source type"],
+    },
+    target: { storeId: "legacy-store", descriptionCategoryId: 303, typeId: 404 },
+    resolvedAt: "2026-08-03T00:00:00.000Z",
+  });
+  assert.equal(item.listingDraft.variants[0].categoryResolution.target.storeId, "legacy-store");
+  assert.equal(forbiddenCategoryField(item.listingDraft.categoryResolution), null);
+  assert.equal(forbiddenCategoryField(item.listingDraft.variants[0].categoryResolution), null);
+  assert.equal(forbiddenCategoryField(item.raw.categoryResolution), null);
+});

@@ -56,46 +56,6 @@ function restoreListingTargetBusinessMetadata(result, source) {
   return result;
 }
 
-const PRIVATE_CATEGORY_RESOLUTION_KEYS = new Set([
-  "accountid",
-  "collectitemid",
-  "sourcetypeid",
-  "targetdescriptioncategoryid",
-  "targettypeid",
-  "taxonomyscope",
-  "credentialstoreid",
-  "taxonomyfingerprint",
-  "displaypath",
-  "displaypathjson",
-  "leasetoken",
-  "leaseexpiresat",
-  "attemptcount",
-  "nextattemptat",
-  "failurecode",
-  "failuredetailsafe",
-  "failure",
-  "matchedat",
-  "validatedat",
-  "createdat",
-  "updatedat",
-]);
-
-function removePrivateLegacyCategoryResolutionFields(resolution) {
-  if (!resolution || typeof resolution !== "object" || Array.isArray(resolution)) return;
-  for (const key of Object.keys(resolution)) {
-    if (PRIVATE_CATEGORY_RESOLUTION_KEYS.has(canonicalPathKey(key))) delete resolution[key];
-  }
-}
-
-function removePrivateLegacyCategoryResolutionDetails(result) {
-  const draft = result?.listingDraft;
-  if (!draft || typeof draft !== "object" || Array.isArray(draft)) return;
-  removePrivateLegacyCategoryResolutionFields(draft.categoryResolution);
-  for (const variant of Array.isArray(draft.variants) ? draft.variants : []) {
-    removePrivateLegacyCategoryResolutionFields(variant?.categoryResolution);
-  }
-}
-
 function cleanScopeValue(value) {
   return String(value ?? "").trim();
 }
@@ -123,6 +83,91 @@ function publicDisplayPath(value) {
     if (labels.length) path[language] = labels;
   }
   return path;
+}
+
+const LEGACY_CATEGORY_STATUSES = new Set([
+  "PENDING",
+  "QUEUED",
+  "MATCHING",
+  "MATCHED",
+  "NEEDS_REVIEW",
+  "RETRYABLE_ERROR",
+  "INVALIDATED",
+  "WAITING_ENRICHMENT",
+  "WAITING_STORE",
+]);
+
+function publicLegacyCategorySource(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const descriptionCategoryId = positiveIdentifier(
+    value.descriptionCategoryId ?? value.description_category_id,
+  );
+  const typeName = cleanScopeValue(value.typeName ?? value.type_name).slice(0, 240);
+  const typeIdCandidate = positiveIdentifier(
+    value.typeIdCandidate ?? value.type_id_candidate,
+  );
+  const path = Array.isArray(value.path)
+    ? value.path.map((label) => cleanScopeValue(label).slice(0, 240)).filter(Boolean).slice(0, 32)
+    : [];
+  const source = {
+    ...(descriptionCategoryId ? { descriptionCategoryId } : {}),
+    ...(typeName ? { typeName } : {}),
+    ...(typeIdCandidate ? { typeIdCandidate } : {}),
+    ...(path.length ? { path } : {}),
+  };
+  return Object.keys(source).length ? source : null;
+}
+
+function publicLegacyCategoryTarget(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const storeId = cleanScopeValue(value.storeId).slice(0, 240);
+  const descriptionCategoryId = positiveIdentifier(
+    value.descriptionCategoryId ?? value.description_category_id,
+  );
+  const typeId = positiveIdentifier(value.typeId ?? value.type_id);
+  const target = {
+    ...(storeId ? { storeId } : {}),
+    ...(descriptionCategoryId ? { descriptionCategoryId } : {}),
+    ...(typeId ? { typeId } : {}),
+  };
+  return Object.keys(target).length ? target : null;
+}
+
+// Legacy category records may come from old drafts, variants, or raw snapshots.
+// This is the only public contract for them: business status/method/source/target
+// and resolution time. Every other field is intentionally discarded.
+function publicLegacyCategoryResolution(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = cleanScopeValue(value.status).toUpperCase();
+  const method = cleanScopeValue(value.method).slice(0, 120);
+  const source = publicLegacyCategorySource(value.source);
+  const target = publicLegacyCategoryTarget(value.target);
+  const resolvedAt = publicInstant(value.resolvedAt);
+  const resolution = {
+    ...(LEGACY_CATEGORY_STATUSES.has(status) ? { status } : {}),
+    ...(method ? { method } : {}),
+    ...(source ? { source } : {}),
+    ...(target ? { target } : {}),
+    ...(resolvedAt ? { resolvedAt } : {}),
+  };
+  return Object.keys(resolution).length ? resolution : null;
+}
+
+function projectLegacyCategoryResolutions(value) {
+  if (Array.isArray(value)) return value.map(projectLegacyCategoryResolutions);
+  if (!value || typeof value !== "object") return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const result = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (canonicalPathKey(key) === "categoryresolution") {
+      const resolution = publicLegacyCategoryResolution(nested);
+      if (resolution) result[key] = resolution;
+      continue;
+    }
+    result[key] = projectLegacyCategoryResolutions(nested);
+  }
+  return result;
 }
 
 function categoryResolutionGuidance(status) {
@@ -185,7 +230,7 @@ export function publicCollectionItem(item = {}, {
         businessItem,
       )
     : {};
-  removePrivateLegacyCategoryResolutionDetails(result);
+  const projectedResult = projectLegacyCategoryResolutions(result);
   const operatingStoreId = cleanScopeValue(
     trustedLegacyScope.operatingStoreId,
   );
@@ -193,25 +238,25 @@ export function publicCollectionItem(item = {}, {
     trustedLegacyScope.dataCollectionStoreId,
   );
 
-  delete result.legacyScope;
-  delete result.storeId;
-  delete result.localStoreId;
-  delete result.operatingStoreId;
-  delete result.dataCollectionStoreId;
-  delete result.createdBy;
-  delete result.sellerCompanyId;
-  delete result.categoryResolution;
+  delete projectedResult.legacyScope;
+  delete projectedResult.storeId;
+  delete projectedResult.localStoreId;
+  delete projectedResult.operatingStoreId;
+  delete projectedResult.dataCollectionStoreId;
+  delete projectedResult.createdBy;
+  delete projectedResult.sellerCompanyId;
+  delete projectedResult.categoryResolution;
 
   const resolutionSummary = publicCategoryResolutionSummary(categoryResolution);
-  if (resolutionSummary) result.categoryResolution = resolutionSummary;
+  if (resolutionSummary) projectedResult.categoryResolution = resolutionSummary;
 
   if (operatingStoreId || dataCollectionStoreId) {
-    result.legacyScope = {
+    projectedResult.legacyScope = {
       ...(operatingStoreId ? { operatingStoreId } : {}),
       ...(dataCollectionStoreId ? { dataCollectionStoreId } : {}),
     };
   }
-  return result;
+  return projectedResult;
 }
 
 export function publicPersistedCollectionItem(item = {}, { categoryResolution = null } = {}) {
