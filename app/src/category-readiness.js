@@ -105,14 +105,21 @@ export function categoryResolutionForCollectionTarget(
     });
     if (sharedMatch) return sharedMatch;
   }
-  const legacy = legacyResolution === undefined
+  const legacyCandidate = legacyResolution === undefined
     ? item?.listingDraft?.categoryResolution
     : legacyResolution;
+  const legacy = legacyCandidate?.taxonomyScope
+    ? item?.listingDraft?.categoryResolution
+    : legacyCandidate;
   return categoryResolutionForStore(legacy, targetStoreId);
 }
 
-export function listingTargetCategoryFieldsForStore(resolution, targetStoreId) {
-  const matched = categoryResolutionForTarget(resolution, { targetStoreId });
+export function listingTargetCategoryFieldsForStore(
+  resolution,
+  targetStoreId,
+  { taxonomyScope = "OZON:DEFAULT" } = {},
+) {
+  const matched = categoryResolutionForTarget(resolution, { targetStoreId, taxonomyScope });
   if (!matched || matched.status !== "MATCHED") return {};
   if (!matched.taxonomyScope && !cleanText(matched.method)) return {};
   const target = matched.taxonomyScope

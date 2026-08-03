@@ -378,6 +378,45 @@ test("uses a shared summary before a legacy draft only when its taxonomy matches
   }), legacy, "existing store-bound drafts remain readable");
 });
 
+test("does not treat a taxonomy-scoped summary passed as a legacy fallback", () => {
+  const shared = {
+    status: "MATCHED",
+    taxonomyScope: "OZON:DEFAULT",
+    targetDescriptionCategoryId: 11,
+    targetTypeId: 22,
+  };
+  const legacy = {
+    status: "MATCHED",
+    method: "MANUAL",
+    target: { storeId: "store-b", descriptionCategoryId: 33, typeId: 44 },
+  };
+  assert.deepEqual(categoryResolutionForCollectionTarget({
+    categoryResolution: shared,
+    listingDraft: { categoryResolution: legacy },
+  }, {
+    targetStoreId: "store-b",
+    taxonomyScope: "OZON:RU",
+    legacyResolution: shared,
+  }), legacy, "a mismatched shared summary must not shadow the actual legacy draft");
+});
+
+test("uses an explicitly supplied taxonomy scope for fields but keeps direct default reads isolated", () => {
+  const ruSummary = {
+    status: "MATCHED",
+    taxonomyScope: "OZON:RU",
+    targetDescriptionCategoryId: 55,
+    targetTypeId: 66,
+    method: "",
+  };
+  assert.deepEqual(listingTargetCategoryFieldsForStore(ruSummary, "store-b"), {});
+  assert.deepEqual(listingTargetCategoryFieldsForStore(ruSummary, "store-b", {
+    taxonomyScope: "OZON:RU",
+  }), {
+    descriptionCategoryId: 55,
+    typeId: 66,
+  });
+});
+
 test("does not mark any non-matched or non-positive summary target ready for listing", () => {
   for (const status of [
     "WAITING_ENRICHMENT",

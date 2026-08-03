@@ -4135,7 +4135,11 @@ export const collectEditPreviewPayload = ({
     targetStoreId,
     taxonomyScope,
   });
-  const targetFields = listingTargetCategoryFieldsForStore(targetResolution, targetStoreId);
+  const targetFields = listingTargetCategoryFieldsForStore(
+    targetResolution,
+    targetStoreId,
+    { taxonomyScope },
+  );
   const payload = {
     offer_id: offerId,
     name: title || collectEditFirst(item.name, item.title, sku) || `Ozon SKU ${sku}`,
@@ -5006,14 +5010,18 @@ export const collectEditVariantRows = ({
     const rowSku = commercialFields.sku;
     const sourceVariant = collectEditVariantSourceSnapshot(item, variant, rowSku);
     const rowImages = collectEditImages({ ...sourceVariant, ...variant }, images[index] || images[0] || "");
+    const legacyResolution = variant !== item && !variant.categoryResolution?.taxonomyScope
+      ? variant.categoryResolution
+      : item.listingDraft?.categoryResolution;
     const targetResolution = categoryResolutionForCollectionTarget(item, {
       targetStoreId,
       taxonomyScope,
-      legacyResolution: variant.categoryResolution || item.listingDraft?.categoryResolution,
+      legacyResolution,
     });
     const targetFields = listingTargetCategoryFieldsForStore(
       targetResolution,
       targetStoreId,
+      { taxonomyScope },
     );
     return {
       key: `${rowSku || sku || "sku"}-${index}`,
@@ -5061,6 +5069,7 @@ export const collectEditCategoryPreviewSeed = ({
   const categoryFields = listingTargetCategoryFieldsForStore(
     categoryResolution,
     targetStoreId,
+    { taxonomyScope },
   );
   return {
     categoryResolution,
@@ -5078,6 +5087,30 @@ export const collectEditCategoryPreviewSeed = ({
       collectCandidate ? "" : item.type_id,
       collectCandidate ? "" : item.typeId,
     ),
+  };
+};
+
+export const collectEditDraftVariantCategory = ({
+  item = {},
+  row = {},
+  targetStoreId = "",
+  taxonomyScope = "OZON:DEFAULT",
+  fallbackResolution = null,
+} = {}) => {
+  const categoryResolution = categoryResolutionForCollectionTarget(item, {
+    targetStoreId,
+    taxonomyScope,
+    legacyResolution: row.categoryResolution || item.listingDraft?.categoryResolution,
+  }) || fallbackResolution;
+  const targetFields = listingTargetCategoryFieldsForStore(
+    categoryResolution,
+    targetStoreId,
+    { taxonomyScope },
+  );
+  return {
+    categoryResolution,
+    descriptionCategoryId: targetFields.descriptionCategoryId || "",
+    typeId: targetFields.typeId || "",
   };
 };
 
@@ -5158,6 +5191,9 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
     ? collectEditFirst(candidateItem?.id, candidateItem?.collectItemId)
     : "";
   const scopedPreviewItem = itemScopeCurrent ? previewItem : null;
+  const categoryTaxonomyScope = String(
+    item?.categoryResolution?.taxonomyScope || "OZON:DEFAULT",
+  ).trim() || "OZON:DEFAULT";
   const effectiveEnrichment = collectEnrichmentEffectiveSummary(item, enrichmentRetryOverride);
   const enrichmentView = collectEnrichmentView(effectiveEnrichment);
   const enrichmentPollStatus = String(effectiveEnrichment?.status || "");
@@ -5244,6 +5280,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       const categorySeed = collectEditCategoryPreviewSeed({
         item,
         targetStoreId: categoryStoreId,
+        taxonomyScope: categoryTaxonomyScope,
         collectCandidate: Boolean(collectCandidate),
       });
       const storedCategoryResolution = categorySeed.categoryResolution;
@@ -5316,7 +5353,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setListingStock(collectEditFirst(draft.listingStock, draft.stock, item.listingStock, item.listing_stock, "5"));
       setSourceLink(collectEditFirst(draft.sourceLink) || collectEditSourceUrl(item, nextSku));
       setNote(collectEditFirst(draft.note, item.note, item.remark));
-      setVariantRows(collectEditVariantRows({ item: variantSourceItem, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix, targetStoreId: categoryStoreId }));
+      setVariantRows(collectEditVariantRows({ item: variantSourceItem, sku: nextSku, title: nextTitle, price: nextPrice, images: nextImages, offerPrefix: nextOfferPrefix, targetStoreId: categoryStoreId, taxonomyScope: categoryTaxonomyScope }));
       setSelectedVariantKeys([]);
     } else {
       setPreviewItem(null);
@@ -5326,7 +5363,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
       setCategoryAttributeValues({});
       categoryAutoPreviewKeyRef.current = "";
     }
-  }, [itemId, item, itemScopeCurrent, storeCurrencyCode, categoryStoreId, listingWarehouseOptionKey]);
+  }, [itemId, item, itemScopeCurrent, storeCurrencyCode, categoryStoreId, categoryTaxonomyScope, listingWarehouseOptionKey]);
 
   React.useEffect(function() {
     if (!item || !itemScopeCurrent) return;
@@ -5542,6 +5579,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         warehouseId: listingWarehouseId,
         stock: listingStock,
         targetStoreId: categoryStoreId,
+        taxonomyScope: categoryTaxonomyScope,
       });
       const result = await apiRequest("/ozon/products/import/preview", {
         method: "POST",
@@ -5634,11 +5672,15 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
         type_id: _historicalTypeIdSnake,
         ...rowWithoutCategoryRoots
       } = row;
-      const rowResolution = categoryResolutionForCollectionTarget(item, {
+      const rowCategory = collectEditDraftVariantCategory({
+        item,
+        row,
         targetStoreId: categoryStoreId,
-        legacyResolution: row.categoryResolution || currentDraft.categoryResolution,
-      }) || categoryResolution;
-      const rowTarget = listingTargetCategoryFieldsForStore(rowResolution, categoryStoreId);
+        taxonomyScope: categoryTaxonomyScope,
+        fallbackResolution: categoryResolution,
+      });
+      const rowResolution = rowCategory.categoryResolution;
+      const rowTarget = rowCategory;
       const normalizedRow = {
         ...rowWithoutCategoryRoots,
         sourceCategory: sourceCategoryEvidenceOf({
@@ -5762,11 +5804,13 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
   const currentDraft = item?.listingDraft || {};
   const categoryResolution = categoryResolutionForCollectionTarget(item, {
     targetStoreId: categoryStoreId,
+    taxonomyScope: categoryTaxonomyScope,
     legacyResolution: scopedPreviewItem?.categoryResolution || currentDraft.categoryResolution,
   });
   const categoryTargetFields = listingTargetCategoryFieldsForStore(
     categoryResolution,
     categoryStoreId,
+    { taxonomyScope: categoryTaxonomyScope },
   );
   const categoryDescriptionId = collectEditFirst(
     categoryTargetFields.descriptionCategoryId,
@@ -6638,7 +6682,7 @@ function CollectEditPage({ binding, hasStore, localData, onBind, onRefresh, navi
                 <p>{variantRows.length || 1} 个变体</p>
               </div>
               <Space>
-                <Button size="small" icon={<PlusOutlined />} onClick={() => duplicateVariantRow(variantRows[0] || collectEditVariantRows({ item, sku, title, price, images: productImageList, offerPrefix, targetStoreId: categoryStoreId })[0])}>添加变体</Button>
+                <Button size="small" icon={<PlusOutlined />} onClick={() => duplicateVariantRow(variantRows[0] || collectEditVariantRows({ item, sku, title, price, images: productImageList, offerPrefix, targetStoreId: categoryStoreId, taxonomyScope: categoryTaxonomyScope })[0])}>添加变体</Button>
                 <Button size="small" danger disabled={!selectedVariantKeys.length} onClick={deleteSelectedVariants}>批量删除变体</Button>
               </Space>
             </div>
