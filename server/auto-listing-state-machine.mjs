@@ -57,12 +57,20 @@ const transitionError = () => {
 };
 
 export function nextAutoListingStatus(currentStatus, eventType) {
-  const nextStatus = TRANSITIONS[currentStatus]?.[eventType];
+  if (typeof currentStatus !== "string" || typeof eventType !== "string") {
+    throw transitionError();
+  }
+  if (!Object.hasOwn(TRANSITIONS, currentStatus)
+    || !Object.hasOwn(TRANSITIONS[currentStatus], eventType)) {
+    throw transitionError();
+  }
+  const nextStatus = TRANSITIONS[currentStatus][eventType];
   if (typeof nextStatus !== "string") throw transitionError();
   return nextStatus;
 }
 
 export function assertAutoListingTransition(currentStatus, eventType, targetStatus) {
+  if (typeof targetStatus !== "string") throw transitionError();
   if (targetStatus !== nextAutoListingStatus(currentStatus, eventType)) {
     throw transitionError();
   }

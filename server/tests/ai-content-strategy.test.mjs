@@ -203,6 +203,57 @@ test("rejects malformed strategy data and unsupported selected styles with a sta
   }
 });
 
+test("rejects duplicate rule IDs regardless of candidate order", () => {
+  const duplicateRules = [
+    rule({ ruleId: "duplicate-rule", ruleOrder: 1, style: "VISUAL_FIRST" }),
+    rule({ ruleId: "duplicate-rule", ruleOrder: 1, style: "PARAMETER_FIRST" }),
+  ];
+
+  for (const rules of [duplicateRules, [...duplicateRules].reverse()]) {
+    assert.throws(
+      () => resolve({ rules }),
+      (error) => error?.code === "AI_CONTENT_STRATEGY_INVALID",
+    );
+  }
+});
+
+test("rejects cyclic density objects and arrays while accepting shared references", () => {
+  const cyclicObject = {};
+  cyclicObject.self = cyclicObject;
+  const cyclicArray = [];
+  cyclicArray.push(cyclicArray);
+
+  for (const textDensityByRole of [
+    { main: cyclicObject },
+    { main: cyclicArray },
+  ]) {
+    assert.throws(
+      () => resolve({ rules: [rule({ textDensityByRole })] }),
+      (error) => error?.code === "AI_CONTENT_STRATEGY_INVALID",
+    );
+  }
+
+  const sharedDensity = { level: "LIGHT" };
+  assert.deepEqual(resolve({ rules: [rule({
+    textDensityByRole: { main: sharedDensity, sellingPoint: sharedDensity },
+  })] }).textDensityByRole, {
+    main: { level: "LIGHT" },
+    sellingPoint: { level: "LIGHT" },
+  });
+});
+
+test("rejects dangerous JSON density keys without changing its prototype", () => {
+  const textDensityByRole = JSON.parse(
+    '{"__proto__":{"polluted":"yes"},"constructor":{"polluted":"yes"},"prototype":{"polluted":"yes"}}',
+  );
+
+  assert.throws(
+    () => resolve({ rules: [rule({ textDensityByRole })] }),
+    (error) => error?.code === "AI_CONTENT_STRATEGY_INVALID",
+  );
+  assert.equal(Object.getPrototypeOf(textDensityByRole), Object.prototype);
+});
+
 test("does not mutate inputs or alias returned nested JSON", () => {
   const input = {
     strategyVersion: { ...strategyVersion },

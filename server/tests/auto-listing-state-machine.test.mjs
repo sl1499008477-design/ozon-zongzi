@@ -62,9 +62,27 @@ test("rejects forbidden jumps, unknown inputs, and an upload cancellation", () =
     ["UPLOADING", "CANCEL"],
     ["UNKNOWN", "CANCEL"],
     ["CREATED", "UNKNOWN_EVENT"],
+    ["constructor", "name"],
   ]) {
     expectForbidden(currentStatus, eventType);
   }
+});
+
+test("rejects non-string status, event, and target inputs without coercion", () => {
+  const malformedValues = [null, [], ["CREATED"], {}, 1];
+  for (const currentStatus of malformedValues) {
+    expectForbidden(currentStatus, "SOURCE_CAPTURED");
+  }
+  for (const eventType of malformedValues) {
+    expectForbidden("CREATED", eventType);
+  }
+  for (const targetStatus of malformedValues) {
+    assert.throws(
+      () => assertAutoListingTransition("SOURCE_READY", "START_PLANNING", targetStatus),
+      (error) => error?.code === "AUTO_LISTING_TRANSITION_FORBIDDEN",
+    );
+  }
+  expectForbidden(["CREATED"], ["SOURCE_CAPTURED"]);
 });
 
 test("allows retry recovery only through its explicit recovery event", () => {

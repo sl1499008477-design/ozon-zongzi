@@ -27,18 +27,30 @@ const isPlainObject = (value) => {
 const requiredString = (value) =>
   typeof value === "string" && value.trim() ? value : null;
 
-const cloneJsonSafe = (value) => {
+const UNSAFE_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+const cloneJsonSafe = (value, active = new WeakSet()) => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw strategyError();
     return value;
   }
-  if (Array.isArray(value)) return value.map(cloneJsonSafe);
-  if (!isPlainObject(value)) throw strategyError();
+  if (!Array.isArray(value) && !isPlainObject(value)) throw strategyError();
+  if (active.has(value)) throw strategyError();
 
-  const clone = {};
-  for (const [key, nested] of Object.entries(value)) clone[key] = cloneJsonSafe(nested);
-  return clone;
+  active.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((nested) => cloneJsonSafe(nested, active));
+
+    const clone = {};
+    for (const [key, nested] of Object.entries(value)) {
+      if (UNSAFE_JSON_KEYS.has(key)) throw strategyError();
+      clone[key] = cloneJsonSafe(nested, active);
+    }
+    return clone;
+  } finally {
+    active.delete(value);
+  }
 };
 
 const compareStringIds = (left, right) => {
@@ -67,6 +79,14 @@ const validateRule = (value) => {
   }
 
   return value;
+};
+
+const validateUniqueRuleIds = (rules) => {
+  const ruleIds = new Set();
+  for (const rule of rules) {
+    if (ruleIds.has(rule.ruleId)) throw strategyError();
+    ruleIds.add(rule.ruleId);
+  }
 };
 
 const validateProduct = (value) => {
@@ -120,6 +140,7 @@ export function resolveAiContentStrategy(input) {
   }
 
   const rules = input.rules.map(validateRule);
+  validateUniqueRuleIds(rules);
   const ancestors = validateProduct(input.product);
   const { descriptionCategoryId: targetDescriptionCategoryId, productStyle } = input.product;
 
