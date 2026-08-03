@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import {
-  assertAutoListingRetryEvent,
   assertAutoListingTransition,
   nextAutoListingStatus,
   recoveryPointForRetryableFailure,
@@ -51,6 +50,28 @@ function eventDetailsError() {
 
 function recoveryPointMismatchError() {
   return repositoryError("AUTO_LISTING_RECOVERY_POINT_MISMATCH");
+}
+
+function recoveryPointEvidenceError() {
+  return repositoryError("AUTO_LISTING_RECOVERY_POINT_INVALID");
+}
+
+function recoveryPointFromLatestLegacyFailure(event, row, accountId) {
+  if (!plainJsonObject(event) || event.account_id !== accountId || event.job_id !== row.job_id
+    || event.item_id !== row.id || event.event_type !== "RETRYABLE_FAILURE"
+    || event.to_status !== "RETRYABLE_ERROR" || !plainJsonObject(event.details)
+    || typeof row.failure_code !== "string" || !row.failure_code
+    || event.details.failureCode !== row.failure_code) {
+    throw recoveryPointEvidenceError();
+  }
+  let recoveryPoint;
+  try {
+    recoveryPoint = recoveryPointForRetryableFailure(event.from_status);
+  } catch {
+    throw recoveryPointEvidenceError();
+  }
+  if (event.details.recoveryPoint !== recoveryPoint) throw recoveryPointEvidenceError();
+  return recoveryPoint;
 }
 
 function safeEventDetails(value = {}) {
@@ -608,15 +629,13 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       try {
         await client.query("BEGIN");
         const current = await client.query(
-          `SELECT id,job_id,status,status_version,recovery_point FROM auto_listing_job_items
+          `SELECT id,job_id,status,status_version,recovery_point,failure_code FROM auto_listing_job_items
             WHERE id=$1 AND account_id=$2 FOR UPDATE`,
           [id, scope],
         );
         const row = current.rows[0];
         if (!row) throw repositoryError("AUTO_LISTING_JOB_NOT_FOUND", 404);
         if (row.status_version !== expectedStatusVersion) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
-        const nextStatus = nextAutoListingStatus(row.status, eventType);
-        assertAutoListingTransition(row.status, eventType, nextStatus);
         const isRetryableFailure = eventType === "RETRYABLE_FAILURE";
         const isRetry = ["RETRY_PLANNING", "RETRY_GENERATION", "RETRY_UPLOAD"].includes(eventType);
         let recoveryPoint = null;
@@ -629,16 +648,18 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           recoveryPoint = row.recovery_point;
           if (!recoveryPoint) {
             const legacyFailure = await client.query(
-              `SELECT from_status FROM auto_listing_events
-                WHERE account_id=$1 AND item_id=$2 AND event_type='RETRYABLE_FAILURE'
-                ORDER BY created_at DESC,id DESC LIMIT 1`,
-              [scope, id],
+              `SELECT e.account_id,e.job_id,e.item_id,e.event_type,e.from_status,e.to_status,e.details
+                 FROM auto_listing_events e
+                 JOIN auto_listing_jobs j ON j.id=e.job_id AND j.account_id=e.account_id
+                WHERE e.account_id=$1 AND e.item_id=$2 AND e.job_id=$3 AND j.account_id=$1
+                ORDER BY e.created_at DESC,e.id DESC LIMIT 1`,
+              [scope, id, row.job_id],
             );
-            const sourceStatus = legacyFailure.rows[0]?.from_status;
-            recoveryPoint = recoveryPointForRetryableFailure(sourceStatus);
+            recoveryPoint = recoveryPointFromLatestLegacyFailure(legacyFailure.rows[0], row, scope);
           }
-          assertAutoListingRetryEvent(recoveryPoint, eventType);
         }
+        const nextStatus = nextAutoListingStatus(row.status, eventType, recoveryPoint);
+        assertAutoListingTransition(row.status, eventType, nextStatus, recoveryPoint);
         const failureCode = ["BLOCK", "RETRYABLE_FAILURE"].includes(eventType)
           ? safeDetails.failureCode : null;
         const persistedRecoveryPoint = isRetryableFailure ? recoveryPoint : null;

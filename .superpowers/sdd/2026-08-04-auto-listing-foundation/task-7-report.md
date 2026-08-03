@@ -35,3 +35,11 @@ No configuration, pricing, snapshots, warehouses, routes, UI, extension, AI, or 
 
 - The dedicated PostgreSQL fixture now covers the recovery write, wrong-retry no-event behavior, and correct retry clear path, but it could not execute without an explicit disposable `SONLI_MIGRATION_TEST_DATABASE_URL`.
 - Keep `AUTO_LISTING_ENABLED=0`. To roll back code, revert this Task 7 commit; do not remove migration 026 records, recovery audit events, or task history.
+
+## Fix round 1 — primary transition gate and legacy proof
+
+- RED: the focused state-machine/repository tests reported **15 passed, 2 failed**. A direct `nextAutoListingStatus("RETRYABLE_ERROR", retry)` call still bypassed recovery evidence, and a legacy row accepted a later/non-failure event because the query filtered history before proving the latest event.
+- GREEN: retry events are no longer ordinary `TRANSITIONS` entries. The primary `nextAutoListingStatus` and `assertAutoListingTransition` APIs require a matching recovery point for `RETRYABLE_ERROR`; omitted or mismatched evidence returns `AUTO_LISTING_TRANSITION_FORBIDDEN`. The repository invokes those APIs as its transition authority.
+- Legacy lookup now reads the latest event only for the locked account, item, and job, without prefiltering by event type. It must prove `RETRYABLE_FAILURE`, `from_status -> RETRYABLE_ERROR`, matching item failure code, and a recovery point derived from that `from_status`; stale/later, foreign, malformed, or contradictory evidence returns `AUTO_LISTING_RECOVERY_POINT_INVALID` before any write.
+- The always-on fixture covers valid legacy proof, a later non-failure event, foreign account/job/item rows, bad terminal status/details, and an event-insert exception after the item update, which records `ROLLBACK` and never `COMMIT`. The gated fixture now forces the same exception on `RETRYABLE_FAILURE` and asserts status, version, failure, recovery point, and event count remain unchanged.
+- Verification: focused **24 passed, 0 failed, 1 dedicated-DB skip**; foundation **104 passed, 0 failed**; historical regression **42 passed, 0 failed**; gated dedicated-DB command **1 passed, 1 skipped** without `SONLI_MIGRATION_TEST_DATABASE_URL`; syntax and diff checks passed.

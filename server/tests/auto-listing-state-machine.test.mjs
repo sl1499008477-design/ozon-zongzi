@@ -20,9 +20,9 @@ const permittedTransitions = [
   ["GENERATING", "RETRYABLE_FAILURE", "RETRYABLE_ERROR"],
   ["UPLOAD_QUEUED", "RETRYABLE_FAILURE", "RETRYABLE_ERROR"],
   ["UPLOADING", "RETRYABLE_FAILURE", "RETRYABLE_ERROR"],
-  ["RETRYABLE_ERROR", "RETRY_PLANNING", "PLANNING"],
-  ["RETRYABLE_ERROR", "RETRY_GENERATION", "GENERATING"],
-  ["RETRYABLE_ERROR", "RETRY_UPLOAD", "UPLOAD_QUEUED"],
+  ["RETRYABLE_ERROR", "RETRY_PLANNING", "PLANNING", "PLANNING"],
+  ["RETRYABLE_ERROR", "RETRY_GENERATION", "GENERATING", "GENERATION"],
+  ["RETRYABLE_ERROR", "RETRY_UPLOAD", "UPLOAD_QUEUED", "UPLOAD"],
   ["READY_FOR_REVIEW", "REGENERATE", "GENERATING"],
   ["CREATED", "BLOCK", "BLOCKED"],
   ["SOURCE_READY", "BLOCK", "BLOCKED"],
@@ -40,18 +40,18 @@ const permittedTransitions = [
   ["RETRYABLE_ERROR", "CANCEL", "CANCELLED"],
 ];
 
-const expectForbidden = (currentStatus, eventType) => {
+const expectForbidden = (currentStatus, eventType, recoveryPoint) => {
   assert.throws(
-    () => nextAutoListingStatus(currentStatus, eventType),
+    () => nextAutoListingStatus(currentStatus, eventType, recoveryPoint),
     (error) => error?.code === "AUTO_LISTING_TRANSITION_FORBIDDEN",
   );
 };
 
 test("enumerates every permitted transition through the closed event table", () => {
-  for (const [currentStatus, eventType, targetStatus] of permittedTransitions) {
-    assert.equal(nextAutoListingStatus(currentStatus, eventType), targetStatus);
+  for (const [currentStatus, eventType, targetStatus, recoveryPoint] of permittedTransitions) {
+    assert.equal(nextAutoListingStatus(currentStatus, eventType, recoveryPoint), targetStatus);
     assert.doesNotThrow(() =>
-      assertAutoListingTransition(currentStatus, eventType, targetStatus),
+      assertAutoListingTransition(currentStatus, eventType, targetStatus, recoveryPoint),
     );
   }
 });
@@ -88,9 +88,21 @@ test("rejects non-string status, event, and target inputs without coercion", () 
 });
 
 test("allows retry recovery only through its explicit recovery event", () => {
-  assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_PLANNING"), "PLANNING");
-  assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_GENERATION"), "GENERATING");
-  assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_UPLOAD"), "UPLOAD_QUEUED");
+  assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_PLANNING", "PLANNING"), "PLANNING");
+  assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_GENERATION", "GENERATION"), "GENERATING");
+  assert.equal(nextAutoListingStatus("RETRYABLE_ERROR", "RETRY_UPLOAD", "UPLOAD"), "UPLOAD_QUEUED");
+  for (const [eventType, recoveryPoint] of [
+    ["RETRY_PLANNING", undefined],
+    ["RETRY_PLANNING", "GENERATION"],
+    ["RETRY_GENERATION", "UPLOAD"],
+    ["RETRY_UPLOAD", "PLANNING"],
+  ]) {
+    expectForbidden("RETRYABLE_ERROR", eventType, recoveryPoint);
+    assert.throws(
+      () => assertAutoListingTransition("RETRYABLE_ERROR", eventType, "PLANNING", recoveryPoint),
+      (error) => error?.code === "AUTO_LISTING_TRANSITION_FORBIDDEN",
+    );
+  }
   expectForbidden("RETRYABLE_ERROR", "RETRYABLE_FAILURE");
   expectForbidden("RETRYABLE_ERROR", "BLOCK");
 });

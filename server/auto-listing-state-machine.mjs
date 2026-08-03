@@ -39,12 +39,7 @@ const TRANSITIONS = {
     RETRYABLE_FAILURE: "RETRYABLE_ERROR",
     BLOCK: "BLOCKED",
   },
-  RETRYABLE_ERROR: {
-    RETRY_PLANNING: "PLANNING",
-    RETRY_GENERATION: "GENERATING",
-    RETRY_UPLOAD: "UPLOAD_QUEUED",
-    CANCEL: "CANCELLED",
-  },
+  RETRYABLE_ERROR: { CANCEL: "CANCELLED" },
   SUCCEEDED: {},
   BLOCKED: {},
   CANCELLED: {},
@@ -61,6 +56,12 @@ const RETRY_EVENTS_BY_RECOVERY_POINT = Object.freeze({
   PLANNING: "RETRY_PLANNING",
   GENERATION: "RETRY_GENERATION",
   UPLOAD: "RETRY_UPLOAD",
+});
+
+const RETRY_TARGETS_BY_EVENT = Object.freeze({
+  RETRY_PLANNING: "PLANNING",
+  RETRY_GENERATION: "GENERATING",
+  RETRY_UPLOAD: "UPLOAD_QUEUED",
 });
 
 const transitionError = () => {
@@ -90,9 +91,16 @@ export function assertAutoListingRetryEvent(recoveryPoint, eventType) {
   }
 }
 
-export function nextAutoListingStatus(currentStatus, eventType) {
+export function nextAutoListingStatus(currentStatus, eventType, recoveryPoint) {
   if (typeof currentStatus !== "string" || typeof eventType !== "string") {
     throw transitionError();
+  }
+  if (currentStatus === "RETRYABLE_ERROR" && Object.hasOwn(RETRY_TARGETS_BY_EVENT, eventType)) {
+    if (typeof recoveryPoint !== "string"
+      || RETRY_EVENTS_BY_RECOVERY_POINT[recoveryPoint] !== eventType) {
+      throw transitionError();
+    }
+    return RETRY_TARGETS_BY_EVENT[eventType];
   }
   if (!Object.hasOwn(TRANSITIONS, currentStatus)
     || !Object.hasOwn(TRANSITIONS[currentStatus], eventType)) {
@@ -103,9 +111,9 @@ export function nextAutoListingStatus(currentStatus, eventType) {
   return nextStatus;
 }
 
-export function assertAutoListingTransition(currentStatus, eventType, targetStatus) {
+export function assertAutoListingTransition(currentStatus, eventType, targetStatus, recoveryPoint) {
   if (typeof targetStatus !== "string") throw transitionError();
-  if (targetStatus !== nextAutoListingStatus(currentStatus, eventType)) {
+  if (targetStatus !== nextAutoListingStatus(currentStatus, eventType, recoveryPoint)) {
     throw transitionError();
   }
 }

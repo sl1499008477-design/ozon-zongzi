@@ -312,7 +312,7 @@ if (!enabled) {
       )).rows[0].count);
       await assert.rejects(
         repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 3, eventType: "RETRY_GENERATION", actorAccountId: accountA, correlationId: "wrong-retry" }),
-        (error) => error?.code === "AUTO_LISTING_RECOVERY_POINT_INVALID",
+        (error) => error?.code === "AUTO_LISTING_TRANSITION_FORBIDDEN",
       );
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [item.id],
@@ -371,23 +371,30 @@ if (!enabled) {
       await registerGraphSources(client, eventFailure);
       const eventJob = await repository.createJobGraph(eventFailure);
       const eventItem = eventJob.items[0];
+      await repository.updateItemStatus({
+        accountId: accountA, itemId: eventItem.id, expectedStatusVersion: 1, eventType: "START_PLANNING",
+        actorAccountId: accountA, correlationId: "event-failure-planning",
+      });
       const eventCountBefore = Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [eventItem.id],
       )).rows[0].count);
       await client.query(`CREATE OR REPLACE FUNCTION ${schemaSql}.fail_task4_status_event()
         RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN
-          IF NEW.event_type = 'START_PLANNING' THEN RAISE EXCEPTION 'forced event failure'; END IF;
+          IF NEW.event_type = 'RETRYABLE_FAILURE' THEN RAISE EXCEPTION 'forced event failure'; END IF;
           RETURN NEW;
         END; $$`);
       await client.query(`CREATE TRIGGER fail_task4_status_event BEFORE INSERT ON auto_listing_events
         FOR EACH ROW EXECUTE FUNCTION ${schemaSql}.fail_task4_status_event()`);
       await assert.rejects(
-        repository.updateItemStatus({ accountId: accountA, itemId: eventItem.id, expectedStatusVersion: 1, eventType: "START_PLANNING", actorAccountId: accountA, correlationId: "event-failure" }),
+        repository.updateItemStatus({
+          accountId: accountA, itemId: eventItem.id, expectedStatusVersion: 2, eventType: "RETRYABLE_FAILURE",
+          actorAccountId: accountA, correlationId: "event-failure", details: { failureCode: "AUTO_LISTING_TRANSIENT" },
+        }),
       );
       const afterEventFailure = (await client.query(
-        "SELECT status,status_version,failure_code FROM auto_listing_job_items WHERE id=$1", [eventItem.id],
+        "SELECT status,status_version,failure_code,recovery_point FROM auto_listing_job_items WHERE id=$1", [eventItem.id],
       )).rows[0];
-      assert.deepEqual(afterEventFailure, { status: "SOURCE_READY", status_version: 1, failure_code: null });
+      assert.deepEqual(afterEventFailure, { status: "PLANNING", status_version: 2, failure_code: null, recovery_point: null });
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [eventItem.id],
       )).rows[0].count), eventCountBefore);
