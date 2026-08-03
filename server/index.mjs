@@ -144,6 +144,7 @@ import {
 import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs";
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
+import { listingWarehouseEligibility } from "./listing-warehouse-eligibility.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
 const rootDir = path.resolve(__dirname, "..");
@@ -801,10 +802,30 @@ function localStatePayload(state, options = {}) {
     .filter((item) => String(item?.accountId || "") === String(account.id))
     .map(publicPersistedCollectionItem);
   const visibleFiles = ensureFilesCache(state).filter((file) => canAccessLocalFile(file, account));
+  const visibleProducts = accountScopedCache(state.caches.products, account, accountStoreIds);
+  const visibleWarehouses = accountScopedCache(state.caches.warehouses, account, accountStoreIds)
+    .map((warehouse) => {
+      const targetStoreId = String(
+        warehouse?.storeId
+        || warehouse?.store_id
+        || warehouse?.localStoreId
+        || warehouse?.local_store_id
+        || "",
+      ).trim();
+      return {
+        ...warehouse,
+        listingEligibility: listingWarehouseEligibility({
+          warehouse,
+          products: visibleProducts,
+          targetStoreId,
+          accountId: account.id,
+        }),
+      };
+    });
   const visibleCaches = {
-    products: accountScopedCache(state.caches.products, account, accountStoreIds),
+    products: visibleProducts,
     postings: accountScopedCache(state.caches.postings, account, accountStoreIds),
-    warehouses: accountScopedCache(state.caches.warehouses, account, accountStoreIds),
+    warehouses: visibleWarehouses,
     collectBox: visibleCollectBox,
     favorites: accountScopedCache(state.caches.favorites, account, accountStoreIds),
     promotions: accountScopedCache(state.caches.promotions, account, accountStoreIds),

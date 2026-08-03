@@ -42,8 +42,22 @@ const state = ensureAccountState({
   dataCollectionStores: [],
   caches: {
     products: [
-      { id: "product_a", storeId: "store_a" },
-      { id: "product_b", storeId: "store_b" },
+      {
+        id: "product_a",
+        storeId: "store_a",
+        warehouse_stocks: [{ warehouse_id: "fbs-a", source: "fbs", present: 0 }],
+      },
+      {
+        id: "product_b",
+        storeId: "store_b",
+        warehouse_stocks: [{ warehouse_id: "fbs-b", source: "fbs", present: 0 }],
+      },
+      {
+        id: "product_b_archived",
+        storeId: "store_b",
+        is_archived: true,
+        warehouse_stocks: [{ warehouse_id: "fbs-b-archived", source: "fbs", present: 8 }],
+      },
       { id: "product_unscoped" },
     ],
     postings: [
@@ -51,8 +65,34 @@ const state = ensureAccountState({
       { id: "posting_b", accountId: accountB.id },
     ],
     warehouses: [
-      { id: "warehouse_a", localStoreId: "store_a" },
-      { id: "warehouse_b", localStoreId: "store_b" },
+      {
+        id: "warehouse_a",
+        localStoreId: "store_a",
+        warehouse_id: "fbs-a",
+        warehouse_type: "fbs",
+        status: "active",
+      },
+      {
+        id: "warehouse_b",
+        localStoreId: "store_b",
+        warehouse_id: "fbs-b",
+        warehouse_type: "fbs",
+        status: "active",
+      },
+      {
+        id: "warehouse_b_fbo",
+        localStoreId: "store_b",
+        warehouse_id: "fbo-b",
+        warehouse_type: "fbo",
+        status: "active",
+      },
+      {
+        id: "warehouse_b_archived_only",
+        localStoreId: "store_b",
+        warehouse_id: "fbs-b-archived",
+        warehouse_type: "fbs",
+        status: "active",
+      },
     ],
     favorites: [
       { id: "favorite_a", storeId: "store_a" },
@@ -89,11 +129,28 @@ assert.deepEqual(payloadB.stores.map((store) => store.id), ["store_b"]);
 assert.equal(payloadB.binding.id, "store_b");
 assert.deepEqual(payloadB.caches.collectBox.map((item) => item.id), ["collect_b"]);
 assert.deepEqual(payloadB.caches.files.map((file) => file.id), ["file_b"]);
-assert.deepEqual(payloadB.caches.products.map((item) => item.id), ["product_b"]);
+assert.deepEqual(payloadB.caches.products.map((item) => item.id), ["product_b", "product_b_archived"]);
 assert.deepEqual(payloadB.caches.postings.map((item) => item.id), ["posting_b"]);
-assert.deepEqual(payloadB.caches.warehouses.map((item) => item.id), ["warehouse_b"]);
+assert.deepEqual(payloadB.caches.warehouses.map((item) => item.id), [
+  "warehouse_b",
+  "warehouse_b_fbo",
+  "warehouse_b_archived_only",
+]);
+assert.deepEqual(payloadB.caches.warehouses[0].listingEligibility, {
+  eligible: true,
+  code: "ELIGIBLE_ACTIVE_FBS",
+});
+assert.deepEqual(payloadB.caches.warehouses[1].listingEligibility, {
+  eligible: false,
+  code: "TYPE_NOT_FBS",
+});
+assert.deepEqual(payloadB.caches.warehouses[2].listingEligibility, {
+  eligible: false,
+  code: "NO_ACTIVE_PRODUCT_ASSOCIATION",
+});
+assert.equal(payloadB.caches.warehouses.some((item) => item.warehouse_id === "fbs-a"), false);
 assert.deepEqual(payloadB.caches.favorites.map((item) => item.id), ["favorite_b"]);
-assert.equal(payloadB.summary.products, 1);
+assert.equal(payloadB.summary.products, 2);
 assert.equal(payloadB.summary.postings, 1);
 assert.deepEqual(Object.keys(payloadB.jobs), ["job_b"]);
 
