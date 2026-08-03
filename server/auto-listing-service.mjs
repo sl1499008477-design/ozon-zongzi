@@ -8,6 +8,7 @@ import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibi
 import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
 const REQUEST_KEYS = new Set(["actor", "collectItemIds", "idempotencyKey", "config", "correlationId"]);
+const PRICE_STRING_FIELDS = ["blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
 
 function error(code, status = 422) {
   const result = new Error(code);
@@ -36,9 +37,9 @@ function assertRequest(input) {
     throw error("AUTO_LISTING_REQUEST_INVALID");
   }
   const ids = input.collectItemIds;
-  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100) throw error("AUTO_LISTING_REQUEST_INVALID");
-  const collectItemIds = [...new Set(ids.map((id) => text(id)))];
-  if (collectItemIds.some((id) => !id) || collectItemIds.length > 100) throw error("AUTO_LISTING_REQUEST_INVALID");
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 1000 || ids.some((id) => !text(id))) throw error("AUTO_LISTING_REQUEST_INVALID");
+  const collectItemIds = [...new Set(ids.map(text))];
+  if (collectItemIds.length < 1 || collectItemIds.length > 100) throw error("AUTO_LISTING_REQUEST_INVALID");
   const idempotencyKey = text(input.idempotencyKey);
   const correlationId = text(input.correlationId);
   if (!idempotencyKey || idempotencyKey.length > 240 || !correlationId || correlationId.length > 240) {
@@ -56,11 +57,10 @@ function priceInput(snapshot, adjustmentKopecks) {
   };
 }
 
-function categoryAncestors(path, descriptionCategoryId) {
-  if (!Array.isArray(path)) return [];
-  return path
-    .map((categoryId, index) => ({ categoryId: String(categoryId), distance: path.length - index }))
-    .filter((entry) => entry.categoryId && entry.categoryId !== String(descriptionCategoryId));
+function categoryAncestors(ids) {
+  if (!Array.isArray(ids)) return [];
+  return ids.map((categoryId, index) => ({ categoryId: String(categoryId), distance: index + 1 }))
+    .filter((entry) => entry.categoryId);
 }
 
 function strategyFor(snapshot, source, published) {
@@ -69,10 +69,22 @@ function strategyFor(snapshot, source, published) {
     rules: published.rules,
     product: {
       descriptionCategoryId: snapshot.targetCategory.descriptionCategoryId,
-      categoryAncestors: categoryAncestors(snapshot.targetCategory.categoryPath, snapshot.targetCategory.descriptionCategoryId),
+      categoryAncestors: categoryAncestors(snapshot.targetCategory.ancestorCategoryIds),
       productStyle: text(source.productStyle || source.collectItem?.productStyle) || "UNKNOWN",
     },
   });
+}
+
+function safePrice(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.currency !== "RUB"
+    || !["BLACK_GTE_80", "BLACK_LT_80"].includes(value.branch)) return undefined;
+  const price = { currency: "RUB", branch: value.branch };
+  for (const field of PRICE_STRING_FIELDS) {
+    if (value[field] === undefined) continue;
+    if (typeof value[field] !== "string" || !/^[+-]?\d+$/.test(value[field])) return undefined;
+    price[field] = value[field];
+  }
+  return price;
 }
 
 function safeItem(item = {}) {
@@ -91,7 +103,7 @@ function safeItem(item = {}) {
     strategyVersionId: source.strategyVersionId || source.strategy_version_id || null,
     style: source.style || null,
     matchedBy: source.matchedBy || source.matched_by || null,
-    ...(source.price ? { price: canonical(source.price) } : {}),
+    ...(safePrice(source.price) ? { price: safePrice(source.price) } : {}),
     ...(source.failureCode || source.failure_code ? { failureCode: source.failureCode || source.failure_code } : {}),
   };
 }
@@ -110,7 +122,7 @@ function safeJob(row = {}) {
 }
 
 function requireRepository(repository) {
-  const required = ["loadCollectSources", "loadTargetStore", "loadTargetWarehouse", "loadPublishedStrategy", "createJobGraph", "getJob", "listJobs"];
+  const required = ["loadCollectSources", "loadTargetStore", "loadTargetWarehouse", "loadPublishedStrategy", "getJobByIdempotencyKey", "createJobGraph", "getJob", "listJobs"];
   if (!repository || required.some((name) => typeof repository[name] !== "function")) {
     throw new TypeError("Auto listing repository dependencies are required");
   }
@@ -126,6 +138,8 @@ export function createAutoListingService({ repository } = {}) {
       const accountId = text(input.actor.id);
       if (!accountId) throw error("AUTO_LISTING_REQUEST_INVALID");
       const config = normalizeAutoListingConfig(input.config);
+      const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey });
+      if (replay) return safeJob(replay);
       const store = await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
       const targetStore = validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
       const warehouseEvidence = await storage.loadTargetWarehouse({
@@ -134,6 +148,13 @@ export function createAutoListingService({ repository } = {}) {
         targetWarehouseId: config.targetWarehouseId,
       });
       const warehouse = warehouseEvidence?.warehouse;
+      if (!warehouse
+        || text(warehouse.id) !== config.targetWarehouseId
+        || text(warehouse.storeId || warehouse.store_id) !== config.targetStoreId
+        || text(warehouse.accountId || warehouse.account_id || warehouse.ownerAccountId) !== accountId
+        || !text(warehouse.warehouse_id || warehouse.warehouseId)) {
+        throw error("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+      }
       assertListingStockSelectionEligible({
         warehouses: [warehouse],
         products: warehouseEvidence?.products || [],
@@ -149,7 +170,7 @@ export function createAutoListingService({ repository } = {}) {
       if (!published?.strategyVersion || !Array.isArray(published.rules)) {
         throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
       }
-      const items = sources.map((source) => {
+      const items = sources.map((source, sourceOrder) => {
         const captured = buildAutoListingSourceSnapshot({
           accountId,
           sourceType: "COLLECT_BOX",
@@ -158,8 +179,9 @@ export function createAutoListingService({ repository } = {}) {
           collectItem: source.collectItem,
           productDraft: source.productDraft,
           rawResponseRef: source.rawResponseRef,
+          rawResponseHash: source.rawResponseHash,
+          rawCollectedAt: source.rawCollectedAt,
         });
-        const strategy = strategyFor(captured.snapshot, source, published);
         const base = {
           sourceType: "COLLECT_BOX",
           sourceRecordId: source.id,
@@ -169,15 +191,18 @@ export function createAutoListingService({ repository } = {}) {
           rawResponseRef: captured.rawResponseRef,
           targetStoreId: targetStore.id,
           targetWarehouseId: config.targetWarehouseId,
-          strategyId: strategy.strategyId,
-          strategyVersionId: strategy.strategyVersionId,
-          style: strategy.style,
-          matchedBy: strategy.matchedBy,
+          sourceOrder,
         };
+        if (captured.snapshot.targetCategory.targetStoreId !== config.targetStoreId) {
+          return { ...base, status: "BLOCKED", failureCode: "AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH" };
+        }
+        const strategy = strategyFor(captured.snapshot, source, published);
         try {
-          return { ...base, status: "SOURCE_READY", price: calculateAutoListingPrice(priceInput(captured.snapshot, config.priceAdjustmentKopecks)) };
+          return { ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId, style: strategy.style, matchedBy: strategy.matchedBy,
+            status: "SOURCE_READY", price: calculateAutoListingPrice(priceInput(captured.snapshot, config.priceAdjustmentKopecks)) };
         } catch (caught) {
-          return { ...base, status: "BLOCKED", failureCode: text(caught?.code) || "AUTO_LISTING_ITEM_BLOCKED" };
+          return { ...base, strategyId: strategy.strategyId, strategyVersionId: strategy.strategyVersionId, style: strategy.style, matchedBy: strategy.matchedBy,
+            status: "BLOCKED", failureCode: text(caught?.code) || "AUTO_LISTING_ITEM_BLOCKED" };
         }
       });
       const created = await storage.createJobGraph({

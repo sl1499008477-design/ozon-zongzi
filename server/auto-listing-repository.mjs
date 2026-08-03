@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { assertAutoListingTransition, nextAutoListingStatus } from "./auto-listing-state-machine.mjs";
+import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
 
@@ -107,7 +109,7 @@ async function readJobWithClient(client, accountId, jobId) {
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
       WHERE i.job_id=$1 AND i.account_id=$2
-      ORDER BY i.created_at ASC,i.id ASC`,
+      ORDER BY i.id ASC`,
     [jobId, accountId],
   );
   const eventResult = await client.query(
@@ -124,8 +126,29 @@ function assertGraph(graph) {
   if (!graph || typeof graph !== "object") throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   const accountId = requiredAccountId(graph.accountId);
   const idempotencyKey = requiredText(graph.idempotencyKey);
-  if (!Array.isArray(graph.items) || !graph.items.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-  return { ...graph, accountId, idempotencyKey };
+  if (requiredText(graph.actorAccountId) !== accountId || !requiredText(graph.strategyVersionId)
+    || !Array.isArray(graph.items) || !graph.items.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  const items = graph.items.map((item) => {
+    if (!item || typeof item !== "object" || item.sourceType !== graph.sourceType
+      || !requiredText(item.sourceRecordId) || !requiredText(item.sourceVersion)
+      || !requiredText(item.targetStoreId) || !requiredText(item.targetWarehouseId)
+      || !Number.isInteger(item.sourceOrder) || item.sourceOrder < 0
+      || !["SOURCE_READY", "BLOCKED"].includes(item.status)) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    const captured = verifyAutoListingSourceSnapshot(item);
+    if (captured.snapshot.identity.accountId !== accountId
+      || captured.snapshot.identity.sourceRecordId !== item.sourceRecordId
+      || captured.snapshot.identity.sourceVersion !== item.sourceVersion
+      || captured.snapshot.identity.sourceType !== item.sourceType) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    return { ...item, ...captured };
+  });
+  if (new Set(items.map((item) => item.sourceOrder)).size !== items.length) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return { ...graph, accountId, idempotencyKey, items };
 }
 
 export function createAutoListingRepository({ pool, idFactory = defaultIdFactory, now = () => new Date() } = {}) {
@@ -143,12 +166,13 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       const result = await pool.query(
         `SELECT c.id,c.account_id,c.source,c.source_sku,c.summary,
                 d.id AS draft_id,d.version AS draft_version,d.data AS draft_data,
-                raw.id AS raw_response_ref,raw.payload AS raw_payload
+                raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at
            FROM collect_items c
            LEFT JOIN product_drafts d ON d.id=c.current_draft_id AND d.collect_item_id=c.id
            LEFT JOIN LATERAL (
-             SELECT id,payload FROM collect_raw_payloads
+             SELECT id,payload,payload_hash,collected_at FROM collect_raw_payloads
               WHERE collect_item_id=c.id AND account_id=c.account_id
+                AND ((d.id IS NOT NULL AND id=d.source_payload_id) OR d.id IS NULL)
               ORDER BY created_at DESC,id DESC LIMIT 1
            ) raw ON TRUE
           WHERE c.account_id=$1 AND c.id=ANY($2::text[]) AND c.deleted_at IS NULL
@@ -161,8 +185,12 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
         return {
           id: row.id,
           accountId: row.account_id,
-          sourceVersion: String(row.draft_version || 1),
+          sourceVersion: row.draft_id
+            ? `draft:${row.draft_version}:${row.payload_hash || row.raw_response_ref || "missing"}`
+            : `raw:${row.payload_hash || row.raw_response_ref || "missing"}`,
           rawResponseRef: row.raw_response_ref || null,
+          rawResponseHash: row.payload_hash || null,
+          rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
           collectItem: {
             ...rawNormalized,
             id: row.id,
@@ -289,6 +317,28 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           committed = true;
           return { ...existing, duplicate: true };
         }
+        const strategy = await client.query(
+          `SELECT 1 FROM ai_content_strategy_versions
+            WHERE id=$1 AND account_id=$2 AND status='PUBLISHED' FOR SHARE`,
+          [graph.strategyVersionId, graph.accountId],
+        );
+        if (!strategy.rows[0]) throw repositoryError("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+        for (const item of graph.items) {
+          const source = await client.query(
+            `SELECT 1 FROM collect_items
+              WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL FOR SHARE`,
+            [item.sourceRecordId, graph.accountId],
+          );
+          if (!source.rows[0]) throw repositoryError("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
+          const target = await client.query(
+            `SELECT 1 FROM stores s
+              JOIN warehouses w ON w.id=$3 AND w.store_id=s.id
+             WHERE s.id=$2 AND s.owner_account_id=$1
+               AND NULLIF(BTRIM(w.warehouse_id),'') IS NOT NULL FOR SHARE`,
+            [graph.accountId, item.targetStoreId, item.targetWarehouseId],
+          );
+          if (!target.rows[0]) throw repositoryError("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+        }
         const jobId = newId("auto_listing_job");
         await client.query(
           `INSERT INTO auto_listing_jobs (
@@ -319,7 +369,7 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
                 json(item.snapshot), item.snapshotHash, item.rawResponseRef],
             );
           }
-          const itemId = newId("auto_listing_item");
+          const itemId = `${jobId}_item_${String(item.sourceOrder).padStart(3, "0")}`;
           await client.query(
             `INSERT INTO auto_listing_job_items (
                id,job_id,account_id,snapshot_id,target_store_id,target_warehouse_id,status,status_version,
@@ -377,6 +427,16 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       return readJobWithClient(pool, scope, requiredText(jobId, "AUTO_LISTING_JOB_NOT_FOUND"));
     },
 
+    async getJobByIdempotencyKey({ accountId, idempotencyKey } = {}) {
+      const scope = requiredAccountId(accountId);
+      const key = requiredText(idempotencyKey);
+      const result = await pool.query(
+        `SELECT id FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2`,
+        [scope, key],
+      );
+      return result.rows[0] ? readJobWithClient(pool, scope, result.rows[0].id) : null;
+    },
+
     async listJobs({ accountId, limit = 20 } = {}) {
       const scope = requiredAccountId(accountId);
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
@@ -389,26 +449,53 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       return result;
     },
 
-    async updateItemStatus({ accountId, itemId, expectedStatusVersion, status, failureCode = null } = {}) {
+    async updateItemStatus({
+      accountId, itemId, expectedStatusVersion, eventType, actorAccountId, correlationId, details = {},
+    } = {}) {
       const scope = requiredAccountId(accountId);
       const id = requiredText(itemId);
-      if (!Number.isInteger(expectedStatusVersion) || expectedStatusVersion < 1 || !requiredText(status)) {
+      if (!Number.isInteger(expectedStatusVersion) || expectedStatusVersion < 1
+        || !requiredText(eventType) || requiredText(actorAccountId) !== scope || !requiredText(correlationId)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
-      const updated = await pool.query(
-        `UPDATE auto_listing_job_items SET status=$1,status_version=status_version+1,
-                failure_code=$2,failure_detail_safe=$2,updated_at=NOW()
-          WHERE id=$3 AND account_id=$4 AND status_version=$5
-          RETURNING id,status,status_version`,
-        [status, failureCode, id, scope, expectedStatusVersion],
-      );
-      if (updated.rows[0]) return updated.rows[0];
-      const exists = await pool.query(
-        `SELECT 1 FROM auto_listing_job_items WHERE id=$1 AND account_id=$2`,
-        [id, scope],
-      );
-      if (!exists.rows[0]) throw repositoryError("AUTO_LISTING_JOB_NOT_FOUND", 404);
-      throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
+      const client = await pool.connect();
+      let committed = false;
+      try {
+        await client.query("BEGIN");
+        const current = await client.query(
+          `SELECT id,job_id,status,status_version FROM auto_listing_job_items
+            WHERE id=$1 AND account_id=$2 FOR UPDATE`,
+          [id, scope],
+        );
+        const row = current.rows[0];
+        if (!row) throw repositoryError("AUTO_LISTING_JOB_NOT_FOUND", 404);
+        if (row.status_version !== expectedStatusVersion) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
+        const nextStatus = nextAutoListingStatus(row.status, eventType);
+        assertAutoListingTransition(row.status, eventType, nextStatus);
+        const safeDetails = JSON.parse(JSON.stringify(details));
+        const updated = await client.query(
+          `UPDATE auto_listing_job_items SET status=$1,status_version=status_version+1,updated_at=NOW()
+            WHERE id=$2 AND account_id=$3 AND status_version=$4
+            RETURNING id,status,status_version`,
+          [nextStatus, id, scope, expectedStatusVersion],
+        );
+        if (!updated.rows[0]) throw repositoryError("AUTO_LISTING_VERSION_CONFLICT", 409);
+        await client.query(
+          `INSERT INTO auto_listing_events (
+             id,account_id,job_id,item_id,actor_account_id,from_status,to_status,event_type,correlation_id,details
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [`${id}_${String(expectedStatusVersion + 2).padStart(2, "0")}`, scope, row.job_id, id,
+            actorAccountId, row.status, nextStatus, eventType, correlationId, json(safeDetails)],
+        );
+        await client.query("COMMIT");
+        committed = true;
+        return updated.rows[0];
+      } catch (caught) {
+        if (!committed) await client.query("ROLLBACK").catch(() => {});
+        throw caught;
+      } finally {
+        client.release();
+      }
     },
   };
 }

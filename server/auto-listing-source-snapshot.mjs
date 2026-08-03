@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { buildCollectItemDraftV4 } from "./listing-pipeline.mjs";
 
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const SNAPSHOT_KEYS = [
+  "identity", "source", "targetCategory", "attributes", "logistics", "productMeasurements",
+  "priceEvidence", "variants", "media", "richContent", "rawEvidence",
+];
 
 function sourceError(code) {
   const error = new Error(code);
@@ -9,12 +13,14 @@ function sourceError(code) {
   return error;
 }
 
-function text(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
+const text = (value) => typeof value === "string" ? value.trim() : "";
+const identifier = (value) => (typeof value === "string" || typeof value === "number") ? String(value).trim() : "";
 
-function identifier(value) {
-  return (typeof value === "string" || typeof value === "number") ? String(value).trim() : "";
+function scalar(value, { allowNull = false } = {}) {
+  if (allowNull && (value === undefined || value === null || value === "")) return null;
+  const result = text(value);
+  if (!result || result.length > 2048) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  return result;
 }
 
 function jsonSafe(value, active = new WeakSet()) {
@@ -27,177 +33,180 @@ function jsonSafe(value, active = new WeakSet()) {
     if (active.has(value)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
     active.add(value);
     try {
-      return value.map((entry) => jsonSafe(entry, active));
+      const output = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!(index in value)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+        output.push(jsonSafe(value[index], active));
+      }
+      return output;
     } finally {
       active.delete(value);
     }
   }
   if (!value || typeof value !== "object") throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-  if (active.has(value)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  if (prototype !== Object.prototype && prototype !== null || active.has(value)) {
+    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  }
   active.add(value);
   try {
-    const output = {};
-    for (const key of Object.keys(value).sort()) {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => {
       if (DANGEROUS_KEYS.has(key)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-      output[key] = jsonSafe(value[key], active);
-    }
-    return output;
+      return [key, jsonSafe(value[key], active)];
+    }));
   } finally {
     active.delete(value);
   }
 }
 
 function firstDefined(...values) {
-  for (const value of values) {
-    if (value !== undefined && value !== null && value !== "") return value;
-  }
+  for (const value of values) if (value !== undefined && value !== null && value !== "") return value;
   return values.at(-1);
 }
 
+function safeAncestorIds(target = {}) {
+  const ids = firstDefined(target.ancestorCategoryIds, target.ancestor_category_ids, []);
+  if (!Array.isArray(ids)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  return ids.map((id) => {
+    const value = identifier(id);
+    if (!value) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+    return value;
+  });
+}
+
 function categorySnapshot(draft) {
-  const resolution = draft.categoryResolution && typeof draft.categoryResolution === "object"
-    ? draft.categoryResolution : {};
+  const resolution = draft.categoryResolution && typeof draft.categoryResolution === "object" ? draft.categoryResolution : {};
+  const target = resolution.target && typeof resolution.target === "object" ? resolution.target : {};
   const descriptionCategoryId = identifier(firstDefined(draft.descriptionCategoryId, draft.description_category_id));
   const typeId = identifier(firstDefined(draft.typeId, draft.type_id));
-  if (!descriptionCategoryId || !typeId) throw sourceError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED");
+  const targetStoreId = identifier(target.storeId);
+  if (!descriptionCategoryId || !typeId || !targetStoreId) throw sourceError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED");
   return {
     descriptionCategoryId,
     typeId,
+    targetStoreId,
+    ancestorCategoryIds: safeAncestorIds(target),
     categoryPath: firstDefined(draft.categoryPath, resolution.categoryPath, resolution.path, resolution.source?.path, []),
     sourceEvidence: firstDefined(resolution.source, draft.sourceCategory, null),
     match: firstDefined(resolution.match, resolution.dictionaryMatch, null),
     dictionary: firstDefined(resolution.dictionary, null),
-    taxonomy: firstDefined(resolution.taxonomy, null),
+    taxonomy: firstDefined(resolution.taxonomy, target.taxonomy, null),
   };
 }
 
-function priceSnapshot(draft, collectItem) {
-  const currency = text(firstDefined(draft.currency, draft.currencyCode, draft.currency_code, collectItem.currency));
+function priceEvidence(record, fallback, collectItem) {
+  const currency = text(firstDefined(record?.currency, record?.currencyCode, record?.currency_code, fallback?.currency, fallback?.currencyCode, collectItem.currency));
   if (currency !== "RUB") throw sourceError("AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB");
   return {
-    blackKopecks: String(firstDefined(draft.blackKopecks, draft.black_kopecks, draft.blackPriceKopecks, "")),
-    greenKopecks: String(firstDefined(draft.greenKopecks, draft.green_kopecks, draft.greenPriceKopecks, "")),
+    blackKopecks: String(firstDefined(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks, fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, "")),
+    greenKopecks: String(firstDefined(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks, fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, "")),
     currency,
   };
 }
 
-function sourceVariants(draft, collectItem) {
+function variantsSnapshot(draft, collectItem) {
   const primarySku = text(firstDefined(draft.sku, draft.sourceSku, collectItem.sku, collectItem.sourceSku));
+  if (!primarySku) throw sourceError("AUTO_LISTING_SOURCE_SKU_REQUIRED");
   const primary = {
     sku: primarySku,
     offerId: firstDefined(draft.offerId, draft.offer_id, collectItem.offerId, collectItem.offer_id, ""),
     name: firstDefined(draft.title, draft.name, collectItem.name, collectItem.title, ""),
     price: firstDefined(draft.price, collectItem.price, ""),
-    media: firstDefined(draft.images, draft.media, collectItem.images, []),
+    priceEvidence: priceEvidence(draft, null, collectItem),
+    media: firstDefined(draft.media, draft.images, collectItem.images, []),
+    groupId: firstDefined(draft.variantGroupId, draft.groupId, null),
+    relation: firstDefined(draft.relation, draft.variantRelation, draft.groupEvidence, null),
+    evidence: firstDefined(draft.evidence, null),
   };
-  const variants = Array.isArray(draft.variants) && draft.variants.length ? draft.variants : [primary];
-  const normalized = variants.map((variant) => {
-    const record = variant && typeof variant === "object" && !Array.isArray(variant) ? variant : {};
-    const sku = text(firstDefined(record.sku, record.sourceSku, record.source_sku));
+  const records = Array.isArray(draft.variants) && draft.variants.length ? draft.variants : [primary];
+  const variants = records.map((record) => {
+    const value = record && typeof record === "object" && !Array.isArray(record) ? record : {};
+    const sku = text(firstDefined(value.sku, value.sourceSku, value.source_sku));
     if (!sku) throw sourceError("AUTO_LISTING_SOURCE_SKU_REQUIRED");
     return {
       sku,
-      offerId: firstDefined(record.offerId, record.offer_id, ""),
-      name: firstDefined(record.name, record.title, ""),
-      price: firstDefined(record.price, record.priceKopecks, ""),
-      media: firstDefined(record.media, record.images, []),
-      relation: firstDefined(record.relation, record.variantRelation, record.groupEvidence, null),
-      evidence: firstDefined(record.evidence, null),
+      offerId: firstDefined(value.offerId, value.offer_id, ""),
+      name: firstDefined(value.name, value.title, ""),
+      price: firstDefined(value.price, value.priceKopecks, ""),
+      priceEvidence: priceEvidence(value, draft, collectItem),
+      media: firstDefined(value.media, value.images, []),
+      groupId: firstDefined(value.variantGroupId, value.groupId, value.group_id, null),
+      relation: firstDefined(value.relation, value.variantRelation, value.groupEvidence, null),
+      evidence: firstDefined(value.evidence, null),
     };
   });
-  if (!primarySku) throw sourceError("AUTO_LISTING_SOURCE_SKU_REQUIRED");
-  if (!normalized.some((variant) => variant.sku === primarySku)) normalized.unshift(primary);
-  return { primarySku, variants: normalized };
+  if (!variants.some((variant) => variant.sku === primarySku)) variants.unshift(primary);
+  return { primarySku, variants };
 }
 
-function productMeasurements(draft, collectItem) {
-  return firstDefined(
-    draft.productMeasurements,
-    draft.product_measurements,
-    draft.productDimensions,
-    draft.product_dimensions,
-    collectItem.productMeasurements,
-    collectItem.productDimensions,
-    {},
-  );
-}
-
-/**
- * Builds an immutable, JSON-safe capture of already-normalized collect facts.
- * This function never scrapes or enriches data; any new collection becomes a new snapshot.
- */
-export function buildAutoListingSourceSnapshot(input = {}) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+function normalizedSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  const keys = Object.keys(snapshot).sort();
+  if (keys.length !== SNAPSHOT_KEYS.length || keys.some((key, index) => key !== [...SNAPSHOT_KEYS].sort()[index])) {
     throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   }
+  return jsonSafe(snapshot);
+}
+
+export function canonicalAutoListingSourceSnapshot(snapshot) {
+  return JSON.stringify(normalizedSnapshot(snapshot));
+}
+
+export function verifyAutoListingSourceSnapshot(value = {}) {
+  const snapshot = normalizedSnapshot(value.snapshot);
+  const snapshotHash = scalar(value.snapshotHash);
+  const expected = crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  if (snapshotHash !== expected) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  return {
+    snapshot,
+    snapshotHash,
+    rawResponseRef: scalar(value.rawResponseRef, { allowNull: true }),
+  };
+}
+
+export function buildAutoListingSourceSnapshot(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   const accountId = text(input.accountId);
   const sourceRecordId = text(input.sourceRecordId);
   const sourceVersion = text(input.sourceVersion);
   const sourceType = text(input.sourceType);
   const collectItem = input.collectItem;
+  if (!sourceRecordId || !sourceVersion || !["COLLECT_BOX", "EXCEL_SKU"].includes(sourceType)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   if (!accountId || !collectItem || typeof collectItem !== "object" || Array.isArray(collectItem)
-    || (text(collectItem.accountId) && text(collectItem.accountId) !== accountId)) {
+    || text(collectItem.accountId) !== accountId || text(collectItem.id) !== sourceRecordId) {
     throw sourceError("AUTO_LISTING_SOURCE_SCOPE");
   }
-  if (!sourceRecordId || !sourceVersion || !["COLLECT_BOX", "EXCEL_SKU"].includes(sourceType)) {
-    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-  }
-  if (text(collectItem.id) && text(collectItem.id) !== sourceRecordId) {
-    throw sourceError("AUTO_LISTING_SOURCE_SCOPE");
-  }
-
+  const rawResponseRef = scalar(input.rawResponseRef, { allowNull: true });
+  const rawResponseHash = scalar(input.rawResponseHash, { allowNull: true });
   let draft;
-  try {
-    draft = buildCollectItemDraftV4(collectItem);
-  } catch {
-    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-  }
-  const variants = sourceVariants(draft, collectItem);
-  const snapshot = jsonSafe({
+  try { draft = buildCollectItemDraftV4(collectItem); } catch { throw sourceError("AUTO_LISTING_SOURCE_INVALID"); }
+  const variants = variantsSnapshot(draft, collectItem);
+  const snapshot = normalizedSnapshot({
     identity: {
-      accountId,
-      sourceType,
-      sourceRecordId,
-      sourceVersion,
-      primarySku: variants.primarySku,
+      accountId, sourceType, sourceRecordId, sourceVersion, primarySku: variants.primarySku,
       primaryOfferId: firstDefined(draft.offerId, draft.offer_id, collectItem.offerId, collectItem.offer_id, ""),
       primaryName: firstDefined(draft.title, draft.name, collectItem.name, collectItem.title, ""),
+      brand: firstDefined(draft.brand, collectItem.brand, ""),
     },
     source: {
-      sourceType,
-      sourceRecordId,
-      sourceVersion,
+      sourceType, sourceRecordId, sourceVersion,
       productDraftId: firstDefined(input.productDraft?.id, null),
       productDraftVersion: firstDefined(input.productDraft?.version, null),
+      collectedAt: scalar(firstDefined(input.rawCollectedAt, draft.collectedAt, collectItem.collectedAt, collectItem.createdAt, null), { allowNull: true }),
     },
     targetCategory: categorySnapshot(draft),
     attributes: firstDefined(draft.attributes, draft.categoryAttributes, []),
-    logistics: firstDefined(draft.logistics, {
-      packageWeight: draft.packageWeight,
-      packageLength: draft.packageLength,
-      packageWidth: draft.packageWidth,
-      packageHeight: draft.packageHeight,
-    }),
-    productMeasurements: productMeasurements(draft, collectItem),
-    priceEvidence: priceSnapshot(draft, collectItem),
+    logistics: firstDefined(draft.logistics, { packageWeight: draft.packageWeight || "", packageLength: draft.packageLength || "", packageWidth: draft.packageWidth || "", packageHeight: draft.packageHeight || "" }),
+    productMeasurements: firstDefined(draft.productMeasurements, draft.product_measurements, draft.productDimensions, draft.product_dimensions, collectItem.productMeasurements, collectItem.productDimensions, {}),
+    priceEvidence: priceEvidence(draft, null, collectItem),
     variants: variants.variants,
-    media: {
-      images: firstDefined(draft.images, collectItem.images, []),
-      video: firstDefined(draft.video, null),
-      videos: firstDefined(draft.videos, draft.media, collectItem.videos, []),
-    },
+    media: { images: firstDefined(draft.images, collectItem.images, []), video: firstDefined(draft.video, null), videos: firstDefined(draft.videos, draft.media, collectItem.videos, []) },
     richContent: firstDefined(draft.richContent, draft.rich_content, collectItem.richContent, collectItem.rich_content, null),
-    rawEvidence: {
-      rawResponseRef: firstDefined(input.rawResponseRef, null),
-      rawResponseHash: firstDefined(input.rawResponseHash, null),
-    },
+    rawEvidence: { rawResponseRef, rawResponseHash },
   });
-  const serialized = JSON.stringify(snapshot);
-  return {
+  return verifyAutoListingSourceSnapshot({
     snapshot,
-    snapshotHash: crypto.createHash("sha256").update(serialized).digest("hex"),
-    rawResponseRef: firstDefined(input.rawResponseRef, null),
-  };
+    snapshotHash: crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+    rawResponseRef,
+  });
 }

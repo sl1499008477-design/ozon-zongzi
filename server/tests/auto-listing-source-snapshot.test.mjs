@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import {
+  buildAutoListingSourceSnapshot,
+  verifyAutoListingSourceSnapshot,
+} from "../auto-listing-source-snapshot.mjs";
 
 const collectItem = (overrides = {}) => ({
   id: "collect-1",
@@ -9,6 +12,8 @@ const collectItem = (overrides = {}) => ({
   name: "Primary product",
   listingDraft: {
     sku: "sku-primary",
+    brand: "Brand one",
+    collectedAt: "2026-08-04T01:02:03.000Z",
     offerId: "offer-primary",
     title: "Primary product",
     categoryResolution: {
@@ -28,7 +33,7 @@ const collectItem = (overrides = {}) => ({
     images: ["https://media.example/primary.jpg"],
     videos: [{ url: "https://media.example/video.mp4" }],
     richContent: { blocks: [{ text: "facts" }] },
-    variants: [{ sku: "sku-primary", offerId: "offer-primary", name: "Primary product", images: ["https://media.example/primary.jpg"] }],
+    variants: [{ sku: "sku-primary", offerId: "offer-primary", name: "Primary product", images: ["https://media.example/primary.jpg"], blackKopecks: "10000", greenKopecks: "8000", currency: "RUB", variantGroupId: "group-a" }],
   },
   ...overrides,
 });
@@ -71,6 +76,8 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
     "priceEvidence", "variants", "media", "richContent", "rawEvidence",
   ].sort());
   assert.equal(result.snapshot.identity.primarySku, "sku-primary");
+  assert.equal(result.snapshot.identity.brand, "Brand one");
+  assert.equal(result.snapshot.source.collectedAt, "2026-08-04T01:02:03.000Z");
   assert.equal(result.snapshot.targetCategory.descriptionCategoryId, "123");
   assert.equal(result.snapshot.targetCategory.typeId, "456");
   assert.equal(result.snapshot.attributes[0].dictionaryValueId, "20");
@@ -85,6 +92,62 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
   assert.match(result.snapshotHash, /^[a-f0-9]{64}$/);
   result.snapshot.variants[0].sku = "changed";
   assert.deepEqual(input, before);
+});
+
+test("preserves variant price, media and grouping facts and hashes every frozen business field", () => {
+  const baseline = source({
+    collectItem: collectItem({
+      listingDraft: {
+        ...collectItem().listingDraft,
+        brand: "Brand one",
+        variants: [{ sku: "sku-primary", offerId: "offer-primary", name: "Primary product", images: ["one"], blackKopecks: "10000", greenKopecks: "8000", currency: "RUB", variantGroupId: "group-a", relation: { visual: "same" } }],
+      },
+    }),
+  });
+  const first = buildAutoListingSourceSnapshot(baseline);
+  assert.deepEqual(first.snapshot.variants[0].priceEvidence, { blackKopecks: "10000", greenKopecks: "8000", currency: "RUB" });
+  assert.equal(first.snapshot.variants[0].groupId, "group-a");
+  assert.deepEqual(first.snapshot.variants[0].media, ["one"]);
+  for (const mutate of [
+    (draft) => ({ ...draft, brand: "Brand two" }),
+    (draft) => ({ ...draft, variants: [{ ...draft.variants[0], blackKopecks: "10001" }] }),
+    (draft) => ({ ...draft, variants: [{ ...draft.variants[0], greenKopecks: "7999" }] }),
+    (draft) => ({ ...draft, variants: [{ ...draft.variants[0], variantGroupId: "group-b" }] }),
+    (draft) => ({ ...draft, variants: [{ ...draft.variants[0], images: ["two"] }] }),
+  ]) {
+    const next = buildAutoListingSourceSnapshot(source({ collectItem: collectItem({ listingDraft: mutate(baseline.collectItem.listingDraft) }) }));
+    assert.notEqual(next.snapshotHash, first.snapshotHash);
+  }
+});
+
+test("requires complete trusted scope and makes raw evidence and arrays JSON-exact", () => {
+  for (const input of [
+    source({ collectItem: collectItem({ accountId: undefined }) }),
+    source({ collectItem: collectItem({ id: undefined }) }),
+    source({ rawResponseRef: { id: "raw" } }),
+    source({ rawResponseHash: ["hash"] }),
+  ]) {
+    assert.throws(() => buildAutoListingSourceSnapshot(input), (error) => error?.code === "AUTO_LISTING_SOURCE_SCOPE" || error?.code === "AUTO_LISTING_SOURCE_INVALID");
+  }
+  const sparse = source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, attributes: Array(1) } }) });
+  assert.throws(() => buildAutoListingSourceSnapshot(sparse), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
+});
+
+test("keeps matched target-store and reliable ancestor IDs separate from display labels", () => {
+  const result = buildAutoListingSourceSnapshot(source({
+    collectItem: collectItem({ listingDraft: {
+      ...collectItem().listingDraft,
+      categoryResolution: {
+        ...collectItem().listingDraft.categoryResolution,
+        target: { ...collectItem().listingDraft.categoryResolution.target, ancestorCategoryIds: ["ancestor-1", "ancestor-2"] },
+        source: { path: ["Kitchen", "Tea kettles"] },
+      },
+    } }),
+  }));
+  assert.equal(result.snapshot.targetCategory.targetStoreId, "store-a");
+  assert.deepEqual(result.snapshot.targetCategory.ancestorCategoryIds, ["ancestor-1", "ancestor-2"]);
+  assert.deepEqual(verifyAutoListingSourceSnapshot(result), result);
+  assert.throws(() => verifyAutoListingSourceSnapshot({ snapshot: { identity: {} }, snapshotHash: "bad" }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
 });
 
 test("hashes equivalent key orders equally and business changes differently", () => {

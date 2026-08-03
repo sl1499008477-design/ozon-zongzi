@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
+import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
@@ -13,6 +14,28 @@ const migrationsDir = path.join(__dirname, "../db/migrations");
 const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
 function graph(accountId, idempotencyKey, suffix, overrides = {}) {
+  const sourceRecordId = `collect-${suffix}`;
+  const sourceVersion = "1";
+  const captured = buildAutoListingSourceSnapshot({
+    accountId,
+    sourceType: "COLLECT_BOX",
+    sourceRecordId,
+    sourceVersion,
+    rawResponseRef: `raw-${suffix}`,
+    rawResponseHash: `raw-hash-${suffix}`,
+    collectItem: {
+      id: sourceRecordId,
+      accountId,
+      sku: `sku-${suffix}`,
+      listingDraft: {
+        sku: `sku-${suffix}`,
+        offerId: `offer-${suffix}`,
+        title: `Product ${suffix}`,
+        currency: "RUB", blackKopecks: "10000", greenKopecks: "8000", images: [], variants: [{ sku: `sku-${suffix}`, offerId: `offer-${suffix}` }],
+        categoryResolution: { status: "MATCHED", method: "test", target: { storeId: `store-${accountId}`, descriptionCategoryId: "123", typeId: "456" }, source: { path: [] } },
+      },
+    },
+  });
   return {
     accountId,
     actorAccountId: accountId,
@@ -24,13 +47,14 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     strategyVersionId: `strategy-version-${accountId}`,
     items: [{
       sourceType: "COLLECT_BOX",
-      sourceRecordId: `collect-${suffix}`,
-      sourceVersion: "1",
-      snapshot: { identity: { primarySku: `sku-${suffix}` }, source: { sourceVersion: "1" } },
-      snapshotHash: `snapshot-${suffix}`,
-      rawResponseRef: `raw-${suffix}`,
+      sourceRecordId,
+      sourceVersion,
+      snapshot: captured.snapshot,
+      snapshotHash: captured.snapshotHash,
+      rawResponseRef: captured.rawResponseRef,
       targetStoreId: `store-${accountId}`,
       targetWarehouseId: `warehouse-${accountId}`,
+      sourceOrder: 0,
       status: "SOURCE_READY",
       strategyId: `strategy-${accountId}`,
       strategyVersionId: `strategy-version-${accountId}`,
@@ -40,6 +64,16 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     }],
     ...overrides,
   };
+}
+
+async function registerGraphSources(client, graphInput) {
+  for (const item of graphInput.items) {
+    await client.query(
+      `INSERT INTO collect_items (id,account_id,source,identity_key,source_sku,summary)
+       VALUES ($1,$2,'test',$3,$4,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`,
+      [item.sourceRecordId, graphInput.accountId, `identity-${item.sourceRecordId}`, item.snapshot.identity.primarySku],
+    );
+  }
 }
 
 if (!enabled) {
@@ -98,17 +132,28 @@ if (!enabled) {
       const bad = graph(accountA, "rollback-key", "rollback", {
         items: [
           graph(accountA, "x", "rollback-one").items[0],
-          { ...graph(accountA, "x", "rollback-two").items[0], targetStoreId: "missing-store" },
+          { ...graph(accountA, "x", "rollback-two").items[0], targetStoreId: "missing-store", sourceOrder: 1 },
         ],
       });
+      await registerGraphSources(client, bad);
+      const malformed = graph(accountA, "malformed-key", "malformed");
+      await registerGraphSources(client, malformed);
+      malformed.items[0].snapshot = { identity: { accountId: accountA } };
+      await assert.rejects(repository.createJobGraph(malformed), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
       await assert.rejects(repository.createJobGraph(bad));
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_jobs")).rows[0].count), 0);
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_source_snapshots")).rows[0].count), 0);
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_events")).rows[0].count), 0);
 
-      const created = await repository.createJobGraph(graph(accountA, "shared-key", "a"));
-      const replay = await repository.createJobGraph(graph(accountA, "shared-key", "different-payload"));
-      const other = await repository.createJobGraph(graph(accountB, "shared-key", "b"));
+      const createdInput = graph(accountA, "shared-key", "a");
+      const replayInput = graph(accountA, "shared-key", "different-payload");
+      const otherInput = graph(accountB, "shared-key", "b");
+      await registerGraphSources(client, createdInput);
+      await registerGraphSources(client, replayInput);
+      await registerGraphSources(client, otherInput);
+      const created = await repository.createJobGraph(createdInput);
+      const replay = await repository.createJobGraph(replayInput);
+      const other = await repository.createJobGraph(otherInput);
       assert.equal(replay.duplicate, true);
       assert.equal(replay.id, created.id);
       assert.notEqual(other.id, created.id);
@@ -119,9 +164,13 @@ if (!enabled) {
         `SELECT snapshot,snapshot_hash FROM auto_listing_source_snapshots
           WHERE account_id=$1 AND source_record_id='collect-a'`, [accountA],
       );
-      await repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 1, status: "PLANNING" });
       await assert.rejects(
-        repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 1, status: "GENERATING" }),
+        repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 1, eventType: "UPLOAD_SUCCEEDED", actorAccountId: accountA, correlationId: "bad" }),
+        (error) => error?.code === "AUTO_LISTING_TRANSITION_FORBIDDEN",
+      );
+      await repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 1, eventType: "START_PLANNING", actorAccountId: accountA, correlationId: "plan" });
+      await assert.rejects(
+        repository.updateItemStatus({ accountId: accountA, itemId: item.id, expectedStatusVersion: 1, eventType: "PLAN_READY", actorAccountId: accountA, correlationId: "stale" }),
         (error) => error?.code === "AUTO_LISTING_VERSION_CONFLICT",
       );
       const snapshotAfter = await client.query(
@@ -132,7 +181,7 @@ if (!enabled) {
       assert.equal(typeof repository.updateSnapshot, "undefined");
 
       const scoped = await repository.getJob({ accountId: accountA, jobId: created.id });
-      assert.deepEqual(scoped.events.map((event) => event.eventType), ["CREATED", "SOURCE_CAPTURED"]);
+      assert.deepEqual(scoped.events.map((event) => event.eventType), ["CREATED", "SOURCE_CAPTURED", "START_PLANNING"]);
       assert.equal(await repository.getJob({ accountId: accountB, jobId: created.id }), null);
       assert.deepEqual((await repository.listJobs({ accountId: accountB, limit: 10 })).map((job) => job.id), [other.id]);
     } finally {
