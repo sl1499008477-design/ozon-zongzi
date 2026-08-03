@@ -75,6 +75,23 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.doesNotMatch(JSON.stringify(result), /raw-collect|credentialsSaved|textDensityByRole/);
 });
 
+test("keeps low-branch and missing-price source evidence isolated per sibling", async () => {
+  const repository = fakeRepository({ sources: [
+    source("collect-good"),
+    source("collect-low", { blackKopecks: "7999", greenKopecks: "" }),
+    source("collect-missing", { blackKopecks: "", greenKopecks: "" }),
+  ] });
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-good", "collect-low", "collect-missing"], idempotencyKey: "low-and-missing", correlationId: "corr", config,
+  });
+  assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "SOURCE_READY", "BLOCKED"]);
+  assert.equal(result.items[1].price.branch, "BLACK_LT_80");
+  assert.equal(result.items[2].failureCode, "PRICE_INPUT_MISSING");
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.items[1].snapshot.priceEvidence.greenKopecks, "");
+  assert.equal(graph.items[2].snapshot.priceEvidence.blackKopecks, "");
+});
+
 test("rejects missing or foreign formal warehouses before any graph insert", async () => {
   for (const evidence of [
     { warehouse: null, products: [] },
@@ -252,4 +269,56 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
   await assert.rejects(repository.createJobGraph({
     ...graphInput,
   }), (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE" && error?.body?.reason === "WAREHOUSE_ID_MISSING");
+});
+
+test("repository persists only a canonical recomputed price with a non-default strategy rule", async () => {
+  const collectItem = source("collect-rule").collectItem;
+  collectItem.productStyle = "MODERN";
+  const captured = buildAutoListingSourceSnapshot({
+    accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1",
+    rawResponseRef: "raw-rule", rawResponseHash: "raw-hash", collectItem,
+  });
+  const item = {
+    sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1", snapshot: captured.snapshot,
+    snapshotHash: captured.snapshotHash, rawResponseRef: "raw-rule", targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
+    sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: "rule-modern",
+    style: "VISUAL_FIRST", matchedBy: "PRODUCT_STYLE",
+    price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+  };
+  const graphInput = {
+    accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "rule-key", correlationId: "corr",
+    configSnapshot: { targetStoreId: "store-a", targetWarehouseId: "warehouse-a", priceAdjustmentKopecks: "0" }, configHash: "config", strategyVersionId: "version-a", items: [item],
+  };
+  const calls = [];
+  const client = {
+    async query(sql, params) {
+      calls.push([sql, params]);
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || /INSERT INTO auto_listing_(jobs|job_items|events)/.test(sql)) return { rows: [] };
+      if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [{ id: "rule-modern", rule_order: 1, rule_kind: "PRODUCT_STYLE", category_id: null, ancestor_category_id: null, product_style: "MODERN", rule: { style: "VISUAL_FIRST", textDensityByRole: {} } }] };
+      if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
+      if (/FROM warehouses w JOIN stores/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "1001", owner_account_id: "account-a", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
+      if (/FROM product_stocks ps/.test(sql)) return { rows: [{ source: "fbs" }] };
+      if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [{ id: "snapshot-a", snapshot_hash: captured.snapshotHash }] };
+      if (/FROM auto_listing_jobs WHERE id/.test(sql)) return { rows: [{ id: "auto_listing_job-id", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED", strategy_version_id: "version-a", correlation_id: "corr", created_at: null, updated_at: null }] };
+      if (/JOIN auto_listing_source_snapshots/.test(sql)) return { rows: [] };
+      if (/FROM auto_listing_events/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() {},
+  };
+  const repository = createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) }, idFactory: (prefix) => `${prefix}-id` });
+  await assert.doesNotReject(repository.createJobGraph(graphInput));
+  for (const invalidPrice of [
+    { ...item.price, rawPayload: "secret" },
+    { ...item.price, branch: "UNKNOWN" },
+    { ...item.price, finalPriceKopecks: "1" },
+  ]) {
+    await assert.rejects(
+      repository.createJobGraph({ ...graphInput, idempotencyKey: `invalid-${Math.random()}`, items: [{ ...item, price: invalidPrice }] }),
+      (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID",
+    );
+  }
+  assert.equal(calls.some(([sql, params]) => /INSERT INTO auto_listing_events/.test(sql) && JSON.stringify(params).includes("rawPayload")), false);
 });

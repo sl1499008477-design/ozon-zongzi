@@ -30,6 +30,12 @@ function json(value) {
   return JSON.stringify(value ?? null);
 }
 
+function plainJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function eventDetailsError() {
   return repositoryError("AUTO_LISTING_EVENT_DETAILS_INVALID");
 }
@@ -202,7 +208,7 @@ function assertGraph(graph) {
       || captured.snapshot.identity.sourceType !== item.sourceType) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
-    if (item.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
+    if (captured.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
       || item.targetStoreId !== graph.configSnapshot.targetStoreId
       || item.targetWarehouseId !== graph.configSnapshot.targetWarehouseId
       || (item.status === "SOURCE_READY" && captured.snapshot.targetCategory.targetStoreId !== item.targetStoreId)) {
@@ -213,12 +219,18 @@ function assertGraph(graph) {
         || !(item.ruleId === null || requiredText(item.ruleId))
         || !["VISUAL_FIRST", "PARAMETER_FIRST", "DEMONSTRATION_FIRST", "SPECIFICATION_FIRST", "BALANCED_DEFAULT"].includes(item.style)
         || !["EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"].includes(item.matchedBy)
-        || !item.price || item.price.currency !== "RUB" || !["BLACK_GTE_80", "BLACK_LT_80"].includes(item.price.branch)
-        || !["blackKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"].every((key) => /^[-+]?\d+$/.test(item.price[key] || ""))
-        || (item.price.branch === "BLACK_GTE_80" && !/^[-+]?\d+$/.test(item.price.greenKopecks || ""))
-        || (item.price.branch === "BLACK_LT_80" && item.price.greenKopecks !== undefined)) {
+        || !plainJsonObject(item.price)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
+      let calculated;
+      try {
+        calculated = calculateAutoListingPrice({ ...captured.snapshot.priceEvidence,
+          adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks });
+      } catch {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      if (!samePrice(item.price, calculated)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      return { ...item, ...captured, price: calculated };
     } else if (!/^AUTO_LISTING_[A-Z0-9_]+$|^PRICE_[A-Z0-9_]+$/.test(requiredText(item.failureCode))) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
@@ -231,8 +243,11 @@ function assertGraph(graph) {
 }
 
 function samePrice(left, right) {
-  const keys = ["currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
-  return keys.every((key) => left?.[key] === right?.[key]);
+  if (!plainJsonObject(left) || !plainJsonObject(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
 }
 
 function publishedRules(rows) {

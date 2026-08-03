@@ -75,19 +75,36 @@ function withChangedSourceHash(input) {
   return changed;
 }
 
-function twoConnectionSnapshotBarrier(scopedPool) {
+function twoConnectionSnapshotBarrier(scopedPool, timeoutMs = 5_000) {
   let arrivals = 0;
-  let releaseBarrier;
-  const barrier = new Promise((resolve) => { releaseBarrier = resolve; });
+  let settled = false;
+  let resolveBarrier;
+  let rejectBarrier;
+  const barrier = new Promise((resolve, reject) => { resolveBarrier = resolve; rejectBarrier = reject; });
+  const abort = (cause = new Error("snapshot insertion barrier aborted")) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    rejectBarrier(cause);
+  };
+  const timeout = setTimeout(() => abort(new Error(`snapshot insertion barrier timed out after ${timeoutMs}ms (arrivals=${arrivals})`)), timeoutMs);
+  const release = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    resolveBarrier();
+  };
   return {
     query: (...args) => scopedPool.query(...args),
+    abort,
+    dispose: () => { clearTimeout(timeout); },
     async connect() {
       const connection = await scopedPool.connect();
       return {
         async query(sql, params) {
           if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) {
             arrivals += 1;
-            if (arrivals === 2) releaseBarrier();
+            if (arrivals === 2) release();
             await barrier;
           }
           return connection.query(sql, params);
@@ -96,6 +113,18 @@ function twoConnectionSnapshotBarrier(scopedPool) {
       };
     },
   };
+}
+
+async function runBarrierRace(repository, barrier, inputs) {
+  const tasks = inputs.map((input) => repository.createJobGraph(input).catch((error) => {
+    barrier.abort(error);
+    throw error;
+  }));
+  try {
+    return await Promise.allSettled(tasks);
+  } finally {
+    barrier.dispose();
+  }
 }
 
 async function registerGraphSources(client, graphInput) {
@@ -113,7 +142,7 @@ if (!enabled) {
     skip: "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
   }, () => {});
 } else {
-  test("PostgreSQL repository rolls back graphs, scopes replays, preserves snapshots and orders events", async () => {
+  test("PostgreSQL repository rolls back graphs, scopes replays, preserves snapshots and orders events", { timeout: 20_000 }, async () => {
     const { Pool } = await import("pg");
     const pool = new Pool({ connectionString: databaseUrl });
     const client = await pool.connect();
@@ -264,10 +293,11 @@ if (!enabled) {
       const sharedLeft = graph(accountA, "race-same-left", "race-same");
       const sharedRight = graph(accountA, "race-same-right", "race-same");
       await registerGraphSources(client, sharedLeft);
-      const sameHashRepository = createAutoListingRepository({ pool: twoConnectionSnapshotBarrier(scopedPool) });
-      const [sharedOne, sharedTwo] = await Promise.all([
-        sameHashRepository.createJobGraph(sharedLeft), sameHashRepository.createJobGraph(sharedRight),
-      ]);
+      const sameHashBarrier = twoConnectionSnapshotBarrier(scopedPool);
+      const sameHashRepository = createAutoListingRepository({ pool: sameHashBarrier });
+      const sameHashResults = await runBarrierRace(sameHashRepository, sameHashBarrier, [sharedLeft, sharedRight]);
+      assert.equal(sameHashResults.every((result) => result.status === "fulfilled"), true);
+      const [sharedOne, sharedTwo] = sameHashResults.map((result) => result.value);
       assert.notEqual(sharedOne.id, sharedTwo.id);
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id='collect-race-same'",
@@ -277,10 +307,9 @@ if (!enabled) {
       const conflictLeft = graph(accountA, "race-conflict-left", "race-conflict");
       const conflictRight = withChangedSourceHash(graph(accountA, "race-conflict-right", "race-conflict"));
       await registerGraphSources(client, conflictLeft);
-      const conflictRepository = createAutoListingRepository({ pool: twoConnectionSnapshotBarrier(scopedPool) });
-      const conflictResults = await Promise.allSettled([
-        conflictRepository.createJobGraph(conflictLeft), conflictRepository.createJobGraph(conflictRight),
-      ]);
+      const conflictBarrier = twoConnectionSnapshotBarrier(scopedPool);
+      const conflictRepository = createAutoListingRepository({ pool: conflictBarrier });
+      const conflictResults = await runBarrierRace(conflictRepository, conflictBarrier, [conflictLeft, conflictRight]);
       assert.equal(conflictResults.filter((result) => result.status === "fulfilled").length, 1);
       assert.equal(conflictResults.find((result) => result.status === "rejected")?.reason?.code, "AUTO_LISTING_SOURCE_VERSION_CONFLICT");
       assert.equal(Number((await client.query(

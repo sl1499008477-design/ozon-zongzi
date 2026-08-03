@@ -97,9 +97,15 @@ function categorySnapshot(draft) {
 function priceEvidence(record, fallback, collectItem) {
   const currency = text(firstDefined(record?.currency, record?.currencyCode, record?.currency_code, fallback?.currency, fallback?.currencyCode, collectItem.currency));
   if (currency !== "RUB") throw sourceError("AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB");
+  const fact = (...values) => {
+    const value = values.find((candidate) => candidate !== undefined);
+    if (value === undefined) return "";
+    if (value === null || typeof value === "string") return value;
+    throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+  };
   return {
-    blackKopecks: String(firstDefined(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks, fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, "")),
-    greenKopecks: String(firstDefined(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks, fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, "")),
+    blackKopecks: fact(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks, fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, ""),
+    greenKopecks: fact(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks, fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, ""),
     currency,
   };
 }
@@ -152,29 +158,31 @@ const plainObject = (value) => value !== null && typeof value === "object" && !A
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const stringOrNull = (value) => value === null || typeof value === "string";
 const requiredString = (value) => typeof value === "string" && value.trim().length > 0;
+const nonemptyStringOrNull = (value) => value === null || requiredString(value);
 const rubPrice = (value) => plainObject(value) && value.currency === "RUB"
-  && typeof value.blackKopecks === "string" && typeof value.greenKopecks === "string";
+  && stringOrNull(value.blackKopecks) && stringOrNull(value.greenKopecks);
 
 function assertSemanticSnapshot(snapshot) {
   const { identity, source, targetCategory, attributes, logistics, productMeasurements, priceEvidence, variants, media, richContent, rawEvidence } = snapshot;
   if (!plainObject(identity) || !["accountId", "sourceType", "sourceRecordId", "sourceVersion", "primarySku"].every((key) => requiredString(identity[key]))
+    || !["COLLECT_BOX", "EXCEL_SKU"].includes(identity.sourceType)
     || !["primaryOfferId", "primaryName", "brand"].every((key) => typeof identity[key] === "string")
     || !plainObject(source) || !["sourceType", "sourceRecordId", "sourceVersion", "productStyle"].every((key) => requiredString(source[key]))
-    || !stringOrNull(source.productDraftId) || !(source.productDraftVersion === null || Number.isInteger(source.productDraftVersion))
+    || !stringOrNull(source.productDraftId) || !(source.productDraftVersion === null || (Number.isInteger(source.productDraftVersion) && source.productDraftVersion > 0))
     || !stringOrNull(source.collectedAt)
     || identity.sourceType !== source.sourceType || identity.sourceRecordId !== source.sourceRecordId || identity.sourceVersion !== source.sourceVersion
     || !plainObject(targetCategory) || !["descriptionCategoryId", "typeId", "targetStoreId"].every((key) => requiredString(targetCategory[key]))
-    || !Array.isArray(targetCategory.ancestorCategoryIds) || targetCategory.ancestorCategoryIds.some((id) => typeof id !== "string")
+    || !Array.isArray(targetCategory.ancestorCategoryIds) || targetCategory.ancestorCategoryIds.some((id) => !requiredString(id))
     || !Array.isArray(attributes) || !plainObject(logistics) || !plainObject(productMeasurements)
-    || !rubPrice(priceEvidence) || !requiredString(priceEvidence.blackKopecks) || !requiredString(priceEvidence.greenKopecks) || !Array.isArray(variants) || variants.length < 1
+    || !rubPrice(priceEvidence) || !Array.isArray(variants) || variants.length < 1
     || !plainObject(media) || !Array.isArray(media.images) || !Array.isArray(media.videos)
     || !(richContent === null || typeof richContent === "string" || plainObject(richContent) || Array.isArray(richContent))
-    || !plainObject(rawEvidence) || !stringOrNull(rawEvidence.rawResponseRef) || !stringOrNull(rawEvidence.rawResponseHash)) {
+    || !plainObject(rawEvidence) || !nonemptyStringOrNull(rawEvidence.rawResponseRef) || !nonemptyStringOrNull(rawEvidence.rawResponseHash)) {
     throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   }
   for (const variant of variants) {
     if (!plainObject(variant) || !requiredString(variant.sku) || !["offerId", "name"].every((key) => typeof variant[key] === "string")
-      || !rubPrice(variant.priceEvidence) || !requiredString(variant.priceEvidence.blackKopecks) || !requiredString(variant.priceEvidence.greenKopecks) || !Array.isArray(variant.media)
+      || !rubPrice(variant.priceEvidence) || !Array.isArray(variant.media)
       || !stringOrNull(variant.groupId) || !(variant.relation === null || plainObject(variant.relation) || Array.isArray(variant.relation))) {
       throw sourceError("AUTO_LISTING_SOURCE_INVALID");
     }

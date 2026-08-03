@@ -189,6 +189,24 @@ test("rejects rehashed empty and mismatched provenance facts", () => {
   }
 });
 
+test("rejects rehashed empty raw evidence and invalid canonical source boundaries", () => {
+  const valid = buildAutoListingSourceSnapshot(source());
+  for (const mutate of [
+    (snapshot) => { snapshot.rawEvidence.rawResponseRef = ""; },
+    (snapshot) => { snapshot.identity.sourceType = "UNTRUSTED"; snapshot.source.sourceType = "UNTRUSTED"; },
+    (snapshot) => { snapshot.targetCategory.ancestorCategoryIds = [""]; },
+    (snapshot) => { snapshot.source.productDraftVersion = 0; },
+  ]) {
+    const malformed = structuredClone(valid.snapshot);
+    mutate(malformed);
+    const snapshotHash = crypto.createHash("sha256").update(JSON.stringify(malformed)).digest("hex");
+    assert.throws(
+      () => verifyAutoListingSourceSnapshot({ ...valid, snapshot: malformed, snapshotHash }),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
+    );
+  }
+});
+
 test("hashes equivalent key orders equally and business changes differently", () => {
   const left = source();
   const right = source({
