@@ -257,6 +257,8 @@ async function runFastManual() {
       canonicalSaves += 1;
       sharedExecutor = input.postgresExecutor === transactionClient;
       assert.equal(input.accountId, ACCOUNT_ID);
+      assert.equal(input.collectItem?.accountId, ACCOUNT_ID,
+        "canonical manual save receives backend-only account context");
       assert.equal(input.collectItemId, "collect-manual-seam");
       assert.equal(input.categoryResolution.method, "MANUAL");
     },
@@ -287,10 +289,9 @@ async function runFastManual() {
         draftUpdates += 1;
         const item = {
           id: "collect-manual-seam",
-          accountId: ACCOUNT_ID,
           listingDraft: { categoryResolution: manualResolution },
         };
-        await beforeCommit({ client: transactionClient, item });
+        await beforeCommit({ client: transactionClient, item, accountId: ACCOUNT_ID });
         return item;
       },
     },

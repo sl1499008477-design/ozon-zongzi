@@ -440,6 +440,13 @@ if (!postgresEnabled()) {
           keep: "updated-source",
         },
       },
+      beforeCommit: async ({ client, item: callbackItem, accountId: callbackAccountId }) => {
+        assert.equal(typeof client?.query, "function");
+        assert.equal(callbackAccountId, accountA,
+          "the private transaction callback keeps backend account context");
+        assert.equal(callbackItem.accountId, undefined,
+          "the public persisted item remains account-redacted");
+      },
     });
     assert.equal(updatedListing.listingDraft.targetStore.clientId, updatedTargetClientId);
     assert.deepEqual(

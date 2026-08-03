@@ -1055,7 +1055,11 @@ export async function updateCollectItemDraftV4({
       status: row.status,
       listingDraft,
     });
-    if (beforeCommit) await beforeCommit({ client, item });
+    if (beforeCommit) await beforeCommit({
+      client,
+      item,
+      accountId: String(row.account_id || ""),
+    });
     const mirrored = await mirrorCollectItemV3(item, {
       client,
       collectId: row.id,

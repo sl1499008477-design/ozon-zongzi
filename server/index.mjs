@@ -2525,9 +2525,15 @@ export async function handleFastCollectionRoute(req, res, url, {
         accountId: account.id,
         patch: body,
         expectedVersion,
-        beforeCommit: async ({ client, item: updatedItem }) => {
+        beforeCommit: async ({ client, item: updatedItem, accountId: persistedAccountId }) => {
           const categoryResolution = body?.listingDraft?.categoryResolution;
           if (String(categoryResolution?.method || "").trim().toUpperCase() !== "MANUAL") return;
+          if (String(persistedAccountId || "") !== String(account.id || "")) {
+            throw Object.assign(new Error("采集箱条目账号范围不一致"), {
+              status: 403,
+              code: "COLLECT_ITEM_ACCOUNT_SCOPE_MISMATCH",
+            });
+          }
           if (typeof categoryResolutionPort.saveManualFromDraft !== "function") {
             throw Object.assign(new Error("人工类目保存服务不可用"), {
               status: 503,
@@ -2539,7 +2545,10 @@ export async function handleFastCollectionRoute(req, res, url, {
             collectItemId: decodeURIComponent(collectItemMatch[1]),
             categoryResolution,
             postgresExecutor: client,
-            collectItem: updatedItem,
+            collectItem: {
+              ...updatedItem,
+              accountId: persistedAccountId,
+            },
           });
         },
       });
