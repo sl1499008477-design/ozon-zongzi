@@ -1369,11 +1369,53 @@ test('a frozen Seller tab is reused without opening or selecting another tab', a
   assert.strictEqual(resolved, frozen);
   assert.equal(ensures, 0);
 
+  const fallback = { id: 99, url: 'https://seller.ozon.ru/app/products' };
+  const buyerResolved = await resolveSellerPortalTargetTab({
+    preferTabId: 71,
+    strictPreferredSellerTab: false,
+    tabsApi: {
+      async get() { return { id: 71, url: 'https://www.ozon.ru/product/4862904234' }; },
+    },
+    identityPolicy: policy,
+    async ensureTab() { ensures += 1; return fallback; },
+  });
+  assert.strictEqual(buyerResolved, fallback);
+  assert.equal(ensures, 1, 'an ordinary buyer-page hint must fall back to a trusted Seller tab');
+
   await assert.rejects(resolveSellerPortalTargetTab({
     preferTabId: 70,
+    strictPreferredSellerTab: true,
     tabsApi: { async get() { return { id: 70, url: 'https://example.com/' }; } },
     identityPolicy: policy,
-    async ensureTab() { ensures += 1; return { id: 99 }; },
+    async ensureTab() { ensures += 1; return fallback; },
   }), (error) => error?.code === 'SELLER_CONTEXT_CHANGED');
-  assert.equal(ensures, 0, 'a stale frozen tab must fail closed, not create another tab');
+  assert.equal(ensures, 1, 'a stale frozen tab must fail closed, not select another tab');
+});
+
+test('Seller portal preference is strict only for a trusted runtime snapshot', () => {
+  const source = readFileSync(
+    path.join(__dirname, '../background/service-worker.js'),
+    'utf8',
+  );
+  const resolveSellerPortalPreference = extractWorkerHelper(
+    source,
+    'const resolveSellerPortalPreference = ({',
+    '\n\n  const resolveSellerPortalTargetTab',
+    'resolveSellerPortalPreference',
+  );
+
+  assert.deepEqual(resolveSellerPortalPreference({
+    sellerContext: null,
+    sender: { tab: { id: 71 } },
+  }), {
+    preferTabId: 71,
+    strictPreferredSellerTab: false,
+  });
+  assert.deepEqual(resolveSellerPortalPreference({
+    sellerContext: { companyId: '2681910', sellerTabId: 70 },
+    sender: { tab: { id: 71 } },
+  }), {
+    preferTabId: 70,
+    strictPreferredSellerTab: true,
+  });
 });
