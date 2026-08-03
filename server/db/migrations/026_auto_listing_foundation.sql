@@ -87,7 +87,23 @@ CREATE TABLE IF NOT EXISTS auto_listing_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_version_mutation()
+CREATE OR REPLACE FUNCTION protect_published_auto_listing_strategy()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.status = 'PUBLISHED' THEN
+    RAISE EXCEPTION 'published strategy versions are immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER ai_content_strategy_versions_published_immutable
+BEFORE UPDATE ON ai_content_strategy_versions
+FOR EACH ROW EXECUTE FUNCTION protect_published_auto_listing_strategy();
+
+CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_version_deletion()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
@@ -99,9 +115,9 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER ai_content_strategy_versions_published_immutable
-BEFORE UPDATE OR DELETE ON ai_content_strategy_versions
-FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_published_strategy_version_mutation();
+CREATE TRIGGER ai_content_strategy_versions_published_delete_immutable
+BEFORE DELETE ON ai_content_strategy_versions
+FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_published_strategy_version_deletion();
 
 CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_rule_mutation()
 RETURNS TRIGGER

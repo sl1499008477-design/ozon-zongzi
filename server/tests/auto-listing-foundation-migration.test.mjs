@@ -97,9 +97,20 @@ test("published strategy records are immutable and event records are append-only
   assert.match(rules, /rule_order INTEGER NOT NULL CHECK \(rule_order > 0\)/i);
   assert.match(rules, /UNIQUE \(strategy_version_id, rule_order\)/i);
   assert.match(events, /details JSONB NOT NULL DEFAULT '\{\}'::JSONB/i);
+  const versionProtection = functionBlock(sql, "protect_published_auto_listing_strategy");
+  assert.match(
+    versionProtection,
+    /IF OLD\.status = 'PUBLISHED' THEN[\s\S]*?RAISE EXCEPTION[\s\S]*?END IF;\s*RETURN NEW;/i,
+  );
+  assert.equal((versionProtection.match(/RAISE EXCEPTION/gi) || []).length, 1);
+  assert.doesNotMatch(versionProtection, /\bRETURN OLD\b/i);
   assert.match(
     sql,
-    /CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_version_mutation\(\)[\s\S]*?IF OLD\.status = 'PUBLISHED' THEN[\s\S]*?RAISE EXCEPTION[\s\S]*?CREATE TRIGGER ai_content_strategy_versions_published_immutable[\s\S]*?BEFORE UPDATE OR DELETE ON ai_content_strategy_versions[\s\S]*?EXECUTE FUNCTION auto_listing_reject_published_strategy_version_mutation\(\)/i,
+    /CREATE TRIGGER ai_content_strategy_versions_published_immutable[\s\S]*?BEFORE UPDATE ON ai_content_strategy_versions[\s\S]*?EXECUTE FUNCTION protect_published_auto_listing_strategy\(\)/i,
+  );
+  assert.match(
+    sql,
+    /CREATE OR REPLACE FUNCTION auto_listing_reject_published_strategy_version_deletion\(\)[\s\S]*?IF OLD\.status = 'PUBLISHED' THEN[\s\S]*?RAISE EXCEPTION[\s\S]*?RETURN OLD;[\s\S]*?CREATE TRIGGER ai_content_strategy_versions_published_delete_immutable[\s\S]*?BEFORE DELETE ON ai_content_strategy_versions[\s\S]*?EXECUTE FUNCTION auto_listing_reject_published_strategy_version_deletion\(\)/i,
   );
   assert.match(
     sql,
