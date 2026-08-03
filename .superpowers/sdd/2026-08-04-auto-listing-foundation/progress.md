@@ -1,6 +1,7 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-08-04-auto-listing-foundation.md
 
 Workspace: /Users/songliang/Documents/sonli ozon3.0/.worktrees/auto-listing-ai
+Task 6: supplemental final-review closure — trusted dimensions are derived per verified source capture rather than supplied by the browser; service and repository share strict canonical frozen-config/hash verification; repository rejects malformed config before connect; route rejects forged reliability input. RED: 49 focused tests had 3 targeted failures (forged route input, missing per-item effective config, and premature repository connect), plus a missing verified-capture aggregate helper. GREEN: focused 49/49, foundation 91/91, historical permissions/persistence/listing/store 41/41; gated PostgreSQL 1 pass/1 dedicated-DB skip because SONLI_MIGRATION_TEST_DATABASE_URL is absent. Planned commit: `fix: trust source product dimensions`; hash intentionally omitted pre-commit.
 Branch: codex/auto-listing-ai
 Merge base: 880c3a3
 

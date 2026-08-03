@@ -4,6 +4,10 @@ import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.
 import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import {
+  verifyAutoListingFrozenConfig,
+} from "./auto-listing-contract.mjs";
+import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
 
@@ -189,10 +193,13 @@ function assertGraph(graph) {
   const idempotencyKey = requiredText(graph.idempotencyKey);
   if (requiredText(graph.actorAccountId) !== accountId || !requiredText(graph.strategyVersionId)
     || !Array.isArray(graph.items) || !graph.items.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-  if (!graph.configSnapshot || typeof graph.configSnapshot !== "object"
-    || requiredText(graph.configSnapshot.targetStoreId) === "" || requiredText(graph.configSnapshot.targetWarehouseId) === "") {
+  let frozenConfig;
+  try {
+    frozenConfig = verifyAutoListingFrozenConfig(graph.configSnapshot, graph.configHash);
+  } catch {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
+  const { config: configSnapshot, configHash } = frozenConfig;
   const items = graph.items.map((item) => {
     if (!item || typeof item !== "object" || item.sourceType !== graph.sourceType
       || !requiredText(item.sourceRecordId) || !requiredText(item.sourceVersion)
@@ -209,9 +216,18 @@ function assertGraph(graph) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     if (captured.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
-      || item.targetStoreId !== graph.configSnapshot.targetStoreId
-      || item.targetWarehouseId !== graph.configSnapshot.targetWarehouseId
+      || item.targetStoreId !== configSnapshot.targetStoreId
+      || item.targetWarehouseId !== configSnapshot.targetWarehouseId
       || (item.status === "SOURCE_READY" && captured.snapshot.targetCategory.targetStoreId !== item.targetStoreId)) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    let effectiveImageConfig;
+    try {
+      effectiveImageConfig = deriveEffectiveAutoListingImageConfig(configSnapshot, captured);
+    } catch {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    if (!plainJsonObject(item.effectiveImageConfig) || !sameJson(item.effectiveImageConfig, effectiveImageConfig)) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     if (item.status === "SOURCE_READY") {
@@ -225,21 +241,30 @@ function assertGraph(graph) {
       let calculated;
       try {
         calculated = calculateAutoListingPrice({ ...captured.snapshot.priceEvidence,
-          adjustmentKopecks: graph.configSnapshot.priceAdjustmentKopecks });
+          adjustmentKopecks: configSnapshot.priceAdjustmentKopecks });
       } catch {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
       if (!samePrice(item.price, calculated)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-      return { ...item, ...captured, price: calculated };
+      return { ...item, ...captured, price: calculated, effectiveImageConfig };
     } else if (!/^AUTO_LISTING_[A-Z0-9_]+$|^PRICE_[A-Z0-9_]+$/.test(requiredText(item.failureCode))) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
-    return { ...item, ...captured };
+    return { ...item, ...captured, effectiveImageConfig };
   });
   if (new Set(items.map((item) => item.sourceOrder)).size !== items.length) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
-  return { ...graph, accountId, idempotencyKey, items };
+  return { ...graph, accountId, idempotencyKey, configSnapshot, configHash, items };
+}
+
+function sameJson(left, right) {
+  const canonical = (value) => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  };
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
 function samePrice(left, right) {

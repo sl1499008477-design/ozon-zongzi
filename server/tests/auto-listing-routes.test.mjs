@@ -148,6 +148,21 @@ test("invalid create payloads never initialize the runtime", async () => {
   assert.equal(initialized, 0);
 });
 
+test("route rejects a forged product-dimension reliability claim before service initialization", async () => {
+  let initialized = 0;
+  const { handler, replies } = harness({
+    runtime: { getService: async () => { initialized += 1; return {}; } },
+  });
+  await handler(request({
+    method: "POST",
+    path: "/auto-listing/jobs/from-collect-box",
+    body: { ...createBody, config: { ...createBody.config, hasReliableProductDimensions: true } },
+  }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.equal(replies[0].status, 400);
+  assert.equal(replies[0].payload.code, "AUTO_LISTING_REQUEST_INVALID");
+  assert.equal(initialized, 0);
+});
+
 test("malformed JSON maps to a safe invalid-request response without initialization", async () => {
   let initialized = 0;
   const { handler, replies } = harness({

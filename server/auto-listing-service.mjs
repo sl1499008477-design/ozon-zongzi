@@ -1,5 +1,8 @@
-import crypto from "node:crypto";
-import { normalizeAutoListingConfig } from "./auto-listing-contract.mjs";
+import {
+  normalizeAutoListingConfig,
+  verifyAutoListingFrozenConfig,
+} from "./auto-listing-contract.mjs";
+import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import { buildAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
@@ -19,16 +22,6 @@ function error(code, status = 422) {
 
 function text(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function canonical(value) {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
-}
-
-function hash(value) {
-  return crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
 
 function assertRequest(input) {
@@ -147,7 +140,8 @@ export function createAutoListingService({ repository } = {}) {
       const { collectItemIds, idempotencyKey, correlationId } = assertRequest(input);
       const accountId = text(input.actor.id);
       if (!accountId) throw error("AUTO_LISTING_REQUEST_INVALID");
-      const config = normalizeAutoListingConfig(input.config);
+      const normalizedConfig = normalizeAutoListingConfig(input.config);
+      const { config, configHash } = verifyAutoListingFrozenConfig(normalizedConfig);
       const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey });
       if (replay) return safeJob(replay);
       const store = await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
@@ -202,6 +196,7 @@ export function createAutoListingService({ repository } = {}) {
           targetStoreId: targetStore.id,
           targetWarehouseId: config.targetWarehouseId,
           sourceOrder,
+          effectiveImageConfig: deriveEffectiveAutoListingImageConfig(config, captured),
         };
         if (captured.snapshot.targetCategory.targetStoreId !== config.targetStoreId) {
           return { ...base, status: "BLOCKED", failureCode: "AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH" };
@@ -222,7 +217,7 @@ export function createAutoListingService({ repository } = {}) {
         idempotencyKey,
         correlationId,
         configSnapshot: config,
-        configHash: hash(config),
+        configHash,
         strategyVersionId: published.strategyVersion.strategyVersionId,
         items,
       });

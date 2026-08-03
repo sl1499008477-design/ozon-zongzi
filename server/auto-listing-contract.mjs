@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 export const AUTO_LISTING_IMAGE_ROLES = [
   "main",
   "sellingPoint",
@@ -66,7 +68,11 @@ const FORBIDDEN_CLIENT_FIELDS = new Set([
   "gatewayApiKey",
   "aiGatewayKey",
   "uploadMode",
+  "hasReliableProductDimensions",
 ]);
+
+const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "image"]);
+const IMAGE_KEYS = new Set(["ratio", "resolution", "quality", "language", "roles", "total"]);
 
 const contractError = (code) => {
   const error = new Error(code);
@@ -76,6 +82,14 @@ const contractError = (code) => {
 
 const isPlainObject = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+};
+
+const sameCanonicalJson = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 
 const assertNoForbiddenFields = (value, visited = new Set()) => {
   if (value === null || typeof value !== "object" || visited.has(value)) return;
@@ -90,6 +104,12 @@ const assertNoForbiddenFields = (value, visited = new Set()) => {
       throw contractError("AUTO_LISTING_CONFIG_FORBIDDEN_FIELD");
     }
     assertNoForbiddenFields(nested, visited);
+  }
+};
+
+const assertOnlyKeys = (value, allowed) => {
+  if (!isPlainObject(value) || Object.keys(value).some((key) => !allowed.has(key))) {
+    throw contractError("AUTO_LISTING_CONFIG_INVALID");
   }
 };
 
@@ -114,11 +134,12 @@ const normalizedImageOption = (input, key) => {
   return value;
 };
 
-const normalizedRoles = (input, hasReliableProductDimensions) => {
+const normalizedRoles = (input) => {
   if (input.roles !== undefined && !isPlainObject(input.roles)) {
     throw contractError("AUTO_LISTING_CONFIG_INVALID");
   }
   const requested = input.roles || {};
+  assertOnlyKeys(requested, new Set(AUTO_LISTING_IMAGE_ROLES));
   const roles = {};
   for (const role of AUTO_LISTING_IMAGE_ROLES) {
     const value = requested[role] ?? DEFAULT_IMAGE.roles[role];
@@ -126,7 +147,7 @@ const normalizedRoles = (input, hasReliableProductDimensions) => {
     if (!Number.isInteger(value) || value < minimum || value > maximum) {
       throw contractError("AUTO_LISTING_CONFIG_INVALID");
     }
-    roles[role] = role === "specification" && !hasReliableProductDimensions ? 0 : value;
+    roles[role] = value;
   }
   return roles;
 };
@@ -134,6 +155,7 @@ const normalizedRoles = (input, hasReliableProductDimensions) => {
 export function normalizeAutoListingConfig(rawConfig = {}) {
   if (!isPlainObject(rawConfig)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
   assertNoForbiddenFields(rawConfig);
+  assertOnlyKeys(rawConfig, CONFIG_KEYS);
 
   if (!Number.isInteger(rawConfig.stock) || rawConfig.stock <= 0) {
     throw contractError("AUTO_LISTING_CONFIG_INVALID");
@@ -142,11 +164,14 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
     throw contractError("AUTO_LISTING_CONFIG_INVALID");
   }
 
-  const hasReliableProductDimensions = rawConfig.hasReliableProductDimensions === true;
   const imageInput = rawConfig.image || {};
-  const roles = normalizedRoles(imageInput, hasReliableProductDimensions);
+  assertOnlyKeys(imageInput, IMAGE_KEYS);
+  const roles = normalizedRoles(imageInput);
   const total = Object.values(roles).reduce((sum, count) => sum + count, 0);
   if (total < 6 || total > 13) throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  if (imageInput.total !== undefined && (!Number.isInteger(imageInput.total) || imageInput.total !== total)) {
+    throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  }
 
   return {
     targetStoreId: requiredIdentifier(rawConfig.targetStoreId),
@@ -161,6 +186,15 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
       roles,
       total,
     },
-    reasonCodes: hasReliableProductDimensions ? [] : ["PRODUCT_DIMENSIONS_UNAVAILABLE"],
   };
+}
+
+export function verifyAutoListingFrozenConfig(configSnapshot, configHash) {
+  const config = normalizeAutoListingConfig(configSnapshot);
+  if (!sameCanonicalJson(configSnapshot, config)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  const computedHash = crypto.createHash("sha256").update(JSON.stringify(canonical(config))).digest("hex");
+  if (configHash !== undefined && (typeof configHash !== "string" || configHash !== computedHash)) {
+    throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  }
+  return { config, configHash: computedHash };
 }

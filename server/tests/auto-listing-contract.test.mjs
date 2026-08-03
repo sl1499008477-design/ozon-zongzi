@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import {
   AUTO_LISTING_IMAGE_ROLES,
   AUTO_LISTING_ITEM_STATUSES,
   normalizeAutoListingConfig,
 } from "../auto-listing-contract.mjs";
+import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
 
 const baseConfig = (overrides = {}) => ({
   targetStoreId: "store-1",
   targetWarehouseId: "warehouse-1",
   stock: 12,
-  hasReliableProductDimensions: true,
   ...overrides,
 });
 
@@ -20,6 +21,40 @@ const expectConfigError = (input, code) => {
     (error) => error?.code === code,
   );
 };
+
+const verifiedSnapshot = (productMeasurements, logistics = {}) => buildAutoListingSourceSnapshot({
+  accountId: "account-1",
+  sourceType: "COLLECT_BOX",
+  sourceRecordId: "collect-1",
+  sourceVersion: "1",
+  rawResponseRef: "raw-1",
+  collectItem: {
+    id: "collect-1",
+    accountId: "account-1",
+    sku: "sku-1",
+    listingDraft: {
+      sku: "sku-1",
+      offerId: "offer-1",
+      title: "Product 1",
+      descriptionCategoryId: "123",
+      typeId: "456",
+      categoryResolution: {
+        status: "MATCHED",
+        method: "taxonomy",
+        target: { storeId: "store-1", descriptionCategoryId: "123", typeId: "456" },
+        source: { path: ["root"] },
+      },
+      attributes: [],
+      logistics,
+      productMeasurements,
+      blackKopecks: "10000",
+      greenKopecks: "8000",
+      currency: "RUB",
+      images: [],
+      variants: [{ sku: "sku-1", offerId: "offer-1" }],
+    },
+  },
+});
 
 test("freezes the ordinary user defaults into a hashable JSON contract", () => {
   assert.deepEqual(normalizeAutoListingConfig(baseConfig()), {
@@ -42,7 +77,6 @@ test("freezes the ordinary user defaults into a hashable JSON contract", () => {
       },
       total: 8,
     },
-    reasonCodes: [],
   });
 });
 
@@ -54,7 +88,7 @@ test("allows the declared image option values and derives total from role counts
       resolution: "4K",
       quality: "Ultra",
       language: "ru",
-      total: 999,
+      total: 13,
       roles: {
         main: 1,
         sellingPoint: 5,
@@ -71,10 +105,11 @@ test("allows the declared image option values and derives total from role counts
 });
 
 test("removes specification images when reliable product dimensions are absent", () => {
-  assert.deepEqual(normalizeAutoListingConfig(baseConfig({
-    hasReliableProductDimensions: false,
-    image: { roles: { specification: 1 } },
-  })).image, {
+  const frozen = normalizeAutoListingConfig(baseConfig());
+  const effective = (productMeasurements, logistics = {}) => deriveEffectiveAutoListingImageConfig(frozen, {
+    ...verifiedSnapshot(productMeasurements, logistics),
+  });
+  assert.deepEqual(effective({ reliable: true, length: 28, unit: "cm", source: "manufacturer" }), {
     ratio: "3:4",
     resolution: "1K",
     quality: "Medium",
@@ -84,14 +119,36 @@ test("removes specification images when reliable product dimensions are absent",
       sellingPoint: 3,
       detail: 1,
       scene: 1,
-      specification: 0,
+      specification: 1,
       infographic: 1,
     },
-    total: 7,
+    total: 8,
+    reasonCodes: [],
   });
-  assert.deepEqual(normalizeAutoListingConfig(baseConfig({
-    hasReliableProductDimensions: false,
-  })).reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+  for (const measurements of [
+    {},
+    { reliable: false, length: 28, unit: "cm", source: "manufacturer" },
+    { reliable: true, length: 0, unit: "cm", source: "manufacturer" },
+    { reliable: true, length: "28", unit: "cm", source: "manufacturer" },
+    { reliable: true, length: 28, unit: "", source: "manufacturer" },
+    { reliable: true, length: 28, unit: "cm", source: "" },
+  ]) {
+    assert.deepEqual(effective(measurements).roles.specification, 0);
+    assert.deepEqual(effective(measurements).total, 7);
+    assert.deepEqual(effective(measurements).reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+  }
+  assert.equal(effective({}, { length: 999, unit: "cm", source: "warehouse" }).roles.specification, 0);
+  expectConfigError(baseConfig({ image: { total: 7 } }), "AUTO_LISTING_CONFIG_INVALID");
+  assert.throws(
+    () => deriveEffectiveAutoListingImageConfig(frozen, { productMeasurements: { reliable: true, length: 28, unit: "cm", source: "forged" } }),
+    (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
+  );
+});
+
+test("keeps the requested specification count frozen independently of source evidence", () => {
+  const normalized = normalizeAutoListingConfig(baseConfig({ image: { roles: { specification: 0 } } }));
+  assert.equal(normalized.image.roles.specification, 0);
+  assert.equal(normalized.image.total, 7);
 });
 
 test("rejects unsupported image options, role ranges, and derived totals outside 6 through 13", () => {
@@ -119,6 +176,7 @@ test("rejects authority-bearing client configuration fields", () => {
     "modelCredentials",
     "modelKey",
     "uploadMode",
+    "hasReliableProductDimensions",
   ]) {
     expectConfigError(baseConfig({ [field]: "client-controlled" }), "AUTO_LISTING_CONFIG_FORBIDDEN_FIELD");
   }

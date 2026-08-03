@@ -26,7 +26,7 @@ const AUTO_LISTING_ITEM_STATUSES = new Set([
   "CREATED", "SOURCE_READY", "PLANNING", "GENERATING", "READY_FOR_REVIEW",
   "UPLOAD_QUEUED", "UPLOADING", "SUCCEEDED", "RETRYABLE_ERROR", "BLOCKED", "CANCELLED",
 ]);
-const SENSITIVE_KEY = /(?:account|actor|owner|raw(?:response|body|evidence)?|credential|secret|api.?key|authorization|token|password)/i;
+const SENSITIVE_KEY = /(?:account|actor|owner|raw(?:response|body|evidence)?|credential|secret|api.?key|authorization|token|password|hasReliableProductDimensions)/i;
 
 function text(value, maximum = 240) {
   const result = typeof value === "string" ? value.trim() : "";

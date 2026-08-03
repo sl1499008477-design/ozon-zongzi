@@ -3,6 +3,11 @@ import test from "node:test";
 import { createAutoListingService } from "../auto-listing-service.mjs";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import {
+  normalizeAutoListingConfig,
+  verifyAutoListingFrozenConfig,
+} from "../auto-listing-contract.mjs";
+import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
 
 const actor = { id: "account-a", role: "user" };
 const config = {
@@ -31,13 +36,18 @@ const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => 
         target: { storeId: "store-a", descriptionCategoryId: "123", typeId: "456" },
         source: { path: ["root"] },
       },
-      attributes: [], logistics: {}, productMeasurements: { reliable: true },
+      attributes: [], logistics: {}, productMeasurements: { reliable: true, length: 28, unit: "cm", source: "manufacturer" },
       currency: "RUB", images: [], variants: [{ sku: `sku-${id}`, offerId: `offer-${id}` }],
       ...price,
     },
   },
   productDraft: { id: `draft-${id}`, version: 3 },
 });
+
+const frozenGraphConfig = () => {
+  const snapshot = normalizeAutoListingConfig(config);
+  return verifyAutoListingFrozenConfig(snapshot);
+};
 
 function fakeRepository({ sources = [source("collect-1")], existing = null } = {}) {
   const calls = [];
@@ -71,7 +81,12 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.equal(result.items[0].strategyVersionId, "version-a");
   assert.equal(result.items[0].price.finalPriceKopecks, "14500");
   assert.equal(repository.calls.find(([name]) => name === "loadCollectSources")[1].accountId, "account-a");
-  assert.equal(repository.calls.find(([name]) => name === "createJobGraph")[1].items.length, 2);
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.items.length, 2);
+  assert.deepEqual(verifyAutoListingFrozenConfig(graph.configSnapshot, graph.configHash), {
+    config: graph.configSnapshot,
+    configHash: graph.configHash,
+  });
   assert.doesNotMatch(JSON.stringify(result), /raw-collect|credentialsSaved|textDensityByRole/);
 });
 
@@ -90,6 +105,19 @@ test("keeps low-branch and missing-price source evidence isolated per sibling", 
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
   assert.equal(graph.items[1].snapshot.priceEvidence.greenKopecks, "");
   assert.equal(graph.items[2].snapshot.priceEvidence.blackKopecks, "");
+});
+
+test("derives specification images per verified source snapshot without package dimensions", async () => {
+  const unavailable = source("collect-no-product-size");
+  unavailable.collectItem.listingDraft.productMeasurements = {};
+  unavailable.collectItem.listingDraft.logistics = { length: 999, width: 999, height: 999, unit: "cm", source: "package" };
+  const repository = fakeRepository({ sources: [source("collect-product-size"), unavailable] });
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-product-size", "collect-no-product-size"], idempotencyKey: "mixed-sizes", correlationId: "corr", config,
+  });
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.deepEqual(graph.items.map((item) => item.effectiveImageConfig.roles.specification), [1, 0]);
+  assert.deepEqual(graph.items[1].effectiveImageConfig.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
 });
 
 test("keeps numeric source price facts immutable while blocking only that sibling", async () => {
@@ -273,17 +301,56 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null, style: "BALANCED_DEFAULT", matchedBy: "DEFAULT",
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
   };
+  const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "warehouse-empty", correlationId: "corr",
-    configSnapshot: { targetStoreId: "store-a", targetWarehouseId: "warehouse-a", priceAdjustmentKopecks: "0" }, configHash: "config", strategyVersionId: "version-a", items: [item],
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: deriveEffectiveAutoListingImageConfig(frozen.config, captured) }],
   };
   await assert.rejects(
-    repository.createJobGraph({ ...graphInput, idempotencyKey: "raw-mismatch", items: [{ ...item, rawResponseRef: "another-raw" }] }),
+    repository.createJobGraph({ ...graphInput, idempotencyKey: "raw-mismatch", items: [{ ...graphInput.items[0], rawResponseRef: "another-raw" }] }),
     (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID",
   );
   await assert.rejects(repository.createJobGraph({
     ...graphInput,
   }), (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE" && error?.body?.reason === "WAREHOUSE_ID_MISSING");
+});
+
+test("repository rejects malformed frozen configuration before connecting", async () => {
+  const captured = buildAutoListingSourceSnapshot({
+    accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-config", sourceVersion: "1",
+    rawResponseRef: "raw-config", rawResponseHash: "raw-hash", collectItem: source("collect-config").collectItem,
+  });
+  const frozen = frozenGraphConfig();
+  const item = {
+    sourceType: "COLLECT_BOX", sourceRecordId: "collect-config", sourceVersion: "1", snapshot: captured.snapshot,
+    snapshotHash: captured.snapshotHash, rawResponseRef: captured.rawResponseRef, targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
+    sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null,
+    style: "BALANCED_DEFAULT", matchedBy: "DEFAULT", effectiveImageConfig: deriveEffectiveAutoListingImageConfig(frozen.config, captured),
+    price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+  };
+  const graph = {
+    accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "config-check", correlationId: "corr",
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [item],
+  };
+  let connections = 0;
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => { connections += 1; throw new Error("must not connect"); },
+    query: async () => ({ rows: [] }),
+  } });
+  const malformed = [
+    { configSnapshot: { targetStoreId: "store-a" }, configHash: frozen.configHash },
+    { configSnapshot: { ...frozen.config, unknown: "no" }, configHash: frozen.configHash },
+    { configSnapshot: { ...frozen.config, modelCredentials: "secret" }, configHash: frozen.configHash },
+    { configSnapshot: { ...frozen.config, stock: 0 }, configHash: frozen.configHash },
+    { configSnapshot: { ...frozen.config, priceAdjustmentKopecks: "1.5" }, configHash: frozen.configHash },
+    { configSnapshot: { ...frozen.config, image: { ...frozen.config.image, roles: { ...frozen.config.image.roles, main: 2 } } }, configHash: frozen.configHash },
+    { configSnapshot: { ...frozen.config, image: { ...frozen.config.image, total: 7 } }, configHash: frozen.configHash },
+    { configSnapshot: frozen.config, configHash: "forged" },
+  ];
+  for (const invalid of malformed) {
+    await assert.rejects(repository.createJobGraph({ ...graph, idempotencyKey: `invalid-${Math.random()}`, ...invalid }), (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  assert.equal(connections, 0);
 });
 
 test("repository persists only a canonical recomputed price with a non-default strategy rule", async () => {
@@ -300,9 +367,10 @@ test("repository persists only a canonical recomputed price with a non-default s
     style: "VISUAL_FIRST", matchedBy: "PRODUCT_STYLE",
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
   };
+  const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "rule-key", correlationId: "corr",
-    configSnapshot: { targetStoreId: "store-a", targetWarehouseId: "warehouse-a", priceAdjustmentKopecks: "0" }, configHash: "config", strategyVersionId: "version-a", items: [item],
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: deriveEffectiveAutoListingImageConfig(frozen.config, captured) }],
   };
   const calls = [];
   const client = {
@@ -331,7 +399,7 @@ test("repository persists only a canonical recomputed price with a non-default s
     { ...item.price, finalPriceKopecks: "1" },
   ]) {
     await assert.rejects(
-      repository.createJobGraph({ ...graphInput, idempotencyKey: `invalid-${Math.random()}`, items: [{ ...item, price: invalidPrice }] }),
+      repository.createJobGraph({ ...graphInput, idempotencyKey: `invalid-${Math.random()}`, items: [{ ...graphInput.items[0], price: invalidPrice }] }),
       (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID",
     );
   }

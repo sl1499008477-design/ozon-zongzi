@@ -133,7 +133,7 @@ assert.deepEqual(calculateAutoListingPrice({
 
 - [ ] **Step 2: Write failing configuration tests**
 
-Assert ratio/resolution/quality/language allowlists; role ranges; derived total 6–13; exact default 1/3/1/1/1/1; specification count reduced to 0 when reliable product dimensions are absent; integer stock; signed adjustment; required target store/warehouse; and rejection of client accountId, strategy version, model credentials, or upload mode.
+Assert ratio/resolution/quality/language allowlists; role ranges; derived total 6–13; exact default 1/3/1/1/1/1; frozen requested specification count is independent of source evidence, while a per-item effective image config reduces it to 0 only when that verified source snapshot lacks reliable product dimensions; integer stock; signed adjustment; required target store/warehouse; and rejection of client accountId, strategy version, model credentials, upload mode, or claimed dimension reliability.
 
 - [ ] **Step 3: Confirm RED**
 
@@ -183,7 +183,7 @@ Return a hashable JSON contract:
 }
 ~~~
 
-When hasReliableProductDimensions is false, force specification to 0, recompute total, and record PRODUCT_DIMENSIONS_UNAVAILABLE. Never substitute package dimensions.
+The frozen job config records the user's requested `specification` count and never accepts a browser claim about dimension reliability. Before content planning, derive an effective image config for each verified source snapshot: preserve the requested slot only when `snapshot.productMeasurements` supplies explicit reliable evidence, a non-empty unit/source, and at least one positive finite product measurement. Otherwise set `specification` to 0, recompute total, and record `PRODUCT_DIMENSIONS_UNAVAILABLE`. Never substitute package/logistics dimensions.
 
 - [ ] **Step 6: Confirm GREEN and commit**
 
