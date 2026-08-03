@@ -17,6 +17,7 @@ import {
   resolveListingPreparationReplay,
   validateTargetStoreRecord,
 } from "./listing-submission-policy.mjs";
+import { assertListingWarehouseEligible } from "./listing-warehouse-eligibility.mjs";
 
 export const LISTING_QUEUE = "ozon-product-import-v3";
 export const TERMINAL_SUBMISSION_STATUSES = new Set(["SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED"]);
@@ -534,20 +535,44 @@ export async function assertListingStocksBelongToTarget({
   if (!warehouseIds.length) return true;
   const database = client || await poolReady();
   const result = await database.query(
-    `SELECT DISTINCT requested.id
+    `SELECT DISTINCT
+       requested.id AS requested_id,
+       w.store_id,
+       w.warehouse_id,
+       w.warehouse_type,
+       w.status,
+       w.is_active,
+       w.is_archived,
+       EXISTS (
+         SELECT 1
+         FROM product_stocks ps
+         JOIN products p ON p.id=ps.product_id
+         WHERE ps.warehouse_id=w.id
+           AND ps.store_id=w.store_id
+           AND p.store_id=w.store_id
+           AND p.is_archived=FALSE
+           AND LOWER(ps.source)='fbs'
+       ) AS has_active_product_association
      FROM unnest($3::text[]) AS requested(id)
-     JOIN warehouses w ON w.warehouse_id=requested.id OR w.id=requested.id
+     JOIN warehouses w ON w.warehouse_id=requested.id
      JOIN stores s ON s.id=w.store_id
      WHERE s.owner_account_id=$1
-       AND w.store_id=$2
-       AND w.is_active=TRUE
-       AND w.is_archived=FALSE`,
+       AND w.store_id=$2`,
     [clean(accountId, 240), clean(storeId, 240), warehouseIds],
   );
-  if (result.rowCount !== warehouseIds.length) {
-    throw Object.assign(new Error("上架仓库不属于目标经营店铺或当前不可用"), {
-      status: 409,
-      code: "LISTING_WAREHOUSE_TARGET_MISMATCH",
+  const recordsByRequestedId = new Map(
+    (Array.isArray(result.rows) ? result.rows : [])
+      .map((row) => [clean(row?.requested_id, 240), row]),
+  );
+  for (const warehouseId of warehouseIds) {
+    const warehouse = recordsByRequestedId.get(warehouseId) || null;
+    assertListingWarehouseEligible({
+      warehouse,
+      targetStoreId: clean(storeId, 240),
+      accountId: clean(accountId, 240),
+      hasActiveProductAssociation: warehouse
+        ? warehouse.has_active_product_association === true
+        : false,
     });
   }
   return true;

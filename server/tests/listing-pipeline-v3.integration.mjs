@@ -9,6 +9,7 @@ import { encryptSecret } from "../crypto-secrets.mjs";
 import { getPostgresPool, closePostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import {
+  assertListingStocksBelongToTarget,
   assertUsableOperatingStore,
   createSubmissionV3,
   listCollectItemsV3,
@@ -37,6 +38,8 @@ const raceCollectId = `test_collect_race_${suffix}`;
 const collectIds = [collectId, changedPayloadCollectId, raceCollectId];
 const warehouseAId = `wh_${crypto.createHash("sha256").update(`${storeId}|1`).digest("hex").slice(0, 24)}`;
 const warehouseBId = `wh_${crypto.createHash("sha256").update(`${secondStoreId}|2`).digest("hex").slice(0, 24)}`;
+const warehouseFboId = `wh_${crypto.createHash("sha256").update(`${storeId}|3`).digest("hex").slice(0, 24)}`;
+const warehouseArchivedOnlyId = `wh_${crypto.createHash("sha256").update(`${storeId}|4`).digest("hex").slice(0, 24)}`;
 const storeIds = [storeId, secondStoreId, foreignStoreId, disabledStoreId, noCredentialStoreId];
 const pool = await getPostgresPool();
 let routeDataDir = "";
@@ -136,10 +139,60 @@ try {
   await pool.query(
     `INSERT INTO warehouses (id,store_id,warehouse_id,name,warehouse_type,status,is_active,is_archived)
      VALUES
-       ($1,$3,'1','Store A FBS','FBS','active',TRUE,FALSE),
-       ($2,$4,'2','Store B FBS','FBS','active',TRUE,FALSE)`,
-    [warehouseAId, warehouseBId, storeId, secondStoreId],
+       ($1,$5,'1','Store A FBS','FBS','active',TRUE,FALSE),
+       ($2,$6,'2','Store B FBS','FBS','active',TRUE,FALSE),
+       ($3,$5,'3','Store A FBO','FBO','active',TRUE,FALSE),
+       ($4,$5,'4','Store A Archived Only FBS','FBS','active',TRUE,FALSE)`,
+    [warehouseAId, warehouseBId, warehouseFboId, warehouseArchivedOnlyId, storeId, secondStoreId],
   );
+  await pool.query(
+    `INSERT INTO products (id,store_id,product_id,sku,status,is_archived)
+     VALUES
+       ($1,$4,'active-fbs-product','active-fbs-sku','active',FALSE),
+       ($2,$5,'second-fbs-product','second-fbs-sku','active',FALSE),
+       ($3,$4,'archived-fbs-product','archived-fbs-sku','archived',TRUE)`,
+    [`product_active_${suffix}`, `product_second_${suffix}`, `product_archived_${suffix}`, storeId, secondStoreId],
+  );
+  await pool.query(
+    `INSERT INTO product_stocks (product_id,warehouse_id,store_id,sku,source,present,reserved)
+     VALUES
+       ($1,$4,$6,'active-fbs-sku','fbs',0,0),
+       ($2,$5,$7,'second-fbs-sku','fbs',5,0),
+       ($3,$8,$6,'archived-fbs-sku','fbs',5,0)`,
+    [
+      `product_active_${suffix}`,
+      `product_second_${suffix}`,
+      `product_archived_${suffix}`,
+      warehouseAId,
+      warehouseBId,
+      storeId,
+      secondStoreId,
+      warehouseArchivedOnlyId,
+    ],
+  );
+
+  assert.equal(await assertListingStocksBelongToTarget({
+    accountId,
+    storeId,
+    stocks: [{ warehouse_id: 1, stock: 0 }],
+  }), true);
+  for (const { warehouseId, reason } of [
+    { warehouseId: 3, reason: "TYPE_NOT_FBS" },
+    { warehouseId: 4, reason: "NO_ACTIVE_PRODUCT_ASSOCIATION" },
+    { warehouseId: 2, reason: "STORE_SCOPE_MISMATCH" },
+    { warehouseId: warehouseAId, reason: "STORE_SCOPE_MISMATCH" },
+  ]) {
+    await assert.rejects(
+      assertListingStocksBelongToTarget({
+        accountId,
+        storeId,
+        stocks: [{ warehouse_id: warehouseId, stock: 5 }],
+      }),
+      (error) => error?.status === 422
+        && error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE"
+        && error?.body?.reason === reason,
+    );
+  }
 
   const baseItem = {
     id: collectId,
@@ -375,7 +428,9 @@ try {
       normalizedItems: [{ ...normalizedItems[0], name: "Wrong warehouse target" }],
       stocks: [{ offer_id: "offer-1", warehouse_id: 2, stock: 5 }],
     }),
-    (error) => error?.status === 409 && error?.code === "LISTING_WAREHOUSE_TARGET_MISMATCH",
+    (error) => error?.status === 422
+      && error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE"
+      && error?.body?.reason === "STORE_SCOPE_MISMATCH",
   );
 
   await pool.query("UPDATE stores SET status='disabled' WHERE id=$1", [storeId]);
