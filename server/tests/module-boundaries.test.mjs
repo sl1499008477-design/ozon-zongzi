@@ -84,9 +84,12 @@ function assertAutoListingRouteBoundary(source) {
       }
       imports.push(node.source.value);
     }
-    if (node.type === "CallExpression" && node.callee?.type === "MemberExpression"
-      && node.callee.property?.type === "Identifier" && node.callee.property.name === "query") {
-      hasQueryCall = true;
+    if (node.type === "CallExpression" && node.callee?.type === "MemberExpression") {
+      const property = node.callee.property;
+      const propertyName = node.callee.computed
+        ? (property?.type === "Literal" && typeof property.value === "string" ? property.value : "")
+        : (property?.type === "Identifier" ? property.name : "");
+      if (propertyName === "query") hasQueryCall = true;
     }
   });
   assert.deepEqual(imports, ["./runtime-config.mjs"], "auto-listing routes may import only feature configuration");
@@ -100,10 +103,16 @@ for (const source of [
   'await import("./ai-client.mjs");',
   'await import("./ozon-client.mjs");',
   'await import("./" + moduleName);',
-  'const rows = await executor.query("UPDATE auto_listing_jobs SET status=1");',
-  'const rows = await executor.query("SELECT * FROM auto_listing_jobs");',
 ]) {
   assert.throws(() => assertAutoListingRouteBoundary(source), /auto-listing routes|may import only/);
+}
+for (const source of [
+  'const rows = await executor.query("UPDATE auto_listing_jobs SET status=1");',
+  'const rows = await executor["query"]("SELECT * FROM auto_listing_jobs");',
+  "const rows = await executor['query']('DELETE FROM auto_listing_jobs');",
+]) {
+  const fixture = `import { autoListingEnabled } from "./runtime-config.mjs";\n${source}`;
+  assert.throws(() => assertAutoListingRouteBoundary(fixture), /must not execute SQL query calls/);
 }
 assert.match(
   autoListingRuntime,

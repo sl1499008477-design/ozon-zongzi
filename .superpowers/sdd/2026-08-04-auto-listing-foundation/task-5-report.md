@@ -88,3 +88,19 @@ No Task 1–4 domain, snapshot, repository, service, migration, external gateway
 
 - A live HTTP listener/authentication smoke test and real disposable PostgreSQL transaction coverage remain unavailable. Keep `AUTO_LISTING_ENABLED=0` until those environments are supplied.
 - Roll back route exposure with `AUTO_LISTING_ENABLED=0`. Reverting this commit restores previous error/close behavior; preserve migration 026 and all immutable job, snapshot, and audit history.
+
+## Fix round 3 — computed query boundary closure
+
+### RED / GREEN
+
+- RED: the module-boundary test failed because a fixture with the otherwise legal `import { autoListingEnabled } from "./runtime-config.mjs";` plus `executor["query"](...)` passed. The previous check only recognized non-computed `.query()`.
+- GREEN: identifier `.query()`, computed `["query"]()`, and computed `['query']()` fixtures all fail specifically on the query-call boundary while retaining the legal import. The production route still passes the Acorn boundary check.
+- Verification repeated: foundation **90/90**, permissions/persistence/listing/store **42/42**, and gated auto-listing PostgreSQL **1 passed, 1 skipped** without the dedicated test URL. Syntax and diff checks passed.
+
+### Contract note
+
+The AST boundary recognizes a `CallExpression` on any member property whose resolved identifier or literal string is exactly `query`. Dynamic/static imports remain restricted to the feature-config specifier; SQL fixtures deliberately use the legal config import so their rejection proves the query rule rather than the import allowlist.
+
+### Commit tracking
+
+The planned implementation commit message is `test: close auto listing boundary gaps`. Its hash is intentionally not self-recorded in this same commit; Git history is the authoritative record.
