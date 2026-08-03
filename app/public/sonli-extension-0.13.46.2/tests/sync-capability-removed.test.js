@@ -207,6 +207,7 @@ function loadServiceWorker({
   const runtimeOnMessage = createEvent();
   const alarmsOnAlarm = createEvent();
   const createdAlarms = [];
+  const cookieQueries = [];
   const fetchCalls = [];
   const executeScriptCalls = [];
   const intervalCalls = [];
@@ -289,9 +290,12 @@ function loadServiceWorker({
       onClicked: event,
     },
     cookies: {
-      getAll: async () => sellerCapture
-        ? [{ name: 'sc_company_id', value: '1234', domain: '.seller.ozon.ru' }]
-        : [],
+      getAll: async (query) => {
+        cookieQueries.push(query);
+        return sellerCapture
+          ? [{ name: 'sc_company_id', value: '1234', domain: '.seller.ozon.ru' }]
+          : [];
+      },
     },
     notifications: {
       create() {},
@@ -441,6 +445,7 @@ function loadServiceWorker({
   return {
     context,
     alarmsOnAlarm,
+    cookieQueries,
     createdAlarms,
     createdTabs,
     executeScriptCalls,
@@ -1858,6 +1863,49 @@ test('retired manual and sync-request messages cannot trigger sync fetches', asy
       /api-seller\.ozon\.ru|\/ozon\/sync\/|sync-credentials|cache\/import-with-hash/.test(url)),
     false,
   );
+});
+
+test('retired privileged actions reject without network, browser, cookie, or storage side effects', async () => {
+  const harness = loadServiceWorker();
+  const retiredMessages = [
+    { action: 'addFavorite', product: { id: 'retired-product' } },
+    { action: 'aiListingDraftConfirm', draftId: 'retired-draft' },
+    { action: 'aiListingDraftCreate', body: { title: 'retired' } },
+    { action: 'aiListingDraftPublish', draftId: 'retired-draft' },
+    { action: 'aiOptimize', title: 'retired' },
+    { action: 'checkSellerCookies' },
+    { action: 'checkUpdate' },
+    { action: 'collectBatch', products: [{ id: 'retired-product' }] },
+    { action: 'collectProduct', product: { id: 'retired-product' } },
+    { action: 'fetchOzonPublicProduct', sku: '123456789' },
+    { action: 'focusSellerRecoveryTab' },
+    { action: 'getFavCount' },
+    { action: 'importStock', items: [{ sku: 'retired-sku', stock: 1 }] },
+    { action: 'pushToCollectBox', items: [{ id: 'retired-product' }] },
+    { action: 'refreshBackend' },
+    { action: 'savePricingSnapshot', body: { productId: 'retired-product' } },
+  ];
+  await settle();
+  const localBefore = JSON.parse(JSON.stringify(harness.local.state));
+  const sessionBefore = JSON.parse(JSON.stringify(harness.session.state));
+
+  for (const message of retiredMessages) {
+    const response = await sendRuntimeMessage(harness, message);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(response)),
+      { ok: false, error: '未知消息类型' },
+      message.action,
+    );
+  }
+
+  assert.deepEqual(harness.fetchCalls, []);
+  assert.deepEqual(harness.cookieQueries, []);
+  assert.deepEqual(harness.createdTabs, []);
+  assert.deepEqual(harness.executeScriptCalls, []);
+  assert.deepEqual(harness.updatedTabs, []);
+  assert.deepEqual(harness.updatedWindows, []);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.local.state)), localBefore);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.session.state)), sessionBefore);
 });
 
 test('visible-page capture upload still reaches the collector client', async () => {

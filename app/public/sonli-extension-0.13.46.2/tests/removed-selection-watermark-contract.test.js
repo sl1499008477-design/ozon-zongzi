@@ -15,7 +15,6 @@ const popupHtml = read("popup/popup.html");
 const popupJs = read("popup/popup.js");
 const batchHtml = read("batch-upload/index.html");
 const batchJs = read("batch-upload/index.js");
-const listingActions = read("background/agent/listing-actions.js");
 const storePicker = read("lib/store-picker.js");
 const jizhangerpBridge = read("content/jizhangerp-bridge.js");
 const portalBridgePolicy = read("lib/portal-bridge-policy.js");
@@ -54,7 +53,6 @@ for (const source of [
   batchJs,
   product,
   productCss,
-  listingActions,
   storePicker,
   jizhangerpBridge,
   portalBridgePolicy,

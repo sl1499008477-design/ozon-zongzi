@@ -146,24 +146,6 @@ try {
   const FX_ALARM = 'jzc-fx-refresh';
   const FX_REFRESH_INTERVAL_MINUTES = 2 * 60;
 
-  /**
-   * 登录门户域声明(2026-06-11 串号修复):build.js 给发版包注入
-   * globalThis.__JZ_BRAND__(分销商定制版 webHost = 其商户域,平台版 =
-   * store.jizhangerp.com)。popup/SW 登录直调 api.* 时后端拿不到分销商域上下文
-   * (Origin 是 chrome-extension:// 被跳过),把 webHost 随 body 显式声明,
-   * 后端按它解析 distributorId —— 定制版用户从此登进自己分销商的账号,
-   * 不再被串进平台直营。dev 源码加载无 brand 注入 → 返回 undefined,后端走
-   * 原 host 链路。
-   */
-  function jzBrandPortalHost() {
-    try {
-      const h = globalThis.__JZ_BRAND__ && globalThis.__JZ_BRAND__.webHost;
-      return typeof h === 'string' && h.trim() ? h.trim() : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
   async function getExtensionFingerprint(preferredFingerprint) {
     // popup 传上来的 preferredFingerprint 现在是 machine-v3-,兼容 v2 旧 popup
     // (用户没 reload 扩展但 reload 了网页端)期间 v2 fingerprint 也能透传。
@@ -2697,20 +2679,6 @@ try {
     });
   };
 
-  // ── maozi 公开商详上架灰度开关(读 /feature-flags/me,5min 缓存,同 token)──
-  let _publicImportFlag = { token: null, val: false, at: 0 };
-  const isPublicImportEnabled = async (backendUrl, token) => {
-    if (!token || !backendUrl) return false;
-    if (_publicImportFlag.token === token && Date.now() - _publicImportFlag.at < 300_000) return _publicImportFlag.val;
-    try {
-      const flags = await apiRequest('GET', `${backendUrl}/feature-flags/me`, null, token, null, 8000);
-      _publicImportFlag = { token, val: !!flags?.ozon_public_import, at: Date.now() };
-    } catch {
-      _publicImportFlag = { token, val: false, at: Date.now() };
-    }
-    return _publicImportFlag.val;
-  };
-
   // maozi 公开商详上架:把公开买家商详页 page-json(widgetStates)解析成后端
   // /ozon/products/import-from-public 的精简行(媒体+文本+价格+俄文 characteristics
   // +类目面包屑)。后端据此服务端解析类目/属性 → 官方 import,门户无关。
@@ -3928,17 +3896,6 @@ try {
       })();
       return true;
     }
-
-
-  const getSellerPortalCompanyId = async () => {
-    const scCookies = await chrome.cookies.getAll({ url: 'https://seller.ozon.ru/', name: 'sc_company_id' });
-    const companyId = scCookies[0]?.value || '';
-    if (!companyId) {
-      throw new Error('sc_company_id not found, please login seller.ozon.ru first');
-    }
-    return companyId;
-  };
-
   const sellerContextStatusProjection = async () => {
     try {
       const context = await sellerCompanyContextRuntime.resolveCurrentWithRecovery();
@@ -4019,11 +3976,7 @@ try {
           )) return { ok: false };
           return openSellerLogin();
         }
-        case 'focusSellerRecoveryTab': {
-          return {
-            ok: await sellerCompanyContextRuntime.focusLoginHelper(),
-          };
-        }
+
         case 'enrichOzonCollect': {
           try {
             if (!exactRuntimeMessage(message, ['action', 'requestId', 'sku'])) {
@@ -4267,14 +4220,8 @@ try {
             return { ok: false, error: e?.message || 'open seller portal failed' };
           }
         }
-        case 'refreshBackend': {
-          resolvedBackendUrl = null;
-          const url = await detectBackendUrl();
-          return { ok: true, backendUrl: url };
-        }
-        case 'collectProduct': {
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/collect-box`, message.product, token, storeId) };
-        }
+
+
         case 'updateCollectBoxItem': {
           // AI 采集向导回写采集箱条目(标题/属性等)。PATCH 与前端 updateCollectBoxItem 同端点。
           const cbId = String(message.id || '').trim();
@@ -4309,32 +4256,9 @@ try {
           }
           return upload;
         }
-        case 'collectBatch': {
-          // Legacy action, kept for backward compatibility with older content scripts.
-          // New code should use 'pushToCollectBox'.
-          const products = message.products || [];
-          if (products.length === 0) return { ok: true, data: { results: [], total: 0 } };
-          try {
-            const data = await apiRequest('POST', `${backendUrl}/ozon/collect-box/batch`, { items: products, mode: 'update' }, token, storeId);
-            return { ok: true, data };
-          } catch (error) {
-            return { ok: false, error: error.message };
-          }
-        }
-        case 'pushToCollectBox': {
-          const items = message.items || [];
-          const mode = message.mode === 'skip' ? 'skip' : 'update';
-          if (items.length === 0) return { ok: true, data: { created: 0, updated: 0, skipped: 0, items: [] } };
-          try {
-            const data = await apiRequest('POST', `${backendUrl}/ozon/collect-box/batch`, { items, mode }, token, storeId);
-            return { ok: true, data };
-          } catch (error) {
-            return { ok: false, error: error.message };
-          }
-        }
-        case 'addFavorite': {
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/favorites`, message.product, token, storeId) };
-        }
+
+
+
         case 'getProductStats': {
           let sku = message.sku;
           if (!sku && message.url) {
@@ -4836,11 +4760,7 @@ try {
           const aiStoreId = message.storeId || storeId;
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/ai/verify-category`, message.body || {}, token, aiStoreId, 60_000, aiWizardDebugMeta(message, 'verifyCategory')) };
         }
-        case 'importStock': {
-          // stocks: [{ offer_id, stock, warehouse_id }]
-          const stockStoreId = message.storeId || storeId;
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/stocks/import`, { items: message.stocks }, token, stockStoreId) };
-        }
+
         case 'getImportStatus': {
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/products/import/status`, { task_id: message.taskId }, token, storeId) };
         }
@@ -4848,22 +4768,9 @@ try {
         // 三段式对应后端 collect-box/:id/ai-listing-draft 的 create→confirm→publish。
         // body 透传 DTO（targetMarginPercent / priceRub / applyPoster
         // / warehouseId / offerId 等），storeId 走 x-ozon-store-id 头由 apiRequest 注入。
-        case 'aiListingDraftCreate': {
-          const aiStoreId = message.storeId || storeId;
-          const id = encodeURIComponent(message.itemId);
-          // AI 重写+改图在后端跑，给 120s 余量
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/collect-box/${id}/ai-listing-draft`, message.body || {}, token, aiStoreId, 120_000) };
-        }
-        case 'aiListingDraftConfirm': {
-          const aiStoreId = message.storeId || storeId;
-          const id = encodeURIComponent(message.itemId);
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/collect-box/${id}/ai-listing-draft/confirm`, message.body || {}, token, aiStoreId) };
-        }
-        case 'aiListingDraftPublish': {
-          const aiStoreId = message.storeId || storeId;
-          const id = encodeURIComponent(message.itemId);
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/collect-box/${id}/ai-listing-draft/publish`, message.body || {}, token, aiStoreId, 120_000) };
-        }
+
+
+
         case 'getPricingConfig': {
           const pricingStoreId = message.storeId || storeId;
           const response = await apiRequest(
@@ -4891,20 +4798,7 @@ try {
             ),
           };
         }
-        case 'savePricingSnapshot': {
-          const pricingStoreId = message.storeId || storeId;
-          const idempotencyKey = String(message.body?.idempotencyKey || `pricing-snapshot:${pricingStoreId || 'none'}:${hashString(JSON.stringify(message.body || {}))}`);
-          return {
-            ok: true,
-            data: await apiRequest(
-              'POST',
-              `${backendUrl}/pricing/snapshots`,
-              { ...(message.body || {}), storeId: pricingStoreId || '', idempotencyKey },
-              token,
-              pricingStoreId,
-            ),
-          };
-        }
+
         case 'getFxRate': {
           // CNY→RUB 动态汇率（复用 SKU 前台实价探针缓存）。
           // 给 1688 AI 采集向导按店铺货币定价用：成本是人民币，需换算成店铺货币。
@@ -5050,182 +4944,7 @@ try {
             forceRefresh: message.forceRefresh,
             sender,
           });
-        case 'fetchOzonPublicProduct': {
-          // 按 SKU 抓 ozon.ru 公开商品页，提炼 pageProduct（name/images/breadcrumbs/brand/weight/dims）。
-          // Ozon 反爬会 ban 掉 service-worker 直 fetch（缺浏览器指纹），所以**优先**
-          // 在 www.ozon.ru tab 内 executeScript 注入 fetch（同 fetchSellerPortal 套路），
-          // 找不到 tab 才 fall back 到 service-worker 直 fetch（大概率被反爬拦）。
-          try {
-            const sku = String(message.sku || '').trim();
-            if (!/^\d{6,16}$/.test(sku)) return { ok: false, error: 'invalid sku' };
 
-            // 在页面上下文跑的 fetch + 解析（大字符串注入 executeScript），返回标准化数据
-            // URL 用相对路径,自动适配当前 tab 是 www.ozon.ru 还是 ozon.kz (同 origin)。
-            const inPageFetcher = async (sku) => {
-              const path = `/product/${sku}`;
-              const endpoints = [
-                `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
-                `/api/composer-api.bx/page/json/v2?url=${encodeURIComponent(path)}`,
-              ];
-              const upgrade = (u) =>
-                typeof u === 'string' && u.includes('ir.ozone.ru')
-                  ? u.replace(/\/wc\d+\//, '/wc1000/')
-                  : u;
-              for (const url of endpoints) {
-                try {
-                  const resp = await fetch(url, {
-                    credentials: 'include',
-                    headers: { 'x-o3-app-name': 'dweb_client', 'accept': 'application/json' },
-                  });
-                  if (!resp.ok) continue;
-                  const data = await resp.json();
-                  const states = data && data.widgetStates ? data.widgetStates : {};
-                  if (Object.keys(states).length === 0) continue;
-
-                  let name = null;
-                  let titleFromHeading = null;
-                  const allImages = [];
-                  const seenImg = new Set();
-                  let coverImage = null;
-                  let breadcrumbs = [];
-                  let brand = null;
-                  let weight = null;
-                  const dims = {};
-
-                  const pushImg = (raw) => {
-                    if (!raw) return;
-                    const upgraded = upgrade(raw);
-                    if (!upgraded) return;
-                    const norm = String(upgraded).split('?')[0].split('#')[0].toLowerCase();
-                    if (seenImg.has(norm)) return;
-                    seenImg.add(norm);
-                    allImages.push(upgraded);
-                  };
-
-                  for (const k of Object.keys(states)) {
-                    let v = states[k];
-                    if (typeof v === 'string') { try { v = JSON.parse(v); } catch { continue; } }
-                    if (!v || typeof v !== 'object') continue;
-                    const kLower = k.toLowerCase();
-                    if (!titleFromHeading && kLower.indexOf('heading') !== -1 && typeof v.title === 'string' && v.title.length > 3) {
-                      titleFromHeading = v.title.trim();
-                    }
-                    if (!name && typeof v.title === 'string' && v.title.length > 3) name = v.title.trim();
-                    if (!name && typeof v.name === 'string' && v.name.length > 3) name = v.name.trim();
-                    if (!coverImage && typeof v.coverImage === 'string') coverImage = v.coverImage;
-                    if (Array.isArray(v.images)) {
-                      for (const img of v.images) {
-                        const u = typeof img === 'string' ? img : (img && (img.src || img.url || img.image));
-                        if (u) pushImg(u);
-                      }
-                    }
-                    if (Array.isArray(v.breadcrumbs) && v.breadcrumbs.length > breadcrumbs.length) {
-                      breadcrumbs = v.breadcrumbs.map((b) => (b && (b.text || b.title || b.name)) || '').filter(Boolean);
-                    }
-                    if (!brand && typeof v.brand === 'string') brand = v.brand;
-                    if (Array.isArray(v.characteristics)) {
-                      for (const c of v.characteristics) {
-                        const cName = String((c && (c.name || c.title)) || '').toLowerCase();
-                        const cValRaw = String((c && (c.value || (c.values && c.values[0] && c.values[0].text))) || '');
-                        const m = cValRaw.match(/[\d.]+/);
-                        const num = m ? parseFloat(m[0]) : null;
-                        if (!num) continue;
-                        if (cName.indexOf('вес') !== -1 || cName.indexOf('weight') !== -1) {
-                          const isKg = cValRaw.toLowerCase().indexOf('кг') !== -1 || cValRaw.toLowerCase().indexOf('kg') !== -1;
-                          weight = weight || (isKg ? Math.round(num * 1000) : Math.round(num));
-                        } else if (cName.indexOf('длина') !== -1 || cName.indexOf('length') !== -1 || cName.indexOf('depth') !== -1) {
-                          const isCm = cValRaw.toLowerCase().indexOf('см') !== -1 || cValRaw.toLowerCase().indexOf('cm') !== -1;
-                          dims.depth = dims.depth || (isCm ? Math.round(num * 10) : Math.round(num));
-                        } else if (cName.indexOf('ширина') !== -1 || cName.indexOf('width') !== -1) {
-                          const isCm = cValRaw.toLowerCase().indexOf('см') !== -1 || cValRaw.toLowerCase().indexOf('cm') !== -1;
-                          dims.width = dims.width || (isCm ? Math.round(num * 10) : Math.round(num));
-                        } else if (cName.indexOf('высота') !== -1 || cName.indexOf('height') !== -1) {
-                          const isCm = cValRaw.toLowerCase().indexOf('см') !== -1 || cValRaw.toLowerCase().indexOf('cm') !== -1;
-                          dims.height = dims.height || (isCm ? Math.round(num * 10) : Math.round(num));
-                        }
-                      }
-                    }
-                  }
-
-                  const finalName = titleFromHeading || name;
-                  if (coverImage) {
-                    const filtered = allImages.filter((u) => u !== coverImage);
-                    filtered.unshift(coverImage);
-                    allImages.length = 0;
-                    Array.prototype.push.apply(allImages, filtered);
-                  }
-                  if (!finalName && allImages.length === 0) {
-                    return { ok: false, error: '页面解析失败：name + images 都为空' };
-                  }
-                  return {
-                    ok: true,
-                    data: {
-                      sku,
-                      name: finalName,
-                      images: allImages,
-                      breadcrumbs,
-                      brand,
-                      weight,
-                      depth: dims.depth || null,
-                      width: dims.width || null,
-                      height: dims.height || null,
-                    },
-                  };
-                } catch (e) {
-                  // try next endpoint
-                }
-              }
-              return { ok: false, error: '所有公开端点都失败' };
-            };
-
-            // 1) 优先：在已打开的 ozon.ru / ozon.kz tab 内 page-context 跑 fetch
-            const ozonTabs = await chrome.tabs.query({
-              url: [
-                'https://www.ozon.ru/*',
-                'https://ozon.ru/*',
-                'https://ozon.kz/*',
-                'https://www.ozon.kz/*',
-              ],
-            });
-            // 排除 seller.* (反爬信任域不是这个;且 seller portal 走另一条路径)
-            const target = ozonTabs.find(
-              (t) => t.url && /^https:\/\/(www\.ozon\.ru|ozon\.kz|www\.ozon\.kz)\//.test(t.url),
-            );
-            if (target?.id) {
-              try {
-                const results = await chrome.scripting.executeScript({
-                  target: { tabId: target.id },
-                  func: inPageFetcher,
-                  args: [sku],
-                  world: 'MAIN',
-                });
-                const r = results?.[0]?.result;
-                if (r) return r;
-              } catch (e) {
-                console.warn('[fetchOzonPublicProduct] in-tab executeScript failed:', e?.message);
-              }
-            }
-
-            // 2) 没 tab / executeScript 失败 → 引导用户打开 ozon 页面
-            if (!target) {
-              return {
-                ok: false,
-                error: 'NO_OZON_TAB',
-                message: '请先在浏览器打开任意 ozon.ru 或 ozon.kz 页面（保持后台打开即可），让扩展能借用页面上下文抓数据',
-              };
-            }
-
-            // 3) Fallback：service-worker 直 fetch（大概率反爬，但作为最后兜底）
-            try {
-              const r = await inPageFetcher(sku);
-              return r;
-            } catch (e) {
-              return { ok: false, error: e?.message || '反爬拦截' };
-            }
-          } catch (e) {
-            return { ok: false, error: e?.message || String(e) };
-          }
-        }
         case 'proxyImageFetch': {
           // 由 1688 content script 调用：在 background 代为 fetch ozon CDN 图片，
           // 避开页面 CORS（host_permissions 仅保留可见 Ozon 页面与媒体域）。
@@ -5277,44 +4996,18 @@ try {
 
           return { ok: true, data: { sc_company_id: scCompanyId, cookie_count: sellerCookies.length } };
         }
-        case 'checkSellerCookies': {
-          let identity;
-          try {
-            identity = await globalThis.JzSellerIdentityPolicy.resolveSellerMessageIdentity({
-              findSellerTabs: () => chrome.tabs.query({ url: 'https://seller.ozon.ru/*' }),
-              getCookies: (details) => chrome.cookies.getAll(details),
-              getObservedContexts: (sellerTabs) =>
-                sellerCompanyContextRuntime.observationsForTabs(sellerTabs),
-            });
-          } catch (error) {
-            return { ok: false, error: error?.message || 'SELLER_CONTEXT_REQUIRED' };
-          }
-          return {
-            ok: true,
-            data: {
-              has_cookies: identity.cookies.length > 0,
-              cookie_count: identity.cookies.length,
-              sc_company_id: identity.companyId,
-              sellerCompanyIds: [identity.companyId],
-              userAgent: navigator.userAgent,
-            },
-          };
-        }
+
         case 'translateKeywords': {
           return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/extension/translate`, { texts: message.texts, from: message.from || 'ru', to: message.to || 'zh' }, token, storeId) };
         }
-        case 'aiOptimize': {
-          return { ok: true, data: await apiRequest('POST', `${backendUrl}/ozon/extension/ai-optimize`, { title: message.title, description: message.description, category: message.category, keywords: message.keywords }, token, storeId) };
-        }
+
         case 'getCollectCount': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/collect-box?currentPage=1&pageSize=1`, null, token, storeId) };
         }
         case 'getProductStatusCounts': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/products/cache/status-counts`, null, token, storeId) };
         }
-        case 'getFavCount': {
-          return { ok: true, data: await apiRequest('GET', `${backendUrl}/ozon/favorites?currentPage=1&pageSize=1`, null, token, storeId) };
-        }
+
         case 'getStores': {
           return { ok: true, data: await apiRequest('GET', `${backendUrl}/auth/ozon-stores`, null, token, storeId) };
         }
@@ -5348,15 +5041,7 @@ try {
           const hasUpdate = latestVersion && compareVersions(latestVersion, currentVersion) > 0 && latestVersion !== dismissedVersion;
           return { ok: true, data: { hasUpdate, currentVersion, latestVersion, downloadUrl } };
         }
-        case 'checkUpdate': {
-          await checkForUpdate();
-          const info = await getStorage([STORAGE_KEYS.latestVersion, STORAGE_KEYS.latestDownloadUrl]);
-          const curVer = getCurrentVersion();
-          const newVer = info[STORAGE_KEYS.latestVersion];
-          const dlUrl = info[STORAGE_KEYS.latestDownloadUrl];
-          const isNew = newVer && compareVersions(newVer, curVer) > 0;
-          return { ok: true, data: { hasUpdate: isNew, currentVersion: curVer, latestVersion: newVer, downloadUrl: dlUrl } };
-        }
+
         case 'dismissUpdate': {
           const verToDismiss = message.version;
           if (verToDismiss) {
