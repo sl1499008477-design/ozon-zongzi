@@ -138,9 +138,13 @@ test("background refresh never replaces values in an open add or edit store form
     const apiKey = page.locator('input[placeholder="Ozon Api-Key"]');
     const label = page.locator('input[placeholder="可选，例如：主店"]');
     const createdAt = page.locator('input[type="date"]');
+    const storeForm = page.locator(".ant-modal form");
 
     await settleReact(page);
 
+    assert.equal(await storeForm.getAttribute("autocomplete"), "off");
+    assert.equal(await clientId.getAttribute("autocomplete"), "off");
+    assert.equal(await apiKey.getAttribute("autocomplete"), "new-password");
     assert.equal(await clientId.inputValue(), "");
     assert.equal(await apiKey.inputValue(), "");
     assert.equal(await label.inputValue(), "");

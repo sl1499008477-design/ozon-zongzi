@@ -1293,6 +1293,7 @@ export function AppShell({ initialState = null }) {
         <Form
           form={form}
           layout="vertical"
+          autoComplete="off"
           onFinish={saveBinding}
           initialValues={{
             clientId: "",
@@ -1306,7 +1307,12 @@ export function AppShell({ initialState = null }) {
             name="clientId"
             rules={[{ required: true, message: "请输入 Client-Id" }]}
           >
-            <Input prefix={<ApiOutlined />} placeholder="Ozon Client-Id" disabled={isEditingBindingStore} />
+            <Input
+              prefix={<ApiOutlined />}
+              placeholder="Ozon Client-Id"
+              autoComplete="off"
+              disabled={isEditingBindingStore}
+            />
           </Form.Item>
           <Form.Item
             label="Api-Key"
@@ -1314,7 +1320,11 @@ export function AppShell({ initialState = null }) {
             extra={isEditingBindingStore ? "留空则不修改当前保存的 Api-Key。" : ""}
             rules={[{ required: !isEditingBindingStore, message: "请输入 Api-Key" }]}
           >
-            <Input.Password prefix={<DatabaseOutlined className="bind-field-icon" />} placeholder="Ozon Api-Key" />
+            <Input.Password
+              prefix={<DatabaseOutlined className="bind-field-icon" />}
+              placeholder="Ozon Api-Key"
+              autoComplete="new-password"
+            />
           </Form.Item>
           <Form.Item label="标签" name="label">
             <Input placeholder="可选，例如：主店" />
