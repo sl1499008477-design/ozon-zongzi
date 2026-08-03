@@ -30,6 +30,7 @@ export function createJsonAccountScopedCollectionHandler({
   countAccountItems,
   categoryResolutionPort = null,
   logger = null,
+  now = () => new Date(),
 } = {}) {
   if (
     typeof authenticate !== "function"
@@ -43,6 +44,7 @@ export function createJsonAccountScopedCollectionHandler({
     || typeof sendJson !== "function"
     || typeof sendError !== "function"
     || typeof countAccountItems !== "function"
+    || typeof now !== "function"
   ) {
     throw new TypeError("account-scoped collection route dependencies are required");
   }
@@ -75,6 +77,10 @@ export function createJsonAccountScopedCollectionHandler({
       });
       const pathSource = decodeURIComponent(sourceMatch[1]);
       const body = await readJson(req);
+      const processedAt = new Date(now());
+      if (Number.isNaN(processedAt.getTime())) {
+        throw new TypeError("collection route clock must return a valid instant");
+      }
       const isBatch = url.pathname.endsWith("/batch");
       if (isBatch) assertCollectorScopeFieldsAbsentV4(body);
       const inputs = isBatch ? (Array.isArray(body.items) ? body.items : []) : [body];
@@ -208,7 +214,7 @@ export function createJsonAccountScopedCollectionHandler({
               requestId: prepared.identity.requestId,
               sku: prepared.identity.sourceSku,
               refreshBundle: {},
-              now: new Date(),
+              now: processedAt,
             });
           } else if (effectiveEnrichment?.status === "COMPLETE") {
             await completeLinkedJobsFromCollectEvidence({
@@ -216,7 +222,7 @@ export function createJsonAccountScopedCollectionHandler({
               accountId: account.id,
               collectItemId: item.id,
               sku: prepared.identity.sourceSku,
-              now: new Date(),
+              now: processedAt,
             });
           }
           const response = {
@@ -243,7 +249,7 @@ export function createJsonAccountScopedCollectionHandler({
               capturedAt: prepared.normalizedItem.capturedAt || "",
               payload: structuredClone(input.payload),
             },
-            createdAt: new Date().toISOString(),
+            createdAt: processedAt.toISOString(),
           });
           imported.push({ ...item, collectRequestId: prepared.persistedRequestId, duplicate: false });
           results.push({

@@ -127,13 +127,11 @@ import {
 } from "./sync-lease-policy.mjs";
 import { createCollectorHttpHandler } from "./collector-routes.mjs";
 import { handleCollectorArtifactRoute } from "./collector-artifact-routes.mjs";
-import { createJsonAccountScopedCollectionHandler } from "./account-scoped-collection-routes.mjs";
 import { publicPersistedCollectionItem } from "./collection-public-shape.mjs";
 import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
-import { createCollectorOzonEnrichmentRuntime } from "./collector-ozon-enrichment-runtime.mjs";
-import { createCollectCategoryResolutionRuntime } from "./collect-category-resolution-runtime.mjs";
+import { createCollectCategoryAutoResolutionComposition } from "./collect-category-auto-resolution-composition.mjs";
 import {
   assertOzonListingReady,
   explicitOzonListingTarget,
@@ -361,46 +359,48 @@ async function saveState(state) {
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
 const ozonCategoryService = createOzonCategoryService();
-const collectCategoryResolutionRuntime = createCollectCategoryResolutionRuntime({
-  loadState,
-  saveState,
-  persistenceMode,
-  stateTransaction: jsonStateTransaction,
-  categoryService: ozonCategoryService,
-  currentCredentialStoreForAccount: async (accountId) => jsonStateTransaction.run(async () => (
+export function createServerCollectCategoryAutoResolutionComposition({
+  categoryService = ozonCategoryService,
+  currentCredentialStoreForAccount = async (accountId) => jsonStateTransaction.run(async () => (
     currentStoreIdForAccount(await loadState(), accountId)
   )),
-});
-const collectorOzonEnrichmentRuntime = createCollectorOzonEnrichmentRuntime({
-  loadState,
-  saveState,
-  persistenceMode,
-  stateTransaction: jsonStateTransaction,
-  authenticate: collectorAuthRuntime.authenticateSessionRequest,
-  authenticateAccount: async (req) => {
-    if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
-    return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
-  },
-  readJson: readBody,
-  sendJson,
-  categoryResolutionPort: collectCategoryResolutionRuntime,
-});
-const handleJsonAccountScopedCollectionRoute = createJsonAccountScopedCollectionHandler({
-  authenticate: collectorAuthRuntime.authenticateRequest,
-  readJson: readBody,
-  normalizeItem: normalizeCollectItem,
-  loadState,
-  saveState,
-  stateTransaction: jsonStateTransaction,
-  enqueueForCollect: collectorOzonEnrichmentRuntime.enqueueForCollect,
-  completeLinkedJobsFromCollectEvidence:
-    collectorOzonEnrichmentRuntime.completeLinkedJobsFromCollectEvidence,
-  sendJson,
-  sendError,
-  countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
-  categoryResolutionPort: collectCategoryResolutionRuntime,
-  logger: console,
-});
+  now,
+  randomUUID,
+  sleep,
+  logger = console,
+  timers,
+} = {}) {
+  return createCollectCategoryAutoResolutionComposition({
+    loadState,
+    saveState,
+    persistenceMode,
+    stateTransaction: jsonStateTransaction,
+    categoryService,
+    currentCredentialStoreForAccount,
+    collectorAuthRuntime,
+    authenticateAccount: async (req) => {
+      if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
+      return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
+    },
+    readJson: readBody,
+    sendJson,
+    sendError,
+    normalizeItem: normalizeCollectItem,
+    countAccountItems: (state, account) => cacheItemsForAccount(state, "collectBox", account),
+    now,
+    randomUUID,
+    sleep,
+    logger,
+    timers,
+  });
+}
+const defaultCollectCategoryAutoResolutionComposition =
+  createServerCollectCategoryAutoResolutionComposition();
+const {
+  collectCategoryResolutionRuntime,
+  collectorOzonEnrichmentRuntime,
+  handleJsonAccountScopedCollectionRoute,
+} = defaultCollectCategoryAutoResolutionComposition;
 const ozonSyncService = createOzonSyncService({
   loadState,
   saveState,
@@ -744,7 +744,11 @@ function taxonomyScopeForCollectionItem(item = {}) {
   ).trim() || "OZON:DEFAULT";
 }
 
-async function publicCollectBoxItemsForAccount(state, account) {
+async function publicCollectBoxItemsForAccount(
+  state,
+  account,
+  categoryResolutionReadPort = collectCategoryResolutionRuntime,
+) {
   const items = cacheItemsForAccount(state, "collectBox", account);
   const accountId = String(account?.id || "").trim();
   const requestedScopes = new Map(items.map((item) => [
@@ -755,7 +759,7 @@ async function publicCollectBoxItemsForAccount(state, account) {
 
   let resolutions = [];
   try {
-    resolutions = await collectCategoryResolutionRuntime.readForItems({
+    resolutions = await categoryResolutionReadPort.readForItems({
       accountId,
       collectItemIds: [...requestedScopes.keys()],
     });
@@ -2600,7 +2604,18 @@ const handleCollectorHttpRoute = createCollectorHttpHandler({
   sendJson,
 });
 
-async function handle(req, res) {
+export function createHttpHandler({
+  composition = defaultCollectCategoryAutoResolutionComposition,
+  categoryResolutionReadPort = composition?.collectCategoryResolutionRuntime,
+} = {}) {
+  if (
+    typeof composition?.collectorOzonEnrichmentRuntime?.handleHttpRoute !== "function"
+    || typeof composition?.handleJsonAccountScopedCollectionRoute !== "function"
+    || typeof categoryResolutionReadPort?.readForItems !== "function"
+  ) {
+    throw new TypeError("server category auto-resolution HTTP composition is required");
+  }
+  return async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (handleRemovedDataCollectionStoreRoute(req, res, url, { sendJson })) return;
   if (req.method === "OPTIONS") {
@@ -2610,7 +2625,7 @@ async function handle(req, res) {
 
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
-  if (await collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
+  if (await composition.collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: (request) => collectorAuthRuntime.authenticateRequest(
       request,
@@ -2685,7 +2700,13 @@ async function handle(req, res) {
       token,
       includeAccounts: false,
     });
-    if (account) payload.caches.collectBox = await publicCollectBoxItemsForAccount(state, account);
+    if (account) {
+      payload.caches.collectBox = await publicCollectBoxItemsForAccount(
+        state,
+        account,
+        categoryResolutionReadPort,
+      );
+    }
     sendJson(res, 200, payload);
     return;
   }
@@ -4191,7 +4212,11 @@ async function handle(req, res) {
     sendJson(
       res,
       200,
-      emptyPage(url, await publicCollectBoxItemsForAccount(state, account)),
+      emptyPage(url, await publicCollectBoxItemsForAccount(
+        state,
+        account,
+        categoryResolutionReadPort,
+      )),
     );
     return;
   }
@@ -4346,7 +4371,7 @@ async function handle(req, res) {
     return;
   }
 
-  if (await handleJsonAccountScopedCollectionRoute(req, res, url, state)) return;
+  if (await composition.handleJsonAccountScopedCollectionRoute(req, res, url, state)) return;
 
   if (req.method === "GET" && url.pathname === "/ozon/favorites") {
     const account = requireAuth(req, state);
@@ -5062,7 +5087,10 @@ async function handle(req, res) {
 
   sendError(res, 404, `未实现的本地接口: ${req.method} ${url.pathname}`, "LOCAL_NOT_FOUND");
   });
+  };
 }
+
+const handle = createHttpHandler();
 
 export const testExports = {
   activeStore,
