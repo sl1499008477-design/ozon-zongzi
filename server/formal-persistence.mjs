@@ -17,6 +17,22 @@ function text(value, max = 1000) {
   return String(value ?? "").trim().slice(0, max);
 }
 
+export function normalizeFormalAccountMirrorRecord(account = {}) {
+  const id = text(account?.id, 240);
+  const username = text(account?.username, 160);
+  if (!id || !username) {
+    const error = new Error("正式账号镜像记录缺少账号 ID 或用户名");
+    error.code = "FORMAL_ACCOUNT_RECORD_INCOMPLETE";
+    error.status = 500;
+    throw error;
+  }
+  return {
+    ...account,
+    id,
+    username,
+  };
+}
+
 function dateOrNull(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -745,7 +761,9 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
 }
 
 async function mirrorAccounts(client, state = {}) {
-  for (const account of state.accounts || []) {
+  const accounts = (Array.isArray(state.accounts) ? state.accounts : [])
+    .map(normalizeFormalAccountMirrorRecord);
+  for (const account of accounts) {
     await client.query(
       `
         INSERT INTO accounts (

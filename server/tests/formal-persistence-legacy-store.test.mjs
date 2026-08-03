@@ -5,13 +5,32 @@ process.env.QH_LOCAL_NO_DOTENV = "1";
 delete process.env.DATABASE_URL;
 delete process.env.POSTGRES_HOST;
 
-const { mirrorStateToRelationalTables } = await import("../formal-persistence.mjs");
+const {
+  mirrorStateToRelationalTables,
+  normalizeFormalAccountMirrorRecord,
+} = await import("../formal-persistence.mjs");
 const {
   purgeLegacyDataCollectionStoresForAccount,
   readLegacyDataCollectionStoresForAudit,
 } = await import(
   "../legacy-data-collection-store.mjs"
 );
+
+test("formal account mirroring rejects an ID-only placeholder before SQL persistence", () => {
+  assert.throws(
+    () => normalizeFormalAccountMirrorRecord({ id: "account-a" }),
+    (error) => error?.code === "FORMAL_ACCOUNT_RECORD_INCOMPLETE",
+  );
+  assert.deepEqual(normalizeFormalAccountMirrorRecord({
+    id: " admin-a ",
+    username: " admin ",
+    displayName: "管理员",
+  }), {
+    id: "admin-a",
+    username: "admin",
+    displayName: "管理员",
+  });
+});
 
 test("historical data-collection stores remain account-scoped and read-only", async () => {
   const calls = [];
