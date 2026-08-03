@@ -36,3 +36,10 @@ No migration, state-machine, frozen configuration, warehouse locking, UI, extens
 ## Unverified range and rollback
 
 The real PostgreSQL mixed sibling transaction fixture is ready but was not executed because no dedicated disposable migration database URL is configured. Keep `AUTO_LISTING_ENABLED=0`; rollback is a code revert of this task commit. Do not delete immutable job, snapshot, or event history.
+
+## Fix round 1 — Verify reused source evidence
+
+- RED: repository coverage reported **17 passed, 1 failed**. The conflict reuse query selected only `id,snapshot_hash`; a stored blocked-kind/body/raw-reference corruption carrying the incoming hash progressed beyond the reuse boundary instead of returning `AUTO_LISTING_SOURCE_VERSION_CONFLICT`.
+- GREEN: `INSERT ... RETURNING` and the conflict `SELECT ... FOR SHARE` both return `id,snapshot,snapshot_hash,raw_response_ref` and use one verifier. Complete incoming graph items use the complete snapshot verifier; source-business blocked items use the blocked-evidence verifier. The verified stored canonical body, hash, and raw reference must exactly equal the incoming canonical evidence; this also binds the stored account/source tuple and blocked failure code. Any malformed, wrong-kind, copied-hash body, or raw-reference mismatch now rolls back with `AUTO_LISTING_SOURCE_VERSION_CONFLICT` before an item/event link.
+- A dedicated PostgreSQL fixture pre-seeds a row with a copied valid hash and corrupted JSON body, requires rollback/no job/no job items, and remains gated exclusively to a disposable migration URL.
+- Verification: focused **77 passed, 0 failed, 1 dedicated-DB skip**; foundation **139 passed, 0 failed**; historical **41 passed, 0 failed**; gated PostgreSQL command **3 passed, 0 failed, 1 dedicated-DB skip**; syntax and `git diff --check` passed.

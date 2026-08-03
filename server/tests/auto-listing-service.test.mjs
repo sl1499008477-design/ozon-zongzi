@@ -450,7 +450,9 @@ test("repository persists only a canonical recomputed price with a non-default s
       if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
       if (/FROM warehouses w/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
       if (/FROM product_stocks ps/.test(sql)) return { rows: [{ product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false, product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs" }] };
-      if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [{ id: "snapshot-a", snapshot_hash: captured.snapshotHash }] };
+      if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [{
+        id: "snapshot-a", snapshot: captured.snapshot, snapshot_hash: captured.snapshotHash, raw_response_ref: captured.rawResponseRef,
+      }] };
       if (/FROM auto_listing_jobs WHERE id/.test(sql)) return { rows: [{ id: "auto_listing_job-id", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED", strategy_version_id: "version-a", correlation_id: "corr", created_at: null, updated_at: null }] };
       if (/JOIN auto_listing_source_snapshots/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_events/.test(sql)) return { rows: [] };

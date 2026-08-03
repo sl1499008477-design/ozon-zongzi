@@ -418,6 +418,42 @@ function assertGraph(graph) {
   return { ...graph, accountId, idempotencyKey, configSnapshot, configHash, items };
 }
 
+function sourceVersionConflict() {
+  return repositoryError("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
+}
+
+function verifyPersistedSourceEvidence(item, persistedSnapshot) {
+  const snapshotId = typeof persistedSnapshot?.id === "string" ? persistedSnapshot.id.trim() : "";
+  if (!snapshotId) throw sourceVersionConflict();
+  try {
+    if (Object.hasOwn(item, "blockedEvidence")) {
+      const persisted = verifyAutoListingBlockedSourceEvidence({
+        blockedEvidence: persistedSnapshot.snapshot,
+        snapshotHash: persistedSnapshot.snapshot_hash,
+        rawResponseRef: persistedSnapshot.raw_response_ref,
+      });
+      if (persisted.snapshotHash !== item.snapshotHash || persisted.rawResponseRef !== item.rawResponseRef
+        || !sameJson(persisted.blockedEvidence, item.blockedEvidence)) {
+        throw sourceVersionConflict();
+      }
+    } else {
+      const persisted = verifyAutoListingSourceSnapshot({
+        snapshot: persistedSnapshot.snapshot,
+        snapshotHash: persistedSnapshot.snapshot_hash,
+        rawResponseRef: persistedSnapshot.raw_response_ref,
+      });
+      if (persisted.snapshotHash !== item.snapshotHash || persisted.rawResponseRef !== item.rawResponseRef
+        || !sameJson(persisted.snapshot, item.snapshot)) {
+        throw sourceVersionConflict();
+      }
+    }
+  } catch (caught) {
+    if (caught?.code === "AUTO_LISTING_SOURCE_VERSION_CONFLICT") throw caught;
+    throw sourceVersionConflict();
+  }
+  return snapshotId;
+}
+
 function sameJson(left, right) {
   const canonical = (value) => {
     if (Array.isArray(value)) return value.map(canonical);
@@ -633,19 +669,16 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
                id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref
              ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
              ON CONFLICT (account_id,source_type,source_record_id,source_version) DO NOTHING
-             RETURNING id,snapshot_hash`,
+             RETURNING id,snapshot,snapshot_hash,raw_response_ref`,
             [proposedSnapshotId, graph.accountId, item.sourceType, item.sourceRecordId, item.sourceVersion,
               json(item.snapshot ?? item.blockedEvidence), item.snapshotHash, item.rawResponseRef],
           );
           const persistedSnapshot = insertedSnapshot.rows[0] || (await client.query(
-            `SELECT id,snapshot_hash FROM auto_listing_source_snapshots
+            `SELECT id,snapshot,snapshot_hash,raw_response_ref FROM auto_listing_source_snapshots
               WHERE account_id=$1 AND source_type=$2 AND source_record_id=$3 AND source_version=$4 FOR SHARE`,
             [graph.accountId, item.sourceType, item.sourceRecordId, item.sourceVersion],
           )).rows[0];
-          if (!persistedSnapshot || persistedSnapshot.snapshot_hash !== item.snapshotHash) {
-            throw repositoryError("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
-          }
-          const snapshotId = persistedSnapshot.id;
+          const snapshotId = verifyPersistedSourceEvidence(item, persistedSnapshot);
           const itemId = `${jobId}_item_${String(item.sourceOrder).padStart(3, "0")}`;
           await client.query(
             `INSERT INTO auto_listing_job_items (

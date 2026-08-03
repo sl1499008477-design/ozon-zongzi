@@ -430,6 +430,33 @@ if (!enabled) {
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_source_snapshots")).rows[0].count), 1);
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_events")).rows[0].count), 0);
 
+      const copiedHashCorruption = graph(accountA, "copied-hash-corruption", "copied-hash-corruption");
+      await registerGraphSources(client, copiedHashCorruption);
+      const corruptBody = structuredClone(copiedHashCorruption.items[0].snapshot);
+      corruptBody.identity.brand = "corrupted after hash";
+      await client.query(
+        `INSERT INTO auto_listing_source_snapshots (
+           id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref
+         ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`,
+        [
+          `copied-hash-corruption-${suffix}`, accountA, copiedHashCorruption.items[0].sourceType,
+          copiedHashCorruption.items[0].sourceRecordId, copiedHashCorruption.items[0].sourceVersion,
+          JSON.stringify(corruptBody), copiedHashCorruption.items[0].snapshotHash, copiedHashCorruption.items[0].rawResponseRef,
+        ],
+      );
+      await assert.rejects(
+        repository.createJobGraph(copiedHashCorruption),
+        (error) => error?.code === "AUTO_LISTING_SOURCE_VERSION_CONFLICT",
+      );
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key='copied-hash-corruption'",
+        [accountA],
+      )).rows[0].count), 0);
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_job_items WHERE account_id=$1",
+        [accountA],
+      )).rows[0].count), 0);
+
       const createdInput = graph(accountA, "shared-key", "a");
       const replayInput = graph(accountA, "shared-key", "different-payload");
       const otherInput = graph(accountB, "shared-key", "b");

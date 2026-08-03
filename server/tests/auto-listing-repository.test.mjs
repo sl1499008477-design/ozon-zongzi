@@ -326,6 +326,106 @@ function warehouseEvidenceFixture({ store = {}, credential = true, warehouse = {
   };
 }
 
+function blockedSourceGraph() {
+  const graph = warehouseGraph();
+  const evidence = buildAutoListingBlockedSourceEvidence({
+    accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-reused-blocked", sourceVersion: "1",
+    productDraft: { id: "draft-reused-blocked", version: 1 }, rawResponseRef: "raw-reused-blocked", rawResponseHash: "hash-reused-blocked",
+    rawCollectedAt: "2026-08-04T00:00:00.000Z", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+  });
+  graph.items = [{
+    sourceType: "COLLECT_BOX", sourceRecordId: "collect-reused-blocked", sourceVersion: "1",
+    blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
+    targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0,
+    status: "BLOCKED", failureCode: "AUTO_LISTING_SOURCE_SKU_REQUIRED",
+  }];
+  return graph;
+}
+
+function reusedEvidenceFixture({ graph, persistedSnapshot }) {
+  const calls = [];
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
+      if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
+      if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
+        id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
+        client_id: "client-a", currency_code: "RUB", status: "active",
+      }] };
+      if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
+      if (/FROM warehouses w/.test(sql)) return { rows: [{
+        id: "warehouse-a", store_id: "store-a", warehouse_id: "platform-a", warehouse_type: "FBS",
+        status: "active", is_active: true, is_archived: false,
+      }] };
+      if (/FROM product_stocks ps/.test(sql)) return { rows: [{
+        product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false,
+        product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs",
+      }] };
+      if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
+      if (/INSERT INTO auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [] };
+      if (/SELECT id,snapshot,snapshot_hash,raw_response_ref FROM auto_listing_source_snapshots/.test(sql)) {
+        return { rows: [persistedSnapshot] };
+      }
+      if (/INSERT INTO auto_listing_job_items|INSERT INTO auto_listing_events/.test(sql)) {
+        throw new Error("reused evidence was linked");
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() { calls.push({ sql: "RELEASE" }); },
+  };
+  return {
+    calls,
+    repository: createAutoListingRepository({ pool: { connect: async () => client, query: async () => ({ rows: [] }) } }),
+  };
+}
+
+test("reused source evidence verifies canonical body, kind, and raw reference instead of trusting a copied hash", async () => {
+  const complete = warehouseGraph();
+  const blocked = blockedSourceGraph();
+  const alternateComplete = structuredClone(complete.items[0].snapshot);
+  alternateComplete.identity.brand = "Different frozen body";
+  const cases = [
+    {
+      graph: complete,
+      persistedSnapshot: {
+        id: "reused-wrong-kind", snapshot: blocked.items[0].blockedEvidence,
+        snapshot_hash: complete.items[0].snapshotHash, raw_response_ref: complete.items[0].rawResponseRef,
+      },
+    },
+    {
+      graph: complete,
+      persistedSnapshot: {
+        id: "reused-wrong-body", snapshot: alternateComplete,
+        snapshot_hash: complete.items[0].snapshotHash, raw_response_ref: complete.items[0].rawResponseRef,
+      },
+    },
+    {
+      graph: complete,
+      persistedSnapshot: {
+        id: "reused-wrong-raw", snapshot: complete.items[0].snapshot,
+        snapshot_hash: complete.items[0].snapshotHash, raw_response_ref: "raw-reused-wrong",
+      },
+    },
+    {
+      graph: blocked,
+      persistedSnapshot: {
+        id: "reused-blocked-wrong-kind", snapshot: complete.items[0].snapshot,
+        snapshot_hash: blocked.items[0].snapshotHash, raw_response_ref: blocked.items[0].rawResponseRef,
+      },
+    },
+  ];
+  for (const { graph, persistedSnapshot } of cases) {
+    const { repository, calls } = reusedEvidenceFixture({ graph, persistedSnapshot });
+    await assert.rejects(repository.createJobGraph(graph), (error) => error?.code === "AUTO_LISTING_SOURCE_VERSION_CONFLICT");
+    assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_job_items|INSERT INTO auto_listing_events/.test(sql)), false);
+    assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+  }
+});
+
 test("job creation locks scoped store, credential, warehouse, product, and stock evidence without selecting a secret", async () => {
   const { repository, calls, stop } = warehouseEvidenceFixture();
   await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
