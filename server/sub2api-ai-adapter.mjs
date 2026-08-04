@@ -517,12 +517,25 @@ function parseSse(raw) {
   const events = [];
   for (const block of raw.split(/\r?\n\r?\n/)) {
     const lines = block.split(/\r?\n/);
-    const eventName = clean(lines.find((line) => line.startsWith("event:"))?.slice(6));
+    const eventLines = lines.filter((line) => line.startsWith("event:"));
+    if (eventLines.length > 1) throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    const eventName = eventLines.length ? eventLines[0].slice(6).trim() : "";
+    if (eventName && (eventName.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(eventName))) {
+      throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    }
     const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
     if (!data || data === "[DONE]") continue;
     try {
       const parsed = JSON.parse(data);
-      if (eventName && parsed && typeof parsed === "object" && !parsed.type) parsed.type = eventName;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("event object required");
+      const hasDataType = Object.hasOwn(parsed, "type");
+      if (hasDataType && (typeof parsed.type !== "string" || !parsed.type
+        || parsed.type.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(parsed.type))) {
+        throw new Error("invalid data event type");
+      }
+      if (eventName && hasDataType && parsed.type !== eventName) throw new Error("conflicting event types");
+      if (eventName && !hasDataType) parsed.type = eventName;
+      if (!eventName && !hasDataType) throw new Error("missing event type");
       events.push(parsed);
     } catch { throw gatewayError("INVALID_GATEWAY_RESPONSE"); }
   }

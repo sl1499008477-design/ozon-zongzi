@@ -338,6 +338,42 @@ test("Responses terminal failures map only safe type code and status without lea
   }
 });
 
+test("SSE event names and data types must agree while either field may be omitted", async () => {
+  const sensitive = "private-mismatched-event-message";
+  for (const conflictingTerminal of [
+    `event: response.failed\ndata: {"type":"response.completed","response":{"status":"completed","error":{"message":"${sensitive}"}}}`,
+    `event: response.completed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"message":"${sensitive}"}}}`,
+  ]) {
+    const sse = [
+      `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+      conflictingTerminal,
+      "data: [DONE]", "",
+    ].join("\n\n");
+    const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+    await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+      assert.equal(error?.code, "INVALID_GATEWAY_RESPONSE");
+      assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+      return true;
+    });
+  }
+
+  for (const mode of ["consistent", "event-only", "data-only"]) {
+    const outputData = `{"item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}${mode === "event-only" ? "" : ",\"type\":\"response.output_item.done\""}}`;
+    const completedData = `{"response":{"status":"completed"}${mode === "event-only" ? "" : ",\"type\":\"response.completed\""}}`;
+    const outputPrefix = mode === "data-only" ? "" : "event: response.output_item.done\n";
+    const completedPrefix = mode === "data-only" ? "" : "event: response.completed\n";
+    const sse = [
+      `${outputPrefix}data: ${outputData}`,
+      `${completedPrefix}data: ${completedData}`,
+      "data: [DONE]", "",
+    ].join("\n\n");
+    const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+    const result = await gateway.generateImage(imageInput());
+    assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"), mode);
+  }
+});
+
 test("Responses image-tool requires response.completed evidence after a final output item", async () => {
   const sse = `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}\n\ndata: [DONE]\n\n`;
   const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
