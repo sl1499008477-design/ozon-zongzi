@@ -74,9 +74,11 @@ function validateCapabilityResult(result, profile) {
   const modelEvidence = result?.modelEvidence;
   const requestedImageModel = clean(modelEvidence?.requestedImageModel);
   const gatewayReportedImageModel = clean(modelEvidence?.gatewayReportedImageModel);
+  const gatewayReportedImageModelPresent = modelEvidence?.gatewayReportedImageModelPresent === true;
   if (!validFeatures || !Number.isFinite(latencyMs) || latencyMs < 0
     || clean(models?.text) !== profile.textModel || clean(models?.image) !== profile.imageModel
     || requestedImageModel !== profile.imageModel
+    || gatewayReportedImageModelPresent !== Boolean(gatewayReportedImageModel)
     || (gatewayReportedImageModel && gatewayReportedImageModel !== profile.imageModel)) {
     throw serviceError("INVALID_GATEWAY_RESPONSE");
   }

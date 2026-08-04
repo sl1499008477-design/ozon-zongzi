@@ -180,6 +180,31 @@ test("structured output is validated strictly against the caller JSON Schema", a
   }
 });
 
+test("text model evidence rejects mismatches and records matching or absent upstream evidence", async () => {
+  const mismatched = adapter(async () => jsonResponse({
+    model: "different-text-model",
+    output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+  }));
+  await assert.rejects(
+    mismatched.createTextResponse(textInput()),
+    (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH" && error?.retryable === false,
+  );
+
+  for (const reportedModel of ["gpt-text", undefined]) {
+    const gateway = adapter(async () => jsonResponse({
+      ...(reportedModel ? { model: reportedModel } : {}),
+      output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+    }));
+    const result = await gateway.createTextResponse(textInput());
+    assert.equal(result.model, "gpt-text");
+    assert.deepEqual(result.modelEvidence, {
+      requestedTextModel: "gpt-text",
+      gatewayReportedTextModel: reportedModel || "",
+      gatewayReportedTextModelPresent: Boolean(reportedModel),
+    });
+  }
+});
+
 test("invalid or unsupported JSON Schemas are rejected before secret resolution and fetch", async () => {
   let reads = 0;
   let fetches = 0;
@@ -235,6 +260,7 @@ test("Responses image-tool protocol accepts a documented final streamed output-i
   assert.deepEqual(result.modelEvidence, {
     requestedImageModel: "gpt-image",
     gatewayReportedImageModel: "",
+    gatewayReportedImageModelPresent: false,
     orchestratorModel: "gpt-text",
   });
   assert.deepEqual(result.usage, { inputTokens: 5, outputTokens: 9, totalTokens: 14 });
@@ -259,6 +285,57 @@ test("Responses image-tool rejects failed termination even after a complete outp
   ].join("\n\n");
   const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
   await assert.rejects(gateway.generateImage(imageInput()), (error) => ["NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE"].includes(error?.code));
+});
+
+test("Responses terminal failures map only safe type code and status without leaking messages", async () => {
+  const sensitive = "private-upstream-message-should-never-escape";
+  const cases = [
+    {
+      event: { type: "response.failed", response: { status: "failed", error: { type: "rate_limit_error", code: "rate_limit_exceeded", status: 429, message: sensitive } } },
+      code: "RETRYABLE_GATEWAY", retryable: true, status: 429,
+    },
+    {
+      event: { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "timeout" }, error: { message: sensitive } } },
+      code: "RETRYABLE_GATEWAY", retryable: true, status: null,
+    },
+    {
+      event: { type: "error", error: { type: "server_error", code: "upstream_error", status: 503, message: sensitive } },
+      code: "RETRYABLE_GATEWAY", retryable: true, status: 503,
+    },
+    {
+      event: { type: "error", error: { type: "authentication_error", code: "invalid_api_key", status: 401, message: sensitive } },
+      code: "NON_RETRYABLE_AUTH", retryable: false, status: 401,
+    },
+    {
+      event: { type: "response.failed", response: { status: "failed", error: { type: "invalid_request_error", code: "invalid_request", status: 400, message: sensitive } } },
+      code: "NON_RETRYABLE_GATEWAY", retryable: false, status: 400,
+    },
+    {
+      event: { type: "response.failed", response: { status: "failed", error: { type: "unknown_future_error", message: sensitive } } },
+      code: "NON_RETRYABLE_GATEWAY", retryable: false, status: null,
+    },
+    {
+      event: { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "unknown_future_reason" }, error: { message: sensitive } } },
+      code: "RETRYABLE_GATEWAY", retryable: true, status: null,
+    },
+  ];
+  for (const entry of cases) {
+    const logs = [];
+    const sse = `event: ${entry.event.type}\ndata: ${JSON.stringify(entry.event)}\n\ndata: [DONE]\n\n`;
+    const gateway = adapter(
+      async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }),
+      { logs },
+    );
+    await assert.rejects(gateway.generateImage(imageInput()), (error) => {
+      assert.equal(error?.code, entry.code);
+      assert.equal(error?.retryable, entry.retryable);
+      assert.equal(error?.status, entry.status);
+      assert.doesNotMatch(error?.message || "", new RegExp(sensitive));
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(sensitive));
+      return true;
+    });
+    assert.doesNotMatch(JSON.stringify(logs), new RegExp(sensitive));
+  }
 });
 
 test("Responses image-tool requires response.completed evidence after a final output item", async () => {
@@ -302,6 +379,53 @@ test("OpenAI Images uses the official edits endpoint and images[].image_url when
   assert.equal(result.model, "gpt-image");
 });
 
+test("image model evidence rejects every explicit mismatch and accepts matching or absent evidence", async () => {
+  for (const completedResponse of [
+    { status: "completed", model: "gpt-text" },
+    { status: "completed", model: "gpt-text", image_model: "wrong-image" },
+  ]) {
+    const itemModel = completedResponse.image_model ? "" : ",\"model\":\"wrong-image\"";
+    const responsesMismatch = adapter(async () => new Response([
+      `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed"${itemModel},"result":"${PNG_1X1}"}}`,
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: completedResponse })}`,
+      "data: [DONE]", "",
+    ].join("\n\n"), { headers: { "content-type": "text/event-stream" } }));
+    await assert.rejects(responsesMismatch.generateImage(imageInput()), (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH");
+  }
+
+  const responsesMatch = adapter(async () => new Response([
+    `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","model":"gpt-image","result":"${PNG_1X1}"}}`,
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-text\"}}",
+    "data: [DONE]", "",
+  ].join("\n\n"), { headers: { "content-type": "text/event-stream" } }));
+  const responsesResult = await responsesMatch.generateImage(imageInput());
+  assert.equal(responsesResult.modelEvidence.gatewayReportedImageModel, "gpt-image");
+  assert.equal(responsesResult.modelEvidence.gatewayReportedImageModelPresent, true);
+
+  for (const payload of [
+    { model: "wrong-image", data: [{ b64_json: PNG_1X1 }] },
+    { data: [{ model: "wrong-image", b64_json: PNG_1X1 }] },
+  ]) {
+    const gateway = adapter(async () => jsonResponse(payload));
+    await assert.rejects(gateway.generateImage(imageInput({
+      profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    })), (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH");
+  }
+
+  for (const reportedModel of ["gpt-image", undefined]) {
+    const gateway = adapter(async () => jsonResponse({
+      ...(reportedModel ? { model: reportedModel } : {}),
+      data: [{ b64_json: PNG_1X1 }],
+    }));
+    const result = await gateway.generateImage(imageInput({
+      profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    }));
+    assert.equal(result.model, "gpt-image");
+    assert.equal(result.modelEvidence.gatewayReportedImageModel, reportedModel || "");
+    assert.equal(result.modelEvidence.gatewayReportedImageModelPresent, Boolean(reportedModel));
+  }
+});
+
 test("source-image URLs are rejected before secrets or fetch for every image protocol", async () => {
   for (const imageProtocol of SUB2API_IMAGE_PROTOCOLS) {
     let reads = 0;
@@ -331,6 +455,30 @@ test("malformed or oversized source-image bytes are request errors before secret
     await assert.rejects(gateway.generateImage(imageInput({
       sourceImages: [{ bytes, contentType: "image/png" }],
     })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID");
+    assert.equal(reads, 0);
+    assert.equal(fetches, 0);
+  }
+});
+
+test("source-image aggregate raw bytes and exact encoded request body are bounded before secret or fetch", async () => {
+  for (const adapterOptions of [
+    { maxImageBytes: 68, maxSourceImageBytesTotal: 100 },
+    { maxImageBytes: 68, maxSourceImageBytesTotal: 136, maxRequestBodyBytes: 512 },
+  ]) {
+    let reads = 0;
+    let fetches = 0;
+    const gateway = createSub2ApiAdapter({
+      ...adapterOptions,
+      readSecret: () => { reads += 1; return secret; },
+      fetchImpl: async () => { fetches += 1; throw new Error("must not fetch"); },
+    });
+    await assert.rejects(gateway.generateImage(imageInput({
+      prompt: `${"large-prompt".repeat(90)}`,
+      sourceImages: [
+        { bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" },
+        { bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" },
+      ],
+    })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID" && error?.retryable === false);
     assert.equal(reads, 0);
     assert.equal(fetches, 0);
   }
@@ -643,6 +791,7 @@ test("explicit capability test performs reachability, structured text, and one d
   assert.deepEqual(result.modelEvidence, {
     requestedImageModel: "gpt-image",
     gatewayReportedImageModel: "",
+    gatewayReportedImageModelPresent: false,
     orchestratorModel: "",
   });
 });

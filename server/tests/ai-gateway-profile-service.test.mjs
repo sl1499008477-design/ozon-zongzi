@@ -46,6 +46,7 @@ function fixture({ gatewayResult, gatewayError, saved = { updated: true } } = {}
         modelEvidence: {
           requestedImageModel: "image-model-a",
           gatewayReportedImageModel: "image-model-a",
+          gatewayReportedImageModelPresent: true,
           orchestratorModel: "",
         },
         requestIds: { reachability: "r1", text: "r2", image: "r3" },
@@ -187,6 +188,17 @@ test("capability result validation rejects unsafe or incomplete adapter output a
       latencyMs: 10,
       models: { text: "text-model-a", image: "image-model-a" },
       modelEvidence: { requestedImageModel: "image-model-a", gatewayReportedImageModel: "other-image", orchestratorModel: "" },
+    },
+    {
+      features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      latencyMs: 10,
+      models: { text: "text-model-a", image: "image-model-a" },
+      modelEvidence: {
+        requestedImageModel: "image-model-a",
+        gatewayReportedImageModel: "",
+        gatewayReportedImageModelPresent: true,
+        orchestratorModel: "",
+      },
     },
   ]) {
     const { service, calls } = fixture({ gatewayResult });

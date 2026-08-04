@@ -12,6 +12,8 @@ const RETRYABLE_HTTP = new Set([408, 429, 500, 502, 503, 504]);
 const REQUEST_ID_HEADERS = ["x-request-id", "request-id", "openai-request-id"];
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_BYTES_TOTAL = 32 * 1024 * 1024;
+const MAX_REQUEST_BODY_BYTES = 48 * 1024 * 1024;
 const MAX_PROMPT_CHARACTERS = 100_000;
 const MAX_PROMPT_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
@@ -23,6 +25,29 @@ const FAILURE_EVENTS = new Set([
   "response.incomplete",
   "response.cancelled",
   "response.canceled",
+]);
+const RETRYABLE_TERMINAL_TOKENS = new Set([
+  "api_error",
+  "overloaded_error",
+  "rate_limit",
+  "rate_limit_error",
+  "rate_limit_exceeded",
+  "server_error",
+  "service_unavailable",
+  "temporary",
+  "temporary_error",
+  "temporarily_unavailable",
+  "timed_out",
+  "timeout",
+  "timeout_error",
+  "upstream_error",
+]);
+const AUTH_TERMINAL_TOKENS = new Set([
+  "auth",
+  "authentication_error",
+  "authorization_error",
+  "invalid_api_key",
+  "unauthorized",
 ]);
 
 const schemaCompiler = new Ajv({
@@ -181,6 +206,70 @@ function safeUsage(raw) {
   };
 }
 
+function safeTerminalToken(value) {
+  const token = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return token && token.length <= 80 && /^[a-z0-9_.-]+$/.test(token) ? token : "";
+}
+
+function safeTerminalStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+function terminalFailure(event) {
+  const response = event?.response && typeof event.response === "object" ? event.response : null;
+  const nestedError = response?.error && typeof response.error === "object"
+    ? response.error
+    : (event?.error && typeof event.error === "object" ? event.error : null);
+  const tokens = [
+    nestedError?.type,
+    nestedError?.code,
+    response?.error?.type,
+    response?.error?.code,
+    event?.error?.type,
+    event?.error?.code,
+    event?.code,
+    response?.incomplete_details?.reason,
+  ].map(safeTerminalToken).filter(Boolean);
+  const status = [
+    nestedError?.status,
+    nestedError?.status_code,
+    nestedError?.http_status,
+    response?.error?.status,
+    response?.error?.status_code,
+    response?.status_code,
+    event?.error?.status,
+    event?.error?.status_code,
+    event?.status,
+    event?.status_code,
+  ].map(safeTerminalStatus).find((value) => value !== null) ?? null;
+
+  if (status === 401 || status === 403 || tokens.some((token) => AUTH_TERMINAL_TOKENS.has(token))) {
+    return gatewayError("NON_RETRYABLE_AUTH", { status });
+  }
+  if (status === 408 || status === 429 || (status !== null && status >= 500)
+    || tokens.some((token) => RETRYABLE_TERMINAL_TOKENS.has(token))) {
+    return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status });
+  }
+  if (event?.type === "response.incomplete") {
+    return gatewayError("RETRYABLE_GATEWAY", { retryable: true, status });
+  }
+  // Unknown explicit failures are non-retryable to avoid repeating a possibly
+  // cost-bearing operation without evidence that a retry is safe.
+  return gatewayError("NON_RETRYABLE_GATEWAY", { status });
+}
+
+function verifiedReportedModel(expectedModel, candidates) {
+  const reportedModels = [...new Set(candidates.map((value) => clean(value)).filter(Boolean))];
+  if (reportedModels.some((model) => model !== expectedModel)) {
+    throw gatewayError("AI_GATEWAY_MODEL_MISMATCH");
+  }
+  return {
+    reportedModel: reportedModels[0] || "",
+    evidencePresent: reportedModels.length > 0,
+  };
+}
+
 function safeLog(logger, level, event, fields) {
   const method = logger?.[level];
   if (typeof method !== "function") return;
@@ -321,6 +410,7 @@ function normalizedImage(bytes, extra = {}) {
   const metadata = imageMetadata(bytes);
   const requestedImageModel = clean(extra.requestedImageModel || extra.model);
   const gatewayReportedImageModel = clean(extra.gatewayReportedImageModel);
+  const gatewayReportedImageModelPresent = extra.gatewayReportedImageModelPresent === true;
   const orchestratorModel = clean(extra.orchestratorModel);
   return {
     bytes: new Uint8Array(bytes),
@@ -333,6 +423,7 @@ function normalizedImage(bytes, extra = {}) {
     modelEvidence: {
       requestedImageModel,
       gatewayReportedImageModel,
+      gatewayReportedImageModelPresent,
       orchestratorModel,
     },
     requestId: clean(extra.requestId),
@@ -345,31 +436,58 @@ function normalizedImage(bytes, extra = {}) {
   };
 }
 
-function sourceImageContent(sourceImages = [], maxImageBytes = MAX_IMAGE_BYTES) {
+function binaryByteLength(value) {
+  if (Buffer.isBuffer(value) || ArrayBuffer.isView(value)) return value.byteLength;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  return -1;
+}
+
+function binaryView(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  return Buffer.from(value);
+}
+
+function sourceImageContent(
+  sourceImages = [],
+  maxImageBytes = MAX_IMAGE_BYTES,
+  maxSourceImageBytesTotal = MAX_SOURCE_IMAGE_BYTES_TOTAL,
+) {
   if (!Array.isArray(sourceImages)) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
   if (sourceImages.length > 8) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
-  return sourceImages.map((source) => {
-    if (source?.bytes) {
-      try {
-        const bytes = Buffer.from(source.bytes);
-        if (!bytes.length || bytes.length > maxImageBytes) throw new Error("invalid source image size");
-        const metadata = imageMetadata(bytes);
-        return { type: "input_image", image_url: `data:${metadata.contentType};base64,${bytes.toString("base64")}` };
-      } catch {
-        throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
-      }
-    }
+  const prepared = [];
+  let totalBytes = 0;
+  for (const source of sourceImages) {
     if (source?.url) throw gatewayError("AI_GATEWAY_INPUT_UNSUPPORTED");
-    throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+    const length = binaryByteLength(source?.bytes);
+    if (length < 1 || length > maxImageBytes || totalBytes > maxSourceImageBytesTotal - length) {
+      throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+    }
+    totalBytes += length;
+    prepared.push(source.bytes);
+  }
+  return prepared.map((sourceBytes) => {
+    try {
+      const bytes = binaryView(sourceBytes);
+      const metadata = imageMetadata(bytes);
+      return { type: "input_image", image_url: `data:${metadata.contentType};base64,${bytes.toString("base64")}` };
+    } catch {
+      throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+    }
   });
 }
 
-function responsesInput(prompt, sourceImages = [], maxImageBytes = MAX_IMAGE_BYTES) {
+function responsesInput(
+  prompt,
+  sourceImages = [],
+  maxImageBytes = MAX_IMAGE_BYTES,
+  maxSourceImageBytesTotal = MAX_SOURCE_IMAGE_BYTES_TOTAL,
+) {
   return [{
     role: "user",
     content: [
       { type: "input_text", text: validatePrompt(prompt) },
-      ...sourceImageContent(sourceImages, maxImageBytes),
+      ...sourceImageContent(sourceImages, maxImageBytes, maxSourceImageBytesTotal),
     ],
   }];
 }
@@ -416,12 +534,13 @@ function finalImageFromEvents(events, maxImageBytes) {
   let usage = null;
   let responseId = "";
   let orchestratorModel = "";
-  let gatewayReportedImageModel = "";
+  const gatewayReportedImageModels = [];
   let completed = false;
   for (const event of events) {
-    if (FAILURE_EVENTS.has(event?.type)) throw gatewayError("NON_RETRYABLE_GATEWAY");
+    if (FAILURE_EVENTS.has(event?.type)) throw terminalFailure(event);
     if (event?.type === "response.output_item.done" && event?.item?.type === "image_generation_call") {
       encoded = typeof event.item.result === "string" ? event.item.result.trim() : "";
+      if (clean(event.item.model)) gatewayReportedImageModels.push(event.item.model);
     }
     if (event?.type === "response.completed") {
       const response = event.response || {};
@@ -430,19 +549,20 @@ function finalImageFromEvents(events, maxImageBytes) {
       responseId = clean(response.id);
       orchestratorModel = clean(response.model);
       usage = response.usage || usage;
+      if (clean(response.image_model)) gatewayReportedImageModels.push(response.image_model);
       for (const tool of Array.isArray(response.tools) ? response.tools : []) {
-        if (tool?.type === "image_generation" && clean(tool.model)) gatewayReportedImageModel = clean(tool.model);
+        if (tool?.type === "image_generation" && clean(tool.model)) gatewayReportedImageModels.push(tool.model);
       }
       for (const item of Array.isArray(response.output) ? response.output : []) {
         if (item?.type === "image_generation_call" && typeof item.result === "string" && item.result.trim()) {
           encoded = item.result.trim();
-          if (clean(item.model)) gatewayReportedImageModel = clean(item.model);
+          if (clean(item.model)) gatewayReportedImageModels.push(item.model);
         }
       }
     }
   }
   if (!completed || !encoded) throw gatewayError("INVALID_GATEWAY_RESPONSE");
-  return { bytes: strictBase64(encoded, maxImageBytes), usage, responseId, orchestratorModel, gatewayReportedImageModel };
+  return { bytes: strictBase64(encoded, maxImageBytes), usage, responseId, orchestratorModel, gatewayReportedImageModels };
 }
 
 function positiveByteLimit(value, fallback) {
@@ -537,6 +657,8 @@ export function createSub2ApiAdapter({
   maxImageBytes = MAX_IMAGE_BYTES,
   maxJsonBytes = MAX_JSON_BYTES,
   maxSseBytes,
+  maxSourceImageBytesTotal = MAX_SOURCE_IMAGE_BYTES_TOTAL,
+  maxRequestBodyBytes = MAX_REQUEST_BODY_BYTES,
 } = {}) {
   if (typeof fetchImpl !== "function" || typeof readSecret !== "function") {
     throw new TypeError("sub2api adapter requires fetch and secret reader");
@@ -544,9 +666,22 @@ export function createSub2ApiAdapter({
   maxImageBytes = positiveByteLimit(maxImageBytes, MAX_IMAGE_BYTES);
   maxJsonBytes = positiveByteLimit(maxJsonBytes, MAX_JSON_BYTES);
   maxSseBytes = positiveByteLimit(maxSseBytes, Math.ceil(maxImageBytes * 4 / 3) + MAX_JSON_BYTES);
+  maxSourceImageBytesTotal = positiveByteLimit(maxSourceImageBytesTotal, MAX_SOURCE_IMAGE_BYTES_TOTAL);
+  maxRequestBodyBytes = positiveByteLimit(maxRequestBodyBytes, MAX_REQUEST_BODY_BYTES);
 
   async function executeAuthorized({ input, operation, protocol, endpoint, body, accept = "application/json", allowDisabled = false }) {
     const { normalizedProfile, correlationId, requestKey } = normalizeRequest(input, operation, { allowDisabled });
+    let serializedBody;
+    if (body !== undefined) {
+      try {
+        serializedBody = JSON.stringify(body);
+      } catch {
+        throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+      }
+      if (Buffer.byteLength(serializedBody, "utf8") > maxRequestBodyBytes) {
+        throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+      }
+    }
     let secret;
     try {
       const resolved = readSecret(normalizedProfile.apiKeyEnvName);
@@ -571,7 +706,7 @@ export function createSub2ApiAdapter({
         init: {
           method: body === undefined ? "GET" : "POST",
           headers: baseHeaders(secret, correlationId, requestKey, accept),
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(serializedBody === undefined ? {} : { body: serializedBody }),
         },
         boundary: normalizedProfile.boundary,
         authorized: true,
@@ -611,7 +746,7 @@ export function createSub2ApiAdapter({
     const validate = compileJsonSchema(input.jsonSchema);
     const body = {
       model: normalizedProfile.textModel,
-      input: responsesInput(input.prompt, input.sourceImages, maxImageBytes),
+      input: responsesInput(input.prompt, input.sourceImages, maxImageBytes, maxSourceImageBytesTotal),
       text: {
         format: {
           type: "json_schema",
@@ -633,9 +768,15 @@ export function createSub2ApiAdapter({
     });
     try {
       const payload = await readJson(execution.response, execution.abort, maxJsonBytes);
+      const textModelEvidence = verifiedReportedModel(normalizedProfile.textModel, [payload?.model]);
       return {
         value: parseStructuredResponse(payload, validate),
-        model: clean(payload.model) || normalizedProfile.textModel,
+        model: normalizedProfile.textModel,
+        modelEvidence: {
+          requestedTextModel: normalizedProfile.textModel,
+          gatewayReportedTextModel: textModelEvidence.reportedModel,
+          gatewayReportedTextModelPresent: textModelEvidence.evidencePresent,
+        },
         requestId: safeRequestId(execution.response) || clean(payload.id),
         usage: safeUsage(payload.usage),
         diagnostics: {
@@ -656,7 +797,7 @@ export function createSub2ApiAdapter({
   async function generateResponsesImage(input, normalizedProfile, { allowDisabled = false } = {}) {
     const body = {
       model: normalizedProfile.textModel,
-      input: responsesInput(input.prompt, input.sourceImages, maxImageBytes),
+      input: responsesInput(input.prompt, input.sourceImages, maxImageBytes, maxSourceImageBytesTotal),
       tools: [{
         type: "image_generation",
         model: normalizedProfile.imageModel,
@@ -688,10 +829,15 @@ export function createSub2ApiAdapter({
           throw classifyFetchFailure(error, execution.abort.state());
         }
         const final = finalImageFromEvents(parseSse(raw), maxImageBytes);
+        const imageModelEvidence = verifiedReportedModel(
+          normalizedProfile.imageModel,
+          final.gatewayReportedImageModels,
+        );
         return normalizedImage(final.bytes, {
           protocol: normalizedProfile.imageProtocol,
           requestedImageModel: normalizedProfile.imageModel,
-          gatewayReportedImageModel: final.gatewayReportedImageModel,
+          gatewayReportedImageModel: imageModelEvidence.reportedModel,
+          gatewayReportedImageModelPresent: imageModelEvidence.evidencePresent,
           orchestratorModel: final.orchestratorModel,
           requestId: safeRequestId(execution.response) || final.responseId,
           usage: final.usage,
@@ -699,18 +845,23 @@ export function createSub2ApiAdapter({
       }
       const payload = await readJson(execution.response, execution.abort, maxSseBytes);
       let encoded = "";
-      let gatewayReportedImageModel = "";
+      const gatewayReportedImageModels = [payload?.image_model];
+      for (const tool of Array.isArray(payload?.tools) ? payload.tools : []) {
+        if (tool?.type === "image_generation") gatewayReportedImageModels.push(tool.model);
+      }
       for (const item of Array.isArray(payload?.output) ? payload.output : []) {
         if (item?.type === "image_generation_call" && typeof item.result === "string" && item.result.trim()) {
           encoded = item.result.trim();
-          gatewayReportedImageModel = clean(item.model);
+          gatewayReportedImageModels.push(item.model);
         }
       }
       if (!encoded) throw gatewayError("INVALID_GATEWAY_RESPONSE");
+      const imageModelEvidence = verifiedReportedModel(normalizedProfile.imageModel, gatewayReportedImageModels);
       return normalizedImage(strictBase64(encoded, maxImageBytes), {
         protocol: normalizedProfile.imageProtocol,
         requestedImageModel: normalizedProfile.imageModel,
-        gatewayReportedImageModel,
+        gatewayReportedImageModel: imageModelEvidence.reportedModel,
+        gatewayReportedImageModelPresent: imageModelEvidence.evidencePresent,
         orchestratorModel: clean(payload.model),
         requestId: safeRequestId(execution.response) || clean(payload.id),
         usage: payload.usage,
@@ -721,7 +872,11 @@ export function createSub2ApiAdapter({
   }
 
   async function generateOpenAiImage(input, normalizedProfile, { allowDisabled = false } = {}) {
-    const sourceImages = sourceImageContent(input.sourceImages, maxImageBytes).map((item) => ({ image_url: item.image_url }));
+    const sourceImages = sourceImageContent(
+      input.sourceImages,
+      maxImageBytes,
+      maxSourceImageBytesTotal,
+    ).map((item) => ({ image_url: item.image_url }));
     const body = {
       model: normalizedProfile.imageModel,
       prompt: validatePrompt(input.prompt),
@@ -743,6 +898,7 @@ export function createSub2ApiAdapter({
     try {
       const payload = await readJson(execution.response, execution.abort, maxSseBytes);
       const item = Array.isArray(payload?.data) ? payload.data[0] : null;
+      const imageModelEvidence = verifiedReportedModel(normalizedProfile.imageModel, [payload?.model, item?.model]);
       let bytes;
       if (typeof item?.b64_json === "string" && item.b64_json.trim()) bytes = strictBase64(item.b64_json, maxImageBytes);
       else if (clean(item?.url, 4096)) {
@@ -755,7 +911,8 @@ export function createSub2ApiAdapter({
       return normalizedImage(bytes, {
         protocol: normalizedProfile.imageProtocol,
         requestedImageModel: normalizedProfile.imageModel,
-        gatewayReportedImageModel: clean(payload.model),
+        gatewayReportedImageModel: imageModelEvidence.reportedModel,
+        gatewayReportedImageModelPresent: imageModelEvidence.evidencePresent,
         requestId: safeRequestId(execution.response) || clean(payload.id),
         usage: payload.usage,
       });
