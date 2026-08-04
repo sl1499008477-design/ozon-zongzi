@@ -43,6 +43,11 @@ function fixture({ gatewayResult, gatewayError, saved = { updated: true } } = {}
         features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
         latencyMs: 321,
         models: { text: "text-model-a", image: "image-model-a" },
+        modelEvidence: {
+          requestedImageModel: "image-model-a",
+          gatewayReportedImageModel: "image-model-a",
+          orchestratorModel: "",
+        },
         requestIds: { reachability: "r1", text: "r2", image: "r3" },
       };
     },
@@ -171,6 +176,18 @@ test("capability result validation rejects unsafe or incomplete adapter output a
     { features: ["STRUCTURED_TEXT"], latencyMs: 10, models: { text: "text-model-a", image: "image-model-a" } },
     { features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG", "SECRET_TOKEN"], latencyMs: 10, models: { text: "text-model-a", image: "image-model-a" } },
     { features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: -1, models: { text: "text-model-a", image: "image-model-a" } },
+    {
+      features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      latencyMs: 10,
+      models: { text: "text-model-a", image: "image-model-a" },
+      modelEvidence: { requestedImageModel: "other-image", gatewayReportedImageModel: "", orchestratorModel: "" },
+    },
+    {
+      features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      latencyMs: 10,
+      models: { text: "text-model-a", image: "image-model-a" },
+      modelEvidence: { requestedImageModel: "image-model-a", gatewayReportedImageModel: "other-image", orchestratorModel: "" },
+    },
   ]) {
     const { service, calls } = fixture({ gatewayResult });
     const result = await service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr" });

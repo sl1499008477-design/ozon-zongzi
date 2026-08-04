@@ -122,6 +122,82 @@ test("Responses structured text stays behind the stable port and logs never expo
   assert.deepEqual(second.value, { ok: true });
 });
 
+test("disabled profiles reject every business operation before secret resolution or fetch while capability test remains explicit", async () => {
+  let secretReads = 0;
+  let fetches = 0;
+  const gateway = createSub2ApiAdapter({
+    readSecret: () => { secretReads += 1; return secret; },
+    fetchImpl: async () => { fetches += 1; throw new Error("must not fetch"); },
+  });
+  const disabled = { ...profile, enabled: false };
+  for (const operation of [
+    () => gateway.createTextResponse(textInput({ profile: disabled, allowDisabled: true })),
+    () => gateway.generateImage(imageInput({ profile: disabled, allowDisabled: true })),
+    () => gateway.inspectImage({
+      ...textInput({ profile: disabled, allowDisabled: true }),
+      image: { bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" },
+    }),
+  ]) {
+    await assert.rejects(operation(), (error) => error?.code === "AI_GATEWAY_PROFILE_DISABLED" && error?.retryable === false);
+  }
+  assert.equal(secretReads, 0);
+  assert.equal(fetches, 0);
+});
+
+test("prompts preserve long original text exactly and reject explicit limits without truncating", async () => {
+  const longPrompt = `  ${"商品说明🙂".repeat(300)}  `;
+  let sentPrompt = "";
+  const gateway = adapter(async (_url, init) => {
+    sentPrompt = JSON.parse(init.body).input[0].content[0].text;
+    return jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }] });
+  });
+  await gateway.createTextResponse(textInput({ prompt: longPrompt }));
+  assert.equal(sentPrompt, longPrompt);
+  assert.ok(sentPrompt.length > 1_000);
+
+  const oversized = "x".repeat(100_001);
+  let reads = 0;
+  const rejecting = adapter(async () => { throw new Error("fetch must not run"); }, { readSecret: () => { reads += 1; return secret; } });
+  await assert.rejects(rejecting.createTextResponse(textInput({ prompt: oversized })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID");
+  assert.equal(reads, 0);
+});
+
+test("structured output is validated strictly against the caller JSON Schema", async () => {
+  const schema = {
+    type: "object",
+    properties: { ok: { type: "boolean" } },
+    required: ["ok"],
+    additionalProperties: false,
+  };
+  for (const value of [{}, { ok: "true" }, { ok: true, extra: 1 }]) {
+    const gateway = adapter(async () => jsonResponse({
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(value) }] }],
+    }));
+    await assert.rejects(
+      gateway.createTextResponse(textInput({ jsonSchema: schema })),
+      (error) => error?.code === "INVALID_GATEWAY_RESPONSE",
+    );
+  }
+});
+
+test("invalid or unsupported JSON Schemas are rejected before secret resolution and fetch", async () => {
+  let reads = 0;
+  let fetches = 0;
+  const gateway = createSub2ApiAdapter({
+    readSecret: () => { reads += 1; return secret; },
+    fetchImpl: async () => { fetches += 1; throw new Error("fetch must not run"); },
+  });
+  for (const jsonSchema of [
+    { type: "not-a-json-schema-type" },
+    { type: "object", unknownKeyword: true },
+    { $ref: "https://untrusted.example/schema.json" },
+  ]) {
+    await assert.rejects(gateway.createTextResponse(textInput({ jsonSchema })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID");
+  }
+  assert.equal(reads, 0);
+  assert.equal(fetches, 0);
+});
+
 test("Responses image-tool protocol accepts a documented final streamed output-item event", async () => {
   const sse = [
     "event: response.output_item.done",
@@ -147,12 +223,20 @@ test("Responses image-tool protocol accepts a documented final streamed output-i
   assert.equal(calls.length, 1, "the adapter must not probe or silently switch protocols");
   assert.equal(calls[0].url, "https://gateway.example.test/tenant/v1/responses");
   assert.equal(calls[0].body.model, "gpt-text");
-  assert.deepEqual(calls[0].body.tools, [{ type: "image_generation", model: "gpt-image", size: "1024x1024", quality: "medium", output_format: "png" }]);
+  assert.deepEqual(calls[0].body.tools, [{ type: "image_generation", model: "gpt-image", action: "generate", size: "1024x1024", quality: "medium", output_format: "png" }]);
+  assert.deepEqual(calls[0].body.tool_choice, { type: "image_generation" });
   assert.equal(calls[0].body.stream, true);
   assert.equal(result.contentType, "image/png");
   assert.equal(result.width, 1);
   assert.equal(result.height, 1);
   assert.equal(result.requestId, "upstream-image-stream");
+  assert.equal(result.model, "gpt-image");
+  assert.equal(result.orchestratorModel, "gpt-text");
+  assert.deepEqual(result.modelEvidence, {
+    requestedImageModel: "gpt-image",
+    gatewayReportedImageModel: "",
+    orchestratorModel: "gpt-text",
+  });
   assert.deepEqual(result.usage, { inputTokens: 5, outputTokens: 9, totalTokens: 14 });
   assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
 });
@@ -164,6 +248,23 @@ test("Responses image-tool protocol never treats a partial-image event as an acc
     gateway.generateImage(imageInput()),
     (error) => error?.code === "INVALID_GATEWAY_RESPONSE" && error?.retryable === false,
   );
+});
+
+test("Responses image-tool rejects failed termination even after a complete output item appeared", async () => {
+  const sse = [
+    `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+    "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}",
+    "data: [DONE]",
+    "",
+  ].join("\n\n");
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => ["NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE"].includes(error?.code));
+});
+
+test("Responses image-tool requires response.completed evidence after a final output item", async () => {
+  const sse = `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}\n\ndata: [DONE]\n\n`;
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+  await assert.rejects(gateway.generateImage(imageInput()), (error) => error?.code === "INVALID_GATEWAY_RESPONSE");
 });
 
 test("OpenAI Images protocol normalizes b64_json without trying another protocol", async () => {
@@ -183,6 +284,56 @@ test("OpenAI Images protocol normalizes b64_json without trying another protocol
   assert.equal(result.width, 1);
   assert.equal(result.height, 1);
   assert.equal(result.requestId, "image-json-id");
+});
+
+test("OpenAI Images uses the official edits endpoint and images[].image_url when source bytes are present", async () => {
+  let request;
+  const gateway = adapter(async (url, init) => {
+    request = { url: String(url), body: JSON.parse(init.body) };
+    return jsonResponse({ data: [{ b64_json: PNG_1X1 }] });
+  });
+  const result = await gateway.generateImage(imageInput({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    sourceImages: [{ bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" }],
+  }));
+  assert.equal(request.url, "https://gateway.example.test/tenant/v1/images/edits");
+  assert.equal(Object.hasOwn(request.body, "reference_images"), false);
+  assert.match(request.body.images[0].image_url, /^data:image\/png;base64,/);
+  assert.equal(result.model, "gpt-image");
+});
+
+test("source-image URLs are rejected before secrets or fetch for every image protocol", async () => {
+  for (const imageProtocol of SUB2API_IMAGE_PROTOCOLS) {
+    let reads = 0;
+    let fetches = 0;
+    const gateway = createSub2ApiAdapter({
+      readSecret: () => { reads += 1; return secret; },
+      fetchImpl: async () => { fetches += 1; throw new Error("must not fetch"); },
+    });
+    await assert.rejects(gateway.generateImage(imageInput({
+      profile: { ...profile, imageProtocol },
+      sourceImages: [{ url: "https://example.com/source.png" }],
+    })), (error) => error?.code === "AI_GATEWAY_INPUT_UNSUPPORTED");
+    assert.equal(reads, 0);
+    assert.equal(fetches, 0);
+  }
+});
+
+test("malformed or oversized source-image bytes are request errors before secrets or fetch", async () => {
+  for (const bytes of [Buffer.from("not-an-image"), Buffer.alloc(69)]) {
+    let reads = 0;
+    let fetches = 0;
+    const gateway = createSub2ApiAdapter({
+      maxImageBytes: 68,
+      readSecret: () => { reads += 1; return secret; },
+      fetchImpl: async () => { fetches += 1; throw new Error("must not fetch"); },
+    });
+    await assert.rejects(gateway.generateImage(imageInput({
+      sourceImages: [{ bytes, contentType: "image/png" }],
+    })), (error) => error?.code === "AI_GATEWAY_REQUEST_INVALID");
+    assert.equal(reads, 0);
+    assert.equal(fetches, 0);
+  }
 });
 
 test("OpenAI Images URL output downloads bytes without authorization inside the configured boundary", async () => {
@@ -324,6 +475,94 @@ test("request timeout and caller cancellation abort fetch with distinct stable c
   await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED" && error?.retryable === false);
 });
 
+function stalledBodyResponse({ contentType = "application/json", firstChunk = "" } = {}) {
+  let cancelled = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      if (firstChunk) controller.enqueue(new TextEncoder().encode(firstChunk));
+    },
+    cancel() { cancelled = true; },
+  });
+  return {
+    response: new Response(stream, { headers: { "content-type": contentType } }),
+    wasCancelled: () => cancelled,
+  };
+}
+
+test("timeouts and caller cancellation remain active after response headers while bodies stall", async () => {
+  const textBody = stalledBodyResponse();
+  const textGateway = adapter(async () => textBody.response);
+  await assert.rejects(textGateway.createTextResponse(textInput({ timeoutMs: 5 })), (error) => error?.code === "GATEWAY_TIMEOUT");
+  assert.equal(textBody.wasCancelled(), true);
+
+  const sseBody = stalledBodyResponse({ contentType: "text/event-stream" });
+  const sseGateway = adapter(async () => sseBody.response);
+  const controller = new AbortController();
+  const pending = sseGateway.generateImage(imageInput({ timeoutMs: 5_000, signal: controller.signal }));
+  controller.abort();
+  await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED");
+  assert.equal(sseBody.wasCancelled(), true);
+
+  const imageBody = stalledBodyResponse({ contentType: "image/png", firstChunk: Buffer.from(PNG_1X1, "base64").subarray(0, 8) });
+  let imageCall = 0;
+  const imageGateway = adapter(async () => {
+    imageCall += 1;
+    return imageCall === 1
+      ? jsonResponse({ data: [{ url: "https://gateway.example.test/tenant/v1/image.png" }] })
+      : imageBody.response;
+  });
+  await assert.rejects(imageGateway.generateImage(imageInput({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 5,
+  })), (error) => error?.code === "GATEWAY_TIMEOUT");
+  assert.equal(imageBody.wasCancelled(), true);
+});
+
+test("chunked JSON, SSE, and image bodies enforce byte limits and cancel their readers", async () => {
+  const cases = [
+    {
+      kind: "json",
+      create: (response) => createSub2ApiAdapter({ fetchImpl: async () => response, readSecret: () => secret, maxJsonBytes: 32 })
+        .createTextResponse(textInput()),
+      contentType: "application/json",
+    },
+    {
+      kind: "sse",
+      create: (response) => createSub2ApiAdapter({ fetchImpl: async () => response, readSecret: () => secret, maxSseBytes: 32 })
+        .generateImage(imageInput()),
+      contentType: "text/event-stream",
+    },
+  ];
+  for (const entry of cases) {
+    let cancelled = false;
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(64).fill(65)); },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": entry.contentType } });
+    await assert.rejects(entry.create(response), (error) => error?.code === "INVALID_GATEWAY_RESPONSE", entry.kind);
+    assert.equal(cancelled, true, entry.kind);
+  }
+
+  let call = 0;
+  let cancelled = false;
+  const imageGateway = createSub2ApiAdapter({
+    readSecret: () => secret,
+    maxImageBytes: 16,
+    fetchImpl: async () => {
+      call += 1;
+      if (call === 1) return jsonResponse({ data: [{ url: "https://gateway.example.test/tenant/v1/oversize.png" }] });
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array(32).fill(65)); },
+        cancel() { cancelled = true; },
+      }), { headers: { "content-type": "image/png" } });
+    },
+  });
+  await assert.rejects(imageGateway.generateImage(imageInput({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+  })), (error) => error?.code === "INVALID_GATEWAY_RESPONSE");
+  assert.equal(cancelled, true);
+});
+
 test("secret is read at call time, requires only presence, and never leaks when missing", async () => {
   let value = "a";
   const seen = [];
@@ -389,7 +628,7 @@ test("explicit capability test performs reachability, structured text, and one d
   assert.deepEqual(calls.map((call) => call.url), [
     "https://gateway.example.test/tenant/v1/models",
     "https://gateway.example.test/tenant/v1/responses",
-    "https://gateway.example.test/tenant/v1/images/generations",
+    "https://gateway.example.test/tenant/v1/images/edits",
   ]);
   assert.deepEqual(calls.map((call) => call.headers["Idempotency-Key"]), [
     "capability-fixed:reachability",
@@ -400,6 +639,12 @@ test("explicit capability test performs reachability, structured text, and one d
   assert.deepEqual(result.models, { text: "gpt-text", image: "gpt-image" });
   assert.deepEqual(result.requestIds, { reachability: "models-id", text: "text-id", image: "image-id" });
   assert.ok(Number.isFinite(result.latencyMs) && result.latencyMs >= 0);
+  assert.match(calls[2].body.images[0].image_url, /^data:image\/png;base64,/);
+  assert.deepEqual(result.modelEvidence, {
+    requestedImageModel: "gpt-image",
+    gatewayReportedImageModel: "",
+    orchestratorModel: "",
+  });
 });
 
 test("capability test rejects image bytes that only mimic a supported header but cannot actually decode", async () => {

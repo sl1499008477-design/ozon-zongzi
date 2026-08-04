@@ -6,6 +6,7 @@ const DECODE_FEATURES = new Set(["IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE
 const ALLOWED_FEATURES = new Set([...REQUIRED_FEATURES, ...DECODE_FEATURES]);
 const SAFE_GATEWAY_ERROR_CODES = new Set([
   "AI_GATEWAY_PROFILE_INVALID",
+  "AI_GATEWAY_PROFILE_DISABLED",
   "AI_GATEWAY_REQUEST_INVALID",
   "AI_GATEWAY_SECRET_MISSING",
   "AI_GATEWAY_PROTOCOL_UNSUPPORTED",
@@ -70,8 +71,13 @@ function validateCapabilityResult(result, profile) {
     && features.some((feature) => DECODE_FEATURES.has(feature));
   const latencyMs = result?.latencyMs;
   const models = result?.models;
+  const modelEvidence = result?.modelEvidence;
+  const requestedImageModel = clean(modelEvidence?.requestedImageModel);
+  const gatewayReportedImageModel = clean(modelEvidence?.gatewayReportedImageModel);
   if (!validFeatures || !Number.isFinite(latencyMs) || latencyMs < 0
-    || clean(models?.text) !== profile.textModel || clean(models?.image) !== profile.imageModel) {
+    || clean(models?.text) !== profile.textModel || clean(models?.image) !== profile.imageModel
+    || requestedImageModel !== profile.imageModel
+    || (gatewayReportedImageModel && gatewayReportedImageModel !== profile.imageModel)) {
     throw serviceError("INVALID_GATEWAY_RESPONSE");
   }
   return {

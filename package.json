@@ -16,6 +16,7 @@
     "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
+    "ajv": "^8.20.0",
     "exceljs": "^4.4.0",
     "minio": "^8.0.6",
     "pg": "^8.16.3",
