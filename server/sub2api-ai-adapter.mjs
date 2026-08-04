@@ -283,7 +283,14 @@ function safeLog(logger, level, event, fields) {
     status: Number.isInteger(fields.status) ? fields.status : null,
     errorCode: clean(fields.errorCode),
   };
-  method.call(logger, event, safe);
+  try {
+    const pending = method.call(logger, event, safe);
+    if (pending && typeof pending.then === "function") {
+      Promise.resolve(pending).catch(() => {});
+    }
+  } catch {
+    // Observability is best-effort and must never change a business outcome.
+  }
 }
 
 function abortContext(callerSignal, timeoutMs) {
@@ -520,11 +527,20 @@ function parseSse(raw) {
     const eventLines = lines.filter((line) => line.startsWith("event:"));
     if (eventLines.length > 1) throw gatewayError("INVALID_GATEWAY_RESPONSE");
     const eventName = eventLines.length ? eventLines[0].slice(6).trim() : "";
+    if (eventLines.length && !eventName) throw gatewayError("INVALID_GATEWAY_RESPONSE");
     if (eventName && (eventName.length > 120 || !/^[A-Za-z0-9_.-]+$/.test(eventName))) {
       throw gatewayError("INVALID_GATEWAY_RESPONSE");
     }
     const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-    if (!data || data === "[DONE]") continue;
+    if (!data) continue;
+    if (data === "[DONE]") {
+      if (!eventName || eventName === "message") continue;
+      if (FAILURE_EVENTS.has(eventName)) {
+        events.push({ type: eventName });
+        continue;
+      }
+      throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    }
     try {
       const parsed = JSON.parse(data);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("event object required");

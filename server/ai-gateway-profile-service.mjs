@@ -102,13 +102,20 @@ function safeErrorCode(error) {
 
 function safeLog(logger, event, fields) {
   if (typeof logger?.info !== "function") return;
-  logger.info(event, {
-    accountId: clean(fields.accountId),
-    profileId: clean(fields.profileId),
-    configVersion: Number(fields.configVersion) || null,
-    outcome: clean(fields.outcome),
-    errorCode: clean(fields.errorCode),
-  });
+  try {
+    const pending = logger.info(event, {
+      accountId: clean(fields.accountId),
+      profileId: clean(fields.profileId),
+      configVersion: Number(fields.configVersion) || null,
+      outcome: clean(fields.outcome),
+      errorCode: clean(fields.errorCode),
+    });
+    if (pending && typeof pending.then === "function") {
+      Promise.resolve(pending).catch(() => {});
+    }
+  } catch {
+    // Capability persistence is authoritative; logging is best-effort only.
+  }
 }
 export function createAiGatewayProfileService({ repository, gateway, now = () => new Date(), logger = null } = {}) {
   requireDependencies(repository, gateway);

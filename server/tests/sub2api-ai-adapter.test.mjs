@@ -374,6 +374,46 @@ test("SSE event names and data types must agree while either field may be omitte
   }
 });
 
+test("named failure DONE markers invalidate prior images while only bare or message DONE may end normally", async () => {
+  const completedPrefix = [
+    `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+  ];
+  for (const eventName of ["response.failed", "error", "response.cancelled"]) {
+    const sse = [...completedPrefix, `event: ${eventName}\ndata: [DONE]`, ""].join("\n\n");
+    const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+    await assert.rejects(
+      gateway.generateImage(imageInput()),
+      (error) => error?.code === "NON_RETRYABLE_GATEWAY" && error?.retryable === false,
+    );
+  }
+
+  const incomplete = adapter(async () => new Response(
+    `event: response.incomplete\ndata: [DONE]\n\n`,
+    { headers: { "content-type": "text/event-stream" } },
+  ));
+  await assert.rejects(
+    incomplete.generateImage(imageInput()),
+    (error) => error?.code === "RETRYABLE_GATEWAY" && error?.retryable === true,
+  );
+
+  for (const doneBlock of ["data: [DONE]", "event: message\ndata: [DONE]"]) {
+    const sse = [...completedPrefix, doneBlock, ""].join("\n\n");
+    const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+    const result = await gateway.generateImage(imageInput());
+    assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+  }
+
+  const invalidNamedDone = adapter(async () => new Response(
+    `event: response.completed\ndata: [DONE]\n\n`,
+    { headers: { "content-type": "text/event-stream" } },
+  ));
+  await assert.rejects(
+    invalidNamedDone.generateImage(imageInput()),
+    (error) => error?.code === "INVALID_GATEWAY_RESPONSE",
+  );
+});
+
 test("Responses image-tool requires response.completed evidence after a final output item", async () => {
   const sse = `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}\n\ndata: [DONE]\n\n`;
   const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
@@ -760,6 +800,42 @@ test("secret is read at call time, requires only presence, and never leaks when 
   value = "";
   await assert.rejects(gateway.createTextResponse(textInput()), (error) => error?.code === "AI_GATEWAY_SECRET_MISSING");
   assert.deepEqual(seen, ["Bearer a", "Bearer different-secret"]);
+});
+
+test("logger failures never change successful results or stable gateway failures", async () => {
+  for (const logger of [
+    { info() { throw new Error("logger sync failure"); }, warn() {} },
+    { info() { return Promise.reject(new Error("logger async failure")); }, warn() {} },
+  ]) {
+    let fetches = 0;
+    const gateway = createSub2ApiAdapter({
+      logger,
+      readSecret: () => secret,
+      fetchImpl: async () => {
+        fetches += 1;
+        return jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }] });
+      },
+    });
+    const result = await gateway.createTextResponse(textInput());
+    assert.deepEqual(result.value, { ok: true });
+    assert.equal(fetches, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  let fetches = 0;
+  const failingGateway = createSub2ApiAdapter({
+    logger: { info() {}, warn() { throw new Error("logger masked stable error"); } },
+    readSecret: () => secret,
+    fetchImpl: async () => {
+      fetches += 1;
+      return jsonResponse({ error: { message: "private" } }, { status: 401 });
+    },
+  });
+  await assert.rejects(
+    failingGateway.createTextResponse(textInput()),
+    (error) => error?.code === "NON_RETRYABLE_AUTH" && error?.status === 401,
+  );
+  assert.equal(fetches, 1);
 });
 
 test("inspectImage uses structured Responses internally without exposing source bytes or data URLs", async () => {

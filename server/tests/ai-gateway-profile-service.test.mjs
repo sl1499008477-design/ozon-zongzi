@@ -21,7 +21,7 @@ const profile = Object.freeze({
   enabled: false,
 });
 
-function fixture({ gatewayResult, gatewayError, saved = { updated: true } } = {}) {
+function fixture({ gatewayResult, gatewayError, saved = { updated: true }, logger = null } = {}) {
   const calls = [];
   const repository = {
     async loadProfileForCapabilityTest(input) {
@@ -57,6 +57,7 @@ function fixture({ gatewayResult, gatewayError, saved = { updated: true } } = {}
     repository,
     gateway,
     now: () => new Date("2026-08-04T10:00:00.000Z"),
+    logger,
   });
   return { service, calls };
 }
@@ -155,6 +156,26 @@ test("compare-and-swap prevents an old cost-bearing test from enabling a newer p
   const saved = calls.at(-1)[1];
   assert.equal(saved.expectedConfigVersion, 4);
   assert.equal(saved.enabled, true);
+});
+
+test("capability completion stays successful after persistence even when the logger fails", async () => {
+  for (const logger of [
+    { info() { throw new Error("logger sync failure"); } },
+    { info() { return Promise.reject(new Error("logger async failure")); } },
+  ]) {
+    const { service, calls } = fixture({ logger });
+    const result = await service.testGatewayCapabilities({
+      actor: admin,
+      profileId: "profile-a",
+      configVersion: 4,
+      correlationId: "corr-logger",
+    });
+    assert.equal(result.outcome, "PASSED");
+    assert.equal(result.enabled, true);
+    assert.equal(calls.filter(([name]) => name === "gateway").length, 1);
+    assert.equal(calls.filter(([name]) => name === "save").length, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 });
 
 test("foreign, missing, or malformed profile identity never reaches the gateway", async () => {
