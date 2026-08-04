@@ -4,6 +4,8 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createPostgresAssetCleanupRepository } from "../auto-listing-asset-cleanup-repository.mjs";
+import { buildGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
 
 const dedicatedDatabaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(dedicatedDatabaseUrl);
@@ -58,14 +60,23 @@ if (!enabled) {
       ],
     );
 
-    const insertAsset = (overrides = {}) => client.query(
+    const insertAsset = (overrides = {}) => {
+      const status = overrides.status || "PENDING";
+      const attemptIdentityHash = overrides.attemptIdentityHash !== undefined ? overrides.attemptIdentityHash
+        : status === "PENDING" ? null : overrides.inputHash || "a".repeat(64);
+      const generationSize = overrides.generationSize !== undefined ? overrides.generationSize : status === "PENDING" ? null : "768x1024";
+      const finalInputBoundAt = overrides.finalInputBoundAt !== undefined ? overrides.finalInputBoundAt
+        : ["ACCEPTED", "REJECTED"].includes(status) ? new Date() : null;
+      const inputHash = overrides.inputHash || (status === "PENDING" ? "asset-input" : attemptIdentityHash);
+      return client.query(
       `INSERT INTO ai_generation_assets (
          id,account_id,job_id,item_id,plan_id,profile_id,visual_group_key,slot_key,role,
          input_hash,attempt_no,status,gateway_request_id,checker_request_id,model_name,profile_version,prompt_hash,object_key,
          content_hash,content_type,width,height,checker_result,error_code,error_retryable,accepted_at,
          plan_hash,source_hash,strategy_hash,config_hash,visual_groups_hash,prompt_template_version,
-         source_asset_evidence,model_evidence,regeneration,size_bytes,lease_token,lease_expires_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a',$7,'SELLING_POINT',$8,$9,$10,$11,$12,'image-model',$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31::jsonb,$32::jsonb,$33,$34,$35)`,
+         source_asset_evidence,model_evidence,regeneration,size_bytes,lease_token,lease_expires_at,
+         attempt_identity_hash,generation_size,final_input_bound_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a',$7,'SELLING_POINT',$8,$9,$10,$11,$12,'image-model',$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31::jsonb,$32::jsonb,$33,$34,$35,$36,$37,$38)`,
       [
         overrides.id,
         account,
@@ -74,9 +85,9 @@ if (!enabled) {
         plan,
         profile,
         overrides.slotKey || "selling-point-1",
-        overrides.inputHash || "asset-input",
+        inputHash,
         overrides.attemptNo || 1,
-        overrides.status || "PENDING",
+        status,
         overrides.gatewayRequestId ?? null,
         overrides.checkerRequestId ?? null,
         overrides.profileVersion || 1,
@@ -102,8 +113,12 @@ if (!enabled) {
         overrides.sizeBytes ?? null,
         overrides.leaseToken ?? null,
         overrides.leaseExpiresAt ?? null,
+        attemptIdentityHash,
+        generationSize,
+        finalInputBoundAt,
       ],
-    );
+      );
+    };
 
     const completeAcceptedAsset = (overrides = {}) => ({
       status: "ACCEPTED",
@@ -162,7 +177,7 @@ if (!enabled) {
     try {
       await client.query(`CREATE SCHEMA ${schemaSql}`);
       await client.query(`SET search_path TO ${schemaSql}, public`);
-      for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/.test(file)).sort()) {
+      for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/.test(file) && !file.startsWith("029_")).sort()) {
         await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       }
 
@@ -223,6 +238,22 @@ if (!enabled) {
       ), { code: "23503" });
 
       await insertPlan();
+      const legacyAcceptedInputHash = "f".repeat(64);
+      await client.query(
+        `INSERT INTO ai_generation_assets (
+          id,account_id,job_id,item_id,plan_id,profile_id,visual_group_key,slot_key,role,input_hash,
+          attempt_no,status,gateway_request_id,model_name,profile_version,prompt_hash,object_key,content_hash,
+          content_type,width,height,checker_result,accepted_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a','upgrade-slot','SELLING_POINT',$7,1,'ACCEPTED',
+          'legacy-gateway','image-model',1,'legacy-prompt','legacy/object.png',$8,'image/png',768,1024,'{"accepted":true}'::jsonb,NOW())`,
+        [`legacy-accepted-${suffix}`, account, jobA, itemA, plan, profile, legacyAcceptedInputHash, "e".repeat(64)],
+      );
+      await client.query(await readFile(path.join(migrationsDir, "029_auto_listing_ai_generation_evidence.sql"), "utf8"));
+      await assert.rejects(insertAsset({
+        id: `bound-collides-legacy-${suffix}`, slotKey: "upgrade-slot", status: "GENERATING",
+        inputHash: legacyAcceptedInputHash, attemptIdentityHash: "d".repeat(64), attemptNo: 2, finalInputBoundAt: new Date(),
+        leaseToken: "lease-upgrade", leaseExpiresAt: new Date(Date.now() + 60_000),
+      }), { code: "23505" });
       const planEvidence = await client.query(
         "SELECT visual_groups_hash,visual_groups,regeneration,gateway_request_id FROM ai_content_plans WHERE id=$1",
         [plan],
@@ -251,6 +282,8 @@ if (!enabled) {
       await assert.rejects(insertAsset({ id: `asset-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertResult({ id: `rich-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertAsset({ id: `asset-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-attempt-identity-null-${suffix}`, attemptIdentityHash: null })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-generation-size-null-${suffix}`, generationSize: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-width-null-${suffix}`, width: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-height-null-${suffix}`, height: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-hash-invalid-${suffix}`, configHash: "not-a-hash" })), { code: "23514" });
@@ -275,6 +308,8 @@ if (!enabled) {
         sourceAssetEvidence: [{ assetId: "source-1", contentHash: "9".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123, unexpected: true }],
       })), { code: "23514" });
       await assert.rejects(insertAsset({ id: `asset-generating-no-lease-${suffix}`, status: "GENERATING", inputHash: "a".repeat(64) }), { code: "23514" });
+      await assert.rejects(insertAsset({ id: `asset-generating-blank-lease-${suffix}`, status: "GENERATING", inputHash: "c".repeat(64), leaseToken: "   ", leaseExpiresAt: new Date(Date.now() + 60_000) }), { code: "23514" });
+      await assert.rejects(insertAsset({ id: `asset-failed-null-binding-${suffix}`, status: "FAILED", inputHash: "d".repeat(64), attemptIdentityHash: null, generationSize: null, errorCode: "GATEWAY", errorRetryable: true }), { code: "23514" });
       await insertAsset({ id: `asset-generating-${suffix}`, status: "GENERATING", inputHash: "b".repeat(64), attemptNo: 1, leaseToken: "lease-1", leaseExpiresAt: new Date(Date.now() + 60_000) });
       await assert.rejects(insertAsset({ id: `asset-generating-duplicate-${suffix}`, status: "GENERATING", inputHash: "b".repeat(64), attemptNo: 2, leaseToken: "lease-2", leaseExpiresAt: new Date(Date.now() + 60_000) }), { code: "23505" });
       await assert.rejects(insertAsset({ id: `asset-terminal-has-lease-${suffix}`, status: "FAILED", inputHash: "c".repeat(64), errorCode: "GATEWAY", errorRetryable: true, leaseToken: "lease-3", leaseExpiresAt: new Date(Date.now() + 60_000) }), { code: "23514" });
@@ -284,6 +319,23 @@ if (!enabled) {
       await assert.rejects(insertAsset({ id: `asset-failed-duplicate-${suffix}`, status: "FAILED", errorCode: "GATEWAY", errorRetryable: true }), { code: "23505" });
       await insertAsset(completeAcceptedAsset({ id: `asset-accepted-${suffix}`, attemptNo: 2 }));
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-second-accepted-${suffix}`, attemptNo: 3, objectKey: "objects/b.png", contentHash: "a".repeat(64) })), { code: "23505" });
+
+      const cleanupRepository = createPostgresAssetCleanupRepository({ pool: client });
+      const cleanupInput = {
+        accountId: account, jobId: jobA, itemId: itemA, planId: plan, visualGroupKey: "visual-a", slotKey: "cleanup-slot",
+        attemptIdentityHash: "a".repeat(64), inputHash: "b".repeat(64), attemptNo: 1, contentHash: "c".repeat(64),
+        reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED",
+      };
+      cleanupInput.objectKey = buildGeneratedAssetObjectKey(cleanupInput);
+      const cleanupFirst = await cleanupRepository.recordAssetCleanupRequired(cleanupInput);
+      const cleanupRepeated = await cleanupRepository.recordAssetCleanupRequired(cleanupInput);
+      assert.equal(cleanupRepeated.id, cleanupFirst.id);
+      assert.equal((await cleanupRepository.listAssetCleanupObligations({ accountId: account })).length, 1);
+      assert.deepEqual(await cleanupRepository.listAssetCleanupObligations({ accountId: `wrong-${account}` }), []);
+      await assert.rejects(cleanupRepository.recordAssetCleanupRequired({ ...cleanupInput, reason: "OTHER_REASON" }), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_CONFLICT");
+      const crossScopeCleanup = { ...cleanupInput, jobId: jobB, itemId: itemB, slotKey: "wrong-scope" };
+      crossScopeCleanup.objectKey = buildGeneratedAssetObjectKey(crossScopeCleanup);
+      await assert.rejects(cleanupRepository.recordAssetCleanupRequired(crossScopeCleanup), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_REPOSITORY_FAILED" && error?.retryable === true);
 
       await assert.rejects(insertResult({ id: `rich-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
       await insertResult({ id: `rich-rejected-${suffix}`, status: "REJECTED", errorCode: "CHECKER", errorRetryable: false });

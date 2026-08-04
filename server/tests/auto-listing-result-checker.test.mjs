@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
 import { sha256 } from "../auto-listing-asset-store.mjs";
-import { checkGeneratedAsset } from "../auto-listing-result-checker.mjs";
+import * as checkerModule from "../auto-listing-result-checker.mjs";
+
+const { checkGeneratedAsset } = checkerModule;
 
 async function image() {
   return sharp({ create: { width: 768, height: 1024, channels: 4, background: "#112233" } }).png().toBuffer();
@@ -48,7 +50,7 @@ function checkerValue(overrides = {}, evidenceOverrides = {}) {
   };
 }
 
-async function input(value) {
+async function input(value, overrides = {}) {
   const bytes = await image();
   return {
     generated: { bytes },
@@ -57,6 +59,7 @@ async function input(value) {
     profile: { id: "profile-a", accountId: "account-a", configVersion: 2 },
     checkerModel: "checker-a",
     templateVersion: "image-v1",
+    textRequired: true,
     scope: { correlationId: "corr", requestKey: "check-key" },
     facts: [fact],
     references: [{ assetId: "asset-a", contentHash: sha256(bytes), contentType: "image/png", width: 768, height: 1024, size: bytes.length, bytes }],
@@ -74,6 +77,7 @@ async function input(value) {
         };
       },
     },
+    ...overrides,
   };
 }
 
@@ -122,7 +126,9 @@ test("language evidence and quality/prohibited flags override contradictory top-
 });
 
 test("Russian body permits brand/model letters and numbers but an entirely non-Russian body fails closed", async () => {
-  const mixed = await checkGeneratedAsset(await input(checkerValue({}, { detectedTexts: ["Высота Brand 500 — 1 см"], language: "ru" })));
+  const mixedInput = await input(checkerValue({}, { detectedTexts: ["Высота Brand 500 — 1 см"], language: "ru" }));
+  mixedInput.facts.push({ factId: "fact.brand", field: "identity.brand", kind: "BRAND", value: "Brand 500", numericValue: null, unit: null, sourcePath: "identity.brand" });
+  const mixed = await checkGeneratedAsset(mixedInput);
   assert.equal(mixed.accepted, true);
   const nonRussian = await checkGeneratedAsset(await input(checkerValue({}, { detectedTexts: ["Brand 500 HEIGHT 1 CM"], language: "ru" })));
   assert.equal(nonRussian.code, "LANGUAGE_MISMATCH");
@@ -139,6 +145,79 @@ test("numeric claims must bind the same field, value, unit, and source fact", as
     const result = await checkGeneratedAsset(await input(checkerValue({}, { claims: [{ ...verifiedClaim, ...mutation }] })));
     assert.equal(result.code, "UNVERIFIED_CLAIM", JSON.stringify(mutation));
   }
+});
+
+test("claim text cannot hide extra numeric units or unrelated nonnumeric copy behind bound fields", async () => {
+  const numeric = await checkGeneratedAsset(await input(checkerValue({}, { claims: [{ ...verifiedClaim, text: "Вес 999kg, высота 1 cm" }] })));
+  assert.equal(numeric.code, "UNVERIFIED_CLAIM");
+  const missingUnit = await checkGeneratedAsset(await input(checkerValue({}, { claims: [{ ...verifiedClaim, text: "Высота 1" }] })));
+  assert.equal(missingUnit.code, "UNVERIFIED_CLAIM");
+  const materialFact = { factId: "fact.material", field: "attributes.material", kind: "ATTRIBUTE", value: "Титан", numericValue: null, unit: null, sourcePath: "attributes.material" };
+  const materialInput = await input(checkerValue({}, { claims: [{ text: "Стальной корпус", sourceFactId: materialFact.factId, field: materialFact.field, value: materialFact.value, numericValue: null, unit: null }] }));
+  materialInput.facts = [materialFact];
+  const textual = await checkGeneratedAsset(materialInput);
+  assert.equal(textual.code, "UNVERIFIED_CLAIM");
+
+  const modelFact = { factId: "fact.model", field: "identity.model", kind: "MODEL", value: "Brand 500", numericValue: null, unit: null, sourcePath: "identity.model" };
+  for (const [text, code] of [["Модель Brand 500", undefined], ["Модель Brand 500 999", "UNVERIFIED_CLAIM"]]) {
+    const modelInput = await input(checkerValue({}, { claims: [{ text, sourceFactId: modelFact.factId, field: modelFact.field, value: modelFact.value, numericValue: null, unit: null }], detectedTexts: ["Модель Brand 500"] }));
+    modelInput.facts = [modelFact];
+    assert.equal((await checkGeneratedAsset(modelInput)).code, code, text);
+  }
+});
+
+test("each detected text segment allows only Russian or fact-proven brand model and technical tokens", async () => {
+  const brandFact = { factId: "fact.brand", field: "identity.brand", kind: "BRAND", value: "Brand 500", numericValue: null, unit: null, sourcePath: "identity.brand" };
+  const techFact = { factId: "fact.tech", field: "attributes.connectivity", kind: "ATTRIBUTE", value: "USB LED IPX7", numericValue: null, unit: null, sourcePath: "attributes.connectivity" };
+  const acceptedInput = await input(checkerValue({}, { detectedTexts: ["Высота 1 см", "Brand 500", "USB LED IPX7"] }));
+  acceptedInput.facts.push(brandFact, techFact);
+  assert.equal((await checkGeneratedAsset(acceptedInput)).accepted, true);
+  for (const detectedTexts of [["Высота 1 см", "Best choice"], ["Высота 1 см", "最佳选择"]]) {
+    const rejectedInput = await input(checkerValue({}, { detectedTexts }));
+    rejectedInput.facts.push(brandFact, techFact);
+    assert.equal((await checkGeneratedAsset(rejectedInput)).code, "LANGUAGE_MISMATCH", detectedTexts[1]);
+  }
+  const arbitraryInput = await input(checkerValue({}, { detectedTexts: ["Высота 1 см", "SUPER"] }));
+  arbitraryInput.facts.push({ factId: "fact.marketing", field: "attributes.marketing", kind: "ATTRIBUTE", value: "SUPER", numericValue: null, unit: null, sourcePath: "attributes.marketing" });
+  assert.equal((await checkGeneratedAsset(arbitraryInput)).code, "LANGUAGE_MISMATCH");
+
+  const exceptionOnly = await input(checkerValue({}, { detectedTexts: ["Brand 500", "USB LED IPX7"] }));
+  exceptionOnly.facts.push(brandFact, techFact);
+  assert.equal((await checkGeneratedAsset(exceptionOnly)).accepted, true);
+  for (const contradiction of [checkerValue({ russianText: false }, { detectedTexts: ["Brand 500"] }), checkerValue({}, { detectedTexts: ["Brand 500"], language: "other" })]) {
+    const contradicted = await input(contradiction);
+    contradicted.facts.push(brandFact);
+    assert.equal((await checkGeneratedAsset(contradicted)).code, "LANGUAGE_MISMATCH");
+  }
+});
+
+test("empty detected text follows the explicit slot text requirement", async () => {
+  const required = await checkGeneratedAsset(await input(checkerValue({}, { detectedTexts: [] })));
+  assert.equal(required.code, "LANGUAGE_MISMATCH");
+  const none = checkerValue({}, { claims: [], detectedTexts: [] });
+  const optional = await checkGeneratedAsset(await input(none, { textRequired: false }));
+  assert.equal(optional.accepted, true);
+});
+
+test("exports one pure closed evaluator and persists the complete raw checker decision for replay", async () => {
+  assert.equal(typeof checkerModule.evaluateGeneratedCheckerEvidence, "function");
+  const request = await input(checkerValue());
+  const live = await checkGeneratedAsset(request);
+  assert.deepEqual(live.evidence.checkerResult, checkerValue());
+  const replay = checkerModule.evaluateGeneratedCheckerEvidence({
+    checkerResult: live.evidence.checkerResult,
+    references: request.references,
+    facts: request.facts,
+    checkerModel: request.checkerModel,
+    profile: request.profile,
+    templateVersion: request.templateVersion,
+    requestId: live.evidence.requestId,
+    generatedHash: live.evidence.generatedHash,
+    checkerModelEvidence: live.evidence.checkerModelEvidence,
+    textRequired: true,
+  });
+  assert.equal(replay.accepted, true);
+  assert.deepEqual(replay.evidence, live.evidence);
 });
 
 test("closed checker evidence rejects unknown flags, keys, references, and claim shapes", async () => {

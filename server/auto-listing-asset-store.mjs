@@ -84,6 +84,9 @@ function verifyReadback(bytes, normalized) {
     && bytes.equals(normalized.bytes);
 }
 
+const sameFields = (actual, expected, fields) => actual && typeof actual === "object"
+  && fields.every((field) => actual[field] === expected[field]);
+
 async function readObject(storage, key, normalized) {
   if (typeof storage?.getObjectBuffer !== "function") throw error("AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "图片存储暂时无法校验", true);
   let bytes;
@@ -95,16 +98,21 @@ async function readObject(storage, key, normalized) {
   if (!verifyReadback(bytes, normalized)) throw error("AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", "图片存储内容无效", true);
 }
 
-async function cleanupOrRecord({ storage, repository, scope, stored, reason, logger }) {
+async function cleanupOrRecord({ storage, repository, scope, stored, reason, originalErrorCode, logger }) {
   try {
     if (typeof storage?.removeObject !== "function") throw new Error("cleanup unavailable");
     await storage.removeObject(stored.objectKey);
     return;
   } catch {
     try {
-      if (typeof repository?.recordAssetCleanupRequired !== "function") throw new Error("cleanup repository unavailable");
-      await repository.recordAssetCleanupRequired({ ...scope, ...stored, reason });
-    } catch {}
+      const expected = { ...scope, ...stored, reason, originalErrorCode };
+      const recorded = await repository.recordAssetCleanupRequired(expected);
+      if (!sameFields(recorded, expected, ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "attemptNo", "objectKey", "contentHash", "reason", "originalErrorCode"])
+        || recorded.status !== "PENDING") throw new Error("cleanup persistence unverified");
+    } catch {
+      safeLog(logger, { code: "AUTO_LISTING_ASSET_ORPHAN_CLEANUP", objectKey: stored.objectKey });
+      throw error("AUTO_LISTING_ASSET_CLEANUP_PERSIST_FAILED", "图片清理义务暂时无法保存", true);
+    }
     safeLog(logger, { code: "AUTO_LISTING_ASSET_ORPHAN_CLEANUP", objectKey: stored.objectKey });
   }
 }
@@ -117,10 +125,15 @@ export async function storeGeneratedAsset(input = {}) {
     || !Number.isInteger(normalized.height) || normalized.height < 1) {
     throw error(normalized?.bytes?.length > MAX_NORMALIZED_BYTES ? "AUTO_LISTING_ASSET_TOO_LARGE" : "AUTO_LISTING_ASSET_INVALID");
   }
-  if (typeof storage?.putObjectFromBuffer !== "function" || typeof storage?.getObjectBuffer !== "function") throw error("AUTO_LISTING_ASSET_INVALID");
+  if (!HASH.test(scope.attemptIdentityHash || "") || !HASH.test(scope.inputHash || "")
+    || !Number.isInteger(scope.attemptNo) || scope.attemptNo < 1 || scope.attemptNo > 3
+    || typeof storage?.putObjectFromBuffer !== "function" || typeof storage?.getObjectBuffer !== "function"
+    || typeof repository?.findStoredGenerationAsset !== "function"
+    || typeof repository?.recordStoredGenerationAsset !== "function"
+    || typeof repository?.recordAssetCleanupRequired !== "function") throw error("AUTO_LISTING_ASSET_INVALID");
   const key = buildGeneratedAssetObjectKey({ ...scope, inputHash: scope.inputHash, contentHash: normalized.contentHash });
   const stored = { objectKey: key, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length };
-  if (typeof repository?.findStoredGenerationAsset === "function") {
+  {
     let existing;
     try { existing = await repository.findStoredGenerationAsset({ ...scope, contentHash: normalized.contentHash }); } catch { throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法读取", true); }
     if (existing != null) {
@@ -134,18 +147,21 @@ export async function storeGeneratedAsset(input = {}) {
     put = await storage.putObjectFromBuffer({ key, name: `${scope.slotKey}.png`, contentType: normalized.contentType, buffer: normalized.bytes, maxBytes: MAX_STORAGE_INPUT_BYTES });
   } catch { throw error("AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "图片存储暂时不可用", true); }
   if (!put || put.key !== key || put.sha256 !== normalized.contentHash || put.contentType !== normalized.contentType || put.size !== normalized.bytes.length) {
-    await cleanupOrRecord({ storage, repository, scope, stored, reason: "PUT_REPLY_UNVERIFIED", logger });
+    await cleanupOrRecord({ storage, repository, scope, stored, reason: "PUT_REPLY_UNVERIFIED", originalErrorCode: "AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", logger });
     throw error("AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", "图片存储返回无效", true);
   }
   try {
     await readObject(storage, key, normalized);
   } catch (cause) {
-    await cleanupOrRecord({ storage, repository, scope, stored, reason: cause.code || "READBACK_FAILED", logger });
+    await cleanupOrRecord({ storage, repository, scope, stored, reason: "READBACK_FAILED", originalErrorCode: cause.code || "AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", logger });
     throw cause;
   }
-  if (typeof repository?.recordStoredGenerationAsset !== "function") return Object.freeze(stored);
-  try { const recorded = await repository.recordStoredGenerationAsset({ ...scope, ...stored }); if (recorded != null && (["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "inputHash", "objectKey", "contentHash", "contentType", "width", "height", "size"].some((field) => recorded[field] !== ({ ...scope, ...stored })[field]))) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED"); } catch (cause) {
-    await cleanupOrRecord({ storage, repository, scope, stored, reason: "RECORD_STORED_FAILED", logger });
+  try {
+    const expected = { ...scope, ...stored };
+    const recorded = await repository.recordStoredGenerationAsset(expected);
+    if (!sameFields(recorded, expected, ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "attemptNo", "objectKey", "contentHash", "contentType", "width", "height", "size"])) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED");
+  } catch (cause) {
+    await cleanupOrRecord({ storage, repository, scope, stored, reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED", logger });
     throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法保存", true);
   }
   return Object.freeze(stored);

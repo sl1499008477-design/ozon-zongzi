@@ -1,5 +1,6 @@
 import { normalizeListingImage } from "./auto-listing-asset-store.mjs";
 
+const HASH = /^[a-f0-9]{64}$/;
 const TOP_LEVEL_KEYS = new Set(["matchesProduct", "claimsVerified", "russianText", "quality", "prohibitedContent", "reasons", "evidence"]);
 const EVIDENCE_KEYS = new Set(["identity", "claims", "detectedTexts", "language", "qualityFlags", "prohibitedFlags"]);
 const IDENTITY_KEYS = new Set(["color", "shape", "accessoryCount", "sourceAssetIds"]);
@@ -10,6 +11,7 @@ const PROHIBITED_FLAGS = new Set([
   "CONTACT", "REVIEW_REQUEST", "EXTERNAL_PROMOTION", "AFTER_SALES_GUIDANCE",
   "CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY",
 ]);
+const TECHNICAL_TOKENS = new Set(["USB", "LED", "IPX7", "HDMI", "NFC", "GPS", "OLED", "LCD", "SSD", "HDD", "RAM", "ROM", "ABS", "PVC", "AC", "DC"]);
 
 function checkerError(code, retryable = false) {
   const error = new Error("自动上架图片检查失败");
@@ -34,7 +36,8 @@ function validFact(fact) {
   return exactObject(fact, FACT_KEYS) && clean(fact.factId) && clean(fact.field) && clean(fact.kind)
     && clean(fact.value) && clean(fact.sourcePath)
     && ((fact.numericValue === null && fact.unit === null)
-      || (typeof fact.numericValue === "number" && Number.isFinite(fact.numericValue) && clean(fact.unit)));
+      || (typeof fact.numericValue === "number" && Number.isFinite(fact.numericValue)
+        && (fact.unit === null || clean(fact.unit))));
 }
 
 function validModelEvidence(value, checkerModel) {
@@ -45,6 +48,49 @@ function validModelEvidence(value, checkerModel) {
     && (value.gatewayReportedTextModelPresent
       ? value.gatewayReportedTextModel === checkerModel
       : value.gatewayReportedTextModel === "");
+}
+
+const normalizeText = (value) => value.normalize("NFKC").toLocaleLowerCase("ru-RU").replace(/\s+/gu, " ").trim();
+const canonicalUnit = (value) => ({ "см": "cm", "мм": "mm", "м": "m", "кг": "kg", "г": "g", "л": "l", "мл": "ml" }[normalizeText(value)] || normalizeText(value));
+const numericTokens = (value) => [...value.matchAll(/(?<![\p{L}\p{N}])(-?\d+(?:[.,]\d+)?)(?:\s*([\p{L}%°]{1,16}))?/gu)]
+  .map((match) => ({ value: Number(match[1].replace(",", ".")), unit: match[2] ? canonicalUnit(match[2]) : null }));
+
+function claimTextBoundToFact(claim, fact) {
+  const normalizedText = normalizeText(claim.text);
+  const numbers = numericTokens(claim.text);
+  if (fact.numericValue !== null) {
+    if (!numbers.length) return false;
+    return numbers.every((entry) => entry.value === fact.numericValue
+      && (fact.unit === null ? entry.unit === null : entry.unit === canonicalUnit(fact.unit)));
+  }
+  if (!normalizedText.includes(normalizeText(fact.value))) return false;
+  const factNumbers = numericTokens(fact.value);
+  return numbers.every((entry) => factNumbers.some((candidate) => candidate.value === entry.value && candidate.unit === entry.unit));
+}
+
+function allowedNonRussianTokens(facts) {
+  const allowed = new Set();
+  for (const fact of facts) {
+    for (const token of fact.value.match(/[\p{L}\p{N}]+/gu) || []) {
+      if (["BRAND", "MODEL"].includes(fact.kind) || TECHNICAL_TOKENS.has(token)
+        || /^\d+(?:[.,]\d+)?$/u.test(token)) {
+        allowed.add(token.toLocaleLowerCase("en-US"));
+      }
+    }
+  }
+  return allowed;
+}
+
+function textSegmentsValid(segments, facts) {
+  const allowed = allowedNonRussianTokens(facts);
+  return segments.every((segment) => {
+    for (const token of segment.match(/[\p{L}\p{N}]+/gu) || []) {
+      if (/^[А-Яа-яЁё]+$/u.test(token)) continue;
+      if (/^[A-Za-z0-9]+$/u.test(token) && allowed.has(token.toLocaleLowerCase("en-US"))) continue;
+      return false;
+    }
+    return true;
+  });
 }
 
 const schema = Object.freeze({
@@ -123,14 +169,55 @@ function validateResponse(value, references, facts) {
     if (!exactObject(claim, CLAIM_KEYS) || !clean(claim.text) || !clean(claim.sourceFactId)
       || !clean(claim.field) || !clean(claim.value)
       || !((claim.numericValue === null && claim.unit === null)
-        || (typeof claim.numericValue === "number" && Number.isFinite(claim.numericValue) && clean(claim.unit)))) {
+        || (typeof claim.numericValue === "number" && Number.isFinite(claim.numericValue)
+          && (claim.unit === null || clean(claim.unit))))) {
       throw checkerError("CHECKER_UNAVAILABLE", true);
     }
     const fact = factsById.get(claim.sourceFactId);
     if (!fact || claim.field !== fact.field || claim.value !== fact.value
-      || claim.numericValue !== fact.numericValue || claim.unit !== fact.unit) unverifiedClaim = true;
+      || claim.numericValue !== fact.numericValue || claim.unit !== fact.unit
+      || !claimTextBoundToFact(claim, fact)) unverifiedClaim = true;
   }
   return { evidence, unverifiedClaim };
+}
+
+export function evaluateGeneratedCheckerEvidence(input = {}) {
+  const { checkerResult, references, facts, checkerModel, profile, templateVersion, requestId, generatedHash, checkerModelEvidence, textRequired } = input;
+  if (!Array.isArray(references) || !references.length || !Array.isArray(facts) || !clean(checkerModel)
+    || !clean(templateVersion) || !clean(requestId) || !HASH.test(generatedHash || "")
+    || !clean(profile?.id) || !clean(profile?.accountId) || !Number.isInteger(profile?.configVersion)
+    || typeof textRequired !== "boolean"
+    || !validModelEvidence(checkerModelEvidence, checkerModel)) throw checkerError("CHECKER_UNAVAILABLE", true);
+  const { evidence, unverifiedClaim } = validateResponse(checkerResult, references, facts);
+  const code = !checkerResult.matchesProduct || ["color", "shape", "accessoryCount"].some((key) => evidence.identity[key] === false)
+    ? "PRODUCT_IDENTITY_MISMATCH"
+    : !checkerResult.claimsVerified || unverifiedClaim
+      ? "UNVERIFIED_CLAIM"
+      : !checkerResult.russianText || evidence.language !== "ru"
+        || (textRequired && evidence.detectedTexts.length === 0) || !textSegmentsValid(evidence.detectedTexts, facts)
+        ? "LANGUAGE_MISMATCH"
+        : checkerResult.quality !== "PASS" || evidence.qualityFlags.length
+          ? "IMAGE_QUALITY_FAILED"
+          : checkerResult.prohibitedContent || evidence.prohibitedFlags.length
+            ? "PROHIBITED_CONTENT"
+            : null;
+  if (code === null && checkerResult.reasons.length) throw checkerError("CHECKER_UNAVAILABLE", true);
+  const checkerEvidence = Object.freeze({
+    checkerResult: structuredClone(checkerResult),
+    textRequired,
+    sourceFactIds: [...new Set(evidence.claims.map((claim) => claim.sourceFactId))],
+    sourceFacts: structuredClone(facts),
+    sourceAssets: references.map(({ assetId, contentHash, contentType, width, height, size }) => ({ assetId, contentHash, contentType, width, height, size })),
+    generatedHash,
+    checkerModel,
+    checkerModelEvidence: structuredClone(checkerModelEvidence),
+    profileId: profile.id,
+    profileAccountId: profile.accountId,
+    profileVersion: profile.configVersion,
+    templateVersion,
+    requestId,
+  });
+  return Object.freeze({ accepted: code === null, ...(code ? { code, retryable: false } : {}), evidence: checkerEvidence });
 }
 
 export async function checkGeneratedAsset(input = {}) {
@@ -142,7 +229,8 @@ export async function checkGeneratedAsset(input = {}) {
     throw checkerError(error.code);
   }
   if (!Array.isArray(references) || !references.length || !Array.isArray(facts) || !clean(checkerModel)
-    || !clean(templateVersion) || typeof gateway?.inspectImage !== "function") throw checkerError("CHECKER_UNAVAILABLE", true);
+    || !clean(templateVersion) || typeof input.textRequired !== "boolean"
+    || typeof gateway?.inspectImage !== "function") throw checkerError("CHECKER_UNAVAILABLE", true);
   let response;
   try {
     response = await gateway.inspectImage({
@@ -164,38 +252,17 @@ export async function checkGeneratedAsset(input = {}) {
   if (!clean(response?.requestId) || !validModelEvidence(response?.modelEvidence, checkerModel)) {
     throw checkerError("CHECKER_UNAVAILABLE", true);
   }
-  const { evidence, unverifiedClaim } = validateResponse(response.value, references, facts);
-  const code = !response.value.matchesProduct || ["color", "shape", "accessoryCount"].some((key) => evidence.identity[key] === false)
-    ? "PRODUCT_IDENTITY_MISMATCH"
-    : !response.value.claimsVerified || unverifiedClaim
-      ? "UNVERIFIED_CLAIM"
-      : !response.value.russianText || evidence.language !== "ru"
-        || (evidence.detectedTexts.some((entry) => entry.length > 0) && !/[А-Яа-яЁё]/u.test(evidence.detectedTexts.join(" ")))
-        ? "LANGUAGE_MISMATCH"
-        : response.value.quality !== "PASS" || evidence.qualityFlags.length
-          ? "IMAGE_QUALITY_FAILED"
-          : response.value.prohibitedContent || evidence.prohibitedFlags.length
-            ? "PROHIBITED_CONTENT"
-            : null;
-  const checkerEvidence = Object.freeze({
-    sourceFactIds: [...new Set(evidence.claims.map((claim) => claim.sourceFactId))],
-    sourceFacts: structuredClone(facts),
-    sourceAssets: references.map(({ assetId, contentHash, contentType, width, height, size }) => ({ assetId, contentHash, contentType, width, height, size })),
-    identity: structuredClone(evidence.identity),
-    claims: structuredClone(evidence.claims),
-    detectedTexts: [...evidence.detectedTexts],
-    language: evidence.language,
-    qualityFlags: [...evidence.qualityFlags],
-    prohibitedFlags: [...evidence.prohibitedFlags],
-    generatedHash: normalized.contentHash,
+  const evaluated = evaluateGeneratedCheckerEvidence({
+    checkerResult: response.value,
+    references,
+    facts,
     checkerModel,
-    checkerModelEvidence: structuredClone(response.modelEvidence),
-    profileId: profile?.id,
-    profileAccountId: profile?.accountId,
-    profileVersion: profile?.configVersion,
+    profile,
     templateVersion,
     requestId: response.requestId,
+    generatedHash: normalized.contentHash,
+    checkerModelEvidence: response.modelEvidence,
+    textRequired: input.textRequired,
   });
-  if (code) return Object.freeze({ accepted: false, code, retryable: false, normalized, evidence: checkerEvidence });
-  return Object.freeze({ accepted: true, normalized, evidence: checkerEvidence });
+  return Object.freeze({ ...evaluated, normalized });
 }
