@@ -44,6 +44,7 @@ const ATTRIBUTE_C_KEYS = new Set(["id", "name", "values", "is_required"]);
 const ATTRIBUTE_C_VALUE_KEYS = new Set(["value", "dictionary_value_id"]);
 const ATTRIBUTE_EDIT_KEYS = new Set(["id", "name", "value", "values", "required", "dictionaryId", "multiple"]);
 const ATTRIBUTE_VALUE_CAMEL_KEYS = new Set(["value", "dictionaryValueId"]);
+const ATTRIBUTE_VALUE_ONLY_KEYS = new Set(["value"]);
 const EXCLUDED_ATTRIBUTE_IDS = new Set(["4191", "11254"]);
 const MATCHED_BY = new Set(["EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"]);
 const PLANNER_INPUT_KEYS = new Set([
@@ -300,6 +301,9 @@ function attributeProjection(attribute, attributeIndex) {
       let dictionaryValueId = outerDictionaryId;
       if (typeof entry === "string" || (typeof entry === "number" && Number.isFinite(entry))) {
         value = safeAttributeValues(entry, { allowNumber: true })?.[0];
+      } else if (exactObject(entry, ATTRIBUTE_VALUE_ONLY_KEYS)) {
+        value = safeAttributeValues(entry.value, { allowNumber: true })?.[0];
+        dictionaryValueId = null;
       } else if (exactObject(entry, ATTRIBUTE_C_VALUE_KEYS) || exactObject(entry, ATTRIBUTE_VALUE_CAMEL_KEYS)) {
         value = safeAttributeValues(entry.value, { allowNumber: true })?.[0];
         dictionaryValueId = optionalDictionaryId(entry.dictionary_value_id ?? entry.dictionaryValueId) || outerDictionaryId;

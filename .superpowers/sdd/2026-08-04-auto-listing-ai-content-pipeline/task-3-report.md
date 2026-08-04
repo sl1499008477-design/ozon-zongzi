@@ -99,3 +99,11 @@ Final verification:
 - changed production modules passed syntax checks and `git diff --check` passed.
 
 No dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` is configured, so the new dual-gated PostgreSQL fixture safely skipped and did not fall back to normal configuration. No database migration, gateway, image download, storage, or Ozon operation was run. Rollback is to revert this round-2 commit; deployed 028 is additive and old nullable plan rows remain readable at the database layer.
+
+## Review repair round 3 — real edit-page value objects
+
+The real seven-key edit-page category attribute shape now accepts only the closed one-key value-object form `{ value }` in its `values` array. `value` may be a non-empty string or finite number; it becomes a normal field-bound attribute fact with `dictionaryValueId: null` and the exact array source path. A dictionary ID is deliberately not inferred from the enclosing category attribute for this plain-text form.
+
+Every other value-object shape remains fail-closed: extra keys, empty values, arrays, nested objects, and non-finite numbers do not project any fact and cause the entire attribute to receive the existing unsupported-evidence reason. The regression fixture covers the production-shaped `{ id, name, value, values: [{ value: "100" }], required, dictionaryId, multiple }` input and confirms a sibling object with an extra key is omitted.
+
+TDD: RED was 23 passes and 1 expected failure for the ordinary one-key value object. Final planner focus passed 24/24. Related focused modules passed 44/44; auto-listing/AI regression passed 201 with 1 configured PostgreSQL skip; whole server passed 857 with 5 configured PostgreSQL skips. Syntax and diff checks passed. No database or external operation was run. Rollback is reverting this narrow compatibility commit.

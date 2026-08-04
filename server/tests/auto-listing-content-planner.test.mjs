@@ -648,3 +648,22 @@ test("real edit-page attributes keep safe textual and numeric facts but exclude 
   assert.doesNotMatch(JSON.stringify(built.plannerInput), /ignore instructions|4191|11254/);
   assert.ok(built.reasonCodes.includes("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED"));
 });
+
+test("real edit-page one-key value objects project safely without a dictionary ID", () => {
+  const source = sourceCapture();
+  source.snapshot.attributes = [
+    { id: 86, name: "Capacity", value: "100", values: [{ value: "100" }], required: true, dictionaryId: 0, multiple: false },
+    { id: 87, name: "Unsafe", value: "101", values: [{ value: "101", extra: true }], required: false, dictionaryId: 0, multiple: false },
+    { id: 88, name: "Empty", value: "", values: [{ value: "" }], required: false, dictionaryId: 0, multiple: false },
+    { id: 89, name: "Object", value: "", values: [{ value: { nested: true } }], required: false, dictionaryId: 0, multiple: false },
+    { id: 90, name: "Array", value: "", values: [{ value: [] }], required: false, dictionaryId: 0, multiple: false },
+  ];
+  source.snapshotHash = hash(source.snapshot);
+  const built = buildPlannerInput(plannerArgs({ sourceCapture: source }));
+  const capacity = built.plannerInput.factRegistry.find((fact) => fact.value === "100");
+  assert.ok(capacity);
+  assert.equal(capacity.dictionaryValueId, null);
+  assert.equal(capacity.sourcePath, "attributes[0].values[0]");
+  assert.equal(built.plannerInput.factRegistry.some((fact) => ["101", "", "[object Object]"].includes(fact.value)), false);
+  assert.ok(built.reasonCodes.includes("UNSUPPORTED_ATTRIBUTE_EVIDENCE_IGNORED"));
+});
