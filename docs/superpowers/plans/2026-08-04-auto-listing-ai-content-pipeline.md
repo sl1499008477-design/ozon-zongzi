@@ -238,6 +238,13 @@ git commit -m "feat: plan category-aware product images"
 
 **Interfaces:** storeGeneratedAsset, generateImageSlot, checkGeneratedAsset.
 
+**Immutable source precondition:** `generateImageSlot` accepts only already-materialized
+`CONTENT_HASH` references. A `SOURCE_URL` remains valid planning evidence but must be
+downloaded, decoded, content-hashed, and persisted by a separate idempotent
+materialization worker before Task 4. Materialization creates a new visual-group and
+ContentPlan version; it never mutates an existing plan. Task 4 rejects an unmaterialized
+URL with `AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED` before reservation or any I/O.
+
 - [ ] **Step 1: Write failing asset-store tests**
 
 Assert object keys are account/job/item/plan/slot scoped, content hashes are verified, supported formats are normalized, duplicate content is reused, and object-storage failures leave no accepted database row. Reuse putObjectFromBuffer from server/object-storage.mjs.

@@ -1,4 +1,4 @@
-# Task 4 report — generated-image attempt integrity, review repair round 2
+# Task 4 report — generated-image attempt integrity, review repair round 3
 
 ## Review-repair result
 
@@ -52,3 +52,51 @@ The same migration adds an independent durable cleanup-obligation table with acc
 No real AI gateway, object storage, source download, Ozon operation, production database, or production data was used. Live PostgreSQL compilation and malicious-insert behavior remain unverified because `SONLI_MIGRATION_TEST_DATABASE_URL` is absent. The fixture requires both that dedicated URL and `AUTO_LISTING_POSTGRES_TESTS=1`, never falls back to ordinary database configuration, and now covers: migration-from-028 historical accepted conflict, whitespace lease, explicit null binding evidence, cleanup idempotency/conflict, wrong-account reads, and cross-job/item/plan rejection.
 
 Primary regression risk is integration with the future transactional generation-attempt adapter: it must implement the complete mandatory port set and exact return contracts. The feature remains disabled/unwired. Application rollback is reverting this repair commit. If migration 029 has been applied, use a reviewed compensating migration rather than source reversion alone; do not destructively edit production schema by hand.
+
+## Review repair round 3 — immutable sources, upgrade compatibility, and cleanup execution
+
+This round closes I1-I5 and M1 and records evidence for independent review; it does not self-declare Task 4 complete.
+
+Task 4 now accepts only already-materialized `CONTENT_HASH` source references. A pure `SOURCE_URL` returns stable non-retryable `AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED` before reservation, loader, gateway, or storage, and URL text is never hashed as if it were content. URL evidence remains valid in Task 3 grouping/planning. A future idempotent materialization worker must safely download, decode, persist, and hash the bytes, then create a new visual-group and ContentPlan version before Task 4; it must never mutate an existing immutable plan.
+
+The exact validated `generationSize` is now passed into reservation, persisted when the attempt row is created, echoed by the reservation reply, and carried through bind/store/complete/reject/fail ownership checks. Missing, changed, or non-echoed size fails closed before source loading. Attempt identity already hashes the size, while the explicit row field remains independently auditable.
+
+The checker distinguishes an optional empty OCR result from detected text. `textRequired=false` plus no detected text accepts explicit `russianText=false`/`language=other`; any detected text still enters the language gate. Empty lexical segments, punctuation-only text, and emoji-only text reject. A required-text slot must include at least one `[А-Яа-яЁё0-9]+` token containing a Cyrillic letter; pure brand/model/technical exceptions cannot impersonate Russian body copy, while Russian text plus fact-proven exceptions remains valid.
+
+Migration 029 now upgrades a real <=028 shape with multiple formerly legal duplicate `GENERATING` rows. Before new active indexes, every incompatible legacy row is preserved but terminalized as retryable `FAILED` with `MIGRATION_029_LEGACY_GENERATING_TERMINATED` and cleared lease fields. Its new attempt identity remains null, so it occupies no active key and consumes no attempt for a new identity; the fixture then inserts a new attempt-1 row. No legacy row is deleted.
+
+Cleanup obligations now have a complete durable lifecycle. Memory and PostgreSQL adapters support account-scoped ordered/limited claim, opaque nonce-plus-attempt lease fence, expiry reclaim, exact owner/token/expiry CAS completion/failure, closed stable failure codes, and deterministic five-minute exponential backoff capped at 24 hours. PostgreSQL uses `NOW()` as clock authority and one `FOR UPDATE SKIP LOCKED` statement. The new single-purpose cleanup worker accepts only `{accountId, workerId, limit, leaseMs}`, rebuilds and exact-matches the account-scoped object key before deletion, calls only `storage.removeObject(objectKey, {accountId})`, isolates each remove/complete/fail/log error, and reports `{claimed, completed, failed}` with `claimed = completed + failed`.
+
+### Round 3 changed contracts and files
+
+- Immutable source, reservation echo, and size ownership: `server/auto-listing-image-generator.mjs` and `server/auto-listing-generation-attempt-repository.mjs`.
+- Optional-empty and required-Cyrillic checker policy: `server/auto-listing-result-checker.mjs`.
+- Cleanup claim/CAS/backoff ports and worker: `server/auto-listing-asset-cleanup-repository.mjs` and `server/auto-listing-asset-cleanup-worker.mjs`.
+- Upgrade-safe attempt indexes and cleanup lease schema: `server/db/migrations/029_auto_listing_ai_generation_evidence.sql`.
+- Task 3/4 contract clarification: the canonical pipeline plan plus Task 3 brief/report.
+- RED/GREEN and gated PostgreSQL behavior: the corresponding `server/tests/auto-listing-*.test.mjs` files.
+
+### Round 3 TDD evidence
+
+- Before production edits, grouped RED was 43 passed, 10 failed, and 1 PostgreSQL skip: URL materialization, reservation/row size, optional empty text, punctuation/exception-only text, legacy duplicate upgrade, and cleanup lifecycle were the expected failures.
+- A reached 35/35, then a reservation-reply echo supplement reproduced 30 passed/1 failed and reached 36/36 after strict size echo validation.
+- B reached 13/13, including Cyrillic alphanumeric acceptance and punctuation/emoji/exception-only rejection.
+- C static migration behavior reached 1 passed/0 failed with 1 dedicated-PostgreSQL skip.
+- D reached 10/10 after claim/CAS/backoff, worker batch isolation, forged object-key zero-delete, rejected-promise logger isolation, closed error codes, and bounded nonce coverage.
+
+### Round 3 verification
+
+- Combined round-3 focused set: 60 passed, 0 failed, 1 dedicated-PostgreSQL skip.
+- Auto-listing, AI profile/adapter, and object-storage regression: 261 passed, 0 failed, 1 dedicated-PostgreSQL skip.
+- All `*migration*.test.mjs` contracts: 21 passed, 0 failed, 2 dedicated-database skips.
+- Historical permissions, persistence, formal-store, account-store, category/listing, and warehouse set: 44 passed, 0 failed.
+- Whole `node --test server/tests/*.test.mjs`: 927 passed, 0 failed, 5 configured PostgreSQL skips.
+- Raw `node --test server/tests/*.mjs`: 939 passed, 1 failed, 6 skipped. The sole failure remains the old `account-scoped-collection-migration.integration.mjs`, which intentionally requires `SONLI_MIGRATION_TEST_DATABASE_URL`; it is an environment gate, not reported as product success.
+- Production Vite build passed for 4,833 transformed modules; the existing >500 kB chunk warning remains.
+- Changed-module syntax, `git diff --check`, and final diff/status inspection passed.
+
+### Round 3 unverified scope, risk, and rollback
+
+No real gateway, source materialization/download, object storage, Ozon call, production database, or production data was used. The new PostgreSQL fixture contains the full <=028 duplicate upgrade and cleanup claim/fail/reclaim/stale/current CAS sequence, but it did not execute because both `AUTO_LISTING_POSTGRES_TESTS=1` and a dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` were not configured. PostgreSQL SQL compilation, trigger interaction, and concurrent claim behavior therefore remain explicitly unverified.
+
+The feature remains disabled and unwired. Primary regression risks are the future materialization worker producing a new immutable visual-group/plan version, and the future durable generation-attempt adapter honoring every exact size/lease return contract. Application rollback is reverting this scoped commit while keeping the feature off. If migration 029 was applied, preserve the newly audited legacy `FAILED` rows and cleanup obligations and use a reviewed compensating migration; never hand-delete rows or destructively edit production schema.

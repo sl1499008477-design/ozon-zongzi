@@ -83,14 +83,18 @@ function allowedNonRussianTokens(facts) {
 
 function textSegmentsValid(segments, facts) {
   const allowed = allowedNonRussianTokens(facts);
-  return segments.every((segment) => {
-    for (const token of segment.match(/[\p{L}\p{N}]+/gu) || []) {
-      if (/^[А-Яа-яЁё]+$/u.test(token)) continue;
+  let hasCyrillicToken = false;
+  const valid = segments.every((segment) => {
+    const tokens = segment.match(/[\p{L}\p{N}]+/gu) || [];
+    if (!tokens.length) return false;
+    for (const token of tokens) {
+      if (/^[А-Яа-яЁё0-9]+$/u.test(token) && /[А-Яа-яЁё]/u.test(token)) { hasCyrillicToken = true; continue; }
       if (/^[A-Za-z0-9]+$/u.test(token) && allowed.has(token.toLocaleLowerCase("en-US"))) continue;
       return false;
     }
     return true;
   });
+  return { valid, hasCyrillicToken };
 }
 
 const schema = Object.freeze({
@@ -189,12 +193,15 @@ export function evaluateGeneratedCheckerEvidence(input = {}) {
     || typeof textRequired !== "boolean"
     || !validModelEvidence(checkerModelEvidence, checkerModel)) throw checkerError("CHECKER_UNAVAILABLE", true);
   const { evidence, unverifiedClaim } = validateResponse(checkerResult, references, facts);
+  const hasDetectedText = evidence.detectedTexts.length > 0;
+  const textPolicy = textSegmentsValid(evidence.detectedTexts, facts);
+  const languageMismatch = (textRequired && (!hasDetectedText || !textPolicy.hasCyrillicToken))
+    || (hasDetectedText && (!checkerResult.russianText || evidence.language !== "ru" || !textPolicy.valid));
   const code = !checkerResult.matchesProduct || ["color", "shape", "accessoryCount"].some((key) => evidence.identity[key] === false)
     ? "PRODUCT_IDENTITY_MISMATCH"
     : !checkerResult.claimsVerified || unverifiedClaim
       ? "UNVERIFIED_CLAIM"
-      : !checkerResult.russianText || evidence.language !== "ru"
-        || (textRequired && evidence.detectedTexts.length === 0) || !textSegmentsValid(evidence.detectedTexts, facts)
+      : languageMismatch
         ? "LANGUAGE_MISMATCH"
         : checkerResult.quality !== "PASS" || evidence.qualityFlags.length
           ? "IMAGE_QUALITY_FAILED"

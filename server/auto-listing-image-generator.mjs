@@ -36,15 +36,14 @@ function generationSize(value, ratio, resolution) {
 
 function preliminarySourceEvidence(selected) {
   return selected.map((reference) => {
-    if (!strictText(reference?.assetId) || !["CONTENT_HASH", "SOURCE_URL"].includes(reference?.evidenceKind)) {
+    if (!strictText(reference?.assetId)) {
       throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
     }
-    if (reference.evidenceKind === "CONTENT_HASH") {
-      if (!HASH.test(reference.contentHash || "")) throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
-      return { assetId: reference.assetId, evidenceKind: reference.evidenceKind, evidenceRefHash: reference.contentHash };
+    if (reference.evidenceKind === "SOURCE_URL") throw failure("AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED");
+    if (reference.evidenceKind !== "CONTENT_HASH" || !HASH.test(reference.contentHash || "")) {
+      throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
     }
-    if (!strictText(reference.sourceRef, 4096)) throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
-    return { assetId: reference.assetId, evidenceKind: reference.evidenceKind, evidenceRefHash: sha256(Buffer.from(reference.sourceRef, "utf8")) };
+    return { assetId: reference.assetId, evidenceKind: reference.evidenceKind, evidenceRefHash: reference.contentHash };
   });
 }
 
@@ -109,16 +108,13 @@ async function loadReferences({ sourceAssetLoader, scope, selected }) {
   let total = 0;
   const refs = [];
   for (const expected of selected) {
-    // The loader is the only component allowed to receive a source URL.  The
-    // gateway below receives only these resolved, verified bytes.
     let loaded;
     try { loaded = await sourceAssetLoader.loadSourceAsset({ ...scope, assetId: expected.assetId, sourceRef: expected.sourceRef, evidenceKind: expected.evidenceKind }); } catch { throw failure("AUTO_LISTING_SOURCE_ASSET_UNAVAILABLE", true); }
     const bytes = Buffer.isBuffer(loaded?.bytes) ? loaded.bytes : Buffer.from(loaded?.bytes || []);
     const sourceImage = await inspectSourceListingImage({ bytes }).catch(() => null);
     const contentHash = sha256(bytes);
     if (!sourceImage || !bytes.length || total + bytes.length > MAX_AGGREGATE_BYTES || loaded.assetId !== expected.assetId || loaded.evidenceKind !== expected.evidenceKind || loaded.contentType !== sourceImage.contentType || loaded.width !== sourceImage.width || loaded.height !== sourceImage.height) throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
-    if (expected.evidenceKind === "CONTENT_HASH" && expected.contentHash !== contentHash) throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
-    if (expected.evidenceKind === "SOURCE_URL" && (!text(expected.sourceRef) || loaded.sourceRef !== expected.sourceRef)) throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
+    if (expected.contentHash !== contentHash) throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
     const normalized = { assetId: expected.assetId, contentHash, contentType: loaded.contentType, width: loaded.width, height: loaded.height, size: bytes.length, bytes };
     refs.push(normalized); total += bytes.length;
   }
@@ -280,7 +276,7 @@ export async function generateImageSlot(input = {}) {
     profile, imageModel, ratio, resolution, size: validated.size, quality, templateVersion, regeneration: effectiveRegeneration });
   let reservation;
   try {
-    reservation = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, maxAttempts });
+    reservation = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, generationSize: validated.size, maxAttempts });
   } catch {
     throw repositoryFailure();
   }
@@ -298,8 +294,9 @@ export async function generateImageSlot(input = {}) {
     throw exhausted;
   }
   if (reservation?.status !== "RESERVED" || !strictText(reservation.leaseToken) || !Number.isInteger(reservation.attemptNo)
-    || reservation.attemptNo < 1 || reservation.attemptNo > maxAttempts) throw failure("AUTO_LISTING_IMAGE_RESERVATION_FAILED", true);
-  const attempt = { ...scope, attemptIdentityHash, inputHash: attemptIdentityHash, attemptNo: reservation.attemptNo, leaseToken: reservation.leaseToken };
+    || reservation.attemptNo < 1 || reservation.attemptNo > maxAttempts
+    || reservation.generationSize !== validated.size) throw failure("AUTO_LISTING_IMAGE_RESERVATION_FAILED", true);
+  const attempt = { ...scope, attemptIdentityHash, inputHash: attemptIdentityHash, generationSize: validated.size, attemptNo: reservation.attemptNo, leaseToken: reservation.leaseToken };
   let gatewayRequestId = null;
   let checkerRequestId = null;
   let terminalized = false;

@@ -16,6 +16,19 @@ ALTER TABLE ai_generation_assets
   ADD COLUMN IF NOT EXISTS generation_size TEXT,
   ADD COLUMN IF NOT EXISTS final_input_bound_at TIMESTAMPTZ;
 
+-- <=028 allowed multiple in-flight rows that cannot satisfy the new lease,
+-- immutable-source, or generation-size contract. Preserve their audit rows,
+-- but end their ghost activity before creating the new active indexes.
+UPDATE ai_generation_assets
+SET status = 'FAILED',
+    error_code = 'MIGRATION_029_LEGACY_GENERATING_TERMINATED',
+    error_retryable = TRUE,
+    lease_token = NULL,
+    lease_expires_at = NULL,
+    updated_at = NOW()
+WHERE status = 'GENERATING'
+  AND (attempt_identity_hash IS NULL OR generation_size IS NULL);
+
 CREATE OR REPLACE FUNCTION auto_listing_generation_source_evidence_complete(value JSONB)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -148,7 +161,7 @@ CREATE INDEX IF NOT EXISTS ai_generation_assets_accepted_plan_input_idx
 
 CREATE UNIQUE INDEX IF NOT EXISTS ai_generation_assets_active_scope_key
   ON ai_generation_assets(account_id, job_id, item_id, plan_id, visual_group_key, slot_key, input_hash)
-  WHERE status = 'GENERATING';
+  WHERE status = 'GENERATING' AND attempt_identity_hash IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ai_generation_assets_attempt_identity_attempt_key
   ON ai_generation_assets(account_id, job_id, item_id, plan_id, visual_group_key, slot_key, attempt_identity_hash, attempt_no)
@@ -156,7 +169,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ai_generation_assets_attempt_identity_attempt_
 
 CREATE UNIQUE INDEX IF NOT EXISTS ai_generation_assets_active_attempt_identity_key
   ON ai_generation_assets(account_id, job_id, item_id, plan_id, visual_group_key, slot_key, attempt_identity_hash)
-  WHERE status = 'GENERATING';
+  WHERE status = 'GENERATING' AND attempt_identity_hash IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ai_generation_assets_bound_input_key
   ON ai_generation_assets(account_id, job_id, item_id, plan_id, visual_group_key, slot_key, input_hash)
@@ -183,6 +196,9 @@ CREATE TABLE IF NOT EXISTS auto_listing_asset_cleanup_obligations (
   original_error_code TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED')),
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  claim_token TEXT,
+  claim_owner TEXT,
+  claim_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -196,10 +212,41 @@ CREATE TABLE IF NOT EXISTS auto_listing_asset_cleanup_obligations (
   CHECK (NULLIF(BTRIM(object_key), '') IS NOT NULL AND object_key !~ '[[:cntrl:]]'),
   CHECK (NULLIF(BTRIM(reason), '') IS NOT NULL AND LENGTH(reason) <= 240 AND reason !~ '[[:cntrl:]]'),
   CHECK (NULLIF(BTRIM(original_error_code), '') IS NOT NULL AND LENGTH(original_error_code) <= 240 AND original_error_code !~ '[[:cntrl:]]'),
+  CONSTRAINT auto_listing_asset_cleanup_claim_pair_check CHECK (
+    (status = 'PROCESSING'
+      AND NULLIF(BTRIM(claim_token), '') IS NOT NULL
+      AND NULLIF(BTRIM(claim_owner), '') IS NOT NULL
+      AND claim_expires_at IS NOT NULL)
+    OR (status <> 'PROCESSING' AND claim_token IS NULL AND claim_owner IS NULL AND claim_expires_at IS NULL)
+  ),
   UNIQUE (account_id, object_key),
   FOREIGN KEY (account_id, job_id, item_id, plan_id)
     REFERENCES ai_content_plans(account_id, job_id, item_id, id) ON DELETE RESTRICT
 );
+
+ALTER TABLE auto_listing_asset_cleanup_obligations
+  ADD COLUMN IF NOT EXISTS claim_token TEXT,
+  ADD COLUMN IF NOT EXISTS claim_owner TEXT,
+  ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'auto_listing_asset_cleanup_claim_pair_check'
+      AND conrelid = 'auto_listing_asset_cleanup_obligations'::regclass
+  ) THEN
+    ALTER TABLE auto_listing_asset_cleanup_obligations
+      ADD CONSTRAINT auto_listing_asset_cleanup_claim_pair_check CHECK (
+        (status = 'PROCESSING'
+          AND NULLIF(BTRIM(claim_token), '') IS NOT NULL
+          AND NULLIF(BTRIM(claim_owner), '') IS NOT NULL
+          AND claim_expires_at IS NOT NULL)
+        OR (status <> 'PROCESSING' AND claim_token IS NULL AND claim_owner IS NULL AND claim_expires_at IS NULL)
+      );
+  END IF;
+END;
+$$;
 
 CREATE INDEX IF NOT EXISTS auto_listing_asset_cleanup_pending_idx
   ON auto_listing_asset_cleanup_obligations(account_id, status, next_retry_at, id);

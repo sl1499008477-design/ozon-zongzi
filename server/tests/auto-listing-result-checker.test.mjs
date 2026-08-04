@@ -130,6 +130,8 @@ test("Russian body permits brand/model letters and numbers but an entirely non-R
   mixedInput.facts.push({ factId: "fact.brand", field: "identity.brand", kind: "BRAND", value: "Brand 500", numericValue: null, unit: null, sourcePath: "identity.brand" });
   const mixed = await checkGeneratedAsset(mixedInput);
   assert.equal(mixed.accepted, true);
+  const cyrillicAlphanumeric = await checkGeneratedAsset(await input(checkerValue({}, { detectedTexts: ["Модель2"] })));
+  assert.equal(cyrillicAlphanumeric.accepted, true);
   const nonRussian = await checkGeneratedAsset(await input(checkerValue({}, { detectedTexts: ["Brand 500 HEIGHT 1 CM"], language: "ru" })));
   assert.equal(nonRussian.code, "LANGUAGE_MISMATCH");
 });
@@ -183,7 +185,7 @@ test("each detected text segment allows only Russian or fact-proven brand model 
 
   const exceptionOnly = await input(checkerValue({}, { detectedTexts: ["Brand 500", "USB LED IPX7"] }));
   exceptionOnly.facts.push(brandFact, techFact);
-  assert.equal((await checkGeneratedAsset(exceptionOnly)).accepted, true);
+  assert.equal((await checkGeneratedAsset(exceptionOnly)).code, "LANGUAGE_MISMATCH");
   for (const contradiction of [checkerValue({ russianText: false }, { detectedTexts: ["Brand 500"] }), checkerValue({}, { detectedTexts: ["Brand 500"], language: "other" })]) {
     const contradicted = await input(contradiction);
     contradicted.facts.push(brandFact);
@@ -197,6 +199,20 @@ test("empty detected text follows the explicit slot text requirement", async () 
   const none = checkerValue({}, { claims: [], detectedTexts: [] });
   const optional = await checkGeneratedAsset(await input(none, { textRequired: false }));
   assert.equal(optional.accepted, true);
+
+  const explicitNoText = checkerValue(
+    { russianText: false },
+    { claims: [], detectedTexts: [], language: "other" },
+  );
+  const explicitOptional = await checkGeneratedAsset(await input(explicitNoText, { textRequired: false }));
+  assert.equal(explicitOptional.accepted, true);
+});
+
+test("punctuation-only or emoji-only OCR evidence cannot impersonate valid Russian text", async () => {
+  for (const detectedText of ["!!!", "🔥✨"]) {
+    const result = await checkGeneratedAsset(await input(checkerValue({}, { claims: [], detectedTexts: [detectedText] })));
+    assert.equal(result.code, "LANGUAGE_MISMATCH");
+  }
 });
 
 test("exports one pure closed evaluator and persists the complete raw checker decision for replay", async () => {

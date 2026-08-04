@@ -248,7 +248,36 @@ if (!enabled) {
           'legacy-gateway','image-model',1,'legacy-prompt','legacy/object.png',$8,'image/png',768,1024,'{"accepted":true}'::jsonb,NOW())`,
         [`legacy-accepted-${suffix}`, account, jobA, itemA, plan, profile, legacyAcceptedInputHash, "e".repeat(64)],
       );
+      const legacyGeneratingInputHash = "0".repeat(64);
+      for (const attemptNo of [1, 2, 3]) {
+        await client.query(
+          `INSERT INTO ai_generation_assets (
+            id,account_id,job_id,item_id,plan_id,profile_id,visual_group_key,slot_key,role,input_hash,
+            attempt_no,status,model_name,profile_version,prompt_hash
+          ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a','legacy-generating-slot','SELLING_POINT',$7,$8,
+            'GENERATING','image-model',1,'legacy-prompt')`,
+          [`legacy-generating-${attemptNo}-${suffix}`, account, jobA, itemA, plan, profile, legacyGeneratingInputHash, attemptNo],
+        );
+      }
       await client.query(await readFile(path.join(migrationsDir, "029_auto_listing_ai_generation_evidence.sql"), "utf8"));
+      const migratedLegacyGenerating = await client.query(
+        `SELECT id,status,error_code,error_retryable,lease_token,lease_expires_at,attempt_identity_hash
+         FROM ai_generation_assets WHERE slot_key='legacy-generating-slot' ORDER BY attempt_no`,
+      );
+      assert.deepEqual(migratedLegacyGenerating.rows, [1, 2, 3].map((attemptNo) => ({
+        id: `legacy-generating-${attemptNo}-${suffix}`,
+        status: "FAILED",
+        error_code: "MIGRATION_029_LEGACY_GENERATING_TERMINATED",
+        error_retryable: true,
+        lease_token: null,
+        lease_expires_at: null,
+        attempt_identity_hash: null,
+      })));
+      await insertAsset({
+        id: `new-after-legacy-${suffix}`, slotKey: "legacy-generating-slot", status: "GENERATING",
+        inputHash: "1".repeat(64), attemptIdentityHash: "1".repeat(64), attemptNo: 1,
+        leaseToken: "lease-new-after-legacy", leaseExpiresAt: new Date(Date.now() + 60_000),
+      });
       await assert.rejects(insertAsset({
         id: `bound-collides-legacy-${suffix}`, slotKey: "upgrade-slot", status: "GENERATING",
         inputHash: legacyAcceptedInputHash, attemptIdentityHash: "d".repeat(64), attemptNo: 2, finalInputBoundAt: new Date(),
@@ -336,6 +365,49 @@ if (!enabled) {
       const crossScopeCleanup = { ...cleanupInput, jobId: jobB, itemId: itemB, slotKey: "wrong-scope" };
       crossScopeCleanup.objectKey = buildGeneratedAssetObjectKey(crossScopeCleanup);
       await assert.rejects(cleanupRepository.recordAssetCleanupRequired(crossScopeCleanup), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_REPOSITORY_FAILED" && error?.retryable === true);
+
+      const [cleanupClaim] = await cleanupRepository.claimAssetCleanupObligations({
+        accountId: account, workerId: "cleanup-worker-a", limit: 1, leaseMs: 60_000,
+      });
+      assert.equal(cleanupClaim.id, cleanupFirst.id);
+      assert.equal(cleanupClaim.status, "PROCESSING");
+      assert.equal(cleanupClaim.attemptCount, 1);
+      assert.deepEqual(await cleanupRepository.claimAssetCleanupObligations({
+        accountId: account, workerId: "cleanup-worker-b", limit: 1, leaseMs: 60_000,
+      }), []);
+      assert.deepEqual(await cleanupRepository.claimAssetCleanupObligations({
+        accountId: `wrong-${account}`, workerId: "cleanup-worker-b", limit: 1, leaseMs: 60_000,
+      }), []);
+      const cleanupFailed = await cleanupRepository.failAssetCleanup({
+        accountId: account, id: cleanupClaim.id, workerId: "cleanup-worker-a", claimToken: cleanupClaim.claimToken,
+        errorCode: "AUTO_LISTING_ASSET_REMOVE_FAILED",
+      });
+      assert.equal(cleanupFailed.status, "PENDING");
+      assert.equal(cleanupFailed.attemptCount, 1);
+      assert.equal(cleanupFailed.lastErrorCode, "AUTO_LISTING_ASSET_REMOVE_FAILED");
+      assert.equal(new Date(cleanupFailed.nextRetryAt).getTime() - new Date(cleanupFailed.updatedAt).getTime(), 5 * 60_000);
+      assert.deepEqual(await cleanupRepository.claimAssetCleanupObligations({
+        accountId: account, workerId: "cleanup-worker-b", limit: 1, leaseMs: 60_000,
+      }), []);
+      await client.query(
+        "UPDATE auto_listing_asset_cleanup_obligations SET next_retry_at=NOW()-INTERVAL '1 millisecond' WHERE account_id=$1 AND id=$2",
+        [account, cleanupClaim.id],
+      );
+      const [cleanupReclaim] = await cleanupRepository.claimAssetCleanupObligations({
+        accountId: account, workerId: "cleanup-worker-b", limit: 1, leaseMs: 60_000,
+      });
+      assert.equal(cleanupReclaim.attemptCount, 2);
+      await assert.rejects(cleanupRepository.completeAssetCleanup({
+        accountId: account, id: cleanupClaim.id, workerId: "cleanup-worker-a", claimToken: cleanupClaim.claimToken,
+      }), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_CLAIM_REJECTED");
+      const cleanupCompleted = await cleanupRepository.completeAssetCleanup({
+        accountId: account, id: cleanupReclaim.id, workerId: "cleanup-worker-b", claimToken: cleanupReclaim.claimToken,
+      });
+      assert.equal(cleanupCompleted.status, "COMPLETED");
+      await assert.rejects(cleanupRepository.failAssetCleanup({
+        accountId: account, id: cleanupReclaim.id, workerId: "cleanup-worker-b", claimToken: cleanupReclaim.claimToken,
+        errorCode: "AUTO_LISTING_ASSET_REMOVE_FAILED",
+      }), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_CLAIM_REJECTED");
 
       await assert.rejects(insertResult({ id: `rich-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
       await insertResult({ id: `rich-rejected-${suffix}`, status: "REJECTED", errorCode: "CHECKER", errorRetryable: false });

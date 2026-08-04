@@ -8,9 +8,10 @@ import { buildImageGenerationInput, generateImageSlot, summarizeGeneratedImageSl
 
 const scope = Object.freeze({ accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a", visualGroupKey: "main", slotKey: "cover" });
 const planHash = "a".repeat(64);
+const reserved = (attemptNo = 1, generationSize = "768x1024") => ({ status: "RESERVED", attemptNo, leaseToken: "lease-a", generationSize });
 async function image() { return sharp({ create: { width: 768, height: 1024, channels: 4, background: "#445566" } }).png().toBuffer(); }
-async function setup({ loaderEvidence = "SOURCE_URL", existing = null } = {}) {
-  const bytes = await image(); const asset = { assetId: "asset-a", sourceRef: "https://private.example.test/source.png", evidenceKind: "SOURCE_URL" };
+async function setup({ loaderEvidence = "CONTENT_HASH", existing = null } = {}) {
+  const bytes = await image(); const asset = { assetId: "asset-a", sourceRef: null, evidenceKind: "CONTENT_HASH", contentHash: sha256(bytes) };
   const fact = { factId: "f1", field: "identity.primaryName", kind: "IDENTITY_NAME", value: "Красный товар", numericValue: null, unit: null, sourcePath: "identity.primaryName" };
   const claim = { text: "Красный товар", sourceFactId: "f1", field: fact.field, value: fact.value, numericValue: null, unit: null };
   let gatewayCalls = 0; let loaderCalls = 0; let objectBytes = (await normalizeListingImage({ bytes, ratio: "3:4", resolution: "1K" })).bytes; const calls = []; const bindCalls = [];
@@ -19,7 +20,7 @@ async function setup({ loaderEvidence = "SOURCE_URL", existing = null } = {}) {
     slot: { slotKey: "cover", visualGroupKey: "main", role: "MAIN", textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: ["asset-a"] }, profile: { id: "profile-a", accountId: scope.accountId, configVersion: 3, textModel: "checker", imageModel: "image-model" }, imageModel: "image-model", ratio: "3:4", resolution: "1K", size: "768x1024", quality: "high", templateVersion: "image-v1",
     sourceAssetLoader: { async loadSourceAsset(request) { loaderCalls += 1; assert.equal(request.sourceRef, asset.sourceRef); return { assetId: asset.assetId, sourceRef: asset.sourceRef, evidenceKind: loaderEvidence, bytes, contentType: "image/png", width: 768, height: 1024 }; } },
     repository: {
-      async reserveGenerationAttempt() { return existing ? { status: "EXISTING_ACCEPTED", record: existing } : { status: "RESERVED", attemptNo: 1, leaseToken: "lease-a" }; },
+      async reserveGenerationAttempt() { return existing ? { status: "EXISTING_ACCEPTED", record: existing } : reserved(); },
       async bindGenerationAttemptInput(value) { bindCalls.push(value); return { status: "BOUND", inputHash: value.inputHash }; },
       async findStoredGenerationAsset() { return null; }, async recordAssetCleanupRequired(value) { return value; },
       async recordStoredGenerationAsset(value) { calls.push(["stored", value]); return value; }, async completeGenerationAttempt(value) { calls.push(["complete", value]); return { status: "ACCEPTED", accepted: true, ...value }; }, async rejectGenerationAttempt(value) { calls.push(["rejected", value]); },
@@ -64,6 +65,49 @@ test("generates an accepted slot from server-loaded bytes and does not expose so
   assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
 });
 
+test("rejects a pure SOURCE_URL before reservation, loading, gateway, or storage", async () => {
+  const fixture = await setup();
+  Object.assign(fixture.asset, { evidenceKind: "SOURCE_URL", sourceRef: "https://private.example.test/source.png" });
+  delete fixture.asset.contentHash;
+  const effects = [];
+  fixture.input.repository.reserveGenerationAttempt = async () => { effects.push("reserve"); };
+  fixture.input.sourceAssetLoader.loadSourceAsset = async () => { effects.push("load"); };
+  fixture.input.gateway.generateImage = async () => { effects.push("gateway"); };
+  fixture.input.storage.putObjectFromBuffer = async () => { effects.push("storage"); };
+  await assert.rejects(
+    generateImageSlot(fixture.input),
+    (error) => error?.code === "AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED" && error?.retryable === false,
+  );
+  assert.deepEqual(effects, []);
+});
+
+test("reserves the exact validated generation size before loading immutable source bytes", async () => {
+  const fixture = await setup();
+  let reservationInput;
+  fixture.input.repository.reserveGenerationAttempt = async (value) => {
+    reservationInput = value;
+    return reserved();
+  };
+  await generateImageSlot(fixture.input);
+  assert.equal(reservationInput.generationSize, "768x1024");
+});
+
+test("rejects a reserved reply whose generation size is missing or changed before source loading", async () => {
+  for (const returnedSize of [undefined, "900x1200"]) {
+    const fixture = await setup();
+    fixture.input.repository.reserveGenerationAttempt = async () => {
+      const reply = reserved();
+      if (returnedSize === undefined) delete reply.generationSize;
+      else reply.generationSize = returnedSize;
+      return reply;
+    };
+    await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_IMAGE_RESERVATION_FAILED" && error?.retryable === true);
+    assert.equal(fixture.loaderCalls(), 0);
+    assert.equal(fixture.gatewayCalls(), 0);
+    assert.deepEqual(fixture.calls, []);
+  }
+});
+
 test("reuses a fully audited accepted attempt for the same slot and input without an image call", async () => {
   const first = await setup();
   const accepted = await generateImageSlot(first.input);
@@ -94,7 +138,7 @@ test("required bind port is fenced before reservation or source loading", async 
     const fixture = await setup();
     delete fixture.input.repository[method];
     const effects = [];
-    fixture.input.repository.reserveGenerationAttempt = async () => { effects.push("reserve"); return { status: "RESERVED", attemptNo: 1, leaseToken: "lease-a" }; };
+    fixture.input.repository.reserveGenerationAttempt = async () => { effects.push("reserve"); return reserved(); };
     fixture.input.sourceAssetLoader.loadSourceAsset = async () => { effects.push("load"); throw new Error("must not load"); };
     await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_IMAGE_INPUT_INVALID", method);
     assert.deepEqual(effects, [], method);
@@ -115,14 +159,14 @@ test("quality is canonicalized once for attempt identity, final input, gateway, 
 });
 
 test("mismatched source evidence consumes its reserved lease without calling an image gateway", async () => {
-  const fixture = await setup({ loaderEvidence: "CONTENT_HASH" });
+  const fixture = await setup({ loaderEvidence: "SOURCE_URL" });
   await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_SOURCE_ASSET_INVALID");
   assert.equal(fixture.gatewayCalls(), 0); assert.deepEqual(fixture.calls.map(([name]) => name), ["failed"]);
 });
 
 test("source loading failure is terminalized through its lease and final exhaustion blocks MAIN", async () => {
   const fixture = await setup();
-  fixture.input.repository.reserveGenerationAttempt = async () => ({ status: "RESERVED", attemptNo: 3, leaseToken: "lease-a" });
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(3);
   let blocks = 0; fixture.input.repository.blockItem = async () => { blocks += 1; };
   fixture.input.sourceAssetLoader.loadSourceAsset = async () => { throw new Error("network detail must not escape"); };
   await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_SOURCE_ASSET_UNAVAILABLE" && error?.retryable === false && error?.itemOutcome === "BLOCKED");
@@ -173,7 +217,7 @@ test("the complete plan, profile, group, and slot scope fence runs before every 
 
 test("loads only the slot's ordered unique 1..7 references even when its visual group has more images", async () => {
   const fixture = await setup();
-  const assets = Array.from({ length: 9 }, (_, index) => ({ assetId: `asset-${index}`, sourceRef: `https://private.example.test/${index}.png`, evidenceKind: "SOURCE_URL" }));
+  const assets = Array.from({ length: 9 }, (_, index) => ({ assetId: `asset-${index}`, sourceRef: null, contentHash: sha256(fixture.bytes), evidenceKind: "CONTENT_HASH" }));
   fixture.input.plan.visualGroups.groups[0].referenceImages = assets;
   fixture.input.slot.referenceAssetIds = ["asset-3", "asset-1"];
   fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
@@ -211,7 +255,7 @@ test("source reference aggregate is capped at 32 MiB before reservation or gatew
   const raw = crypto.randomBytes(1700 * 2268 * 3);
   const large = await sharp(raw, { raw: { width: 1700, height: 2268, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
   assert.ok(large.length > 10 * 1024 * 1024);
-  const assets = Array.from({ length: 4 }, (_, index) => ({ assetId: `asset-${index}`, sourceRef: `https://private.example.test/${index}.png`, evidenceKind: "SOURCE_URL" }));
+  const assets = Array.from({ length: 4 }, (_, index) => ({ assetId: `asset-${index}`, sourceRef: null, contentHash: sha256(large), evidenceKind: "CONTENT_HASH" }));
   fixture.input.plan.visualGroups.groups[0].referenceImages = assets;
   fixture.input.slot.referenceAssetIds = assets.map(({ assetId }) => assetId);
   fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
@@ -260,20 +304,19 @@ test("a final input version conflict ends the lease before gateway or storage", 
   assert.equal(fixture.loaderCalls(), 1); assert.equal(fixture.gatewayCalls(), 0); assert.deepEqual(fixture.calls, []);
 });
 
-test("different preliminary source identities reuse the same accepted final bytes at bind", async () => {
+test("the same immutable content identity safely reuses accepted bytes without source loading", async () => {
   const attempts = createMemoryGenerationAttemptRepository({ token: () => crypto.randomUUID() });
   const repository = { ...attempts, async recordAssetCleanupRequired(value) { return { ...value, status: "PENDING" }; }, async blockItem() {}, async countAcceptedAssets() { return 0; } };
   const first = await setup(); first.input.repository = repository;
   const accepted = await generateImageSlot(first.input);
 
   const second = await setup(); second.input.repository = repository;
-  second.asset.sourceRef = "https://private.example.test/same-bytes-new-source.png";
   second.input.gateway.generateImage = async () => { throw new Error("must reuse accepted final bytes"); };
   second.input.storage.putObjectFromBuffer = async () => { throw new Error("must not store duplicate final bytes"); };
   const reused = await generateImageSlot(second.input);
   assert.equal(reused.inputHash, accepted.inputHash);
   assert.equal(reused.attemptIdentityHash, accepted.attemptIdentityHash);
-  assert.equal(second.loaderCalls(), 1);
+  assert.equal(second.loaderCalls(), 0);
   assert.equal(second.gatewayCalls(), 0);
   assert.deepEqual(second.calls, []);
   assert.equal(attempts.snapshot().filter((row) => row.status === "ACCEPTED").length, 1);
@@ -317,7 +360,7 @@ test("an occupied lease has no external call and gateway failure is terminalized
 test("malformed reserved attempt numbers fail closed before gateway, storage, or terminal mutation", async () => {
   for (const attemptNo of [0, 4]) {
     const fixture = await setup();
-    fixture.input.repository.reserveGenerationAttempt = async () => ({ status: "RESERVED", attemptNo, leaseToken: "lease-a" });
+    fixture.input.repository.reserveGenerationAttempt = async () => reserved(attemptNo);
     await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "AUTO_LISTING_IMAGE_RESERVATION_FAILED");
     assert.equal(fixture.gatewayCalls(), 0);
     assert.deepEqual(fixture.calls, []);
@@ -326,7 +369,7 @@ test("malformed reserved attempt numbers fail closed before gateway, storage, or
 
 test("attempt number scopes generation/checker idempotency keys and every terminal record keeps request IDs", async () => {
   const accepted = await setup();
-  accepted.input.repository.reserveGenerationAttempt = async () => ({ status: "RESERVED", attemptNo: 2, leaseToken: "lease-a" });
+  accepted.input.repository.reserveGenerationAttempt = async () => reserved(2);
   const keys = [];
   const generate = accepted.input.gateway.generateImage;
   const inspect = accepted.input.gateway.inspectImage;
@@ -365,7 +408,7 @@ test("transport, storage, checker, policy, and exhausted reservations share one 
     fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
     fixture.input.repository.reserveGenerationAttempt = async () => failureKind === "exhausted"
       ? { status: "ATTEMPTS_EXHAUSTED" }
-      : { status: "RESERVED", attemptNo: 3, leaseToken: "lease-a" };
+      : reserved(3);
     let blocks = 0;
     fixture.input.repository.blockItem = async () => { blocks += 1; };
     fixture.input.repository.countAcceptedAssets = async () => acceptedCount;
@@ -389,7 +432,7 @@ test("final policy failure blocks MAIN once, while non-main only reports bounded
   for (const [role, attemptNo, count, outcome, blocked] of [["MAIN", 1, 0, undefined, 0], ["MAIN", 3, 0, "BLOCKED", 1], ["DETAIL", 3, 5, "ITEM_INCOMPLETE", 0], ["DETAIL", 3, 6, "CONTINUE_WITHOUT_SLOT", 0]]) {
     const fixture = await setup(); fixture.input.slot = { ...fixture.input.slot, role };
     fixture.input.plan.plan.slots = [{ ...fixture.input.slot }];
-    fixture.input.repository.reserveGenerationAttempt = async () => ({ status: "RESERVED", attemptNo, leaseToken: "lease-a" });
+    fixture.input.repository.reserveGenerationAttempt = async () => reserved(attemptNo);
     let blocks = 0; fixture.input.repository.blockItem = async () => { blocks += 1; }; fixture.input.repository.countAcceptedAssets = async () => count;
     fixture.input.gateway.inspectImage = async () => checkerResponse(fixture, {}, { identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, detectedTexts: [] });
     await assert.rejects(generateImageSlot(fixture.input), (error) => error?.code === "PRODUCT_IDENTITY_MISMATCH" && error.itemOutcome === outcome && error.retryable === (attemptNo < 3));
@@ -400,7 +443,7 @@ test("final policy failure blocks MAIN once, while non-main only reports bounded
 
 test("a max-attempt transport failure is persisted as non-retryable before item finalization", async () => {
   const fixture = await setup();
-  fixture.input.repository.reserveGenerationAttempt = async () => ({ status: "RESERVED", attemptNo: 3, leaseToken: "lease-a" });
+  fixture.input.repository.reserveGenerationAttempt = async () => reserved(3);
   fixture.input.repository.blockItem = async () => {};
   fixture.input.gateway.generateImage = async () => { const value = new Error("offline"); value.code = "AI_GATEWAY_UNAVAILABLE"; value.retryable = true; throw value; };
   await assert.rejects(generateImageSlot(fixture.input), (error) => error?.retryable === false);
@@ -411,7 +454,7 @@ test("checker transport and reject-record failure remain recoverable and never t
   const transport = await setup(); transport.input.repository.blockItem = async () => { throw new Error("must not block"); };
   transport.input.gateway.inspectImage = async () => { throw new Error("temporary"); };
   await assert.rejects(generateImageSlot(transport.input), (error) => error?.code === "CHECKER_UNAVAILABLE" && error?.retryable === true);
-  const rejectFailure = await setup(); rejectFailure.input.repository.reserveGenerationAttempt = async () => ({ status: "RESERVED", attemptNo: 3, leaseToken: "lease-a" });
+  const rejectFailure = await setup(); rejectFailure.input.repository.reserveGenerationAttempt = async () => reserved(3);
   rejectFailure.input.repository.rejectGenerationAttempt = async () => { throw new Error("db unavailable"); };
   rejectFailure.input.repository.blockItem = async () => { throw new Error("must not block"); };
   rejectFailure.input.gateway.inspectImage = async () => checkerResponse(rejectFailure, {}, { identity: { color: false, shape: true, accessoryCount: true, sourceAssetIds: ["asset-a"] }, detectedTexts: [] });

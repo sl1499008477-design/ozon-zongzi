@@ -4,11 +4,13 @@ const HASH = /^[a-f0-9]{64}$/;
 const scopeKeys = ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"];
 const clean = (value) => typeof value === "string" && value.trim() && value === value.trim()
   && value.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : "";
+const validGenerationSize = (value) => typeof value === "string" && /^[1-9][0-9]*x[1-9][0-9]*$/u.test(value);
 const copy = (value) => structuredClone(value);
 const keyOf = (input) => scopeKeys.map((key) => input[key]).join("\u0001");
 function invalid() { const error = new Error("图片生成尝试无效"); error.code = "AUTO_LISTING_IMAGE_ATTEMPT_INVALID"; return error; }
 function fence(input, hashKey = "attemptIdentityHash") {
-  if (!input || !scopeKeys.every((key) => clean(input[key])) || !HASH.test(input[hashKey] || "")) throw invalid();
+  if (!input || !scopeKeys.every((key) => clean(input[key])) || !HASH.test(input[hashKey] || "")
+    || !validGenerationSize(input.generationSize)) throw invalid();
   return keyOf(input);
 }
 
@@ -25,7 +27,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
     fence(input);
     const row = rows.find((candidate) => candidate.attemptNo === input.attemptNo && keyOf(candidate) === keyOf(input)
       && candidate.attemptIdentityHash === input.attemptIdentityHash);
-    if (!row || row.leaseToken !== input.leaseToken || row.status !== "GENERATING") throw invalid();
+    if (!row || row.leaseToken !== input.leaseToken || row.status !== "GENERATING"
+      || row.generationSize !== input.generationSize) throw invalid();
     if (row.finalInputBoundAt !== null && input.inputHash !== row.inputHash) throw invalid();
     return row;
   };
@@ -34,6 +37,7 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       fence(input);
       if (!Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 3) throw invalid();
       const current = matching(input);
+      if (current.some((row) => row.generationSize !== input.generationSize)) throw invalid();
       const accepted = current.find((row) => row.status === "ACCEPTED");
       if (accepted) return { status: "EXISTING_ACCEPTED", record: copy(accepted) };
       const timestamp = now();
@@ -43,8 +47,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       const attemptNo = current.reduce((maximum, row) => Math.max(maximum, row.attemptNo), 0) + 1;
       if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
       const leaseToken = clean(token()); if (!leaseToken) throw invalid();
-      rows.push({ ...Object.fromEntries(scopeKeys.map((key) => [key, input[key]])), attemptIdentityHash: input.attemptIdentityHash, inputHash: input.attemptIdentityHash, finalInputBoundAt: null, attemptNo, status: "GENERATING", leaseToken, leaseExpiresAt: timestamp + leaseMs });
-      return { status: "RESERVED", attemptNo, leaseToken };
+      rows.push({ ...Object.fromEntries(scopeKeys.map((key) => [key, input[key]])), attemptIdentityHash: input.attemptIdentityHash, inputHash: input.attemptIdentityHash, generationSize: input.generationSize, finalInputBoundAt: null, attemptNo, status: "GENERATING", leaseToken, leaseExpiresAt: timestamp + leaseMs });
+      return { status: "RESERVED", attemptNo, leaseToken, generationSize: input.generationSize };
     },
     async bindGenerationAttemptInput(input) {
       if (!HASH.test(input?.inputHash || "")) throw invalid();
@@ -69,7 +73,7 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
     async rejectGenerationAttempt(input) { const row = own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy(input), { status: "REJECTED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
     async failGenerationAttempt(input) { const row = own(input); Object.assign(row, copy(input), { status: "FAILED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
     async releaseGenerationLease(input) { const row = own(input); Object.assign(row, { status: "FAILED", errorCode: clean(input.errorCode) || "AUTO_LISTING_IMAGE_FAILED", errorRetryable: true, leaseToken: null, leaseExpiresAt: null }); return copy(row); },
-    async findStoredGenerationAsset(input) { fence(input, "inputHash"); const row = rows.find((candidate) => keyOf(candidate) === keyOf(input) && candidate.inputHash === input.inputHash && candidate.contentHash === input.contentHash && clean(candidate.objectKey)); return row ? copy(row) : null; },
+    async findStoredGenerationAsset(input) { fence(input, "inputHash"); const row = rows.find((candidate) => keyOf(candidate) === keyOf(input) && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize && candidate.contentHash === input.contentHash && clean(candidate.objectKey)); return row ? copy(row) : null; },
     snapshot() { return copy(rows); },
   });
 }

@@ -9,7 +9,7 @@ The foundation snapshot deliberately preserves `variant.evidence` and `variant.m
 - `variant.evidence.appearanceStatus`: `COMPLETE | AMBIGUOUS`
 - `appearanceFacts[]`: closed `{ factId, kind, value }`, where kind is `COLOR | PATTERN | SHAPE | MATERIAL | ACCESSORY_COUNT`
 - `sizeFacts[]`: closed `{ factId, kind: "SIZE", value }`
-- `variant.media[]`: either the current canonical HTTP(S) URL string, normalized to a deterministic `SOURCE_URL` reference with `contentHash: null`, or closed `{ assetId, contentHash }` evidence normalized to `CONTENT_HASH`. URL text is retained only in the internal group record and is omitted from the AI planner prompt; Task 4 must safely download, decode, and calculate the real content hash.
+- `variant.media[]`: either the current canonical HTTP(S) URL string, normalized to a deterministic `SOURCE_URL` reference with `contentHash: null`, or closed `{ assetId, contentHash }` evidence normalized to `CONTENT_HASH`. URL text is retained only in the internal group record and is omitted from the AI planner prompt. Before Task 4, a separate idempotent materialization worker must safely download, decode, persist, and calculate the real content hash, then create a new visual-group/ContentPlan version. Task 4 itself accepts only `CONTENT_HASH` and never mutates the original plan.
 
 Unknown V1 evidence/media object keys are rejected. Missing or legacy appearance evidence is not guessed: that variant becomes a conservative singleton group. Product-level logistics/package dimensions are never visual or claim facts.
 

@@ -13,7 +13,7 @@ The implementation does not call Ozon or browse competitors. The only gateway ca
 
 - Added a strict V1 `variant.evidence` contract for source variant ID, complete/ambiguous appearance status, visible facts (`COLOR`, `PATTERN`, `SHAPE`, `MATERIAL`, `ACCESSORY_COUNT`), and size facts.
 - Unknown V1 keys, conflicting fact IDs, duplicate variant IDs, unsafe media objects, and image-ID collisions fail with stable codes. Missing or ambiguous appearance evidence becomes a singleton instead of being guessed from names, URLs, or package data.
-- Current canonical URL-string media remains usable. It becomes a deterministic `SOURCE_URL` asset reference with `contentHash: null`; URL hashes are never represented as content hashes. Closed `{assetId, contentHash}` evidence remains supported as `CONTENT_HASH`.
+- Current canonical URL-string media remains usable for grouping and planning. It becomes a deterministic `SOURCE_URL` asset reference with `contentHash: null`; URL hashes are never represented as content hashes. Closed `{assetId, contentHash}` evidence remains supported as `CONTENT_HASH`. The later Task 4 generator is immutable-only: a separate idempotent materialization worker must turn URL evidence into persisted content-hash evidence and create a new visual-group/ContentPlan version before generation.
 - Every group records stable source SKUs, source variant IDs, source references, fact evidence, reason codes, key, and hash. Before planning, the caller-supplied group capture is rebuilt from the same verified source and compared exactly, so recomputing a forged group hash cannot authorize altered facts/assets/reasons.
 
 ## Read-only planner contract
@@ -53,7 +53,7 @@ Final verification:
 
 ## Unverified scope, regression risk, and rollback
 
-No real sub2api request, source-image download, object-storage write, PostgreSQL plan reservation, or Ozon write was run. The actual repository implementation and safe URL download/content hashing belong to later tasks. No dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` is configured, so PostgreSQL-gated tests remained safely skipped without any production fallback.
+No real sub2api request, source-image download, object-storage write, PostgreSQL plan reservation, or Ozon write was run. The actual repository implementation and safe URL materialization/content hashing belong to a later worker; Task 4 rejects raw URL evidence. No dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` is configured, so PostgreSQL-gated tests remained safely skipped without any production fallback.
 
 The new modules have no runtime call site and `AUTO_LISTING_AI_ENABLED` remains off by default, so current collection, extension, store, listing, order, and UI behavior is unchanged. Rollback is to keep that flag off and revert this Task 3 commit; there is no database or external side effect to undo.
 
