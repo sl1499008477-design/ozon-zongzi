@@ -298,7 +298,7 @@ if (!enabled) {
         "SELECT object_key_version,object_key FROM ai_generation_assets WHERE id=$1",
         [`legacy-accepted-${suffix}`],
       );
-      assert.deepEqual(migratedLegacyAccepted.rows[0], { object_key_version: "LEGACY_V1", object_key: "legacy/object.png" });
+      assert.deepEqual(migratedLegacyAccepted.rows[0], { object_key_version: null, object_key: "legacy/object.png" });
       const migratedLegacyCleanup = await client.query(
         "SELECT object_key_version,status,object_key FROM auto_listing_asset_cleanup_obligations WHERE id=$1",
         [`legacy-cleanup-${suffix}`],
@@ -378,6 +378,7 @@ if (!enabled) {
       await assert.rejects(insertAsset({ id: `asset-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertResult({ id: `rich-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertAsset({ id: `asset-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-null-object-key-version-${suffix}`, objectKeyVersion: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-wrong-v2-key-${suffix}`, objectKey: "auto-listing/v2/wrong/path.png" })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-attempt-identity-null-${suffix}`, attemptIdentityHash: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-generation-size-null-${suffix}`, generationSize: null })), { code: "23514" });

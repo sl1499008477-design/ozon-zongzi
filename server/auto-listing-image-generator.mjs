@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { inspectSourceListingImage, normalizeListingImage, sha256, storeGeneratedAsset, verifyGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
+import { inspectSourceListingImage, normalizeListingImage, sha256, storeGeneratedAsset, verifyPersistedAcceptedGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
 import { checkGeneratedAsset, evaluateGeneratedCheckerEvidence } from "./auto-listing-result-checker.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -157,7 +157,7 @@ function verifyExistingAccepted(record, scope, inputHash, { attemptIdentityHash,
   if (!record || record.status !== "ACCEPTED" || record.inputHash !== inputHash
     || !HASH.test(record.attemptIdentityHash || "") || record.attemptIdentityHash !== attemptIdentityHash || record.generationSize !== expectedSize) return false;
   for (const key of ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"]) if (record[key] !== scope[key]) return false;
-  if (!HASH.test(record.contentHash) || !verifyGeneratedAssetObjectKey(record)) return false;
+  if (!HASH.test(record.contentHash) || !verifyPersistedAcceptedGeneratedAssetObjectKey(record)) return false;
   return record.role === slot.role && record.contentType === "image/png"
     && Number.isInteger(record.width) && record.width > 0 && Number.isInteger(record.height) && record.height > 0 && Number.isInteger(record.size) && record.size > 0
     && (!stored || ["objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "size"].every((key) => record[key] === stored[key]))

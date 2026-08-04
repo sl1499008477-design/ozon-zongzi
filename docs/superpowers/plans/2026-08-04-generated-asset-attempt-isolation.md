@@ -195,3 +195,52 @@ The adoption statement locks and validates the exact obligation lease, selects a
 - [ ] **Step 5: Update report/ledger with exact evidence and explicit unverified ranges**
 - [ ] **Step 6: Commit the scoped repair with the coordinator-provided message**
 - [ ] **Step 7: Hand the commit to an independent reviewer without self-declaring PASS**
+
+### Task 6: Preserve immutable legacy assets and close PostgreSQL NULL acceptance
+
+**Files:**
+- Modify: `server/db/migrations/030_auto_listing_generated_asset_attempt_isolation.sql`
+- Modify: `server/auto-listing-asset-store.mjs`
+- Modify: `server/auto-listing-image-generator.mjs`
+- Test: `server/tests/auto-listing-ai-generation-evidence-migration.test.mjs`
+- Test: `server/tests/auto-listing-ai-migration-postgres.test.mjs`
+- Test: `server/tests/auto-listing-asset-store.test.mjs`
+- Test: `server/tests/auto-listing-image-generator.test.mjs`
+
+**Interfaces:**
+- Produces: `verifyPersistedAcceptedGeneratedAssetObjectKey(record)` as an internal-server compatibility verifier; callers do not pass a legacy-mode flag.
+- Preserves: ordinary `verifyGeneratedAssetObjectKey(input)` accepts only explicit `ATTEMPT_V2` or `LEGACY_V1` and every new store/complete/cleanup write remains V2-only.
+
+- [x] **Step 1: Add RED compatibility tests**
+
+Add an application test where a persisted `status: "ACCEPTED"`, null-version record with the exact former key formula is accepted only by the persisted-accepted verifier. Assert ordinary verification still rejects it, and null-version non-accepted or malformed legacy keys fail. Add generator replay coverage so the complete existing scope/plan/input/checker/object-readback matrix remains mandatory.
+
+Add migration assertions that 030 contains no `UPDATE ai_generation_assets`, and its accepted constraint contains all three closed predicates:
+
+```sql
+object_key_version IS NOT NULL
+AND object_key_version = 'ATTEMPT_V2'
+AND auto_listing_generation_object_key_v2_complete(...) IS TRUE
+```
+
+Update the double-gated fixture so the 027 terminal trigger remains installed, legacy accepted version stays SQL NULL after 030, a future otherwise-valid accepted insert with version NULL is rejected with `23514`, cleanup legacy rows are still backfilled, and applying 030 twice converges.
+
+- [x] **Step 2: Run RED**
+
+Run:
+
+```bash
+node --test server/tests/auto-listing-ai-generation-evidence-migration.test.mjs server/tests/auto-listing-ai-migration-postgres.test.mjs server/tests/auto-listing-asset-store.test.mjs server/tests/auto-listing-image-generator.test.mjs
+```
+
+Expected: static migration assertions fail because 030 updates terminal assets and lacks explicit non-null/`IS TRUE`; application compatibility fails because unversioned legacy accepted replay is not exposed internally.
+
+- [x] **Step 3: Implement the minimal repair**
+
+Delete only the generation-asset legacy backfill from 030. Keep the cleanup backfill. Strengthen the accepted branch of `ai_generation_assets_new_object_key_v2_check` with explicit non-null and strict verifier `IS TRUE`.
+
+Add a dedicated persisted-accepted verifier that requires `status === "ACCEPTED"`. It first uses the ordinary explicit-version verifier; only when `objectKeyVersion == null` does it exact-match the former key formula. `auto-listing-image-generator.mjs` invokes this function only after its existing accepted status/scope/input/attempt/evidence checks; object readback and checker replay remain unchanged.
+
+- [x] **Step 4: Run focused GREEN, complete matrices, update evidence, and commit**
+
+Run the Task 6 focused command, all auto-listing tests, migration tests, whole `*.test.mjs`, raw `*.mjs`, production build, changed-module syntax, and `git diff --check`. Record the dedicated PostgreSQL skip and the known raw missing-database failure separately. Commit the scoped repair and hand it to independent review without self-declaring PASS.

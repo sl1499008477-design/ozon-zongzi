@@ -4,6 +4,7 @@ import test from "node:test";
 
 const migrationUrl = new URL("../db/migrations/029_auto_listing_ai_generation_evidence.sql", import.meta.url);
 const attemptIsolationMigrationUrl = new URL("../db/migrations/030_auto_listing_generated_asset_attempt_isolation.sql", import.meta.url);
+const immutableContentMigrationUrl = new URL("../db/migrations/027_auto_listing_ai_content.sql", import.meta.url);
 
 test("generation evidence migration is additive and preserves an immutable audit trail", async () => {
   const sql = await readFile(migrationUrl, "utf8");
@@ -37,11 +38,13 @@ test("generation evidence migration is additive and preserves an immutable audit
 
 test("attempt-isolation migration upgrades deployed 029 schemas without rewriting legacy evidence", async () => {
   const sql = await readFile(attemptIsolationMigrationUrl, "utf8");
+  const immutableSql = await readFile(immutableContentMigrationUrl, "utf8");
   assert.match(sql, /ALTER TABLE ai_generation_assets[\s\S]*?ADD COLUMN IF NOT EXISTS object_key_version TEXT/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_generation_object_key_v2_complete\([\s\S]*?account_id[\s\S]*?job_id[\s\S]*?item_id[\s\S]*?plan_id[\s\S]*?visual_group_key[\s\S]*?slot_key[\s\S]*?attempt_identity_hash[\s\S]*?attempt_no[\s\S]*?input_hash[\s\S]*?content_hash[\s\S]*?object_key[\s\S]*?RETURNS BOOLEAN/is);
   assert.match(sql, /auto_listing_generation_object_key_v2_complete\(account_id,job_id,item_id,plan_id,visual_group_key,slot_key,attempt_identity_hash,attempt_no,input_hash,content_hash,object_key\)/i);
-  assert.match(sql, /UPDATE ai_generation_assets[\s\S]*?object_key_version = 'LEGACY_V1'[\s\S]*?object_key_version IS NULL[\s\S]*?object_key IS NOT NULL/is);
-  assert.match(sql, /ai_generation_assets_new_object_key_v2_check[\s\S]*?status <> 'ACCEPTED'[\s\S]*?object_key_version = 'ATTEMPT_V2'[\s\S]*?auto_listing_generation_object_key_v2_complete/is);
+  assert.match(immutableSql, /CREATE TRIGGER ai_generation_assets_terminal_immutable[\s\S]*?BEFORE UPDATE OR DELETE ON ai_generation_assets/is);
+  assert.doesNotMatch(sql, /UPDATE\s+ai_generation_assets\b/i);
+  assert.match(sql, /ai_generation_assets_new_object_key_v2_check[\s\S]*?status <> 'ACCEPTED'[\s\S]*?object_key_version IS NOT NULL[\s\S]*?object_key_version = 'ATTEMPT_V2'[\s\S]*?auto_listing_generation_object_key_v2_complete\(account_id,job_id,item_id,plan_id,visual_group_key,slot_key,attempt_identity_hash,attempt_no,input_hash,content_hash,object_key\) IS TRUE/is);
   assert.match(sql, /auto_listing_asset_cleanup_obligations[\s\S]*?object_key_version TEXT[\s\S]*?adopted_at TIMESTAMPTZ[\s\S]*?adopted_generation_asset_id TEXT[\s\S]*?adopted_generation_asset_status TEXT/is);
   assert.match(sql, /UPDATE auto_listing_asset_cleanup_obligations[\s\S]*?object_key_version = 'LEGACY_V1'[\s\S]*?object_key_version IS NULL/is);
   assert.match(sql, /auto_listing_asset_cleanup_new_object_key_v2_check[\s\S]*?object_key_version = 'ATTEMPT_V2'[\s\S]*?auto_listing_generation_object_key_v2_complete/is);

@@ -52,6 +52,18 @@ test("only an explicit migrated LEGACY_V1 record may use the exact previous key 
   assert.equal(verify({ ...scope, contentHash, objectKey: legacyKey }), false);
 });
 
+test("only persisted ACCEPTED replay may interpret an unversioned exact legacy key", () => {
+  const contentHash = "b".repeat(64);
+  const legacyKey = `auto-listing/YWNjb3VudC1h/am9iLWE/aXRlbS1h/cGxhbi1h/bWFpbg/Y292ZXI/${scope.inputHash}/${contentHash}.png`;
+  const persisted = assetStore.verifyPersistedAcceptedGeneratedAssetObjectKey;
+  assert.equal(typeof persisted, "function");
+  const accepted = { ...scope, status: "ACCEPTED", contentHash, objectKey: legacyKey, objectKeyVersion: null };
+  assert.equal(assetStore.verifyGeneratedAssetObjectKey(accepted), false);
+  assert.equal(persisted(accepted), true);
+  assert.equal(persisted({ ...accepted, status: "GENERATING" }), false);
+  assert.equal(persisted({ ...accepted, objectKey: `${legacyKey}.wrong` }), false);
+});
+
 test("rejects path traversal and an unverified storage reply", async () => {
   assert.doesNotThrow(() => buildGeneratedAssetObjectKey({ ...scope, itemId: "..", contentHash: "b".repeat(64) }));
   const normalized = await normalizeListingImage({ bytes: await image(), ratio: "3:4", resolution: "1K" });

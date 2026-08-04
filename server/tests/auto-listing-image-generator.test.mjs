@@ -119,6 +119,27 @@ test("reuses a fully audited accepted attempt for the same slot and input withou
   assert.equal(replay.gatewayCalls(), 0);
 });
 
+test("replays an immutable pre-030 accepted object with null version only through the exact legacy key", async () => {
+  const first = await setup();
+  const accepted = structuredClone(await generateImageSlot(first.input));
+  accepted.status = "ACCEPTED";
+  accepted.objectKeyVersion = null;
+  const segments = [accepted.accountId, accepted.jobId, accepted.itemId, accepted.planId, accepted.visualGroupKey, accepted.slotKey]
+    .map((value) => Buffer.from(value).toString("base64url"));
+  accepted.objectKey = `auto-listing/${segments.join("/")}/${accepted.inputHash}/${accepted.contentHash}.png`;
+  const replay = await setup({ existing: accepted });
+  const reused = await generateImageSlot(replay.input);
+  assert.equal(reused.objectKey, accepted.objectKey);
+  assert.equal(reused.objectKeyVersion, null);
+  assert.equal(replay.loaderCalls(), 0);
+  assert.equal(replay.gatewayCalls(), 0);
+
+  const corrupt = await setup({ existing: { ...accepted, objectKey: `${accepted.objectKey}.wrong` } });
+  await assert.rejects(generateImageSlot(corrupt.input), (error) => error?.code === "AUTO_LISTING_IMAGE_EXISTING_CORRUPT");
+  assert.equal(corrupt.loaderCalls(), 0);
+  assert.equal(corrupt.gatewayCalls(), 0);
+});
+
 test("direct accepted reuse binds persisted references to the immutable selected asset identity", async () => {
   const first = await setup();
   const accepted = structuredClone(await generateImageSlot(first.input));

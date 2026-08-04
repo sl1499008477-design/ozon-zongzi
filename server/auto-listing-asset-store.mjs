@@ -97,6 +97,17 @@ export function verifyGeneratedAssetObjectKey(input = {}) {
   }
 }
 
+export function verifyPersistedAcceptedGeneratedAssetObjectKey(input = {}) {
+  if (input?.status !== "ACCEPTED") return false;
+  if (verifyGeneratedAssetObjectKey(input)) return true;
+  if (input.objectKeyVersion != null || typeof input.objectKey !== "string") return false;
+  try {
+    return input.objectKey === buildLegacyGeneratedAssetObjectKey(input);
+  } catch {
+    return false;
+  }
+}
+
 function safeLog(logger, event) {
   try {
     const pending = logger?.warn?.(event);

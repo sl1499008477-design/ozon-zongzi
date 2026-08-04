@@ -1,13 +1,6 @@
 ALTER TABLE ai_generation_assets
   ADD COLUMN IF NOT EXISTS object_key_version TEXT;
 
--- Preserve pre-V2 accepted/stored evidence as read-only legacy audit. Runtime
--- writers never select this version for new assets.
-UPDATE ai_generation_assets
-SET object_key_version = 'LEGACY_V1'
-WHERE object_key_version IS NULL
-  AND object_key IS NOT NULL;
-
 CREATE OR REPLACE FUNCTION auto_listing_object_key_segment(value TEXT)
 RETURNS TEXT
 LANGUAGE SQL
@@ -81,8 +74,9 @@ BEGIN
     ALTER TABLE ai_generation_assets
       ADD CONSTRAINT ai_generation_assets_new_object_key_v2_check CHECK (
         status <> 'ACCEPTED' OR (
-          object_key_version = 'ATTEMPT_V2'
-          AND auto_listing_generation_object_key_v2_complete(account_id,job_id,item_id,plan_id,visual_group_key,slot_key,attempt_identity_hash,attempt_no,input_hash,content_hash,object_key)
+          object_key_version IS NOT NULL
+          AND object_key_version = 'ATTEMPT_V2'
+          AND auto_listing_generation_object_key_v2_complete(account_id,job_id,item_id,plan_id,visual_group_key,slot_key,attempt_identity_hash,attempt_no,input_hash,content_hash,object_key) IS TRUE
         )
       ) NOT VALID;
   END IF;

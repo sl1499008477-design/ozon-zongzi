@@ -134,3 +134,33 @@ Migration `030_auto_listing_generated_asset_attempt_isolation.sql` upgrades data
 No real AI gateway, source download/materialization, object storage, Ozon call, production database, production data, or external side effect was used. The dedicated PostgreSQL fixture did not execute because both `AUTO_LISTING_POSTGRES_TESTS=1` and `SONLI_MIGRATION_TEST_DATABASE_URL` are absent. SQL compilation, trigger behavior, row-lock concurrency, and migration replay against a real PostgreSQL server therefore remain explicitly unverified even though their static and adapter contracts are covered.
 
 The principal integration risk is the future durable generation-attempt adapter: every new store/complete write must persist `object_key_version='ATTEMPT_V2'` and the exact path fields, and cleanup wiring must expose the atomic adoption port. The feature remains disabled and unwired. Rollback is to keep the feature off, stop any cleanup worker, and revert the application repair while preserving every object and audit row. If 030 has been applied, do not re-enable the old generator against its V2 new-write constraints; use a reviewed forward/compensating migration if an older application must be restored. Never delete legacy/adopted rows or objects by hand.
+
+## Review repair round 5 — immutable migration compatibility and closed NULL acceptance
+
+This round corrects the migration-030 compatibility strategy after independent review reproduced two database defects. The former generation-asset backfill attempted to update every historical object key, including terminal `ACCEPTED`/`REJECTED`/`FAILED` rows protected by migration 027's `BEFORE UPDATE OR DELETE` immutability trigger, so a deployed database could abort migration 030. The accepted-row check also allowed an otherwise-valid row with SQL NULL `object_key_version` through PostgreSQL three-valued CHECK semantics.
+
+Migration 030 no longer updates `ai_generation_assets` at all. Historical terminal generation evidence remains byte-for-byte immutable and its version remains NULL. The cleanup-obligation backfill remains because legacy `PENDING` cleanup rows are intentionally mutable through their recovery lifecycle. The accepted branch now requires `object_key_version IS NOT NULL`, exact `ATTEMPT_V2`, and `auto_listing_generation_object_key_v2_complete(...) IS TRUE`; new NULL, legacy, or malformed accepted rows therefore fail closed.
+
+Application compatibility is deliberately internal and read-only. `verifyPersistedAcceptedGeneratedAssetObjectKey(record)` first accepts the ordinary explicit-version contract, then permits a NULL version only when the persisted row is already `status: "ACCEPTED"` and its key exactly matches the former complete formula. There is no caller-provided legacy-mode flag. The generator reaches this verifier only after the existing accepted status, full account/job/item/plan/group/slot scope, attempt identity/number, final input, source, plan/profile/model/template/request/regeneration, checker-result, and stored-hash evidence checks; it still reads back and hashes the exact stored object. All new store, completion, rejection, and cleanup writes remain V2-only.
+
+### Round 5 TDD evidence
+
+- Before production edits, the Task-6 focused command produced 42 pass / 3 expected fail / 1 dedicated-PostgreSQL skip. The failures were exactly the forbidden generation-table UPDATE, missing internal persisted-accepted compatibility verifier, and rejected NULL-version legacy accepted replay.
+- With the minimal production repair, the identical command produced 45 pass / 0 fail / 1 dedicated-PostgreSQL skip.
+- The static migration test requires migration 027's terminal immutability trigger, forbids any migration-030 `UPDATE ai_generation_assets`, and requires all three accepted-row predicates. The double-gated fixture keeps a pre-030 accepted row at NULL version, attempts migration 030 twice, preserves the legacy cleanup backfill, and expects `23514` for a new otherwise-valid NULL-version accepted row.
+
+### Round 5 exact verification results
+
+- Task-6 focused: 45 pass / 0 fail / 1 dedicated-PostgreSQL skip.
+- All auto-listing tests: 227 pass / 0 fail / 1 dedicated-PostgreSQL skip.
+- All migration contracts: 22 pass / 0 fail / 2 dedicated-database skips.
+- Selected historical permission, persistence, formal-store, account-store, category/listing, submission-failure, and warehouse boundaries: 42 pass / 0 fail.
+- Whole `node --test server/tests/*.test.mjs`: 939 pass / 0 fail / 5 configured PostgreSQL skips.
+- Raw `node --test server/tests/*.mjs`: 951 pass / 1 fail / 6 skips. The sole failure is the pre-existing `account-scoped-collection-migration.integration.mjs`, which intentionally throws because `SONLI_MIGRATION_TEST_DATABASE_URL` is absent; it is recorded as an environment gate, not product success.
+- Production Vite build passed with 4,833 modules transformed; the existing >500 kB chunk warning remains. Changed production modules and the PostgreSQL fixture passed `node --check`, and `git diff --check` passed.
+
+### Round 5 unverified scope, regression risk, and rollback
+
+No real AI gateway, source download/materialization, object storage, Ozon call, production database, production data, or other external side effect was used. The dedicated PostgreSQL fixture did not execute because `AUTO_LISTING_POSTGRES_TESTS=1` and a dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` are absent. Real PostgreSQL SQL compilation, trigger interaction, NULL rejection, and repeated migration execution therefore remain explicitly unverified even though static and gated fixture contracts cover them.
+
+The principal compatibility risk is that a future persistence adapter must preserve NULL-version historical accepted rows for read-only replay while never exposing that exception to new writes. The feature remains disabled and unwired. Rollback is to keep generation and cleanup workers off and revert this scoped application/migration-source repair while preserving every object and audit row. If any version of migration 030 has been applied, use a reviewed forward migration appropriate to the exact recorded schema state; never mutate terminal generation evidence or delete legacy/adopted audit rows by hand. This implementation is handed to a fifth independent review and does not self-declare Task 4 complete.
