@@ -1,7 +1,10 @@
+import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildGeneratedAssetObjectKey, sha256 } from "../auto-listing-asset-store.mjs";
+import { evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
 import { createPostgresRichContentRepository } from "../auto-listing-rich-content-repository.mjs";
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
@@ -120,21 +123,96 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       nullAcceptedRejected = error?.code === "23514";
     }
 
+    const factEvidence = [{
+      factId: "fact.capacity", field: "capacity", kind: "CAPACITY",
+      value: "500 мл", numericValue: 500, unit: "мл", sourcePath: "attributes.capacity",
+    }];
+    const sourceReference = {
+      assetId: `source-${suffix}`, contentHash: hash("6"), contentType: "image/png",
+      width: 768, height: 1024, size: 1024,
+    };
+    const imageCheckerResult = {
+      matchesProduct: true, claimsVerified: true, russianText: true, quality: "PASS",
+      prohibitedContent: false, reasons: [],
+      evidence: {
+        identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: [sourceReference.assetId] },
+        claims: [{
+          text: "Объём 500 мл", sourceFactId: factEvidence[0].factId, field: factEvidence[0].field,
+          value: factEvidence[0].value, numericValue: factEvidence[0].numericValue, unit: factEvidence[0].unit,
+        }],
+        detectedTexts: ["Объём 500 мл"], language: "ru", qualityFlags: [], prohibitedFlags: [],
+      },
+    };
+    const checkerModelEvidence = {
+      requestedTextModel: "text-model", gatewayReportedTextModel: "text-model",
+      gatewayReportedTextModelPresent: true,
+    };
+    const legacyObjectKey = (entry) => `auto-listing/${[
+      entry.accountId, entry.jobId, entry.itemId, entry.planId, entry.visualGroupKey, entry.slotKey,
+    ].map((value) => Buffer.from(value, "utf8").toString("base64url")).join("/")}/${entry.inputHash}/${entry.contentHash}.png`;
+    const completeAssetEvidence = (index) => {
+      const assetId = index === 0 ? "asset-main" : `asset-extra-${index}`;
+      const slotKey = index === 0 ? "main:main:01" : `main:selling-point:0${index}`;
+      const role = index === 0 ? "MAIN" : "SELLING_POINT";
+      const contentHash = crypto.createHash("sha256").update(`asset-${index}`).digest("hex");
+      const attemptIdentityHash = crypto.createHash("sha256").update(`attempt-${index}`).digest("hex");
+      const assetInputHash = crypto.createHash("sha256").update(`asset-input-${index}`).digest("hex");
+      const keyInput = {
+        accountId, jobId, itemId, planId, visualGroupKey: "main", slotKey,
+        attemptIdentityHash, attemptNo: 1, inputHash: assetInputHash, contentHash,
+      };
+      const checkerRequestId = `checker-${assetId}`;
+      const checkerEvidence = evaluateGeneratedCheckerEvidence({
+        checkerResult: imageCheckerResult, references: [sourceReference], facts: factEvidence,
+        checkerModel: "text-model", profile: { id: profileId, accountId, configVersion: 1 },
+        templateVersion: "image-v1", requestId: checkerRequestId, generatedHash: contentHash,
+        checkerModelEvidence, textRequired: true,
+      }).evidence;
+      return {
+        assetId, status: "ACCEPTED", accountId, jobId, itemId, planId, visualGroupKey: "main", slotKey, role,
+        attemptIdentityHash, attemptNo: 1, inputHash: assetInputHash, generationSize: "768x1024",
+        contentHash, objectKeyVersion: "ATTEMPT_V2", objectKey: buildGeneratedAssetObjectKey(keyInput),
+        contentType: "image/png", width: 768, height: 1024, size: 2048,
+        gatewayRequestId: `gateway-${assetId}`, checkerRequestId,
+        modelEvidence: {
+          requestedImageModel: "image-model", gatewayReportedImageModel: "image-model",
+          gatewayReportedImageModelPresent: true, orchestratorModel: "",
+        },
+        profileId, profileVersion: 1, modelName: "image-model",
+        planHash: hash("1"), sourceHash: hash("2"), strategyHash: hash("a"), configHash: hash("b"),
+        visualGroupsHash: hash("c"), promptTemplateVersion: "image-v1",
+        promptHash: crypto.createHash("sha256").update(`prompt-${index}`).digest("hex"),
+        checkerEvidence, sourceAssetEvidence: [sourceReference], regeneration: null,
+      };
+    };
+    const assetEvidence = Array.from({ length: 6 }, (_, index) => completeAssetEvidence(index));
+    const factBinding = {
+      sourceFactId: "fact.capacity", field: "capacity", value: "500 мл", numericValue: 500, unit: "мл",
+    };
+    const richContent = {
+      version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru", blocks: [
+        { type: "HERO_IMAGE", assetId: "asset-main" },
+        { type: "HEADING", text: "Объём 500 мл", sourceFactIds: ["fact.capacity"], factBindings: [factBinding] },
+        { type: "TEXT", text: "Объём 500 мл", sourceFactIds: ["fact.capacity"], factBindings: [factBinding] },
+      ],
+    };
+    const checkerResult = {
+      accepted: true, validator: "AUTO_LISTING_RICH_CONTENT_V1",
+      sourceFactIds: ["fact.capacity"], assetIds: ["asset-main"],
+    };
+    const modelEvidence = {
+      requestedTextModel: "text-model", gatewayReportedTextModel: "text-model",
+      gatewayReportedTextModelPresent: true,
+    };
     const inputHash = hash("7");
     const reservation = {
       accountId, jobId, itemId, planId, inputHash,
       planHash: hash("1"), sourceHash: hash("2"), factRegistryHash: hash("3"),
       assetHash: hash("4"), promptHash: hash("5"), profileId, profileVersion: 1,
       modelName: "text-model", promptTemplateVersion: "rich-v1",
-      sourceFactEvidence: [{ factId: "fact.capacity", field: "capacity", kind: "CAPACITY", value: "500 мл", numericValue: 500, unit: "мл" }],
-      assetEvidence: [
-        { assetId: "asset-main", role: "MAIN", contentHash: hash("8"), objectKey: "immutable/main.png", objectKeyVersion: "v1" },
-        ...Array.from({ length: 5 }, (_, index) => ({
-          assetId: `asset-extra-${index + 1}`, role: "DETAIL", contentHash: hash(String(index + 10)),
-          objectKey: `immutable/extra-${index + 1}.png`, objectKeyVersion: "v1",
-        })),
-      ],
-      requestEvidence: { requestKey: `rich-${inputHash}`, schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1" },
+      sourceFactEvidence: factEvidence,
+      assetEvidence,
+      requestEvidence: { requestKey: `auto-listing-rich-${inputHash}`, schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1" },
       maxAttempts: 3,
     };
     const repository = createPostgresRichContentRepository({
@@ -146,20 +224,103 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
     try {
       await repository.completeRichContentAttempt({
         ...reservation, ...lease, accountId: `wrong-${accountId}`,
-        richContent: { version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru", blocks: [] },
-        outputHash: hash("9"), checkerResult: { accepted: true, validator: "AUTO_LISTING_RICH_CONTENT_V1", sourceFactIds: ["fact.capacity"], assetIds: ["asset-main"] }, gatewayRequestId: "gateway-rich",
-        modelEvidence: { requestedTextModel: "text-model", gatewayReportedTextModel: "text-model", gatewayReportedTextModelPresent: true },
+        richContent,
+        outputHash: sha256(richContent), checkerResult, gatewayRequestId: "gateway-rich", modelEvidence,
       });
     } catch (error) {
       wrongScopeRejected = error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID";
     }
     const accepted = await repository.completeRichContentAttempt({
       ...reservation, ...lease,
-      richContent: { version: "AUTO_LISTING_RICH_CONTENT_V1", language: "ru", blocks: [{ type: "HERO_IMAGE", assetId: "asset-main" }] },
-      outputHash: hash("9"), checkerResult: { accepted: true, validator: "AUTO_LISTING_RICH_CONTENT_V1", sourceFactIds: ["fact.capacity"], assetIds: ["asset-main"] }, gatewayRequestId: "gateway-rich",
-      modelEvidence: { requestedTextModel: "text-model", gatewayReportedTextModel: "text-model", gatewayReportedTextModelPresent: true },
+      richContent,
+      outputHash: sha256(richContent), checkerResult, gatewayRequestId: "gateway-rich", modelEvidence,
     });
     const replay = await repository.reserveRichContentAttempt(reservation);
+
+    const directAccepted = async (label, mutate = () => {}) => {
+      const value = {
+        inputHash: crypto.createHash("sha256").update(`input-${label}`).digest("hex"),
+        sourceHash: hash("2"), assetHash: hash("b"), outputHash: sha256(richContent),
+        planHash: hash("1"), factRegistryHash: hash("e"), promptHash: hash("f"),
+        sourceFactEvidence: structuredClone(factEvidence), assetEvidence: structuredClone(assetEvidence),
+        richContent: structuredClone(richContent), checkerResult: structuredClone(checkerResult),
+        modelEvidence: structuredClone(modelEvidence), requestEvidence: null,
+      };
+      value.requestEvidence = {
+        requestKey: `auto-listing-rich-${value.inputHash}`,
+        schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1",
+      };
+      mutate(value);
+      return client.query(
+        `INSERT INTO ai_rich_content_results (
+           id,account_id,job_id,item_id,plan_id,profile_id,source_hash,asset_hash,input_hash,attempt_no,
+           model_name,profile_version,prompt_template_version,rich_content,output_hash,checker_result,status,
+           accepted_at,plan_hash,fact_registry_hash,prompt_hash,request_evidence,model_evidence,
+           source_fact_evidence,asset_evidence,gateway_request_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,'text-model',1,'rich-v1',$10::JSONB,$11,$12::JSONB,
+           'ACCEPTED',NOW(),$13,$14,$15,$16::JSONB,$17::JSONB,$18::JSONB,$19::JSONB,'gateway-direct')`,
+        [
+          `direct-${label}-${suffix}`, accountId, jobId, itemId, planId, profileId,
+          value.sourceHash, value.assetHash, value.inputHash, JSON.stringify(value.richContent), value.outputHash,
+          JSON.stringify(value.checkerResult), value.planHash, value.factRegistryHash, value.promptHash,
+          JSON.stringify(value.requestEvidence), JSON.stringify(value.modelEvidence),
+          JSON.stringify(value.sourceFactEvidence), JSON.stringify(value.assetEvidence),
+        ],
+      );
+    };
+
+    const validDirect = await directAccepted("valid");
+    assert.equal(validDirect.rowCount, 1);
+    const validLegacyDirect = await directAccepted("valid-legacy", (value) => {
+      value.assetEvidence[5].objectKeyVersion = null;
+      value.assetEvidence[5].objectKey = legacyObjectKey(value.assetEvidence[5]);
+    });
+    assert.equal(validLegacyDirect.rowCount, 1);
+    const maliciousAcceptedMutations = [
+      ["sql-null-facts", (value) => { value.sourceFactEvidence = null; }],
+      ["json-null-fact", (value) => { value.sourceFactEvidence = [null]; }],
+      ["fact-extra-key", (value) => { value.sourceFactEvidence[0].extra = true; }],
+      ["fact-wrong-type", (value) => { value.sourceFactEvidence[0].numericValue = "500"; }],
+      ["fact-duplicate-id", (value) => { value.sourceFactEvidence.push(structuredClone(value.sourceFactEvidence[0])); }],
+      ["json-null-asset", (value) => { value.assetEvidence[1] = null; }],
+      ["asset-extra-key", (value) => { value.assetEvidence[1].extra = true; }],
+      ["asset-duplicate-id", (value) => { value.assetEvidence[1].assetId = value.assetEvidence[0].assetId; }],
+      ["asset-zero-main", (value) => { value.assetEvidence[0].role = "SELLING_POINT"; }],
+      ["asset-two-main", (value) => { value.assetEvidence[1].role = "MAIN"; }],
+      ["asset-fake-v2-key", (value) => { value.assetEvidence[1].objectKey = "auto-listing/v2/fake.png"; }],
+      ["asset-string-legacy-version", (value) => {
+        value.assetEvidence[1].objectKeyVersion = "LEGACY_V1";
+        value.assetEvidence[1].objectKey = legacyObjectKey(value.assetEvidence[1]);
+      }],
+      ["asset-fake-null-legacy-key", (value) => {
+        value.assetEvidence[1].objectKeyVersion = null;
+        value.assetEvidence[1].objectKey = "auto-listing/fake.png";
+      }],
+      ["asset-missing-audit", (value) => { delete value.assetEvidence[1].gatewayRequestId; }],
+      ["bad-input-hash", (value) => { value.inputHash = "not-a-hash"; value.requestEvidence.requestKey = `auto-listing-rich-${value.inputHash}`; }],
+      ["bad-source-hash", (value) => { value.sourceHash = "not-a-hash"; }],
+      ["bad-asset-hash", (value) => { value.assetHash = "not-a-hash"; }],
+      ["bad-output-hash", (value) => { value.outputHash = "not-a-hash"; }],
+      ["request-unbound", (value) => { value.requestEvidence.requestKey = "auto-listing-rich-other"; }],
+      ["request-json-null", (value) => { value.requestEvidence.requestKey = null; }],
+      ["request-extra-key", (value) => { value.requestEvidence.extra = true; }],
+      ["model-json-null", (value) => { value.modelEvidence.gatewayReportedTextModelPresent = null; }],
+      ["model-extra-key", (value) => { value.modelEvidence.extra = true; }],
+      ["checker-extra-key", (value) => { value.checkerResult.extra = true; }],
+      ["checker-unknown-fact", (value) => { value.checkerResult.sourceFactIds = ["fact.unknown"]; }],
+      ["checker-unknown-asset", (value) => { value.checkerResult.assetIds = ["asset-unknown"]; }],
+      ["rich-extra-key", (value) => { value.richContent.extra = true; }],
+      ["rich-json-null-block", (value) => { value.richContent.blocks[1] = null; }],
+      ["rich-unknown-fact", (value) => { value.richContent.blocks[1].sourceFactIds = ["fact.unknown"]; }],
+      ["rich-unknown-asset", (value) => { value.richContent.blocks[0].assetId = "asset-unknown"; }],
+    ];
+    for (const [label, mutate] of maliciousAcceptedMutations) {
+      await assert.rejects(directAccepted(label, mutate), (error) => {
+        assert.equal(error?.code, "23514", label);
+        return true;
+      });
+    }
+
     let duplicateRejected = false;
     try {
       await client.query(
