@@ -970,7 +970,10 @@ export function createSub2ApiAdapter({
     if (!image?.bytes) throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
     return createTextResponse({
       ...input,
-      sourceImages: [{ bytes: image.bytes, contentType: image.contentType }],
+      sourceImages: [
+        { bytes: image.bytes, contentType: image.contentType },
+        ...(Array.isArray(input.sourceImages) ? input.sourceImages : []),
+      ],
     });
   }
 

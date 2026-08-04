@@ -851,6 +851,7 @@ test("inspectImage uses structured Responses internally without exposing source 
     ...textInput(),
     prompt: "inspect private image",
     image: { bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" },
+    sourceImages: [{ bytes: Buffer.from(PNG_1X1, "base64"), contentType: "image/png" }],
     jsonSchema: {
       type: "object",
       properties: { matches: { type: "boolean" } },
@@ -860,6 +861,7 @@ test("inspectImage uses structured Responses internally without exposing source 
   });
   assert.deepEqual(result.value, { matches: true });
   assert.match(body.input[0].content[1].image_url, /^data:image\/png;base64,/);
+  assert.match(body.input[0].content[2].image_url, /^data:image\/png;base64,/);
   const recorded = JSON.stringify(logs);
   assert.doesNotMatch(recorded, /data:image|iVBOR|inspect private image/);
 });
