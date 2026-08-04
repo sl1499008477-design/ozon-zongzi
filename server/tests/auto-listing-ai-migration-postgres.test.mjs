@@ -61,9 +61,11 @@ if (!enabled) {
     const insertAsset = (overrides = {}) => client.query(
       `INSERT INTO ai_generation_assets (
          id,account_id,job_id,item_id,plan_id,profile_id,visual_group_key,slot_key,role,
-         input_hash,attempt_no,status,model_name,profile_version,prompt_hash,object_key,
-         content_hash,content_type,width,height,checker_result,error_code,error_retryable,accepted_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a',$7,'SELLING_POINT',$8,$9,$10,'image-model',$11,'prompt-hash',$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20)`,
+         input_hash,attempt_no,status,gateway_request_id,checker_request_id,model_name,profile_version,prompt_hash,object_key,
+         content_hash,content_type,width,height,checker_result,error_code,error_retryable,accepted_at,
+         plan_hash,source_hash,strategy_hash,config_hash,visual_groups_hash,prompt_template_version,
+         source_asset_evidence,model_evidence,regeneration,size_bytes,lease_token,lease_expires_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a',$7,'SELLING_POINT',$8,$9,$10,$11,$12,'image-model',$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31::jsonb,$32::jsonb,$33,$34,$35)`,
       [
         overrides.id,
         account,
@@ -75,7 +77,10 @@ if (!enabled) {
         overrides.inputHash || "asset-input",
         overrides.attemptNo || 1,
         overrides.status || "PENDING",
+        overrides.gatewayRequestId ?? null,
+        overrides.checkerRequestId ?? null,
         overrides.profileVersion || 1,
+        overrides.promptHash ?? "prompt-hash",
         overrides.objectKey ?? null,
         overrides.contentHash ?? null,
         overrides.contentType ?? null,
@@ -85,8 +90,46 @@ if (!enabled) {
         overrides.errorCode ?? null,
         overrides.errorRetryable ?? null,
         overrides.acceptedAt ?? null,
+        overrides.planHash ?? null,
+        overrides.sourceHash ?? null,
+        overrides.strategyHash ?? null,
+        overrides.configHash ?? null,
+        overrides.visualGroupsHash ?? null,
+        overrides.promptTemplateVersion ?? null,
+        overrides.sourceAssetEvidence === undefined ? null : JSON.stringify(overrides.sourceAssetEvidence),
+        overrides.modelEvidence === undefined ? null : JSON.stringify(overrides.modelEvidence),
+        overrides.regeneration === undefined ? null : JSON.stringify(overrides.regeneration),
+        overrides.sizeBytes ?? null,
+        overrides.leaseToken ?? null,
+        overrides.leaseExpiresAt ?? null,
       ],
     );
+
+    const completeAcceptedAsset = (overrides = {}) => ({
+      status: "ACCEPTED",
+      inputHash: "1".repeat(64),
+      promptHash: "2".repeat(64),
+      objectKey: "objects/accepted.png",
+      contentHash: "3".repeat(64),
+      contentType: "image/png",
+      width: 768,
+      height: 1024,
+      checkerResult: { accepted: true },
+      gatewayRequestId: "generation-request-1",
+      checkerRequestId: "checker-request-1",
+      planHash: "4".repeat(64),
+      sourceHash: "5".repeat(64),
+      strategyHash: "6".repeat(64),
+      configHash: "7".repeat(64),
+      visualGroupsHash: "8".repeat(64),
+      promptTemplateVersion: "image-v1",
+      sourceAssetEvidence: [{ assetId: "source-1", contentHash: "9".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123 }],
+      modelEvidence: { requestedImageModel: "image-model" },
+      regeneration: null,
+      sizeBytes: 123,
+      acceptedAt: new Date(),
+      ...overrides,
+    });
 
     const insertResult = (overrides = {}) => client.query(
       `INSERT INTO ai_rich_content_results (
@@ -208,30 +251,39 @@ if (!enabled) {
       await assert.rejects(insertAsset({ id: `asset-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertResult({ id: `rich-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertAsset({ id: `asset-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
-      await assert.rejects(insertAsset({
-        id: `asset-width-null-${suffix}`, status: "ACCEPTED", objectKey: "objects/width-null.png",
-        contentHash: "width-null-hash", contentType: "image/png", width: null, height: 1024,
-        checkerResult: { ok: true }, acceptedAt: new Date(),
-      }), { code: "23514" });
-      await assert.rejects(insertAsset({
-        id: `asset-height-null-${suffix}`, status: "ACCEPTED", objectKey: "objects/height-null.png",
-        contentHash: "height-null-hash", contentType: "image/png", width: 768, height: null,
-        checkerResult: { ok: true }, acceptedAt: new Date(),
-      }), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-width-null-${suffix}`, width: null })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-height-null-${suffix}`, height: null })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-hash-invalid-${suffix}`, configHash: "not-a-hash" })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-source-empty-${suffix}`, sourceAssetEvidence: [] })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({
+        id: `asset-source-null-type-${suffix}`,
+        sourceAssetEvidence: [{ assetId: "source-1", contentHash: "9".repeat(64), contentType: null, width: 768, height: 1024, size: 123 }],
+      })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({
+        id: `asset-source-too-many-${suffix}`,
+        sourceAssetEvidence: Array.from({ length: 8 }, (_, index) => ({ assetId: `source-${index + 1}`, contentHash: "9".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123 })),
+      })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({
+        id: `asset-source-duplicate-${suffix}`,
+        sourceAssetEvidence: [
+          { assetId: "source-1", contentHash: "9".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123 },
+          { assetId: "source-1", contentHash: "a".repeat(64), contentType: "image/jpeg", width: 640, height: 640, size: 456 },
+        ],
+      })), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({
+        id: `asset-source-open-${suffix}`,
+        sourceAssetEvidence: [{ assetId: "source-1", contentHash: "9".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123, unexpected: true }],
+      })), { code: "23514" });
+      await assert.rejects(insertAsset({ id: `asset-generating-no-lease-${suffix}`, status: "GENERATING", inputHash: "a".repeat(64) }), { code: "23514" });
+      await insertAsset({ id: `asset-generating-${suffix}`, status: "GENERATING", inputHash: "b".repeat(64), attemptNo: 1, leaseToken: "lease-1", leaseExpiresAt: new Date(Date.now() + 60_000) });
+      await assert.rejects(insertAsset({ id: `asset-generating-duplicate-${suffix}`, status: "GENERATING", inputHash: "b".repeat(64), attemptNo: 2, leaseToken: "lease-2", leaseExpiresAt: new Date(Date.now() + 60_000) }), { code: "23505" });
+      await assert.rejects(insertAsset({ id: `asset-terminal-has-lease-${suffix}`, status: "FAILED", inputHash: "c".repeat(64), errorCode: "GATEWAY", errorRetryable: true, leaseToken: "lease-3", leaseExpiresAt: new Date(Date.now() + 60_000) }), { code: "23514" });
       await insertAsset({ id: `asset-failed-${suffix}`, status: "FAILED", errorCode: "GATEWAY", errorRetryable: true });
       await assert.rejects(client.query("UPDATE ai_generation_assets SET status='PENDING' WHERE id=$1", [`asset-failed-${suffix}`]), /terminal AI generation assets are immutable/i);
       await assert.rejects(client.query("DELETE FROM ai_generation_assets WHERE id=$1", [`asset-failed-${suffix}`]), /terminal AI generation assets are immutable/i);
       await assert.rejects(insertAsset({ id: `asset-failed-duplicate-${suffix}`, status: "FAILED", errorCode: "GATEWAY", errorRetryable: true }), { code: "23505" });
-      await insertAsset({
-        id: `asset-accepted-${suffix}`, attemptNo: 2, status: "ACCEPTED", objectKey: "objects/a.png",
-        contentHash: "content-hash", contentType: "image/png", width: 768, height: 1024,
-        checkerResult: { ok: true }, acceptedAt: new Date(),
-      });
-      await assert.rejects(insertAsset({
-        id: `asset-second-accepted-${suffix}`, attemptNo: 3, status: "ACCEPTED", objectKey: "objects/b.png",
-        contentHash: "content-hash-2", contentType: "image/png", width: 768, height: 1024,
-        checkerResult: { ok: true }, acceptedAt: new Date(),
-      }), { code: "23505" });
+      await insertAsset(completeAcceptedAsset({ id: `asset-accepted-${suffix}`, attemptNo: 2 }));
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-second-accepted-${suffix}`, attemptNo: 3, objectKey: "objects/b.png", contentHash: "a".repeat(64) })), { code: "23505" });
 
       await assert.rejects(insertResult({ id: `rich-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
       await insertResult({ id: `rich-rejected-${suffix}`, status: "REJECTED", errorCode: "CHECKER", errorRetryable: false });

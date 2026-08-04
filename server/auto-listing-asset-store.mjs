@@ -3,6 +3,8 @@ import sharp from "sharp";
 
 const HASH = /^[a-f0-9]{64}$/;
 const MIME_BY_FORMAT = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp" };
+const MAX_NORMALIZED_BYTES = 16 * 1024 * 1024;
+const MAX_STORAGE_INPUT_BYTES = 32 * 1024 * 1024;
 
 function error(code, message = "自动上架图片资源无效", retryable = false) {
   const value = new Error(message);
@@ -52,6 +54,7 @@ export async function normalizeListingImage({ bytes, ratio, resolution, maxInput
   const actualRatio = normalized.width / normalized.height;
   if (normalized.width < minimum || normalized.height < minimum || normalized.width > maximum || normalized.height > maximum
     || Math.abs(actualRatio - ratioValue(ratio)) > 0.02) throw error("AUTO_LISTING_ASSET_DIMENSIONS_INVALID");
+  if (output.length > MAX_NORMALIZED_BYTES) throw error("AUTO_LISTING_ASSET_TOO_LARGE");
   return Object.freeze({ bytes: output, contentHash: sha256(output), contentType: "image/png", width: normalized.width, height: normalized.height, format: "png" });
 }
 
@@ -68,9 +71,53 @@ export function buildGeneratedAssetObjectKey({ accountId, jobId, itemId, planId,
   return `auto-listing/${keySegment(accountId)}/${keySegment(jobId)}/${keySegment(itemId)}/${keySegment(planId)}/${keySegment(visualGroupKey)}/${keySegment(slotKey)}/${inputHash}/${contentHash}.png`;
 }
 
+function safeLog(logger, event) {
+  try {
+    const pending = logger?.warn?.(event);
+    if (pending && typeof pending.then === "function") Promise.resolve(pending).catch(() => {});
+  } catch {}
+}
+
+function verifyReadback(bytes, normalized) {
+  return Buffer.isBuffer(bytes) && bytes.length === normalized.bytes.length
+    && bytes.length <= MAX_NORMALIZED_BYTES && sha256(bytes) === normalized.contentHash
+    && bytes.equals(normalized.bytes);
+}
+
+async function readObject(storage, key, normalized) {
+  if (typeof storage?.getObjectBuffer !== "function") throw error("AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "图片存储暂时无法校验", true);
+  let bytes;
+  try {
+    bytes = await storage.getObjectBuffer(key, { maxBytes: MAX_NORMALIZED_BYTES });
+  } catch {
+    throw error("AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "图片存储暂时无法校验", true);
+  }
+  if (!verifyReadback(bytes, normalized)) throw error("AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", "图片存储内容无效", true);
+}
+
+async function cleanupOrRecord({ storage, repository, scope, stored, reason, logger }) {
+  try {
+    if (typeof storage?.removeObject !== "function") throw new Error("cleanup unavailable");
+    await storage.removeObject(stored.objectKey);
+    return;
+  } catch {
+    try {
+      if (typeof repository?.recordAssetCleanupRequired !== "function") throw new Error("cleanup repository unavailable");
+      await repository.recordAssetCleanupRequired({ ...scope, ...stored, reason });
+    } catch {}
+    safeLog(logger, { code: "AUTO_LISTING_ASSET_ORPHAN_CLEANUP", objectKey: stored.objectKey });
+  }
+}
+
 export async function storeGeneratedAsset(input = {}) {
   const { scope, normalized, storage, repository, logger = null } = input;
-  if (!scope || !normalized || typeof storage?.putObjectFromBuffer !== "function") throw error("AUTO_LISTING_ASSET_INVALID");
+  if (!scope || !normalized || !Buffer.isBuffer(normalized.bytes) || !normalized.bytes.length
+    || normalized.bytes.length > MAX_NORMALIZED_BYTES || normalized.contentHash !== sha256(normalized.bytes)
+    || normalized.contentType !== "image/png" || !Number.isInteger(normalized.width) || normalized.width < 1
+    || !Number.isInteger(normalized.height) || normalized.height < 1) {
+    throw error(normalized?.bytes?.length > MAX_NORMALIZED_BYTES ? "AUTO_LISTING_ASSET_TOO_LARGE" : "AUTO_LISTING_ASSET_INVALID");
+  }
+  if (typeof storage?.putObjectFromBuffer !== "function" || typeof storage?.getObjectBuffer !== "function") throw error("AUTO_LISTING_ASSET_INVALID");
   const key = buildGeneratedAssetObjectKey({ ...scope, inputHash: scope.inputHash, contentHash: normalized.contentHash });
   const stored = { objectKey: key, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length };
   if (typeof repository?.findStoredGenerationAsset === "function") {
@@ -78,21 +125,27 @@ export async function storeGeneratedAsset(input = {}) {
     try { existing = await repository.findStoredGenerationAsset({ ...scope, contentHash: normalized.contentHash }); } catch { throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法读取", true); }
     if (existing != null) {
       if (["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "inputHash"].some((field) => existing[field] !== scope[field]) || existing.objectKey !== stored.objectKey || existing.contentHash !== stored.contentHash || existing.contentType !== stored.contentType || existing.width !== stored.width || existing.height !== stored.height || existing.size !== stored.size) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "已保存图片记录不一致", true);
+      await readObject(storage, stored.objectKey, normalized);
       return Object.freeze(stored);
     }
   }
   let put;
   try {
-    put = await storage.putObjectFromBuffer({ key, name: `${scope.slotKey}.png`, contentType: normalized.contentType, buffer: normalized.bytes });
+    put = await storage.putObjectFromBuffer({ key, name: `${scope.slotKey}.png`, contentType: normalized.contentType, buffer: normalized.bytes, maxBytes: MAX_STORAGE_INPUT_BYTES });
   } catch { throw error("AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE", "图片存储暂时不可用", true); }
   if (!put || put.key !== key || put.sha256 !== normalized.contentHash || put.contentType !== normalized.contentType || put.size !== normalized.bytes.length) {
-    if (typeof storage.removeObject === "function") await Promise.resolve(storage.removeObject(key)).catch(() => {});
+    await cleanupOrRecord({ storage, repository, scope, stored, reason: "PUT_REPLY_UNVERIFIED", logger });
     throw error("AUTO_LISTING_ASSET_STORAGE_UNVERIFIED", "图片存储返回无效", true);
+  }
+  try {
+    await readObject(storage, key, normalized);
+  } catch (cause) {
+    await cleanupOrRecord({ storage, repository, scope, stored, reason: cause.code || "READBACK_FAILED", logger });
+    throw cause;
   }
   if (typeof repository?.recordStoredGenerationAsset !== "function") return Object.freeze(stored);
   try { const recorded = await repository.recordStoredGenerationAsset({ ...scope, ...stored }); if (recorded != null && (["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "inputHash", "objectKey", "contentHash", "contentType", "width", "height", "size"].some((field) => recorded[field] !== ({ ...scope, ...stored })[field]))) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED"); } catch (cause) {
-    if (typeof storage.removeObject === "function") Promise.resolve(storage.removeObject(key)).catch(() => {});
-    try { logger?.warn?.({ code: "AUTO_LISTING_ASSET_ORPHAN_CLEANUP" }); } catch {}
+    await cleanupOrRecord({ storage, repository, scope, stored, reason: "RECORD_STORED_FAILED", logger });
     throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法保存", true);
   }
   return Object.freeze(stored);

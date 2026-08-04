@@ -95,7 +95,7 @@ export async function putObjectFromBase64({ key, name, contentType, base64 }) {
   return putObjectFromBuffer({ key, name, contentType: contentType || dataUrlType, buffer });
 }
 
-export async function putObjectFromBuffer({ key, name, contentType, buffer }) {
+export async function putObjectFromBuffer({ key, name, contentType, buffer, maxBytes = Number(process.env.LOCAL_FILE_MAX_BYTES || 50 * 1024 * 1024) }) {
   await ensureBucket();
   const content = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
   if (!content.length) {
@@ -103,7 +103,11 @@ export async function putObjectFromBuffer({ key, name, contentType, buffer }) {
     error.status = 400;
     throw error;
   }
-  const maxBytes = Number(process.env.LOCAL_FILE_MAX_BYTES || 50 * 1024 * 1024);
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) {
+    const error = new Error("文件大小限制无效");
+    error.status = 400;
+    throw error;
+  }
   if (content.length > maxBytes) {
     const error = new Error(`文件超过本地上传限制 ${Math.round(maxBytes / 1024 / 1024)}MB`);
     error.status = 413;
@@ -135,6 +139,21 @@ export async function putObjectFromBuffer({ key, name, contentType, buffer }) {
 export async function getObjectStream(key) {
   const client = await getClient();
   return client.getObject(bucketName(), String(key || ""));
+}
+
+export async function readObjectStreamBounded(stream, { maxBytes = 16 * 1024 * 1024 } = {}) {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new Error("对象读取大小限制无效");
+  const chunks = []; let size = 0;
+  for await (const chunk of stream) {
+    const value = Buffer.from(chunk); size += value.length;
+    if (size > maxBytes) { stream.destroy?.(); throw new Error("对象超过读取限制"); }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+export async function getObjectBuffer(key, options = {}) {
+  return readObjectStreamBounded(await getObjectStream(key), options);
 }
 
 export async function removeObject(key) {
