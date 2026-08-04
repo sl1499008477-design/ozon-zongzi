@@ -39,6 +39,10 @@ const PRODUCT_MEASUREMENT_FIELDS = new Set([
 ]);
 const DIMENSION_META_FIELDS = new Set(["reliable", "unit", "source"]);
 const ATTRIBUTE_KEYS = new Set(["attributeId", "dictionaryValueId", "values", "multiple"]);
+const ATTRIBUTE_B_KEYS = new Set(["key", "value", "dictionary_value_id"]);
+const ATTRIBUTE_C_KEYS = new Set(["id", "name", "values", "is_required"]);
+const ATTRIBUTE_C_VALUE_KEYS = new Set(["value", "dictionary_value_id"]);
+const MATCHED_BY = new Set(["EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"]);
 const PLANNER_INPUT_KEYS = new Set([
   "contractVersion", "factRegistry", "strategy", "textDensityByRole", "requestedRoleCounts",
   "imagesPerVisualGroup", "visualGroups", "language", "ratio", "resolution", "quality",
@@ -80,12 +84,13 @@ function requiredText(value, max = 2048) {
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  return Object.fromEntries(Object.keys(value).sort(compareText).map((key) => [key, canonical(value[key])]));
 }
 
 const canonicalText = (value) => JSON.stringify(canonical(value));
 const sha256 = (value) => crypto.createHash("sha256").update(typeof value === "string" ? value : canonicalText(value)).digest("hex");
 const sameJson = (left, right) => canonicalText(left) === canonicalText(right);
+const compareText = (left, right) => Buffer.from(String(left), "utf8").compare(Buffer.from(String(right), "utf8"));
 
 function deepFreeze(value, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return value;
@@ -114,7 +119,7 @@ function assertJsonSafe(value, active = new Set()) {
   }
 }
 
-function verifyStrategyCapture(value) {
+function verifyStrategyCapture(value, sourceSnapshot) {
   if (!isPlainObject(value) || !exactObject(value.strategySnapshot, STRATEGY_KEYS)
     || typeof value.strategyHash !== "string" || !HASH.test(value.strategyHash)
     || sha256(value.strategySnapshot) !== value.strategyHash) throw plannerError();
@@ -122,8 +127,29 @@ function verifyStrategyCapture(value) {
   assertJsonSafe(snapshot);
   if (!requiredText(snapshot.strategyId) || !requiredText(snapshot.strategyVersionId)
     || !(snapshot.ruleId === null || (typeof snapshot.ruleId === "string" && snapshot.ruleId.trim()))
-    || !requiredText(snapshot.matchedBy) || !STYLES.has(snapshot.style)
+    || !MATCHED_BY.has(snapshot.matchedBy) || !STYLES.has(snapshot.style)
     || !isPlainObject(snapshot.textDensityByRole) || !isPlainObject(snapshot.evidence)) throw plannerError();
+  const targetCategoryId = sourceSnapshot.targetCategory.descriptionCategoryId;
+  const evidence = snapshot.evidence;
+  const exactEvidence = (keys) => exactObject(evidence, new Set(keys));
+  const hasRule = typeof snapshot.ruleId === "string" && snapshot.ruleId.trim();
+  if (snapshot.matchedBy === "EXACT_CATEGORY") {
+    if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ruleOrder"])
+      || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== targetCategoryId
+      || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder < 0) throw plannerError();
+  } else if (snapshot.matchedBy === "ANCESTOR_CATEGORY") {
+    if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ancestorDistance", "ruleOrder"])
+      || evidence.targetDescriptionCategoryId !== targetCategoryId || !Number.isInteger(evidence.ancestorDistance)
+      || evidence.ancestorDistance < 1 || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder < 0) throw plannerError();
+    const matchingAncestor = sourceSnapshot.targetCategory.ancestorCategoryIds[evidence.ancestorDistance - 1];
+    if (matchingAncestor !== evidence.matchedValue) throw plannerError();
+  } else if (snapshot.matchedBy === "PRODUCT_STYLE") {
+    if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ruleOrder"])
+      || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== sourceSnapshot.source.productStyle
+      || evidence.matchedValue === "UNKNOWN" || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder < 0) throw plannerError();
+  } else if (snapshot.ruleId !== null || snapshot.style !== "BALANCED_DEFAULT"
+    || !exactEvidence(["targetDescriptionCategoryId", "matchedValue"])
+    || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== "BALANCED_DEFAULT") throw plannerError();
   const densities = { ...STYLE_DENSITIES[snapshot.style] };
   const allowedDensityKeys = new Set([...ROLE_ORDER, ...Object.values(ROLE_LOWER)]);
   for (const [key, density] of Object.entries(snapshot.textDensityByRole)) {
@@ -153,7 +179,7 @@ function trustedProductDimensions(productMeasurements) {
   if (unknown.length) return [];
   return Object.entries(productMeasurements)
     .filter(([key, value]) => PRODUCT_MEASUREMENT_FIELDS.has(key) && typeof value === "number" && Number.isFinite(value) && value > 0)
-    .sort(([left], [right]) => left.localeCompare(right));
+    .sort(([left], [right]) => compareText(left, right));
 }
 
 function effectiveRoleCounts(config, style, hasDimensions) {
@@ -188,6 +214,59 @@ function addFact(registry, fact) {
   if (!known) registry.set(fact.factId, fact);
 }
 
+function attributeIdentifier(value) {
+  if (!["string", "number"].includes(typeof value)) return "";
+  const normalized = String(value).trim();
+  return normalized && normalized.length <= 240 ? normalized : "";
+}
+
+function safeAttributeValues(value) {
+  const values = Array.isArray(value) ? value : [value];
+  if (!values.length || values.some((entry) => typeof entry !== "string" || !entry.trim() || entry.length > 2048)) return null;
+  return values.map((entry) => entry.trim());
+}
+
+function attributeProjection(attribute, attributeIndex) {
+  if (exactObject(attribute, ATTRIBUTE_KEYS)) {
+    const attributeId = attributeIdentifier(attribute.attributeId);
+    const dictionaryValueId = attributeIdentifier(attribute.dictionaryValueId);
+    const values = safeAttributeValues(attribute.values);
+    if (!attributeId || !dictionaryValueId || typeof attribute.multiple !== "boolean" || !values) return null;
+    return values.map((value, valueIndex) => ({
+      attributeId, dictionaryValueId, value,
+      sourcePath: `attributes[${attributeIndex}].values[${valueIndex}]#dictionaryValueId=${dictionaryValueId}`,
+    }));
+  }
+  if (exactObject(attribute, ATTRIBUTE_B_KEYS)) {
+    const attributeId = attributeIdentifier(attribute.key);
+    const dictionaryValueId = attributeIdentifier(attribute.dictionary_value_id);
+    const values = safeAttributeValues(attribute.value);
+    if (!attributeId || !dictionaryValueId || !values) return null;
+    return values.map((value, valueIndex) => ({
+      attributeId, dictionaryValueId, value,
+      sourcePath: `attributes[${attributeIndex}].value[${valueIndex}]#dictionary_value_id=${dictionaryValueId}`,
+    }));
+  }
+  if (exactObject(attribute, ATTRIBUTE_C_KEYS)) {
+    const attributeId = attributeIdentifier(attribute.id);
+    if (!attributeId || typeof attribute.name !== "string" || !attribute.name.trim() || typeof attribute.is_required !== "boolean"
+      || !Array.isArray(attribute.values) || !attribute.values.length) return null;
+    const projected = [];
+    for (const [valueIndex, entry] of attribute.values.entries()) {
+      if (!exactObject(entry, ATTRIBUTE_C_VALUE_KEYS)) return null;
+      const dictionaryValueId = attributeIdentifier(entry.dictionary_value_id);
+      const values = safeAttributeValues(entry.value);
+      if (!dictionaryValueId || !values || values.length !== 1) return null;
+      projected.push({
+        attributeId, dictionaryValueId, value: values[0],
+        sourcePath: `attributes[${attributeIndex}].values[${valueIndex}].value#dictionary_value_id=${dictionaryValueId}`,
+      });
+    }
+    return projected;
+  }
+  return null;
+}
+
 function factRegistry(snapshot, groups, dimensions) {
   const registry = new Map();
   const reasonCodes = [];
@@ -204,22 +283,17 @@ function factRegistry(snapshot, groups, dimensions) {
     sourcePath: `productMeasurements.${key}`, visualGroupKeys: [],
   });
   snapshot.attributes.forEach((attribute, attributeIndex) => {
-    const attributeId = ["string", "number"].includes(typeof attribute?.attributeId) ? String(attribute.attributeId).trim() : "";
-    const dictionaryValueId = ["string", "number"].includes(typeof attribute?.dictionaryValueId) ? String(attribute.dictionaryValueId).trim() : "";
-    if (!exactObject(attribute, ATTRIBUTE_KEYS)
-      || !attributeId || attributeId.length > 240
-      || !dictionaryValueId || dictionaryValueId.length > 240
-      || typeof attribute.multiple !== "boolean"
-      || !Array.isArray(attribute.values)
-      || attribute.values.some((value) => typeof value !== "string" || !value.trim())) {
+    const projection = attributeProjection(attribute, attributeIndex);
+    if (!projection) {
       reasonCodes.push("UNSUPPORTED_ATTRIBUTE_EVIDENCE_IGNORED");
       return;
     }
-    attribute.values.forEach((value, valueIndex) => addFact(registry, {
+    projection.forEach(({ attributeId, dictionaryValueId, value, sourcePath }, valueIndex) => addFact(registry, {
       factId: `fact.attribute.${attributeId}.${valueIndex}`,
       kind: "ATTRIBUTE",
-      value: value.trim(),
-      sourcePath: `attributes[${attributeIndex}].values[${valueIndex}]#dictionaryValueId=${dictionaryValueId}`,
+      value,
+      sourcePath,
+      dictionaryValueId,
       visualGroupKeys: [],
     }));
   });
@@ -235,24 +309,24 @@ function factRegistry(snapshot, groups, dimensions) {
       const known = registry.get(fact.factId);
       if (known) {
         if (known.kind !== normalized.kind || known.value !== normalized.value || known.sourcePath !== normalized.sourcePath) throw plannerError();
-        known.visualGroupKeys = [...new Set([...known.visualGroupKeys, group.visualGroupKey])].sort();
+        known.visualGroupKeys = [...new Set([...known.visualGroupKeys, group.visualGroupKey])].sort(compareText);
       } else addFact(registry, normalized);
     }
   }
-  return { facts: [...registry.values()].sort((left, right) => left.factId.localeCompare(right.factId)), reasonCodes };
+  return { facts: [...registry.values()].sort((left, right) => compareText(left.factId, right.factId)), reasonCodes };
 }
 
 function verifyProhibitedClaims(value) {
   if (!Array.isArray(value) || value.length !== new Set(value).size || value.some((entry) => !PROHIBITED_CLAIMS.has(entry))) throw plannerError();
-  const normalized = [...value].sort();
-  if (!sameJson(normalized, [...PROHIBITED_CLAIMS].sort())) throw plannerError();
+  const normalized = [...value].sort(compareText);
+  if (!sameJson(normalized, [...PROHIBITED_CLAIMS].sort(compareText))) throw plannerError();
   return normalized;
 }
 
 export function buildPlannerInput(input = {}) {
   if (!exactObject(input, INPUT_KEYS)) throw plannerError();
   const source = verifyAutoListingSourceSnapshot(input.sourceCapture);
-  const strategy = verifyStrategyCapture(input.strategyCapture);
+  const strategy = verifyStrategyCapture(input.strategyCapture, source.snapshot);
   const config = verifyAutoListingFrozenConfig(input.configCapture?.configSnapshot, input.configCapture?.configHash);
   const visual = verifyVisualGroupsCapture(input.visualGroupsCapture, source.snapshotHash);
   const rebuiltVisual = buildVisualGroups({ sourceCapture: input.sourceCapture });
@@ -271,11 +345,9 @@ export function buildPlannerInput(input = {}) {
   const plannerGroups = visual.groups.map((group) => {
     const appearancePreserve = [...new Set(group.factEvidence
       .filter((fact) => ["COLOR", "PATTERN", "SHAPE", "MATERIAL", "ACCESSORY_COUNT"].includes(fact.kind))
-      .map((fact) => fact.value))].sort();
+      .map((fact) => fact.value))].sort(compareText);
     return {
       visualGroupKey: group.visualGroupKey,
-      sourceSkus: [...group.sourceSkus],
-      variantIds: [...group.variantIds],
       referenceImages: group.referenceImages.map(({ assetId, contentHash, evidenceKind }) => ({ assetId, contentHash, evidenceKind })),
       factEvidence: structuredClone(group.factEvidence),
       requiredPreserve: appearancePreserve.length ? appearancePreserve : [source.snapshot.identity.primaryName],
@@ -285,7 +357,7 @@ export function buildPlannerInput(input = {}) {
   const plannerInput = {
     contractVersion: 1,
     factRegistry: registry.facts,
-    strategy: strategy.snapshot,
+    strategy: { style: strategy.snapshot.style, matchedBy: strategy.snapshot.matchedBy, textDensityByRole: strategy.densities },
     textDensityByRole: strategy.densities,
     requestedRoleCounts: roles.counts,
     imagesPerVisualGroup: roles.total,
@@ -319,8 +391,29 @@ export function buildPlannerInput(input = {}) {
     strategyHash: strategy.strategyHash,
     configHash: config.configHash,
     visualGroupsHash: visual.visualGroupsHash,
-    reasonCodes: [...new Set([...visual.reasonCodes, ...roles.reasonCodes, ...registry.reasonCodes])].sort(),
+    sourceAccountId: source.snapshot.identity.accountId,
+    reasonCodes: [...new Set([...visual.reasonCodes, ...roles.reasonCodes, ...registry.reasonCodes])].sort(compareText),
   });
+}
+
+function validatePlannerPreflight(plannerContext) {
+  const input = plannerContext?.plannerInput;
+  if (!input || !Array.isArray(input.visualGroups) || !Array.isArray(input.factRegistry)
+    || !isPlainObject(input.requestedRoleCounts) || !Number.isInteger(input.imagesPerVisualGroup)
+    || input.imagesPerVisualGroup < 6 || input.imagesPerVisualGroup > 13
+    || input.visualGroups.length * input.imagesPerVisualGroup > 1000) throw plannerError();
+  const factsById = new Map(input.factRegistry.map((fact) => [fact.factId, fact]));
+  const expectedRoles = ROLE_ORDER.reduce((sum, role) => sum + input.requestedRoleCounts[role], 0);
+  if (expectedRoles !== input.imagesPerVisualGroup) throw plannerError();
+  for (const group of input.visualGroups) {
+    if (!group || !Array.isArray(group.referenceImages) || !group.referenceImages.length
+      || !Array.isArray(group.requiredPreserve) || !group.requiredPreserve.length
+      || group.requiredPreserve.some((entry) => typeof entry !== "string" || !entry.trim())
+      || !Array.isArray(group.factEvidence)) throw plannerError();
+    const groupFacts = group.factEvidence.map((fact) => factsById.get(fact.factId));
+    if (groupFacts.some((fact) => !fact || (fact.visualGroupKeys.length && !fact.visualGroupKeys.includes(group.visualGroupKey)))) throw plannerError();
+    if (!input.factRegistry.some((fact) => !fact.visualGroupKeys.length || fact.visualGroupKeys.includes(group.visualGroupKey))) throw plannerError();
+  }
 }
 
 export const CONTENT_PLAN_JSON_SCHEMA = deepFreeze({
@@ -368,18 +461,44 @@ function textMatchesRussianOrExactIdentity(text, facts) {
   return facts.some((fact) => fact.kind === "IDENTITY" && text === fact.value);
 }
 
-function numericClaimsSupported(text, facts) {
+function normalizedNumber(value) {
+  return value.replaceAll(",", ".");
+}
+
+function normalizedUnit(value) {
+  const unit = value.toLocaleLowerCase("ru-RU");
+  return new Map([
+    ["mm", "mm"], ["мм", "mm"], ["cm", "cm"], ["см", "cm"], ["m", "m"], ["м", "m"],
+    ["kg", "kg"], ["кг", "kg"], ["g", "g"], ["г", "g"], ["l", "l"], ["л", "l"],
+  ]).get(unit) || null;
+}
+
+function numericUnitPairs(text) {
+  return [...text.matchAll(/(\d+(?:[.,]\d+)?)\s*([\p{L}]+)/gu)].map(([, number, unit]) => ({ number: normalizedNumber(number), unit: normalizedUnit(unit) }));
+}
+
+function numericClaimsSupported(text, facts, claimType) {
   const numbers = text.match(/\d+(?:[.,]\d+)?/g) || [];
   if (!numbers.length) return true;
-  const evidenceNumbers = new Set(facts.flatMap((fact) => fact.value.match(/\d+(?:[.,]\d+)?/g) || [])
-    .map((number) => number.replaceAll(",", ".")));
-  return numbers.every((number) => evidenceNumbers.has(number.replaceAll(",", ".")));
+  const supportedFacts = facts.filter((fact) => fact.kind === claimType);
+  const evidenceNumbers = new Set(supportedFacts.flatMap((fact) => fact.value.match(/\d+(?:[.,]\d+)?/g) || [])
+    .map(normalizedNumber));
+  if (!numbers.every((number) => evidenceNumbers.has(normalizedNumber(number)))) return false;
+  return numericUnitPairs(text).every(({ number, unit }) => unit && supportedFacts.some((fact) => {
+    const pairs = numericUnitPairs(fact.value);
+    return pairs.some((pair) => pair.number === number && pair.unit === unit);
+  }));
 }
 
 function claimTextUsesEvidence(claim, facts) {
   const normalizedText = claim.text.toLocaleLowerCase("ru-RU");
   if (claim.claimType === "DIMENSION") {
-    if (!numericClaimsSupported(claim.text, facts)) return false;
+    const dimensions = facts.filter((fact) => fact.kind === "DIMENSION");
+    if (!dimensions.length) return false;
+    const dimensionPairs = dimensions.map((fact) => ({ fact, pairs: numericUnitPairs(fact.value) }));
+    const numbers = claim.text.match(/\d+(?:[.,]\d+)?/g) || [];
+    if (!numbers.length || !numbers.every((number) => dimensionPairs.some(({ pairs }) => pairs.some((pair) => pair.number === normalizedNumber(number))))) return false;
+    if (!numericUnitPairs(claim.text).every(({ number, unit }) => unit && dimensionPairs.some(({ pairs }) => pairs.some((pair) => pair.number === number && pair.unit === unit)))) return false;
     const mentioned = {
       height: /высот/u.test(normalizedText),
       width: /ширин/u.test(normalizedText),
@@ -388,14 +507,11 @@ function claimTextUsesEvidence(claim, facts) {
       diameter: /диаметр/u.test(normalizedText),
     };
     const specificMentions = Object.entries(mentioned).filter(([, present]) => present).map(([kind]) => kind);
-    const supportedKinds = facts.filter((fact) => fact.kind === "DIMENSION").map((fact) => {
+    const supportedKinds = dimensions.map((fact) => {
       const field = fact.sourcePath.split(".").at(-1).toLowerCase();
       return ["height", "width", "length", "depth", "diameter"].find((kind) => field.includes(kind)) || "";
     });
     if (specificMentions.length && specificMentions.some((kind) => !supportedKinds.includes(kind))) return false;
-    const evidenceUnits = new Set(facts.filter((fact) => fact.kind === "DIMENSION").map((fact) => fact.value.split(/\s+/).at(-1).toLowerCase()));
-    if (/\bмм\b/u.test(normalizedText) && !evidenceUnits.has("mm")) return false;
-    if (/\bсм\b/u.test(normalizedText) && !evidenceUnits.has("cm")) return false;
     return true;
   }
   return facts.some((fact) => {
@@ -431,9 +547,9 @@ export function validateContentPlan({ plan, plannerContext } = {}) {
     assertStringArray(slot.referenceAssetIds, { nonempty: true });
     assertStringArray(slot.preserve, { nonempty: true });
     assertStringArray(slot.prohibitedClaims);
-    if (!sameJson([...slot.prohibitedClaims].sort(), input.prohibitedClaims)) throw contentPlanError();
+    if (!sameJson([...slot.prohibitedClaims].sort(compareText), input.prohibitedClaims)) throw contentPlanError();
     const group = groupsByKey.get(slot.visualGroupKey);
-    if (!sameJson([...slot.preserve].sort(), [...group.requiredPreserve].sort())) throw contentPlanError();
+    if (!sameJson([...slot.preserve].sort(compareText), [...group.requiredPreserve].sort(compareText))) throw contentPlanError();
     const groupAssets = new Set(group.referenceImages.map((entry) => entry.assetId));
     if (slot.referenceAssetIds.some((assetId) => !groupAssets.has(assetId))) throw contentPlanError();
     const slotFacts = slot.sourceFactIds.map((factId) => factsById.get(factId));
@@ -453,7 +569,7 @@ export function validateContentPlan({ plan, plannerContext } = {}) {
         || containsForbiddenSemanticClaim(claim.text)
         || !textMatchesRussianOrExactIdentity(claim.text, claimFacts)
         || !claimTextUsesEvidence(claim, claimFacts)
-        || !numericClaimsSupported(claim.text, claimFacts)) throw contentPlanError();
+        || !numericClaimsSupported(claim.text, claimFacts, claim.claimType)) throw contentPlanError();
     }
     const roleIndex = groupRoleCounts.get(slot.visualGroupKey)[slot.role] + 1;
     const expectedSlotKey = `${slot.visualGroupKey}:${slot.role.toLowerCase().replaceAll("_", "-")}:${String(roleIndex).padStart(2, "0")}`;
@@ -492,6 +608,13 @@ export function validateContentPlan({ plan, plannerContext } = {}) {
 function verifyStoredPlan(record, scope, plannerContext) {
   if (!isPlainObject(record) || record.accountId !== scope.accountId || record.jobId !== scope.jobId
     || record.itemId !== scope.itemId || record.inputHash !== plannerContext.inputHash
+    || record.sourceHash !== plannerContext.sourceHash || record.strategyHash !== plannerContext.strategyHash
+    || record.configHash !== plannerContext.configHash || record.visualGroupsHash !== plannerContext.visualGroupsHash
+    || record.profileId !== plannerContext.plannerInput.profile.id
+    || record.profileVersion !== plannerContext.plannerInput.profile.configVersion
+    || record.plannerModel !== plannerContext.plannerInput.plannerModel
+    || record.promptTemplateVersion !== plannerContext.plannerInput.promptTemplateVersion
+    || !sameJson(record.regeneration, plannerContext.plannerInput.regeneration)
     || typeof record.planHash !== "string" || !HASH.test(record.planHash)) {
     throw plannerError("AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT", "已保存的图片规划版本与当前任务不一致");
   }
@@ -524,6 +647,8 @@ export async function createContentPlan(input = {}) {
     prohibitedClaims: input.prohibitedClaims,
     regeneration: input.regeneration,
   });
+  if (plannerContext.sourceAccountId !== scope.accountId || plannerContext.sourceAccountId !== gatewayProfile.accountId) throw plannerError();
+  validatePlannerPreflight(plannerContext);
   const requestKey = `auto-listing-plan-${sha256({ ...scope, inputHash: plannerContext.inputHash })}`;
   let reservation;
   try {

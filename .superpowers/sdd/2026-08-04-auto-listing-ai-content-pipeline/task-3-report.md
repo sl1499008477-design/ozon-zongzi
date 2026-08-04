@@ -56,3 +56,26 @@ Final verification:
 No real sub2api request, source-image download, object-storage write, PostgreSQL plan reservation, or Ozon write was run. The actual repository implementation and safe URL download/content hashing belong to later tasks. No dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` is configured, so PostgreSQL-gated tests remained safely skipped without any production fallback.
 
 The new modules have no runtime call site and `AUTO_LISTING_AI_ENABLED` remains off by default, so current collection, extension, store, listing, order, and UI behavior is unchanged. Rollback is to keep that flag off and revert this Task 3 commit; there is no database or external side effect to undo.
+
+## Review repair — evidence boundaries
+
+This repair closes the final review findings within Task 3 only. `buildPlannerInput` now carries the verified source account ID, and `createContentPlan` rejects any mismatch among caller account, source account, and gateway-profile account before reservation, repository, or gateway work. Preflight additionally closes group media, preserve/fact scope, role/count, and the global 1000-slot boundary before an external boundary is reached.
+
+Visual evidence now treats `null`, missing-contract, and non-V1 historical evidence as conservative singleton groups. Explicit V1 remains closed: malformed V1 is rejected, while a V1 `COMPLETE` record with conflicting values for the same visible kind becomes a singleton with no unsafe appearance fact projection. UTF-8 byte comparison replaces locale-dependent ordering.
+
+Attribute projection accepts only the three documented closed source shapes (A, B, C), retains the attribute source path and dictionary-value evidence, and records ignored unsupported/sensitive/extra evidence. It never adds rich content, category, price, logistics, store, warehouse, or other writable source fields to the prompt. Strategy evidence is now a closed `EXACT_CATEGORY`/`ANCESTOR_CATEGORY`/`PRODUCT_STYLE`/`DEFAULT` contract bound to the verified target category, ancestors, or product style. The AI prompt receives only style, match class, and normalized role densities; the version/rule identifiers and opaque match evidence remain hash-only traceability data.
+
+Numeric claims now require same-kind source evidence. Dimensions require each number and recognized unit to match the same cited product measurement fact, so an identity value such as a brand `500` cannot support a height. Existing rows are rechecked field-by-field for source/strategy/config/visual/profile/template/model/regeneration evidence as well as canonical plan body and hash; every mismatch fails closed.
+
+TDD: the focused RED run had 23 passes and 5 expected grouped failures (legacy/V1 visual conflicts, attribute projection, strategy projection/closure, cross-account zero-call plus stored-row evidence, and numeric/unit binding). The final focused Task 3 suite passed 29/29. Strategy ancestor/product-style binding was added as a final regression case.
+
+Final verification:
+
+- focused Task 3: 29 passed, 0 failed;
+- auto-listing and AI regression: 196 passed, 1 dedicated PostgreSQL test skipped by configuration, 0 failed;
+- whole server `server/tests/*.test.mjs`: 852 passed, 5 configured PostgreSQL skips, 0 failed;
+- historical permissions/persistence/listing/account-store regression: 33 passed, 0 failed;
+- production app build passed; the existing large-chunk warning remains;
+- both changed production modules passed syntax checks and `git diff --check` passed.
+
+No real gateway request, repository/database call, image download, object-storage write, or Ozon operation was performed. The new checks are pure in-memory boundary tests. Rollback remains a revert of this repair commit (or retaining the disabled feature flag); no data migration or external state needs recovery.

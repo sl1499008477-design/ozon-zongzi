@@ -33,7 +33,7 @@ function requiredText(value) {
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  return Object.fromEntries(Object.keys(value).sort(compareText).map((key) => [key, canonical(value[key])]));
 }
 
 function assertJsonSafe(value, active = new Set()) {
@@ -58,7 +58,8 @@ function assertJsonSafe(value, active = new Set()) {
 
 const canonicalText = (value) => JSON.stringify(canonical(value));
 const hash = (value) => crypto.createHash("sha256").update(canonicalText(value)).digest("hex");
-const compareCanonical = (left, right) => canonicalText(left).localeCompare(canonicalText(right));
+const compareText = (left, right) => Buffer.from(String(left), "utf8").compare(Buffer.from(String(right), "utf8"));
+const compareCanonical = (left, right) => compareText(canonicalText(left), canonicalText(right));
 
 function normalizeFact(value, expectedKinds) {
   if (!exactObject(value, FACT_KEYS)) throw visualError();
@@ -116,26 +117,38 @@ function normalizeImages(values) {
     if (known && canonicalText(known) !== canonicalText(image)) throw visualError();
     byId.set(image.assetId, image);
   }
-  return [...byId.values()].sort((left, right) => left.assetId.localeCompare(right.assetId));
+  return [...byId.values()].sort((left, right) => compareText(left.assetId, right.assetId));
 }
 
 function normalizeEvidence(value, sku) {
+  const singleton = (evidenceReason) => ({
+    variantId: `source-sku:${sku}`,
+    complete: false,
+    appearanceFacts: [],
+    sizeFacts: [],
+    evidenceReason,
+  });
   if (value === null || value === undefined) {
-    return {
-      variantId: `source-sku:${sku}`,
-      complete: false,
-      appearanceFacts: [],
-      sizeFacts: [],
-    };
+    return singleton(null);
   }
-  if (!exactObject(value, EVIDENCE_KEYS)
-    || value.contractVersion !== 1
-    || !["COMPLETE", "AMBIGUOUS"].includes(value.appearanceStatus)) throw visualError();
+  if (!isPlainObject(value)) throw visualError();
+  if (value.contractVersion !== 1) return singleton("LEGACY_APPEARANCE_EVIDENCE_SINGLETON");
+  if (!exactObject(value, EVIDENCE_KEYS) || !["COMPLETE", "AMBIGUOUS"].includes(value.appearanceStatus)) throw visualError();
+  const appearanceFacts = normalizeFacts(value.appearanceFacts, APPEARANCE_KINDS);
+  const conflictingKinds = new Set();
+  const valueByKind = new Map();
+  for (const fact of appearanceFacts) {
+    const known = valueByKind.get(fact.kind);
+    if (known !== undefined && known !== fact.value) conflictingKinds.add(fact.kind);
+    valueByKind.set(fact.kind, fact.value);
+  }
+  const conflicting = value.appearanceStatus === "COMPLETE" && conflictingKinds.size > 0;
   return {
     variantId: requiredText(value.variantId),
-    complete: value.appearanceStatus === "COMPLETE",
-    appearanceFacts: normalizeFacts(value.appearanceFacts, APPEARANCE_KINDS),
+    complete: value.appearanceStatus === "COMPLETE" && !conflicting,
+    appearanceFacts: conflicting ? [] : appearanceFacts,
     sizeFacts: normalizeFacts(value.sizeFacts, new Set(["SIZE"])),
+    evidenceReason: conflicting ? "CONFLICTING_APPEARANCE_EVIDENCE_SINGLETON" : null,
   };
 }
 
@@ -168,7 +181,7 @@ function buildGroups(variants) {
   const completeSignatureCount = new Set(variants.map((variant) => variant.appearanceSignature).filter(Boolean)).size;
   const groups = [];
   for (const [bucketKey, members] of buckets) {
-    members.sort((left, right) => left.variantId.localeCompare(right.variantId) || left.sku.localeCompare(right.sku));
+    members.sort((left, right) => compareText(left.variantId, right.variantId) || compareText(left.sku, right.sku));
     const imageById = new Map();
     const factById = new Map();
     for (const member of members) {
@@ -184,8 +197,9 @@ function buildGroups(variants) {
       }
     }
     const ambiguous = bucketKey.startsWith("ambiguous:");
+    const singletonReason = members.find((member) => member.evidenceReason)?.evidenceReason;
     const reasonCodes = ambiguous
-      ? ["AMBIGUOUS_APPEARANCE_SPLIT"]
+      ? [singletonReason || "AMBIGUOUS_APPEARANCE_SPLIT"]
       : completeSignatureCount > 1
         ? ["VISIBLE_APPEARANCE_DIFFERENCE"]
         : members.length > 1
@@ -197,14 +211,14 @@ function buildGroups(variants) {
     };
     groups.push({
       visualGroupKey: `visual-group-${hash(groupIdentity).slice(0, 20)}`,
-      sourceSkus: [...new Set(members.map((member) => member.sku))].sort(),
+      sourceSkus: [...new Set(members.map((member) => member.sku))].sort(compareText),
       variantIds: members.map((member) => member.variantId),
-      referenceImages: [...imageById.values()].sort((left, right) => left.assetId.localeCompare(right.assetId)),
+      referenceImages: [...imageById.values()].sort((left, right) => compareText(left.assetId, right.assetId)),
       factEvidence: [...factById.values()].sort(compareCanonical),
       reasonCodes,
     });
   }
-  return groups.sort((left, right) => left.visualGroupKey.localeCompare(right.visualGroupKey));
+  return groups.sort((left, right) => compareText(left.visualGroupKey, right.visualGroupKey));
 }
 
 export function buildVisualGroups(input = {}) {
@@ -214,7 +228,7 @@ export function buildVisualGroups(input = {}) {
   const result = {
     sourceHash: verified.snapshotHash,
     groups,
-    reasonCodes: [...new Set(groups.flatMap((group) => group.reasonCodes))].sort(),
+    reasonCodes: [...new Set(groups.flatMap((group) => group.reasonCodes))].sort(compareText),
   };
   return Object.freeze({ ...result, visualGroupsHash: hash(result) });
 }

@@ -147,3 +147,32 @@ test("normalizes current canonical URL media to deterministic non-content-hash r
   }]);
   assert.throws(() => buildVisualGroups({ sourceCapture: colliding }), (error) => error?.code === "AUTO_LISTING_VISUAL_EVIDENCE_INVALID");
 });
+
+test("legacy appearance evidence and conflicting V1 kinds are conservative singleton groups", () => {
+  const legacy = sourceCapture([
+    { sku: "legacy-a", images: [image("legacy-a")], evidence: { guessedColor: "red" } },
+    { sku: "legacy-b", images: [image("legacy-b")], evidence: { contractVersion: 0, color: "red" } },
+  ]);
+  const legacyGroups = buildVisualGroups({ sourceCapture: legacy });
+  assert.equal(legacyGroups.groups.length, 2);
+  assert.ok(legacyGroups.groups.every((group) => group.reasonCodes.includes("LEGACY_APPEARANCE_EVIDENCE_SINGLETON")));
+
+  const conflicting = sourceCapture([{
+    sku: "conflict", images: [image("conflict")], evidence: evidence("variant-conflict", [
+      fact("fact.color.red", "COLOR", "red"), fact("fact.color.blue", "COLOR", "blue"),
+    ]),
+  }]);
+  const result = buildVisualGroups({ sourceCapture: conflicting });
+  assert.equal(result.groups.length, 1);
+  assert.ok(result.groups[0].reasonCodes.includes("CONFLICTING_APPEARANCE_EVIDENCE_SINGLETON"));
+  assert.deepEqual(result.groups[0].factEvidence, result.groups[0].factEvidence.filter((entry) => entry.kind === "SIZE"));
+});
+
+test("visual evidence ordering is fixed by code point rather than host locale", () => {
+  const capture = sourceCapture([
+    { sku: "z", images: [image("z")], evidence: evidence("z", [fact("z", "COLOR", "red")]) },
+    { sku: "ä", images: [image("ä")], evidence: evidence("ä", [fact("ä", "COLOR", "blue")]) },
+  ]);
+  const result = buildVisualGroups({ sourceCapture: capture });
+  assert.deepEqual(result.groups.flatMap((group) => group.sourceSkus), ["z", "ä"]);
+});
