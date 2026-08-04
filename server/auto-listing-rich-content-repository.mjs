@@ -1,15 +1,31 @@
 import crypto from "node:crypto";
+import { sha256, verifyPersistedAcceptedGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
+import { evaluateGeneratedCheckerEvidence } from "./auto-listing-result-checker.mjs";
+import { validateRichContentDocument } from "./auto-listing-rich-content.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
-const TERMINAL = new Set(["ACCEPTED", "REJECTED", "FAILED"]);
 const VERSION = "AUTO_LISTING_RICH_CONTENT_V1";
+const ASSET_ROLES = new Set(["MAIN", "SELLING_POINT", "DETAIL", "SCENE", "SPECIFICATION", "INFOGRAPHIC"]);
+const FACT_KEYS = new Set(["factId", "field", "kind", "value", "numericValue", "unit", "sourcePath"]);
+const ASSET_KEYS = new Set([
+  "assetId", "status", "accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "role",
+  "attemptIdentityHash", "attemptNo", "inputHash", "generationSize", "contentHash", "objectKeyVersion", "objectKey",
+  "contentType", "width", "height", "size", "gatewayRequestId", "checkerRequestId", "modelEvidence",
+  "profileId", "profileVersion", "modelName", "planHash", "sourceHash", "strategyHash", "configHash",
+  "visualGroupsHash", "promptTemplateVersion", "promptHash", "checkerEvidence", "sourceAssetEvidence", "regeneration",
+]);
+const SOURCE_ASSET_KEYS = new Set(["assetId", "contentHash", "contentType", "width", "height", "size"]);
 const clean = (value, maxLength = 240) => typeof value === "string" && value === value.trim() && value.length > 0
   && value.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(value);
 const clone = (value) => structuredClone(value);
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" && !(value instanceof Date)
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const same = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
+  && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+const exactObject = (value, keys) => plainObject(value)
+  && Object.keys(value).length === keys.size && Object.keys(value).every((key) => keys.has(key));
 const scopeKey = (value) => SCOPE_KEYS.map((key) => value[key]).join("\u0001");
 
 function attemptError(message = "富文本生成尝试无效") {
@@ -32,27 +48,105 @@ function validTimestamp(value) {
 }
 
 function validModelEvidence(value, modelName) {
-  return value && typeof value === "object" && !Array.isArray(value)
+  return exactObject(value, new Set(["requestedTextModel", "gatewayReportedTextModel", "gatewayReportedTextModelPresent"]))
     && value.requestedTextModel === modelName && value.gatewayReportedTextModel === modelName
     && value.gatewayReportedTextModelPresent === true;
 }
 
-function validCheckerResult(value, assets) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    && value.accepted === true && value.validator === VERSION
-    && Array.isArray(value.sourceFactIds) && value.sourceFactIds.length > 0
-    && Array.isArray(value.assetIds) && value.assetIds.length > 0
-    && value.assetIds.every((assetId) => assets.some((asset) => asset.assetId === assetId));
+function validFactEvidence(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 256) return false;
+  const ids = new Set();
+  for (const fact of value) {
+    if (!exactObject(fact, FACT_KEYS) || !clean(fact.factId) || ids.has(fact.factId)
+      || !clean(fact.field, 512) || !clean(fact.kind, 120) || !clean(fact.value, 2048)
+      || !clean(fact.sourcePath, 1024)
+      || !((fact.numericValue === null && fact.unit === null)
+        || (typeof fact.numericValue === "number" && Number.isFinite(fact.numericValue)
+          && (fact.unit === null || clean(fact.unit, 64))))) return false;
+    ids.add(fact.factId);
+  }
+  return true;
 }
 
-function validAssetEvidence(value) {
+function validSourceAssetEvidence(value) {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 7
+    && value.length === new Set(value.map((entry) => entry?.assetId)).size
+    && value.every((entry) => exactObject(entry, SOURCE_ASSET_KEYS) && clean(entry.assetId)
+      && HASH.test(entry.contentHash || "") && entry.contentType === "image/png"
+      && Number.isInteger(entry.width) && entry.width > 0 && Number.isInteger(entry.height) && entry.height > 0
+      && Number.isInteger(entry.size) && entry.size > 0);
+}
+
+function validImageModelEvidence(value, modelName) {
+  const keys = new Set(["requestedImageModel", "gatewayReportedImageModel", "gatewayReportedImageModelPresent", "orchestratorModel"]);
+  return exactObject(value, keys) && value.requestedImageModel === modelName
+    && typeof value.gatewayReportedImageModel === "string" && typeof value.gatewayReportedImageModelPresent === "boolean"
+    && typeof value.orchestratorModel === "string"
+    && (value.gatewayReportedImageModelPresent ? value.gatewayReportedImageModel === modelName : value.gatewayReportedImageModel === "");
+}
+
+function validRegeneration(value) {
+  return value === null || (exactObject(value, new Set(["requestId", "reason"]))
+    && clean(value.requestId) && clean(value.reason));
+}
+
+const normalizedUnit = (value) => value === null ? null : ({ "мл": "ml", "л": "l", "см": "cm", "мм": "mm", "м": "m", "кг": "kg", "г": "g" }[String(value).normalize("NFKC").toLocaleLowerCase("ru-RU")] || String(value).normalize("NFKC").toLocaleLowerCase("ru-RU"));
+
+function sameFactRegistry(left, right) {
+  if (!validFactEvidence(left) || !validFactEvidence(right)) return false;
+  const byId = new Map(left.map((fact) => [fact.factId, fact]));
+  return right.every((fact) => {
+    const expected = byId.get(fact.factId);
+    return expected && ["field", "kind", "value", "numericValue", "sourcePath"].every((key) => expected[key] === fact[key])
+      && normalizedUnit(expected.unit) === normalizedUnit(fact.unit);
+  });
+}
+
+function validTask4CheckerEvidence(asset, facts, reservation) {
+  try {
+    const checkerFacts = asset.checkerEvidence?.sourceFacts;
+    if (!sameFactRegistry(facts, checkerFacts)) return false;
+    const evaluated = evaluateGeneratedCheckerEvidence({
+      checkerResult: asset.checkerEvidence?.checkerResult,
+      references: asset.sourceAssetEvidence,
+      facts: checkerFacts,
+      checkerModel: reservation.modelName,
+      profile: { id: reservation.profileId, accountId: reservation.accountId, configVersion: reservation.profileVersion },
+      templateVersion: asset.promptTemplateVersion,
+      requestId: asset.checkerRequestId,
+      generatedHash: asset.contentHash,
+      checkerModelEvidence: asset.checkerEvidence?.checkerModelEvidence,
+      textRequired: asset.checkerEvidence?.textRequired,
+    });
+    return evaluated.accepted && same(evaluated.evidence, asset.checkerEvidence);
+  } catch {
+    return false;
+  }
+}
+
+function validAssetEvidence(value, reservation) {
   if (!Array.isArray(value) || value.length < 6 || value.length > 20) return false;
-  const ids = new Set(); let main = 0;
+  const ids = new Set(); const slots = new Set(); let main = 0;
   for (const asset of value) {
-    if (!asset || typeof asset !== "object" || Array.isArray(asset) || !clean(asset.assetId)
-      || ids.has(asset.assetId) || !clean(asset.role) || !HASH.test(asset.contentHash || "")
-      || !clean(asset.objectKey, 2048) || !clean(asset.objectKeyVersion)) return false;
-    ids.add(asset.assetId); if (asset.role === "MAIN") main += 1;
+    if (!exactObject(asset, ASSET_KEYS) || !clean(asset.assetId) || ids.has(asset.assetId)
+      || !SCOPE_KEYS.every((key) => asset[key] === reservation[key])
+      || !clean(asset.visualGroupKey) || !clean(asset.slotKey) || slots.has(`${asset.visualGroupKey}\u0001${asset.slotKey}`)
+      || !ASSET_ROLES.has(asset.role) || asset.status !== "ACCEPTED"
+      || !HASH.test(asset.attemptIdentityHash || "") || !Number.isInteger(asset.attemptNo) || asset.attemptNo < 1 || asset.attemptNo > 3
+      || !HASH.test(asset.inputHash || "") || !/^[1-9][0-9]*x[1-9][0-9]*$/u.test(asset.generationSize || "")
+      || !HASH.test(asset.contentHash || "") || !clean(asset.objectKey, 2048)
+      || !verifyPersistedAcceptedGeneratedAssetObjectKey(asset)
+      || asset.contentType !== "image/png" || !Number.isInteger(asset.width) || asset.width < 1
+      || !Number.isInteger(asset.height) || asset.height < 1 || !Number.isInteger(asset.size) || asset.size < 1
+      || !clean(asset.gatewayRequestId) || !clean(asset.checkerRequestId)
+      || !validImageModelEvidence(asset.modelEvidence, asset.modelName)
+      || asset.profileId !== reservation.profileId || asset.profileVersion !== reservation.profileVersion
+      || !clean(asset.modelName) || asset.planHash !== reservation.planHash || asset.sourceHash !== reservation.sourceHash
+      || ![asset.strategyHash, asset.configHash, asset.visualGroupsHash, asset.promptHash].every((entry) => HASH.test(entry || ""))
+      || !clean(asset.promptTemplateVersion) || !validSourceAssetEvidence(asset.sourceAssetEvidence)
+      || !validRegeneration(asset.regeneration) || !validTask4CheckerEvidence(asset, reservation.sourceFactEvidence, reservation)) return false;
+    ids.add(asset.assetId); slots.add(`${asset.visualGroupKey}\u0001${asset.slotKey}`);
+    if (asset.role === "MAIN") main += 1;
   }
   return main === 1;
 }
@@ -70,13 +164,26 @@ function validateReservation(input) {
   }
   if (!clean(input.profileId) || !Number.isInteger(input.profileVersion) || input.profileVersion < 1
     || !clean(input.modelName) || !clean(input.promptTemplateVersion)
-    || !Array.isArray(input.sourceFactEvidence) || input.sourceFactEvidence.length < 1
-    || !validAssetEvidence(input.assetEvidence)
-    || !input.requestEvidence || typeof input.requestEvidence !== "object" || Array.isArray(input.requestEvidence)
-    || !clean(input.requestEvidence.requestKey) || input.requestEvidence.schemaVersion !== VERSION
+    || !validFactEvidence(input.sourceFactEvidence)
+    || !validAssetEvidence(input.assetEvidence, input)
+    || !exactObject(input.requestEvidence, new Set(["requestKey", "schemaVersion"]))
+    || input.requestEvidence.requestKey !== `auto-listing-rich-${input.inputHash}` || input.requestEvidence.schemaVersion !== VERSION
     || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 3) {
     throw attemptError();
   }
+}
+
+function validPersistenceContract(input) {
+  if (!plainObject(input) || !validModelEvidence(input.modelEvidence, input.modelName)
+    || !clean(input.gatewayRequestId) || !HASH.test(input.outputHash || "")
+    || input.outputHash !== sha256(input.richContent)) return false;
+  const checked = validateRichContentDocument({
+    richContent: input.richContent,
+    factRegistry: input.sourceFactEvidence,
+    acceptedAssets: input.assetEvidence,
+    scope: Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]])),
+  });
+  return checked.valid && same(checked.checkerResult, input.checkerResult);
 }
 
 function matchingScope(left, right) {
@@ -190,9 +297,7 @@ export function createMemoryRichContentRepository({
       return { status: "RESERVED", attemptNo, leaseToken, inputHash: input.inputHash, promptHash: input.promptHash };
     },
     async completeRichContentAttempt(input) {
-      if (!validCheckerResult(input?.checkerResult, input?.assetEvidence || [])
-        || !validModelEvidence(input?.modelEvidence, input?.modelName) || !clean(input.gatewayRequestId)
-        || !HASH.test(input.outputHash || "") || !input.richContent || typeof input.richContent !== "object") {
+      if (!validPersistenceContract(input)) {
         throw attemptError();
       }
       const record = terminalize(input, "ACCEPTED");
@@ -233,8 +338,9 @@ export function createPostgresRichContentRepository({
     const rowId = id();
     if (![leaseToken, rowId].every((value) => clean(value))) throw attemptError();
     const values = SCOPE_KEYS.map((key) => input[key]);
-    const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+    let client = null;
     try {
+      client = typeof pool.connect === "function" ? await pool.connect() : pool;
       await client.query("BEGIN");
       const boundary = await client.query(
         `SELECT id FROM auto_listing_job_items
@@ -296,11 +402,15 @@ export function createPostgresRichContentRepository({
       await client.query("COMMIT");
       return { status: "RESERVED", attemptNo, leaseToken, inputHash: input.inputHash, promptHash: input.promptHash };
     } catch (error) {
-      try { await client.query("ROLLBACK"); } catch {}
+      if (client) {
+        try { await client.query("ROLLBACK"); } catch {}
+      }
       if (error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID") throw error;
       throw repositoryError();
     } finally {
-      if (client !== pool) client.release();
+      if (client && client !== pool) {
+        try { client.release(); } catch {}
+      }
     }
   }
 
@@ -309,10 +419,7 @@ export function createPostgresRichContentRepository({
     if (!Number.isInteger(input.attemptNo) || input.attemptNo < 1 || !clean(input.leaseToken)) throw attemptError();
     const accepted = status === "ACCEPTED";
     if (accepted) {
-      if (!validCheckerResult(input?.checkerResult, input?.assetEvidence || [])
-        || !validModelEvidence(input?.modelEvidence, input?.modelName) || !clean(input.gatewayRequestId)
-        || !HASH.test(input.outputHash || "") || !input.richContent || typeof input.richContent !== "object"
-        || !input.modelEvidence || typeof input.modelEvidence !== "object") throw attemptError();
+      if (!validPersistenceContract(input)) throw attemptError();
     } else if (!clean(input.errorCode) || typeof input.errorRetryable !== "boolean"
       || (status === "REJECTED" && input.errorRetryable !== false)) throw attemptError();
     let result;

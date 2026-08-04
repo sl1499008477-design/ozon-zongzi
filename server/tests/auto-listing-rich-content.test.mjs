@@ -10,32 +10,175 @@ const hash = (value) => crypto.createHash("sha256").update(JSON.stringify(canoni
 const reverseKeysDeep = (value) => Array.isArray(value) ? value.map(reverseKeysDeep) : value && typeof value === "object"
   ? Object.fromEntries(Object.entries(value).reverse().map(([key, child]) => [key, reverseKeysDeep(child)])) : value;
 const scope = Object.freeze({ accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a" });
-const profile = Object.freeze({ id: "profile-a", accountId: "account-a", configVersion: 3, textModel: "rich-model" });
+const profile = Object.freeze({ id: "profile-a", accountId: "account-a", configVersion: 3, textModel: "rich-model", imageModel: "image-model" });
 
 const facts = Object.freeze([
-  { factId: "fact.brand", field: "identity.brand", kind: "BRAND", value: "SONLI", numericValue: null, unit: null },
-  { factId: "fact.material", field: "attributes.material", kind: "MATERIAL", value: "нержавеющая сталь", numericValue: null, unit: null },
-  { factId: "fact.capacity", field: "attributes.capacity", kind: "CAPACITY", value: "500 мл", numericValue: 500, unit: "ml" },
-  { factId: "fact.model", field: "identity.model", kind: "MODEL", value: "X500", numericValue: null, unit: null },
-  { factId: "fact.weight", field: "attributes.weight", kind: "WEIGHT", value: "300 г", numericValue: 300, unit: "g" },
+  { factId: "fact.brand", field: "identity.brand", kind: "BRAND", value: "SONLI", numericValue: null, unit: null, sourcePath: "identity.brand" },
+  { factId: "fact.material", field: "attributes.material", kind: "MATERIAL", value: "нержавеющая сталь", numericValue: null, unit: null, sourcePath: "attributes.material" },
+  { factId: "fact.capacity", field: "attributes.capacity", kind: "CAPACITY", value: "500 мл", numericValue: 500, unit: "ml", sourcePath: "attributes.capacity" },
+  { factId: "fact.model", field: "identity.model", kind: "MODEL", value: "X500", numericValue: null, unit: null, sourcePath: "identity.model" },
+  { factId: "fact.weight", field: "attributes.weight", kind: "WEIGHT", value: "300 г", numericValue: 300, unit: "g", sourcePath: "attributes.weight" },
 ]);
-const plan = Object.freeze({ ...scope, id: scope.planId, planHash: "c".repeat(64), sourceHash: "d".repeat(64), factRegistry: facts });
-const asset = (id, role, slotKey, character) => {
-  const value = {
-    id, ...scope, status: "ACCEPTED", role, visualGroupKey: `group-${slotKey}`, slotKey,
-    attemptIdentityHash: character.repeat(64), attemptNo: 1, inputHash: character.repeat(64),
-    contentHash: character.repeat(64), objectKeyVersion: "ATTEMPT_V2",
-  };
-  return Object.freeze({ ...value, objectKey: buildGeneratedAssetObjectKey(value) });
+const slotSpecs = Object.freeze([
+  ["asset-main", "MAIN", "main-01", "a"],
+  ["asset-detail", "SELLING_POINT", "detail-01", "b"],
+  ["asset-03", "SELLING_POINT", "detail-02", "3"],
+  ["asset-04", "SELLING_POINT", "detail-03", "4"],
+  ["asset-05", "SELLING_POINT", "detail-04", "5"],
+  ["asset-06", "SELLING_POINT", "detail-05", "6"],
+]);
+const slots = slotSpecs.map(([, role, slotKey]) => ({
+  slotKey,
+  visualGroupKey: `group-${slotKey}`,
+  role,
+  textDensity: "LIGHT",
+  preserve: ["shape"],
+  referenceAssetIds: [`source-${slotKey}`],
+}));
+const visualGroups = {
+  groups: slots.map((slot) => ({
+    visualGroupKey: slot.visualGroupKey,
+    referenceImages: [{
+      assetId: slot.referenceAssetIds[0],
+      sourceRef: null,
+      evidenceKind: "CONTENT_HASH",
+      contentHash: hash(`source:${slot.slotKey}`),
+    }],
+  })),
 };
-const assets = Object.freeze([
-  asset("asset-main", "MAIN", "main-01", "a"),
-  asset("asset-detail", "SELLING_POINT", "detail-01", "b"),
-  asset("asset-03", "SELLING_POINT", "detail-02", "3"),
-  asset("asset-04", "SELLING_POINT", "detail-03", "4"),
-  asset("asset-05", "SELLING_POINT", "detail-04", "5"),
-  asset("asset-06", "SELLING_POINT", "detail-05", "6"),
-]);
+const plan = Object.freeze({
+  ...scope,
+  id: scope.planId,
+  sourceAccountId: scope.accountId,
+  profileId: profile.id,
+  profileVersion: profile.configVersion,
+  plannerModel: profile.textModel,
+  promptTemplateVersion: "image-v1",
+  planHash: "c".repeat(64),
+  sourceHash: "d".repeat(64),
+  strategyHash: "e".repeat(64),
+  configHash: "f".repeat(64),
+  visualGroupsHash: "1".repeat(64),
+  visualGroups,
+  plan: { slots },
+  factRegistry: facts.map((fact) => ({ ...fact, visualGroupKeys: slots.map((slot) => slot.visualGroupKey) })),
+});
+const task4Facts = facts.map(({ factId, kind, value, sourcePath }) => {
+  const numeric = value.match(/^(-?\d+(?:\.\d+)?)\s+([^\s]+)$/u);
+  return {
+    factId,
+    field: sourcePath,
+    kind,
+    value,
+    numericValue: numeric ? Number(numeric[1]) : null,
+    unit: numeric ? numeric[2] : null,
+    sourcePath,
+  };
+});
+const asset = (id, role, slotKey, character) => {
+  const slot = slots.find((candidate) => candidate.slotKey === slotKey);
+  const reference = visualGroups.groups.find((group) => group.visualGroupKey === slot.visualGroupKey).referenceImages[0];
+  const sourceAssetEvidence = [{
+    assetId: reference.assetId,
+    contentHash: reference.contentHash,
+    contentType: "image/png",
+    width: 768,
+    height: 1024,
+    size: 1024,
+  }];
+  const checkerRequestId = `checker-${slotKey}`;
+  const checkerModelEvidence = { requestedTextModel: profile.textModel, gatewayReportedTextModel: profile.textModel, gatewayReportedTextModelPresent: true };
+  const checkerResult = {
+    matchesProduct: true,
+    claimsVerified: true,
+    russianText: true,
+    quality: "PASS",
+    prohibitedContent: false,
+    reasons: [],
+    evidence: {
+      identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: [reference.assetId] },
+      claims: [],
+      detectedTexts: ["товар"],
+      language: "ru",
+      qualityFlags: [],
+      prohibitedFlags: [],
+    },
+  };
+  const value = {
+    id, ...scope, status: "ACCEPTED", role, visualGroupKey: slot.visualGroupKey, slotKey,
+    attemptIdentityHash: character.repeat(64), attemptNo: 1, inputHash: character.repeat(64),
+    generationSize: "768x1024",
+    contentHash: character.repeat(64), objectKeyVersion: "ATTEMPT_V2",
+    contentType: "image/png", width: 768, height: 1024, size: 1024,
+    gatewayRequestId: `gateway-${slotKey}`, checkerRequestId,
+    modelEvidence: { requestedImageModel: profile.imageModel, gatewayReportedImageModel: profile.imageModel, gatewayReportedImageModelPresent: true, orchestratorModel: "" },
+    profileId: profile.id, profileVersion: profile.configVersion, modelName: profile.imageModel,
+    planHash: plan.planHash, sourceHash: plan.sourceHash, strategyHash: plan.strategyHash,
+    configHash: plan.configHash, visualGroupsHash: plan.visualGroupsHash,
+    promptTemplateVersion: plan.promptTemplateVersion,
+    promptHash: hash({ templateVersion: plan.promptTemplateVersion, planHash: plan.planHash, slot, sourceAssets: sourceAssetEvidence.map(({ assetId, contentHash }) => ({ assetId, contentHash })) }),
+    sourceAssetEvidence,
+    regeneration: null,
+  };
+  return Object.freeze({
+    ...value,
+    objectKey: buildGeneratedAssetObjectKey(value),
+    checkerEvidence: {
+      checkerResult,
+      textRequired: true,
+      sourceFactIds: [],
+      sourceFacts: structuredClone(task4Facts),
+      sourceAssets: structuredClone(sourceAssetEvidence),
+      generatedHash: value.contentHash,
+      checkerModel: profile.textModel,
+      checkerModelEvidence,
+      profileId: profile.id,
+      profileAccountId: profile.accountId,
+      profileVersion: profile.configVersion,
+      templateVersion: plan.promptTemplateVersion,
+      requestId: checkerRequestId,
+    },
+  });
+};
+const assets = Object.freeze(slotSpecs.map(([id, role, slotKey, character]) => asset(id, role, slotKey, character)));
+const fullAssetEvidence = (rows = assets) => rows.map((entry) => ({
+  assetId: entry.id,
+  status: entry.status,
+  accountId: entry.accountId,
+  jobId: entry.jobId,
+  itemId: entry.itemId,
+  planId: entry.planId,
+  visualGroupKey: entry.visualGroupKey,
+  slotKey: entry.slotKey,
+  role: entry.role,
+  attemptIdentityHash: entry.attemptIdentityHash,
+  attemptNo: entry.attemptNo,
+  inputHash: entry.inputHash,
+  generationSize: entry.generationSize,
+  contentHash: entry.contentHash,
+  objectKeyVersion: entry.objectKeyVersion,
+  objectKey: entry.objectKey,
+  contentType: entry.contentType,
+  width: entry.width,
+  height: entry.height,
+  size: entry.size,
+  gatewayRequestId: entry.gatewayRequestId,
+  checkerRequestId: entry.checkerRequestId,
+  modelEvidence: structuredClone(entry.modelEvidence),
+  profileId: entry.profileId,
+  profileVersion: entry.profileVersion,
+  modelName: entry.modelName,
+  planHash: entry.planHash,
+  sourceHash: entry.sourceHash,
+  strategyHash: entry.strategyHash,
+  configHash: entry.configHash,
+  visualGroupsHash: entry.visualGroupsHash,
+  promptTemplateVersion: entry.promptTemplateVersion,
+  promptHash: entry.promptHash,
+  checkerEvidence: structuredClone(entry.checkerEvidence),
+  sourceAssetEvidence: structuredClone(entry.sourceAssetEvidence),
+  regeneration: structuredClone(entry.regeneration),
+})).sort((left, right) => left.assetId.localeCompare(right.assetId));
 
 const binding = (factId) => {
   const fact = facts.find((entry) => entry.factId === factId);
@@ -57,7 +200,7 @@ const validContent = () => ({
     block("IMAGE_TEXT", "Объём 500 мл", "fact.capacity", "asset-detail"),
   ],
 });
-const context = (overrides = {}) => ({ ...scope, planHash: plan.planHash, sourceHash: plan.sourceHash, plan: structuredClone(plan), factRegistry: structuredClone(facts), acceptedAssets: structuredClone(assets), ...overrides });
+const context = (overrides = {}) => ({ ...scope, planHash: plan.planHash, sourceHash: plan.sourceHash, plan: structuredClone(plan), factRegistry: structuredClone(facts), acceptedAssets: structuredClone(assets), profile: structuredClone(profile), ...overrides });
 const validation = async (content, overrides = {}) => {
   const { validateRichContent } = await richModule();
   assert.equal(typeof validateRichContent, "function");
@@ -219,6 +362,47 @@ test("builds a deterministic prompt from frozen facts and accepted asset evidenc
   assert.throws(() => buildRichContentPrompt(context()), (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
 });
 
+test("rich-content input rejects shallow accepted assets that cannot replay the complete Task 4 contract", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const acceptedAssets = assets.map(({ id, status, accountId, jobId, itemId, planId, role, visualGroupKey, slotKey, attemptIdentityHash, attemptNo, inputHash, contentHash, objectKeyVersion, objectKey }) => ({
+    id, status, accountId, jobId, itemId, planId, role, visualGroupKey, slotKey, attemptIdentityHash, attemptNo, inputHash, contentHash, objectKeyVersion, objectKey,
+  }));
+  assert.throws(
+    () => buildRichContentPrompt({ ...context({ acceptedAssets }), profile, promptTemplateVersion: "rich-v1" }),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+  );
+});
+
+test("every prompt-projected fact and asset string rejects URL contact and credential-like values", async () => {
+  const { buildRichContentPrompt } = await richModule();
+  const cases = [
+    (input) => { input.factRegistry[0].field = "https://private.example/field"; input.plan.factRegistry[0].field = input.factRegistry[0].field; },
+    (input) => { input.factRegistry[0].kind = "data:text/plain,secret"; input.plan.factRegistry[0].kind = input.factRegistry[0].kind; },
+    (input) => { input.factRegistry[0].value = "file:///tmp/secret"; input.plan.factRegistry[0].value = input.factRegistry[0].value; },
+    (input) => { input.factRegistry[0].value = "ftp://private.example/source"; input.plan.factRegistry[0].value = input.factRegistry[0].value; },
+    (input) => { input.factRegistry[0].value = "www.private.example"; input.plan.factRegistry[0].value = input.factRegistry[0].value; },
+    (input) => { input.factRegistry[0].value = "owner@example.test"; input.plan.factRegistry[0].value = input.factRegistry[0].value; },
+    (input) => { input.factRegistry[0].value = "+7 999 123-45-67"; input.plan.factRegistry[0].value = input.factRegistry[0].value; },
+    (input) => { input.factRegistry[0].value = "api_key=sk-secret-value"; input.plan.factRegistry[0].value = input.factRegistry[0].value; },
+    (input) => {
+      const priorFactId = input.factRegistry[0].factId;
+      input.factRegistry[0].factId = "https://private.example/fact";
+      input.plan.factRegistry[0].factId = input.factRegistry[0].factId;
+      for (const asset of input.acceptedAssets) {
+        asset.checkerEvidence.sourceFacts.find((entry) => entry.factId === priorFactId).factId = input.factRegistry[0].factId;
+      }
+    },
+    (input) => { input.acceptedAssets[0].id = "https://private.example/asset"; },
+    (input) => { input.acceptedAssets[0].role = "admin@example.test"; },
+  ];
+  for (const [index, mutate] of cases.entries()) {
+    const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+    mutate(input);
+    assert.throws(() => buildRichContentPrompt(input),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID", `prompt projection case ${index}`);
+  }
+});
+
 test("treats frozen facts and accepted assets as id-keyed collections for prompt and input identity", async () => {
   const { buildRichContentPrompt } = await richModule();
   const baseline = { ...context(), profile, promptTemplateVersion: "rich-v1" };
@@ -286,8 +470,7 @@ test("reuses an audited accepted result with zero gateway calls and fails closed
   const { buildRichContentPrompt, generateRichContent } = await richModule();
   const promptEvidence = buildRichContentPrompt({ ...context(), profile, promptTemplateVersion: "rich-v1" });
   const sourceFactEvidence = facts.map((fact) => structuredClone(fact)).sort((left, right) => left.factId.localeCompare(right.factId));
-  const assetEvidence = assets.map(({ id, role, slotKey, contentHash, objectKeyVersion, objectKey }) => ({ assetId: id, role, slotKey, contentHash, objectKeyVersion, objectKey }))
-    .sort((left, right) => left.assetId.localeCompare(right.assetId));
+  const assetEvidence = fullAssetEvidence();
   const requestEvidence = { requestKey: `auto-listing-rich-${promptEvidence.inputHash}`, schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1" };
   const modelEvidence = { requestedTextModel: "rich-model", gatewayReportedTextModel: "rich-model", gatewayReportedTextModelPresent: true };
   const reorderedContent = validContent();
@@ -354,6 +537,23 @@ test("terminalizes malformed gateway output, gateway failure, and policy rejecti
     assert.equal(repo.calls[0][0], "reserve");
     assert.ok(["reject", "fail"].includes(repo.calls.at(-1)[0]));
   }
+});
+
+test("gateway failures terminalize the lease but expose only the stable safe rich-content error", async () => {
+  const { generateRichContent } = await richModule();
+  const repo = repository();
+  await assert.rejects(generateRichContent(generationInput(repo, {
+    async createTextResponse() {
+      throw Object.assign(new Error("secret upstream gateway body"), { code: "UPSTREAM_PRIVATE_CODE", retryable: true });
+    },
+  })), (error) => {
+    assert.equal(error?.code, "AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
+    assert.equal(error?.retryable, true);
+    assert.doesNotMatch(error?.message || "", /secret upstream|private/i);
+    return true;
+  });
+  assert.equal(repo.calls.at(-1)[0], "fail");
+  assert.equal(repo.calls.at(-1)[1].errorCode, "AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED");
 });
 
 test("does not call a gateway for concurrent work, policy-rejected reservations, or repository transition errors", async () => {

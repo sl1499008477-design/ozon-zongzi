@@ -1,4 +1,5 @@
-import { sha256, verifyPersistedAcceptedGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
+import { sha256 } from "./auto-listing-asset-store.mjs";
+import { verifyAcceptedGeneratedAssetEvidence } from "./auto-listing-image-generator.mjs";
 
 const VERSION = "AUTO_LISTING_RICH_CONTENT_V1";
 const MAX_PROMPT_BYTES = 256 * 1024;
@@ -14,6 +15,13 @@ const POLICY_RULES = [
   /(?:сертифицирован|сертификат|лечебн|медицинск|исцел|гаранти|возврат|обмен)\w*/iu,
   /(?:в\s+комплекте|комплект\s+включает|подарок|бонус)/iu,
 ];
+const PROMPT_PROJECTION_RULES = [
+  /(?:https?|ftp|file|data):/iu,
+  /www\./iu,
+  /\b[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[A-Za-z]{2,}\b/iu,
+  /(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/u,
+  /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|bearer|password|secret)\b\s*[:=]/iu,
+];
 
 const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -25,6 +33,8 @@ const clean = (value, maxBytes = 2048) => typeof value === "string" && value ===
 const clone = (value) => structuredClone(value);
 const same = (left, right) => sha256(left) === sha256(right);
 const rawHash = (value) => sha256(value);
+const safePromptProjection = (value, maxBytes) => clean(value, maxBytes)
+  && !PROMPT_PROJECTION_RULES.some((rule) => rule.test(value));
 
 function richError(code, message = "富文本生成失败", retryable = false) {
   const error = new Error(message);
@@ -62,8 +72,8 @@ const numericTokens = (value) => [...value.matchAll(/(?<![\p{L}\p{N}])(-?\d+(?:[
   .map((match) => ({ value: Number(match[1].replace(",", ".")), unit: match[2] ? canonicalUnit(match[2]) : null }));
 
 function validFact(fact) {
-  return plainObject(fact) && clean(fact.factId, 240) && clean(fact.field, 512) && clean(fact.kind, 120)
-    && clean(fact.value, 2048)
+  return plainObject(fact) && safePromptProjection(fact.factId, 240) && safePromptProjection(fact.field, 512)
+    && safePromptProjection(fact.kind, 120) && safePromptProjection(fact.value, 2048)
     && ((fact.numericValue === null && fact.unit === null)
       || (typeof fact.numericValue === "number" && Number.isFinite(fact.numericValue)
         && (fact.unit === null || clean(fact.unit, 64))));
@@ -75,16 +85,28 @@ function validateFacts(facts) {
   return byId.size === facts.length ? byId : null;
 }
 
-function validAsset(asset, scope) {
-  if (!plainObject(asset) || !clean(asset.id, 240) || asset.status !== "ACCEPTED"
-    || !SCOPE_KEYS.every((key) => asset[key] === scope[key]) || !clean(asset.role, 120)
-    || !HASH.test(asset.contentHash || "") || !clean(asset.objectKey, 2048)) return false;
-  return verifyPersistedAcceptedGeneratedAssetObjectKey(asset);
+function validAsset(asset, scope, plan, profile) {
+  if (!plainObject(asset) || !safePromptProjection(asset.id, 240)
+    || !safePromptProjection(asset.slotKey, 240) || !safePromptProjection(asset.role, 120)
+    || !plainObject(plan) || !plainObject(profile)
+    || !Array.isArray(plan.plan?.slots)) return false;
+  const slots = plan.plan.slots.filter((slot) => slot?.slotKey === asset.slotKey
+    && slot?.visualGroupKey === asset.visualGroupKey);
+  if (slots.length !== 1) return false;
+  return verifyAcceptedGeneratedAssetEvidence({
+    record: asset,
+    scope: { ...scope, visualGroupKey: asset.visualGroupKey, slotKey: asset.slotKey },
+    plan,
+    slot: slots[0],
+    profile,
+    imageModel: profile.imageModel,
+    templateVersion: plan.promptTemplateVersion,
+  });
 }
 
-function validateAssets(assets, scope) {
+function validateAssets(assets, scope, plan, profile) {
   if (!Array.isArray(assets) || assets.length < 6 || assets.length > 20
-    || assets.some((asset) => !validAsset(asset, scope))) return null;
+    || assets.some((asset) => !validAsset(asset, scope, plan, profile))) return null;
   const byId = new Map(assets.map((asset) => [asset.id, asset]));
   if (byId.size !== assets.length || assets.filter((asset) => asset.role === "MAIN").length !== 1) return null;
   return byId;
@@ -155,11 +177,27 @@ function checkerFailure(code) {
   return Object.freeze({ valid: false, checkerResult: Object.freeze({ accepted: false, validator: VERSION, code }) });
 }
 
-export function validateRichContent(input = {}) {
+function validateDocumentAssets(assets, scope) {
+  if (!plainObject(scope) || !SCOPE_KEYS.every((key) => clean(scope[key], 240))
+    || !Array.isArray(assets) || assets.length < 6 || assets.length > 20) return null;
+  const normalized = [];
+  for (const asset of assets) {
+    const id = asset?.id ?? asset?.assetId;
+    if (!plainObject(asset) || !clean(id, 240) || asset.status !== "ACCEPTED"
+      || !SCOPE_KEYS.every((key) => asset[key] === scope[key]) || !clean(asset.role, 120)) return null;
+    normalized.push({ ...asset, id });
+  }
+  const byId = new Map(normalized.map((asset) => [asset.id, asset]));
+  if (byId.size !== normalized.length || normalized.filter((asset) => asset.role === "MAIN").length !== 1) return null;
+  return byId;
+}
+
+/** Closed-document validator for repository-owned, already-verified Task 4 evidence. */
+export function validateRichContentDocument(input = {}) {
   const { richContent, factRegistry, acceptedAssets } = input;
-  const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]]));
+  const scope = input.scope;
   const factsById = validateFacts(factRegistry);
-  const assetsById = validateAssets(acceptedAssets, scope);
+  const assetsById = validateDocumentAssets(acceptedAssets, scope);
   if (!factsById || !assetsById) return checkerFailure("INPUT_EVIDENCE_INVALID");
   if (!exactObject(richContent, new Set(["version", "language", "blocks"]))
     || richContent.version !== VERSION || richContent.language !== "ru"
@@ -213,6 +251,19 @@ export function validateRichContent(input = {}) {
   });
 }
 
+export function validateRichContent(input = {}) {
+  const scope = Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]]));
+  if (!validateAssets(input.acceptedAssets, scope, input.plan, input.profile)) {
+    return checkerFailure("INPUT_EVIDENCE_INVALID");
+  }
+  return validateRichContentDocument({
+    richContent: input.richContent,
+    factRegistry: input.factRegistry,
+    acceptedAssets: input.acceptedAssets,
+    scope,
+  });
+}
+
 function factEvidence(facts) {
   return facts.map(({ factId, field, kind, value, numericValue, unit, sourcePath }) => ({
     factId, field, kind, value, numericValue, unit, ...(sourcePath === undefined ? {} : { sourcePath }),
@@ -221,11 +272,42 @@ function factEvidence(facts) {
 
 function assetEvidence(assets) {
   return assets.map((asset) => ({
-    assetId: asset.id, role: asset.role,
-    ...(asset.slotKey === undefined ? {} : { slotKey: asset.slotKey }),
+    assetId: asset.id,
+    status: asset.status,
+    accountId: asset.accountId,
+    jobId: asset.jobId,
+    itemId: asset.itemId,
+    planId: asset.planId,
+    visualGroupKey: asset.visualGroupKey,
+    slotKey: asset.slotKey,
+    role: asset.role,
+    attemptIdentityHash: asset.attemptIdentityHash,
+    attemptNo: asset.attemptNo,
+    inputHash: asset.inputHash,
+    generationSize: asset.generationSize,
     contentHash: asset.contentHash,
-    ...(asset.objectKeyVersion === undefined ? {} : { objectKeyVersion: asset.objectKeyVersion }),
+    objectKeyVersion: asset.objectKeyVersion,
     objectKey: asset.objectKey,
+    contentType: asset.contentType,
+    width: asset.width,
+    height: asset.height,
+    size: asset.size,
+    gatewayRequestId: asset.gatewayRequestId,
+    checkerRequestId: asset.checkerRequestId,
+    modelEvidence: clone(asset.modelEvidence),
+    profileId: asset.profileId,
+    profileVersion: asset.profileVersion,
+    modelName: asset.modelName,
+    planHash: asset.planHash,
+    sourceHash: asset.sourceHash,
+    strategyHash: asset.strategyHash,
+    configHash: asset.configHash,
+    visualGroupsHash: asset.visualGroupsHash,
+    promptTemplateVersion: asset.promptTemplateVersion,
+    promptHash: asset.promptHash,
+    checkerEvidence: clone(asset.checkerEvidence),
+    sourceAssetEvidence: clone(asset.sourceAssetEvidence),
+    regeneration: clone(asset.regeneration),
   })).sort((left, right) => left.assetId < right.assetId ? -1 : left.assetId > right.assetId ? 1 : 0);
 }
 
@@ -234,7 +316,7 @@ export function buildRichContentPrompt(input = {}) {
   if (!SCOPE_KEYS.every((key) => clean(scope[key], 240)) || !validateFacts(input.factRegistry)
     || !validatePlan(input.plan, scope, input.factRegistry)
     || input.planHash !== input.plan.planHash || input.sourceHash !== input.plan.sourceHash
-    || !validateAssets(input.acceptedAssets, scope)
+    || !validateAssets(input.acceptedAssets, scope, input.plan, input.profile)
     || !plainObject(input.profile) || input.profile.accountId !== scope.accountId
     || !clean(input.profile.id, 240) || !Number.isInteger(input.profile.configVersion) || input.profile.configVersion < 1
     || !clean(input.profile.textModel, 240) || !clean(input.promptTemplateVersion, 240)) {
@@ -277,7 +359,13 @@ function repositoryPort(repository) {
   if (Object.values(port).some((method) => typeof method !== "function" || method.length < 1)) {
     throw richError("AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED", "Хранилище недоступно", true);
   }
-  return Object.fromEntries(Object.entries(port).map(([name, method]) => [name, method.bind(repository)]));
+  return Object.fromEntries(Object.entries(port).map(([name, method]) => [name, async (value) => {
+    try {
+      return await method.call(repository, value);
+    } catch {
+      throw richError("AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED", "Хранилище недоступно", true);
+    }
+  }]));
 }
 
 function validGatewayModelEvidence(value, modelName) {
@@ -294,7 +382,7 @@ function assertGenerationInput(input) {
     || !clean(input.profile.textModel, 240) || !clean(input.promptTemplateVersion, 240)
     || !validateFacts(input.factRegistry) || !validatePlan(input.plan, scope, input.factRegistry)
     || input.planHash !== input.plan.planHash || input.sourceHash !== input.plan.sourceHash
-    || !validateAssets(input.acceptedAssets, scope)) {
+    || !validateAssets(input.acceptedAssets, scope, input.plan, input.profile)) {
     throw richError("AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
   }
   return scope;
@@ -374,9 +462,9 @@ export async function generateRichContent(input = {}) {
       jsonSchema: RICH_CONTENT_JSON_SCHEMA,
     });
   } catch (cause) {
-    const errorCode = clean(cause?.code, 240) ? cause.code : "AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED";
-    try { await port.fail({ ...reservationInput, ...lease, errorCode, errorRetryable: cause?.retryable !== false }); } catch (transitionError) { throw transitionError; }
-    throw cause;
+    const gatewayFailure = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_FAILED", "Шлюз генерации недоступен", cause?.retryable !== false);
+    await port.fail({ ...reservationInput, ...lease, errorCode: gatewayFailure.code, errorRetryable: gatewayFailure.retryable });
+    throw gatewayFailure;
   }
   if (!clean(response?.requestId, 240) || !validGatewayModelEvidence(response?.modelEvidence, input.profile.textModel)) {
     const invalidEvidence = richError("AUTO_LISTING_RICH_CONTENT_GATEWAY_EVIDENCE_INVALID", "Шлюз не подтвердил запрос и модель", true);
