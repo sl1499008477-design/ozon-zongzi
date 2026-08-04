@@ -119,6 +119,60 @@ test("reuses a fully audited accepted attempt for the same slot and input withou
   assert.equal(replay.gatewayCalls(), 0);
 });
 
+test("pure accepted-asset evidence verification rejects every incomplete or cross-bound Task 4 audit", async () => {
+  const { verifyAcceptedGeneratedAssetEvidence } = await import("../auto-listing-image-generator.mjs");
+  assert.equal(typeof verifyAcceptedGeneratedAssetEvidence, "function");
+  const fixture = await setup();
+  const accepted = structuredClone(await generateImageSlot(fixture.input));
+  const verification = {
+    record: accepted,
+    scope: fixture.input.scope,
+    plan: fixture.input.plan,
+    slot: fixture.input.slot,
+    profile: fixture.input.profile,
+    imageModel: fixture.input.imageModel,
+    templateVersion: fixture.input.templateVersion,
+  };
+  assert.equal(verifyAcceptedGeneratedAssetEvidence(verification), true);
+
+  const corruptions = [
+    ({ plan }) => { plan.plan = { slots: [] }; },
+    ({ record }) => { record.accountId = "account-b"; },
+    ({ record }) => { record.visualGroupKey = "other-group"; },
+    ({ record }) => { record.slotKey = "other-slot"; },
+    ({ record }) => { record.role = "DETAIL"; },
+    ({ record }) => { record.planHash = "0".repeat(64); },
+    ({ record }) => { record.sourceHash = "0".repeat(64); },
+    ({ record }) => { record.strategyHash = "0".repeat(64); },
+    ({ record }) => { record.configHash = "0".repeat(64); },
+    ({ record }) => { record.visualGroupsHash = "0".repeat(64); },
+    ({ record }) => { record.profileId = "profile-b"; },
+    ({ record }) => { record.profileVersion = 4; },
+    ({ record }) => { record.modelName = "other-image-model"; },
+    ({ record }) => { record.promptTemplateVersion = "other-template"; },
+    ({ record }) => { record.objectKey = `${record.objectKey}.forged`; },
+    ({ record }) => { record.objectKeyVersion = "UNKNOWN"; },
+    ({ record }) => { record.sourceAssetEvidence[0].contentHash = "0".repeat(64); },
+    ({ record }) => { record.checkerEvidence.sourceAssets[0].contentHash = "0".repeat(64); },
+    ({ record }) => { record.checkerEvidence.checkerResult.evidence.identity.sourceAssetIds = ["other-source"]; },
+    ({ record }) => { record.checkerEvidence.checkerResult.matchesProduct = false; },
+  ];
+  for (const corrupt of corruptions) {
+    const candidate = structuredClone(verification);
+    corrupt(candidate);
+    assert.equal(verifyAcceptedGeneratedAssetEvidence(candidate), false);
+  }
+
+  const legacy = structuredClone(verification);
+  legacy.record.objectKeyVersion = null;
+  const segments = [legacy.record.accountId, legacy.record.jobId, legacy.record.itemId, legacy.record.planId, legacy.record.visualGroupKey, legacy.record.slotKey]
+    .map((value) => Buffer.from(value).toString("base64url"));
+  legacy.record.objectKey = `auto-listing/${segments.join("/")}/${legacy.record.inputHash}/${legacy.record.contentHash}.png`;
+  assert.equal(verifyAcceptedGeneratedAssetEvidence(legacy), true);
+  legacy.record.objectKey = `${legacy.record.objectKey}.forged`;
+  assert.equal(verifyAcceptedGeneratedAssetEvidence(legacy), false);
+});
+
 test("replays an immutable pre-030 accepted object with null version only through the exact legacy key", async () => {
   const first = await setup();
   const accepted = structuredClone(await generateImageSlot(first.input));

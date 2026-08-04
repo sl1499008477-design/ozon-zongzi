@@ -153,6 +153,95 @@ function validCheckerEvidence(value, { record, profile, templateVersion, referen
   }
 }
 
+/**
+ * Pure cross-use boundary for a persisted Task 4 accepted asset.  It does not
+ * read object storage; callers that consume the bytes must still perform the
+ * separate object readback check.  Rich-content generation uses this boundary
+ * to prove that an "ACCEPTED" label is backed by the complete frozen plan,
+ * source-image, profile, model, prompt and checker evidence.
+ */
+export function verifyAcceptedGeneratedAssetEvidence(input = {}) {
+  try {
+    const { record, scope, plan, slot, profile, imageModel, templateVersion } = input;
+    const scopeKeys = ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"];
+    if (!record || !scope || !plan || !slot || !profile
+      || scopeKeys.some((key) => !strictText(scope[key]) || record[key] !== scope[key])
+      || record.status !== "ACCEPTED"
+      || plan.id !== scope.planId || plan.sourceAccountId !== scope.accountId
+      || plan.jobId !== scope.jobId || plan.itemId !== scope.itemId
+      || plan.profileId !== profile.id || plan.profileVersion !== profile.configVersion
+      || plan.plannerModel !== profile.textModel || plan.promptTemplateVersion !== templateVersion
+      || profile.accountId !== scope.accountId || profile.imageModel !== imageModel
+      || !strictText(profile.id) || !strictText(profile.accountId)
+      || !Number.isInteger(profile.configVersion) || profile.configVersion < 1
+      || !strictText(profile.textModel) || !strictText(imageModel) || !strictText(templateVersion)
+      || ![plan.planHash, plan.sourceHash, plan.strategyHash, plan.configHash, plan.visualGroupsHash]
+        .every((value) => HASH.test(value || ""))
+      || record.planHash !== plan.planHash || record.sourceHash !== plan.sourceHash
+      || record.strategyHash !== plan.strategyHash || record.configHash !== plan.configHash
+      || record.visualGroupsHash !== plan.visualGroupsHash
+      || record.profileId !== profile.id || record.profileVersion !== profile.configVersion
+      || record.modelName !== imageModel || record.promptTemplateVersion !== templateVersion
+      || slot.slotKey !== scope.slotKey || slot.visualGroupKey !== scope.visualGroupKey
+      || record.role !== slot.role || !TEXT_DENSITIES.has(slot.textDensity)
+      || !Array.isArray(plan.plan?.slots) || !plan.plan.slots.some((candidate) => sameJson(candidate, slot))
+      || !Array.isArray(plan.visualGroups?.groups)
+      || !HASH.test(record.attemptIdentityHash || "") || !HASH.test(record.inputHash || "")
+      || !Number.isInteger(record.attemptNo) || record.attemptNo < 1 || record.attemptNo > 3
+      || !/^[1-9][0-9]*x[1-9][0-9]*$/u.test(record.generationSize || "")
+      || !HASH.test(record.contentHash || "") || !verifyPersistedAcceptedGeneratedAssetObjectKey(record)
+      || record.contentType !== "image/png"
+      || !Number.isInteger(record.width) || record.width < 1
+      || !Number.isInteger(record.height) || record.height < 1
+      || !Number.isInteger(record.size) || record.size < 1
+      || requestId(record.gatewayRequestId) !== record.gatewayRequestId
+      || requestId(record.checkerRequestId) !== record.checkerRequestId
+      || !validImageModelEvidence(record.modelEvidence, imageModel)
+      || !sameJson(record.regeneration, plan.regeneration ?? null)) return false;
+
+    const groups = plan.visualGroups.groups.filter((entry) => entry?.visualGroupKey === scope.visualGroupKey);
+    if (groups.length !== 1 || !Array.isArray(groups[0].referenceImages) || !groups[0].referenceImages.length
+      || !Array.isArray(slot.referenceAssetIds) || slot.referenceAssetIds.length < 1 || slot.referenceAssetIds.length > 7
+      || slot.referenceAssetIds.length !== new Set(slot.referenceAssetIds).size
+      || slot.referenceAssetIds.some((assetId) => !strictText(assetId))) return false;
+    const byId = new Map();
+    for (const reference of groups[0].referenceImages) {
+      if (!strictText(reference?.assetId) || byId.has(reference.assetId)
+        || reference.evidenceKind !== "CONTENT_HASH" || !HASH.test(reference.contentHash || "")) return false;
+      byId.set(reference.assetId, reference);
+    }
+    const selected = slot.referenceAssetIds.map((assetId) => byId.get(assetId));
+    if (selected.some((reference) => !reference)
+      || !persistedReferencesMatchSelection(record.sourceAssetEvidence, selected)
+      || !sameJson(record.sourceAssetEvidence, sourceEvidence(record.sourceAssetEvidence))
+      || record.sourceAssetEvidence.some((reference) => !HASH.test(reference.contentHash || "")
+        || !["image/png", "image/jpeg", "image/webp"].includes(reference.contentType)
+        || !Number.isInteger(reference.width) || reference.width < 1
+        || !Number.isInteger(reference.height) || reference.height < 1
+        || !Number.isInteger(reference.size) || reference.size < 1)) return false;
+
+    const facts = promptFacts(plan, scope.visualGroupKey);
+    const checkerFacts = record.checkerEvidence?.sourceFacts;
+    const byFactId = (values) => Array.isArray(values)
+      ? [...values].sort((left, right) => String(left?.factId).localeCompare(String(right?.factId)))
+      : values;
+    if (!sameJson(byFactId(checkerFacts), byFactId(facts))) return false;
+    const textRequired = slot.textDensity !== "NONE";
+    const expectedPromptHash = hash({
+      templateVersion,
+      planHash: plan.planHash,
+      slot,
+      sourceAssets: record.sourceAssetEvidence.map(({ assetId, contentHash }) => ({ assetId, contentHash })),
+    });
+    return record.promptHash === expectedPromptHash
+      && validCheckerEvidence(record.checkerEvidence, {
+        record, profile, templateVersion, references: record.sourceAssetEvidence, facts: checkerFacts, textRequired,
+      });
+  } catch {
+    return false;
+  }
+}
+
 function verifyExistingAccepted(record, scope, inputHash, { attemptIdentityHash, plan, slot, profile, imageModel, templateVersion, references, facts, promptHash, regeneration, textRequired, generationSize: expectedSize, stored = null }) {
   if (!record || record.status !== "ACCEPTED" || record.inputHash !== inputHash
     || !HASH.test(record.attemptIdentityHash || "") || record.attemptIdentityHash !== attemptIdentityHash || record.generationSize !== expectedSize) return false;
