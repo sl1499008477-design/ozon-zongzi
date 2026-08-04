@@ -9,6 +9,7 @@ const cleanup = (overrides = {}) => {
     accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a",
     visualGroupKey: "main", slotKey: "cover", attemptIdentityHash: hash("a"),
     inputHash: hash("b"), attemptNo: 2, contentHash: hash("c"),
+    objectKeyVersion: "ATTEMPT_V2",
     reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED",
     ...overrides,
   };
@@ -23,6 +24,7 @@ test("cleanup obligations are durable-shaped, account-scoped, and idempotent by 
   const repeated = await repository.recordAssetCleanupRequired(cleanup());
   assert.deepEqual(repeated, first);
   assert.equal(first.status, "PENDING");
+  assert.equal(first.objectKeyVersion, "ATTEMPT_V2");
   assert.equal(first.attemptCount, 0);
   assert.equal(first.createdAt, 1_000);
   assert.equal(first.updatedAt, 1_000);
@@ -30,6 +32,56 @@ test("cleanup obligations are durable-shaped, account-scoped, and idempotent by 
   assert.deepEqual((await repository.listAssetCleanupObligations({ accountId: "account-a" })).map(({ objectKey }) => objectKey), [first.objectKey]);
   assert.deepEqual(await repository.listAssetCleanupObligations({ accountId: "account-b" }), []);
   await assert.rejects(repository.recordAssetCleanupRequired(cleanup({ reason: "OTHER_REASON" })), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_CONFLICT");
+});
+
+test("cleanup identity is idempotent for one attempt and distinct for another attempt with identical bytes", async () => {
+  const repository = createMemoryAssetCleanupRepository();
+  const firstInput = cleanup({ attemptNo: 1 });
+  firstInput.objectKey = buildGeneratedAssetObjectKey(firstInput);
+  const secondInput = cleanup({ attemptNo: 2 });
+  secondInput.objectKey = buildGeneratedAssetObjectKey(secondInput);
+  const first = await repository.recordAssetCleanupRequired(firstInput);
+  assert.equal((await repository.recordAssetCleanupRequired(firstInput)).id, first.id);
+  const second = await repository.recordAssetCleanupRequired(secondInput);
+  assert.notEqual(second.id, first.id);
+  assert.notEqual(second.objectKey, first.objectKey);
+  assert.equal((await repository.listAssetCleanupObligations({ accountId: "account-a" })).length, 2);
+});
+
+test("ordinary cleanup recording cannot create a migrated LEGACY_V1 obligation", async () => {
+  const repository = createMemoryAssetCleanupRepository();
+  const value = cleanup({ objectKeyVersion: "LEGACY_V1" });
+  await assert.rejects(repository.recordAssetCleanupRequired(value), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_INVALID");
+  assert.deepEqual(await repository.listAssetCleanupObligations({ accountId: "account-a" }), []);
+});
+
+test("a referenced claimed obligation becomes terminal ADOPTED with exact reference audit", async () => {
+  let timestamp = Date.parse("2026-08-04T00:00:00.000Z");
+  const reference = { accountId: "account-a", id: "asset-accepted-2", status: "ACCEPTED" };
+  const repository = createMemoryAssetCleanupRepository({
+    now: () => timestamp,
+    token: () => "claim-adopt",
+    async findGenerationAssetReference({ accountId, objectKey }) {
+      return { ...reference, objectKey, accountId };
+    },
+  });
+  await repository.recordAssetCleanupRequired(cleanup());
+  const [claimed] = await repository.claimAssetCleanupObligations({
+    accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 1_000,
+  });
+  const adopted = await repository.adoptAssetCleanupIfReferenced?.({
+    accountId: "account-a", id: claimed.id, workerId: "worker-a", claimToken: claimed.claimToken,
+  });
+  assert.equal(adopted?.status, "ADOPTED");
+  assert.equal(adopted.record.status, "ADOPTED");
+  assert.equal(adopted.record.adoptedAt, timestamp);
+  assert.equal(adopted.record.adoptedGenerationAssetId, reference.id);
+  assert.equal(adopted.record.adoptedGenerationAssetStatus, reference.status);
+  assert.equal(adopted.record.claimToken, null);
+  timestamp += 1_001;
+  assert.deepEqual(await repository.claimAssetCleanupObligations({
+    accountId: "account-a", workerId: "worker-b", limit: 1, leaseMs: 1_000,
+  }), []);
 });
 
 test("cleanup repository rejects malformed or cross-account object identity without persisting", async () => {
@@ -96,6 +148,21 @@ test("PostgreSQL cleanup claim rejects an oversized nonce before a database quer
     accountId: "account-a", workerId: "worker-a", limit: 1, leaseMs: 5_000,
   }), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_INVALID");
   assert.equal(queries, 0);
+});
+
+test("PostgreSQL adoption is one account-scoped lease-CAS statement with an exact object reference fence", async () => {
+  const calls = [];
+  const repository = createPostgresAssetCleanupRepository({
+    pool: { async query(sql, parameters) { calls.push({ sql, parameters }); return { rows: [{ ownership_matched: true, reference_found: false, adopted_record: null }] }; } },
+  });
+  assert.deepEqual(await repository.adoptAssetCleanupIfReferenced({
+    accountId: "account-a", id: "cleanup-a", workerId: "worker-a", claimToken: "claim-a",
+  }), { status: "UNREFERENCED" });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].parameters, ["account-a", "cleanup-a", "worker-a", "claim-a"]);
+  assert.match(calls[0].sql, /account_id=\$1[\s\S]*?id=\$2[\s\S]*?status='PROCESSING'[\s\S]*?claim_owner=\$3[\s\S]*?claim_token=\$4[\s\S]*?claim_expires_at > NOW\(\)[\s\S]*?FOR UPDATE/is);
+  assert.match(calls[0].sql, /FROM ai_generation_assets AS asset[\s\S]*?asset\.account_id=owned\.account_id AND asset\.object_key=owned\.object_key/is);
+  assert.match(calls[0].sql, /SET status='ADOPTED'[\s\S]*?adopted_at=NOW\(\)[\s\S]*?adopted_generation_asset_id=reference\.id[\s\S]*?adopted_generation_asset_status=reference\.status/is);
 });
 
 test("cleanup failure releases the lease with bounded deterministic exponential backoff", async () => {

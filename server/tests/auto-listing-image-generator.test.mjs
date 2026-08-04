@@ -62,6 +62,7 @@ test("generates an accepted slot from server-loaded bytes and does not expose so
   const fixture = await setup();
   const result = await generateImageSlot(fixture.input);
   assert.equal(result.accepted, true); assert.equal(fixture.gatewayCalls(), 1);
+  assert.equal(result.objectKeyVersion, "ATTEMPT_V2");
   assert.deepEqual(fixture.calls.map(([name]) => name), ["stored", "complete"]);
 });
 
@@ -127,7 +128,7 @@ test("direct accepted reuse binds persisted references to the immutable selected
   const rebuilt = buildImageGenerationInput({ ...first.input, references: accepted.sourceAssetEvidence });
   accepted.inputHash = rebuilt.inputHash;
   accepted.promptHash = rebuilt.promptHash;
-  accepted.objectKey = buildGeneratedAssetObjectKey({ ...scope, inputHash: rebuilt.inputHash, contentHash: accepted.contentHash });
+  accepted.objectKey = buildGeneratedAssetObjectKey({ ...accepted, inputHash: rebuilt.inputHash, contentHash: accepted.contentHash });
   const replay = await setup({ existing: accepted });
   await assert.rejects(generateImageSlot(replay.input), (error) => error?.code === "AUTO_LISTING_IMAGE_EXISTING_CORRUPT");
   assert.equal(replay.loaderCalls(), 0);
@@ -462,7 +463,7 @@ test("checker transport and reject-record failure remain recoverable and never t
 });
 
 test("every accepted audit column is fail-closed on a corrupt completion row", async () => {
-  for (const field of ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "role", "generationSize", "contentHash", "objectKey", "contentType", "width", "height", "size", "gatewayRequestId", "checkerRequestId", "modelEvidence", "profileId", "profileVersion", "modelName", "planHash", "sourceHash", "strategyHash", "configHash", "visualGroupsHash", "promptTemplateVersion", "promptHash", "checkerEvidence", "sourceAssetEvidence", "regeneration"]) {
+  for (const field of ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "role", "generationSize", "contentHash", "objectKey", "objectKeyVersion", "contentType", "width", "height", "size", "gatewayRequestId", "checkerRequestId", "modelEvidence", "profileId", "profileVersion", "modelName", "planHash", "sourceHash", "strategyHash", "configHash", "visualGroupsHash", "promptTemplateVersion", "promptHash", "checkerEvidence", "sourceAssetEvidence", "regeneration"]) {
     const fixture = await setup(); const original = fixture.input.repository.completeGenerationAttempt;
     fixture.input.repository.completeGenerationAttempt = async (value) => { const row = await original(value); row[field] = ["width", "height", "size"].includes(field) ? 0 : field === "checkerEvidence" ? { ...row.checkerEvidence, generatedHash: "0".repeat(64) } : field === "sourceAssetEvidence" ? [] : field === "modelEvidence" ? { ...row.modelEvidence, requestedImageModel: "corrupt" } : field === "regeneration" ? { requestId: "corrupt", reason: "QUALITY_RETRY" } : ["gatewayRequestId", "checkerRequestId"].includes(field) ? " corrupt " : "corrupt"; return row; };
     await assert.rejects(generateImageSlot(fixture.input), (error) => { assert.equal(error?.code, "AUTO_LISTING_IMAGE_REPOSITORY_FAILED", field); return true; }, field);
@@ -479,6 +480,7 @@ test("existing accepted reuse revalidates the full evidence matrix and actual st
     (row) => { row.checkerRequestId = "other"; },
     (row) => { row.modelEvidence = { ...row.modelEvidence, requestedImageModel: "other" }; },
     (row) => { row.objectKey = `${row.objectKey}.other`; },
+    (row) => { row.objectKeyVersion = "LEGACY_V1"; },
     (row) => { row.promptHash = "0".repeat(64); },
     (row) => { row.sourceAssetEvidence = []; },
     (row) => { row.checkerEvidence = { ...row.checkerEvidence, generatedHash: "0".repeat(64) }; },

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const migrationUrl = new URL("../db/migrations/029_auto_listing_ai_generation_evidence.sql", import.meta.url);
+const attemptIsolationMigrationUrl = new URL("../db/migrations/030_auto_listing_generated_asset_attempt_isolation.sql", import.meta.url);
 
 test("generation evidence migration is additive and preserves an immutable audit trail", async () => {
   const sql = await readFile(migrationUrl, "utf8");
@@ -31,5 +32,21 @@ test("generation evidence migration is additive and preserves an immutable audit
   assert.match(sql, /auto_listing_asset_cleanup_obligations[\s\S]*?FOREIGN KEY \(account_id, job_id, item_id, plan_id\)[\s\S]*?REFERENCES ai_content_plans\(account_id, job_id, item_id, id\)/i);
   assert.match(sql, /UNIQUE \(account_id, object_key\)/i);
   assert.doesNotMatch(sql, /ALTER\s+COLUMN\s+input_hash\s+DROP\s+NOT\s+NULL/i);
+  assert.doesNotMatch(sql, /\b(?:DROP\s+(?:TABLE|COLUMN)|TRUNCATE|DELETE\s+FROM)\b/i);
+});
+
+test("attempt-isolation migration upgrades deployed 029 schemas without rewriting legacy evidence", async () => {
+  const sql = await readFile(attemptIsolationMigrationUrl, "utf8");
+  assert.match(sql, /ALTER TABLE ai_generation_assets[\s\S]*?ADD COLUMN IF NOT EXISTS object_key_version TEXT/i);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_generation_object_key_v2_complete\([\s\S]*?account_id[\s\S]*?job_id[\s\S]*?item_id[\s\S]*?plan_id[\s\S]*?visual_group_key[\s\S]*?slot_key[\s\S]*?attempt_identity_hash[\s\S]*?attempt_no[\s\S]*?input_hash[\s\S]*?content_hash[\s\S]*?object_key[\s\S]*?RETURNS BOOLEAN/is);
+  assert.match(sql, /auto_listing_generation_object_key_v2_complete\(account_id,job_id,item_id,plan_id,visual_group_key,slot_key,attempt_identity_hash,attempt_no,input_hash,content_hash,object_key\)/i);
+  assert.match(sql, /UPDATE ai_generation_assets[\s\S]*?object_key_version = 'LEGACY_V1'[\s\S]*?object_key_version IS NULL[\s\S]*?object_key IS NOT NULL/is);
+  assert.match(sql, /ai_generation_assets_new_object_key_v2_check[\s\S]*?status <> 'ACCEPTED'[\s\S]*?object_key_version = 'ATTEMPT_V2'[\s\S]*?auto_listing_generation_object_key_v2_complete/is);
+  assert.match(sql, /auto_listing_asset_cleanup_obligations[\s\S]*?object_key_version TEXT[\s\S]*?adopted_at TIMESTAMPTZ[\s\S]*?adopted_generation_asset_id TEXT[\s\S]*?adopted_generation_asset_status TEXT/is);
+  assert.match(sql, /UPDATE auto_listing_asset_cleanup_obligations[\s\S]*?object_key_version = 'LEGACY_V1'[\s\S]*?object_key_version IS NULL/is);
+  assert.match(sql, /auto_listing_asset_cleanup_new_object_key_v2_check[\s\S]*?object_key_version = 'ATTEMPT_V2'[\s\S]*?auto_listing_generation_object_key_v2_complete/is);
+  assert.match(sql, /BEFORE INSERT ON auto_listing_asset_cleanup_obligations[\s\S]*?auto_listing_asset_cleanup_new_v2_only/i);
+  assert.match(sql, /status IN \('PENDING', 'PROCESSING', 'COMPLETED', 'ADOPTED'\)/i);
+  assert.match(sql, /status = 'ADOPTED'[\s\S]*?adopted_at IS NOT NULL[\s\S]*?adopted_generation_asset_id[\s\S]*?adopted_generation_asset_status[\s\S]*?claim_token IS NULL[\s\S]*?claim_owner IS NULL[\s\S]*?claim_expires_at IS NULL/is);
   assert.doesNotMatch(sql, /\b(?:DROP\s+(?:TABLE|COLUMN)|TRUNCATE|DELETE\s+FROM)\b/i);
 });

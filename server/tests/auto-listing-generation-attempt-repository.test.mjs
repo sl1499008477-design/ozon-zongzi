@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
 import { createMemoryGenerationAttemptRepository } from "../auto-listing-generation-attempt-repository.mjs";
 
 const scope = Object.freeze({ accountId: "account-a", jobId: "job-a", itemId: "item-a", planId: "plan-a", visualGroupKey: "group-a", slotKey: "main" });
 const attemptIdentityHash = "a".repeat(64);
 const inputHash = "b".repeat(64);
 const generationSize = "768x1024";
-const complete = (lease, identity = attemptIdentityHash) => ({ ...scope, attemptIdentityHash: identity, inputHash, generationSize, ...lease, objectKey: "auto-listing/a.png", contentHash: "c".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123, profileId: "profile-a", profileVersion: 1, modelName: "image-a", planHash: "d".repeat(64), sourceHash: "e".repeat(64), strategyHash: "f".repeat(64), configHash: "1".repeat(64), visualGroupsHash: "2".repeat(64), promptTemplateVersion: "v1", checkerEvidence: { ok: true }, sourceAssetEvidence: [] });
+const complete = (lease, identity = attemptIdentityHash) => {
+  const value = { ...scope, attemptIdentityHash: identity, inputHash, generationSize, ...lease, objectKeyVersion: "ATTEMPT_V2", contentHash: "c".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 123, profileId: "profile-a", profileVersion: 1, modelName: "image-a", planHash: "d".repeat(64), sourceHash: "e".repeat(64), strategyHash: "f".repeat(64), configHash: "1".repeat(64), visualGroupsHash: "2".repeat(64), promptTemplateVersion: "v1", checkerEvidence: { ok: true }, sourceAssetEvidence: [] };
+  value.objectKey = buildGeneratedAssetObjectKey(value);
+  return value;
+};
 
 test("one preliminary identity owns the lease, binds final bytes, and reuses accepted work", async () => {
   let timestamp = 100; let sequence = 0;
@@ -32,6 +37,24 @@ test("reservation requires and persists the exact generation size before final i
   const reserved = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, generationSize, maxAttempts: 3 });
   assert.equal(reserved.generationSize, generationSize);
   assert.equal(repository.snapshot()[0].generationSize, generationSize);
+});
+
+test("new accepted attempts require an exact ATTEMPT_V2 object-key audit", async () => {
+  for (const mutation of [
+    (value) => { delete value.objectKeyVersion; },
+    (value) => { value.objectKeyVersion = "LEGACY_V1"; },
+    (value) => { value.objectKey = value.objectKey.replace("/attempt-1/", "/attempt-2/"); },
+  ]) {
+    const repository = createMemoryGenerationAttemptRepository({ token: () => "lease-v2" });
+    const lease = await repository.reserveGenerationAttempt({ ...scope, attemptIdentityHash, generationSize, maxAttempts: 3 });
+    await repository.bindGenerationAttemptInput({ ...scope, attemptIdentityHash, inputHash, ...lease });
+    const value = complete(lease);
+    value.objectKeyVersion = "ATTEMPT_V2";
+    value.objectKey = buildGeneratedAssetObjectKey(value);
+    mutation(value);
+    await assert.rejects(repository.completeGenerationAttempt(value), (error) => error?.code === "AUTO_LISTING_IMAGE_ATTEMPT_INVALID");
+    assert.equal(repository.snapshot()[0].status, "GENERATING");
+  }
 });
 
 test("every generation-attempt owner transition rejects a missing or changed generation size", async () => {

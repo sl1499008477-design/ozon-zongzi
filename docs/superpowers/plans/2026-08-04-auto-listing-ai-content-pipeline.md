@@ -457,3 +457,9 @@ node --test server/tests/object-cleanup-queue.test.mjs server/tests/object-clean
 ~~~
 
 - [ ] Rollback: set AUTO_LISTING_AI_ENABLED=0 and stop auto-listing-worker. Keep immutable plans/assets/events for audit; do not remove shared object-storage assets until the existing cleanup policy marks them unreferenced.
+
+## Task 4 review repair round 4 handoff
+
+Generated-image object keys are now exact attempt-scoped `ATTEMPT_V2` paths. Migration-labeled `LEGACY_V1` remains read-only, and new accepted/cleanup writes cannot select it. Cleanup adopts any exact same-account generation reference under a live lease CAS before deletion, with terminal ADOPTED audit. Additive migration 030 upgrades already-recorded 029 databases and keeps legacy cleanup lifecycle updates recoverable.
+
+Verification evidence: focused 65 pass/1 dedicated-PostgreSQL skip; auto-listing 225 pass/1 skip; migration contracts 22 pass/2 skips; selected historical boundaries 42 pass; whole `*.test.mjs` 937 pass/5 skips; raw `*.mjs` 949 pass/1 expected dedicated-URL environment failure/6 skips; Vite build 4,833 modules; changed-module syntax and diff check clean. The feature remains disabled/unwired, the dedicated PostgreSQL behavior fixture did not run, and this handoff enters independent review without self-declaring Task 4 complete.

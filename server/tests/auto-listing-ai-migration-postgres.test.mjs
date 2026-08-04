@@ -71,12 +71,12 @@ if (!enabled) {
       return client.query(
       `INSERT INTO ai_generation_assets (
          id,account_id,job_id,item_id,plan_id,profile_id,visual_group_key,slot_key,role,
-         input_hash,attempt_no,status,gateway_request_id,checker_request_id,model_name,profile_version,prompt_hash,object_key,
+         input_hash,attempt_no,status,gateway_request_id,checker_request_id,model_name,profile_version,prompt_hash,object_key_version,object_key,
          content_hash,content_type,width,height,checker_result,error_code,error_retryable,accepted_at,
          plan_hash,source_hash,strategy_hash,config_hash,visual_groups_hash,prompt_template_version,
          source_asset_evidence,model_evidence,regeneration,size_bytes,lease_token,lease_expires_at,
          attempt_identity_hash,generation_size,final_input_bound_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a',$7,'SELLING_POINT',$8,$9,$10,$11,$12,'image-model',$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31::jsonb,$32::jsonb,$33,$34,$35,$36,$37,$38)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a',$7,'SELLING_POINT',$8,$9,$10,$11,$12,'image-model',$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31::jsonb,$32::jsonb,$33::jsonb,$34,$35,$36,$37,$38,$39)`,
       [
         overrides.id,
         account,
@@ -92,6 +92,7 @@ if (!enabled) {
         overrides.checkerRequestId ?? null,
         overrides.profileVersion || 1,
         overrides.promptHash ?? "prompt-hash",
+        overrides.objectKeyVersion ?? null,
         overrides.objectKey ?? null,
         overrides.contentHash ?? null,
         overrides.contentType ?? null,
@@ -120,11 +121,12 @@ if (!enabled) {
       );
     };
 
-    const completeAcceptedAsset = (overrides = {}) => ({
+    const completeAcceptedAsset = (overrides = {}) => {
+      const value = {
       status: "ACCEPTED",
       inputHash: "1".repeat(64),
       promptHash: "2".repeat(64),
-      objectKey: "objects/accepted.png",
+      objectKeyVersion: "ATTEMPT_V2",
       contentHash: "3".repeat(64),
       contentType: "image/png",
       width: 768,
@@ -144,7 +146,17 @@ if (!enabled) {
       sizeBytes: 123,
       acceptedAt: new Date(),
       ...overrides,
-    });
+      };
+      value.attemptIdentityHash ??= value.inputHash;
+      value.attemptNo ??= 1;
+      value.objectKey ??= buildGeneratedAssetObjectKey({
+        accountId: account, jobId: jobA, itemId: itemA, planId: plan,
+        visualGroupKey: "visual-a", slotKey: value.slotKey || "selling-point-1",
+        attemptIdentityHash: value.attemptIdentityHash, attemptNo: value.attemptNo,
+        inputHash: value.inputHash, contentHash: value.contentHash,
+      });
+      return value;
+    };
 
     const insertResult = (overrides = {}) => client.query(
       `INSERT INTO ai_rich_content_results (
@@ -238,6 +250,9 @@ if (!enabled) {
       ), { code: "23503" });
 
       await insertPlan();
+      const legacyCleanupInputHash = "b".repeat(64);
+      const legacyCleanupContentHash = "c".repeat(64);
+      const legacyCleanupObjectKey = `auto-listing/${[account, jobA, itemA, plan, "visual-a", "legacy-cleanup-slot"].map((value) => Buffer.from(value).toString("base64url")).join("/")}/${legacyCleanupInputHash}/${legacyCleanupContentHash}.png`;
       const legacyAcceptedInputHash = "f".repeat(64);
       await client.query(
         `INSERT INTO ai_generation_assets (
@@ -247,6 +262,15 @@ if (!enabled) {
         ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a','upgrade-slot','SELLING_POINT',$7,1,'ACCEPTED',
           'legacy-gateway','image-model',1,'legacy-prompt','legacy/object.png',$8,'image/png',768,1024,'{"accepted":true}'::jsonb,NOW())`,
         [`legacy-accepted-${suffix}`, account, jobA, itemA, plan, profile, legacyAcceptedInputHash, "e".repeat(64)],
+      );
+      await client.query(
+        `INSERT INTO ai_generation_assets (
+          id,account_id,job_id,item_id,plan_id,profile_id,visual_group_key,slot_key,role,input_hash,
+          attempt_no,status,gateway_request_id,model_name,profile_version,prompt_hash,object_key,content_hash,
+          content_type,width,height,checker_result,accepted_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a','legacy-cleanup-slot','SELLING_POINT',$7,1,'ACCEPTED',
+          'legacy-cleanup-gateway','image-model',1,'legacy-cleanup-prompt',$8,$9,'image/png',768,1024,'{"accepted":true}'::jsonb,NOW())`,
+        [`legacy-cleanup-asset-${suffix}`, account, jobA, itemA, plan, profile, legacyCleanupInputHash, legacyCleanupObjectKey, legacyCleanupContentHash],
       );
       const legacyGeneratingInputHash = "0".repeat(64);
       for (const attemptNo of [1, 2, 3]) {
@@ -260,6 +284,49 @@ if (!enabled) {
         );
       }
       await client.query(await readFile(path.join(migrationsDir, "029_auto_listing_ai_generation_evidence.sql"), "utf8"));
+      await client.query(
+        `INSERT INTO auto_listing_asset_cleanup_obligations (
+           id,dedupe_key,account_id,job_id,item_id,plan_id,visual_group_key,slot_key,
+           attempt_identity_hash,input_hash,attempt_no,object_key,content_hash,reason,original_error_code
+         ) VALUES ($1,$2,$3,$4,$5,$6,'visual-a','legacy-cleanup-slot',$7,$8,1,$9,$10,'READBACK_FAILED','AUTO_LISTING_ASSET_STORAGE_UNVERIFIED')`,
+        [`legacy-cleanup-${suffix}`, "d".repeat(64), account, jobA, itemA, plan, "a".repeat(64), legacyCleanupInputHash, legacyCleanupObjectKey, legacyCleanupContentHash],
+      );
+      const attemptIsolationMigration = await readFile(path.join(migrationsDir, "030_auto_listing_generated_asset_attempt_isolation.sql"), "utf8");
+      await client.query(attemptIsolationMigration);
+      await client.query(attemptIsolationMigration);
+      const migratedLegacyAccepted = await client.query(
+        "SELECT object_key_version,object_key FROM ai_generation_assets WHERE id=$1",
+        [`legacy-accepted-${suffix}`],
+      );
+      assert.deepEqual(migratedLegacyAccepted.rows[0], { object_key_version: "LEGACY_V1", object_key: "legacy/object.png" });
+      const migratedLegacyCleanup = await client.query(
+        "SELECT object_key_version,status,object_key FROM auto_listing_asset_cleanup_obligations WHERE id=$1",
+        [`legacy-cleanup-${suffix}`],
+      );
+      assert.deepEqual(migratedLegacyCleanup.rows[0], { object_key_version: "LEGACY_V1", status: "PENDING", object_key: legacyCleanupObjectKey });
+      await assert.rejects(client.query(
+        `INSERT INTO auto_listing_asset_cleanup_obligations (
+           id,dedupe_key,account_id,job_id,item_id,plan_id,visual_group_key,slot_key,
+           attempt_identity_hash,input_hash,attempt_no,object_key_version,object_key,content_hash,reason,original_error_code
+         ) SELECT $1,$2,account_id,job_id,item_id,plan_id,visual_group_key,slot_key,
+                  attempt_identity_hash,input_hash,attempt_no,'LEGACY_V1',object_key,content_hash,reason,original_error_code
+           FROM auto_listing_asset_cleanup_obligations WHERE id=$3`,
+        [`new-legacy-cleanup-${suffix}`, "e".repeat(64), `legacy-cleanup-${suffix}`],
+      ), { code: "23514" });
+      const cleanupRepository = createPostgresAssetCleanupRepository({ pool: client });
+      const [legacyCleanupClaim] = await cleanupRepository.claimAssetCleanupObligations({
+        accountId: account, workerId: "legacy-cleanup-worker", limit: 1, leaseMs: 60_000,
+      });
+      await assert.rejects(cleanupRepository.adoptAssetCleanupIfReferenced({
+        accountId: `wrong-${account}`, id: legacyCleanupClaim.id, workerId: "legacy-cleanup-worker", claimToken: legacyCleanupClaim.claimToken,
+      }), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_CLAIM_REJECTED");
+      const legacyAdopted = await cleanupRepository.adoptAssetCleanupIfReferenced({
+        accountId: account, id: legacyCleanupClaim.id, workerId: "legacy-cleanup-worker", claimToken: legacyCleanupClaim.claimToken,
+      });
+      assert.equal(legacyAdopted.status, "ADOPTED");
+      assert.equal(legacyAdopted.record.adoptedGenerationAssetId, `legacy-cleanup-asset-${suffix}`);
+      assert.equal(legacyAdopted.record.adoptedGenerationAssetStatus, "ACCEPTED");
+      assert.equal(legacyAdopted.record.claimToken, null);
       const migratedLegacyGenerating = await client.query(
         `SELECT id,status,error_code,error_retryable,lease_token,lease_expires_at,attempt_identity_hash
          FROM ai_generation_assets WHERE slot_key='legacy-generating-slot' ORDER BY attempt_no`,
@@ -311,6 +378,7 @@ if (!enabled) {
       await assert.rejects(insertAsset({ id: `asset-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertResult({ id: `rich-wrong-profile-${suffix}`, profileVersion: 2 }), { code: "23503" });
       await assert.rejects(insertAsset({ id: `asset-incomplete-${suffix}`, status: "ACCEPTED", acceptedAt: new Date() }), { code: "23514" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-wrong-v2-key-${suffix}`, objectKey: "auto-listing/v2/wrong/path.png" })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-attempt-identity-null-${suffix}`, attemptIdentityHash: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-generation-size-null-${suffix}`, generationSize: null })), { code: "23514" });
       await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-width-null-${suffix}`, width: null })), { code: "23514" });
@@ -347,12 +415,12 @@ if (!enabled) {
       await assert.rejects(client.query("DELETE FROM ai_generation_assets WHERE id=$1", [`asset-failed-${suffix}`]), /terminal AI generation assets are immutable/i);
       await assert.rejects(insertAsset({ id: `asset-failed-duplicate-${suffix}`, status: "FAILED", errorCode: "GATEWAY", errorRetryable: true }), { code: "23505" });
       await insertAsset(completeAcceptedAsset({ id: `asset-accepted-${suffix}`, attemptNo: 2 }));
-      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-second-accepted-${suffix}`, attemptNo: 3, objectKey: "objects/b.png", contentHash: "a".repeat(64) })), { code: "23505" });
+      await assert.rejects(insertAsset(completeAcceptedAsset({ id: `asset-second-accepted-${suffix}`, attemptNo: 3, contentHash: "a".repeat(64) })), { code: "23505" });
 
-      const cleanupRepository = createPostgresAssetCleanupRepository({ pool: client });
       const cleanupInput = {
         accountId: account, jobId: jobA, itemId: itemA, planId: plan, visualGroupKey: "visual-a", slotKey: "cleanup-slot",
         attemptIdentityHash: "a".repeat(64), inputHash: "b".repeat(64), attemptNo: 1, contentHash: "c".repeat(64),
+        objectKeyVersion: "ATTEMPT_V2",
         reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED",
       };
       cleanupInput.objectKey = buildGeneratedAssetObjectKey(cleanupInput);

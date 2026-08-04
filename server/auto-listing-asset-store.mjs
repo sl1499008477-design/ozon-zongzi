@@ -5,6 +5,10 @@ const HASH = /^[a-f0-9]{64}$/;
 const MIME_BY_FORMAT = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp" };
 const MAX_NORMALIZED_BYTES = 16 * 1024 * 1024;
 const MAX_STORAGE_INPUT_BYTES = 32 * 1024 * 1024;
+export const GENERATED_ASSET_OBJECT_KEY_VERSIONS = Object.freeze({
+  ATTEMPT_V2: "ATTEMPT_V2",
+  LEGACY_V1: "LEGACY_V1",
+});
 
 function error(code, message = "自动上架图片资源无效", retryable = false) {
   const value = new Error(message);
@@ -65,10 +69,32 @@ function text(value, max = 240) {
 
 const keySegment = (value) => Buffer.from(text(value), "utf8").toString("base64url");
 
-export function buildGeneratedAssetObjectKey({ accountId, jobId, itemId, planId, visualGroupKey, slotKey, inputHash, contentHash }) {
+function buildLegacyGeneratedAssetObjectKey({ accountId, jobId, itemId, planId, visualGroupKey, slotKey, inputHash, contentHash }) {
   for (const value of [accountId, jobId, itemId, planId, visualGroupKey, slotKey]) text(value);
   if (!HASH.test(inputHash) || !HASH.test(contentHash)) throw error("AUTO_LISTING_ASSET_SCOPE_INVALID");
   return `auto-listing/${keySegment(accountId)}/${keySegment(jobId)}/${keySegment(itemId)}/${keySegment(planId)}/${keySegment(visualGroupKey)}/${keySegment(slotKey)}/${inputHash}/${contentHash}.png`;
+}
+
+export function buildGeneratedAssetObjectKey({ accountId, jobId, itemId, planId, visualGroupKey, slotKey, attemptIdentityHash, attemptNo, inputHash, contentHash }) {
+  for (const value of [accountId, jobId, itemId, planId, visualGroupKey, slotKey]) text(value);
+  if (!HASH.test(attemptIdentityHash || "") || !Number.isInteger(attemptNo) || attemptNo < 1 || attemptNo > 3
+    || !HASH.test(inputHash || "") || !HASH.test(contentHash || "")) throw error("AUTO_LISTING_ASSET_SCOPE_INVALID");
+  return `auto-listing/v2/${keySegment(accountId)}/${keySegment(jobId)}/${keySegment(itemId)}/${keySegment(planId)}/${keySegment(visualGroupKey)}/${keySegment(slotKey)}/${attemptIdentityHash}/attempt-${attemptNo}/${inputHash}/${contentHash}.png`;
+}
+
+export function verifyGeneratedAssetObjectKey(input = {}) {
+  try {
+    if (typeof input.objectKey !== "string") return false;
+    if (input.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2) {
+      return input.objectKey === buildGeneratedAssetObjectKey(input);
+    }
+    if (input.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.LEGACY_V1) {
+      return input.objectKey === buildLegacyGeneratedAssetObjectKey(input);
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function safeLog(logger, event) {
@@ -101,13 +127,13 @@ async function readObject(storage, key, normalized) {
 async function cleanupOrRecord({ storage, repository, scope, stored, reason, originalErrorCode, logger }) {
   try {
     if (typeof storage?.removeObject !== "function") throw new Error("cleanup unavailable");
-    await storage.removeObject(stored.objectKey);
+    await storage.removeObject(stored.objectKey, { accountId: scope.accountId });
     return;
   } catch {
     try {
       const expected = { ...scope, ...stored, reason, originalErrorCode };
       const recorded = await repository.recordAssetCleanupRequired(expected);
-      if (!sameFields(recorded, expected, ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "attemptNo", "objectKey", "contentHash", "reason", "originalErrorCode"])
+      if (!sameFields(recorded, expected, ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "attemptNo", "objectKeyVersion", "objectKey", "contentHash", "reason", "originalErrorCode"])
         || recorded.status !== "PENDING") throw new Error("cleanup persistence unverified");
     } catch {
       safeLog(logger, { code: "AUTO_LISTING_ASSET_ORPHAN_CLEANUP", objectKey: stored.objectKey });
@@ -132,12 +158,12 @@ export async function storeGeneratedAsset(input = {}) {
     || typeof repository?.recordStoredGenerationAsset !== "function"
     || typeof repository?.recordAssetCleanupRequired !== "function") throw error("AUTO_LISTING_ASSET_INVALID");
   const key = buildGeneratedAssetObjectKey({ ...scope, inputHash: scope.inputHash, contentHash: normalized.contentHash });
-  const stored = { objectKey: key, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length };
+  const stored = { objectKeyVersion: GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2, objectKey: key, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length };
   {
     let existing;
     try { existing = await repository.findStoredGenerationAsset({ ...scope, contentHash: normalized.contentHash }); } catch { throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法读取", true); }
     if (existing != null) {
-      if (["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "inputHash"].some((field) => existing[field] !== scope[field]) || existing.objectKey !== stored.objectKey || existing.contentHash !== stored.contentHash || existing.contentType !== stored.contentType || existing.width !== stored.width || existing.height !== stored.height || existing.size !== stored.size) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "已保存图片记录不一致", true);
+      if (["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "attemptNo", "inputHash"].some((field) => existing[field] !== scope[field]) || existing.objectKeyVersion !== stored.objectKeyVersion || existing.objectKey !== stored.objectKey || existing.contentHash !== stored.contentHash || existing.contentType !== stored.contentType || existing.width !== stored.width || existing.height !== stored.height || existing.size !== stored.size) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "已保存图片记录不一致", true);
       await readObject(storage, stored.objectKey, normalized);
       return Object.freeze(stored);
     }
@@ -159,7 +185,7 @@ export async function storeGeneratedAsset(input = {}) {
   try {
     const expected = { ...scope, ...stored };
     const recorded = await repository.recordStoredGenerationAsset(expected);
-    if (!sameFields(recorded, expected, ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "attemptNo", "objectKey", "contentHash", "contentType", "width", "height", "size"])) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED");
+    if (!sameFields(recorded, expected, ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey", "attemptIdentityHash", "inputHash", "attemptNo", "objectKeyVersion", "objectKey", "contentHash", "contentType", "width", "height", "size"])) throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED");
   } catch (cause) {
     await cleanupOrRecord({ storage, repository, scope, stored, reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED", logger });
     throw error("AUTO_LISTING_ASSET_REPOSITORY_FAILED", "图片记录暂时无法保存", true);

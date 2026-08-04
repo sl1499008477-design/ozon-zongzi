@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
+import * as assetStore from "../auto-listing-asset-store.mjs";
 import {
   buildGeneratedAssetObjectKey,
   normalizeListingImage,
@@ -28,7 +29,27 @@ test("normalizes real image bytes and stores them only after storage confirms ev
   } });
   assert.equal(calls.length, 1);
   assert.equal(stored.contentHash, normalized.contentHash);
-  assert.match(stored.objectKey, /^auto-listing\/YWNjb3VudC1h\/am9iLWE\/aXRlbS1h\/cGxhbi1h\/bWFpbg\/Y292ZXI\//);
+  assert.equal(stored.objectKeyVersion, "ATTEMPT_V2");
+  assert.equal(stored.objectKey, `auto-listing/v2/YWNjb3VudC1h/am9iLWE/aXRlbS1h/cGxhbi1h/bWFpbg/Y292ZXI/${scope.attemptIdentityHash}/attempt-1/${scope.inputHash}/${normalized.contentHash}.png`);
+});
+
+test("ATTEMPT_V2 keys physically isolate identical bytes by trusted attempt identity and number", async () => {
+  const contentHash = "b".repeat(64);
+  const first = buildGeneratedAssetObjectKey({ ...scope, attemptNo: 1, contentHash });
+  const second = buildGeneratedAssetObjectKey({ ...scope, attemptNo: 2, contentHash });
+  assert.notEqual(first, second);
+  assert.equal(first, `auto-listing/v2/YWNjb3VudC1h/am9iLWE/aXRlbS1h/cGxhbi1h/bWFpbg/Y292ZXI/${scope.attemptIdentityHash}/attempt-1/${scope.inputHash}/${contentHash}.png`);
+  assert.equal(second, `auto-listing/v2/YWNjb3VudC1h/am9iLWE/aXRlbS1h/cGxhbi1h/bWFpbg/Y292ZXI/${scope.attemptIdentityHash}/attempt-2/${scope.inputHash}/${contentHash}.png`);
+});
+
+test("only an explicit migrated LEGACY_V1 record may use the exact previous key formula", () => {
+  const contentHash = "b".repeat(64);
+  const legacyKey = `auto-listing/YWNjb3VudC1h/am9iLWE/aXRlbS1h/cGxhbi1h/bWFpbg/Y292ZXI/${scope.inputHash}/${contentHash}.png`;
+  const verify = assetStore.verifyGeneratedAssetObjectKey;
+  assert.equal(typeof verify, "function");
+  assert.equal(verify({ ...scope, contentHash, objectKey: legacyKey, objectKeyVersion: "LEGACY_V1" }), true);
+  assert.equal(verify({ ...scope, contentHash, objectKey: legacyKey, objectKeyVersion: "ATTEMPT_V2" }), false);
+  assert.equal(verify({ ...scope, contentHash, objectKey: legacyKey }), false);
 });
 
 test("rejects path traversal and an unverified storage reply", async () => {
@@ -47,7 +68,7 @@ test("reuses a byte-identical scoped object and never records acceptance after s
   const objectKey = buildGeneratedAssetObjectKey({ ...scope, contentHash: normalized.contentHash });
   let puts = 0; let recorded = 0;
   let reads = 0;
-  const reused = await storeGeneratedAsset({ scope, normalized, repository: repository({ async findStoredGenerationAsset() { return { ...scope, objectKey, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length }; } }), storage: { async putObjectFromBuffer() { puts += 1; throw new Error("must not write"); }, async getObjectBuffer(key, options) { reads += 1; assert.equal(key, objectKey); assert.deepEqual(options, { maxBytes: 16 * 1024 * 1024 }); return normalized.bytes; } } });
+  const reused = await storeGeneratedAsset({ scope, normalized, repository: repository({ async findStoredGenerationAsset() { return { ...scope, objectKeyVersion: "ATTEMPT_V2", objectKey, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length }; } }), storage: { async putObjectFromBuffer() { puts += 1; throw new Error("must not write"); }, async getObjectBuffer(key, options) { reads += 1; assert.equal(key, objectKey); assert.deepEqual(options, { maxBytes: 16 * 1024 * 1024 }); return normalized.bytes; } } });
   assert.equal(reused.objectKey, objectKey); assert.equal(puts, 0);
   assert.equal(reads, 1);
   await assert.rejects(storeGeneratedAsset({ scope, normalized, repository: repository({ async recordStoredGenerationAsset() { recorded += 1; } }), storage: { async putObjectFromBuffer() { throw new Error("offline"); }, async getObjectBuffer() { throw new Error("must not read"); } } }), (error) => error?.code === "AUTO_LISTING_ASSET_STORAGE_UNAVAILABLE");
@@ -72,7 +93,7 @@ test("put and reuse fail closed when bounded object readback differs from normal
   await assert.rejects(storeGeneratedAsset({
     scope,
     normalized,
-    repository: repository({ async findStoredGenerationAsset() { return { ...scope, objectKey, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length }; } }),
+    repository: repository({ async findStoredGenerationAsset() { return { ...scope, objectKeyVersion: "ATTEMPT_V2", objectKey, contentHash: normalized.contentHash, contentType: normalized.contentType, width: normalized.width, height: normalized.height, size: normalized.bytes.length }; } }),
     storage: { async putObjectFromBuffer() { throw new Error("must not put"); }, async getObjectBuffer() { return Buffer.from("different"); } },
   }), (error) => error?.code === "AUTO_LISTING_ASSET_STORAGE_UNVERIFIED");
 });
@@ -121,7 +142,7 @@ test("repository ports must return the exact durable stored and cleanup records"
   for (const returned of [null, undefined, { ...scope }]) {
     await assert.rejects(storeGeneratedAsset({ scope, normalized, storage: successfulStorage(), repository: repository({ async recordStoredGenerationAsset() { return returned; } }) }), (error) => error?.code === "AUTO_LISTING_ASSET_REPOSITORY_FAILED");
   }
-  const validCleanup = { ...scope, objectKey: buildGeneratedAssetObjectKey({ ...scope, contentHash: normalized.contentHash }), contentHash: normalized.contentHash, reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED", status: "PENDING" };
+  const validCleanup = { ...scope, objectKeyVersion: "ATTEMPT_V2", objectKey: buildGeneratedAssetObjectKey({ ...scope, contentHash: normalized.contentHash }), contentHash: normalized.contentHash, reason: "RECORD_STORED_FAILED", originalErrorCode: "AUTO_LISTING_ASSET_REPOSITORY_FAILED", status: "PENDING" };
   for (const returned of [null, { ...validCleanup, accountId: "other" }, { ...validCleanup, objectKey: "other" }, { ...validCleanup, contentHash: "0".repeat(64) }, { ...validCleanup, reason: "OTHER" }, { ...validCleanup, status: "COMPLETED" }]) {
     await assert.rejects(storeGeneratedAsset({
       scope, normalized,

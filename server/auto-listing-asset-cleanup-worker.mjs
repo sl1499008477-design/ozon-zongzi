@@ -1,4 +1,4 @@
-import { buildGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
+import { verifyGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
 
 const clean = (value, max = 240) => typeof value === "string" && value.trim() && value === value.trim()
   && value.length <= max && !/[\u0000-\u001f\u007f]/u.test(value) ? value : "";
@@ -31,11 +31,23 @@ function validClaimedObligation(obligation, request) {
   if (obligation?.accountId !== request.accountId || obligation?.status !== "PROCESSING"
     || obligation?.claimOwner !== request.workerId || !clean(obligation?.id)
     || !clean(obligation?.claimToken) || !clean(obligation?.objectKey, 4096)) return false;
-  try { return buildGeneratedAssetObjectKey(obligation) === obligation.objectKey; } catch { return false; }
+  return verifyGeneratedAssetObjectKey(obligation);
+}
+
+function validAdoptedResult(result, obligation, request) {
+  const record = result?.record;
+  return result?.status === "ADOPTED" && record?.status === "ADOPTED"
+    && record.accountId === request.accountId && record.id === obligation.id
+    && record.objectKeyVersion === obligation.objectKeyVersion && record.objectKey === obligation.objectKey
+    && record.claimToken === null && record.claimOwner === null && record.claimExpiresAt === null
+    && clean(record.adoptedGenerationAssetId) && clean(record.adoptedGenerationAssetStatus)
+    && Number.isFinite(record.adoptedAt instanceof Date ? record.adoptedAt.getTime()
+      : typeof record.adoptedAt === "string" ? Date.parse(record.adoptedAt) : record.adoptedAt);
 }
 
 export function createAutoListingAssetCleanupWorker({ repository, storage, logger = null } = {}) {
   if (typeof repository?.claimAssetCleanupObligations !== "function"
+    || typeof repository?.adoptAssetCleanupIfReferenced !== "function"
     || typeof repository?.completeAssetCleanup !== "function"
     || typeof repository?.failAssetCleanup !== "function"
     || typeof storage?.removeObject !== "function") throw problem();
@@ -45,7 +57,7 @@ export function createAutoListingAssetCleanupWorker({ repository, storage, logge
       const request = validRun(input);
       const obligations = await repository.claimAssetCleanupObligations(request);
       if (!Array.isArray(obligations) || obligations.length > request.limit) throw problem();
-      const summary = { claimed: obligations.length, completed: 0, failed: 0 };
+      const summary = { claimed: obligations.length, completed: 0, adopted: 0, failed: 0 };
       for (const obligation of obligations) {
         if (!validClaimedObligation(obligation, request)) {
           summary.failed += 1;
@@ -58,6 +70,28 @@ export function createAutoListingAssetCleanupWorker({ repository, storage, logge
           workerId: request.workerId,
           claimToken: obligation?.claimToken,
         };
+        let adoption;
+        try {
+          adoption = await repository.adoptAssetCleanupIfReferenced(ownership);
+        } catch {
+          summary.failed += 1;
+          safeLog(logger, "AUTO_LISTING_ASSET_CLEANUP_ADOPTION_CHECK_FAILED");
+          continue;
+        }
+        if (adoption?.status === "ADOPTED") {
+          if (!validAdoptedResult(adoption, obligation, request)) {
+            summary.failed += 1;
+            safeLog(logger, "AUTO_LISTING_ASSET_CLEANUP_ADOPTION_INVALID");
+            continue;
+          }
+          summary.adopted += 1;
+          continue;
+        }
+        if (!adoption || adoption.status !== "UNREFERENCED" || Object.keys(adoption).length !== 1) {
+          summary.failed += 1;
+          safeLog(logger, "AUTO_LISTING_ASSET_CLEANUP_ADOPTION_INVALID");
+          continue;
+        }
         try {
           await storage.removeObject(obligation.objectKey, { accountId: request.accountId });
         } catch {

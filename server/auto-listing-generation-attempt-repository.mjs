@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { GENERATED_ASSET_OBJECT_KEY_VERSIONS, verifyGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const scopeKeys = ["accountId", "jobId", "itemId", "planId", "visualGroupKey", "slotKey"];
@@ -68,12 +69,33 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       row.finalInputBoundAt = now();
       return { status: "BOUND", inputHash: input.inputHash };
     },
-    async recordStoredGenerationAsset(input) { const row = own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy({ objectKey: input.objectKey, contentHash: input.contentHash, contentType: input.contentType, width: input.width, height: input.height, size: input.size })); return copy(row); },
-    async completeGenerationAttempt(input) { const row = own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy(input), { status: "ACCEPTED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
+    async recordStoredGenerationAsset(input) {
+      const row = own(input);
+      if (row.finalInputBoundAt === null || input.objectKeyVersion !== GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+        || !verifyGeneratedAssetObjectKey(input)) throw invalid();
+      Object.assign(row, copy({ objectKeyVersion: input.objectKeyVersion, objectKey: input.objectKey, contentHash: input.contentHash, contentType: input.contentType, width: input.width, height: input.height, size: input.size }));
+      return copy(row);
+    },
+    async completeGenerationAttempt(input) {
+      const row = own(input);
+      if (row.finalInputBoundAt === null || input.objectKeyVersion !== GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+        || !verifyGeneratedAssetObjectKey(input)) throw invalid();
+      Object.assign(row, copy(input), { status: "ACCEPTED", leaseToken: null, leaseExpiresAt: null });
+      return copy(row);
+    },
     async rejectGenerationAttempt(input) { const row = own(input); if (row.finalInputBoundAt === null) throw invalid(); Object.assign(row, copy(input), { status: "REJECTED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
     async failGenerationAttempt(input) { const row = own(input); Object.assign(row, copy(input), { status: "FAILED", leaseToken: null, leaseExpiresAt: null }); return copy(row); },
     async releaseGenerationLease(input) { const row = own(input); Object.assign(row, { status: "FAILED", errorCode: clean(input.errorCode) || "AUTO_LISTING_IMAGE_FAILED", errorRetryable: true, leaseToken: null, leaseExpiresAt: null }); return copy(row); },
-    async findStoredGenerationAsset(input) { fence(input, "inputHash"); const row = rows.find((candidate) => keyOf(candidate) === keyOf(input) && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize && candidate.contentHash === input.contentHash && clean(candidate.objectKey)); return row ? copy(row) : null; },
+    async findStoredGenerationAsset(input) {
+      fence(input, "inputHash");
+      if (!Number.isInteger(input.attemptNo) || input.attemptNo < 1 || input.attemptNo > 3) throw invalid();
+      const row = rows.find((candidate) => keyOf(candidate) === keyOf(input)
+        && candidate.attemptIdentityHash === input.attemptIdentityHash && candidate.attemptNo === input.attemptNo
+        && candidate.inputHash === input.inputHash && candidate.generationSize === input.generationSize
+        && candidate.contentHash === input.contentHash && candidate.objectKeyVersion === GENERATED_ASSET_OBJECT_KEY_VERSIONS.ATTEMPT_V2
+        && verifyGeneratedAssetObjectKey(candidate));
+      return row ? copy(row) : null;
+    },
     snapshot() { return copy(rows); },
   });
 }
