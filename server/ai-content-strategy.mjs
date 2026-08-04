@@ -64,7 +64,7 @@ const compareCandidates = (left, right) =>
 const validateRule = (value) => {
   if (!isPlainObject(value)
     || !requiredString(value.ruleId)
-    || !Number.isInteger(value.ruleOrder)
+    || !Number.isInteger(value.ruleOrder) || value.ruleOrder <= 0
     || !RULE_MATCH_TYPES.has(value.matchType)
     || !LEGAL_STYLES.has(value.style)
     || !isPlainObject(value.textDensityByRole)) {

@@ -42,6 +42,9 @@ const ATTRIBUTE_KEYS = new Set(["attributeId", "dictionaryValueId", "values", "m
 const ATTRIBUTE_B_KEYS = new Set(["key", "value", "dictionary_value_id"]);
 const ATTRIBUTE_C_KEYS = new Set(["id", "name", "values", "is_required"]);
 const ATTRIBUTE_C_VALUE_KEYS = new Set(["value", "dictionary_value_id"]);
+const ATTRIBUTE_EDIT_KEYS = new Set(["id", "name", "value", "values", "required", "dictionaryId", "multiple"]);
+const ATTRIBUTE_VALUE_CAMEL_KEYS = new Set(["value", "dictionaryValueId"]);
+const EXCLUDED_ATTRIBUTE_IDS = new Set(["4191", "11254"]);
 const MATCHED_BY = new Set(["EXACT_CATEGORY", "ANCESTOR_CATEGORY", "PRODUCT_STYLE", "DEFAULT"]);
 const PLANNER_INPUT_KEYS = new Set([
   "contractVersion", "factRegistry", "strategy", "textDensityByRole", "requestedRoleCounts",
@@ -136,17 +139,17 @@ function verifyStrategyCapture(value, sourceSnapshot) {
   if (snapshot.matchedBy === "EXACT_CATEGORY") {
     if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ruleOrder"])
       || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== targetCategoryId
-      || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder < 0) throw plannerError();
+      || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder <= 0) throw plannerError();
   } else if (snapshot.matchedBy === "ANCESTOR_CATEGORY") {
     if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ancestorDistance", "ruleOrder"])
       || evidence.targetDescriptionCategoryId !== targetCategoryId || !Number.isInteger(evidence.ancestorDistance)
-      || evidence.ancestorDistance < 1 || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder < 0) throw plannerError();
+      || evidence.ancestorDistance < 1 || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder <= 0) throw plannerError();
     const matchingAncestor = sourceSnapshot.targetCategory.ancestorCategoryIds[evidence.ancestorDistance - 1];
     if (matchingAncestor !== evidence.matchedValue) throw plannerError();
   } else if (snapshot.matchedBy === "PRODUCT_STYLE") {
     if (!hasRule || !exactEvidence(["targetDescriptionCategoryId", "matchedValue", "ruleOrder"])
       || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== sourceSnapshot.source.productStyle
-      || evidence.matchedValue === "UNKNOWN" || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder < 0) throw plannerError();
+      || evidence.matchedValue === "UNKNOWN" || !Number.isInteger(evidence.ruleOrder) || evidence.ruleOrder <= 0) throw plannerError();
   } else if (snapshot.ruleId !== null || snapshot.style !== "BALANCED_DEFAULT"
     || !exactEvidence(["targetDescriptionCategoryId", "matchedValue"])
     || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== "BALANCED_DEFAULT") throw plannerError();
@@ -180,6 +183,16 @@ function trustedProductDimensions(productMeasurements) {
   return Object.entries(productMeasurements)
     .filter(([key, value]) => PRODUCT_MEASUREMENT_FIELDS.has(key) && typeof value === "number" && Number.isFinite(value) && value > 0)
     .sort(([left], [right]) => compareText(left, right));
+}
+
+function dimensionKind(key) {
+  const field = key.toLocaleLowerCase("en-US");
+  if (field.includes("height")) return "DIMENSION_HEIGHT";
+  if (field.includes("width")) return "DIMENSION_WIDTH";
+  if (field.includes("length")) return "DIMENSION_LENGTH";
+  if (field.includes("depth")) return "DIMENSION_DEPTH";
+  if (field.includes("diameter")) return "DIMENSION_DIAMETER";
+  throw plannerError();
 }
 
 function effectiveRoleCounts(config, style, hasDimensions) {
@@ -220,10 +233,20 @@ function attributeIdentifier(value) {
   return normalized && normalized.length <= 240 ? normalized : "";
 }
 
-function safeAttributeValues(value) {
+function optionalDictionaryId(value) {
+  const dictionaryId = attributeIdentifier(value);
+  return dictionaryId && dictionaryId !== "0" ? dictionaryId : null;
+}
+
+function safeAttributeValues(value, { allowNumber = false } = {}) {
   const values = Array.isArray(value) ? value : [value];
-  if (!values.length || values.some((entry) => typeof entry !== "string" || !entry.trim() || entry.length > 2048)) return null;
-  return values.map((entry) => entry.trim());
+  if (!values.length || values.some((entry) => (typeof entry !== "string" && !(allowNumber && typeof entry === "number" && Number.isFinite(entry)))
+    || !String(entry).trim() || String(entry).length > 2048)) return null;
+  return values.map((entry) => String(entry).trim());
+}
+
+function attributeFactKind(attributeId) {
+  return `ATTRIBUTE:${sha256(attributeId).slice(0, 24)}`;
 }
 
 function attributeProjection(attribute, attributeIndex) {
@@ -264,6 +287,31 @@ function attributeProjection(attribute, attributeIndex) {
     }
     return projected;
   }
+  if (exactObject(attribute, ATTRIBUTE_EDIT_KEYS)) {
+    const attributeId = attributeIdentifier(attribute.id);
+    const outerDictionaryId = optionalDictionaryId(attribute.dictionaryId);
+    if (!attributeId || typeof attribute.name !== "string" || !attribute.name.trim()
+      || typeof attribute.required !== "boolean" || typeof attribute.multiple !== "boolean"
+      || !Array.isArray(attribute.values)) return null;
+    const sourceValues = attribute.values.length ? attribute.values : [attribute.value];
+    const projected = [];
+    for (const [valueIndex, entry] of sourceValues.entries()) {
+      let value;
+      let dictionaryValueId = outerDictionaryId;
+      if (typeof entry === "string" || (typeof entry === "number" && Number.isFinite(entry))) {
+        value = safeAttributeValues(entry, { allowNumber: true })?.[0];
+      } else if (exactObject(entry, ATTRIBUTE_C_VALUE_KEYS) || exactObject(entry, ATTRIBUTE_VALUE_CAMEL_KEYS)) {
+        value = safeAttributeValues(entry.value, { allowNumber: true })?.[0];
+        dictionaryValueId = optionalDictionaryId(entry.dictionary_value_id ?? entry.dictionaryValueId) || outerDictionaryId;
+      } else return null;
+      if (!value) return null;
+      projected.push({
+        attributeId, dictionaryValueId, value,
+        sourcePath: `attributes[${attributeIndex}].values[${valueIndex}]${dictionaryValueId ? `#dictionaryValueId=${dictionaryValueId}` : ""}`,
+      });
+    }
+    return projected;
+  }
   return null;
 }
 
@@ -271,18 +319,23 @@ function factRegistry(snapshot, groups, dimensions) {
   const registry = new Map();
   const reasonCodes = [];
   if (snapshot.identity.primaryName) addFact(registry, {
-    factId: "fact.identity.name", kind: "IDENTITY", value: snapshot.identity.primaryName,
+    factId: "fact.identity.name", kind: "IDENTITY_NAME", value: snapshot.identity.primaryName,
     sourcePath: "identity.primaryName", visualGroupKeys: [],
   });
   if (snapshot.identity.brand) addFact(registry, {
-    factId: "fact.identity.brand", kind: "IDENTITY", value: snapshot.identity.brand,
+    factId: "fact.identity.brand", kind: "IDENTITY_BRAND", value: snapshot.identity.brand,
     sourcePath: "identity.brand", visualGroupKeys: [],
   });
   for (const [key, value] of dimensions) addFact(registry, {
-    factId: `fact.product.${key}`, kind: "DIMENSION", value: `${value} ${snapshot.productMeasurements.unit}`,
+    factId: `fact.product.${key}`, kind: dimensionKind(key), value: `${value} ${snapshot.productMeasurements.unit}`,
     sourcePath: `productMeasurements.${key}`, visualGroupKeys: [],
   });
   snapshot.attributes.forEach((attribute, attributeIndex) => {
+    const candidateId = attributeIdentifier(attribute?.attributeId ?? attribute?.key ?? attribute?.id);
+    if (EXCLUDED_ATTRIBUTE_IDS.has(candidateId)) {
+      reasonCodes.push("EXCLUDED_ATTRIBUTE_EVIDENCE_IGNORED");
+      return;
+    }
     const projection = attributeProjection(attribute, attributeIndex);
     if (!projection) {
       reasonCodes.push("UNSUPPORTED_ATTRIBUTE_EVIDENCE_IGNORED");
@@ -290,7 +343,7 @@ function factRegistry(snapshot, groups, dimensions) {
     }
     projection.forEach(({ attributeId, dictionaryValueId, value, sourcePath }, valueIndex) => addFact(registry, {
       factId: `fact.attribute.${attributeId}.${valueIndex}`,
-      kind: "ATTRIBUTE",
+      kind: attributeFactKind(attributeId),
       value,
       sourcePath,
       dictionaryValueId,
@@ -391,9 +444,18 @@ export function buildPlannerInput(input = {}) {
     strategyHash: strategy.strategyHash,
     configHash: config.configHash,
     visualGroupsHash: visual.visualGroupsHash,
+    visualGroups: structuredClone(visual),
     sourceAccountId: source.snapshot.identity.accountId,
     reasonCodes: [...new Set([...visual.reasonCodes, ...roles.reasonCodes, ...registry.reasonCodes])].sort(compareText),
   });
+}
+
+function optionalGatewayRequestId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" || !value.trim() || value !== value.trim() || value.length > 240 || /[\u0000-\u001f]/u.test(value)) {
+    throw plannerError("AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT", "图片规划网关请求记录无效");
+  }
+  return value;
 }
 
 function validatePlannerPreflight(plannerContext) {
@@ -458,7 +520,7 @@ function assertStringArray(value, { nonempty = false } = {}) {
 
 function textMatchesRussianOrExactIdentity(text, facts) {
   if (/\p{Script=Cyrillic}/u.test(text)) return true;
-  return facts.some((fact) => fact.kind === "IDENTITY" && text === fact.value);
+  return facts.some((fact) => fact.kind.startsWith("IDENTITY_") && text === fact.value);
 }
 
 function normalizedNumber(value) {
@@ -492,8 +554,8 @@ function numericClaimsSupported(text, facts, claimType) {
 
 function claimTextUsesEvidence(claim, facts) {
   const normalizedText = claim.text.toLocaleLowerCase("ru-RU");
-  if (claim.claimType === "DIMENSION") {
-    const dimensions = facts.filter((fact) => fact.kind === "DIMENSION");
+  if (claim.claimType.startsWith("DIMENSION_")) {
+    const dimensions = facts.filter((fact) => fact.kind === claim.claimType);
     if (!dimensions.length) return false;
     const dimensionPairs = dimensions.map((fact) => ({ fact, pairs: numericUnitPairs(fact.value) }));
     const numbers = claim.text.match(/\d+(?:[.,]\d+)?/g) || [];
@@ -507,11 +569,11 @@ function claimTextUsesEvidence(claim, facts) {
       diameter: /диаметр/u.test(normalizedText),
     };
     const specificMentions = Object.entries(mentioned).filter(([, present]) => present).map(([kind]) => kind);
-    const supportedKinds = dimensions.map((fact) => {
-      const field = fact.sourcePath.split(".").at(-1).toLowerCase();
-      return ["height", "width", "length", "depth", "diameter"].find((kind) => field.includes(kind)) || "";
-    });
-    if (specificMentions.length && specificMentions.some((kind) => !supportedKinds.includes(kind))) return false;
+    const requiredKindByMention = {
+      height: "DIMENSION_HEIGHT", width: "DIMENSION_WIDTH", length: "DIMENSION_LENGTH",
+      depth: "DIMENSION_DEPTH", diameter: "DIMENSION_DIAMETER",
+    };
+    if (specificMentions.length && specificMentions.some((kind) => requiredKindByMention[kind] !== claim.claimType)) return false;
     return true;
   }
   return facts.some((fact) => {
@@ -610,12 +672,16 @@ function verifyStoredPlan(record, scope, plannerContext) {
     || record.itemId !== scope.itemId || record.inputHash !== plannerContext.inputHash
     || record.sourceHash !== plannerContext.sourceHash || record.strategyHash !== plannerContext.strategyHash
     || record.configHash !== plannerContext.configHash || record.visualGroupsHash !== plannerContext.visualGroupsHash
+    || !sameJson(record.visualGroups, plannerContext.visualGroups)
     || record.profileId !== plannerContext.plannerInput.profile.id
     || record.profileVersion !== plannerContext.plannerInput.profile.configVersion
     || record.plannerModel !== plannerContext.plannerInput.plannerModel
     || record.promptTemplateVersion !== plannerContext.plannerInput.promptTemplateVersion
     || !sameJson(record.regeneration, plannerContext.plannerInput.regeneration)
     || typeof record.planHash !== "string" || !HASH.test(record.planHash)) {
+    throw plannerError("AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT", "已保存的图片规划版本与当前任务不一致");
+  }
+  try { optionalGatewayRequestId(record.gatewayRequestId); } catch {
     throw plannerError("AUTO_LISTING_CONTENT_PLAN_VERSION_CONFLICT", "已保存的图片规划版本与当前任务不一致");
   }
   let plan;
@@ -682,6 +748,7 @@ export async function createContentPlan(input = {}) {
       throw plannerError("AUTO_LISTING_CONTENT_PLAN_GATEWAY_FAILED", "AI 图片规划暂时失败");
     }
     const plan = validateContentPlan({ plan: response?.value, plannerContext });
+    const gatewayRequestId = optionalGatewayRequestId(response?.requestId);
     const planHash = sha256(plan);
     if (typeof repository.saveContentPlan !== "function") throw plannerError();
     let stored;
@@ -694,12 +761,13 @@ export async function createContentPlan(input = {}) {
         strategyHash: plannerContext.strategyHash,
         configHash: plannerContext.configHash,
         visualGroupsHash: plannerContext.visualGroupsHash,
+        visualGroups: plannerContext.visualGroups,
         profileId: plannerContext.plannerInput.profile.id,
         profileVersion: plannerContext.plannerInput.profile.configVersion,
         plannerModel: plannerContext.plannerInput.plannerModel,
         promptTemplateVersion: plannerContext.plannerInput.promptTemplateVersion,
         regeneration: plannerContext.plannerInput.regeneration,
-        gatewayRequestId: typeof response?.requestId === "string" ? response.requestId : "",
+        gatewayRequestId,
         plan,
         planHash,
       });

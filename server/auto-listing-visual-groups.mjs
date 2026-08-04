@@ -131,8 +131,7 @@ function normalizeEvidence(value, sku) {
   if (value === null || value === undefined) {
     return singleton(null);
   }
-  if (!isPlainObject(value)) throw visualError();
-  if (value.contractVersion !== 1) return singleton("LEGACY_APPEARANCE_EVIDENCE_SINGLETON");
+  if (!isPlainObject(value) || value.contractVersion !== 1) return singleton("LEGACY_APPEARANCE_EVIDENCE_SINGLETON");
   if (!exactObject(value, EVIDENCE_KEYS) || !["COMPLETE", "AMBIGUOUS"].includes(value.appearanceStatus)) throw visualError();
   const appearanceFacts = normalizeFacts(value.appearanceFacts, APPEARANCE_KINDS);
   const conflictingKinds = new Set();
@@ -154,7 +153,7 @@ function normalizeEvidence(value, sku) {
 
 function normalizeVariants(snapshot) {
   const seenVariantIds = new Set();
-  return snapshot.variants.map((variant) => {
+  const variants = snapshot.variants.map((variant) => {
     const sku = requiredText(variant.sku);
     const evidence = normalizeEvidence(variant.evidence, sku);
     if (seenVariantIds.has(evidence.variantId)) throw visualError();
@@ -165,6 +164,13 @@ function normalizeVariants(snapshot) {
       : null;
     return { sku, ...evidence, referenceImages, appearanceSignature };
   });
+  const sourceImagesById = new Map();
+  for (const variant of variants) for (const image of variant.referenceImages) {
+    const known = sourceImagesById.get(image.assetId);
+    if (known && canonicalText(known) !== canonicalText(image)) throw visualError();
+    sourceImagesById.set(image.assetId, image);
+  }
+  return variants;
 }
 
 function buildGroups(variants) {

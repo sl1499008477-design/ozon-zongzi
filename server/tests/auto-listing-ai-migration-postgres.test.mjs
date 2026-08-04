@@ -40,8 +40,8 @@ if (!enabled) {
       `INSERT INTO ai_content_plans (
          id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,
          strategy_hash,config_hash,source_hash,input_hash,planner_model,profile_version,
-         prompt_template_version,plan,plan_hash
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,'strategy-hash','config-hash','source-hash',$8,'planner',1,'template-v1','{"slots":[]}'::jsonb,'plan-hash')`,
+         prompt_template_version,plan,plan_hash,visual_groups_hash,visual_groups,regeneration,gateway_request_id
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,'strategy-hash','config-hash','source-hash',$8,'planner',1,'template-v1','{"slots":[]}'::jsonb,'plan-hash',$9,$10::jsonb,$11::jsonb,$12)`,
       [
         overrides.id || plan,
         account,
@@ -51,6 +51,10 @@ if (!enabled) {
         overrides.strategyId || strategyA,
         profile,
         overrides.inputHash || `input-${overrides.id || plan}`,
+        overrides.visualGroupsHash || "a".repeat(64),
+        JSON.stringify(overrides.visualGroups || { sourceHash: "source-hash", groups: [], reasonCodes: [], visualGroupsHash: "a".repeat(64) }),
+        overrides.regeneration === undefined ? null : JSON.stringify(overrides.regeneration),
+        overrides.gatewayRequestId === undefined ? "gateway-plan-1" : overrides.gatewayRequestId,
       ],
     );
 
@@ -176,6 +180,25 @@ if (!enabled) {
       ), { code: "23503" });
 
       await insertPlan();
+      const planEvidence = await client.query(
+        "SELECT visual_groups_hash,visual_groups,regeneration,gateway_request_id FROM ai_content_plans WHERE id=$1",
+        [plan],
+      );
+      assert.deepEqual(planEvidence.rows[0], {
+        visual_groups_hash: "a".repeat(64),
+        visual_groups: { sourceHash: "source-hash", groups: [], reasonCodes: [], visualGroupsHash: "a".repeat(64) },
+        regeneration: null,
+        gateway_request_id: "gateway-plan-1",
+      });
+      await assert.rejects(insertPlan({
+        id: `invalid-plan-evidence-${suffix}`, visualGroupsHash: "not-a-hash",
+      }), { code: "23514" });
+      await assert.rejects(insertPlan({
+        id: `invalid-plan-request-${suffix}`, gatewayRequestId: " request-with-space ",
+      }), { code: "23514" });
+      await assert.rejects(client.query(
+        "UPDATE ai_content_plans SET gateway_request_id='changed' WHERE id=$1", [plan],
+      ), /AI content plans are immutable/i);
       await assert.rejects(client.query("UPDATE ai_gateway_profiles SET base_url='https://changed.invalid' WHERE id=$1", [profile]), /referenced AI gateway profile configuration is immutable/i);
       await client.query(
         "UPDATE ai_gateway_profiles SET capability_result=$2::jsonb,capability_checked_at=NOW(),enabled=TRUE WHERE id=$1",

@@ -192,6 +192,7 @@ test("rejects malformed strategy data and unsupported selected styles with a sta
     { strategyVersion: { strategyId: "strategy" }, rules: [], product: {} },
     { strategyVersion, rules: [rule({ style: "MANUAL_OVERRIDE" })], product: {} },
     { strategyVersion, rules: [rule({ ruleOrder: "1" })], product: {} },
+    { strategyVersion, rules: [rule({ ruleOrder: 0 })], product: {} },
     { strategyVersion, rules: [rule({ matchType: "ANY" })], product: {} },
     { strategyVersion, rules: [rule({ matchType: "PRODUCT_STYLE", productStyle: "" })], product: {} },
     { strategyVersion, rules: [rule({ textDensityByRole: { main: undefined } })], product: {} },

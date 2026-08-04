@@ -176,3 +176,27 @@ test("visual evidence ordering is fixed by code point rather than host locale", 
   const result = buildVisualGroups({ sourceCapture: capture });
   assert.deepEqual(result.groups.flatMap((group) => group.sourceSkus), ["z", "ä"]);
 });
+
+test("all non-V1 JSON evidence is singleton-only and source-wide asset identities cannot conflict", () => {
+  for (const evidenceValue of ["legacy", 1, true, [], { contractVersion: 2 }]) {
+    const capture = sourceCapture([{ sku: `legacy-${typeof evidenceValue}`, images: [image("legacy")], evidence: evidenceValue }]);
+    const result = buildVisualGroups({ sourceCapture: capture });
+    assert.equal(result.groups.length, 1);
+    assert.ok(result.groups[0].reasonCodes.some((reason) => reason.includes("SINGLETON")));
+  }
+  const collision = sourceCapture([
+    { sku: "red", images: [image("shared", "a")], evidence: evidence("red", [fact("red", "COLOR", "red")]) },
+    { sku: "blue", images: [image("shared", "b")], evidence: evidence("blue", [fact("blue", "COLOR", "blue")]) },
+  ]);
+  assert.throws(() => buildVisualGroups({ sourceCapture: collision }), (error) => error?.code === "AUTO_LISTING_VISUAL_EVIDENCE_INVALID");
+
+  const urlOnly = sourceCapture([{
+    sku: "url", images: ["https://cdn.example.test/one.jpg"], evidence: evidence("url", [fact("url", "COLOR", "red")]),
+  }]);
+  const sourceUrlAssetId = buildVisualGroups({ sourceCapture: urlOnly }).groups[0].referenceImages[0].assetId;
+  const urlCollision = sourceCapture([
+    { sku: "url", images: ["https://cdn.example.test/one.jpg"], evidence: evidence("url", [fact("url", "COLOR", "red")]) },
+    { sku: "asset", images: [image(sourceUrlAssetId, "c")], evidence: evidence("asset", [fact("asset", "COLOR", "blue")]) },
+  ]);
+  assert.throws(() => buildVisualGroups({ sourceCapture: urlCollision }), (error) => error?.code === "AUTO_LISTING_VISUAL_EVIDENCE_INVALID");
+});

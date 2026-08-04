@@ -79,3 +79,23 @@ Final verification:
 - both changed production modules passed syntax checks and `git diff --check` passed.
 
 No real gateway request, repository/database call, image download, object-storage write, or Ozon operation was performed. The new checks are pure in-memory boundary tests. Rollback remains a revert of this repair commit (or retaining the disabled feature flag); no data migration or external state needs recovery.
+
+## Review repair round 2 — persisted plan evidence and field-bound facts
+
+Added additive migration `028_auto_listing_ai_plan_evidence.sql`. It leaves 027 and existing plan rows intact while adding nullable compatibility columns for `visual_groups_hash`, complete `visual_groups` capture, `regeneration`, and `gateway_request_id`. New planner writes always pass all four fields: no regeneration is represented as SQL `NULL`; a regeneration is the closed JSON object. The migration limits visual hashes to SHA-256 text, requires object JSON where present, and bounds gateway request IDs to trimmed 1–240-character text. The existing immutable-plan trigger protects the new columns too.
+
+Plan save and reuse validation now require the complete rebuilt visual-group capture as well as its hash; gateway request IDs must be a safe string or null. Product facts are field-bound (`DIMENSION_HEIGHT`, `DIMENSION_WIDTH`, etc.; independent identity kinds; stable hashed attribute kinds), so a number and unit must be supplied by the same exact fact kind. A width `30` can no longer support a height `30`, and a brand number cannot support the identity name or a dimension.
+
+The planner also accepts the real edit-page seven-key category attribute shape, including text/numeric values without a dictionary ID. It preserves source paths and dictionary evidence when present, rejects extra keys, and excludes source-description/rich-content attribute IDs `4191` and `11254` with a traceable reason. All legal JSON evidence that is not an explicit V1 plain object is singleton-only. A source-wide asset registry rejects the same asset ID when content-hash or URL evidence differs across visual groups. Strategy resolver and planner evidence both require a positive `ruleOrder`, consistent with the existing foundation migration database constraint.
+
+TDD: initial RED had 38 passes and 5 expected failures (missing 028, zero rule order, real edit-page attribute projection, non-object legacy evidence, and complete visual capture persistence). Final focused migration/planner/visual/strategy suite had 49 passes and 1 correctly configured dedicated-PostgreSQL skip.
+
+Final verification:
+
+- auto-listing and AI regression: 200 passed, 1 dedicated PostgreSQL test skipped by configuration, 0 failed;
+- whole server `server/tests/*.test.mjs`: 856 passed, 5 configured PostgreSQL skips, 0 failed;
+- historical permissions/persistence/listing/account-store regression: 33 passed, 0 failed;
+- production app build passed; the existing large-chunk warning remains;
+- changed production modules passed syntax checks and `git diff --check` passed.
+
+No dedicated `SONLI_MIGRATION_TEST_DATABASE_URL` is configured, so the new dual-gated PostgreSQL fixture safely skipped and did not fall back to normal configuration. No database migration, gateway, image download, storage, or Ozon operation was run. Rollback is to revert this round-2 commit; deployed 028 is additive and old nullable plan rows remain readable at the database layer.
