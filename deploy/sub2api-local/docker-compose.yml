@@ -1,0 +1,76 @@
+name: sonli-sub2api-local
+
+services:
+  sub2api:
+    image: ghcr.io/wei-shaw/sub2api:0.1.132
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SUB2API_PORT:-8080}:8080"
+    volumes:
+      - sonli_sub2api_data:/app/data
+    environment:
+      AUTO_SETUP: "true"
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      DATABASE_HOST: sub2api-postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${SUB2API_POSTGRES_USER:-sub2api}
+      DATABASE_PASSWORD: ${SUB2API_POSTGRES_PASSWORD:?Run pnpm sub2api:bootstrap first}
+      DATABASE_DBNAME: ${SUB2API_POSTGRES_DB:-sub2api}
+      DATABASE_SSLMODE: disable
+      REDIS_HOST: sub2api-redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${SUB2API_REDIS_PASSWORD:?Run pnpm sub2api:bootstrap first}
+      ADMIN_EMAIL: ${SUB2API_ADMIN_EMAIL:-admin@sub2api.local}
+      ADMIN_PASSWORD: ${SUB2API_ADMIN_PASSWORD:?Run pnpm sub2api:bootstrap first}
+      JWT_SECRET: ${SUB2API_JWT_SECRET:?Run pnpm sub2api:bootstrap first}
+      TOTP_ENCRYPTION_KEY: ${SUB2API_TOTP_ENCRYPTION_KEY:?Run pnpm sub2api:bootstrap first}
+      TZ: ${TZ:-Asia/Shanghai}
+    depends_on:
+      sub2api-postgres:
+        condition: service_healthy
+      sub2api-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  sub2api-postgres:
+    image: postgres:16.8-alpine
+    restart: unless-stopped
+    volumes:
+      - sonli_sub2api_postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${SUB2API_POSTGRES_USER:-sub2api}
+      POSTGRES_PASSWORD: ${SUB2API_POSTGRES_PASSWORD:?Run pnpm sub2api:bootstrap first}
+      POSTGRES_DB: ${SUB2API_POSTGRES_DB:-sub2api}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  sub2api-redis:
+    image: redis:7.4.2-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$SUB2API_REDIS_PASSWORD\""]
+    volumes:
+      - sonli_sub2api_redis_data:/data
+    environment:
+      SUB2API_REDIS_PASSWORD: ${SUB2API_REDIS_PASSWORD:?Run pnpm sub2api:bootstrap first}
+      REDISCLI_AUTH: ${SUB2API_REDIS_PASSWORD:?Run pnpm sub2api:bootstrap first}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  sonli_sub2api_data:
+  sonli_sub2api_postgres_data:
+  sonli_sub2api_redis_data:

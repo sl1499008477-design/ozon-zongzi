@@ -3,6 +3,9 @@ node_modules/
 .worktrees/
 .env
 .env.local
+/.env.sub2api-local-*.bak
+/.env.sub2api-local-*.tmp
+deploy/sub2api-local/.env
 app/node_modules/
 app/dist/
 app/.vite/
