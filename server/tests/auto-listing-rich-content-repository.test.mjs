@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { buildGeneratedAssetObjectKey, verifyPersistedAcceptedGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
+import { buildImageGenerationAttemptIdentity, buildImageGenerationInput } from "../auto-listing-image-generator.mjs";
+import { buildRichContentEvidenceIdentity } from "../auto-listing-rich-content.mjs";
 import { evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
 
 const scope = Object.freeze({
@@ -11,12 +13,8 @@ const scope = Object.freeze({
   planId: "plan-a",
 });
 const hashes = Object.freeze({
-  inputHash: "1".repeat(64),
   planHash: "2".repeat(64),
   sourceHash: "3".repeat(64),
-  factRegistryHash: "4".repeat(64),
-  assetHash: "5".repeat(64),
-  promptHash: "6".repeat(64),
 });
 const fact = Object.freeze({
   factId: "fact.capacity",
@@ -46,13 +44,44 @@ const checkerResult = Object.freeze({
 const checkerModelEvidence = Object.freeze({
   requestedTextModel: "text-model", gatewayReportedTextModel: "text-model", gatewayReportedTextModelPresent: true,
 });
+const generationProfile = Object.freeze({ id: "profile-a", accountId: scope.accountId, configVersion: 3, textModel: "text-model", imageModel: "image-model" });
+const generationPlan = Object.freeze({
+  planHash: hashes.planHash,
+  sourceHash: hashes.sourceHash,
+  strategyHash: "a".repeat(64),
+  configHash: "b".repeat(64),
+  visualGroupsHash: "c".repeat(64),
+});
 const assetEvidence = (index) => {
   const assetId = index === 0 ? "asset-main" : `asset-${index + 1}`;
   const slotKey = index === 0 ? "main:main:01" : `main:selling-point:0${index}`;
   const role = index === 0 ? "MAIN" : "SELLING_POINT";
   const contentHash = String(index + 1).repeat(64);
-  const attemptIdentityHash = String(index + 10).repeat(64).slice(0, 64);
-  const inputHash = String(index + 20).repeat(64).slice(0, 64);
+  const slot = { slotKey, visualGroupKey: "main", role, textDensity: "LIGHT", preserve: ["shape"], referenceAssetIds: [sourceReference.assetId] };
+  const generation = { ratio: "3:4", resolution: "1K", size: "768x1024", quality: "medium" };
+  const generationScope = { ...scope, visualGroupKey: "main", slotKey };
+  const attemptIdentityHash = buildImageGenerationAttemptIdentity({
+    scope: generationScope,
+    plan: generationPlan,
+    slot,
+    preliminaryEvidence: [{ assetId: sourceReference.assetId, evidenceKind: "CONTENT_HASH", evidenceRefHash: sourceReference.contentHash }],
+    profile: generationProfile,
+    imageModel: generationProfile.imageModel,
+    ...generation,
+    templateVersion: "image-v1",
+    regeneration: null,
+  });
+  const generatedInput = buildImageGenerationInput({
+    plan: generationPlan,
+    slot,
+    references: [sourceReference],
+    profile: generationProfile,
+    imageModel: generationProfile.imageModel,
+    ...generation,
+    templateVersion: "image-v1",
+    regeneration: null,
+  });
+  const inputHash = generatedInput.inputHash;
   const keyInput = { ...scope, visualGroupKey: "main", slotKey, attemptIdentityHash, attemptNo: 1, inputHash, contentHash };
   const checkerEvidence = evaluateGeneratedCheckerEvidence({
     checkerResult, references: [sourceReference], facts: [fact], checkerModel: "text-model",
@@ -70,26 +99,62 @@ const assetEvidence = (index) => {
     profileId: "profile-a", profileVersion: 3, modelName: "image-model",
     planHash: hashes.planHash, sourceHash: hashes.sourceHash, strategyHash: "a".repeat(64),
     configHash: "b".repeat(64), visualGroupsHash: "c".repeat(64), promptTemplateVersion: "image-v1",
-    promptHash: String(index + 30).repeat(64).slice(0, 64), checkerEvidence,
+    promptHash: generatedInput.promptHash, checkerEvidence,
     sourceAssetEvidence: [sourceReference], regeneration: null,
   });
 };
 const assets = Object.freeze(Array.from({ length: 6 }, (_, index) => assetEvidence(index)));
-const reservationInput = (overrides = {}) => ({
-  ...scope,
-  ...hashes,
-  profileId: "profile-a",
-  profileVersion: 3,
-  modelName: "text-model",
-  promptTemplateVersion: "rich-v1",
-  sourceFactEvidence: [structuredClone(fact)],
-  assetEvidence: structuredClone(assets),
-  requestEvidence: {
-    requestKey: `auto-listing-rich-${hashes.inputHash}`,
-    schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1",
-  },
-  maxAttempts: 3,
-  ...overrides,
+const reservationInput = (overrides = {}) => {
+  const base = {
+    ...scope,
+    planHash: overrides.planHash ?? hashes.planHash,
+    sourceHash: overrides.sourceHash ?? hashes.sourceHash,
+    profileId: overrides.profileId ?? "profile-a",
+    profileVersion: overrides.profileVersion ?? 3,
+    modelName: overrides.modelName ?? "text-model",
+    promptTemplateVersion: overrides.promptTemplateVersion ?? "rich-v1",
+    sourceFactEvidence: overrides.sourceFactEvidence ?? [structuredClone(fact)],
+    assetEvidence: overrides.assetEvidence ?? structuredClone(assets),
+  };
+  const identity = buildRichContentEvidenceIdentity({
+    scope, planHash: base.planHash, sourceHash: base.sourceHash,
+    sourceFactEvidence: base.sourceFactEvidence, assetEvidence: base.assetEvidence,
+    profileId: base.profileId, profileVersion: base.profileVersion,
+    modelName: base.modelName, promptTemplateVersion: base.promptTemplateVersion,
+  });
+  return {
+    ...base,
+    factRegistryHash: identity.factRegistryHash,
+    assetHash: identity.assetHash,
+    promptHash: identity.promptHash,
+    inputHash: identity.inputHash,
+    requestEvidence: {
+      requestKey: `auto-listing-rich-${identity.inputHash}`,
+      schemaVersion: "AUTO_LISTING_RICH_CONTENT_V1",
+    },
+    maxAttempts: 3,
+    ...overrides,
+  };
+};
+const identityInput = (value) => ({
+  scope: Object.fromEntries(Object.keys(scope).map((key) => [key, value[key]])),
+  planHash: value.planHash,
+  sourceHash: value.sourceHash,
+  sourceFactEvidence: value.sourceFactEvidence,
+  assetEvidence: value.assetEvidence,
+  profileId: value.profileId,
+  profileVersion: value.profileVersion,
+  modelName: value.modelName,
+  promptTemplateVersion: value.promptTemplateVersion,
+});
+const extraFact = (sourcePath) => ({
+  factId: "fact.extra",
+  field: "attributes.extra",
+  kind: "MATERIAL",
+  value: "безопасный материал",
+  numericValue: null,
+  unit: null,
+  sourcePath,
 });
 const acceptedContent = Object.freeze({
   version: "AUTO_LISTING_RICH_CONTENT_V1",
@@ -124,16 +189,90 @@ async function repositoryModule() {
   return import("../auto-listing-rich-content-repository.mjs");
 }
 
+test("canonical evidence rejects public domains in every prompt-projected field", () => {
+  const cases = [
+    ["factId", (value) => { value.sourceFactEvidence[0].factId = "private.example.cn"; }],
+    ["field", (value) => { value.sourceFactEvidence[0].field = "private.example.uk"; }],
+    ["kind", (value) => { value.sourceFactEvidence[0].kind = "private.example.de"; }],
+    ["value", (value) => { value.sourceFactEvidence[0].value = "private.example.cloud"; }],
+    ["unit", (value) => { value.sourceFactEvidence[0].unit = "пример.рф"; }],
+    ["assetId", (value) => { value.assetEvidence[0].assetId = "xn--e1afmkfd.xn--p1ai"; }],
+    ["role", (value) => { value.assetEvidence[0].role = "例子.中国"; }],
+    ["slotKey", (value) => { value.assetEvidence[0].slotKey = "private.example.cloud"; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const value = reservationInput();
+    mutate(value);
+    assert.throws(
+      () => buildRichContentEvidenceIdentity(identityInput(value)),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+      label,
+    );
+  }
+});
+
+test("canonical evidence enforces collection and closed-row limits before structured cloning", () => {
+  const baseline = reservationInput();
+  const tooManyFacts = Array.from({ length: 257 }, () => () => "uncloneable");
+  const tooManyAssets = Array.from({ length: 21 }, () => () => "uncloneable");
+  const openFacts = [{ ...structuredClone(fact), extra: () => "uncloneable" }];
+  const oversizedUtf8Facts = [{ ...structuredClone(fact), sourcePath: "路".repeat(342) }];
+  for (const sourceFactEvidence of [tooManyFacts, openFacts, oversizedUtf8Facts]) {
+    assert.throws(
+      () => buildRichContentEvidenceIdentity({ ...identityInput(baseline), sourceFactEvidence }),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+    );
+  }
+  assert.throws(
+    () => buildRichContentEvidenceIdentity({ ...identityInput(baseline), assetEvidence: tooManyAssets }),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID",
+  );
+});
+
+test("memory reservation applies UTF-8 byte ceilings to non-prompt evidence", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  for (const sourcePath of ["路".repeat(341), `p${"😀".repeat(255)}`]) {
+    const input = reservationInput({ sourceFactEvidence: [structuredClone(fact), extraFact(sourcePath)] });
+    assert.equal((await createMemoryRichContentRepository().reserveRichContentAttempt(input)).status, "RESERVED");
+  }
+  for (const sourcePath of ["路".repeat(342), `p${"😀".repeat(256)}`]) {
+    const input = reservationInput();
+    input.sourceFactEvidence.push(extraFact(sourcePath));
+    await assert.rejects(
+      createMemoryRichContentRepository().reserveRichContentAttempt(input),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+    );
+  }
+});
+
+test("memory completion applies UTF-8 byte ceilings to terminal audit strings", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const validRepository = createMemoryRichContentRepository({ token: () => "lease-byte-valid" });
+  const validLease = await validRepository.reserveRichContentAttempt(reservationInput());
+  assert.equal((await validRepository.completeRichContentAttempt(completeInput(validLease, {
+    gatewayRequestId: "😀".repeat(60),
+  }))).status, "ACCEPTED");
+
+  const invalidRepository = createMemoryRichContentRepository({ token: () => "lease-byte-invalid" });
+  const invalidLease = await invalidRepository.reserveRichContentAttempt(reservationInput());
+  await assert.rejects(
+    invalidRepository.completeRichContentAttempt(completeInput(invalidLease, { gatewayRequestId: "😀".repeat(61) })),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
+  assert.equal(invalidRepository.snapshot()[0].status, "GENERATING");
+});
+
 test("reservation persists and echoes the complete frozen input before gateway work", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
   const repository = createMemoryRichContentRepository({ token: () => "lease-1" });
   const lease = await repository.reserveRichContentAttempt(reservationInput());
+  const expected = reservationInput();
   assert.deepEqual(lease, {
     status: "RESERVED",
     attemptNo: 1,
     leaseToken: "lease-1",
-    inputHash: hashes.inputHash,
-    promptHash: hashes.promptHash,
+    inputHash: expected.inputHash,
+    promptHash: expected.promptHash,
   });
   assert.deepEqual(repository.snapshot()[0].sourceFactEvidence, [fact]);
   assert.deepEqual(repository.snapshot()[0].assetEvidence, assets);
@@ -204,8 +343,8 @@ test("accepted evidence allows group-specific checker facts to be a subset of th
   const lease = await repository.reserveRichContentAttempt(reservedInput);
   const accepted = await repository.completeRichContentAttempt({
     ...completeInput(lease),
-    sourceFactEvidence: reservedInput.sourceFactEvidence,
-    assetEvidence: reservedInput.assetEvidence,
+    ...reservedInput,
+    ...lease,
   });
   assert.equal(accepted.status, "ACCEPTED");
 });
@@ -226,7 +365,8 @@ test("accepted evidence allows the Task 4 gateway to omit its reported image mod
   const lease = await repository.reserveRichContentAttempt(reservedInput);
   const accepted = await repository.completeRichContentAttempt({
     ...completeInput(lease),
-    assetEvidence: reservedInput.assetEvidence,
+    ...reservedInput,
+    ...lease,
   });
   assert.equal(accepted.status, "ACCEPTED");
 });
@@ -276,6 +416,80 @@ test("policy rejection is terminal nonretryable while gateway failure is recover
   assert.equal(failed.leaseToken, null);
 });
 
+test("the same policy-rejected input is terminally replayed without creating attempt two", async () => {
+  const { createMemoryRichContentRepository } = await repositoryModule();
+  const repository = createMemoryRichContentRepository({ token: () => "lease-policy-replay" });
+  const lease = await repository.reserveRichContentAttempt(reservationInput());
+  await repository.rejectRichContentAttempt({
+    ...reservationInput(),
+    ...lease,
+    errorCode: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED",
+    errorRetryable: false,
+  });
+  assert.deepEqual(await repository.reserveRichContentAttempt(reservationInput()), {
+    status: "REJECTED",
+    code: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED",
+  });
+  assert.equal(repository.snapshot().length, 1);
+  assert.equal(repository.snapshot()[0].attemptNo, 1);
+});
+
+for (const contentType of ["image/jpeg", "image/webp"]) {
+  test(`accepted Task 4 ${contentType} source evidence remains valid at the rich repository boundary`, async () => {
+    const { createMemoryRichContentRepository } = await repositoryModule();
+    const repository = createMemoryRichContentRepository({ token: () => `lease-${contentType}` });
+    const compatibleAssets = structuredClone(assets);
+    for (const asset of compatibleAssets) {
+      asset.sourceAssetEvidence[0].contentType = contentType;
+      asset.checkerEvidence.sourceAssets[0].contentType = contentType;
+    }
+    const input = reservationInput({ assetEvidence: compatibleAssets });
+    const lease = await repository.reserveRichContentAttempt(input);
+    const accepted = await repository.completeRichContentAttempt({
+      ...completeInput(lease),
+      ...input,
+      ...lease,
+    });
+    assert.equal(accepted.status, "ACCEPTED");
+  });
+}
+
+function recomputeClaimedRichInputHash(input) {
+  input.inputHash = digest({
+    scope,
+    planHash: input.planHash,
+    sourceHash: input.sourceHash,
+    factRegistryHash: input.factRegistryHash,
+    assetHash: input.assetHash,
+    profileId: input.profileId,
+    profileVersion: input.profileVersion,
+    modelName: input.modelName,
+    promptTemplateVersion: input.promptTemplateVersion,
+    language: "ru",
+    promptHash: input.promptHash,
+  });
+  input.requestEvidence.requestKey = `auto-listing-rich-${input.inputHash}`;
+}
+
+for (const [label, mutate] of [
+  ["fact registry hash", (input) => { input.factRegistryHash = "7".repeat(64); recomputeClaimedRichInputHash(input); }],
+  ["asset hash", (input) => { input.assetHash = "8".repeat(64); recomputeClaimedRichInputHash(input); }],
+  ["prompt hash", (input) => { input.promptHash = "9".repeat(64); recomputeClaimedRichInputHash(input); }],
+  ["input hash", (input) => {
+    input.inputHash = "a".repeat(64);
+    input.requestEvidence.requestKey = `auto-listing-rich-${input.inputHash}`;
+  }],
+]) {
+  test(`reservation rejects a forged but well-formed ${label}`, async () => {
+    const { createMemoryRichContentRepository } = await repositoryModule();
+    const input = reservationInput(); mutate(input);
+    await assert.rejects(
+      createMemoryRichContentRepository().reserveRichContentAttempt(input),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+    );
+  });
+}
+
 test("expired leases cannot complete and terminal input cannot overwrite frozen reservation evidence", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
   let now = 100;
@@ -295,8 +509,10 @@ test("expired leases cannot complete and terminal input cannot overwrite frozen 
 
 test("direct repository acceptance requires six assets and complete deterministic terminal evidence", async () => {
   const { createMemoryRichContentRepository } = await repositoryModule();
+  const insufficientAssets = reservationInput();
+  insufficientAssets.assetEvidence = insufficientAssets.assetEvidence.slice(0, 5);
   await assert.rejects(
-    createMemoryRichContentRepository().reserveRichContentAttempt(reservationInput({ assetEvidence: assets.slice(0, 5) })),
+    createMemoryRichContentRepository().reserveRichContentAttempt(insufficientAssets),
     (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
   );
   const zeroSizeAssets = structuredClone(assets);
@@ -369,4 +585,83 @@ test("PostgreSQL repository maps connection acquisition failures without leaking
     assert.doesNotMatch(error?.message || "", /secret raw database connect/i);
     return true;
   });
+});
+
+test("PostgreSQL reserve and complete reject forged canonical hashes before any query", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  let queries = 0;
+  const pool = { async query() { queries += 1; throw new Error("query must not run"); } };
+  const repository = createPostgresRichContentRepository({ pool, token: () => "lease-hash", id: () => "rich-hash" });
+  const forgedReserve = reservationInput({ factRegistryHash: "7".repeat(64) });
+  await assert.rejects(repository.reserveRichContentAttempt(forgedReserve),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID");
+  const forgedComplete = completeInput({ attemptNo: 1, leaseToken: "lease-hash" }, { assetHash: "8".repeat(64) });
+  await assert.rejects(repository.completeRichContentAttempt(forgedComplete),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID");
+  assert.equal(queries, 0);
+});
+
+test("PostgreSQL reserve and complete enforce UTF-8 bytes before any query", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  let queries = 0;
+  const pool = { async query() { queries += 1; throw new Error("query must not run"); } };
+  const repository = createPostgresRichContentRepository({ pool, token: () => "lease-bytes", id: () => "rich-bytes" });
+  const oversizedSourcePath = reservationInput();
+  oversizedSourcePath.sourceFactEvidence.push(extraFact("路".repeat(342)));
+  await assert.rejects(
+    repository.reserveRichContentAttempt(oversizedSourcePath),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
+  await assert.rejects(
+    repository.completeRichContentAttempt(completeInput(
+      { attemptNo: 1, leaseToken: "lease-bytes" },
+      { gatewayRequestId: "😀".repeat(61) },
+    )),
+    (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_ATTEMPT_INVALID",
+  );
+  assert.equal(queries, 0);
+});
+
+test("PostgreSQL repository maps release failures to the stable safe repository error", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  const client = {
+    async query(sql) {
+      if (/SELECT id FROM auto_listing_job_items/u.test(sql)) return { rowCount: 1, rows: [{ id: scope.itemId }] };
+      if (/SELECT \* FROM ai_rich_content_results/u.test(sql)) return { rowCount: 0, rows: [] };
+      if (/SELECT 1 FROM ai_rich_content_results/u.test(sql)) return { rowCount: 0, rows: [] };
+      if (/SELECT COALESCE\(MAX\(attempt_no\)/u.test(sql)) return { rowCount: 1, rows: [{ attempt_no: 0 }] };
+      return { rowCount: 1, rows: [] };
+    },
+    release() { throw new Error("secret raw release message"); },
+  };
+  const pool = { async query() { throw new Error("pool query must not run"); }, async connect() { return client; } };
+  const repository = createPostgresRichContentRepository({ pool, token: () => "lease-release", id: () => "rich-release" });
+  await assert.rejects(repository.reserveRichContentAttempt(reservationInput()), (error) => {
+    assert.equal(error?.code, "AUTO_LISTING_RICH_CONTENT_REPOSITORY_FAILED");
+    assert.equal(error?.retryable, true);
+    assert.doesNotMatch(error?.message || "", /secret raw release/i);
+    return true;
+  });
+});
+
+test("PostgreSQL reservation replays a policy rejection before any new insert", async () => {
+  const { createPostgresRichContentRepository } = await repositoryModule();
+  const statements = [];
+  const client = {
+    async query(sql) {
+      statements.push(sql);
+      if (/SELECT id FROM auto_listing_job_items/u.test(sql)) return { rowCount: 1, rows: [{ id: scope.itemId }] };
+      if (/SELECT \* FROM ai_rich_content_results/u.test(sql)) return { rowCount: 0, rows: [] };
+      if (/status='REJECTED'/u.test(sql)) return { rowCount: 1, rows: [{ exists: 1 }] };
+      return { rowCount: 1, rows: [] };
+    },
+    release() {},
+  };
+  const pool = { async query() { throw new Error("pool query must not run"); }, async connect() { return client; } };
+  const repository = createPostgresRichContentRepository({ pool, token: () => "lease-rejected-pg", id: () => "rich-rejected-pg" });
+  assert.deepEqual(await repository.reserveRichContentAttempt(reservationInput()), {
+    status: "REJECTED",
+    code: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED",
+  });
+  assert.equal(statements.some((sql) => /INSERT INTO ai_rich_content_results/u.test(sql)), false);
 });

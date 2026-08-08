@@ -40,4 +40,18 @@ for (const name of [
   );
 }
 
+assert.match(compose, /auto-listing-ai-worker:[\s\S]*?profiles: \["application", "auto-listing-ai"\]/u);
+assert.match(compose, /auto-listing-ai-worker:[\s\S]*?command: \["node", "server\/auto-listing-ai-worker\.mjs"\]/u);
+assert.match(compose, /AUTO_LISTING_ENABLED: \$\{AUTO_LISTING_ENABLED:-false\}/u);
+assert.match(compose, /AUTO_LISTING_AI_ENABLED: \$\{AUTO_LISTING_AI_ENABLED:-false\}/u);
+assert.match(compose, /AUTO_LISTING_EXCEL_MAX_BYTES: \$\{AUTO_LISTING_EXCEL_MAX_BYTES:-2097152\}/u);
+assert.match(compose, /AUTO_LISTING_EXCEL_MAX_ROWS: \$\{AUTO_LISTING_EXCEL_MAX_ROWS:-1000\}/u);
+assert.match(example, /^AUTO_LISTING_EXCEL_MAX_BYTES=2097152$/mu);
+assert.match(example, /^AUTO_LISTING_EXCEL_MAX_ROWS=1000$/mu);
+assert.match(compose, /AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: \$\{AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES:-\}/u);
+assert.match(compose, /AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: \$\{AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS:-\}/u);
+assert.match(compose, /auto-listing-ai-worker:[\s\S]*?restart: on-failure[\s\S]*?stop_grace_period: 5m/u);
+assert.match(compose, /^      SUB2API_API_KEY: \$\{SUB2API_API_KEY:-\}$/mu,
+  "AI key must only come from the environment");
+
 console.log("infrastructure configuration contract passed");

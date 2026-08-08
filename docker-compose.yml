@@ -78,6 +78,20 @@ services:
       SONLI_ADMIN_USERNAME: ${SONLI_ADMIN_USERNAME:-admin}
       SONLI_ADMIN_PASSWORD: ${SONLI_ADMIN_PASSWORD:?Set SONLI_ADMIN_PASSWORD in .env}
       LISTING_PIPELINE_V3: "1"
+      AUTO_LISTING_ENABLED: ${AUTO_LISTING_ENABLED:-false}
+      AUTO_LISTING_AI_ENABLED: ${AUTO_LISTING_AI_ENABLED:-false}
+      AUTO_LISTING_EXCEL_MAX_BYTES: ${AUTO_LISTING_EXCEL_MAX_BYTES:-2097152}
+      AUTO_LISTING_EXCEL_MAX_ROWS: ${AUTO_LISTING_EXCEL_MAX_ROWS:-1000}
+      AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: ${AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES:-}
+      AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: ${AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS:-}
+      AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS: ${AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS:-}
+      AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY: ${AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY:-false}
+      AUTO_LISTING_UPLOAD_ENABLED: ${AUTO_LISTING_UPLOAD_ENABLED:-false}
+      AUTO_LISTING_DIRECT_UPLOAD_ALLOWED: ${AUTO_LISTING_DIRECT_UPLOAD_ALLOWED:-false}
+      LISTING_ASSET_PUBLIC_BASE_URL: ${LISTING_ASSET_PUBLIC_BASE_URL:-}
+      LISTING_ASSET_PUBLIC_PREFIX: ${LISTING_ASSET_PUBLIC_PREFIX:-listing-media/v1}
+      LISTING_ASSET_PUBLICATION_VERSION: ${LISTING_ASSET_PUBLICATION_VERSION:-LISTING_MEDIA_V1}
+      SUB2API_API_KEY: ${SUB2API_API_KEY:-}
       PG_BOSS_SCHEMA: ${PG_BOSS_SCHEMA:-sonli_queue}
       LISTING_WORKER_CONCURRENCY: ${LISTING_WORKER_CONCURRENCY:-2}
       LISTING_MAX_STATUS_CHECKS: ${LISTING_MAX_STATUS_CHECKS:-240}
@@ -112,6 +126,29 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+
+  auto-listing-ai-worker:
+    profiles: ["application", "auto-listing-ai"]
+    build:
+      context: .
+      target: backend
+    restart: on-failure
+    command: ["node", "server/auto-listing-ai-worker.mjs"]
+    environment:
+      <<: *application-environment
+      PG_BOSS_APPLICATION_NAME: sonli-auto-listing-ai-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    stop_grace_period: 5m
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.kill(1, 0)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   web:
     profiles: ["application"]

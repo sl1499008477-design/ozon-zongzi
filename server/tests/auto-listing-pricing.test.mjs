@@ -146,3 +146,18 @@ test("rejects malformed adjustments and nonpositive final prices", () => {
     currency: "RUB",
   }, "PRICE_FINAL_NOT_POSITIVE");
 });
+
+test("bounds every externally parsed kopeck integer to PostgreSQL signed BIGINT before BigInt conversion", () => {
+  assert.equal(calculateAutoListingPrice({
+    blackKopecks: "9223372036854775807", greenKopecks: "1",
+    adjustmentKopecks: "-9223372036854775808", currency: "RUB",
+  }).adjustmentKopecks, "-9223372036854775808");
+  for (const input of [
+    { blackKopecks: "9223372036854775808", greenKopecks: "1", currency: "RUB" },
+    { blackKopecks: "8000", greenKopecks: "9223372036854775808", currency: "RUB" },
+    { blackKopecks: "8000", greenKopecks: "1", adjustmentKopecks: "9223372036854775808", currency: "RUB" },
+    { blackKopecks: `1${"0".repeat(10_000)}`, currency: "RUB" },
+  ]) {
+    expectPriceError(input, "PRICE_INPUT_INVALID");
+  }
+});

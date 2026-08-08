@@ -7,11 +7,13 @@ const clean = (value) => typeof value === "string" && value.trim() && value === 
   && value.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : "";
 const validGenerationSize = (value) => typeof value === "string" && /^[1-9][0-9]*x[1-9][0-9]*$/u.test(value);
 const copy = (value) => structuredClone(value);
-const keyOf = (input) => scopeKeys.map((key) => input[key]).join("\u0001");
+const keyOf = (input) => [...scopeKeys.map((key) => input[key]), input.expectedStatusVersion ?? "legacy"].join("\u0001");
 function invalid() { const error = new Error("图片生成尝试无效"); error.code = "AUTO_LISTING_IMAGE_ATTEMPT_INVALID"; return error; }
 function fence(input, hashKey = "attemptIdentityHash") {
   if (!input || !scopeKeys.every((key) => clean(input[key])) || !HASH.test(input[hashKey] || "")
-    || !validGenerationSize(input.generationSize)) throw invalid();
+    || !validGenerationSize(input.generationSize)
+    || (Object.hasOwn(input, "expectedStatusVersion") && (!Number.isInteger(input.expectedStatusVersion)
+      || input.expectedStatusVersion < 1 || input.expectedStatusVersion > 2_147_483_647))) throw invalid();
   return keyOf(input);
 }
 
@@ -20,9 +22,27 @@ function fence(input, hashKey = "attemptIdentityHash") {
  * defines the same account/job/item/plan/slot fence that the durable Task 6
  * adapter must enforce transactionally; it never crosses a caller's scope.
  */
-export function createMemoryGenerationAttemptRepository({ now = () => Date.now(), leaseMs = 60_000, token = () => crypto.randomUUID() } = {}) {
-  if (!Number.isInteger(leaseMs) || leaseMs < 1 || typeof now !== "function" || typeof token !== "function") throw invalid();
+export function createMemoryGenerationAttemptRepository({ now = () => Date.now(), leaseMs = 60_000, token = () => crypto.randomUUID(), readItemState = null } = {}) {
+  if (!Number.isInteger(leaseMs) || leaseMs < 1 || typeof now !== "function" || typeof token !== "function"
+    || !(readItemState === null || typeof readItemState === "function")) throw invalid();
   const rows = [];
+  const stateDisposition = async (input) => {
+    if (!Object.hasOwn(input, "expectedStatusVersion")) return "CURRENT";
+    let state;
+    try {
+      state = readItemState === null
+        ? { status: "GENERATING", statusVersion: input.expectedStatusVersion, activeContentPlanId: input.planId }
+        : await readItemState(Object.freeze({
+          accountId: input.accountId, jobId: input.jobId, itemId: input.itemId,
+          planId: input.planId, expectedStatusVersion: input.expectedStatusVersion,
+        }));
+    } catch { throw invalid(); }
+    if (!state || typeof state.status !== "string" || !Number.isInteger(state.statusVersion)) throw invalid();
+    if (state.status === "CANCELLED") return "CANCELLED";
+    if (state.status !== "GENERATING" || state.statusVersion !== input.expectedStatusVersion
+      || state.activeContentPlanId !== input.planId) return "STALE";
+    return "CURRENT";
+  };
   const matching = (input) => rows.filter((row) => keyOf(row) === keyOf(input) && row.attemptIdentityHash === input.attemptIdentityHash);
   const own = (input) => {
     fence(input);
@@ -37,6 +57,8 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
     async reserveGenerationAttempt(input) {
       fence(input);
       if (!Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 3) throw invalid();
+      const disposition = await stateDisposition(input);
+      if (disposition !== "CURRENT") return { status: disposition };
       const current = matching(input);
       if (current.some((row) => row.generationSize !== input.generationSize)) throw invalid();
       const accepted = current.find((row) => row.status === "ACCEPTED");
@@ -48,7 +70,11 @@ export function createMemoryGenerationAttemptRepository({ now = () => Date.now()
       const attemptNo = current.reduce((maximum, row) => Math.max(maximum, row.attemptNo), 0) + 1;
       if (attemptNo > input.maxAttempts) return { status: "ATTEMPTS_EXHAUSTED" };
       const leaseToken = clean(token()); if (!leaseToken) throw invalid();
-      rows.push({ ...Object.fromEntries(scopeKeys.map((key) => [key, input[key]])), attemptIdentityHash: input.attemptIdentityHash, inputHash: input.attemptIdentityHash, generationSize: input.generationSize, finalInputBoundAt: null, attemptNo, status: "GENERATING", leaseToken, leaseExpiresAt: timestamp + leaseMs });
+      rows.push({ ...Object.fromEntries(scopeKeys.map((key) => [key, input[key]])),
+        ...(Object.hasOwn(input, "expectedStatusVersion") ? { expectedStatusVersion: input.expectedStatusVersion } : {}),
+        attemptIdentityHash: input.attemptIdentityHash, inputHash: input.attemptIdentityHash,
+        generationSize: input.generationSize, finalInputBoundAt: null, attemptNo, status: "GENERATING",
+        leaseToken, leaseExpiresAt: timestamp + leaseMs });
       return { status: "RESERVED", attemptNo, leaseToken, generationSize: input.generationSize };
     },
     async bindGenerationAttemptInput(input) {

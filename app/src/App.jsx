@@ -87,6 +87,8 @@ import DataScreenPage from "./DataScreenPage.jsx";
 import PricingSettingsPage from "./PricingSettingsPage.jsx";
 import AccountSettingsPage from "./AccountSettingsPage.jsx";
 import StoresSettingsPage from "./StoresSettingsPage.jsx";
+import AutoListingPage from "./AutoListingPage.jsx";
+import { buildAutoListingCollectPush } from "./auto-listing-collect-push.js";
 import { createStoreDeletionCleanup } from "./store-deletion-cleanup.js";
 import ProfitTrendPage from "./ProfitTrendPage.jsx";
 import SourceTable, {
@@ -251,6 +253,7 @@ const pageTitles = {
   "/ozon/products/stocks": "库存管理",
   "/ozon/products/reshelf": "下架重上",
   "/ozon/tools/ai-poster-records": "AI 改图神器",
+  "/ozon/tools/auto-listing": "自动上架",
   "/ozon/ai-image": "AI 商品套图",
   "/ozon/promotions/prices": "价格与折扣",
   "/ozon/promotions/campaigns": "促销活动",
@@ -486,6 +489,7 @@ const menuItems = [
     icon: <ThunderboltOutlined />,
     label: "AI 工具",
     children: [
+      { key: "/ozon/tools/auto-listing", label: "自动上架" },
       { key: "/ozon/tools/ai-poster-records", label: "AI 改图神器" },
       { key: "/ozon/ai-image", label: "AI 商品套图" },
     ],
@@ -540,6 +544,7 @@ const routeParent = {
   "/ozon/products/stocks": "products",
   "/ozon/products/reshelf": "products",
   "/ozon/tools/ai-poster-records": "ai",
+  "/ozon/tools/auto-listing": "ai",
   "/ozon/promotions/prices": "promotions",
   "/ozon/promotions/campaigns": "promotions",
   "/ozon/ai-image": "ai",
@@ -1679,6 +1684,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
   if (route === "/ozon/products/stocks") return <StocksPage {...pageProps} />;
   if (route === "/ozon/products/reshelf") return <ReshelfPage {...pageProps} />;
   if (route === "/ozon/tools/ai-poster-records") return <AiPosterPage {...pageProps} />;
+  if (route === "/ozon/tools/auto-listing") return <AutoListingPage {...pageProps} />;
   if (route === "/ozon/ai-image") return <AiImagePage />;
   if (route === "/ozon/promotions/prices") return <PriceDiscountPage {...pageProps} />;
   if (route === "/ozon/promotions/campaigns") return <CampaignsPage {...pageProps} />;
@@ -3304,7 +3310,7 @@ function ProductListPage({ binding, hasStore, localData, onSync, navigate }) {
   );
 }
 
-function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
+function CollectPage({ hasStore, localData, onBind, onRefresh, navigate, account }) {
   const { message } = AntApp.useApp();
   const [activeStatus, setActiveStatus] = useState("全部");
   const [sourceFilter, setSourceFilter] = useState();
@@ -3440,6 +3446,20 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
       },
     });
   };
+  const pushToAutoListing = () => {
+    try {
+      const target = buildAutoListingCollectPush({
+        selectedIds: selectedRowKeys,
+        visibleItems: visibleRows,
+        accountId: account?.id,
+      });
+      navigate(target.path);
+    } catch (error) {
+      message.warning(error?.code === "AUTO_LISTING_COLLECT_SELECTION_EMPTY"
+        ? "请先选择要推送的采集商品"
+        : "选中的商品已不可用，请刷新采集箱后重试");
+    }
+  };
   const handleCollectAdd = async (value) => {
     const token = localStorage.getItem("token");
     const readiness = collectAddReadiness({ value, token });
@@ -3539,6 +3559,14 @@ function CollectPage({ hasStore, localData, onBind, onRefresh, navigate }) {
           ]}
         />
         <div className="collect-filter-actions">
+          <Button
+            type="primary"
+            disabled={!selectedRowKeys.length}
+            icon={<ThunderboltOutlined />}
+            onClick={pushToAutoListing}
+          >
+            推送到自动上架
+          </Button>
           <Button
             danger
             disabled={!selectedRowKeys.length}

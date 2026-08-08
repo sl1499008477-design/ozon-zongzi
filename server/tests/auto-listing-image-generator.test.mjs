@@ -82,6 +82,24 @@ test("rejects a pure SOURCE_URL before reservation, loading, gateway, or storage
   assert.deepEqual(effects, []);
 });
 
+test("accepts only CONTENT_HASH source references before every repository, loader, gateway, or storage effect", async () => {
+  for (const evidenceKind of ["SOURCE_REF_HASH", "UNKNOWN_EVIDENCE"]) {
+    const fixture = await setup();
+    Object.assign(fixture.asset, { evidenceKind, sourceRef: null, contentHash: sha256(fixture.bytes) });
+    const effects = [];
+    fixture.input.repository.reserveGenerationAttempt = async () => { effects.push("reserve"); };
+    fixture.input.sourceAssetLoader.loadSourceAsset = async () => { effects.push("load"); };
+    fixture.input.gateway.generateImage = async () => { effects.push("gateway"); };
+    fixture.input.storage.putObjectFromBuffer = async () => { effects.push("storage"); };
+    await assert.rejects(
+      generateImageSlot(fixture.input),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED" && error?.retryable === false,
+      evidenceKind,
+    );
+    assert.deepEqual(effects, [], evidenceKind);
+  }
+});
+
 test("reserves the exact validated generation size before loading immutable source bytes", async () => {
   const fixture = await setup();
   let reservationInput;
@@ -171,6 +189,42 @@ test("pure accepted-asset evidence verification rejects every incomplete or cros
   assert.equal(verifyAcceptedGeneratedAssetEvidence(legacy), true);
   legacy.record.objectKey = `${legacy.record.objectKey}.forged`;
   assert.equal(verifyAcceptedGeneratedAssetEvidence(legacy), false);
+});
+
+test("pure accepted-asset evidence verification recomputes both frozen generation identities", async () => {
+  const { verifyAcceptedGeneratedAssetEvidence } = await import("../auto-listing-image-generator.mjs");
+  const fixture = await setup();
+  const accepted = structuredClone(await generateImageSlot(fixture.input));
+  const verification = {
+    record: accepted,
+    scope: fixture.input.scope,
+    plan: fixture.input.plan,
+    slot: fixture.input.slot,
+    profile: fixture.input.profile,
+    imageModel: fixture.input.imageModel,
+    templateVersion: fixture.input.templateVersion,
+  };
+
+  for (const corrupt of [
+    (record) => { record.inputHash = "1".repeat(64); },
+    (record) => { record.attemptIdentityHash = "2".repeat(64); },
+    (record) => { record.inputHash = "3".repeat(64); record.attemptIdentityHash = "4".repeat(64); },
+  ]) {
+    const forged = structuredClone(verification);
+    corrupt(forged.record);
+    forged.record.objectKey = buildGeneratedAssetObjectKey(forged.record);
+    assert.equal(verifyAcceptedGeneratedAssetEvidence(forged), false);
+  }
+
+  const forgedLegacy = structuredClone(verification);
+  forgedLegacy.record.inputHash = "5".repeat(64);
+  forgedLegacy.record.attemptIdentityHash = "6".repeat(64);
+  forgedLegacy.record.objectKeyVersion = null;
+  const segments = [forgedLegacy.record.accountId, forgedLegacy.record.jobId, forgedLegacy.record.itemId,
+    forgedLegacy.record.planId, forgedLegacy.record.visualGroupKey, forgedLegacy.record.slotKey]
+    .map((value) => Buffer.from(value).toString("base64url"));
+  forgedLegacy.record.objectKey = `auto-listing/${segments.join("/")}/${forgedLegacy.record.inputHash}/${forgedLegacy.record.contentHash}.png`;
+  assert.equal(verifyAcceptedGeneratedAssetEvidence(forgedLegacy), false);
 });
 
 test("replays an immutable pre-030 accepted object with null version only through the exact legacy key", async () => {

@@ -2,6 +2,7 @@ import "./env.mjs";
 import { assertProductionConfiguration } from "./runtime-config.mjs";
 import { createAutoListingRuntime } from "./auto-listing-runtime.mjs";
 import { createAutoListingHttpHandler } from "./auto-listing-routes.mjs";
+import { createAutoListingWebRuntime } from "./auto-listing-web-runtime.mjs";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
@@ -138,6 +139,7 @@ import {
   createOperatingStoreNotifier,
 } from "./collect-category-auto-resolution-composition.mjs";
 import {
+  assertOzonListingLogisticsReady,
   assertOzonListingReady,
   explicitOzonListingTarget,
   normalizeOzonCollectedSourceEvidence,
@@ -147,6 +149,7 @@ import { createJsonStateTransactionBoundary } from "./json-state-transaction.mjs
 import { handleRetiredExtensionSyncRoute } from "./extension-sync-retirement.mjs";
 import { handleRemovedDataCollectionStoreRoute } from "./data-collection-store-retirement.mjs";
 import { assertListingStockSelectionEligible, listingEligibilityCaches } from "./listing-warehouse-eligibility.mjs";
+import { createOzonSkuCollectionService } from "./ozon-sku-collection-service.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 assertProductionConfiguration("api");
 const rootDir = path.resolve(__dirname, "..");
@@ -364,13 +367,21 @@ async function saveState(state) {
 
 const jsonStateTransaction = createJsonStateTransactionBoundary({ enabled: () => persistenceMode() === "json" });
 const collectorAuthRuntime = createCollectorAuthRuntime({ loadState, saveState, persistenceMode, stateTransaction: jsonStateTransaction, readJson: readBody, sendJson });
+const authenticateAutoListingRequest = async (req) => {
+  if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
+  return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
+};
 const autoListingRuntime = createAutoListingRuntime();
 const handleAutoListingRoute = createAutoListingHttpHandler({
-  authenticate: async (req) => {
-    if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
-    return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
-  },
+  authenticate: authenticateAutoListingRequest,
   runtime: autoListingRuntime,
+  readJson: readBody,
+  sendJson,
+});
+const autoListingWebRuntime = createAutoListingWebRuntime({
+  authenticate: authenticateAutoListingRequest,
+  getAutoListingService: autoListingRuntime.getService,
+  collectSku: (input) => autoListingSkuCollectionService.collectOzonSkuForAccount(input),
   readJson: readBody,
   sendJson,
 });
@@ -1486,7 +1497,36 @@ async function scrapeOzonProductDetail(sku) {
   return null;
 }
 
-
+const ozonSkuCollectionService = createOzonSkuCollectionService({
+  scrapeProductDetail: scrapeOzonProductDetail,
+  normalizeItem: normalizeCollectItem,
+  saveItem: saveCollectBoxItemAtomic,
+});
+// Excel 自动上架采集只写入正式 PostgreSQL 采集记录，不改动旧版 JSON 采集箱。
+// 这样后台任务与用户正在操作的采集箱互不覆盖，同时仍保留原始响应用于追溯。
+const autoListingSkuCollectionService = createOzonSkuCollectionService({
+  scrapeProductDetail: scrapeOzonProductDetail,
+  normalizeItem: normalizeCollectItem,
+  async saveItem(item, { account }) {
+    if (item?.raw?.error === "scrape_failed") {
+      const error = new Error("AUTO_LISTING_SOURCE_SCRAPE_EMPTY");
+      error.code = "AUTO_LISTING_SOURCE_SCRAPE_EMPTY";
+      throw error;
+    }
+    const scopedItem = accountOwnedCollectBoxItem(item, account);
+    const persisted = await mirrorCollectItemV3(scopedItem, {
+      accountId: account.id,
+      source: "AUTO_LISTING_EXCEL_SKU",
+      captureRaw: true,
+    });
+    if (!persisted?.collectId) {
+      const error = new Error("AUTO_LISTING_SOURCE_PERSIST_FAILED");
+      error.code = "AUTO_LISTING_SOURCE_PERSIST_FAILED";
+      throw error;
+    }
+    return { item: { ...scopedItem, id: persisted.collectId } };
+  },
+});
 function getRequestStore(state, req, fallbackStoreId) {
   const storeId = req.headers["x-ozon-store-id"] || fallbackStoreId || state.currentStoreId;
   const store = activeStore(state, storeId);
@@ -2410,8 +2450,7 @@ async function collectBoxListingRequest(state, req, id, body = {}, { account, dr
             ...item,
             listingDraft: currentItem.listingDraft,
           }, requestedTargetStoreId);
-          assertCollectListingTargets(replayItems);
-          replayItems.forEach(assertOzonListingReady);
+          replayItems.forEach(assertOzonListingLogisticsReady);
         },
       })
     : null;
@@ -2677,7 +2716,12 @@ export function createHttpHandler({
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
   if (await composition.collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleReviewAssetRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleItemRoute(req, res, url)) return;
   if (await handleAutoListingRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleUserWorkflowRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleAiAdminRoute(req, res, url)) return;
+  if (await autoListingWebRuntime.handleAdminRoute(req, res, url)) return;
   if (await handleCollectorArtifactRoute(req, res, url, {
     authenticate: (request) => collectorAuthRuntime.authenticateRequest(
       request,
@@ -4203,49 +4247,15 @@ export function createHttpHandler({
       return;
     }
     try {
-      const detail = await scrapeOzonProductDetail(sku);
-      if (detail && detail.title) {
-        const item = normalizeCollectItem({
-          sku,
-          productUrl: detail.url || `https://www.ozon.ru/product/test-${sku}/`,
-          name: detail.title,
-          price: detail.price || detail.priceText || "",
-          priceText: detail.priceText || "",
-          image: detail.primaryImage || (detail.images || [])[0] || "",
-          images: detail.images || [],
-          variants: Array.isArray(detail.variants) ? detail.variants : [],
-          variantData: Array.isArray(detail.variants) && detail.variants.length ? { variants: detail.variants } : undefined,
-          seller: detail.sellerName || "",
-          sellerLink: detail.sellerLink || "",
-          brand: detail.brand || "",
-          category: (detail.categories || []).join(" / "),
-          rating: detail.rating || null,
-          reviewCount: detail.reviewCount || null,
-          source: "SKU 抓取",
-          status: "已采集",
-          raw: { sku, scrapedAt: new Date().toISOString() },
-        });
-        const saved = await saveCollectBoxItemAtomic(item, { account });
-        sendJson(res, 200, { ok: true, data: publicPersistedCollectionItem(saved.item), scraped: true });
-      } else {
-        // 抓取失败，仍然创建条目但标记为待处理
-        const item = normalizeCollectItem({
-          sku,
-          name: `SKU ${sku}`,
-          source: "SKU 添加（抓取失败）",
-          status: "待处理",
-          raw: { sku, error: "scrape_failed" },
-        });
-        const saved = await saveCollectBoxItemAtomic(item, { account });
-        sendJson(res, 200, {
-          ok: true,
-          data: publicPersistedCollectionItem(saved.item),
-          scraped: false,
-          error: "未能从 ozon.ru 抓取到商品数据",
-        });
-      }
-    } catch (error) {
-      sendError(res, 500, `抓取失败: ${error.message}`);
+      const result = await ozonSkuCollectionService.collectOzonSkuForAccount({ account, sku });
+      sendJson(res, 200, {
+        ok: true,
+        data: publicPersistedCollectionItem(result.item),
+        scraped: result.scraped,
+        ...(result.scraped ? {} : { error: "未能从 ozon.ru 抓取到商品数据" }),
+      });
+    } catch {
+      sendError(res, 500, "抓取失败，请稍后重试", "OZON_SKU_COLLECTION_FAILED");
     }
     return;
   }
@@ -4359,7 +4369,7 @@ export function createHttpHandler({
           listingJobId: result.job?.localTaskId || result.job?.id || "",
           listingSubmittedAt: new Date().toISOString(),
           listingLastError: "",
-        }, { account }).catch(() => null);
+        }, { account });
       }
       sendJson(res, 200, result);
     } catch (error) {
@@ -5188,6 +5198,7 @@ let stopCollectCategoryResolutionWorker = () => {};
 server.once("close", () => {
   stopCollectCategoryResolutionWorker();
   collectCategoryResolutionRuntime.stop();
+  void autoListingWebRuntime.stopWorkers();
 });
 
 if (process.env.QH_LOCAL_NO_LISTEN !== "1") {
@@ -5195,6 +5206,9 @@ if (process.env.QH_LOCAL_NO_LISTEN !== "1") {
     console.log(`QH local API listening on http://${listenHost}:${port}`);
     scheduleImportStatusPolling(1000);
     objectCleanupWorker.start();
+    void autoListingWebRuntime.startWorkers().catch(() => {
+      console.error("[auto-listing] user workflow workers failed to start");
+    });
     stopCollectCategoryResolutionWorker = collectCategoryResolutionRuntime.start();
   });
 }

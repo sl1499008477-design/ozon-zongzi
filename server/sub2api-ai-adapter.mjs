@@ -1,6 +1,12 @@
 import { AiGatewayError, createAiGatewayPort } from "./ai-gateway-port.mjs";
 import Ajv from "ajv";
 import sharp from "sharp";
+import {
+  createSub2ApiGatewayPolicy,
+  normalizeSub2ApiGatewayBaseUrl,
+  requireSub2ApiGatewayPolicy,
+  verifySub2ApiGatewayDnsBoundary,
+} from "./sub2api-gateway-boundary.mjs";
 
 export const SUB2API_TEXT_PROTOCOLS = Object.freeze(["SUB2API_RESPONSES"]);
 export const SUB2API_IMAGE_PROTOCOLS = Object.freeze([
@@ -87,7 +93,7 @@ function profileField(profile, camel, snake = "") {
   return profile?.[camel] ?? (snake ? profile?.[snake] : undefined);
 }
 
-function normalizeProfile(profile) {
+function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
   const result = {
     id: clean(profileField(profile, "id")),
     accountId: clean(profileField(profile, "accountId", "account_id")),
@@ -108,16 +114,12 @@ function normalizeProfile(profile) {
     || !SUB2API_IMAGE_PROTOCOLS.includes(result.imageProtocol)) {
     throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
   }
-  let parsed;
   try {
-    parsed = new URL(result.baseUrl);
+    result.baseUrl = normalizeSub2ApiGatewayBaseUrl(result.baseUrl, { allowLocalGateway });
   } catch {
     throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
   }
-  const loopbackHttp = parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname.toLowerCase());
-  if ((parsed.protocol !== "https:" && !loopbackHttp) || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
-  }
+  const parsed = new URL(result.baseUrl);
   const pathname = parsed.pathname.endsWith("/") ? parsed.pathname : `${parsed.pathname}/`;
   parsed.pathname = pathname.replace(/\/+/g, "/");
   result.boundary = Object.freeze({ origin: parsed.origin, path: parsed.pathname });
@@ -339,11 +341,12 @@ function classifyHttp(response) {
   return gatewayError("NON_RETRYABLE_GATEWAY", { status: response.status, requestId });
 }
 
-async function fetchWithBoundary({ fetchImpl, url, init, boundary, authorized, signal }) {
+async function fetchWithBoundary({ fetchImpl, url, init, boundary, authorized, signal, verifyTarget }) {
   let target = url;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     let response;
     try {
+      await verifyTarget?.(target);
       response = await fetchImpl(target, { ...init, redirect: "manual", signal });
     } catch (error) {
       throw error;
@@ -652,7 +655,7 @@ async function readJson(response, abort, maxBytes) {
   }
 }
 
-async function readImageUrl(fetchImpl, urlValue, normalizedProfile, abort, maxImageBytes) {
+async function readImageUrl(fetchImpl, urlValue, normalizedProfile, abort, maxImageBytes, verifyTarget) {
   const url = parseBoundaryUrl(urlValue, normalizedProfile.boundary);
   const response = await fetchWithBoundary({
     fetchImpl,
@@ -661,6 +664,7 @@ async function readImageUrl(fetchImpl, urlValue, normalizedProfile, abort, maxIm
     boundary: normalizedProfile.boundary,
     authorized: false,
     signal: abort.signal,
+    verifyTarget,
   });
   if (!response.ok) throw classifyHttp(response);
   const bytes = await readBodyLimited(response, { maxBytes: maxImageBytes, abort });
@@ -668,8 +672,8 @@ async function readImageUrl(fetchImpl, urlValue, normalizedProfile, abort, maxIm
   return bytes;
 }
 
-function normalizeRequest(input, operation, { allowDisabled = false } = {}) {
-  const normalizedProfile = normalizeProfile(input?.profile);
+function normalizeRequest(input, operation, { allowDisabled = false, allowLocalGateway = false } = {}) {
+  const normalizedProfile = normalizeProfile(input?.profile, { allowLocalGateway });
   if (!allowDisabled && !normalizedProfile.enabled) throw gatewayError("AI_GATEWAY_PROFILE_DISABLED");
   const correlationId = validateIdentity(input?.correlationId);
   const requestKey = validateIdentity(input?.requestKey);
@@ -683,13 +687,20 @@ export function createSub2ApiAdapter({
   fetchImpl = globalThis.fetch,
   readSecret = (name) => process.env[name],
   logger = null,
+  allowLocalGateway = false,
+  resolveHostname,
   maxImageBytes = MAX_IMAGE_BYTES,
   maxJsonBytes = MAX_JSON_BYTES,
   maxSseBytes,
   maxSourceImageBytesTotal = MAX_SOURCE_IMAGE_BYTES_TOTAL,
   maxRequestBodyBytes = MAX_REQUEST_BODY_BYTES,
+  allowedSecretEnvNames,
+  allowedGatewayBaseUrls,
+  allowedGatewayOrigins,
 } = {}) {
-  if (typeof fetchImpl !== "function" || typeof readSecret !== "function") {
+  if (typeof fetchImpl !== "function" || typeof readSecret !== "function"
+    || typeof allowLocalGateway !== "boolean"
+    || (resolveHostname !== undefined && typeof resolveHostname !== "function")) {
     throw new TypeError("sub2api adapter requires fetch and secret reader");
   }
   maxImageBytes = positiveByteLimit(maxImageBytes, MAX_IMAGE_BYTES);
@@ -697,9 +708,38 @@ export function createSub2ApiAdapter({
   maxSseBytes = positiveByteLimit(maxSseBytes, Math.ceil(maxImageBytes * 4 / 3) + MAX_JSON_BYTES);
   maxSourceImageBytesTotal = positiveByteLimit(maxSourceImageBytesTotal, MAX_SOURCE_IMAGE_BYTES_TOTAL);
   maxRequestBodyBytes = positiveByteLimit(maxRequestBodyBytes, MAX_REQUEST_BODY_BYTES);
+  const enforcePolicy = allowedSecretEnvNames !== undefined
+    || allowedGatewayBaseUrls !== undefined || allowedGatewayOrigins !== undefined;
+  const gatewayPolicy = enforcePolicy ? createSub2ApiGatewayPolicy({
+    allowedSecretEnvNames: allowedSecretEnvNames ?? [],
+    allowedGatewayBaseUrls: allowedGatewayBaseUrls ?? [],
+    allowedGatewayOrigins: allowedGatewayOrigins ?? [],
+    allowLocalGateway,
+  }) : null;
+
+  async function verifyGatewayBoundary(normalizedProfile, abort) {
+    try {
+      if (gatewayPolicy) requireSub2ApiGatewayPolicy(normalizedProfile, gatewayPolicy);
+      await verifySub2ApiGatewayDnsBoundary({
+        hostname: normalizedProfile.base.hostname,
+        allowLocalGateway,
+        signal: abort.signal,
+        ...(resolveHostname === undefined ? {} : { resolveHostname }),
+      });
+    } catch (error) {
+      if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
+      if (error?.code === "SUB2API_GATEWAY_DNS_FAILED") {
+        throw gatewayError("RETRYABLE_GATEWAY", { retryable: true });
+      }
+      throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
+    }
+  }
 
   async function executeAuthorized({ input, operation, protocol, endpoint, body, accept = "application/json", allowDisabled = false }) {
-    const { normalizedProfile, correlationId, requestKey } = normalizeRequest(input, operation, { allowDisabled });
+    const { normalizedProfile, correlationId, requestKey } = normalizeRequest(input, operation, {
+      allowDisabled,
+      allowLocalGateway,
+    });
     let serializedBody;
     if (body !== undefined) {
       try {
@@ -711,24 +751,28 @@ export function createSub2ApiAdapter({
         throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
       }
     }
-    let secret;
-    try {
-      const resolved = readSecret(normalizedProfile.apiKeyEnvName);
-      secret = typeof resolved === "string" ? resolved.trim() : "";
-    } catch {
-      throw gatewayError("AI_GATEWAY_SECRET_MISSING");
-    }
-    if (!secret) throw gatewayError("AI_GATEWAY_SECRET_MISSING");
     const abort = abortContext(input.signal, input.timeoutMs);
     const url = endpointUrl(normalizedProfile, endpoint);
-    safeLog(logger, "info", "ai_gateway.request_started", {
-      profileId: normalizedProfile.id,
-      profileVersion: normalizedProfile.configVersion,
-      protocol,
-      operation,
-      correlationId,
-    });
     try {
+      await verifyGatewayBoundary(normalizedProfile, abort);
+      if (abort.signal.aborted) {
+        throw classifyFetchFailure(abort.signal.reason, abort.state());
+      }
+      let secret;
+      try {
+        const resolved = readSecret(normalizedProfile.apiKeyEnvName);
+        secret = typeof resolved === "string" ? resolved.trim() : "";
+      } catch {
+        throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+      }
+      if (!secret) throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+      safeLog(logger, "info", "ai_gateway.request_started", {
+        profileId: normalizedProfile.id,
+        profileVersion: normalizedProfile.configVersion,
+        protocol,
+        operation,
+        correlationId,
+      });
       const response = await fetchWithBoundary({
         fetchImpl,
         url,
@@ -740,6 +784,7 @@ export function createSub2ApiAdapter({
         boundary: normalizedProfile.boundary,
         authorized: true,
         signal: abort.signal,
+        verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
       });
       if (!response.ok) throw classifyHttp(response);
       safeLog(logger, "info", "ai_gateway.request_succeeded", {
@@ -770,7 +815,7 @@ export function createSub2ApiAdapter({
   }
 
   async function createTextResponseInternal(input = {}, { allowDisabled = false } = {}) {
-    const { normalizedProfile } = normalizeRequest(input, "text", { allowDisabled });
+    const { normalizedProfile } = normalizeRequest(input, "text", { allowDisabled, allowLocalGateway });
     if (normalizedProfile.textProtocol !== "SUB2API_RESPONSES") throw gatewayError("AI_GATEWAY_PROTOCOL_UNSUPPORTED");
     const validate = compileJsonSchema(input.jsonSchema);
     const body = {
@@ -932,7 +977,15 @@ export function createSub2ApiAdapter({
       if (typeof item?.b64_json === "string" && item.b64_json.trim()) bytes = strictBase64(item.b64_json, maxImageBytes);
       else if (clean(item?.url, 4096)) {
         try {
-          bytes = await readImageUrl(fetchImpl, item.url, normalizedProfile, execution.abort, maxImageBytes);
+          await verifyGatewayBoundary(normalizedProfile, execution.abort);
+          bytes = await readImageUrl(
+            fetchImpl,
+            item.url,
+            normalizedProfile,
+            execution.abort,
+            maxImageBytes,
+            () => verifyGatewayBoundary(normalizedProfile, execution.abort),
+          );
         } catch (error) {
           throw classifyFetchFailure(error, execution.abort.state());
         }
@@ -951,7 +1004,7 @@ export function createSub2ApiAdapter({
   }
 
   async function generateImageInternal(input = {}, { allowDisabled = false } = {}) {
-    const { normalizedProfile } = normalizeRequest(input, "image", { allowDisabled });
+    const { normalizedProfile } = normalizeRequest(input, "image", { allowDisabled, allowLocalGateway });
     if (normalizedProfile.imageProtocol === "SUB2API_RESPONSES_IMAGE_TOOL") {
       return generateResponsesImage(input, normalizedProfile, { allowDisabled });
     }
@@ -981,7 +1034,7 @@ export function createSub2ApiAdapter({
     const { normalizedProfile } = normalizeRequest(
       { ...input, model: input.profile.textModel || input.profile.text_model },
       "text",
-      { allowDisabled },
+      { allowDisabled, allowLocalGateway },
     );
     const execution = await executeAuthorized({
       input: { ...input, model: normalizedProfile.textModel },
@@ -1000,7 +1053,7 @@ export function createSub2ApiAdapter({
 
   async function testCapabilities(input = {}) {
     const started = Date.now();
-    const normalizedProfile = normalizeProfile(input.profile);
+    const normalizedProfile = normalizeProfile(input.profile, { allowLocalGateway });
     const base = {
       profile: input.profile,
       correlationId: validateIdentity(input.correlationId),

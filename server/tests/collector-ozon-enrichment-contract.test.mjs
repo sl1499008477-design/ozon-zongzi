@@ -9,6 +9,7 @@ import {
   parseOzonEnrichmentRequest,
 } from "../collector-ozon-enrichment-contract.mjs";
 import {
+  assertOzonListingLogisticsReady,
   assertOzonListingReady,
   buildOzonEnrichmentSummary,
   mergeOzonEnrichmentResult,
@@ -97,6 +98,16 @@ test("target category fields cannot satisfy source-category enrichment readiness
     () => assertOzonListingReady(targetOnly),
     (error) => error?.code === "COLLECT_ENRICHMENT_INCOMPLETE"
       && assert.deepEqual(error.missingFields, ["descriptionCategoryId"]) === undefined,
+  );
+});
+
+test("idempotent listing replay checks current logistics without requiring source-category evidence again", () => {
+  const logisticsOnly = { weight: 500, depth: 300, width: 200, height: 100 };
+  assert.doesNotThrow(() => assertOzonListingLogisticsReady(logisticsOnly));
+  assert.throws(
+    () => assertOzonListingLogisticsReady({ ...logisticsOnly, width: 0 }),
+    (error) => error?.code === "COLLECT_ENRICHMENT_INCOMPLETE"
+      && assert.deepEqual(error.missingFields, ["widthMm"]) === undefined,
   );
 });
 

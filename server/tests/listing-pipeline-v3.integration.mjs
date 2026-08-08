@@ -35,7 +35,8 @@ const noCredentialStoreId = `test_store_no_credential_${suffix}`;
 const collectId = `test_collect_${suffix}`;
 const changedPayloadCollectId = `test_collect_changed_payload_${suffix}`;
 const raceCollectId = `test_collect_race_${suffix}`;
-const collectIds = [collectId, changedPayloadCollectId, raceCollectId];
+const autoListingCollectId = `test_collect_auto_listing_${suffix}`;
+const collectIds = [collectId, changedPayloadCollectId, raceCollectId, autoListingCollectId];
 const warehouseAId = `wh_${crypto.createHash("sha256").update(`${storeId}|1`).digest("hex").slice(0, 24)}`;
 const warehouseBId = `wh_${crypto.createHash("sha256").update(`${secondStoreId}|2`).digest("hex").slice(0, 24)}`;
 const warehouseFboId = `wh_${crypto.createHash("sha256").update(`${storeId}|3`).digest("hex").slice(0, 24)}`;
@@ -266,6 +267,55 @@ try {
     height: 100,
     attributes: [],
   }];
+  const autoListingItem = {
+    ...baseItem,
+    id: autoListingCollectId,
+    sku: "source-sku-auto",
+    listingDraft: {
+      ...baseItem.listingDraft,
+      sku: "source-sku-auto",
+      title: "Frozen source title",
+      sourceCategory: { descriptionCategoryId: 1 },
+      variants: [{ sku: "source-sku-auto", offerId: "offer-auto", price: "100.00" }],
+    },
+  };
+  const frozenAutoDraft = await mirrorCollectItemV3(autoListingItem, {
+    accountId, storeId, captureRaw: true,
+  });
+  const autoSubmission = await createSubmissionV3({
+    collectItem: { ...autoListingItem, listingDraft: { title: "stale caller draft must never mirror" } },
+    accountId,
+    targetStoreId: storeId,
+    idempotencyKey: `auto-listing-${suffix}`,
+    normalizedItems: [{ ...normalizedItems[0], offer_id: "offer-auto", name: "AI overlay title" }],
+    stocks: [{ offer_id: "offer-auto", warehouse_id: 1, stock: 5 }],
+    type: "AUTO_LISTING",
+    frozenProductDraft: {
+      id: frozenAutoDraft.draftId,
+      version: frozenAutoDraft.version,
+      dataHash: frozenAutoDraft.dataHash,
+    },
+  });
+  assert.equal(autoSubmission.duplicate, false);
+  const frozenAfterSubmission = await pool.query(
+    `SELECT d.version,d.data_hash,d.data,s.items
+       FROM product_drafts d
+       JOIN submission_snapshots s ON s.id=$2
+      WHERE d.id=$1`,
+    [frozenAutoDraft.draftId, autoSubmission.job.snapshotId],
+  );
+  assert.equal(Number(frozenAfterSubmission.rows[0].version), frozenAutoDraft.version);
+  assert.equal(frozenAfterSubmission.rows[0].data_hash, frozenAutoDraft.dataHash);
+  assert.equal(frozenAfterSubmission.rows[0].data.title, "Frozen source title");
+  assert.equal(frozenAfterSubmission.rows[0].items[0].name, "AI overlay title");
+  await assert.rejects(createSubmissionV3({
+    collectItem: autoListingItem, accountId, targetStoreId: storeId,
+    idempotencyKey: `auto-listing-stale-${suffix}`,
+    normalizedItems: [{ ...normalizedItems[0], offer_id: "offer-auto", name: "AI overlay title" }],
+    stocks: [{ offer_id: "offer-auto", warehouse_id: 1, stock: 5 }], type: "AUTO_LISTING",
+    frozenProductDraft: { id: frozenAutoDraft.draftId, version: frozenAutoDraft.version + 1,
+      dataHash: frozenAutoDraft.dataHash },
+  }), { code: "AUTO_LISTING_SOURCE_DRAFT_CHANGED", definitelyNotSubmitted: true });
   const beforeIncomplete = await pool.query(
     `SELECT
        (SELECT COUNT(*)::int FROM submission_snapshots WHERE collect_item_id=$1) AS snapshot_count,
@@ -710,6 +760,10 @@ try {
     }
     assert.equal(concurrentReplayResult.status, 200, JSON.stringify(concurrentReplayResult.body));
     assert.equal(concurrentReplayResult.body.job.id, created.job.id);
+    const persistedStatusBeforeIncomplete = await pool.query(
+      "SELECT status FROM collect_items WHERE id=$1",
+      [collectId],
+    );
     const replayStateBefore = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
     const replayItemBefore = replayStateBefore.caches.collectBox.find((item) => item.id === collectId);
     const replayRowsBefore = await pool.query(
@@ -741,7 +795,7 @@ try {
     );
     assert.deepEqual(replayRowsAfter.rows[0], replayRowsBefore.rows[0]);
     const incompleteStatus = await pool.query("SELECT status FROM collect_items WHERE id=$1", [collectId]);
-    assert.equal(incompleteStatus.rows[0].status, replayItemBefore.status);
+    assert.equal(incompleteStatus.rows[0].status, persistedStatusBeforeIncomplete.rows[0].status);
     const replayStateAfter = JSON.parse(await readFile(path.join(routeDataDir, "local-state.json"), "utf8"));
     const replayItemAfter = replayStateAfter.caches.collectBox.find((item) => item.id === collectId);
     assert.deepEqual(

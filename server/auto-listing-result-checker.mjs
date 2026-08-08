@@ -12,6 +12,14 @@ const PROHIBITED_FLAGS = new Set([
   "CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY",
 ]);
 const TECHNICAL_TOKENS = new Set(["USB", "LED", "IPX7", "HDMI", "NFC", "GPS", "OLED", "LCD", "SSD", "HDD", "RAM", "ROM", "ABS", "PVC", "AC", "DC"]);
+const ARRAY_LIMITS = Object.freeze({
+  reasons: 32,
+  sourceAssetIds: 7,
+  claims: 256,
+  detectedTexts: 64,
+  qualityFlags: 4,
+  prohibitedFlags: 8,
+});
 
 function checkerError(code, retryable = false) {
   const error = new Error("自动上架图片检查失败");
@@ -24,20 +32,22 @@ const plainObject = (value) => value !== null && typeof value === "object" && !A
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const exactObject = (value, keys) => plainObject(value)
   && Object.keys(value).length === keys.size && Object.keys(value).every((key) => keys.has(key));
-const clean = (value) => typeof value === "string" && value.trim() && value === value.trim() ? value : "";
+const clean = (value, maxBytes = Number.POSITIVE_INFINITY) => typeof value === "string"
+  && value.trim() && value === value.trim() && Buffer.byteLength(value, "utf8") <= maxBytes ? value : "";
 const sameJson = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
-function stringArray(value, { nonempty = false } = {}) {
-  return Array.isArray(value) && (!nonempty || value.length > 0) && value.length === new Set(value).size
-    && value.every((entry) => clean(entry));
+function stringArray(value, { nonempty = false, maxItems, maxBytes = Number.POSITIVE_INFINITY } = {}) {
+  if (!Array.isArray(value) || (nonempty && value.length === 0)
+    || (Number.isInteger(maxItems) && value.length > maxItems)) return false;
+  return value.length === new Set(value).size && value.every((entry) => clean(entry, maxBytes));
 }
 
 function validFact(fact) {
-  return exactObject(fact, FACT_KEYS) && clean(fact.factId) && clean(fact.field) && clean(fact.kind)
-    && clean(fact.value) && clean(fact.sourcePath)
+  return exactObject(fact, FACT_KEYS) && clean(fact.factId, 240) && clean(fact.field, 512) && clean(fact.kind, 120)
+    && clean(fact.value, 2048) && clean(fact.sourcePath, 1024)
     && ((fact.numericValue === null && fact.unit === null)
       || (typeof fact.numericValue === "number" && Number.isFinite(fact.numericValue)
-        && (fact.unit === null || clean(fact.unit))));
+        && (fact.unit === null || clean(fact.unit, 64))));
 }
 
 function validModelEvidence(value, checkerModel) {
@@ -106,7 +116,7 @@ const schema = Object.freeze({
     russianText: { type: "boolean" },
     quality: { enum: ["PASS", "FAIL"] },
     prohibitedContent: { type: "boolean" },
-    reasons: { type: "array", uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
+    reasons: { type: "array", maxItems: ARRAY_LIMITS.reasons, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
     evidence: {
       type: "object",
       additionalProperties: false,
@@ -118,12 +128,13 @@ const schema = Object.freeze({
             color: { type: "boolean" },
             shape: { type: "boolean" },
             accessoryCount: { type: "boolean" },
-            sourceAssetIds: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
+            sourceAssetIds: { type: "array", minItems: 1, maxItems: ARRAY_LIMITS.sourceAssetIds, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
           },
           required: ["color", "shape", "accessoryCount", "sourceAssetIds"],
         },
         claims: {
           type: "array",
+          maxItems: ARRAY_LIMITS.claims,
           items: {
             type: "object",
             additionalProperties: false,
@@ -138,10 +149,10 @@ const schema = Object.freeze({
             required: ["text", "sourceFactId", "field", "value", "numericValue", "unit"],
           },
         },
-        detectedTexts: { type: "array", uniqueItems: true, items: { type: "string", maxLength: 2048 } },
+        detectedTexts: { type: "array", maxItems: ARRAY_LIMITS.detectedTexts, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 2048 } },
         language: { enum: ["ru", "other"] },
-        qualityFlags: { type: "array", uniqueItems: true, items: { enum: [...QUALITY_FLAGS] } },
-        prohibitedFlags: { type: "array", uniqueItems: true, items: { enum: [...PROHIBITED_FLAGS] } },
+        qualityFlags: { type: "array", maxItems: ARRAY_LIMITS.qualityFlags, uniqueItems: true, items: { enum: [...QUALITY_FLAGS] } },
+        prohibitedFlags: { type: "array", maxItems: ARRAY_LIMITS.prohibitedFlags, uniqueItems: true, items: { enum: [...PROHIBITED_FLAGS] } },
       },
       required: ["identity", "claims", "detectedTexts", "language", "qualityFlags", "prohibitedFlags"],
     },
@@ -153,15 +164,16 @@ function validateResponse(value, references, facts) {
   if (!exactObject(value, TOP_LEVEL_KEYS) || typeof value.matchesProduct !== "boolean"
     || typeof value.claimsVerified !== "boolean" || typeof value.russianText !== "boolean"
     || !["PASS", "FAIL"].includes(value.quality) || typeof value.prohibitedContent !== "boolean"
-    || !stringArray(value.reasons)) throw checkerError("CHECKER_UNAVAILABLE", true);
+    || !stringArray(value.reasons, { maxItems: ARRAY_LIMITS.reasons, maxBytes: 240 })) throw checkerError("CHECKER_UNAVAILABLE", true);
   const evidence = value.evidence;
   if (!exactObject(evidence, EVIDENCE_KEYS) || !exactObject(evidence.identity, IDENTITY_KEYS)
     || !["color", "shape", "accessoryCount"].every((key) => typeof evidence.identity[key] === "boolean")
-    || !stringArray(evidence.identity.sourceAssetIds, { nonempty: true })
-    || !Array.isArray(evidence.claims) || !stringArray(evidence.detectedTexts)
+    || !stringArray(evidence.identity.sourceAssetIds, { nonempty: true, maxItems: ARRAY_LIMITS.sourceAssetIds, maxBytes: 240 })
+    || !Array.isArray(evidence.claims) || evidence.claims.length > ARRAY_LIMITS.claims
+    || !stringArray(evidence.detectedTexts, { maxItems: ARRAY_LIMITS.detectedTexts, maxBytes: 2048 })
     || !["ru", "other"].includes(evidence.language)
-    || !stringArray(evidence.qualityFlags) || evidence.qualityFlags.some((flag) => !QUALITY_FLAGS.has(flag))
-    || !stringArray(evidence.prohibitedFlags) || evidence.prohibitedFlags.some((flag) => !PROHIBITED_FLAGS.has(flag))) {
+    || !stringArray(evidence.qualityFlags, { maxItems: ARRAY_LIMITS.qualityFlags }) || evidence.qualityFlags.some((flag) => !QUALITY_FLAGS.has(flag))
+    || !stringArray(evidence.prohibitedFlags, { maxItems: ARRAY_LIMITS.prohibitedFlags }) || evidence.prohibitedFlags.some((flag) => !PROHIBITED_FLAGS.has(flag))) {
     throw checkerError("CHECKER_UNAVAILABLE", true);
   }
   const expectedAssetIds = references.map((reference) => reference.assetId);
@@ -170,11 +182,11 @@ function validateResponse(value, references, facts) {
   if (factsById.size !== facts.length || facts.some((fact) => !validFact(fact))) throw checkerError("CHECKER_UNAVAILABLE", true);
   let unverifiedClaim = false;
   for (const claim of evidence.claims) {
-    if (!exactObject(claim, CLAIM_KEYS) || !clean(claim.text) || !clean(claim.sourceFactId)
-      || !clean(claim.field) || !clean(claim.value)
+    if (!exactObject(claim, CLAIM_KEYS) || !clean(claim.text, 2048) || !clean(claim.sourceFactId, 240)
+      || !clean(claim.field, 512) || !clean(claim.value, 2048)
       || !((claim.numericValue === null && claim.unit === null)
         || (typeof claim.numericValue === "number" && Number.isFinite(claim.numericValue)
-          && (claim.unit === null || clean(claim.unit))))) {
+          && (claim.unit === null || clean(claim.unit, 64))))) {
       throw checkerError("CHECKER_UNAVAILABLE", true);
     }
     const fact = factsById.get(claim.sourceFactId);
@@ -187,7 +199,8 @@ function validateResponse(value, references, facts) {
 
 export function evaluateGeneratedCheckerEvidence(input = {}) {
   const { checkerResult, references, facts, checkerModel, profile, templateVersion, requestId, generatedHash, checkerModelEvidence, textRequired } = input;
-  if (!Array.isArray(references) || !references.length || !Array.isArray(facts) || !clean(checkerModel)
+  if (!Array.isArray(references) || !references.length || references.length > ARRAY_LIMITS.sourceAssetIds
+    || !Array.isArray(facts) || facts.length > ARRAY_LIMITS.claims || !clean(checkerModel, 240)
     || !clean(templateVersion) || !clean(requestId) || !HASH.test(generatedHash || "")
     || !clean(profile?.id) || !clean(profile?.accountId) || !Number.isInteger(profile?.configVersion)
     || typeof textRequired !== "boolean"
@@ -228,6 +241,18 @@ export function evaluateGeneratedCheckerEvidence(input = {}) {
 }
 
 export async function checkGeneratedAsset(input = {}) {
+  if (!plainObject(input)
+    || !plainObject(input.generated)
+    || !Array.isArray(input.references) || input.references.length < 1 || input.references.length > ARRAY_LIMITS.sourceAssetIds
+    || !Array.isArray(input.facts) || input.facts.length < 1 || input.facts.length > ARRAY_LIMITS.claims
+    || !plainObject(input.profile) || !clean(input.profile.id, 240) || !clean(input.profile.accountId, 240)
+    || !Number.isInteger(input.profile.configVersion) || input.profile.configVersion < 1
+    || !clean(input.checkerModel, 240) || !plainObject(input.scope)
+    || !clean(input.scope.correlationId, 240) || !clean(input.scope.requestKey, 240)
+    || !clean(input.templateVersion, 240) || typeof input.textRequired !== "boolean"
+    || typeof input.gateway?.inspectImage !== "function") {
+    throw checkerError("CHECKER_UNAVAILABLE", true);
+  }
   const { generated, references, facts, gateway, profile, checkerModel, scope, templateVersion } = input;
   let normalized;
   try {
@@ -235,9 +260,6 @@ export async function checkGeneratedAsset(input = {}) {
   } catch (error) {
     throw checkerError(error.code);
   }
-  if (!Array.isArray(references) || !references.length || !Array.isArray(facts) || !clean(checkerModel)
-    || !clean(templateVersion) || typeof input.textRequired !== "boolean"
-    || typeof gateway?.inspectImage !== "function") throw checkerError("CHECKER_UNAVAILABLE", true);
   let response;
   try {
     response = await gateway.inspectImage({

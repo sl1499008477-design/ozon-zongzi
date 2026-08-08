@@ -18,9 +18,17 @@ const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(datab
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, "../db/migrations");
 const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
+const publicationPolicy = Object.freeze({ origin: "https://cdn.example.com",
+  baseUrl: "https://cdn.example.com/", prefix: "listing-media/v1",
+  publicationVersion: "LISTING_MEDIA_V1" });
+const publicationPolicyHash = crypto.createHash("sha256").update(JSON.stringify({
+  baseUrl: publicationPolicy.baseUrl, origin: publicationPolicy.origin,
+  prefix: publicationPolicy.prefix, publicationVersion: publicationPolicy.publicationVersion,
+})).digest("hex");
 
 function graph(accountId, idempotencyKey, suffix, overrides = {}) {
   const sourceRecordId = `collect-${suffix}`;
+  const productDraftId = `draft-${suffix}`;
   const sourceVersion = "1";
   const { config, configHash } = normalizeAndHashAutoListingConfig({
     targetStoreId: `store-${accountId}`,
@@ -35,6 +43,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     sourceVersion,
     rawResponseRef: `raw-${suffix}`,
     rawResponseHash: `raw-hash-${suffix}`,
+    productDraft: { id: productDraftId, version: 1 },
     collectItem: {
       id: sourceRecordId,
       accountId,
@@ -57,6 +66,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     configSnapshot: config,
     configHash,
     strategyVersionId: `strategy-version-${accountId}`,
+    uploadPolicyVersionId: `upload-policy-${accountId}`,
     items: [{
       sourceType: "COLLECT_BOX",
       sourceRecordId,
@@ -77,6 +87,25 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
         configSnapshot: config, configHash, sourceCapture: captured,
       }),
+      listingBaseTemplate: {
+        productDraft: { id: productDraftId, version: 1, dataHash: "1".repeat(64) },
+        pricingEvidence: {
+          currency: "RUB", blackKopecks: "10000", greenKopecks: "8000",
+          evidenceHash: "767a5b396ef1e82c9ebf280694cb5cb97ea39d654af13a0f78e021cad0db36c2",
+        },
+        richContentAttributeSupported: true,
+        variants: [{
+          sourceVariantId: `variant-${suffix}`, sourceSku: `sku-${suffix}`,
+          item: {
+            offer_id: `offer-${suffix}`, name: `Product ${suffix}`, price: "100.00", currency_code: "RUB",
+            description_category_id: 123, type_id: 456,
+            primary_image: `https://source.example.test/${suffix}.jpg`, images: [`https://source.example.test/${suffix}.jpg`],
+            weight: 100, weight_unit: "g", depth: 100, width: 100, height: 100, dimension_unit: "mm",
+            attributes: [{ id: 85, complex_id: 0, values: [{ value: "No brand" }] }],
+          },
+        }],
+        versions: { normalizerVersion: "v3", categoryRuleVersion: "v1", dictionaryVersion: "live" },
+      },
     }],
     ...overrides,
   };
@@ -225,6 +254,23 @@ async function registerGraphSources(client, graphInput) {
        VALUES ($1,$2,'test',$3,$4,'{}'::jsonb) ON CONFLICT (id) DO NOTHING`,
       [item.sourceRecordId, graphInput.accountId, `identity-${item.sourceRecordId}`, item.snapshot?.identity?.primarySku || `blocked-${item.sourceRecordId}`],
     );
+    if (item.status === "SOURCE_READY") {
+      const draft = item.listingBaseTemplate.productDraft;
+      await client.query(
+        `INSERT INTO product_drafts (
+           id,collect_item_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version
+         ) VALUES ($1,$2,$3,$4,'{}'::jsonb,$5,$6,$7)
+         ON CONFLICT (id) DO NOTHING`,
+        [draft.id, item.sourceRecordId, draft.version, draft.dataHash,
+          item.listingBaseTemplate.versions.normalizerVersion,
+          item.listingBaseTemplate.versions.categoryRuleVersion,
+          item.listingBaseTemplate.versions.dictionaryVersion],
+      );
+      await client.query(
+        "UPDATE collect_items SET current_draft_id=$1 WHERE id=$2 AND account_id=$3",
+        [draft.id, item.sourceRecordId, graphInput.accountId],
+      );
+    }
   }
 }
 
@@ -335,7 +381,7 @@ if (!enabled) {
       }
       for (const accountId of [accountA, accountB]) {
         await client.query(
-          "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'user','active')",
+          "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
           [accountId, `user-${accountId}`],
         );
         await client.query(
@@ -364,6 +410,14 @@ if (!enabled) {
           `INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash)
            VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)`,
           [`strategy-version-${accountId}`, accountId, `strategy-${accountId}`, `strategy-hash-${accountId}`],
+        );
+        await client.query(
+          `INSERT INTO auto_listing_upload_policy_versions (
+             id,account_id,mode,enabled,version,publication_reason,created_by,published_by,published_at,
+             publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash
+           ) VALUES ($1,$2,'REVIEW',TRUE,1,'integration review policy',$2,$2,NOW(),$3,$4,$5,$6,$7)`,
+          [`upload-policy-${accountId}`, accountId, publicationPolicy.origin, publicationPolicy.baseUrl,
+            publicationPolicy.prefix, publicationPolicy.publicationVersion, publicationPolicyHash],
         );
       }
       const scopedPool = {
@@ -424,7 +478,7 @@ if (!enabled) {
       const malformed = graph(accountA, "malformed-key", "malformed");
       await registerGraphSources(client, malformed);
       malformed.items[0].snapshot = { identity: { accountId: accountA } };
-      await assert.rejects(repository.createJobGraph(malformed), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
+      await assert.rejects(repository.createJobGraph(malformed), (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID");
       await assert.rejects(repository.createJobGraph(bad));
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_jobs")).rows[0].count), 0);
       assert.equal(Number((await client.query("SELECT count(*)::int AS count FROM auto_listing_source_snapshots")).rows[0].count), 1);
@@ -695,7 +749,7 @@ if (!enabled) {
         await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       }
       await client.query(
-        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'user','active')",
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
         [accountId, `user-${accountId}`],
       );
       await client.query(
@@ -721,6 +775,14 @@ if (!enabled) {
       await client.query(
         "INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,$4)",
         [`strategy-version-${accountId}`, accountId, `strategy-${accountId}`, `strategy-hash-${accountId}`],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_upload_policy_versions (
+           id,account_id,mode,enabled,version,publication_reason,created_by,published_by,published_at,
+           publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash
+         ) VALUES ($1,$2,'REVIEW',TRUE,1,'integration review policy',$2,$2,NOW(),$3,$4,$5,$6,$7)`,
+        [`upload-policy-${accountId}`, accountId, publicationPolicy.origin, publicationPolicy.baseUrl,
+          publicationPolicy.prefix, publicationPolicy.publicationVersion, publicationPolicyHash],
       );
 
       const runInvalidationRace = async ({ suffix: graphSuffix, sql, params }) => {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -7,6 +7,13 @@ import { Readable } from "node:stream";
 const dataDir = await mkdtemp(path.join(os.tmpdir(), "sonli-external-write-safety-"));
 const token = "safe-write-token";
 const storeId = "safe-write-store";
+
+const serverDir = new URL("../", import.meta.url);
+for (const file of (await readdir(serverDir)).filter((name) => name.startsWith("auto-listing") && name.endsWith(".mjs"))) {
+  const source = await readFile(new URL(file, serverDir), "utf8");
+  assert.doesNotMatch(source, /callOzonSellerApi|from\s+["']\.\/ozon-client\.mjs["']/u,
+    `${file} must delegate external writes to the durable listing pipeline`);
+}
 
 process.env.QH_LOCAL_DATA_DIR = dataDir;
 process.env.QH_LOCAL_NO_LISTEN = "1";

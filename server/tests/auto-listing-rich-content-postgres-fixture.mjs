@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGeneratedAssetObjectKey, sha256 } from "../auto-listing-asset-store.mjs";
 import { evaluateGeneratedCheckerEvidence } from "../auto-listing-result-checker.mjs";
+import { buildRichContentEvidenceIdentity } from "../auto-listing-rich-content.mjs";
 import { createPostgresRichContentRepository } from "../auto-listing-rich-content-repository.mjs";
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
@@ -186,6 +187,45 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       };
     };
     const assetEvidence = Array.from({ length: 6 }, (_, index) => completeAssetEvidence(index));
+    const evidenceValidation = await client.query(
+      `SELECT auto_listing_rich_fact_evidence_valid($1::jsonb) AS fact_valid,
+              auto_listing_rich_asset_evidence_valid($2::jsonb) AS asset_valid,
+              auto_listing_rich_asset_evidence_matches(
+                $2::jsonb,$1::jsonb,$3,$4,$5,$6,$7,$8,$9,$10,$11
+              ) AS asset_matches`,
+      [JSON.stringify(factEvidence), JSON.stringify(assetEvidence), accountId, jobId, itemId, planId,
+        hash("1"), hash("2"), profileId, 1, "text-model"],
+    );
+    const assetValidation = await client.query(
+      `SELECT BOOL_AND(auto_listing_rich_source_asset_evidence_valid(entry->'sourceAssetEvidence')) AS sources_valid,
+              BOOL_AND(auto_listing_generation_object_key_v2_complete(
+                entry->>'accountId',entry->>'jobId',entry->>'itemId',entry->>'planId',
+                entry->>'visualGroupKey',entry->>'slotKey',entry->>'attemptIdentityHash',
+                (entry->>'attemptNo')::integer,entry->>'inputHash',entry->>'contentHash',entry->>'objectKey'
+              )) AS object_keys_valid,
+              BOOL_AND(auto_listing_rich_asset_checker_evidence_valid(
+                entry->'checkerEvidence',entry->'sourceAssetEvidence',entry->>'contentHash',
+                entry->>'checkerRequestId',entry->'checkerEvidence'->>'checkerModel',entry->>'profileId',
+                entry->>'accountId',(entry->>'profileVersion')::integer,entry->>'promptTemplateVersion'
+              )) AS checker_valid
+       FROM jsonb_array_elements($1::jsonb) AS assets(entry)`,
+      [JSON.stringify(assetEvidence)],
+    );
+    const claimValidation = await client.query(
+      `SELECT BOOL_AND(auto_listing_rich_text_matches_bindings(
+                claim->>'text',jsonb_build_array(claim - 'text')
+              )) AS text_bindings_valid
+       FROM jsonb_array_elements($1::jsonb) AS assets(entry),
+            jsonb_array_elements(entry->'checkerEvidence'->'checkerResult'->'evidence'->'claims') AS claims(claim)`,
+      [JSON.stringify(assetEvidence)],
+    );
+    assert.deepEqual(claimValidation.rows[0], { text_bindings_valid: true });
+    assert.deepEqual(assetValidation.rows[0], {
+      sources_valid: true, object_keys_valid: true, checker_valid: true,
+    });
+    assert.deepEqual(evidenceValidation.rows[0], {
+      fact_valid: true, asset_valid: true, asset_matches: true,
+    });
     const factBinding = {
       sourceFactId: "fact.capacity", field: "capacity", value: "500 мл", numericValue: 500, unit: "мл",
     };
@@ -204,11 +244,16 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       requestedTextModel: "text-model", gatewayReportedTextModel: "text-model",
       gatewayReportedTextModelPresent: true,
     };
-    const inputHash = hash("7");
+    const reservationIdentity = buildRichContentEvidenceIdentity({
+      scope: { accountId, jobId, itemId, planId },
+      planHash: hash("1"), sourceHash: hash("2"), sourceFactEvidence: factEvidence, assetEvidence,
+      profileId, profileVersion: 1, modelName: "text-model", promptTemplateVersion: "rich-v1",
+    });
+    const inputHash = reservationIdentity.inputHash;
     const reservation = {
       accountId, jobId, itemId, planId, inputHash,
-      planHash: hash("1"), sourceHash: hash("2"), factRegistryHash: hash("3"),
-      assetHash: hash("4"), promptHash: hash("5"), profileId, profileVersion: 1,
+      planHash: hash("1"), sourceHash: hash("2"), factRegistryHash: reservationIdentity.factRegistryHash,
+      assetHash: reservationIdentity.assetHash, promptHash: reservationIdentity.promptHash, profileId, profileVersion: 1,
       modelName: "text-model", promptTemplateVersion: "rich-v1",
       sourceFactEvidence: factEvidence,
       assetEvidence,
@@ -216,7 +261,8 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       maxAttempts: 3,
     };
     const repository = createPostgresRichContentRepository({
-      pool: client, token: () => `lease-${suffix}`, id: () => `rich-${suffix}`,
+      pool: { query: (...args) => client.query(...args) },
+      token: () => `lease-${suffix}`, id: () => `rich-${suffix}`,
     });
     const lease = await repository.reserveRichContentAttempt(reservation);
     const concurrent = await repository.reserveRichContentAttempt(reservation);
@@ -276,6 +322,103 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       value.assetEvidence[5].objectKey = legacyObjectKey(value.assetEvidence[5]);
     });
     assert.equal(validLegacyDirect.rowCount, 1);
+
+    for (const contentType of ["image/jpeg", "image/webp"]) {
+      const validSourceType = await directAccepted(`valid-${contentType.slice(6)}`, (value) => {
+        for (const asset of value.assetEvidence) {
+          asset.sourceAssetEvidence[0].contentType = contentType;
+          asset.checkerEvidence.sourceAssets[0].contentType = contentType;
+        }
+      });
+      assert.equal(validSourceType.rowCount, 1, contentType);
+    }
+
+    const validFactSubset = await directAccepted("valid-fact-subset", (value) => {
+      value.sourceFactEvidence.push({
+        factId: "fact.material", field: "material", kind: "MATERIAL",
+        value: "сталь", numericValue: null, unit: null, sourcePath: "attributes.material",
+      });
+    });
+    assert.equal(validFactSubset.rowCount, 1);
+
+    const validNormalizedUnit = await directAccepted("valid-normalized-unit", (value) => {
+      value.sourceFactEvidence[0].unit = "ml";
+      for (const block of value.richContent.blocks) {
+        for (const binding of block.factBindings || []) binding.unit = "ml";
+      }
+      value.outputHash = sha256(value.richContent);
+    });
+    assert.equal(validNormalizedUnit.rowCount, 1);
+
+    const validInflectedFact = await directAccepted("valid-inflected-fact", (value) => {
+      const materialFact = {
+        factId: "fact.material", field: "material", kind: "MATERIAL",
+        value: "нержавеющая сталь", numericValue: null, unit: null, sourcePath: "attributes.material",
+      };
+      value.sourceFactEvidence.push(materialFact);
+      value.richContent.blocks.push({
+        type: "TEXT", text: "Корпус из нержавеющей стали",
+        sourceFactIds: [materialFact.factId],
+        factBindings: [{
+          sourceFactId: materialFact.factId, field: materialFact.field, value: materialFact.value,
+          numericValue: materialFact.numericValue, unit: materialFact.unit,
+        }],
+      });
+      value.checkerResult.sourceFactIds.push(materialFact.factId);
+      value.outputHash = sha256(value.richContent);
+    });
+    assert.equal(validInflectedFact.rowCount, 1);
+
+    const validMissingImageModel = await directAccepted("valid-missing-image-model", (value) => {
+      for (const asset of value.assetEvidence) {
+        asset.modelEvidence.gatewayReportedImageModel = "";
+        asset.modelEvidence.gatewayReportedImageModelPresent = false;
+      }
+    });
+    assert.equal(validMissingImageModel.rowCount, 1);
+
+    const addOrderedReferences = (value) => {
+      const materialFact = {
+        factId: "fact.material", field: "material", kind: "MATERIAL",
+        value: "сталь", numericValue: null, unit: null, sourcePath: "attributes.material",
+      };
+      value.sourceFactEvidence.push(materialFact);
+      value.richContent.blocks[2] = {
+        type: "TEXT", text: "Материал: сталь", sourceFactIds: [materialFact.factId],
+        factBindings: [{
+          sourceFactId: materialFact.factId, field: materialFact.field, value: materialFact.value,
+          numericValue: materialFact.numericValue, unit: materialFact.unit,
+        }],
+      };
+      value.richContent.blocks.push({
+        type: "IMAGE_TEXT", assetId: "asset-extra-1", text: "Объём 500 мл",
+        sourceFactIds: ["fact.capacity"], factBindings: [structuredClone(factBinding)],
+      });
+      value.checkerResult.sourceFactIds = ["fact.capacity", materialFact.factId];
+      value.checkerResult.assetIds = ["asset-main", "asset-extra-1"];
+      value.outputHash = sha256(value.richContent);
+    };
+    const validOrderedReferences = await directAccepted("valid-ordered-references", addOrderedReferences);
+    assert.equal(validOrderedReferences.rowCount, 1);
+
+    const validNonContactWord = await directAccepted("valid-non-contact-word", (value) => {
+      value.richContent.blocks[1].text = "Бесконтактный термометр, объём 500 мл";
+      value.outputHash = sha256(value.richContent);
+    });
+    assert.equal(validNonContactWord.rowCount, 1);
+
+    for (const [label, phrase] of [
+      ["valid-heat-exchanger", "Теплообменник"],
+      ["valid-irrevocable-mechanism", "Безотзывный механизм"],
+      ["valid-non-medical-device", "Немедицинский прибор"],
+    ]) {
+      const validCompoundWord = await directAccepted(label, (value) => {
+        value.richContent.blocks[1].text = `${phrase}, объём 500 мл`;
+        value.outputHash = sha256(value.richContent);
+      });
+      assert.equal(validCompoundWord.rowCount, 1, phrase);
+    }
+
     const maliciousAcceptedMutations = [
       ["sql-null-facts", (value) => { value.sourceFactEvidence = null; }],
       ["json-null-fact", (value) => { value.sourceFactEvidence = [null]; }],
@@ -297,6 +440,78 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
         value.assetEvidence[1].objectKey = "auto-listing/fake.png";
       }],
       ["asset-missing-audit", (value) => { delete value.assetEvidence[1].gatewayRequestId; }],
+      ["asset-oversized-utf8-id", (value) => { value.assetEvidence[1].assetId = "я".repeat(121); }],
+      ["asset-missing-model-uses-json-null", (value) => {
+        value.assetEvidence[1].modelEvidence.gatewayReportedImageModel = null;
+        value.assetEvidence[1].modelEvidence.gatewayReportedImageModelPresent = false;
+      }],
+      ["asset-present-model-is-null", (value) => {
+        value.assetEvidence[1].modelEvidence.gatewayReportedImageModel = null;
+        value.assetEvidence[1].modelEvidence.gatewayReportedImageModelPresent = true;
+      }],
+      ["asset-checker-source-fact-id-null", (value) => { value.assetEvidence[1].checkerEvidence.sourceFactIds = [null]; }],
+      ["asset-checker-source-fact-id-duplicate", (value) => {
+        value.assetEvidence[1].checkerEvidence.sourceFactIds = ["fact.capacity", "fact.capacity"];
+      }],
+      ["asset-checker-source-fact-id-not-derived", (value) => {
+        value.assetEvidence[1].checkerEvidence.sourceFactIds = [];
+      }],
+      ["asset-checker-null-claim", (value) => { value.assetEvidence[1].checkerEvidence.checkerResult.evidence.claims[0] = null; }],
+      ["asset-checker-open-claim", (value) => { value.assetEvidence[1].checkerEvidence.checkerResult.evidence.claims[0].extra = true; }],
+      ["asset-checker-unbound-claim", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.claims[0].text = "Объём 700 мл";
+      }],
+      ["asset-checker-inflected-nonnumeric-claim", (value) => {
+        const materialFact = {
+          factId: "fact.material", field: "material", kind: "MATERIAL",
+          value: "нержавеющая сталь", numericValue: null, unit: null, sourcePath: "attributes.material",
+        };
+        value.sourceFactEvidence.push(structuredClone(materialFact));
+        const evidence = value.assetEvidence[1].checkerEvidence;
+        evidence.sourceFacts.push(structuredClone(materialFact));
+        evidence.sourceFactIds = [materialFact.factId];
+        evidence.checkerResult.evidence.claims = [{
+          text: "Корпус из нержавеющей стали", sourceFactId: materialFact.factId,
+          field: materialFact.field, value: materialFact.value,
+          numericValue: materialFact.numericValue, unit: materialFact.unit,
+        }];
+      }],
+      ["asset-checker-null-detected-text", (value) => { value.assetEvidence[1].checkerEvidence.checkerResult.evidence.detectedTexts[0] = null; }],
+      ["asset-checker-oversized-detected-text", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.detectedTexts[0] = "я".repeat(1025);
+      }],
+      ["asset-checker-oversized-claim", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.claims[0].text = "я".repeat(1025);
+      }],
+      ["asset-checker-too-many-reasons", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.reasons = Array.from({ length: 33 }, () => "причина");
+      }],
+      ["asset-checker-too-many-source-assets", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.identity.sourceAssetIds = Array.from(
+          { length: 8 }, (_, index) => `source-${index}`,
+        );
+      }],
+      ["asset-checker-too-many-claims", (value) => {
+        const claim = value.assetEvidence[1].checkerEvidence.checkerResult.evidence.claims[0];
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.claims = Array.from(
+          { length: 257 }, () => structuredClone(claim),
+        );
+      }],
+      ["asset-checker-too-many-detected-texts", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.detectedTexts = Array.from(
+          { length: 65 }, (_, index) => `Текст ${"а".repeat(index + 1)}`,
+        );
+      }],
+      ["asset-checker-too-many-quality-flags", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.qualityFlags = Array.from(
+          { length: 5 }, () => "TEXT_ILLEGIBLE",
+        );
+      }],
+      ["asset-checker-too-many-prohibited-flags", (value) => {
+        value.assetEvidence[1].checkerEvidence.checkerResult.evidence.prohibitedFlags = Array.from(
+          { length: 9 }, () => "CONTACT_DETAILS",
+        );
+      }],
       ["bad-input-hash", (value) => { value.inputHash = "not-a-hash"; value.requestEvidence.requestKey = `auto-listing-rich-${value.inputHash}`; }],
       ["bad-source-hash", (value) => { value.sourceHash = "not-a-hash"; }],
       ["bad-asset-hash", (value) => { value.assetHash = "not-a-hash"; }],
@@ -309,10 +524,27 @@ export async function runRichContentPostgresFixture({ connectionString } = {}) {
       ["checker-extra-key", (value) => { value.checkerResult.extra = true; }],
       ["checker-unknown-fact", (value) => { value.checkerResult.sourceFactIds = ["fact.unknown"]; }],
       ["checker-unknown-asset", (value) => { value.checkerResult.assetIds = ["asset-unknown"]; }],
+      ["checker-fact-first-reference-order", (value) => {
+        addOrderedReferences(value);
+        value.checkerResult.sourceFactIds.reverse();
+      }],
+      ["checker-asset-first-reference-order", (value) => {
+        addOrderedReferences(value);
+        value.checkerResult.assetIds.reverse();
+      }],
       ["rich-extra-key", (value) => { value.richContent.extra = true; }],
       ["rich-json-null-block", (value) => { value.richContent.blocks[1] = null; }],
       ["rich-unknown-fact", (value) => { value.richContent.blocks[1].sourceFactIds = ["fact.unknown"]; }],
       ["rich-unknown-asset", (value) => { value.richContent.blocks[0].assetId = "asset-unknown"; }],
+      ["rich-unbound-number", (value) => { value.richContent.blocks[1].text = "Объём 700 мл"; }],
+      ["rich-unit-swap", (value) => { value.richContent.blocks[1].text = "Объём 500 л"; }],
+      ["rich-english-only", (value) => { value.richContent.blocks[1].text = "500 ml"; }],
+      ["rich-policy-warranty", (value) => { value.richContent.blocks[1].text = "Гарантия: объём 500 мл"; }],
+      ["rich-policy-seller-contacts", (value) => { value.richContent.blocks[1].text = "Контакты продавца: объём 500 мл"; }],
+      ["rich-policy-seller-phone", (value) => { value.richContent.blocks[1].text = "Телефон продавца: объём 500 мл"; }],
+      ["rich-policy-contact-seller", (value) => { value.richContent.blocks[1].text = "Обратитесь к продавцу: объём 500 мл"; }],
+      ["rich-policy-certification", (value) => { value.richContent.blocks[1].text = "Сертификация: объём 500 мл"; }],
+      ["rich-oversized-utf8-text", (value) => { value.richContent.blocks[1].text = "я".repeat(4097); }],
     ];
     for (const [label, mutate] of maliciousAcceptedMutations) {
       await assert.rejects(directAccepted(label, mutate), (error) => {

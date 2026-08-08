@@ -107,3 +107,172 @@ test("attempt and active or accepted uniqueness use the complete tenant scope", 
   assert.match(value, /UNIQUE INDEX IF NOT EXISTS ai_rich_content_results_active_input_key[\s\S]*?\(account_id, job_id, item_id, plan_id, input_hash\)[\s\S]*?WHERE status = 'GENERATING'/is);
   assert.match(value, /UNIQUE INDEX IF NOT EXISTS ai_rich_content_results_full_accepted_input_key[\s\S]*?\(account_id, job_id, item_id, plan_id, input_hash\)[\s\S]*?WHERE status = 'ACCEPTED'/is);
 });
+
+test("Task 4 source evidence accepts exactly PNG JPEG and WebP", async () => {
+  const value = await sql();
+  const sourceValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_source_asset_evidence_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_checker_evidence_valid"),
+  );
+  assert.match(sourceValidator, /entry->>'contentType'\s+NOT IN\s*\('image\/png','image\/jpeg','image\/webp'\)/is);
+});
+
+test("Task 4 checker facts are a closed nonempty subset of the frozen fact registry", async () => {
+  const value = await sql();
+  const matcher = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_evidence_matches"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_content_valid"),
+  );
+  assert.match(matcher, /jsonb_array_elements\(entry->'checkerEvidence'->'sourceFacts'\)[\s\S]*?NOT EXISTS[\s\S]*?jsonb_array_elements\(source_fact_evidence\)/is);
+  assert.doesNotMatch(matcher, /entry->'checkerEvidence'->'sourceFacts'\s*<>\s*source_fact_evidence/is);
+});
+
+test("Task 4 image model evidence accepts an explicitly absent reported model only as an empty string", async () => {
+  const value = await sql();
+  const assetValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_evidence_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_evidence_matches"),
+  );
+  assert.match(assetValidator, /gatewayReportedImageModelPresent'[\s\S]*?= 'true'::JSONB[\s\S]*?gatewayReportedImageModel'\) = 'string'[\s\S]*?gatewayReportedImageModel' = entry->>'modelName'/is);
+  const absentBranchStart = assetValidator.indexOf(
+    "((model_evidence->'gatewayReportedImageModelPresent' = 'false'::JSONB)",
+  );
+  assert.notEqual(absentBranchStart, -1);
+  const absentBranch = assetValidator.slice(
+    absentBranchStart,
+    assetValidator.indexOf("\n      )", absentBranchStart),
+  );
+  assert.match(absentBranch, /jsonb_typeof\(model_evidence->'gatewayReportedImageModel'\) = 'string'[\s\S]*?model_evidence->>'gatewayReportedImageModel' = ''/is);
+  assert.doesNotMatch(absentBranch, /gatewayReportedImageModel'\) = 'null'/is);
+});
+
+test("Task 4 checker arrays validate every closed element and its UTF-8 byte ceiling", async () => {
+  const value = await sql();
+  const checkerValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_checker_evidence_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_legacy_object_key_complete"),
+  );
+  assert.match(checkerValidator, /jsonb_array_elements\(value->'sourceFactIds'\)[\s\S]*?jsonb_typeof\([^)]*\)\s*<>\s*'string'[\s\S]*?OCTET_LENGTH/is);
+  assert.match(checkerValidator, /jsonb_array_elements\(evidence->'claims'\)[\s\S]*?claim[\s\S]*?text[\s\S]*?sourceFactId[\s\S]*?numericValue[\s\S]*?unit/is);
+  assert.match(checkerValidator, /jsonb_typeof\(claim->'numericValue'\) = 'null'[\s\S]*?POSITION\([\s\S]*?claim->>'value'[\s\S]*?claim->>'text'[\s\S]*?\) = 0/is);
+  assert.match(checkerValidator, /jsonb_array_elements\(evidence->'detectedTexts'\)[\s\S]*?jsonb_typeof\([^)]*\)\s*<>\s*'string'[\s\S]*?OCTET_LENGTH/is);
+});
+
+test("Task 4 asset audit strings keep the bounded input contract in UTF-8 bytes", async () => {
+  const value = await sql();
+  const assetValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_evidence_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_evidence_matches"),
+  );
+  for (const [field, bytes] of [
+    ["assetId", 240], ["accountId", 240], ["jobId", 240], ["itemId", 240], ["planId", 240],
+    ["visualGroupKey", 240], ["slotKey", 240], ["role", 120], ["generationSize", 32],
+    ["objectKey", 2048], ["gatewayRequestId", 240], ["checkerRequestId", 240],
+    ["profileId", 240], ["modelName", 240], ["promptTemplateVersion", 240],
+  ]) {
+    assert.match(assetValidator, new RegExp(`OCTET_LENGTH\\(entry->>'${field}'\\)\\s*>\\s*${bytes}`, "i"), field);
+  }
+});
+
+test("migration mirrors rich-content UTF-8 limits and fact-binding text semantics", async () => {
+  const value = await sql();
+  assert.match(value, /CREATE OR REPLACE FUNCTION auto_listing_rich_text_matches_bindings\b/is);
+  assert.match(value, /auto_listing_rich_text_matches_bindings\(block->>'text',\s*block->'factBindings'\) IS NOT TRUE/is);
+  for (const [field, bytes] of [["factId", 240], ["field", 512], ["kind", 120], ["value", 2048], ["sourcePath", 1024]]) {
+    assert.match(value, new RegExp(`OCTET_LENGTH\\(entry->>'${field}'\\)\\s*>\\s*${bytes}`, "i"));
+  }
+  assert.match(value, /OCTET_LENGTH\(block->>'text'\) > 8192/is);
+});
+
+test("checker evidence preserves rich-body fact and asset first-reference order", async () => {
+  const value = await sql();
+  const checkerValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_checker_evidence_valid"),
+    value.indexOf("DO $$", value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_checker_evidence_valid")),
+  );
+  assert.match(checkerValidator, /jsonb_array_elements\(rich_content->'blocks'\) WITH ORDINALITY[\s\S]*?jsonb_array_elements\(COALESCE\(block->'sourceFactIds'[\s\S]*?WITH ORDINALITY[\s\S]*?DISTINCT ON \(fact_id\)/is);
+  assert.match(checkerValidator, /checker_result->'sourceFactIds'\s*<>\s*expected_source_fact_ids/is);
+  assert.match(checkerValidator, /jsonb_agg\(block->'assetId' ORDER BY block_ordinal\)/is);
+  assert.match(checkerValidator, /checker_result->'assetIds'\s*<>\s*expected_asset_ids/is);
+});
+
+test("rich text applies the JS Russian-token allowlist and fixed policy rules", async () => {
+  const value = await sql();
+  assert.match(value, /CREATE OR REPLACE FUNCTION auto_listing_rich_russian_text_valid\b[\s\S]*?usb-c[\s\S]*?bluetooth[\s\S]*?BRAND[\s\S]*?MODEL/is);
+  assert.match(value, /CREATE OR REPLACE FUNCTION auto_listing_rich_policy_rules_valid\b[\s\S]*?https[\s\S]*?www[\s\S]*?telegram[\s\S]*?whatsapp[\s\S]*?отзыв[\s\S]*?гаранти[\s\S]*?комплект[\s\S]*?бонус/is);
+  assert.match(value, /auto_listing_rich_policy_rules_valid\(block->>'text'\) IS NOT TRUE/is);
+  assert.match(value, /auto_listing_rich_russian_text_valid\([\s\S]*?block->>'text'[\s\S]*?source_fact_evidence[\s\S]*?block->'sourceFactIds'[\s\S]*?\) IS NOT TRUE/is);
+});
+
+test("rich text rejects the fixed seller-contact and certification policy phrases", async () => {
+  const value = await sql();
+  const policyValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_policy_rules_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_russian_text_valid"),
+  );
+  assert.match(policyValidator, /контакт\[\[:alpha:\]-\]\*/is);
+  assert.match(policyValidator, /телефон\[\[:alpha:\]-\]\*/is);
+  assert.match(policyValidator, /обрат\[\[:alpha:\]-\]\*[\s\S]*?к[\s\S]*?продавц\[\[:alpha:\]-\]\*/is);
+  assert.match(policyValidator, /сертификац[\s\S]*?\[\[:alpha:\]-\]\*/is);
+});
+
+test("seller-contact policy uses a Unicode left boundary", async () => {
+  const value = await sql();
+  const policyValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_policy_rules_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_russian_text_valid"),
+  );
+  assert.ok(policyValidator.includes(
+    "(^|[^[:alnum:]])(telegram|whatsapp|viber|телеграм|ватсап|позвон|пишите|свяжитесь|контакт[[:alpha:]-]*|телефон[[:alpha:]-]*|обрат[[:alpha:]-]*",
+  ));
+});
+
+test("all word-policy branches use the same Unicode left boundary", async () => {
+  const value = await sql();
+  const policyValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_policy_rules_valid"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_russian_text_valid"),
+  );
+  for (const branch of [
+    "(^|[^[:alnum:]])(telegram|whatsapp|viber|телеграм|ватсап|позвон|пишите|свяжитесь|контакт",
+    "(^|[^[:alnum:]])(остав(ьте|ить)[[:space:]]+отзыв|оцените",
+    "(^|[^[:alnum:]])(сертифицирован|сертификат|сертификац|лечебн|медицинск|исцел|гаранти|возврат|обмен)",
+    "(^|[^[:alnum:]])(в[[:space:]]+комплекте|комплект[[:space:]]+включает|подарок|бонус)",
+  ]) assert.ok(policyValidator.includes(branch), branch);
+});
+
+test("Task 4 checker rejects oversized arrays before expanding their elements", async () => {
+  const value = await sql();
+  const checkerValidator = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_checker_evidence_valid"),
+    value.indexOf("FOR claim IN", value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_asset_checker_evidence_valid")),
+  );
+  for (const [path, max] of [
+    ["checker_result->'reasons'", 32],
+    ["evidence->'claims'", 256],
+    ["evidence->'detectedTexts'", 64],
+    ["evidence->'qualityFlags'", 4],
+    ["evidence->'prohibitedFlags'", 8],
+  ]) {
+    assert.match(checkerValidator, new RegExp(`jsonb_array_length\\(${path.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\)\\s*>\\s*${max}`, "i"), path);
+  }
+  assert.match(checkerValidator, /jsonb_array_length\(evidence->'identity'->'sourceAssetIds'\)\s+NOT BETWEEN\s+1\s+AND\s+7/is);
+});
+
+test("migration 031 uses PostgreSQL-safe conditional expressions and CTE identifiers", async () => {
+  const value = await sql();
+  assert.doesNotMatch(value, /\bOR\s+CASE\s+WHEN\b/is);
+  assert.match(value, /\bOR\s+\(CASE\s+WHEN\b/is);
+  assert.doesNotMatch(value, /\bWITH\s+references\s+AS\b/is);
+  assert.match(value, /\bWITH\s+body_references\s+AS\b/is);
+  assert.doesNotMatch(value, /entry->'regeneration'\s*-\s*'requestId'\s*-\s*'reason'/is);
+  assert.match(value, /\(entry->'regeneration'\)\s*-\s*'requestId'\s*-\s*'reason'/is);
+  const textMatcher = value.slice(
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_text_matches_bindings"),
+    value.indexOf("CREATE OR REPLACE FUNCTION auto_listing_rich_policy_rules_valid"),
+  );
+  assert.doesNotMatch(textMatcher, /jsonb_array_elements\(bindings\)\s+AS\s+rows\(binding\)/is);
+  assert.match(textMatcher, /jsonb_array_elements\(bindings\)\s+AS\s+rows\(candidate_binding\)/is);
+  assert.doesNotMatch(value, /AS\s+source_fact_id\s*,\s*MIN\(ordinal\)\s+AS\s+first_ordinal/is);
+  assert.match(value, /AS\s+derived_source_fact_id\s*,\s*MIN\(ordinal\)\s+AS\s+first_ordinal/is);
+});

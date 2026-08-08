@@ -199,6 +199,20 @@ test("requires identifiers and validates integer stock and signed integer adjust
   expectConfigError(baseConfig({ priceAdjustmentKopecks: "1.5" }), "AUTO_LISTING_CONFIG_INVALID");
 });
 
+test("limits stock to PostgreSQL INTEGER and adjustment to PostgreSQL signed BIGINT", () => {
+  assert.equal(normalizeAutoListingConfig(baseConfig({ stock: 2_147_483_647 })).stock, 2_147_483_647);
+  for (const stock of [2_147_483_648, Number.MAX_SAFE_INTEGER]) {
+    expectConfigError(baseConfig({ stock }), "AUTO_LISTING_CONFIG_INVALID");
+  }
+  assert.equal(normalizeAutoListingConfig(baseConfig({ priceAdjustmentKopecks: "9223372036854775807" })).priceAdjustmentKopecks, "9223372036854775807");
+  assert.equal(normalizeAutoListingConfig(baseConfig({ priceAdjustmentKopecks: "-9223372036854775808" })).priceAdjustmentKopecks, "-9223372036854775808");
+  for (const value of [
+    "9223372036854775808", "-9223372036854775809", `1${"0".repeat(10_000)}`,
+  ]) {
+    expectConfigError(baseConfig({ priceAdjustmentKopecks: value }), "AUTO_LISTING_CONFIG_INVALID");
+  }
+});
+
 test("rejects authority-bearing client configuration fields", () => {
   for (const field of [
     "accountId",

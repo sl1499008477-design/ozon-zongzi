@@ -132,13 +132,25 @@ function safePrice(price) {
 function safeItem(item = {}) {
   const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
   const output = {};
-  const fields = [["itemId", "itemId", "id"], ["status", "status"], ["createdAt", "createdAt", "created_at"], ["updatedAt", "updatedAt", "updated_at"], ["targetStoreId", "targetStoreId", "target_store_id"], ["targetWarehouseId", "targetWarehouseId", "target_warehouse_id"], ["sourceRecordId", "sourceRecordId", "source_record_id"], ["sourceVersion", "sourceVersion", "source_version"], ["sourceHash", "sourceHash", "source_hash", "snapshotHash"], ["strategyId", "strategyId", "strategy_id"], ["strategyVersionId", "strategyVersionId", "strategy_version_id"], ["style", "style"], ["matchedBy", "matchedBy", "matched_by"], ["failureCode", "failureCode", "failure_code"]];
+  const fields = [["itemId", "itemId", "id"], ["status", "status"], ["createdAt", "createdAt", "created_at"], ["updatedAt", "updatedAt", "updated_at"], ["targetStoreId", "targetStoreId", "target_store_id"], ["targetWarehouseId", "targetWarehouseId", "target_warehouse_id"], ["sourceRecordId", "sourceRecordId", "source_record_id"], ["sourceVersion", "sourceVersion", "source_version"], ["sourceHash", "sourceHash", "source_hash", "snapshotHash"], ["failureCode", "failureCode", "failure_code"]];
   for (const [name, ...candidates] of fields) {
     const value = candidates.map((key) => source[key]).find((candidate) => typeof candidate === "string" && candidate.length <= 512);
     if (value) output[name] = value;
   }
   const price = safePrice(source.price);
   if (price) output.price = price;
+  const statusVersion = source.statusVersion ?? source.status_version;
+  if (Number.isSafeInteger(statusVersion) && statusVersion > 0) output.statusVersion = statusVersion;
+  const actions = source.actions;
+  if (actions && typeof actions === "object" && !Array.isArray(actions)
+    && Object.getPrototypeOf(actions) === Object.prototype
+    && Reflect.ownKeys(actions).length === 5
+    && ["review", "approve", "retry", "regenerate", "cancel"].every((key) => typeof actions[key] === "boolean")) {
+    output.actions = {
+      review: actions.review, approve: actions.approve, retry: actions.retry,
+      regenerate: actions.regenerate, cancel: actions.cancel,
+    };
+  }
   return output;
 }
 

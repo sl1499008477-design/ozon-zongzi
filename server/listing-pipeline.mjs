@@ -70,9 +70,10 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
   const id = clean(collectItemId, 240);
   if (!id) return;
   const result = await client.query(
-    `SELECT id,current_draft_id FROM collect_items
-      WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL
-      FOR UPDATE`,
+    `SELECT c.id,c.current_draft_id
+       FROM collect_items c
+      WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+      FOR UPDATE OF c`,
     [id, clean(accountId, 240)],
   );
   if (!result.rowCount) {
@@ -83,14 +84,37 @@ async function assertCollectItemAvailableForListing(client, collectItemId, accou
   }
   const currentDraftId = clean(result.rows[0]?.current_draft_id, 240);
   const draft = currentDraftId
-    ? await client.query("SELECT data FROM product_drafts WHERE id=$1 FOR SHARE", [currentDraftId])
-    : { rows: [] };
+    ? (await client.query(
+        `SELECT version,data_hash,data
+           FROM product_drafts
+          WHERE id=$1 AND collect_item_id=$2
+          FOR SHARE`,
+        [currentDraftId, id],
+      )).rows[0]
+    : null;
   return {
     id,
-    listingDraft: draft.rows[0]?.data && typeof draft.rows[0].data === "object"
-      ? draft.rows[0].data
+    productDraft: draft ? { id: currentDraftId, version: Number(draft.version),
+      dataHash: draft.data_hash } : null,
+    listingDraft: draft?.data && typeof draft.data === "object"
+      ? draft.data
       : {},
   };
+}
+
+function assertFrozenAutoListingDraft(currentItem, frozen) {
+  if (!frozen || typeof frozen !== "object" || Array.isArray(frozen)
+    || Reflect.ownKeys(frozen).length !== 3
+    || !["id", "version", "dataHash"].every((key) => Object.hasOwn(frozen, key))
+    || currentItem?.productDraft?.id !== frozen.id
+    || currentItem?.productDraft?.version !== frozen.version
+    || currentItem?.productDraft?.dataHash !== frozen.dataHash
+    || !/^[a-f0-9]{64}$/u.test(frozen.dataHash || "")) {
+    throw Object.assign(new Error("自动上架采集底稿已经变化"), {
+      status: 409, code: "AUTO_LISTING_SOURCE_DRAFT_CHANGED", definitelyNotSubmitted: true,
+    });
+  }
+  return frozen;
 }
 
 function explicitSourceCategoryForListing(collectItem = {}, index = 0) {
@@ -108,6 +132,7 @@ function explicitSourceCategoryForListing(collectItem = {}, index = 0) {
     variant.categoryResolution?.source,
     draft.sourceCategory,
     draft.categoryResolution?.source,
+    { descriptionCategoryId: draft.descriptionCategoryId ?? draft.description_category_id },
     collectItem?.sourceCategory,
     collectItem?.categoryResolution?.source,
   ]) {
@@ -1231,6 +1256,7 @@ export async function createSubmissionV3({
   type = "COLLECT_BOX_DRAFT",
   versions = {},
   retryFailed = false,
+  frozenProductDraft = null,
 }) {
   if (!listingPipelineEnabled()) return null;
   accountId = clean(accountId, 240);
@@ -1257,33 +1283,33 @@ export async function createSubmissionV3({
       ? listingPreparationIdempotencyKey(preparation)
       : "";
     let latest = null;
-    if (isCollectedListing && collectItem) {
-      await assertCollectItemAvailableForListing(client, collectItem.id, accountId);
-    }
+    const currentCollectItem = isCollectedListing && collectItem
+      ? await assertCollectItemAvailableForListing(client, collectItem.id, accountId) : null;
+    const frozenAutoDraft = type === "AUTO_LISTING"
+      ? assertFrozenAutoListingDraft(currentCollectItem, frozenProductDraft) : null;
     if (preparation) {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
       const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
       if (replay) {
         try {
-          assertCollectItemListingPayloadsReady(collectItem, normalizedItems);
+          assertCollectItemListingPayloadsReady(type === "AUTO_LISTING" ? currentCollectItem : collectItem, normalizedItems);
         } catch (error) {
           throw markListingReplayPreflightError(error);
         }
         return replay;
       }
-      assertCollectItemListingPayloadsReady(collectItem, normalizedItems);
+      assertCollectItemListingPayloadsReady(type === "AUTO_LISTING" ? currentCollectItem : collectItem, normalizedItems);
       targetStore = await assertUsableOperatingStore({
         accountId: preparation.accountId,
         storeId: preparation.targetStoreId,
         requireCredentials: true,
         client,
       });
-      mirrored = await mirrorCollectItemV3(collectItem, {
-        accountId,
-        storeId: preparation.targetStoreId,
-        client,
-        ...versions,
-      });
+      mirrored = type === "AUTO_LISTING"
+        ? { draftId: frozenAutoDraft.id, version: frozenAutoDraft.version }
+        : await mirrorCollectItemV3(collectItem, {
+          accountId, storeId: preparation.targetStoreId, client, ...versions,
+        });
     } else {
       if (isCollectedListing && collectItem) {
         assertCollectItemListingPayloadsReady(collectItem, normalizedItems);

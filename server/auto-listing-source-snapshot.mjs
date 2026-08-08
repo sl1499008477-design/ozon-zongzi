@@ -293,9 +293,11 @@ export function buildAutoListingSourceSnapshot(input = {}) {
   const sourceVersion = text(input.sourceVersion);
   const sourceType = text(input.sourceType);
   const collectItem = input.collectItem;
+  const expectedCollectItemId = sourceType === "EXCEL_SKU" ? text(input.collectItemId) : sourceRecordId;
   if (!sourceRecordId || !sourceVersion || !["COLLECT_BOX", "EXCEL_SKU"].includes(sourceType)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   if (!accountId || !collectItem || typeof collectItem !== "object" || Array.isArray(collectItem)
-    || text(collectItem.accountId) !== accountId || text(collectItem.id) !== sourceRecordId) {
+    || !expectedCollectItemId || text(collectItem.accountId) !== accountId
+    || text(collectItem.id) !== expectedCollectItemId) {
     throw sourceError("AUTO_LISTING_SOURCE_SCOPE");
   }
   jsonSafe(collectItem);

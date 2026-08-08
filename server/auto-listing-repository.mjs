@@ -16,6 +16,7 @@ import {
   verifyAutoListingFrozenConfig,
 } from "./auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
+import { freezeAutoListingListingBase } from "./auto-listing-overlay.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
 const BLOCKED_SOURCE_FAILURE_CODES = new Set([
@@ -273,6 +274,9 @@ function mapJob(row, items, events) {
       return {
         id: item.id,
         status: item.status,
+        statusVersion: Number(item.status_version),
+        recoveryPoint: item.recovery_point || null,
+        activeContentPlanId: item.active_content_plan_id || null,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
         targetStoreId: item.target_store_id,
@@ -311,7 +315,8 @@ async function readJobWithClient(client, accountId, jobId) {
   const job = jobResult.rows[0];
   if (!job) return null;
   const itemResult = await client.query(
-    `SELECT i.id,i.status,i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,
+    `SELECT i.id,i.status,i.status_version,i.recovery_point,i.active_content_plan_id,
+            i.target_store_id,i.target_warehouse_id,i.failure_code,i.created_at,i.updated_at,
             s.source_record_id,s.source_version,s.snapshot_hash
        FROM auto_listing_job_items i
        JOIN auto_listing_source_snapshots s ON s.id=i.snapshot_id AND s.account_id=$2
@@ -333,7 +338,9 @@ function assertGraph(graph) {
   if (!graph || typeof graph !== "object") throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   const accountId = requiredAccountId(graph.accountId);
   const idempotencyKey = requiredText(graph.idempotencyKey);
-  if (requiredText(graph.actorAccountId) !== accountId || !requiredText(graph.strategyVersionId)
+  if (!["COLLECT_BOX", "EXCEL_SKU"].includes(graph.sourceType)
+    || requiredText(graph.actorAccountId) !== accountId || !requiredText(graph.strategyVersionId)
+    || !requiredText(graph.uploadPolicyVersionId)
     || !Array.isArray(graph.items) || !graph.items.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   let frozenConfig;
   try {
@@ -343,6 +350,8 @@ function assertGraph(graph) {
   }
   const { config: configSnapshot, configHash } = frozenConfig;
   const items = graph.items.map((item) => {
+    const collectItemId = graph.sourceType === "EXCEL_SKU"
+      ? requiredText(item?.collectItemId) : requiredText(item?.sourceRecordId);
     if (!item || typeof item !== "object" || item.sourceType !== graph.sourceType
       || !requiredText(item.sourceRecordId) || !requiredText(item.sourceVersion)
       || !requiredText(item.targetStoreId) || !requiredText(item.targetWarehouseId)
@@ -356,7 +365,7 @@ function assertGraph(graph) {
     const sourceBusinessBlocked = item.status === "BLOCKED" && BLOCKED_SOURCE_FAILURE_CODES.has(item.failureCode);
     if (sourceBusinessBlocked) {
       if (Object.hasOwn(item, "snapshot") || !Object.hasOwn(item, "blockedEvidence")
-        || ["strategyId", "strategyVersionId", "ruleId", "style", "matchedBy", "price", "effectiveImageConfig"].some((key) => Object.hasOwn(item, key))) {
+        || ["strategyId", "strategyVersionId", "ruleId", "style", "matchedBy", "price", "effectiveImageConfig", "listingBaseTemplate"].some((key) => Object.hasOwn(item, key))) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
       let captured;
@@ -368,7 +377,7 @@ function assertGraph(graph) {
         || captured.blockedEvidence.failureCode !== item.failureCode) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
-      return { ...item, ...captured };
+      return { ...item, collectItemId, ...captured };
     }
     if (Object.hasOwn(item, "blockedEvidence")) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     let captured;
@@ -406,11 +415,19 @@ function assertGraph(graph) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
       if (!samePrice(item.price, calculated)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-      return { ...item, ...captured, price: calculated, effectiveImageConfig };
+      const listingBaseTemplate = verifiedListingBaseTemplate({
+        accountId,
+        collectItemId,
+        targetStoreId: item.targetStoreId,
+        snapshotId: "preflight-snapshot",
+        item: { ...item, snapshot: captured.snapshot },
+      });
+      return { ...item, collectItemId, ...captured, price: calculated, effectiveImageConfig, listingBaseTemplate };
     } else if (!/^AUTO_LISTING_[A-Z0-9_]+$|^PRICE_[A-Z0-9_]+$/.test(requiredText(item.failureCode))) {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
-    return { ...item, ...captured, effectiveImageConfig };
+    if (Object.hasOwn(item, "listingBaseTemplate")) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    return { ...item, collectItemId, ...captured, effectiveImageConfig };
   });
   if (new Set(items.map((item) => item.sourceOrder)).size !== items.length) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
@@ -471,6 +488,46 @@ function samePrice(left, right) {
     && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
 }
 
+const LISTING_BASE_TEMPLATE_KEYS = new Set([
+  "productDraft", "pricingEvidence", "richContentAttributeSupported", "variants", "versions",
+]);
+
+function verifiedListingBaseTemplate({ accountId, collectItemId, targetStoreId, snapshotId, item }) {
+  const template = item?.listingBaseTemplate;
+  if (!plainJsonObject(template) || Object.keys(template).length !== LISTING_BASE_TEMPLATE_KEYS.size
+    || Object.keys(template).some((key) => !LISTING_BASE_TEMPLATE_KEYS.has(key))) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  let frozen;
+  try {
+    frozen = freezeAutoListingListingBase({
+      accountId,
+      jobId: "preflight-job",
+      itemId: "preflight-item",
+      sourceSnapshotId: snapshotId,
+      collectItemId,
+      targetStoreId,
+      ...template,
+    });
+  } catch {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  if (frozen.productDraft.id !== item.snapshot.source.productDraftId
+    || frozen.productDraft.version !== item.snapshot.source.productDraftVersion
+    || frozen.pricingEvidence.currency !== item.snapshot.priceEvidence.currency
+    || frozen.pricingEvidence.blackKopecks !== item.snapshot.priceEvidence.blackKopecks
+    || frozen.pricingEvidence.greenKopecks !== (item.snapshot.priceEvidence.greenKopecks || null)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return {
+    productDraft: frozen.productDraft,
+    pricingEvidence: frozen.pricingEvidence,
+    richContentAttributeSupported: frozen.richContentAttributeSupported,
+    variants: frozen.variants,
+    versions: frozen.versions,
+  };
+}
+
 function publishedRules(rows) {
   return rows.map((rule) => ({
     ruleId: rule.id, ruleOrder: Number(rule.rule_order), matchType: rule.rule_kind,
@@ -479,11 +536,35 @@ function publishedRules(rows) {
   }));
 }
 
-export function createAutoListingRepository({ pool, idFactory = defaultIdFactory, now = () => new Date() } = {}) {
+function validInitialAiStageOutcome(value) {
+  try {
+    if (!plainJsonObject(value)) return false;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    return keys.length === 2
+      && keys.every((key) => typeof key === "string" && ["status", "statusVersion"].includes(key))
+      && ["status", "statusVersion"].every((key) => descriptors[key]?.enumerable === true
+        && Object.hasOwn(descriptors[key], "value"))
+      && descriptors.status.value === "PLANNING"
+      && descriptors.statusVersion.value === 2;
+  } catch {
+    return false;
+  }
+}
+
+export function createAutoListingRepository({
+  pool,
+  idFactory = defaultIdFactory,
+  now = () => new Date(),
+  stageInitialPlanWork = null,
+} = {}) {
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") {
     throw new TypeError("PostgreSQL pool is required for auto listing repository");
   }
   if (typeof now !== "function") throw new TypeError("Auto listing repository clock must be a function");
+  if (stageInitialPlanWork !== null && typeof stageInitialPlanWork !== "function") {
+    throw new TypeError("Auto listing initial AI workflow port must be a function or null");
+  }
   const newId = (prefix) => requiredText(idFactory(prefix), "AUTO_LISTING_REPOSITORY_INVALID");
 
   return {
@@ -493,7 +574,8 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       if (!ids.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       const result = await pool.query(
         `SELECT c.id,c.account_id,c.source,c.source_sku,c.summary,
-                d.id AS draft_id,d.version AS draft_version,d.data AS draft_data,
+                d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash,d.data AS draft_data,
+                d.normalizer_version,d.category_rule_version,d.dictionary_version,
                 raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at
            FROM collect_items c
            LEFT JOIN product_drafts d ON d.id=c.current_draft_id AND d.collect_item_id=c.id
@@ -528,9 +610,95 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
             summary: row.summary,
             listingDraft: row.draft_data || rawNormalized.listingDraft || {},
           },
-          productDraft: row.draft_id ? { id: row.draft_id, version: Number(row.draft_version || 1) } : null,
+          productDraft: row.draft_id ? {
+            id: row.draft_id,
+            version: Number(row.draft_version || 1),
+            dataHash: row.draft_data_hash,
+            normalizerVersion: row.normalizer_version,
+            categoryRuleVersion: row.category_rule_version,
+            dictionaryVersion: row.dictionary_version,
+          } : null,
         };
       });
+    },
+
+    async loadExcelImportSources({ accountId, importFileId } = {}) {
+      const scope = requiredAccountId(accountId);
+      const fileId = requiredText(importFileId);
+      const fileResult = await pool.query(
+        `SELECT id,account_id,status,status_version,accepted_rows,ready_rows,failed_rows,
+                config_snapshot,config_hash,idempotency_key,correlation_id
+           FROM auto_listing_import_files
+          WHERE account_id=$1 AND id=$2`,
+        [scope, fileId],
+      );
+      const file = fileResult.rows?.[0];
+      if (!file) return null;
+      if (file.account_id !== scope || file.id !== fileId) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      const sourceResult = await pool.query(
+        `SELECT r.id AS row_id,r.collect_item_id,c.account_id,c.source,c.source_sku,c.summary,
+                d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash,d.data AS draft_data,
+                d.normalizer_version,d.category_rule_version,d.dictionary_version,
+                raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at
+           FROM auto_listing_import_rows r
+           JOIN collect_items c
+             ON c.id=r.collect_item_id AND c.account_id=r.account_id AND c.deleted_at IS NULL
+           LEFT JOIN product_drafts d ON d.id=c.current_draft_id AND d.collect_item_id=c.id
+           LEFT JOIN LATERAL (
+             SELECT id,payload,payload_hash,collected_at FROM collect_raw_payloads
+              WHERE collect_item_id=c.id AND account_id=c.account_id
+                AND ((d.id IS NOT NULL AND id=d.source_payload_id) OR d.id IS NULL)
+              ORDER BY created_at DESC,id DESC LIMIT 1
+           ) raw ON TRUE
+          WHERE r.account_id=$1 AND r.import_file_id=$2 AND r.status='READY'
+          ORDER BY r.row_number,r.id`,
+        [scope, fileId],
+      );
+      const sources = sourceResult.rows.map((row) => {
+        if (row.account_id !== scope) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+        const rawNormalized = row.raw_payload?.normalized && typeof row.raw_payload.normalized === "object"
+          ? row.raw_payload.normalized : {};
+        return {
+          id: row.row_id,
+          collectItemId: row.collect_item_id,
+          accountId: row.account_id,
+          sourceVersion: row.draft_id
+            ? `draft:${row.draft_version}:${row.payload_hash || row.raw_response_ref || "missing"}`
+            : `raw:${row.payload_hash || row.raw_response_ref || "missing"}`,
+          rawResponseRef: row.raw_response_ref || null,
+          rawResponseHash: row.payload_hash || null,
+          rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
+          collectItem: {
+            ...rawNormalized,
+            id: row.collect_item_id,
+            accountId: row.account_id,
+            source: row.source,
+            sourceSku: row.source_sku,
+            summary: row.summary,
+            listingDraft: row.draft_data || rawNormalized.listingDraft || {},
+          },
+          productDraft: row.draft_id ? {
+            id: row.draft_id,
+            version: Number(row.draft_version || 1),
+            dataHash: row.draft_data_hash,
+            normalizerVersion: row.normalizer_version,
+            categoryRuleVersion: row.category_rule_version,
+            dictionaryVersion: row.dictionary_version,
+          } : null,
+        };
+      });
+      return {
+        importFile: {
+          id: file.id, accountId: file.account_id, status: file.status,
+          statusVersion: Number(file.status_version), acceptedRows: Number(file.accepted_rows),
+          readyRows: Number(file.ready_rows), failedRows: Number(file.failed_rows),
+          configSnapshot: file.config_snapshot, configHash: file.config_hash,
+          idempotencyKey: file.idempotency_key, correlationId: file.correlation_id,
+        },
+        sources,
+      };
     },
 
     async loadTargetStore({ accountId, targetStoreId } = {}) {
@@ -593,6 +761,32 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
       };
     },
 
+    async loadPublishedUploadPolicies({ accountId } = {}) {
+      const scope = requiredAccountId(accountId);
+      const result = await pool.query(
+        `SELECT id,account_id,version,mode,enabled,published_by,published_at
+           FROM auto_listing_upload_policy_versions
+          WHERE account_id=$1 AND enabled IS TRUE
+            AND published_by IS NOT NULL AND published_at IS NOT NULL
+            AND publication_origin IS NOT NULL
+            AND publication_base_url IS NOT NULL
+            AND publication_prefix IS NOT NULL
+            AND publication_version IS NOT NULL
+            AND publication_policy_hash ~ '^[a-f0-9]{64}$'
+          ORDER BY version DESC,id ASC`,
+        [scope],
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        accountId: row.account_id,
+        version: Number(row.version),
+        mode: row.mode,
+        enabled: row.enabled === true,
+        publishedBy: row.published_by,
+        publishedAt: row.published_at instanceof Date ? row.published_at.toISOString() : String(row.published_at),
+      }));
+    },
+
     async createJobGraph(graphInput) {
       const graph = assertGraph(graphInput);
       const client = await pool.connect();
@@ -620,6 +814,40 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           [graph.strategyVersionId, graph.accountId],
         );
         if (!strategy.rows[0]) throw repositoryError("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+        const uploadPolicy = await client.query(
+          `SELECT id FROM auto_listing_upload_policy_versions
+            WHERE account_id=$1 AND id=$2 AND enabled IS TRUE
+              AND published_by IS NOT NULL AND published_at IS NOT NULL
+              AND publication_origin IS NOT NULL
+              AND publication_base_url IS NOT NULL
+              AND publication_prefix IS NOT NULL
+              AND publication_version IS NOT NULL
+              AND publication_policy_hash ~ '^[a-f0-9]{64}$'
+            FOR SHARE`,
+          [graph.accountId, graph.uploadPolicyVersionId],
+        );
+        if (!uploadPolicy.rows[0]) throw repositoryError("AUTO_LISTING_UPLOAD_POLICY_NOT_PUBLISHED", 409);
+        let aiProfileId = null;
+        let aiProfileVersion = null;
+        if (stageInitialPlanWork) {
+          const profiles = await client.query(
+            `SELECT id,config_version FROM ai_gateway_profiles
+              WHERE account_id=$1 AND enabled IS TRUE
+              FOR SHARE`,
+            [graph.accountId],
+          );
+          if (profiles.rows.length === 0) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED", 409);
+          }
+          if (profiles.rows.length !== 1) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_AMBIGUOUS", 409);
+          }
+          aiProfileId = requiredText(profiles.rows[0].id);
+          aiProfileVersion = Number(profiles.rows[0].config_version);
+          if (!Number.isInteger(aiProfileVersion) || aiProfileVersion < 1) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED", 409);
+          }
+        }
         const rules = await client.query(
           `SELECT id,rule_order,rule_kind,category_id,ancestor_category_id,product_style,rule
              FROM ai_content_strategy_rules WHERE account_id=$1 AND strategy_version_id=$2
@@ -627,16 +855,57 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
           [graph.accountId, graph.strategyVersionId],
         );
         for (const item of graph.items) {
-          const source = await client.query(
-            `SELECT 1 FROM collect_items
-              WHERE id=$1 AND account_id=$2 AND deleted_at IS NULL FOR SHARE`,
-            [item.sourceRecordId, graph.accountId],
-          );
+          const source = graph.sourceType === "EXCEL_SKU" && item.status === "SOURCE_READY"
+            ? await client.query(
+              `SELECT d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash
+                 FROM auto_listing_import_rows r
+                 JOIN auto_listing_import_files f
+                   ON f.account_id=r.account_id AND f.id=r.import_file_id AND f.status='COLLECTING'
+                 JOIN collect_items c
+                   ON c.account_id=r.account_id AND c.id=r.collect_item_id AND c.deleted_at IS NULL
+                 JOIN product_drafts d
+                   ON d.id=c.current_draft_id AND d.collect_item_id=c.id
+                WHERE r.id=$1 AND r.collect_item_id=$2 AND r.account_id=$3 AND r.status='READY'
+                FOR SHARE OF r,f,c,d`,
+              [item.sourceRecordId, item.collectItemId, graph.accountId],
+            )
+            : graph.sourceType === "EXCEL_SKU"
+              ? await client.query(
+                `SELECT NULL::TEXT AS draft_id,NULL::INTEGER AS draft_version,NULL::TEXT AS draft_data_hash
+                   FROM auto_listing_import_rows r
+                   JOIN auto_listing_import_files f
+                     ON f.account_id=r.account_id AND f.id=r.import_file_id AND f.status='COLLECTING'
+                   JOIN collect_items c
+                     ON c.account_id=r.account_id AND c.id=r.collect_item_id AND c.deleted_at IS NULL
+                  WHERE r.id=$1 AND r.collect_item_id=$2 AND r.account_id=$3 AND r.status='READY'
+                  FOR SHARE OF r,f,c`,
+                [item.sourceRecordId, item.collectItemId, graph.accountId],
+              )
+              : item.status === "SOURCE_READY" ? await client.query(
+              `SELECT d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash
+                 FROM collect_items c
+                 JOIN product_drafts d ON d.id=c.current_draft_id AND d.collect_item_id=c.id
+                WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+                FOR SHARE OF c,d`,
+              [item.sourceRecordId, graph.accountId],
+            ) : await client.query(
+              `SELECT NULL::TEXT AS draft_id,NULL::INTEGER AS draft_version,NULL::TEXT AS draft_data_hash
+                 FROM collect_items c
+                WHERE c.id=$1 AND c.account_id=$2 AND c.deleted_at IS NULL
+                FOR SHARE OF c`,
+              [item.sourceRecordId, graph.accountId],
+            );
           if (!source.rows[0]) throw repositoryError("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
           if (item.status === "SOURCE_READY" && item.strategyId !== strategy.rows[0].strategy_key) {
             throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
           }
           if (item.status === "SOURCE_READY") {
+            const draft = source.rows[0];
+            if (draft.draft_id !== item.listingBaseTemplate.productDraft.id
+              || Number(draft.draft_version) !== item.listingBaseTemplate.productDraft.version
+              || draft.draft_data_hash !== item.listingBaseTemplate.productDraft.dataHash) {
+              throw sourceVersionConflict();
+            }
             const resolved = resolveAiContentStrategy({
               strategyVersion: { strategyId: strategy.rows[0].strategy_key, strategyVersionId: graph.strategyVersionId },
               rules: publishedRules(rules.rows),
@@ -657,10 +926,11 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
         await client.query(
           `INSERT INTO auto_listing_jobs (
              id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,
-             strategy_version_id,created_by,correlation_id
-           ) VALUES ($1,$2,$3,'CREATED',$4,$5::jsonb,$6,$7,$8,$9)`,
+             strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id
+           ) VALUES ($1,$2,$3,'CREATED',$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12)`,
           [jobId, graph.accountId, graph.sourceType, graph.idempotencyKey, json(graph.configSnapshot), graph.configHash,
-            graph.strategyVersionId, graph.actorAccountId, graph.correlationId],
+            graph.strategyVersionId, graph.uploadPolicyVersionId, aiProfileId, aiProfileVersion,
+            graph.actorAccountId, graph.correlationId],
         );
         for (const item of graph.items) {
           const proposedSnapshotId = newId("auto_listing_snapshot");
@@ -704,6 +974,45 @@ export function createAutoListingRepository({ pool, idFactory = defaultIdFactory
               blocked ? "BLOCKED" : "SOURCE_READY", blocked ? "BLOCK" : "SOURCE_CAPTURED", graph.correlationId,
               json(eventDetails(item))],
           );
+          if (!blocked) {
+            const listingBase = freezeAutoListingListingBase({
+              accountId: graph.accountId,
+              jobId,
+              itemId,
+              sourceSnapshotId: snapshotId,
+              collectItemId: item.collectItemId,
+              targetStoreId: item.targetStoreId,
+              ...item.listingBaseTemplate,
+            });
+            await client.query(
+              `INSERT INTO auto_listing_listing_bases (
+                 id,account_id,job_id,item_id,source_snapshot_id,collect_item_id,target_store_id,
+                 product_draft_id,product_draft_version,product_draft_data_hash,ozon_ready_variants,
+                 pricing_evidence,rich_content_attribute_supported,listing_base_version,canonical_hash,
+                 normalizer_version,category_rule_version,dictionary_version
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18)`,
+              [newId("auto_listing_base"), graph.accountId, jobId, itemId, snapshotId, item.collectItemId,
+                item.targetStoreId, listingBase.productDraft.id, listingBase.productDraft.version,
+                listingBase.productDraft.dataHash, json(listingBase.variants), json(listingBase.pricingEvidence),
+                listingBase.richContentAttributeSupported, listingBase.version, listingBase.canonicalHash,
+                listingBase.versions.normalizerVersion, listingBase.versions.categoryRuleVersion,
+                listingBase.versions.dictionaryVersion],
+            );
+          }
+          if (!blocked && stageInitialPlanWork) {
+            const staged = await stageInitialPlanWork({
+              client,
+              accountId: graph.accountId,
+              jobId,
+              itemId,
+              actorAccountId: graph.actorAccountId,
+              expectedStatusVersion: 1,
+              correlationId: graph.correlationId,
+            });
+            if (!validInitialAiStageOutcome(staged)) {
+              throw repositoryError("AUTO_LISTING_AI_INITIAL_STAGE_INVALID", 500);
+            }
+          }
         }
         const created = await readJobWithClient(client, graph.accountId, jobId);
         await client.query("COMMIT");

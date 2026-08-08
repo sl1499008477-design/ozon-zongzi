@@ -1,0 +1,381 @@
+import { createPostgresAutoListingAiPhaseContextLoader } from "./auto-listing-ai-phase-context-postgres.mjs";
+import { createPostgresAiOutboxRepository } from "./auto-listing-ai-outbox-postgres.mjs";
+import {
+  createAutoListingAiOutboxPublisher,
+  createAutoListingAiQueueAdapter,
+} from "./auto-listing-ai-queue.mjs";
+import { orchestrateAutoListingAiPhase } from "./auto-listing-ai-orchestrator.mjs";
+import { createPostgresContentPlanRepository } from "./auto-listing-content-plan-repository.mjs";
+import { createContentPlan } from "./auto-listing-content-planner.mjs";
+import { createPostgresGenerationAttemptRepository } from "./auto-listing-generation-attempt-postgres.mjs";
+import { generateImageSlot } from "./auto-listing-image-generator.mjs";
+import { finalizeMaterializedPlan } from "./auto-listing-materialized-plan.mjs";
+import { createActiveMaterializedSourceAssetLoader } from "./auto-listing-materialized-source-loader.mjs";
+import { createPostgresRichContentRepository } from "./auto-listing-rich-content-repository.mjs";
+import { generateRichContent } from "./auto-listing-rich-content.mjs";
+import { createAutoListingSourceImageDownloader } from "./auto-listing-source-downloader.mjs";
+import { createPostgresSourceMaterializationRepository } from "./auto-listing-source-materialization-repository.mjs";
+import { materializeSourceAsset } from "./auto-listing-source-materializer.mjs";
+import {
+  getObjectBuffer,
+  putObjectFromBuffer,
+  removeObject,
+} from "./object-storage.mjs";
+import { createSub2ApiAdapter } from "./sub2api-ai-adapter.mjs";
+import { createSub2ApiGatewayPolicy } from "./sub2api-gateway-boundary.mjs";
+
+const INPUT_KEYS = new Set(["env", "resolvePool", "ports"]);
+const RELAY_PORT_KEYS = new Set([
+  "createBoss", "createOutboxRepository", "createQueueAdapter", "createPublisher",
+]);
+const PORT_KEYS = new Set([
+  "createBoss", "createGateway", "createWorkflow", "createContentPlanRepository",
+  "createSourceMaterializationRepository", "createGenerationRepository",
+  "createRichContentRepository", "createDownloader", "createStorage",
+  "createSourceAssetLoader", "createContextLoader", "orchestratePhase", "phaseServices",
+]);
+const WORKFLOW_PORT_KEYS = new Set(["stageInitialPlanWork", "applyPhaseOutcome"]);
+const SERVICE_KEYS = new Set([
+  "planContent", "materializeSourceAsset", "finalizeMaterializedPlan",
+  "generateImageSlot", "generateRichContent",
+]);
+const REQUIRED_PROHIBITED_CLAIMS = Object.freeze([
+  "CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY",
+]);
+const PLAN_PROMPT_TEMPLATE_VERSION = "AUTO_LISTING_CONTENT_PLAN_V1";
+const RICH_CONTENT_LEASE_OWNER = "auto-listing-rich-content-worker-v1";
+
+function compositionError(code, retryable = false) {
+  const error = new Error("自动上架 AI 生产运行环境配置失败");
+  error.code = code;
+  error.retryable = retryable;
+  return error;
+}
+
+function plainObject(value) {
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+  } catch {
+    return false;
+  }
+}
+
+function environmentObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactObject(value, keys) {
+  try {
+    const actual = Reflect.ownKeys(value);
+    return plainObject(value) && actual.length === keys.size
+      && actual.every((key) => typeof key === "string" && keys.has(key));
+  } catch {
+    return false;
+  }
+}
+
+function enabled(env, name) {
+  const value = String(env?.[name] || "").trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
+function required(env, name) {
+  const value = typeof env?.[name] === "string" ? env[name].trim() : "";
+  if (!value) throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  return value;
+}
+
+function positiveInteger(value, fallback, maximum) {
+  const parsed = value === undefined || value === null || value === "" ? fallback : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+  return parsed;
+}
+
+function csvList(env, name) {
+  const raw = typeof env?.[name] === "string" ? env[name] : "";
+  const values = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  if (values.length === 0 || new Set(values).size !== values.length) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+  return values;
+}
+
+function databaseConfig(env) {
+  const sslValue = String(env.POSTGRES_SSL || "false").trim().toLowerCase();
+  if (!["", "0", "1", "false", "true"].includes(sslValue)) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+  const ssl = sslValue === "1" || sslValue === "true" ? { rejectUnauthorized: false } : false;
+  const connectionString = typeof env.DATABASE_URL === "string" ? env.DATABASE_URL.trim() : "";
+  if (connectionString) return Object.freeze({ connectionString, ssl });
+  return Object.freeze({
+    host: required(env, "POSTGRES_HOST"),
+    port: positiveInteger(env.POSTGRES_PORT, 5432, 65_535),
+    database: required(env, "POSTGRES_DB"),
+    user: required(env, "POSTGRES_USER"),
+    password: required(env, "POSTGRES_PASSWORD"),
+    ssl,
+  });
+}
+
+function closedConfiguration(env) {
+  try {
+    if (!environmentObject(env) || !enabled(env, "AUTO_LISTING_ENABLED") || !enabled(env, "AUTO_LISTING_AI_ENABLED")) {
+      throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+    }
+    for (const name of ["MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET"]) required(env, name);
+    positiveInteger(env.MINIO_PORT, 9000, 65_535);
+    const minioSsl = String(env.MINIO_USE_SSL || "false").trim().toLowerCase();
+    if (!["0", "1", "false", "true"].includes(minioSsl)) {
+      throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+    }
+    const schema = String(env.PG_BOSS_SCHEMA || "sonli_queue").trim();
+    const applicationName = String(env.PG_BOSS_APPLICATION_NAME || "sonli-auto-listing-ai-worker").trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/u.test(schema)
+      || !/^[A-Za-z0-9_.-]{1,63}$/u.test(applicationName)) {
+      throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+    }
+    const gatewayPolicy = createSub2ApiGatewayPolicy({
+      allowedSecretEnvNames: csvList(env, "AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES"),
+      allowedGatewayBaseUrls: csvList(env, "AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS"),
+      allowedGatewayOrigins: typeof env.AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS === "string"
+        && env.AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS.trim()
+        ? csvList(env, "AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS") : [],
+    });
+    return Object.freeze({
+      database: databaseConfig(env),
+      gatewayPolicy,
+      queue: Object.freeze({
+        schema,
+        application_name: applicationName,
+        max: positiveInteger(env.PG_BOSS_POOL_SIZE, 5, 20),
+        useListenNotify: true,
+      }),
+    });
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID") throw error;
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+}
+
+function secretReader(env, allowedSecretEnvNames) {
+  const allowed = new Set(allowedSecretEnvNames);
+  return (name) => {
+    if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)
+      || ["__proto__", "prototype", "constructor"].includes(name.toLowerCase())
+      || !allowed.has(name)) return undefined;
+    return typeof env[name] === "string" ? env[name] : undefined;
+  };
+}
+
+const storagePort = Object.freeze({ getObjectBuffer, putObjectFromBuffer, removeObject });
+const phaseServices = Object.freeze({
+  planContent: createContentPlan,
+  materializeSourceAsset,
+  finalizeMaterializedPlan,
+  generateImageSlot,
+  generateRichContent,
+});
+
+const DEFAULT_PORTS = Object.freeze({
+  async createBoss({ database, queue }) {
+    const { PgBoss } = await import("pg-boss");
+    return new PgBoss({ ...database, ...queue });
+  },
+  createGateway: ({ readSecret, gatewayPolicy }) => createSub2ApiAdapter({
+    readSecret,
+    allowedSecretEnvNames: gatewayPolicy.allowedSecretEnvNames,
+    allowedGatewayBaseUrls: gatewayPolicy.allowedGatewayBaseUrls,
+    allowedGatewayOrigins: gatewayPolicy.allowedGatewayOrigins,
+  }),
+  async createWorkflow({ pool }) {
+    const { createPostgresAutoListingAiWorkflow } = await import("./auto-listing-ai-workflow-postgres.mjs");
+    return createPostgresAutoListingAiWorkflow({ pool });
+  },
+  createContentPlanRepository: ({ pool }) => createPostgresContentPlanRepository({ pool }),
+  createSourceMaterializationRepository: ({ pool }) => createPostgresSourceMaterializationRepository({ pool }),
+  createGenerationRepository: ({ pool }) => createPostgresGenerationAttemptRepository({ pool }),
+  createRichContentRepository: ({ pool }) => createPostgresRichContentRepository({ pool }),
+  createDownloader: () => createAutoListingSourceImageDownloader(),
+  createStorage: () => storagePort,
+  createSourceAssetLoader: (options) => createActiveMaterializedSourceAssetLoader(options),
+  createContextLoader: (options) => createPostgresAutoListingAiPhaseContextLoader(options),
+  orchestratePhase: (input, services) => orchestrateAutoListingAiPhase(input, services),
+  phaseServices,
+});
+
+const DEFAULT_RELAY_PORTS = Object.freeze({
+  createBoss: DEFAULT_PORTS.createBoss,
+  createOutboxRepository: ({ pool }) => createPostgresAiOutboxRepository({ pool }),
+  createQueueAdapter: (options) => createAutoListingAiQueueAdapter(options),
+  createPublisher: (options) => createAutoListingAiOutboxPublisher(options),
+});
+
+function validatePorts(ports) {
+  if (!exactObject(ports, PORT_KEYS)
+    || [...PORT_KEYS].filter((key) => key !== "phaseServices").some((key) => typeof ports[key] !== "function")
+    || !exactObject(ports.phaseServices, SERVICE_KEYS)
+    || [...SERVICE_KEYS].some((key) => typeof ports.phaseServices[key] !== "function")) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+}
+
+function assertPortShape(value, methods) {
+  if (!value || typeof value !== "object" || methods.some((method) => typeof value[method] !== "function")) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+  return value;
+}
+
+function assertWorkflowPort(value) {
+  if (!exactObject(value, WORKFLOW_PORT_KEYS)
+    || [...WORKFLOW_PORT_KEYS].some((method) => typeof value[method] !== "function")) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+  return value;
+}
+
+export async function createAutoListingAiProductionDependencies(input = {}) {
+  if (!exactObject(input, INPUT_KEYS) || typeof input.resolvePool !== "function") {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+  const { env, resolvePool, ports } = input;
+  validatePorts(ports);
+  const config = closedConfiguration(env);
+  let pool;
+  try { pool = await resolvePool(); } catch {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+  if (!pool || typeof pool.query !== "function" || typeof pool.connect !== "function") {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+
+  try {
+    const aiWorkflow = assertWorkflowPort(await ports.createWorkflow({ pool }));
+    const gateway = assertPortShape(ports.createGateway({
+      readSecret: secretReader(env, config.gatewayPolicy.allowedSecretEnvNames),
+      gatewayPolicy: config.gatewayPolicy,
+    }), [
+      "createTextResponse", "generateImage", "inspectImage",
+    ]);
+    const storage = assertPortShape(ports.createStorage({ env }), [
+      "putObjectFromBuffer", "getObjectBuffer", "removeObject",
+    ]);
+    const contentPlanRepository = ports.createContentPlanRepository({ pool });
+    const sourceMaterializationRepository = ports.createSourceMaterializationRepository({ pool });
+    const generationRepository = ports.createGenerationRepository({ pool });
+    const richContentRepository = ports.createRichContentRepository({ pool });
+    const downloader = assertPortShape(ports.createDownloader(), ["downloadSourceImage"]);
+    const sourceAssetLoader = assertPortShape(ports.createSourceAssetLoader({
+      pool, repository: sourceMaterializationRepository, storage,
+    }), ["loadSourceAsset"]);
+    for (const repository of [contentPlanRepository, sourceMaterializationRepository,
+      generationRepository, richContentRepository]) {
+      if (!repository || typeof repository !== "object") {
+        throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+      }
+    }
+    const loadContext = ports.createContextLoader({
+      pool,
+      gateway,
+      contentPlanRepository,
+      sourceMaterializationRepository,
+      generationRepository,
+      richContentRepository,
+      downloader,
+      storage,
+      sourceAssetLoader,
+      logger: null,
+      planPromptTemplateVersion: PLAN_PROMPT_TEMPLATE_VERSION,
+      prohibitedClaims: REQUIRED_PROHIBITED_CLAIMS,
+      maxAttempts: 3,
+      richContentLeaseOwner: RICH_CONTENT_LEASE_OWNER,
+    });
+    if (typeof loadContext !== "function") {
+      throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+    }
+    return Object.freeze({
+      bossFactory: () => ports.createBoss({ database: config.database, queue: config.queue }),
+      loadContext,
+      orchestrate: (orchestratorInput) => ports.orchestratePhase(orchestratorInput, ports.phaseServices),
+      workflow: Object.freeze({
+        applyOutcome: (message, outcome) => aiWorkflow.applyPhaseOutcome({ message, outcome }),
+      }),
+    });
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED") throw error;
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+}
+
+export function createDefaultAutoListingAiProductionDependencies({ env, resolvePool } = {}) {
+  return createAutoListingAiProductionDependencies({ env, resolvePool, ports: DEFAULT_PORTS });
+}
+
+export async function createAutoListingAiProductionOutboxRelay(input = {}) {
+  if (!exactObject(input, INPUT_KEYS) || typeof input.resolvePool !== "function"
+    || !exactObject(input.ports, RELAY_PORT_KEYS)
+    || [...RELAY_PORT_KEYS].some((key) => typeof input.ports[key] !== "function")) {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+  }
+  const { env, resolvePool, ports } = input;
+  const config = closedConfiguration(env);
+  let pool;
+  try { pool = await resolvePool(); } catch {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+  if (!pool || typeof pool.query !== "function" || typeof pool.connect !== "function") {
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+
+  try {
+    const repository = assertPortShape(ports.createOutboxRepository({ pool }), [
+      "listRunnableAutoListingAiAccountIds", "claimAutoListingAiMessages",
+      "renewAutoListingAiMessageLease", "completeAutoListingAiMessage",
+      "failAutoListingAiMessage", "reconcileDeadAutoListingAiMessages",
+      "reconcileInterruptedAutoListingAiItems",
+    ]);
+    let afterAccountId = null;
+    const accountIds = async () => {
+      let values = await repository.listRunnableAutoListingAiAccountIds({ afterAccountId, limit: 100 });
+      if (!Array.isArray(values)) throw new Error("invalid discovery");
+      if (values.length === 0 && afterAccountId !== null) {
+        afterAccountId = null;
+        values = await repository.listRunnableAutoListingAiAccountIds({ afterAccountId, limit: 100 });
+      }
+      if (values.length > 0) afterAccountId = values[values.length - 1];
+      return values;
+    };
+    const queueAdapter = assertPortShape(ports.createQueueAdapter({
+      enabled: true,
+      bossFactory: () => ports.createBoss({ database: config.database, queue: config.queue }),
+    }), ["start", "publish", "stop"]);
+    const publisher = assertPortShape(ports.createPublisher({
+      enabled: true,
+      outboxRepository: repository,
+      queueAdapter,
+      accountIds,
+      timers: Object.freeze({ setTimeout, clearTimeout, setInterval, clearInterval }),
+      workerId: "auto-listing-ai-outbox-relay-v1",
+      batchSize: 1,
+      leaseMs: 30_000,
+      publishTimeoutMs: 10_000,
+      intervalMs: 5_000,
+      accountConcurrency: 4,
+    }), ["start", "stop"]);
+    return Object.freeze({
+      start: () => publisher.start(),
+      stop: () => publisher.stop(),
+    });
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED") throw error;
+    throw compositionError("AUTO_LISTING_AI_RUNTIME_INITIALIZATION_FAILED", true);
+  }
+}
+
+export function createDefaultAutoListingAiProductionOutboxRelay({ env, resolvePool } = {}) {
+  return createAutoListingAiProductionOutboxRelay({ env, resolvePool, ports: DEFAULT_RELAY_PORTS });
+}

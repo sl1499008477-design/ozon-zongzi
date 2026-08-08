@@ -222,7 +222,8 @@ function isBlockedIpv6(address) {
   // unspecified, IPv4-compatible/mapped, ULA, link-local and multicast.
   if ((first & 0xe000) !== 0x2000) return true;
   if (first === 0x2001 && second === 0x0db8) return true; // documentation
-  if (first === 0x2001 && (second & 0xfff0) === 0x0010) return true; // ORCHID
+  if (first === 0x2001 && second === 0x0002 && groups[2] === 0) return true; // benchmarking
+  if (first === 0x2001 && [0x0010, 0x0020].includes(second & 0xfff0)) return true; // ORCHIDv1/v2
   if (first === 0x2001 && second === 0x0000) return true; // Teredo transition range
   if (first === 0x2002) {
     const third = groups[2];
@@ -724,7 +725,15 @@ export async function downloadCollectorExcelImage(url, options = {}) {
         502,
       );
     }
-    target = validateHttpTarget(result.redirect.href);
+    const redirected = validateHttpTarget(result.redirect.href);
+    if (options.forbidHttpsDowngrade === true && target.protocol === "https:" && redirected.protocol !== "https:") {
+      throw errorWithStatus(
+        "图片重定向不允许从 HTTPS 降级到 HTTP",
+        "COLLECTOR_EXCEL_IMAGE_HTTPS_DOWNGRADE_BLOCKED",
+        400,
+      );
+    }
+    target = redirected;
   }
 }
 

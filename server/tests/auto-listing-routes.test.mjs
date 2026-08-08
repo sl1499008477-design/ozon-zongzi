@@ -241,7 +241,7 @@ test("list and detail are actor-scoped, validate input, and never leak events or
   const calls = [];
   const service = {
     listAutoListingJobs: async (input) => { calls.push(["list", input]); return [{ id: "job_1", accountId: "account_b", events: [{ details: { rawResponse: "no" } }], items: [] }]; },
-    getAutoListingJob: async (input) => { calls.push(["get", input]); return { id: "job_1", accountId: "account_b", sub2apiKey: "no", items: [{ id: "item_1", status: "SOURCE_READY", rawResponseRef: "no" }] }; },
+    getAutoListingJob: async (input) => { calls.push(["get", input]); return { id: "job_1", accountId: "account_b", sub2apiKey: "no", items: [{ id: "item_1", status: "READY_FOR_REVIEW", statusVersion: 3, rawResponseRef: "no", actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } }] }; },
   };
   const { handler, replies } = harness({ runtime: { getService: async () => service } });
   await handler(request({ path: "/auto-listing/jobs?limit=20" }), {}, new URL("http://local/auto-listing/jobs?limit=20"));
@@ -252,13 +252,28 @@ test("list and detail are actor-scoped, validate input, and never leak events or
   ]);
   assert.deepEqual(replies.map((reply) => reply.payload.data), [
     [{ jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [] }],
-    { jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [{ itemId: "item_1", status: "SOURCE_READY" }] },
+    { jobId: "job_1", sourceType: "COLLECT_BOX", status: "CREATED", items: [{ itemId: "item_1", status: "READY_FOR_REVIEW", statusVersion: 3, actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } }] },
   ]);
 
   const invalid = harness({ runtime: { getService: async () => service } });
   await invalid.handler(request({ path: "/auto-listing/jobs?limit=101" }), {}, new URL("http://local/auto-listing/jobs?limit=101"));
   await invalid.handler(request({ method: "DELETE", path: "/auto-listing/jobs" }), {}, new URL("http://local/auto-listing/jobs"));
   assert.deepEqual(invalid.replies.map((reply) => [reply.status, reply.payload.code]), [[400, "AUTO_LISTING_REQUEST_INVALID"], [405, "AUTO_LISTING_METHOD_NOT_ALLOWED"]]);
+});
+
+test("HTTP task projection strips internal strategy metadata even if a service returns it", async () => {
+  const service = {
+    getAutoListingJob: async () => ({
+      id: "job_1", items: [{
+        id: "item_1", status: "SOURCE_READY", strategyId: "strategy-a",
+        strategyVersionId: "version-a", style: "PARAMETER_FIRST", matchedBy: "CATEGORY",
+      }],
+    }),
+  };
+  const { handler, replies } = harness({ runtime: { getService: async () => service } });
+  await handler(request({ path: "/auto-listing/jobs/job_1" }), {}, new URL("http://local/auto-listing/jobs/job_1"));
+  const serialized = JSON.stringify(replies[0].payload.data);
+  assert.doesNotMatch(serialized, /strategyId|strategyVersionId|PARAMETER_FIRST|matchedBy/);
 });
 
 test("GET query contract rejects client scope and unknown fields before runtime initialization", async () => {
@@ -417,6 +432,7 @@ test("runtime initializes once concurrently and retries after failure", async ()
     getPostgresPool: async () => { pools += 1; if (pools === 1) throw new Error("temporary"); return { id: "pool" }; },
     createRepository: ({ pool }) => { repositories += 1; return { pool }; },
     createService: ({ repository }) => { services += 1; return { repository }; },
+    createListingBasePreparer: async () => async () => ({}),
   });
   await assert.rejects(runtime.getService(), /temporary/);
   const [left, right] = await Promise.all([runtime.getService(), runtime.getService()]);

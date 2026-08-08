@@ -69,7 +69,7 @@ test("size-only variants with identical complete appearance facts share one stab
   assert.deepEqual(first.groups[0].sourceSkus, ["sku-l", "sku-m"]);
   assert.deepEqual(first.groups[0].variantIds, ["variant-l", "variant-m"]);
   assert.deepEqual(first.groups[0].referenceImages, [image("image-m", "a"), image("image-l", "b")]
-    .map((entry) => ({ ...entry, sourceRef: null, evidenceKind: "CONTENT_HASH" }))
+    .map((entry) => ({ ...entry, sourceRefHash: null, sourceRef: null, evidenceKind: "CONTENT_HASH" }))
     .sort((a, b) => a.assetId.localeCompare(b.assetId)));
   assert.ok(first.groups[0].reasonCodes.includes("SIZE_ONLY_VARIANTS_SHARED"));
   assert.ok(first.groups[0].factEvidence.some((entry) => entry.factId === "fact.color.red"));
@@ -123,7 +123,7 @@ test("rejects unverified captures and unknown top-level input keys", () => {
   assert.throws(() => buildVisualGroups({ sourceCapture: { ...capture, snapshotHash: "0".repeat(64) } }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
 });
 
-test("normalizes current canonical URL media to deterministic non-content-hash references", () => {
+test("normalizes URL media to deterministic hash-only references and never persists the URL", () => {
   const capture = sourceCapture([{
     sku: "sku-url",
     images: ["https://cdn.example.test/product/red.jpg"],
@@ -134,11 +134,14 @@ test("normalizes current canonical URL media to deterministic non-content-hash r
   assert.deepEqual(first, second);
   assert.deepEqual(first.groups[0].referenceImages, [{
     assetId: first.groups[0].referenceImages[0].assetId,
+    sourceRefHash: first.groups[0].referenceImages[0].sourceRefHash,
     contentHash: null,
-    sourceRef: "https://cdn.example.test/product/red.jpg",
-    evidenceKind: "SOURCE_URL",
+    sourceRef: null,
+    evidenceKind: "SOURCE_REF_HASH",
   }]);
   assert.match(first.groups[0].referenceImages[0].assetId, /^source-url-[a-f0-9]{24}$/);
+  assert.match(first.groups[0].referenceImages[0].sourceRefHash, /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(first), /cdn\.example\.test|red\.jpg/u);
 
   const colliding = sourceCapture([{
     sku: "sku-url",

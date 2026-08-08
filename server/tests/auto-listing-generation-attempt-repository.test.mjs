@@ -104,3 +104,17 @@ test("final input binding returns accepted reuse or a stable conflict before dup
   assert.equal(reused.status, "EXISTING_ACCEPTED");
   assert.equal(reused.record.inputHash, inputHash);
 });
+
+test("the versioned memory adapter matches the production stale/cancelled/active-plan fence before writes", async () => {
+  for (const [state, expected] of [
+    [{ status: "CANCELLED", statusVersion: 7, activeContentPlanId: scope.planId }, "CANCELLED"],
+    [{ status: "GENERATING", statusVersion: 8, activeContentPlanId: scope.planId }, "STALE"],
+    [{ status: "GENERATING", statusVersion: 7, activeContentPlanId: "plan-b" }, "STALE"],
+  ]) {
+    const repository = createMemoryGenerationAttemptRepository({ readItemState: async () => state });
+    assert.deepEqual(await repository.reserveGenerationAttempt({
+      ...scope, expectedStatusVersion: 7, attemptIdentityHash, generationSize, maxAttempts: 3,
+    }), { status: expected });
+    assert.deepEqual(repository.snapshot(), []);
+  }
+});

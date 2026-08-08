@@ -347,3 +347,13 @@ export function assertOzonListingReady(payload) {
     { status: 422, code: "COLLECT_ENRICHMENT_INCOMPLETE", missingFields },
   );
 }
+
+export function assertOzonListingLogisticsReady(payload) {
+  const missingFields = missingOzonEnrichmentFields(payload)
+    .filter((field) => field !== "descriptionCategoryId");
+  if (!missingFields.length) return;
+  throw Object.assign(
+    new Error(`Ozon 商品物流资料不完整：${missingFields.join(", ")}`),
+    { status: 422, code: "COLLECT_ENRICHMENT_INCOMPLETE", missingFields },
+  );
+}

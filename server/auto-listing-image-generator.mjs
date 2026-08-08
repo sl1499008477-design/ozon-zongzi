@@ -39,8 +39,8 @@ function preliminarySourceEvidence(selected) {
     if (!strictText(reference?.assetId)) {
       throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
     }
-    if (reference.evidenceKind === "SOURCE_URL") throw failure("AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED");
-    if (reference.evidenceKind !== "CONTENT_HASH" || !HASH.test(reference.contentHash || "")) {
+    if (reference.evidenceKind !== "CONTENT_HASH") throw failure("AUTO_LISTING_SOURCE_ASSET_NOT_MATERIALIZED");
+    if (!HASH.test(reference.contentHash || "")) {
       throw failure("AUTO_LISTING_SOURCE_ASSET_INVALID");
     }
     return { assetId: reference.assetId, evidenceKind: reference.evidenceKind, evidenceRefHash: reference.contentHash };
@@ -227,13 +227,9 @@ export function verifyAcceptedGeneratedAssetEvidence(input = {}) {
       : values;
     if (!sameJson(byFactId(checkerFacts), byFactId(facts))) return false;
     const textRequired = slot.textDensity !== "NONE";
-    const expectedPromptHash = hash({
-      templateVersion,
-      planHash: plan.planHash,
-      slot,
-      sourceAssets: record.sourceAssetEvidence.map(({ assetId, contentHash }) => ({ assetId, contentHash })),
-    });
-    return record.promptHash === expectedPromptHash
+    return acceptedGenerationIdentityMatches({
+      record, scope, plan, slot, selected, profile, imageModel, templateVersion,
+    })
       && validCheckerEvidence(record.checkerEvidence, {
         record, profile, templateVersion, references: record.sourceAssetEvidence, facts: checkerFacts, textRequired,
       });
@@ -277,10 +273,30 @@ export function buildImageGenerationInput({ plan, slot, references, profile, ima
   return Object.freeze({ inputHash: hash(payload), promptHash: hash({ templateVersion, planHash: plan.planHash, slot, sourceAssets: payload.sourceAssets }) });
 }
 
-function buildAttemptIdentity({ scope, plan, slot, preliminaryEvidence, profile, imageModel, ratio, resolution, size, quality, templateVersion, regeneration }) {
+export function buildImageGenerationAttemptIdentity({ scope, plan, slot, preliminaryEvidence, profile, imageModel, ratio, resolution, size, quality, templateVersion, regeneration }) {
   return hash({ scope, planHash: plan.planHash, sourceHash: plan.sourceHash, strategyHash: plan.strategyHash, configHash: plan.configHash,
     visualGroupsHash: plan.visualGroupsHash, slot, preliminaryEvidence, profileId: profile.id, profileVersion: profile.configVersion,
     imageModel, ratio, resolution, size, quality, templateVersion, regeneration });
+}
+
+function acceptedGenerationIdentityMatches({ record, scope, plan, slot, selected, profile, imageModel, templateVersion }) {
+  const preliminaryEvidence = preliminarySourceEvidence(selected);
+  for (const ratio of RATIOS) for (const resolution of RESOLUTIONS) for (const quality of QUALITIES) {
+    try {
+      generationSize(record.generationSize, ratio, resolution);
+      const attemptIdentityHash = buildImageGenerationAttemptIdentity({
+        scope, plan, slot, preliminaryEvidence, profile, imageModel, ratio, resolution,
+        size: record.generationSize, quality, templateVersion, regeneration: record.regeneration,
+      });
+      const finalInput = buildImageGenerationInput({
+        plan, slot, references: record.sourceAssetEvidence, profile, imageModel, ratio, resolution,
+        size: record.generationSize, quality, templateVersion, regeneration: record.regeneration,
+      });
+      if (record.attemptIdentityHash === attemptIdentityHash && record.inputHash === finalInput.inputHash
+        && record.promptHash === finalInput.promptHash) return true;
+    } catch {}
+  }
+  return false;
 }
 
 /** Pure worker-facing policy: one failed MAIN or fewer than six accepted slots
@@ -359,7 +375,7 @@ export async function generateImageSlot(input = {}) {
   const effectiveRegeneration = regeneration ?? plan.regeneration ?? null;
   const textRequired = slot.textDensity !== "NONE";
   const facts = promptFacts(plan, scope.visualGroupKey);
-  const attemptIdentityHash = buildAttemptIdentity({ scope, plan, slot, preliminaryEvidence: validated.preliminaryEvidence,
+  const attemptIdentityHash = buildImageGenerationAttemptIdentity({ scope, plan, slot, preliminaryEvidence: validated.preliminaryEvidence,
     profile, imageModel, ratio, resolution, size: validated.size, quality, templateVersion, regeneration: effectiveRegeneration });
   let reservation;
   try {

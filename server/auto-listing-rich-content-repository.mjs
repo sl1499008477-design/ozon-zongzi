@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { sha256, verifyPersistedAcceptedGeneratedAssetObjectKey } from "./auto-listing-asset-store.mjs";
 import { evaluateGeneratedCheckerEvidence } from "./auto-listing-result-checker.mjs";
-import { validateRichContentDocument } from "./auto-listing-rich-content.mjs";
+import { buildRichContentEvidenceIdentity, validateRichContentDocument } from "./auto-listing-rich-content.mjs";
 
 const HASH = /^[a-f0-9]{64}$/;
 const SCOPE_KEYS = ["accountId", "jobId", "itemId", "planId"];
@@ -16,8 +16,8 @@ const ASSET_KEYS = new Set([
   "visualGroupsHash", "promptTemplateVersion", "promptHash", "checkerEvidence", "sourceAssetEvidence", "regeneration",
 ]);
 const SOURCE_ASSET_KEYS = new Set(["assetId", "contentHash", "contentType", "width", "height", "size"]);
-const clean = (value, maxLength = 240) => typeof value === "string" && value === value.trim() && value.length > 0
-  && value.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(value);
+const clean = (value, maxBytes = 240) => typeof value === "string" && value === value.trim() && value.length > 0
+  && Buffer.byteLength(value, "utf8") <= maxBytes && !/[\u0000-\u001f\u007f]/u.test(value);
 const clone = (value) => structuredClone(value);
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" && !(value instanceof Date)
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
@@ -72,7 +72,7 @@ function validSourceAssetEvidence(value) {
   return Array.isArray(value) && value.length >= 1 && value.length <= 7
     && value.length === new Set(value.map((entry) => entry?.assetId)).size
     && value.every((entry) => exactObject(entry, SOURCE_ASSET_KEYS) && clean(entry.assetId)
-      && HASH.test(entry.contentHash || "") && entry.contentType === "image/png"
+      && HASH.test(entry.contentHash || "") && ["image/png", "image/jpeg", "image/webp"].includes(entry.contentType)
       && Number.isInteger(entry.width) && entry.width > 0 && Number.isInteger(entry.height) && entry.height > 0
       && Number.isInteger(entry.size) && entry.size > 0);
 }
@@ -171,9 +171,29 @@ function validateReservation(input) {
     || !Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 3) {
     throw attemptError();
   }
+  let identity = null;
+  try {
+    identity = buildRichContentEvidenceIdentity({
+      scope: Object.fromEntries(SCOPE_KEYS.map((key) => [key, input[key]])),
+      planHash: input.planHash,
+      sourceHash: input.sourceHash,
+      sourceFactEvidence: input.sourceFactEvidence,
+      assetEvidence: input.assetEvidence,
+      profileId: input.profileId,
+      profileVersion: input.profileVersion,
+      modelName: input.modelName,
+      promptTemplateVersion: input.promptTemplateVersion,
+    });
+  } catch {}
+  if (!identity || input.factRegistryHash !== identity.factRegistryHash || input.assetHash !== identity.assetHash
+    || input.promptHash !== identity.promptHash || input.inputHash !== identity.inputHash
+  ) {
+    throw attemptError();
+  }
 }
 
 function validPersistenceContract(input) {
+  try { validateReservation(input); } catch { return false; }
   if (!plainObject(input) || !validModelEvidence(input.modelEvidence, input.modelName)
     || !clean(input.gatewayRequestId) || !HASH.test(input.outputHash || "")
     || input.outputHash !== sha256(input.richContent)) return false;
@@ -271,6 +291,9 @@ export function createMemoryRichContentRepository({
       const related = rows.filter((row) => matchingScope(row, input));
       const accepted = related.find((row) => row.status === "ACCEPTED");
       if (accepted) return { status: "EXISTING_ACCEPTED", record: clone(accepted) };
+      if (related.some((row) => row.status === "REJECTED")) {
+        return { status: "REJECTED", code: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED" };
+      }
       const timestamp = now();
       const active = related.find((row) => row.status === "GENERATING" && row.leaseExpiresAt > timestamp);
       if (active) return { status: "IN_PROGRESS" };
@@ -366,6 +389,16 @@ export function createPostgresRichContentRepository({
         await client.query("COMMIT");
         return { status: "EXISTING_ACCEPTED", record: mapRow(accepted.rows[0]) };
       }
+      const rejected = await client.query(
+        `SELECT 1 FROM ai_rich_content_results
+         WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
+           AND status='REJECTED' LIMIT 1 FOR SHARE`,
+        [...values, input.inputHash],
+      );
+      if (rejected.rows[0]) {
+        await client.query("COMMIT");
+        return { status: "REJECTED", code: "AUTO_LISTING_RICH_CONTENT_POLICY_REJECTED" };
+      }
       const active = await client.query(
         `SELECT 1 FROM ai_rich_content_results
          WHERE account_id=$1 AND job_id=$2 AND item_id=$3 AND plan_id=$4 AND input_hash=$5
@@ -409,7 +442,7 @@ export function createPostgresRichContentRepository({
       throw repositoryError();
     } finally {
       if (client && client !== pool) {
-        try { client.release(); } catch {}
+        try { await client.release(); } catch { throw repositoryError(); }
       }
     }
   }

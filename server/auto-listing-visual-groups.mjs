@@ -5,7 +5,7 @@ const INPUT_KEYS = new Set(["sourceCapture"]);
 const EVIDENCE_KEYS = new Set(["contractVersion", "variantId", "appearanceStatus", "appearanceFacts", "sizeFacts"]);
 const FACT_KEYS = new Set(["factId", "kind", "value"]);
 const IMAGE_KEYS = new Set(["assetId", "contentHash"]);
-const NORMALIZED_IMAGE_KEYS = new Set(["assetId", "contentHash", "sourceRef", "evidenceKind"]);
+const NORMALIZED_IMAGE_KEYS = new Set(["assetId", "sourceRefHash", "contentHash", "sourceRef", "evidenceKind"]);
 const APPEARANCE_KINDS = new Set(["COLOR", "PATTERN", "SHAPE", "MATERIAL", "ACCESSORY_COUNT"]);
 const SHA256 = /^[a-f0-9]{64}$/;
 const OUTPUT_KEYS = new Set(["sourceHash", "groups", "reasonCodes", "visualGroupsHash"]);
@@ -58,6 +58,7 @@ function assertJsonSafe(value, active = new Set()) {
 
 const canonicalText = (value) => JSON.stringify(canonical(value));
 const hash = (value) => crypto.createHash("sha256").update(canonicalText(value)).digest("hex");
+const hashText = (value) => crypto.createHash("sha256").update(value).digest("hex");
 const compareText = (left, right) => Buffer.from(String(left), "utf8").compare(Buffer.from(String(right), "utf8"));
 const compareCanonical = (left, right) => compareText(canonicalText(left), canonicalText(right));
 
@@ -94,11 +95,13 @@ function normalizeImages(values) {
       try { sourceUrl = new URL(value); } catch { throw visualError(); }
       if (!["http:", "https:"].includes(sourceUrl.protocol) || value.length > 8192) throw visualError();
       const sourceRef = sourceUrl.toString();
+      const sourceRefHash = hashText(sourceRef);
       const image = {
-        assetId: `source-url-${hash(sourceRef).slice(0, 24)}`,
+        assetId: `source-url-${sourceRefHash.slice(0, 24)}`,
+        sourceRefHash,
         contentHash: null,
-        sourceRef,
-        evidenceKind: "SOURCE_URL",
+        sourceRef: null,
+        evidenceKind: "SOURCE_REF_HASH",
       };
       const known = byId.get(image.assetId);
       if (known && canonicalText(known) !== canonicalText(image)) throw visualError();
@@ -108,6 +111,7 @@ function normalizeImages(values) {
     if (!exactObject(value, IMAGE_KEYS)) throw visualError();
     const image = {
       assetId: requiredText(value.assetId),
+      sourceRefHash: null,
       contentHash: requiredText(value.contentHash),
       sourceRef: null,
       evidenceKind: "CONTENT_HASH",
@@ -251,6 +255,7 @@ export function verifyVisualGroupsCapture(value, expectedSourceHash) {
   if (!SHA256.test(value.visualGroupsHash) || hash(rebuilt) !== value.visualGroupsHash) throw visualError();
   // Re-run the closed output shape through canonical source-like checks rather than trusting a caller-supplied hash.
   const groupKeys = new Set();
+  const evidenceByAssetId = new Map();
   for (const group of value.groups) {
     const keys = new Set(["visualGroupKey", "sourceSkus", "variantIds", "referenceImages", "factEvidence", "reasonCodes"]);
     if (!exactObject(group, keys) || groupKeys.has(group.visualGroupKey)
@@ -260,15 +265,14 @@ export function verifyVisualGroupsCapture(value, expectedSourceHash) {
     groupKeys.add(group.visualGroupKey);
     for (const entry of group.referenceImages) {
       if (!exactObject(entry, NORMALIZED_IMAGE_KEYS)
-        || !["CONTENT_HASH", "SOURCE_URL"].includes(entry.evidenceKind)
-        || (entry.evidenceKind === "CONTENT_HASH" && (!SHA256.test(entry.contentHash) || entry.sourceRef !== null))
-        || (entry.evidenceKind === "SOURCE_URL" && (entry.contentHash !== null || typeof entry.sourceRef !== "string"))) throw visualError();
+        || !["CONTENT_HASH", "SOURCE_REF_HASH"].includes(entry.evidenceKind)
+        || entry.sourceRef !== null
+        || (entry.evidenceKind === "CONTENT_HASH" && (!SHA256.test(entry.contentHash) || !(entry.sourceRefHash === null || SHA256.test(entry.sourceRefHash))))
+        || (entry.evidenceKind === "SOURCE_REF_HASH" && (entry.contentHash !== null || !SHA256.test(entry.sourceRefHash)))) throw visualError();
       requiredText(entry.assetId);
-      if (entry.evidenceKind === "SOURCE_URL") {
-        let parsed;
-        try { parsed = new URL(entry.sourceRef); } catch { throw visualError(); }
-        if (!["http:", "https:"].includes(parsed.protocol)) throw visualError();
-      }
+      const known = evidenceByAssetId.get(entry.assetId);
+      if (known && canonicalText(known) !== canonicalText(entry)) throw visualError();
+      evidenceByAssetId.set(entry.assetId, entry);
     }
   }
   return value;

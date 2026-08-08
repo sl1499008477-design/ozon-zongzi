@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
 import { buildAutoListingBlockedSourceEvidence, buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+
+const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]))
+    : value;
+const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+
+function listingBaseTemplate(sourceRecordId, sourceOrder) {
+  const price = { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" };
+  const image = `https://source.example.test/${sourceOrder}.jpg`;
+  return {
+    productDraft: { id: `draft-${sourceRecordId}`, version: 1, dataHash: "1".repeat(64) },
+    pricingEvidence: { ...price, evidenceHash: digest(price) },
+    richContentAttributeSupported: true,
+    variants: [{
+      sourceVariantId: `variant-${sourceOrder}`,
+      sourceSku: `sku-lock-${sourceOrder}`,
+      item: {
+        offer_id: `offer-lock-${sourceOrder}`, name: "Locked evidence product", price: "100.00",
+        currency_code: "RUB", description_category_id: 123, type_id: 456,
+        primary_image: image, images: [image], weight: 100, weight_unit: "g",
+        depth: 100, width: 100, height: 100, dimension_unit: "mm",
+        attributes: [{ id: 85, complex_id: 0, values: [{ value: "No brand" }] }],
+      },
+    }],
+    versions: {
+      normalizerVersion: "normalizer-v3", categoryRuleVersion: "category-v5", dictionaryVersion: "dictionary-live",
+    },
+  };
+}
 
 function transitionFixture({
   status, recoveryPoint = null, failureCode = "AUTO_LISTING_TRANSIENT", legacyCurrentEvent = null,
@@ -228,6 +259,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
       sourceVersion: "1",
       rawResponseRef: `raw-lock-${sourceOrder}`,
       rawResponseHash: `hash-lock-${sourceOrder}`,
+      productDraft: { id: `draft-${sourceRecordId}`, version: 1 },
       collectItem: {
         id: sourceRecordId,
         accountId: "account-a",
@@ -272,6 +304,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
       effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
         configSnapshot: config, configHash, sourceCapture: captured,
       }),
+      listingBaseTemplate: listingBaseTemplate(sourceRecordId, sourceOrder),
     };
   });
   return {
@@ -283,11 +316,49 @@ function warehouseGraph({ itemCount = 1 } = {}) {
     configSnapshot: config,
     configHash,
     strategyVersionId: "strategy-version-a",
+    uploadPolicyVersionId: "upload-policy-review-a",
     items,
   };
 }
 
-function warehouseEvidenceFixture({ store = {}, credential = true, warehouse = {}, associations = true } = {}) {
+function excelWarehouseGraph() {
+  const graph = warehouseGraph();
+  const collectItemId = "collect-lock-0";
+  const sourceRecordId = "row-lock-0";
+  const captured = buildAutoListingSourceSnapshot({
+    accountId: "account-a", sourceType: "EXCEL_SKU", sourceRecordId, collectItemId,
+    sourceVersion: "1", rawResponseRef: "raw-lock-0", rawResponseHash: "hash-lock-0",
+    productDraft: { id: "draft-collect-lock-0", version: 1 },
+    collectItem: {
+      id: collectItemId, accountId: "account-a", sku: "sku-lock-0",
+      listingDraft: {
+        sku: "sku-lock-0", offerId: "offer-lock-0", title: "Locked evidence product",
+        currency: "RUB", blackKopecks: "10000", greenKopecks: "8000", images: [],
+        variants: [{ sku: "sku-lock-0", offerId: "offer-lock-0" }],
+        categoryResolution: {
+          status: "MATCHED", method: "test",
+          target: { storeId: "store-a", descriptionCategoryId: "123", typeId: "456" },
+          source: { path: [] },
+        },
+      },
+    },
+  });
+  graph.sourceType = "EXCEL_SKU";
+  graph.items = [{
+    ...graph.items[0], sourceType: "EXCEL_SKU", sourceRecordId, collectItemId,
+    snapshot: captured.snapshot, snapshotHash: captured.snapshotHash,
+    effectiveImageConfig: deriveEffectiveAutoListingImageConfig({
+      configSnapshot: graph.configSnapshot, configHash: graph.configHash, sourceCapture: captured,
+    }),
+  }];
+  return graph;
+}
+
+function warehouseEvidenceFixture({
+  store = {}, credential = true, warehouse = {}, associations = true,
+  profiles = [{ id: "profile-a", config_version: 3 }],
+  stageInitialPlanWork = null,
+} = {}) {
   const calls = [];
   const stop = Object.assign(new Error("stop after evidence"), { code: "STOP_AFTER_EVIDENCE" });
   const client = {
@@ -296,8 +367,15 @@ function warehouseEvidenceFixture({ store = {}, credential = true, warehouse = {
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
+      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
-      if (/FROM collect_items/.test(sql)) return { rows: [{ ok: 1 }] };
+      if (/FROM auto_listing_import_rows/.test(sql)) return { rows: [{
+        draft_id: `draft-${params[1]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
+      }] };
+      if (/FROM collect_items c/.test(sql)) return { rows: [{
+        draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
+      }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
         client_id: "client-a", currency_code: "RUB", status: "active", ...store,
@@ -322,9 +400,164 @@ function warehouseEvidenceFixture({ store = {}, credential = true, warehouse = {
     repository: createAutoListingRepository({
       pool: { connect: async () => client, query: async () => ({ rows: [] }) },
       idFactory: (prefix) => `${prefix}-id`,
+      stageInitialPlanWork,
     }),
   };
 }
+
+test("repository accepts only a function or null for the optional initial AI workflow port", () => {
+  const pool = { connect: async () => {}, query: async () => ({ rows: [] }) };
+  assert.throws(
+    () => createAutoListingRepository({ pool, stageInitialPlanWork: {} }),
+    /initial AI workflow port must be a function or null/,
+  );
+});
+
+test("job creation without an AI workflow keeps the legacy profile-free path", async () => {
+  const { repository, calls, stop } = warehouseEvidenceFixture();
+  await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
+
+  assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
+  const insertCall = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
+  assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id/iu);
+  assert.deepEqual(insertCall.params.slice(6), [
+    "strategy-version-a", "upload-policy-review-a", null, null, "account-a", "lock-evidence-correlation",
+  ]);
+  const policyCall = calls.find(({ sql }) => /FROM auto_listing_upload_policy_versions/.test(sql));
+  assert.match(policyCall.sql, /publication_origin IS NOT NULL/iu);
+  assert.match(policyCall.sql, /publication_base_url IS NOT NULL/iu);
+  assert.match(policyCall.sql, /publication_prefix IS NOT NULL/iu);
+  assert.match(policyCall.sql, /publication_version IS NOT NULL/iu);
+  assert.match(policyCall.sql, /publication_policy_hash ~ '\^\[a-f0-9\]\{64\}\$'/iu);
+});
+
+test("EXCEL_SKU job creation locks the ready import-row to collect-item relationship", async () => {
+  const { repository, calls, stop } = warehouseEvidenceFixture();
+  await assert.rejects(repository.createJobGraph(excelWarehouseGraph()), (error) => error === stop);
+  const sourceCheck = calls.find(({ sql }) => /FROM auto_listing_import_rows/.test(sql));
+  assert.match(sourceCheck.sql, /JOIN collect_items/u);
+  assert.match(sourceCheck.sql, /r\.status='READY'/u);
+  assert.deepEqual(sourceCheck.params, ["row-lock-0", "collect-lock-0", "account-a"]);
+  assert.equal(calls.some(({ sql }) => /SELECT 1 FROM collect_items[\s\S]*id=\$1/u.test(sql)), false);
+});
+
+test("loads finalizable Excel source rows with account and ready-state boundaries", async () => {
+  const calls = [];
+  const repository = createAutoListingRepository({
+    pool: {
+      connect: async () => assert.fail("read path must not open a transaction"),
+      async query(sql, params) {
+        calls.push({ sql: String(sql), params });
+        if (/FROM auto_listing_import_files/u.test(sql)) return { rows: [{
+          id: "import-1", account_id: "account-a", status: "COLLECTING", status_version: "2",
+          accepted_rows: 1, ready_rows: 1, failed_rows: 0, config_snapshot: { targetStoreId: "store-a" },
+          config_hash: "a".repeat(64), idempotency_key: "job-import-1", correlation_id: "corr-import-1",
+        }] };
+        return { rows: [{
+          row_id: "row-1", collect_item_id: "collect-1", account_id: "account-a",
+          source: "SKU", source_sku: "7003", summary: {}, draft_id: null, draft_version: null,
+          draft_data: null, raw_response_ref: "raw-1", raw_payload: { normalized: { title: "Product" } },
+          payload_hash: "hash-1", collected_at: "2026-08-07T00:00:00.000Z",
+        }] };
+      },
+    },
+  });
+  const result = await repository.loadExcelImportSources({ accountId: "account-a", importFileId: "import-1" });
+  assert.equal(result.importFile.id, "import-1");
+  assert.equal(result.sources[0].id, "row-1");
+  assert.equal(result.sources[0].collectItemId, "collect-1");
+  assert.match(calls[1].sql, /r\.status='READY'/u);
+  assert.match(calls[1].sql, /r\.account_id=\$1/u);
+  assert.match(calls[1].sql, /c\.account_id=r\.account_id/u);
+  assert.deepEqual(calls[1].params, ["account-a", "import-1"]);
+});
+
+test("job creation locks and freezes the one enabled account AI profile without latest-profile inference", async () => {
+  const { repository, calls, stop } = warehouseEvidenceFixture({
+    stageInitialPlanWork: async () => ({ status: "PLANNING", statusVersion: 2 }),
+  });
+  await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
+
+  const strategyIndex = calls.findIndex(({ sql }) => /FROM ai_content_strategy_versions/.test(sql));
+  const profileIndex = calls.findIndex(({ sql }) => /FROM ai_gateway_profiles/.test(sql));
+  const profileCall = calls[profileIndex];
+  const insertCall = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
+  assert.ok(profileIndex > strategyIndex);
+  assert.match(profileCall.sql, /SELECT\s+id,config_version\s+FROM ai_gateway_profiles/iu);
+  assert.match(profileCall.sql, /WHERE account_id=\$1 AND enabled IS TRUE/iu);
+  assert.match(profileCall.sql, /FOR SHARE/iu);
+  assert.doesNotMatch(profileCall.sql, /ORDER\s+BY|LIMIT|latest|api_key/iu);
+  assert.deepEqual(profileCall.params, ["account-a"]);
+  assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id/iu);
+  assert.deepEqual(insertCall.params.slice(6), [
+    "strategy-version-a", "upload-policy-review-a", "profile-a", 3, "account-a", "lock-evidence-correlation",
+  ]);
+});
+
+test("job creation fails closed when the account has no enabled AI profile", async () => {
+  const { repository, calls } = warehouseEvidenceFixture({
+    profiles: [],
+    stageInitialPlanWork: async () => ({ status: "PLANNING", statusVersion: 2 }),
+  });
+  await assert.rejects(
+    repository.createJobGraph(warehouseGraph()),
+    (error) => error?.code === "AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED"
+      && !/sql|select|profile-a/iu.test(error.message),
+  );
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("job creation fails closed instead of guessing when multiple AI profiles are enabled", async () => {
+  const { repository, calls } = warehouseEvidenceFixture({ profiles: [
+    { id: "profile-a", config_version: 3 },
+    { id: "profile-b", config_version: 8 },
+  ], stageInitialPlanWork: async () => ({ status: "PLANNING", statusVersion: 2 }) });
+  await assert.rejects(
+    repository.createJobGraph(warehouseGraph()),
+    (error) => error?.code === "AUTO_LISTING_AI_PROFILE_AMBIGUOUS"
+      && !/sql|select|profile-a|profile-b/iu.test(error.message),
+  );
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("idempotent job replay returns before profile selection and does not change frozen evidence", async () => {
+  const calls = [];
+  let stageCount = 0;
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
+      if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/.test(sql)) {
+        return { rows: [{ id: "job-existing" }] };
+      }
+      if (/SELECT id,account_id,source_type,status,strategy_version_id,correlation_id/.test(sql)) {
+        return { rows: [{
+          id: "job-existing", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED",
+          strategy_version_id: "strategy-version-a", correlation_id: "existing-correlation",
+          created_at: new Date(0), updated_at: new Date(0),
+        }] };
+      }
+      if (/FROM auto_listing_job_items i/.test(sql) || /FROM auto_listing_events/.test(sql)) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() {},
+  };
+  const repository = createAutoListingRepository({
+    pool: { connect: async () => client, query: async () => ({ rows: [] }) },
+    stageInitialPlanWork: async () => {
+      stageCount += 1;
+      return { status: "PLANNING", statusVersion: 2 };
+    },
+  });
+  const result = await repository.createJobGraph(warehouseGraph());
+  assert.equal(result.id, "job-existing");
+  assert.equal(result.duplicate, true);
+  assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql)), false);
+  assert.equal(stageCount, 0);
+});
 
 function blockedSourceGraph() {
   const graph = warehouseGraph();
@@ -341,6 +574,237 @@ function blockedSourceGraph() {
   }];
   return graph;
 }
+
+function mixedCreationGraph() {
+  const graph = warehouseGraph({ itemCount: 2 });
+  const blocked = blockedSourceGraph().items[0];
+  graph.items.push({ ...blocked, sourceOrder: 2 });
+  return graph;
+}
+
+function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "profile-a", config_version: 3 }] } = {}) {
+  const calls = [];
+  const stageCalls = [];
+  const snapshots = new Map();
+  const items = [];
+  const events = [];
+  let job = null;
+  const counters = new Map();
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
+      if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/.test(sql)) return { rows: [] };
+      if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
+        id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
+        client_id: "client-a", currency_code: "RUB", status: "active",
+      }] };
+      if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
+      if (/FROM warehouses w/.test(sql)) return { rows: [{
+        id: "warehouse-a", store_id: "store-a", warehouse_id: "platform-a", name: "Warehouse A",
+        warehouse_type: "FBS", status: "active", is_active: true, is_archived: false,
+      }] };
+      if (/FROM product_stocks ps/.test(sql)) return { rows: [{
+        product_id: "product-a", product_store_id: "store-a", product_status: "active",
+        product_is_archived: false, product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs",
+      }] };
+      if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
+      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
+      if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM collect_items c/.test(sql)) return { rows: [{
+        draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
+      }] };
+      if (/INSERT INTO auto_listing_jobs/.test(sql)) {
+        job = {
+          id: params[0], account_id: params[1], source_type: params[2], status: "CREATED",
+          strategy_version_id: params[6], correlation_id: params[11],
+          created_at: new Date(0), updated_at: new Date(0),
+        };
+        return { rows: [] };
+      }
+      if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) {
+        const row = {
+          id: params[0], source_record_id: params[3], source_version: params[4],
+          snapshot: JSON.parse(params[5]), snapshot_hash: params[6], raw_response_ref: params[7],
+        };
+        snapshots.set(row.id, row);
+        return { rows: [row] };
+      }
+      if (/INSERT INTO auto_listing_job_items/.test(sql)) {
+        items.push({
+          id: params[0], job_id: params[1], account_id: params[2], snapshot_id: params[3],
+          target_store_id: params[4], target_warehouse_id: params[5], status: params[6],
+          status_version: 1, failure_code: params[7], created_at: new Date(0), updated_at: new Date(0),
+        });
+        return { rows: [] };
+      }
+      if (/INSERT INTO auto_listing_listing_bases/.test(sql)) return { rows: [] };
+      if (/INSERT INTO auto_listing_events/.test(sql)) {
+        const created = /NULL,'CREATED','CREATED'/.test(sql);
+        events.push(created ? {
+          id: params[0], item_id: params[3], from_status: null, to_status: "CREATED",
+          event_type: "CREATED", correlation_id: params[5], details: JSON.parse(params[6]), created_at: new Date(0),
+        } : {
+          id: params[0], item_id: params[3], from_status: "CREATED", to_status: params[5],
+          event_type: params[6], correlation_id: params[7], details: JSON.parse(params[8]), created_at: new Date(0),
+        });
+        return { rows: [] };
+      }
+      if (/SELECT id,account_id,source_type,status,strategy_version_id,correlation_id/.test(sql)) return { rows: job ? [job] : [] };
+      if (/FROM auto_listing_job_items i/.test(sql)) return { rows: items.map((item) => ({
+        ...item,
+        source_record_id: snapshots.get(item.snapshot_id).source_record_id,
+        source_version: snapshots.get(item.snapshot_id).source_version,
+        snapshot_hash: snapshots.get(item.snapshot_id).snapshot_hash,
+      })) };
+      if (/FROM auto_listing_events/.test(sql)) return { rows: events };
+      throw new Error(`unexpected query: ${sql}`);
+    },
+    release() { calls.push({ sql: "RELEASE" }); },
+  };
+  const stageInitialPlanWork = stageBehavior === null ? null : async (input) => {
+    stageCalls.push(input);
+    calls.push({ sql: "STAGE_INITIAL_PLAN_WORK", params: [input] });
+    const outcome = await stageBehavior(input, stageCalls.length - 1);
+    if (outcome?.status === "PLANNING" && outcome?.statusVersion === 2) {
+      const item = items.find((candidate) => candidate.id === input.itemId);
+      if (item) {
+        item.status = "PLANNING";
+        item.status_version = 2;
+      }
+    }
+    return outcome;
+  };
+  const repository = createAutoListingRepository({
+    pool: { connect: async () => client, query: async () => ({ rows: [] }) },
+    idFactory(prefix) {
+      const count = (counters.get(prefix) || 0) + 1;
+      counters.set(prefix, count);
+      return `${prefix}-${count}`;
+    },
+    stageInitialPlanWork,
+  });
+  return { repository, calls, stageCalls, client };
+}
+
+test("successful creation without the AI workflow keeps ready statuses and stages no outbox work", async () => {
+  const { repository, calls, stageCalls } = successfulCreationFixture();
+  const created = await repository.createJobGraph(mixedCreationGraph());
+
+  assert.deepEqual(created.items.map(({ status }) => status), ["SOURCE_READY", "SOURCE_READY", "BLOCKED"]);
+  assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /auto_listing_ai_outbox/i.test(sql)), false);
+  assert.equal(calls.filter(({ sql }) => /INSERT INTO auto_listing_listing_bases/.test(sql)).length, 2);
+  assert.equal(stageCalls.length, 0);
+  const jobInsert = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
+  assert.deepEqual(jobInsert.params.slice(7, 10), ["upload-policy-review-a", null, null]);
+});
+
+test("optional AI workflow stages every ready sibling after its original event and leaves blocked siblings untouched", async () => {
+  const { repository, calls, stageCalls, client } = successfulCreationFixture({
+    stageBehavior: async () => ({ status: "PLANNING", statusVersion: 2 }),
+  });
+
+  const created = await repository.createJobGraph(mixedCreationGraph());
+
+  assert.deepEqual(created.items.map(({ status }) => status), ["PLANNING", "PLANNING", "BLOCKED"]);
+  assert.equal(stageCalls.length, 2);
+  assert.deepEqual(stageCalls.map((call) => ({ ...call, client: undefined })), [
+    {
+      client: undefined, accountId: "account-a", jobId: "auto_listing_job-1",
+      itemId: "auto_listing_job-1_item_000", actorAccountId: "account-a",
+      expectedStatusVersion: 1, correlationId: "lock-evidence-correlation",
+    },
+    {
+      client: undefined, accountId: "account-a", jobId: "auto_listing_job-1",
+      itemId: "auto_listing_job-1_item_001", actorAccountId: "account-a",
+      expectedStatusVersion: 1, correlationId: "lock-evidence-correlation",
+    },
+  ]);
+  assert.equal(stageCalls.every((call) => call.client === client), true);
+  for (const stageCall of stageCalls) {
+    assert.deepEqual(Object.keys(stageCall).sort(), [
+      "accountId", "actorAccountId", "client", "correlationId", "expectedStatusVersion", "itemId", "jobId",
+    ]);
+    const stageIndex = calls.findIndex(({ sql, params }) => sql === "STAGE_INITIAL_PLAN_WORK" && params[0] === stageCall);
+    const sourceEventIndex = calls.findIndex(({ sql, params }) => /INSERT INTO auto_listing_events/.test(sql)
+      && params[0] === `${stageCall.itemId}_02`);
+    const baseIndex = calls.findIndex(({ sql, params }) => /INSERT INTO auto_listing_listing_bases/.test(sql)
+      && params[3] === stageCall.itemId);
+    assert.ok(baseIndex > sourceEventIndex);
+    assert.ok(stageIndex > baseIndex);
+    assert.ok(stageIndex > sourceEventIndex);
+  }
+  assert.equal(stageCalls.some(({ itemId }) => itemId.endsWith("_002")), false);
+});
+
+test("a ready item without a complete listing-base template fails before connecting", async () => {
+  const graph = warehouseGraph();
+  delete graph.items[0].listingBaseTemplate;
+  let connections = 0;
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => { connections += 1; throw new Error("must not connect"); },
+    query: async () => ({ rows: [] }),
+  } });
+  await assert.rejects(repository.createJobGraph(graph), {
+    code: "AUTO_LISTING_REPOSITORY_INVALID",
+  });
+  assert.equal(connections, 0);
+
+  const forged = warehouseGraph();
+  const forgedPrice = { currency: "RUB", blackKopecks: "9000", greenKopecks: "7000" };
+  forged.items[0].listingBaseTemplate.pricingEvidence = {
+    ...forgedPrice, evidenceHash: digest(forgedPrice),
+  };
+  await assert.rejects(repository.createJobGraph(forged), {
+    code: "AUTO_LISTING_REPOSITORY_INVALID",
+  });
+  assert.equal(connections, 0);
+});
+
+test("a malformed initial AI stage outcome rolls the whole graph back", async () => {
+  const hidden = { status: "PLANNING", statusVersion: 2 };
+  Object.defineProperty(hidden, "accountId", { value: "account-b" });
+  const symbolled = { status: "PLANNING", statusVersion: 2, [Symbol("scope")]: "account-b" };
+  const accessor = {};
+  Object.defineProperties(accessor, {
+    status: { enumerable: true, get: () => "PLANNING" },
+    statusVersion: { enumerable: true, get: () => 2 },
+  });
+  for (const malformed of [
+    { status: "SOURCE_READY", statusVersion: 1 },
+    { status: "PLANNING", statusVersion: 2, accountId: "account-b" },
+    hidden,
+    symbolled,
+    accessor,
+    null,
+  ]) {
+    const { repository, calls } = successfulCreationFixture({
+      stageBehavior: async () => malformed,
+    });
+    await assert.rejects(
+      repository.createJobGraph(warehouseGraph()),
+      (error) => error?.code === "AUTO_LISTING_AI_INITIAL_STAGE_INVALID",
+    );
+    assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+    assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
+  }
+});
+
+test("a later sibling stage failure rolls back earlier staged work in the same transaction", async () => {
+  const stageFailure = Object.assign(new Error("safe stage failure"), { code: "AUTO_LISTING_STAGE_FAILED" });
+  const { repository, calls, stageCalls } = successfulCreationFixture({
+    stageBehavior: async (_input, index) => {
+      if (index === 1) throw stageFailure;
+      return { status: "PLANNING", statusVersion: 2 };
+    },
+  });
+  await assert.rejects(repository.createJobGraph(mixedCreationGraph()), (error) => error === stageFailure);
+  assert.equal(stageCalls.length, 2);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
+});
 
 function reusedEvidenceFixture({ graph, persistedSnapshot }) {
   const calls = [];
@@ -363,8 +827,12 @@ function reusedEvidenceFixture({ graph, persistedSnapshot }) {
         product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs",
       }] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
+      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: [{ id: "profile-a", config_version: 3 }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
-      if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
+      if (/FROM collect_items c/.test(sql)) return { rows: [{
+        draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
+      }] };
       if (/INSERT INTO auto_listing_jobs/.test(sql)) return { rows: [] };
       if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [] };
       if (/SELECT id,snapshot,snapshot_hash,raw_response_ref FROM auto_listing_source_snapshots/.test(sql)) {
@@ -479,6 +947,7 @@ test("repository accepts only canonical blocked-source evidence before connectin
   const graph = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "blocked-source",
     correlationId: "corr", configSnapshot: config, configHash, strategyVersionId: "version-a",
+    uploadPolicyVersionId: "upload-policy-review-a",
     items: [{
       sourceType: "COLLECT_BOX", sourceRecordId: "collect-blocked", sourceVersion: "1",
       blockedEvidence: evidence.blockedEvidence, snapshotHash: evidence.snapshotHash, rawResponseRef: evidence.rawResponseRef,
@@ -504,4 +973,44 @@ test("repository accepts only canonical blocked-source evidence before connectin
     await assert.rejects(repository.createJobGraph({ ...graph, idempotencyKey: `invalid-${connections}`, items: [item] }), (error) => error?.code === "AUTO_LISTING_REPOSITORY_INVALID");
     assert.equal(connections, 1);
   }
+});
+
+test("published upload-policy lookup ignores legacy rows and selects a newer complete policy", async () => {
+  const calls = [];
+  const legacy = {
+    id: "policy-legacy", account_id: "account-a", version: 3, mode: "DIRECT", enabled: true,
+    published_by: "account-a", published_at: new Date("2026-08-08T01:00:00.000Z"),
+    publication_origin: null, publication_base_url: null, publication_prefix: null,
+    publication_version: null, publication_policy_hash: null,
+  };
+  const complete = {
+    id: "policy-complete", account_id: "account-a", version: 2, mode: "REVIEW", enabled: true,
+    published_by: "account-a", published_at: new Date("2026-08-08T00:00:00.000Z"),
+    publication_origin: "https://cdn.example.test", publication_base_url: "https://cdn.example.test/assets",
+    publication_prefix: "assets", publication_version: "v1", publication_policy_hash: "a".repeat(64),
+  };
+  const queryRows = (rows) => rows
+    .filter((row) => row.publication_origin && row.publication_base_url && row.publication_prefix
+      && row.publication_version && /^[a-f0-9]{64}$/.test(row.publication_policy_hash || ""))
+    .map((row) => ({ ...row }));
+  const repository = createAutoListingRepository({ pool: {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      return { rows: queryRows([legacy, complete]) };
+    },
+    async connect() { throw new Error("unused"); },
+  } });
+  const policies = await repository.loadPublishedUploadPolicies({ accountId: "account-a" });
+  assert.deepEqual(policies.map((policy) => policy.id), ["policy-complete"]);
+  const sql = calls[0].sql;
+  for (const column of ["publication_origin", "publication_base_url", "publication_prefix", "publication_version"]) {
+    assert.match(sql, new RegExp(`${column} IS NOT NULL`, "iu"));
+  }
+  assert.match(sql, /publication_policy_hash\s*~/iu);
+
+  const legacyOnlyRepository = createAutoListingRepository({ pool: {
+    async query() { return { rows: queryRows([legacy]) }; },
+    async connect() { throw new Error("unused"); },
+  } });
+  assert.deepEqual(await legacyOnlyRepository.loadPublishedUploadPolicies({ accountId: "account-a" }), []);
 });

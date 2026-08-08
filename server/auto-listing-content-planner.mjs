@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
 import { verifyAutoListingSourceSnapshot } from "./auto-listing-source-snapshot.mjs";
 import { buildVisualGroups, verifyVisualGroupsCapture } from "./auto-listing-visual-groups.mjs";
+import { normalizeAutoListingTextDensityByRole } from "./auto-listing-text-density-contract.mjs";
 
 const INPUT_KEYS = new Set([
   "sourceCapture", "strategyCapture", "configCapture", "visualGroupsCapture", "profileRef",
@@ -155,12 +156,13 @@ function verifyStrategyCapture(value, sourceSnapshot) {
     || !exactEvidence(["targetDescriptionCategoryId", "matchedValue"])
     || evidence.targetDescriptionCategoryId !== targetCategoryId || evidence.matchedValue !== "BALANCED_DEFAULT") throw plannerError();
   const densities = { ...STYLE_DENSITIES[snapshot.style] };
-  const allowedDensityKeys = new Set([...ROLE_ORDER, ...Object.values(ROLE_LOWER)]);
-  for (const [key, density] of Object.entries(snapshot.textDensityByRole)) {
-    if (!allowedDensityKeys.has(key) || !DENSITIES.has(density)) throw plannerError();
-    const role = ROLE_ORDER.includes(key) ? key : ROLE_ORDER.find((candidate) => ROLE_LOWER[candidate] === key);
-    densities[role] = density;
+  let densityOverrides;
+  try {
+    densityOverrides = normalizeAutoListingTextDensityByRole(snapshot.textDensityByRole);
+  } catch {
+    throw plannerError();
   }
+  Object.assign(densities, densityOverrides);
   return { snapshot: structuredClone(snapshot), strategyHash: value.strategyHash, densities };
 }
 
@@ -405,7 +407,12 @@ export function buildPlannerInput(input = {}) {
       .map((fact) => fact.value))].sort(compareText);
     return {
       visualGroupKey: group.visualGroupKey,
-      referenceImages: group.referenceImages.map(({ assetId, contentHash, evidenceKind }) => ({ assetId, contentHash, evidenceKind })),
+      referenceImages: group.referenceImages.map(({ assetId, sourceRefHash, contentHash, evidenceKind }) => ({
+        assetId,
+        sourceRefHash,
+        contentHash,
+        evidenceKind,
+      })),
       factEvidence: structuredClone(group.factEvidence),
       requiredPreserve: appearancePreserve.length ? appearancePreserve : [source.snapshot.identity.primaryName],
       reasonCodes: [...group.reasonCodes],
@@ -449,7 +456,9 @@ export function buildPlannerInput(input = {}) {
     configHash: config.configHash,
     visualGroupsHash: visual.visualGroupsHash,
     visualGroups: structuredClone(visual),
+    factRegistryHash: sha256(plannerInput.factRegistry),
     sourceAccountId: source.snapshot.identity.accountId,
+    strategyVersionId: strategy.snapshot.strategyVersionId,
     reasonCodes: [...new Set([...visual.reasonCodes, ...roles.reasonCodes, ...registry.reasonCodes])].sort(compareText),
   });
 }
@@ -677,6 +686,8 @@ function verifyStoredPlan(record, scope, plannerContext) {
     || record.sourceHash !== plannerContext.sourceHash || record.strategyHash !== plannerContext.strategyHash
     || record.configHash !== plannerContext.configHash || record.visualGroupsHash !== plannerContext.visualGroupsHash
     || !sameJson(record.visualGroups, plannerContext.visualGroups)
+    || record.factRegistryHash !== plannerContext.factRegistryHash
+    || !sameJson(record.factRegistry, plannerContext.plannerInput.factRegistry)
     || record.profileId !== plannerContext.plannerInput.profile.id
     || record.profileVersion !== plannerContext.plannerInput.profile.configVersion
     || record.plannerModel !== plannerContext.plannerInput.plannerModel
@@ -701,12 +712,16 @@ function verifyStoredPlan(record, scope, plannerContext) {
 export async function createContentPlan(input = {}) {
   const { accountId, jobId, itemId, gatewayProfile, gateway, repository } = input;
   const scope = { accountId: requiredText(accountId, 240), jobId: requiredText(jobId, 240), itemId: requiredText(itemId, 240) };
+  const sourceSnapshotId = requiredText(input.sourceSnapshotId, 240);
+  const expectedStatusVersion = input.expectedStatusVersion;
   if (!isPlainObject(gatewayProfile) || gatewayProfile.accountId !== scope.accountId
     || !Number.isInteger(gatewayProfile.configVersion) || gatewayProfile.configVersion < 1
     || typeof gatewayProfile.id !== "string" || !gatewayProfile.id.trim()
     || typeof gatewayProfile.textModel !== "string" || !gatewayProfile.textModel.trim()
     || typeof gateway?.createTextResponse !== "function"
-    || typeof repository?.reserveContentPlan !== "function") throw plannerError();
+    || typeof repository?.reserveContentPlan !== "function"
+    || !Number.isInteger(expectedStatusVersion) || expectedStatusVersion < 1
+    || expectedStatusVersion > 2_147_483_647) throw plannerError();
   const plannerContext = buildPlannerInput({
     sourceCapture: input.sourceCapture,
     strategyCapture: input.strategyCapture,
@@ -722,7 +737,15 @@ export async function createContentPlan(input = {}) {
   const requestKey = `auto-listing-plan-${sha256({ ...scope, inputHash: plannerContext.inputHash })}`;
   let reservation;
   try {
-    reservation = await repository.reserveContentPlan({ ...scope, inputHash: plannerContext.inputHash, requestKey });
+    reservation = await repository.reserveContentPlan({
+      ...scope,
+      sourceSnapshotId,
+      profileId: plannerContext.plannerInput.profile.id,
+      profileVersion: plannerContext.plannerInput.profile.configVersion,
+      inputHash: plannerContext.inputHash,
+      expectedStatusVersion,
+      requestKey,
+    });
   } catch {
     throw plannerError("AUTO_LISTING_CONTENT_PLAN_REPOSITORY_FAILED", "图片规划记录暂时无法读取");
   }
@@ -759,13 +782,19 @@ export async function createContentPlan(input = {}) {
     try {
       stored = await repository.saveContentPlan({
         ...scope,
+        sourceSnapshotId,
+        expectedStatusVersion,
+        requestKey,
         reservationToken: reservation.reservationToken,
         inputHash: plannerContext.inputHash,
+        strategyVersionId: plannerContext.strategyVersionId,
         sourceHash: plannerContext.sourceHash,
         strategyHash: plannerContext.strategyHash,
         configHash: plannerContext.configHash,
         visualGroupsHash: plannerContext.visualGroupsHash,
         visualGroups: plannerContext.visualGroups,
+        factRegistryHash: plannerContext.factRegistryHash,
+        factRegistry: plannerContext.plannerInput.factRegistry,
         profileId: plannerContext.plannerInput.profile.id,
         profileVersion: plannerContext.plannerInput.profile.configVersion,
         plannerModel: plannerContext.plannerInput.plannerModel,
@@ -781,7 +810,13 @@ export async function createContentPlan(input = {}) {
     return verifyStoredPlan(stored, scope, plannerContext);
   } catch (error) {
     if (typeof repository.releaseContentPlanReservation === "function") {
-      await repository.releaseContentPlanReservation({ ...scope, inputHash: plannerContext.inputHash, reservationToken: reservation.reservationToken, errorCode: error?.code || "AUTO_LISTING_CONTENT_PLAN_FAILED" }).catch(() => {});
+      await repository.releaseContentPlanReservation({
+        ...scope,
+        inputHash: plannerContext.inputHash,
+        expectedStatusVersion,
+        reservationToken: reservation.reservationToken,
+        errorCode: error?.code || "AUTO_LISTING_CONTENT_PLAN_FAILED",
+      }).catch(() => {});
     }
     throw error;
   }

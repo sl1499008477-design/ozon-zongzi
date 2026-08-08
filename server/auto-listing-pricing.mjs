@@ -3,6 +3,9 @@ const PRICE_INPUT_MISSING = "PRICE_INPUT_MISSING";
 const PRICE_INPUT_INVALID = "PRICE_INPUT_INVALID";
 const PRICE_FINAL_NOT_POSITIVE = "PRICE_FINAL_NOT_POSITIVE";
 
+const POSTGRES_BIGINT_MIN = -9_223_372_036_854_775_808n;
+const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+
 const priceError = (code) => {
   const error = new Error(code);
   error.code = code;
@@ -18,8 +21,11 @@ const parseIntegerKopecks = (value, { required, positive }) => {
   }
   if (typeof value !== "string") throw priceError(PRICE_INPUT_INVALID);
   const text = String(value).trim();
-  if (!/^[+-]?\d+$/.test(text)) throw priceError(PRICE_INPUT_INVALID);
+  if (!/^[+-]?\d{1,19}$/.test(text)) throw priceError(PRICE_INPUT_INVALID);
   const parsed = BigInt(text);
+  if (parsed < POSTGRES_BIGINT_MIN || parsed > POSTGRES_BIGINT_MAX) {
+    throw priceError(PRICE_INPUT_INVALID);
+  }
   if (positive && parsed <= 0n) throw priceError(PRICE_INPUT_INVALID);
   return parsed;
 };

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { buildGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
+import { buildImageGenerationAttemptIdentity, buildImageGenerationInput } from "../auto-listing-image-generator.mjs";
 
 const richModule = () => import("../auto-listing-rich-content.mjs");
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
@@ -29,22 +30,22 @@ const slotSpecs = Object.freeze([
 ]);
 const slots = slotSpecs.map(([, role, slotKey]) => ({
   slotKey,
-  visualGroupKey: `group-${slotKey}`,
+  visualGroupKey: "group-a",
   role,
   textDensity: "LIGHT",
   preserve: ["shape"],
   referenceAssetIds: [`source-${slotKey}`],
 }));
 const visualGroups = {
-  groups: slots.map((slot) => ({
-    visualGroupKey: slot.visualGroupKey,
-    referenceImages: [{
+  groups: [{
+    visualGroupKey: "group-a",
+    referenceImages: slots.map((slot) => ({
       assetId: slot.referenceAssetIds[0],
       sourceRef: null,
       evidenceKind: "CONTENT_HASH",
       contentHash: hash(`source:${slot.slotKey}`),
-    }],
-  })),
+    })),
+  }],
 };
 const plan = Object.freeze({
   ...scope,
@@ -61,7 +62,7 @@ const plan = Object.freeze({
   visualGroupsHash: "1".repeat(64),
   visualGroups,
   plan: { slots },
-  factRegistry: facts.map((fact) => ({ ...fact, visualGroupKeys: slots.map((slot) => slot.visualGroupKey) })),
+  factRegistry: facts.map((fact) => ({ ...fact, visualGroupKeys: ["group-a"] })),
 });
 const task4Facts = facts.map(({ factId, kind, value, sourcePath }) => {
   const numeric = value.match(/^(-?\d+(?:\.\d+)?)\s+([^\s]+)$/u);
@@ -77,7 +78,8 @@ const task4Facts = facts.map(({ factId, kind, value, sourcePath }) => {
 });
 const asset = (id, role, slotKey, character) => {
   const slot = slots.find((candidate) => candidate.slotKey === slotKey);
-  const reference = visualGroups.groups.find((group) => group.visualGroupKey === slot.visualGroupKey).referenceImages[0];
+  const reference = visualGroups.groups.find((group) => group.visualGroupKey === slot.visualGroupKey)
+    .referenceImages.find((entry) => entry.assetId === slot.referenceAssetIds[0]);
   const sourceAssetEvidence = [{
     assetId: reference.assetId,
     contentHash: reference.contentHash,
@@ -104,10 +106,33 @@ const asset = (id, role, slotKey, character) => {
       prohibitedFlags: [],
     },
   };
+  const generation = { ratio: "3:4", resolution: "1K", size: "768x1024", quality: "medium" };
+  const generationScope = { ...scope, visualGroupKey: slot.visualGroupKey, slotKey };
+  const attemptIdentityHash = buildImageGenerationAttemptIdentity({
+    scope: generationScope,
+    plan,
+    slot,
+    preliminaryEvidence: [{ assetId: reference.assetId, evidenceKind: "CONTENT_HASH", evidenceRefHash: reference.contentHash }],
+    profile,
+    imageModel: profile.imageModel,
+    ...generation,
+    templateVersion: plan.promptTemplateVersion,
+    regeneration: null,
+  });
+  const generatedInput = buildImageGenerationInput({
+    plan,
+    slot,
+    references: sourceAssetEvidence,
+    profile,
+    imageModel: profile.imageModel,
+    ...generation,
+    templateVersion: plan.promptTemplateVersion,
+    regeneration: null,
+  });
   const value = {
     id, ...scope, status: "ACCEPTED", role, visualGroupKey: slot.visualGroupKey, slotKey,
-    attemptIdentityHash: character.repeat(64), attemptNo: 1, inputHash: character.repeat(64),
-    generationSize: "768x1024",
+    attemptIdentityHash, attemptNo: 1, inputHash: generatedInput.inputHash,
+    generationSize: generation.size,
     contentHash: character.repeat(64), objectKeyVersion: "ATTEMPT_V2",
     contentType: "image/png", width: 768, height: 1024, size: 1024,
     gatewayRequestId: `gateway-${slotKey}`, checkerRequestId,
@@ -116,7 +141,7 @@ const asset = (id, role, slotKey, character) => {
     planHash: plan.planHash, sourceHash: plan.sourceHash, strategyHash: plan.strategyHash,
     configHash: plan.configHash, visualGroupsHash: plan.visualGroupsHash,
     promptTemplateVersion: plan.promptTemplateVersion,
-    promptHash: hash({ templateVersion: plan.promptTemplateVersion, planHash: plan.planHash, slot, sourceAssets: sourceAssetEvidence.map(({ assetId, contentHash }) => ({ assetId, contentHash })) }),
+    promptHash: generatedInput.promptHash,
     sourceAssetEvidence,
     regeneration: null,
   };
@@ -273,6 +298,17 @@ test("accepts only immutable accepted assets in the same account, job, item, and
   }
 });
 
+test("binds each rich-content generation to exactly one visual group with 6-13 assets and one MAIN", async () => {
+  const crossGroup = structuredClone(assets);
+  crossGroup[1].visualGroupKey = "other-group";
+  await assertRejected(validContent(), { acceptedAssets: crossGroup });
+  const fourteen = Array.from({ length: 14 }, (_, index) => ({
+    ...structuredClone(assets[index % assets.length]), id: `asset-over-${index}`, slotKey: `slot-over-${index}`,
+    role: index === 0 ? "MAIN" : "DETAIL",
+  }));
+  await assertRejected(validContent(), { acceptedAssets: fourteen });
+});
+
 test("requires every text block, including a heading, to carry unique frozen fact bindings", async () => {
   const cases = [
     (content) => { delete content.blocks[1].sourceFactIds; },
@@ -326,6 +362,39 @@ test("rejects URLs, contacts, external promotion, reviews, and unsupported regul
     await assertRejected(content);
   }
 });
+
+for (const [label, phrase] of [
+  ["seller contact heading", "Контакты продавца"],
+  ["seller phone heading", "Телефон продавца"],
+  ["seller contact instruction", "Обратитесь к продавцу"],
+  ["certification noun", "Сертификация"],
+]) {
+  test(`rejects ${label} with case-insensitive Russian word-form policy`, async () => {
+    const content = validContent();
+    content.blocks[2].text = `Корпус из нержавеющей стали. ${phrase}`;
+    await assertRejected(content);
+  });
+}
+
+test("seller-contact and certification policy does not reject fact-proven brands or closed technical tokens", async () => {
+  const content = validContent();
+  content.blocks[2].text = "Корпус из нержавеющей стали USB-C Bluetooth";
+  assert.equal((await validation(content)).valid, true);
+});
+
+test("seller-contact policy does not match contact stems inside legitimate Russian words", async () => {
+  const content = validContent();
+  content.blocks[2].text = "Корпус из нержавеющей стали, бесконтактный";
+  assert.equal((await validation(content)).valid, true);
+});
+
+for (const phrase of ["Теплообменник", "безотзывный механизм", "немедицинский прибор"]) {
+  test(`word policy does not match a prohibited stem inside the legitimate compound: ${phrase}`, async () => {
+    const content = validContent();
+    content.blocks[2].text = `Корпус из нержавеющей стали. ${phrase}`;
+    assert.equal((await validation(content)).valid, true);
+  });
+}
 
 test("enforces UTF-8-safe text, array, and block limits before accepting a document", async () => {
   const cases = [
@@ -402,6 +471,32 @@ test("every prompt-projected fact and asset string rejects URL contact and crede
       (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID", `prompt projection case ${index}`);
   }
 });
+
+function replaceProjectedMaterialValue(input, value) {
+  input.factRegistry.find((entry) => entry.factId === "fact.material").value = value;
+  input.plan.factRegistry.find((entry) => entry.factId === "fact.material").value = value;
+  for (const acceptedAsset of input.acceptedAssets) {
+    acceptedAsset.checkerEvidence.sourceFacts.find((entry) => entry.factId === "fact.material").value = value;
+  }
+}
+
+for (const [label, mutate] of [
+  ["credential-shaped unit", (input) => {
+    input.factRegistry.find((entry) => entry.factId === "fact.capacity").unit = "Bearer opaque-token-value";
+    input.plan.factRegistry.find((entry) => entry.factId === "fact.capacity").unit = "Bearer opaque-token-value";
+  }],
+  ["bare domain", (input) => replaceProjectedMaterialValue(input, "private.example.com")],
+  ["international phone", (input) => replaceProjectedMaterialValue(input, "+44 20 7946 0958")],
+  ["Bearer token without a colon", (input) => replaceProjectedMaterialValue(input, "Bearer opaque-token-value")],
+]) {
+  test(`prompt projection rejects ${label} before reservation`, async () => {
+    const { buildRichContentPrompt } = await richModule();
+    const input = { ...context(), profile, promptTemplateVersion: "rich-v1" };
+    mutate(input);
+    assert.throws(() => buildRichContentPrompt(input),
+      (error) => error?.code === "AUTO_LISTING_RICH_CONTENT_INPUT_INVALID");
+  });
+}
 
 test("treats frozen facts and accepted assets as id-keyed collections for prompt and input identity", async () => {
   const { buildRichContentPrompt } = await richModule();

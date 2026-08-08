@@ -549,6 +549,24 @@ await assert.rejects(
   (error) => error?.code === "COLLECTOR_EXCEL_IMAGE_PRIVATE_ADDRESS",
   "redirect targets must receive the same SSRF validation",
 );
+const downgradeDefinitions = [
+  { status: 302, headers: { location: "http://public.sonli.example/a.png" } },
+  { headers: { "content-type": "image/png", "content-length": String(onePixelPng.length) }, chunks: [onePixelPng] },
+];
+await assert.rejects(
+  () => downloadCollectorExcelImage("https://images.sonli.example/downgrade", {
+    imageDnsLookup: publicDns,
+    imageRequest: fakeImageRequester(downgradeDefinitions),
+    forbidHttpsDowngrade: true,
+  }),
+  (error) => error?.code === "COLLECTOR_EXCEL_IMAGE_HTTPS_DOWNGRADE_BLOCKED",
+  "security-sensitive callers must be able to reject HTTPS-to-HTTP redirects",
+);
+const compatibleDowngrade = await downloadCollectorExcelImage("https://images.sonli.example/downgrade", {
+  imageDnsLookup: publicDns,
+  imageRequest: fakeImageRequester(downgradeDefinitions),
+});
+assert.deepEqual(compatibleDowngrade.buffer, onePixelPng, "collector export keeps its previous downgrade behavior by default");
 await assert.rejects(
   () => downloadCollectorExcelImage("https://images.sonli.example/redirect-loop", {
     imageDnsLookup: publicDns,

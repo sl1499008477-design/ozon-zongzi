@@ -69,6 +69,7 @@ function strategyCapture(style = "BALANCED_DEFAULT") {
 }
 
 const profileRef = { id: "profile-1", configVersion: 7, textModel: "planner-model" };
+const runtimeScope = { sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7 };
 const prohibitedClaims = ["CERTIFICATION", "MEDICAL_BENEFIT", "UNLISTED_ACCESSORIES", "WARRANTY"];
 
 function plannerArgs(overrides = {}) {
@@ -231,7 +232,7 @@ test("createContentPlan reserves before one gateway call, persists canonical evi
     return { value: output, requestId: "gateway-request-1", usage: { totalTokens: 100 } };
   } };
   const args = {
-    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway, repository, correlationId: "corr-1",
@@ -261,7 +262,7 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
     const row = { id: "plan-1", accountId: "account-a", jobId: "job-1", itemId: "item-1", inputHash: built.inputHash, planHash, plan: structuredClone(output) };
     mutate(row);
     await assert.rejects(createContentPlan({
-      accountId: "account-a", jobId: "job-1", itemId: "item-1",
+      accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
       ...planningArgs,
       gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
       gateway: { async createTextResponse() { throw new Error("must not call"); } },
@@ -272,7 +273,7 @@ test("reused corrupted or cross-scope rows fail closed, and gateway failures per
   let saves = 0;
   let releases = 0;
   await assert.rejects(createContentPlan({
-    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
     ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse() { throw Object.assign(new Error("gateway"), { code: "RETRYABLE_GATEWAY" }); } },
@@ -328,7 +329,7 @@ test("rejects planner input unknown fields and damaged visual-group or strategy 
   );
 });
 
-test("canonical URL media remains plannable without pretending the URL hash is a content hash, while no media blocks early", () => {
+test("canonical URL media remains plannable and persistable only as hash evidence, while no media blocks early", async () => {
   const withUrl = sourceCapture();
   withUrl.snapshot.variants[0].media = ["https://cdn.example.test/source.jpg"];
   withUrl.snapshotHash = hash(withUrl.snapshot);
@@ -337,9 +338,26 @@ test("canonical URL media remains plannable without pretending the URL hash is a
     sourceCapture: withUrl, strategyCapture: strategyCapture(), configCapture: configCapture(), visualGroupsCapture: groups,
     profileRef, promptTemplateVersion: "planner-v1", prohibitedClaims, regeneration: null,
   });
-  assert.equal(built.plannerInput.visualGroups[0].referenceImages[0].evidenceKind, "SOURCE_URL");
-  assert.equal(built.plannerInput.visualGroups[0].referenceImages[0].contentHash, null);
-  assert.equal(Object.hasOwn(built.plannerInput.visualGroups[0].referenceImages[0], "sourceRef"), false);
+  const reference = built.plannerInput.visualGroups[0].referenceImages[0];
+  assert.equal(reference.evidenceKind, "SOURCE_REF_HASH");
+  assert.equal(reference.contentHash, null);
+  assert.equal(reference.sourceRefHash, crypto.createHash("sha256").update("https://cdn.example.test/source.jpg").digest("hex"));
+  assert.equal(Object.hasOwn(reference, "sourceRef"), false);
+  assert.doesNotMatch(JSON.stringify(built), /https?:\/\//iu);
+  let savedInput;
+  await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope,
+    sourceCapture: withUrl, strategyCapture: strategyCapture(), configCapture: configCapture(),
+    visualGroupsCapture: groups, promptTemplateVersion: "planner-v1", prohibitedClaims, regeneration: null,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
+    gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-url-evidence" }; } },
+    repository: {
+      async reserveContentPlan() { return { status: "RESERVED", reservationToken: "lease-url-evidence" }; },
+      async saveContentPlan(input) { savedInput = structuredClone(input); return { id: "plan-url-evidence", ...input }; },
+    },
+  });
+  assert.equal(savedInput.visualGroups.groups[0].referenceImages[0].evidenceKind, "SOURCE_REF_HASH");
+  assert.doesNotMatch(JSON.stringify(savedInput.visualGroups), /https?:\/\//iu);
 
   const withoutMedia = sourceCapture();
   withoutMedia.snapshot.variants[0].media = [];
@@ -378,13 +396,53 @@ test("repository reservation serializes concurrent same-input planning so the ga
     return { value: output, requestId: "gateway-one" };
   } };
   const args = {
-    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...planningArgs,
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway, repository,
   };
   const [first, second] = await Promise.all([createContentPlan(args), createContentPlan(args)]);
   assert.equal(gatewayCalls, 1);
   assert.deepEqual(first, second);
+});
+
+test("production repository port receives frozen snapshot, profile, request, and status-version fences on every transition", async () => {
+  const planningArgs = plannerArgs();
+  const built = planner();
+  const calls = [];
+  const repository = {
+    async reserveContentPlan(input) {
+      calls.push(["reserve", input]);
+      return { status: "RESERVED", reservationToken: "lease-1" };
+    },
+    async saveContentPlan(input) {
+      calls.push(["save", input]);
+      return { id: "plan-1", ...input };
+    },
+    async releaseContentPlanReservation(input) {
+      calls.push(["release", input]);
+    },
+  };
+  await createContentPlan({
+    accountId: "account-a", jobId: "job-1", itemId: "item-1",
+    sourceSnapshotId: "snapshot-db-1", expectedStatusVersion: 7,
+    ...planningArgs,
+    gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
+    gateway: { async createTextResponse() { return { value: validPlan(built), requestId: "gateway-one" }; } },
+    repository,
+  });
+  assert.deepEqual(Object.keys(calls[0][1]).sort(), [
+    "accountId", "expectedStatusVersion", "inputHash", "itemId", "jobId", "profileId",
+    "profileVersion", "requestKey", "sourceSnapshotId",
+  ]);
+  assert.equal(calls[0][1].sourceSnapshotId, "snapshot-db-1");
+  assert.equal(calls[0][1].expectedStatusVersion, 7);
+  assert.equal(calls[0][1].profileId, "profile-1");
+  assert.equal(calls[1][1].sourceSnapshotId, "snapshot-db-1");
+  assert.equal(calls[1][1].expectedStatusVersion, 7);
+  assert.equal(calls[1][1].requestKey, calls[0][1].requestKey);
+  assert.equal(calls[1][1].strategyVersionId, "strategy-v1");
+  assert.deepEqual(calls[1][1].factRegistry, built.plannerInput.factRegistry);
+  assert.equal(calls[1][1].factRegistryHash, hash(built.plannerInput.factRegistry));
 });
 
 test("source text that resembles a prompt remains delimited as untrusted data and cannot add writable planner fields", async () => {
@@ -394,7 +452,7 @@ test("source text that resembles a prompt remains delimited as untrusted data an
   const args = plannerArgs({ sourceCapture: source });
   let capturedPrompt = "";
   await assert.rejects(createContentPlan({
-    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...args,
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...args,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model", enabled: true },
     gateway: { async createTextResponse(input) { capturedPrompt = input.prompt; throw Object.assign(new Error("stop"), { code: "RETRYABLE_GATEWAY" }); } },
     repository: {
@@ -547,7 +605,7 @@ test("content planner rejects cross-account source before repository or gateway 
   let repositoryCalls = 0;
   let gatewayCalls = 0;
   await assert.rejects(createContentPlan({
-    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...planningArgs,
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...planningArgs,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
     gateway: { async createTextResponse() { gatewayCalls += 1; } },
     repository: { async reserveContentPlan() { repositoryCalls += 1; } },
@@ -569,7 +627,7 @@ test("content planner rejects cross-account source before repository or gateway 
     record[field] = field === "profileVersion" ? 8 : field === "regeneration" ? { requestId: "x", reason: "QUALITY_RETRY" }
       : field === "visualGroups" ? {} : field === "gatewayRequestId" ? " unsafe " : "corrupt";
     await assert.rejects(createContentPlan({
-      accountId: "account-a", jobId: "job-1", itemId: "item-1", ...plannerArgs(),
+      accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...plannerArgs(),
       gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
       gateway: { async createTextResponse() { throw new Error("must not call"); } },
       repository: { async reserveContentPlan() { return { status: "EXISTING", record }; } },
@@ -620,7 +678,7 @@ test("claims are field-bound and stored plans retain visual evidence plus a safe
   const output = validPlan(planner());
   let stored;
   await createContentPlan({
-    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...args,
+    accountId: "account-a", jobId: "job-1", itemId: "item-1", ...runtimeScope, ...args,
     gatewayProfile: { id: "profile-1", accountId: "account-a", configVersion: 7, textModel: "planner-model" },
     gateway: { async createTextResponse() { return { value: output, requestId: "gateway-1" }; } },
     repository: {

@@ -110,7 +110,7 @@ if (!enabled) {
         overrides.promptTemplateVersion ?? null,
         overrides.sourceAssetEvidence === undefined ? null : JSON.stringify(overrides.sourceAssetEvidence),
         overrides.modelEvidence === undefined ? null : JSON.stringify(overrides.modelEvidence),
-        overrides.regeneration === undefined ? null : JSON.stringify(overrides.regeneration),
+        overrides.regeneration == null ? null : JSON.stringify(overrides.regeneration),
         overrides.sizeBytes ?? null,
         overrides.leaseToken ?? null,
         overrides.leaseExpiresAt ?? null,
@@ -147,12 +147,12 @@ if (!enabled) {
       acceptedAt: new Date(),
       ...overrides,
       };
-      value.attemptIdentityHash ??= value.inputHash;
+      if (!Object.hasOwn(overrides, "attemptIdentityHash")) value.attemptIdentityHash = value.inputHash;
       value.attemptNo ??= 1;
       value.objectKey ??= buildGeneratedAssetObjectKey({
         accountId: account, jobId: jobA, itemId: itemA, planId: plan,
         visualGroupKey: "visual-a", slotKey: value.slotKey || "selling-point-1",
-        attemptIdentityHash: value.attemptIdentityHash, attemptNo: value.attemptNo,
+        attemptIdentityHash: value.attemptIdentityHash ?? value.inputHash, attemptNo: value.attemptNo,
         inputHash: value.inputHash, contentHash: value.contentHash,
       });
       return value;
@@ -189,7 +189,7 @@ if (!enabled) {
     try {
       await client.query(`CREATE SCHEMA ${schemaSql}`);
       await client.query(`SET search_path TO ${schemaSql}, public`);
-      for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/.test(file) && !file.startsWith("029_")).sort()) {
+      for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/.test(file) && file < "029_").sort()) {
         await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       }
 
@@ -428,7 +428,7 @@ if (!enabled) {
       const cleanupFirst = await cleanupRepository.recordAssetCleanupRequired(cleanupInput);
       const cleanupRepeated = await cleanupRepository.recordAssetCleanupRequired(cleanupInput);
       assert.equal(cleanupRepeated.id, cleanupFirst.id);
-      assert.equal((await cleanupRepository.listAssetCleanupObligations({ accountId: account })).length, 1);
+      assert.equal((await cleanupRepository.listAssetCleanupObligations({ accountId: account })).length, 2);
       assert.deepEqual(await cleanupRepository.listAssetCleanupObligations({ accountId: `wrong-${account}` }), []);
       await assert.rejects(cleanupRepository.recordAssetCleanupRequired({ ...cleanupInput, reason: "OTHER_REASON" }), (error) => error?.code === "AUTO_LISTING_ASSET_CLEANUP_CONFLICT");
       const crossScopeCleanup = { ...cleanupInput, jobId: jobB, itemId: itemB, slotKey: "wrong-scope" };

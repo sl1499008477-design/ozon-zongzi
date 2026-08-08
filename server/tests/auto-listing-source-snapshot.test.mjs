@@ -97,6 +97,19 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
   assert.deepEqual(input, before);
 });
 
+test("an Excel snapshot traces the import row while separately verifying its collected item", () => {
+  const result = buildAutoListingSourceSnapshot(source({
+    sourceType: "EXCEL_SKU",
+    sourceRecordId: "row-1",
+    collectItemId: "collect-1",
+  }));
+  assert.equal(result.snapshot.identity.sourceType, "EXCEL_SKU");
+  assert.equal(result.snapshot.identity.sourceRecordId, "row-1");
+  assert.throws(() => buildAutoListingSourceSnapshot(source({
+    sourceType: "EXCEL_SKU", sourceRecordId: "row-1", collectItemId: "collect-other",
+  })), { code: "AUTO_LISTING_SOURCE_SCOPE" });
+});
+
 test("preserves variant price, media and grouping facts and hashes every frozen business field", () => {
   const baseline = source({
     collectItem: collectItem({

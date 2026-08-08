@@ -74,6 +74,10 @@ const FORBIDDEN_CLIENT_FIELDS = new Set([
 const CONFIG_KEYS = new Set(["targetStoreId", "targetWarehouseId", "stock", "priceAdjustmentKopecks", "image"]);
 const IMAGE_KEYS = new Set(["ratio", "resolution", "quality", "language", "roles", "total"]);
 
+const POSTGRES_BIGINT_MIN = -9_223_372_036_854_775_808n;
+const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+
 const contractError = (code) => {
   const error = new Error(code);
   error.code = code;
@@ -124,8 +128,12 @@ const signedIntegerString = (value, fallback = "0") => {
   if (value === undefined) return fallback;
   if (typeof value !== "string") throw contractError("AUTO_LISTING_CONFIG_INVALID");
   const text = String(value).trim();
-  if (!/^[+-]?\d+$/.test(text)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
-  return String(BigInt(text));
+  if (!/^[+-]?\d{1,19}$/.test(text)) throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  const parsed = BigInt(text);
+  if (parsed < POSTGRES_BIGINT_MIN || parsed > POSTGRES_BIGINT_MAX) {
+    throw contractError("AUTO_LISTING_CONFIG_INVALID");
+  }
+  return String(parsed);
 };
 
 const normalizedImageOption = (input, key) => {
@@ -157,7 +165,11 @@ export function normalizeAutoListingConfig(rawConfig = {}) {
   assertNoForbiddenFields(rawConfig);
   assertOnlyKeys(rawConfig, CONFIG_KEYS);
 
-  if (!Number.isInteger(rawConfig.stock) || rawConfig.stock <= 0) {
+  if (
+    !Number.isInteger(rawConfig.stock)
+    || rawConfig.stock <= 0
+    || rawConfig.stock > POSTGRES_INTEGER_MAX
+  ) {
     throw contractError("AUTO_LISTING_CONFIG_INVALID");
   }
   if (rawConfig.image !== undefined && !isPlainObject(rawConfig.image)) {

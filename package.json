@@ -7,6 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "server": "node server/index.mjs",
     "worker": "node server/listing-worker.mjs",
+    "auto-listing-worker": "node server/auto-listing-ai-worker.mjs",
     "test:pipeline": "node server/tests/listing-pipeline-v3.integration.mjs",
     "test:collection-pipeline": "node server/tests/collection-pipeline-v4.integration.mjs",
     "db:migrate": "node server/db/migrate.mjs",

@@ -1,5 +1,38 @@
+import { isIP } from "node:net";
+
 function configured(name) {
   return Boolean(String(process.env[name] || "").trim());
+}
+
+const AUTO_LISTING_EXCEL_DEFAULTS = Object.freeze({ maxBytes: 2_097_152, maxRows: 1_000 });
+const AUTO_LISTING_EXCEL_MAXIMUMS = Object.freeze({ maxBytes: 64 * 1024 * 1024, maxRows: 100_000 });
+
+function configuredPositiveInteger(env, name, fallback, maximum) {
+  const raw = String(env?.[name] ?? "").trim();
+  if (!raw) return fallback;
+  if (!/^[1-9]\d*$/u.test(raw)) throw aiConfigurationError("AUTO_LISTING_EXCEL_LIMIT_INVALID");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > maximum) {
+    throw aiConfigurationError("AUTO_LISTING_EXCEL_LIMIT_INVALID");
+  }
+  return value;
+}
+
+export function autoListingExcelImportLimits(env = process.env) {
+  return Object.freeze({
+    maxBytes: configuredPositiveInteger(env, "AUTO_LISTING_EXCEL_MAX_BYTES",
+      AUTO_LISTING_EXCEL_DEFAULTS.maxBytes, AUTO_LISTING_EXCEL_MAXIMUMS.maxBytes),
+    maxRows: configuredPositiveInteger(env, "AUTO_LISTING_EXCEL_MAX_ROWS",
+      AUTO_LISTING_EXCEL_DEFAULTS.maxRows, AUTO_LISTING_EXCEL_MAXIMUMS.maxRows),
+  });
+}
+
+export function autoListingExcelRequestBodyLimit(limits) {
+  if (!Number.isSafeInteger(limits?.maxBytes) || limits.maxBytes < 1
+    || limits.maxBytes > AUTO_LISTING_EXCEL_MAXIMUMS.maxBytes) {
+    throw aiConfigurationError("AUTO_LISTING_EXCEL_LIMIT_INVALID");
+  }
+  return (Math.ceil(limits.maxBytes / 3) * 4) + (256 * 1024);
 }
 
 export function autoListingEnabled(env = process.env) {
@@ -12,6 +45,30 @@ export function autoListingAiEnabled(env = process.env) {
   return value === "1" || value === "true";
 }
 
+export function autoListingUploadEnabled(env = process.env) {
+  const value = String(env?.AUTO_LISTING_UPLOAD_ENABLED || "").trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
+export function listingAssetPublicationConfig(env = process.env) {
+  if (!autoListingUploadEnabled(env)) return null;
+  const rawBaseUrl = String(env?.LISTING_ASSET_PUBLIC_BASE_URL || "").trim();
+  const prefix = String(env?.LISTING_ASSET_PUBLIC_PREFIX || "listing-media/v1").trim();
+  const publicationVersion = String(env?.LISTING_ASSET_PUBLICATION_VERSION || "LISTING_MEDIA_V1").trim();
+  let parsed;
+  try { parsed = new URL(rawBaseUrl); } catch { throw aiConfigurationError("LISTING_ASSET_PUBLICATION_CONFIG_INVALID"); }
+  const hostname = parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash
+    || !hostname.includes(".") || hostname === "localhost" || hostname.endsWith(".localhost")
+    || hostname.endsWith(".local") || hostname.endsWith(".internal") || isIP(hostname) !== 0
+    || !/^[A-Za-z0-9][A-Za-z0-9/_-]{0,159}$/u.test(prefix) || prefix.includes("//") || prefix.endsWith("/")
+    || !/^[A-Z0-9][A-Z0-9_-]{0,63}$/u.test(publicationVersion)) {
+    throw aiConfigurationError("LISTING_ASSET_PUBLICATION_CONFIG_INVALID");
+  }
+  const baseUrl = parsed.toString().endsWith("/") ? parsed.toString() : `${parsed.toString()}/`;
+  return Object.freeze({ baseUrl, prefix, publicationVersion });
+}
+
 function aiConfigurationError(code) {
   const error = new Error(code);
   error.code = code;
@@ -21,10 +78,8 @@ function aiConfigurationError(code) {
 
 export function assertAutoListingAiRuntimeConfiguration({ env = process.env, profile = null } = {}) {
   if (!autoListingAiEnabled(env)) return null;
-  const profileId = String(env?.AUTO_LISTING_AI_PROFILE_ID || "").trim();
-  if (!profileId) throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_REQUIRED");
   const storedProfileId = String(profile?.id || "").trim();
-  if (!storedProfileId || storedProfileId !== profileId) throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_MISMATCH");
+  if (!storedProfileId) throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_REQUIRED");
   const configVersion = Number(profile?.configVersion ?? profile?.config_version);
   if (!Number.isInteger(configVersion) || configVersion < 1) throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_INVALID");
   if (profile?.enabled !== true) throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_NOT_ENABLED");
@@ -34,7 +89,18 @@ export function assertAutoListingAiRuntimeConfiguration({ env = process.env, pro
     throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_INVALID");
   }
   if (!envName || !String(env?.[envName] || "").trim()) throw aiConfigurationError("AUTO_LISTING_AI_SECRET_REQUIRED");
-  return Object.freeze({ profileId, configVersion });
+  try {
+    const list = (name) => String(env?.[name] || "").split(",").map((value) => value.trim()).filter(Boolean);
+    const policy = createSub2ApiGatewayPolicy({
+      allowedSecretEnvNames: list("AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES"),
+      allowedGatewayBaseUrls: list("AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS"),
+      allowedGatewayOrigins: list("AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS"),
+    });
+    requireSub2ApiGatewayPolicy(profile, policy);
+  } catch {
+    throw aiConfigurationError("AUTO_LISTING_AI_PROFILE_INVALID");
+  }
+  return Object.freeze({ profileId: storedProfileId, configVersion });
 }
 
 function secureSecret(name, minimumLength) {
@@ -63,10 +129,16 @@ export function assertProductionConfiguration(role = "api") {
     }
   }
   if (String(process.env.LISTING_PIPELINE_V3 || "1") === "0") errors.push("正式环境不能禁用 LISTING_PIPELINE_V3");
-  if (autoListingAiEnabled(process.env) && !configured("AUTO_LISTING_AI_PROFILE_ID")) {
-    errors.push("启用自动上架 AI 时必须配置 AUTO_LISTING_AI_PROFILE_ID");
+  if (autoListingUploadEnabled(process.env)) {
+    try { listingAssetPublicationConfig(process.env); } catch {
+      errors.push("启用自动上架上传时必须配置可公开访问的 HTTPS 图片地址");
+    }
   }
   if (errors.length) {
     throw new Error(`正式环境配置不合格：${errors.join("；")}`);
   }
 }
+import {
+  createSub2ApiGatewayPolicy,
+  requireSub2ApiGatewayPolicy,
+} from "./sub2api-gateway-boundary.mjs";

@@ -4,7 +4,7 @@
 
 **Goal:** Convert accepted AI content into a typed listing overlay, submit it through the existing Ozon listing pipeline, support review and direct modes with one path, reconcile final platform results, and roll out direct upload safely after acceptance.
 
-**Architecture:** An overlay builder copies the immutable source snapshot and applies only typed media, rich-content, calculated-price, destination, and stock fields. Accepted image assets are published to a dedicated externally reachable listing-media boundary. A submission service calls createSubmissionV3/prepareCollectItemForListing and records a one-to-one link to the current durable listing job. A reconciler maps existing listing outcomes back to auto-listing items. Review versus direct changes only when the same submission service is invoked.
+**Architecture:** Before AI work starts, the backend freezes a complete target-store-normalized Ozon-ready listing base, its source draft version, and its canonical hash. The overlay builder copies that immutable listing base and applies only typed media, rich-content, calculated-price, destination, and stock fields. Accepted image assets are published to a dedicated externally reachable listing-media boundary. A submission service delegates to the existing listing pipeline without mutating the collect-box draft and records a one-to-one link to the current durable listing job. A reconciler maps existing listing outcomes back to auto-listing items. Review versus direct changes only when the same submission service is invoked.
 
 **Tech Stack:** Node.js ESM, PostgreSQL, current listing-pipeline/listing-worker/ozon-client boundaries, MinIO-compatible object storage, pg-boss, node:test.
 
@@ -13,6 +13,8 @@
 - Complete plans 1–3 first.
 - Follow AGENTS.md: backend authorization, immutable and traceable submission snapshots, idempotent external writes, recovery after uncertain results, account/store boundaries, stable contracts, audit logs, and rollback reporting.
 - Honor the confirmed design: do not perform a post-generation comparison across every source field. Prevent changes structurally by copying the immutable snapshot and accepting only a closed typed overlay.
+- The compact AI source snapshot is not an upload payload. Freeze and hash a complete Ozon-ready listing base before generation, including every variant's attributes/dictionary IDs, complex attributes, logistics, barcode, VAT/old/min price, video, model, and variant relations.
+- Upload rechecks only the original collect draft identity/version/hash against the frozen source evidence. It does not compare every field after generation. A changed or deleted source blocks upload and requires a new task.
 - The AI output can supply only new images and rich content. Price, target store, active FBS warehouse, and stock come from frozen user configuration. No caller can override SKU, category, attributes, weight, package dimensions, product dimensions, variant relations, or offer identity.
 - Never call callOzonSellerApi from an auto-listing module. All Ozon writes go through createSubmissionV3 and the current listing worker.
 - Review and direct modes use the same overlay, publication, submission, idempotency, and reconciliation services.
@@ -30,14 +32,14 @@ This is plan 4 of 4. After its verification gate passes, AUTO_LISTING_ENABLED ma
 ## Task 1: Add Upload Policy Versions and Submission Links
 
 **Files:**
-- Create: server/db/migrations/029_auto_listing_upload_rollout.sql
+- Create: server/db/migrations/038_auto_listing_upload_rollout.sql
 - Create: server/tests/auto-listing-upload-migration.test.mjs
 
-**Interfaces:** auto_listing_upload_policy_versions, auto_listing_submission_links, auto_listing_upload_attempts.
+**Interfaces:** auto_listing_listing_bases, auto_listing_upload_policy_versions, auto_listing_submission_links, auto_listing_upload_attempts.
 
 - [ ] **Step 1: Write a failing migration-contract test**
 
-Assert additive tables, admin publisher, REVIEW/DIRECT mode constraint, immutable policy versions, unique item/result submission link, current listing snapshot/job foreign keys, idempotency key, request/result hashes, attempt outcome/error/audit fields, and indexes. Reject destructive SQL.
+Assert additive tables, immutable complete listing-base JSON/hash plus source collect/draft identity, admin publisher, REVIEW/DIRECT mode constraint, immutable policy versions, unique item/result submission link, current listing snapshot/job foreign keys, idempotency key, request/result hashes, attempt outcome/error/audit fields, and indexes. Reject destructive SQL.
 
 - [ ] **Step 2: Confirm RED**
 
@@ -45,7 +47,9 @@ Assert additive tables, admin publisher, REVIEW/DIRECT mode constraint, immutabl
 node --test server/tests/auto-listing-upload-migration.test.mjs
 ~~~
 
-- [ ] **Step 3: Create migration 029**
+- [ ] **Step 3: Create migration 038**
+
+auto_listing_listing_bases stores account/job/item/source snapshot/collect item, product draft ID/version/data hash, the complete Ozon-ready normalized variant array, its canonical hash, normalizer/category/dictionary versions, and timestamps. It is append-only and account/job/item scoped. AI modules read it but never update it.
 
 auto_listing_upload_policy_versions stores immutable REVIEW or DIRECT mode, enabled flag, version, publication reason, created/published by, and timestamps. Seed no active DIRECT policy.
 
@@ -60,7 +64,7 @@ Add upload_policy_version_id to auto_listing_jobs additively. The job-creation s
 ~~~bash
 node --test server/tests/auto-listing-upload-migration.test.mjs
 AUTO_LISTING_POSTGRES_TESTS=1 node server/db/migrate.mjs
-git add server/db/migrations/029_auto_listing_upload_rollout.sql server/tests/auto-listing-upload-migration.test.mjs
+git add server/db/migrations/038_auto_listing_upload_rollout.sql server/tests/auto-listing-upload-migration.test.mjs
 git commit -m "feat: add auto listing upload rollout data"
 ~~~
 
@@ -74,11 +78,11 @@ git commit -m "feat: add auto listing upload rollout data"
 - Create: server/tests/auto-listing-overlay.test.mjs
 - Create: server/tests/auto-listing-ozon-rich-content.test.mjs
 
-**Interfaces:** buildAutoListingSubmissionDraft, convertAutoListingRichContentToOzon.
+**Interfaces:** freezeAutoListingListingBase, buildAutoListingSubmissionDraft, convertAutoListingRichContentToOzon.
 
 - [ ] **Step 1: Write failing overlay tests**
 
-Deep-freeze the source fixture and assert it remains byte/hash-identical after building single- and multi-variant drafts. Assert these preserved fields exactly: SKU/offer ID, target category IDs, attributes/dictionary IDs, weight, package dimensions, product measurements, variant relations, source identity, and nonmedia product facts.
+Deep-freeze the complete Ozon-ready listing-base fixture and assert it remains byte/hash-identical after building single- and multi-variant drafts. Assert these preserved fields exactly: SKU/offer ID, target category IDs, attributes/dictionary IDs, complex attributes, weight, package dimensions, product measurements, barcode, VAT/old/min price, video, model, variant relations, source identity, and every nonmedia product fact.
 
 Assert only these results change:
 
@@ -110,7 +114,7 @@ node --test server/tests/auto-listing-overlay.test.mjs server/tests/auto-listing
 
 - [ ] **Step 4: Implement copy-plus-typed-overlay construction**
 
-Do not merge arbitrary objects. Create normalized items by explicitly copying each source field required by the current listing contract, then assign accepted media/rich content and final price. Derive stock rows separately from immutable variant offer IDs and frozen warehouse/stock configuration.
+Do not merge arbitrary caller objects and do not rebuild variants from the compact AI source snapshot. Clone each complete frozen Ozon-ready variant, then assign only accepted media/rich content and final price. Derive stock rows separately from immutable variant offer IDs and frozen warehouse/stock configuration.
 
 Multi-variant rules:
 
@@ -213,7 +217,7 @@ node --test server/tests/auto-listing-upload-service.test.mjs server/tests/exter
 
 - [ ] **Step 3: Implement a single submission boundary**
 
-The service transactionally reserves auto_listing_submission_links by account/item/result hash, publishes accepted assets, builds the typed draft/stocks, and calls prepareCollectItemForListing or createSubmissionV3 with:
+The service transactionally reserves auto_listing_submission_links by account/item/result hash, verifies the original collect draft identity/version/hash is unchanged, publishes accepted assets, builds the typed draft/stocks, and delegates to the existing listing pipeline with:
 
 ~~~js
 {
@@ -221,7 +225,7 @@ The service transactionally reserves auto_listing_submission_links by account/it
   collectItemId: sourceSnapshot.source.collectItemId,
   targetStoreId: config.targetStoreId,
   idempotencyKey: "auto-listing:" + itemId + ":" + resultHash,
-  collectItem: accountScopedCollectItem,
+  collectItem: unchangedAccountScopedCollectItem,
   normalizedItems: overlay.items,
   stocks: overlay.stocks,
   type: "AUTO_LISTING",
@@ -233,7 +237,7 @@ The service transactionally reserves auto_listing_submission_links by account/it
 }
 ~~~
 
-Capture returned existing submission snapshot/job IDs and link them. If the external listing-pipeline transaction succeeds but link persistence is interrupted, recovery searches by the same idempotency key and repairs the link.
+Pass AI results only through normalizedItems/stocks; never place them in collectItem.listingDraft, so the listing pipeline cannot mirror AI changes back into the collect box. Capture returned existing submission snapshot/job IDs and link them. If the external listing-pipeline transaction succeeds but link persistence is interrupted, recovery searches by the same idempotency key and repairs the link.
 
 - [ ] **Step 4: Extend external-write safety guards**
 
@@ -481,4 +485,3 @@ git commit -m "test: verify automatic listing end to end"
 - [ ] Explicit sub2api capability test passes for the selected deployment/profile/models.
 - [ ] Review-mode controlled Ozon acceptance passes before direct mode is available.
 - [ ] Direct mode remains disabled until its policy is published after acceptance.
-

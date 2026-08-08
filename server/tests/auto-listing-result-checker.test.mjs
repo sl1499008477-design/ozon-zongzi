@@ -81,6 +81,39 @@ async function input(value, overrides = {}) {
   };
 }
 
+function evaluatorInput(checkerResult, overrides = {}) {
+  return {
+    checkerResult,
+    references: [{ assetId: "asset-a", contentHash: "a".repeat(64), contentType: "image/png", width: 768, height: 1024, size: 1024 }],
+    facts: [fact],
+    checkerModel: "checker-a",
+    profile: { id: "profile-a", accountId: "account-a", configVersion: 2 },
+    templateVersion: "image-v1",
+    requestId: "check-1",
+    generatedHash: "b".repeat(64),
+    checkerModelEvidence: {
+      requestedTextModel: "checker-a",
+      gatewayReportedTextModel: "checker-a",
+      gatewayReportedTextModelPresent: true,
+    },
+    textRequired: true,
+    ...overrides,
+  };
+}
+
+const checkerUnavailable = (error) => error?.code === "CHECKER_UNAVAILABLE" && error?.retryable === true;
+
+function throwingOversizedArray(length) {
+  return new Proxy(new Array(length), {
+    get(target, property, receiver) {
+      if (property === Symbol.iterator || /^(?:0|[1-9][0-9]*)$/u.test(String(property))) {
+        throw new Error("oversized checker array was traversed");
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
 test("deterministic gate and closed checker response accept complete source-bound evidence", async () => {
   const result = await checkGeneratedAsset(await input(checkerValue()));
   assert.equal(result.accepted, true);
@@ -212,6 +245,86 @@ test("punctuation-only or emoji-only OCR evidence cannot impersonate valid Russi
   for (const detectedText of ["!!!", "🔥✨"]) {
     const result = await checkGeneratedAsset(await input(checkerValue({}, { claims: [], detectedTexts: [detectedText] })));
     assert.equal(result.code, "LANGUAGE_MISMATCH");
+  }
+});
+
+test("checker text ceilings use UTF-8 bytes instead of JavaScript character counts", async () => {
+  const russian2048Bytes = "я".repeat(1024);
+  const russian2050Bytes = "я".repeat(1025);
+  assert.equal(Buffer.byteLength(russian2048Bytes, "utf8"), 2048);
+  assert.equal(Buffer.byteLength(russian2050Bytes, "utf8"), 2050);
+
+  assert.equal(checkerModule.evaluateGeneratedCheckerEvidence(
+    evaluatorInput(checkerValue({}, { detectedTexts: [russian2048Bytes] })),
+  ).accepted, true);
+
+  const overlongCases = [
+    checkerValue({ matchesProduct: false, reasons: ["я".repeat(121)] }),
+    checkerValue({}, { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: ["я".repeat(121)] } }),
+    checkerValue({}, { claims: [{ ...verifiedClaim, text: russian2050Bytes }] }),
+    checkerValue({}, { claims: [{ ...verifiedClaim, sourceFactId: "я".repeat(121) }] }),
+    checkerValue({}, { claims: [{ ...verifiedClaim, field: "я".repeat(257) }] }),
+    checkerValue({}, { claims: [{ ...verifiedClaim, value: russian2050Bytes }] }),
+    checkerValue({}, { claims: [{ ...verifiedClaim, unit: "я".repeat(33) }] }),
+    checkerValue({}, { detectedTexts: [russian2050Bytes] }),
+  ];
+  for (const value of overlongCases) {
+    assert.throws(
+      () => checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(value)),
+      checkerUnavailable,
+    );
+  }
+});
+
+test("checker arrays have explicit caps and reject oversize before iteration", async () => {
+  const cases = [
+    ["reasons", 33, (array) => checkerValue({ reasons: array })],
+    ["sourceAssetIds", 8, (array) => checkerValue({}, { identity: { color: true, shape: true, accessoryCount: true, sourceAssetIds: array } })],
+    ["claims", 257, (array) => checkerValue({}, { claims: array })],
+    ["detectedTexts", 65, (array) => checkerValue({}, { detectedTexts: array })],
+    ["qualityFlags", 5, (array) => checkerValue({}, { qualityFlags: array })],
+    ["prohibitedFlags", 9, (array) => checkerValue({}, { prohibitedFlags: array })],
+  ];
+  for (const [name, length, build] of cases) {
+    assert.throws(
+      () => checkerModule.evaluateGeneratedCheckerEvidence(evaluatorInput(build(throwingOversizedArray(length)))),
+      checkerUnavailable,
+      name,
+    );
+  }
+
+  let checkerSchema;
+  const request = await input(checkerValue());
+  request.gateway.inspectImage = async ({ jsonSchema }) => {
+    checkerSchema = jsonSchema;
+    return {
+      requestId: "check-1",
+      modelEvidence: {
+        requestedTextModel: "checker-a",
+        gatewayReportedTextModel: "checker-a",
+        gatewayReportedTextModelPresent: true,
+      },
+      value: checkerValue(),
+    };
+  };
+  assert.equal((await checkGeneratedAsset(request)).accepted, true);
+  assert.equal(checkerSchema.properties.reasons.maxItems, 32);
+  assert.equal(checkerSchema.properties.evidence.properties.identity.properties.sourceAssetIds.maxItems, 7);
+  assert.equal(checkerSchema.properties.evidence.properties.claims.maxItems, 256);
+  assert.equal(checkerSchema.properties.evidence.properties.detectedTexts.maxItems, 64);
+  assert.equal(checkerSchema.properties.evidence.properties.qualityFlags.maxItems, 4);
+  assert.equal(checkerSchema.properties.evidence.properties.prohibitedFlags.maxItems, 8);
+});
+
+test("outer checker rejects oversized references and facts before generated-image decoding", async () => {
+  for (const overrides of [
+    { references: throwingOversizedArray(8) },
+    { facts: throwingOversizedArray(257) },
+  ]) {
+    const request = await input(checkerValue());
+    request.generated = { bytes: Buffer.from("not-an-image", "utf8") };
+    Object.assign(request, overrides);
+    await assert.rejects(checkGeneratedAsset(request), checkerUnavailable);
   }
 });
 

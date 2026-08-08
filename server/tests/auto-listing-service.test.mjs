@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAutoListingService } from "../auto-listing-service.mjs";
+import { createAutoListingService as createProductionAutoListingService } from "../auto-listing-service.mjs";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import {
@@ -16,6 +16,28 @@ const config = {
   stock: 5,
   priceAdjustmentKopecks: "0",
 };
+
+function repositoryListingBaseTemplate(id) {
+  const image = `https://source.example.test/${id}.jpg`;
+  return {
+    productDraft: { id: `draft-${id}`, version: 1, dataHash: "1".repeat(64) },
+    pricingEvidence: {
+      currency: "RUB", blackKopecks: "10000", greenKopecks: "8000",
+      evidenceHash: "767a5b396ef1e82c9ebf280694cb5cb97ea39d654af13a0f78e021cad0db36c2",
+    },
+    richContentAttributeSupported: true,
+    variants: [{
+      sourceVariantId: id, sourceSku: `sku-${id}`,
+      item: {
+        offer_id: `offer-${id}`, name: `Product ${id}`, price: "100.00", currency_code: "RUB",
+        description_category_id: 123, type_id: 456, primary_image: image, images: [image],
+        weight: 100, weight_unit: "g", depth: 100, width: 100, height: 100, dimension_unit: "mm",
+        attributes: [{ id: 85, complex_id: 0, values: [{ value: "No brand" }] }],
+      },
+    }],
+    versions: { normalizerVersion: "v3", categoryRuleVersion: "v1", dictionaryVersion: "live" },
+  };
+}
 
 const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => ({
   id,
@@ -41,8 +63,28 @@ const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => 
       ...price,
     },
   },
-  productDraft: { id: `draft-${id}`, version: 3 },
+  productDraft: {
+    id: `draft-${id}`, version: 3, dataHash: "1".repeat(64),
+    normalizerVersion: "normalizer-v3", categoryRuleVersion: "category-v5", dictionaryVersion: "dictionary-live",
+  },
 });
+
+const prepareListingBase = async ({ source: entry, pricingEvidence }) => ({
+  productDraft: {
+    id: entry.productDraft.id, version: entry.productDraft.version, dataHash: entry.productDraft.dataHash,
+  },
+  pricingEvidence: { ...pricingEvidence, evidenceHash: "2".repeat(64) },
+  richContentAttributeSupported: true,
+  variants: [{ sourceVariantId: entry.id, sourceSku: `sku-${entry.collectItemId || entry.id}`, item: { offer_id: entry.id } }],
+  versions: {
+    normalizerVersion: entry.productDraft.normalizerVersion,
+    categoryRuleVersion: entry.productDraft.categoryRuleVersion,
+    dictionaryVersion: entry.productDraft.dictionaryVersion,
+  },
+});
+
+const createAutoListingService = ({ repository }) =>
+  createProductionAutoListingService({ repository, prepareListingBase });
 
 const frozenGraphConfig = () => {
   return normalizeAndHashAutoListingConfig(config);
@@ -60,15 +102,68 @@ function fakeRepository({ sources = [source("collect-1")], existing = null } = {
   return {
     calls,
     async loadCollectSources(input) { calls.push(["loadCollectSources", input]); return sources; },
+    async loadExcelImportSources(input) {
+      calls.push(["loadExcelImportSources", input]);
+      return {
+        importFile: {
+          id: input.importFileId, accountId: input.accountId, status: "COLLECTING", statusVersion: 2,
+          acceptedRows: sources.length, readyRows: sources.length, failedRows: 0,
+          configSnapshot: normalizeAndHashAutoListingConfig(config).config,
+          configHash: normalizeAndHashAutoListingConfig(config).configHash,
+          idempotencyKey: `job-${input.importFileId}`, correlationId: `corr-${input.importFileId}`,
+        },
+        sources: sources.map((entry, index) => ({ ...entry, id: `row-${index + 1}`, collectItemId: entry.id })),
+      };
+    },
     async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", credentialsSaved: true }; },
     async loadTargetWarehouse(input) { calls.push(["loadTargetWarehouse", input]); return { warehouse: { id: "warehouse-a", storeId: "store-a", accountId: input.accountId, warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }, products: [{ accountId: input.accountId, storeId: "store-a", warehouse_stocks: [{ warehouse_id: "1001", source: "fbs" }] }] }; },
     async loadPublishedStrategy(input) { calls.push(["loadPublishedStrategy", input]); return { strategyVersion: { strategyId: "strategy-a", strategyVersionId: "version-a" }, rules: [] }; },
+    async loadPublishedUploadPolicies(input) {
+      calls.push(["loadPublishedUploadPolicies", input]);
+      return [{ id: "upload-policy-review-v1", accountId: input.accountId, version: 1, mode: "REVIEW",
+        enabled: true, publishedBy: "admin-a", publishedAt: "2026-08-08T00:00:00.000Z" }];
+    },
     async getJobByIdempotencyKey(input) { calls.push(["getJobByIdempotencyKey", input]); return null; },
     async createJobGraph(input) { calls.push(["createJobGraph", input]); if (graph) return { ...graph, duplicate: true }; graph = { ...input, id: "job-1", createdAt: "2026-08-04T00:00:00.000Z" }; return graph; },
     async getJob(input) { calls.push(["getJob", input]); return graph && input.accountId === "account-a" ? graph : null; },
     async listJobs(input) { calls.push(["listJobs", input]); return graph && input.accountId === "account-a" ? [graph] : []; },
   };
 }
+
+test("creates an EXCEL_SKU job from ready import rows while preserving row and collect identities", async () => {
+  const repository = fakeRepository({ sources: [source("collect-1"), source("collect-2")] });
+  const result = await createAutoListingService({ repository }).createExcelAutoListingJob({
+    actor, importFileId: "import-1",
+  });
+  assert.equal(result.sourceType, "EXCEL_SKU");
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.equal(graph.sourceType, "EXCEL_SKU");
+  assert.deepEqual(graph.items.map(({ sourceRecordId, collectItemId }) => ({ sourceRecordId, collectItemId })), [
+    { sourceRecordId: "row-1", collectItemId: "collect-1" },
+    { sourceRecordId: "row-2", collectItemId: "collect-2" },
+  ]);
+  assert.equal(graph.idempotencyKey, "job-import-1");
+  assert.equal(repository.calls.find(([name]) => name === "loadExcelImportSources")[1].accountId, "account-a");
+});
+
+test("refuses to create an Excel job until every accepted import row is terminal", async () => {
+  const repository = fakeRepository();
+  repository.loadExcelImportSources = async () => ({
+    importFile: {
+      id: "import-1", accountId: "account-a", status: "COLLECTING", statusVersion: 2,
+      acceptedRows: 2, readyRows: 1, failedRows: 0,
+      configSnapshot: normalizeAndHashAutoListingConfig(config).config,
+      configHash: normalizeAndHashAutoListingConfig(config).configHash,
+      idempotencyKey: "job-import-1", correlationId: "corr-import-1",
+    },
+    sources: [{ ...source("collect-1"), id: "row-1", collectItemId: "collect-1" }],
+  });
+  await assert.rejects(
+    createAutoListingService({ repository }).createExcelAutoListingJob({ actor, importFileId: "import-1" }),
+    { code: "AUTO_LISTING_IMPORT_NOT_FINALIZABLE" },
+  );
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+});
 
 test("rejects permission before invoking the repository", async () => {
   const repository = fakeRepository();
@@ -83,11 +178,15 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.equal(result.jobId, "job-1");
   assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "BLOCKED"]);
   assert.equal(result.items[1].failureCode, "PRICE_INPUT_INVALID");
-  assert.equal(result.items[0].strategyVersionId, "version-a");
   assert.equal(result.items[0].price.finalPriceKopecks, "14500");
   assert.equal(repository.calls.find(([name]) => name === "loadCollectSources")[1].accountId, "account-a");
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
   assert.equal(graph.items.length, 2);
+  assert.equal(graph.items[0].strategyVersionId, "version-a");
+  assert.equal(graph.uploadPolicyVersionId, "upload-policy-review-v1");
+  assert.equal(graph.items[0].listingBaseTemplate.productDraft.id, "draft-collect-1");
+  assert.equal(graph.items[0].listingBaseTemplate.richContentAttributeSupported, true);
+  assert.equal(Object.hasOwn(graph.items[1], "listingBaseTemplate"), false);
   assert.deepEqual(verifyAutoListingFrozenConfig(graph.configSnapshot, graph.configHash), {
     config: graph.configSnapshot,
     configHash: graph.configHash,
@@ -274,8 +373,24 @@ test("uses reliable ancestor IDs but never display category labels for strategy 
     rules: [{ ruleId: "ancestor", ruleOrder: 1, matchType: "ANCESTOR_CATEGORY", categoryId: "ancestor-id", style: "PARAMETER_FIRST", textDensityByRole: {} }],
   });
   const result = await createAutoListingService({ repository }).createAutoListingJob({ actor, collectItemIds: ["collect-ancestor"], idempotencyKey: "ancestor-key", correlationId: "corr", config });
-  assert.equal(result.items[0].matchedBy, "ANCESTOR_CATEGORY");
-  assert.equal(result.items[0].style, "PARAMETER_FIRST");
+  const persisted = repository.calls.find(([name]) => name === "createJobGraph")[1].items[0];
+  assert.equal(persisted.matchedBy, "ANCESTOR_CATEGORY");
+  assert.equal(persisted.style, "PARAMETER_FIRST");
+  assert.equal(Object.hasOwn(result.items[0], "matchedBy"), false);
+  assert.equal(Object.hasOwn(result.items[0], "style"), false);
+  assert.equal(Object.hasOwn(result.items[0], "strategyId"), false);
+  assert.equal(Object.hasOwn(result.items[0], "strategyVersionId"), false);
+});
+
+test("ordinary job DTOs omit internal strategy selection metadata", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "job-internal-strategy", items: [{
+      id: "item-a", status: "SOURCE_READY", strategyId: "strategy-a",
+      strategyVersionId: "version-a", style: "PARAMETER_FIRST", matchedBy: "CATEGORY",
+    }],
+  } });
+  const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-internal-strategy" });
+  assert.deepEqual(Object.keys(result.items[0]).filter((key) => /strategy|style|matched/i.test(key)), []);
 });
 
 test("bounds list requests and keeps cross-account same-key replays independent", async () => {
@@ -318,6 +433,26 @@ test("reads and lists only within actor account and sanitizes persistence rows",
   await assert.rejects(service.getAutoListingJob({ actor: { id: "account-b", role: "user" }, jobId: "job-safe" }), (error) => error?.code === "AUTO_LISTING_JOB_NOT_FOUND");
 });
 
+test("job DTO exposes only server-authorized item actions and hides recovery evidence", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "job-actions", accountId: "account-a", sourceType: "COLLECT_BOX", status: "GENERATING",
+    items: [
+      { id: "ready", status: "READY_FOR_REVIEW", statusVersion: 5, activeContentPlanId: "plan-a" },
+      { id: "retry", status: "RETRYABLE_ERROR", statusVersion: 3, recoveryPoint: "GENERATION" },
+      { id: "upload", status: "UPLOADING", statusVersion: 7, activeContentPlanId: "plan-b" },
+      { id: "blocked", status: "BLOCKED", statusVersion: 2, activeContentPlanId: "plan-c" },
+    ],
+  } });
+  const result = await createAutoListingService({ repository }).getAutoListingJob({ actor, jobId: "job-actions" });
+  assert.deepEqual(result.items.map(({ itemId, actions }) => ({ itemId, actions })), [
+    { itemId: "ready", actions: { review: true, approve: true, retry: false, regenerate: true, cancel: true } },
+    { itemId: "retry", actions: { review: false, approve: false, retry: true, regenerate: false, cancel: true } },
+    { itemId: "upload", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false } },
+    { itemId: "blocked", actions: { review: false, approve: false, retry: false, regenerate: false, cancel: false } },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /recoveryPoint|activeContentPlanId|plan-[abc]/u);
+});
+
 test("never exposes nested objects through job and item scalar DTO slots", async () => {
   const secret = { rawPayload: { token: "secret" } };
   const repository = fakeRepository({ existing: {
@@ -338,6 +473,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-warehouse", sourceVersion: "1",
     rawResponseRef: "raw-warehouse", rawResponseHash: "raw-hash",
     collectItem: source("collect-warehouse").collectItem,
+    productDraft: { id: "draft-collect-warehouse", version: 1 },
   });
   const client = {
     async query(sql) {
@@ -361,11 +497,14 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     targetStoreId: "store-a", targetWarehouseId: "warehouse-a", sourceOrder: 0, status: "SOURCE_READY",
     strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: null, style: "BALANCED_DEFAULT", matchedBy: "DEFAULT",
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+    listingBaseTemplate: repositoryListingBaseTemplate("collect-warehouse"),
   };
   const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "warehouse-empty", correlationId: "corr",
-    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a",
+    uploadPolicyVersionId: "upload-policy-review-v1",
+    items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
   };
   await assert.rejects(
     repository.createJobGraph({ ...graphInput, idempotencyKey: "raw-mismatch", items: [{ ...graphInput.items[0], rawResponseRef: "another-raw" }] }),
@@ -424,6 +563,7 @@ test("repository persists only a canonical recomputed price with a non-default s
   const captured = buildAutoListingSourceSnapshot({
     accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1",
     rawResponseRef: "raw-rule", rawResponseHash: "raw-hash", collectItem,
+    productDraft: { id: "draft-collect-rule", version: 1 },
   });
   const item = {
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1", snapshot: captured.snapshot,
@@ -431,23 +571,30 @@ test("repository persists only a canonical recomputed price with a non-default s
     sourceOrder: 0, status: "SOURCE_READY", strategyId: "strategy-a", strategyVersionId: "version-a", ruleId: "rule-modern",
     style: "VISUAL_FIRST", matchedBy: "PRODUCT_STYLE",
     price: { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", greenKopecks: "8000", realPriceKopecks: "14500", adjustmentKopecks: "0", finalPriceKopecks: "14500" },
+    listingBaseTemplate: repositoryListingBaseTemplate("collect-rule"),
   };
   const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "rule-key", correlationId: "corr",
-    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
+    configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a",
+    uploadPolicyVersionId: "upload-policy-review-v1",
+    items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
   };
   const calls = [];
   const client = {
     async query(sql, params) {
       calls.push([sql, params]);
-      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || /INSERT INTO auto_listing_(jobs|job_items|events)/.test(sql)) return { rows: [] };
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || /INSERT INTO auto_listing_(jobs|job_items|events|listing_bases)/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
       if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
+      if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-v1" }] };
+      if (/FROM ai_gateway_profiles/.test(sql)) return { rows: [{ id: "profile-a", config_version: 3 }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [{ id: "rule-modern", rule_order: 1, rule_kind: "PRODUCT_STYLE", category_id: null, ancestor_category_id: null, product_style: "MODERN", rule: { style: "VISUAL_FIRST", textDensityByRole: {} } }] };
-      if (/SELECT 1 FROM collect_items/.test(sql)) return { rows: [{}] };
+      if (/FROM collect_items c/.test(sql)) return { rows: [{
+        draft_id: "draft-collect-rule", draft_version: 1, draft_data_hash: "1".repeat(64),
+      }] };
       if (/FROM warehouses w/.test(sql)) return { rows: [{ id: "warehouse-a", store_id: "store-a", warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }] };
       if (/FROM product_stocks ps/.test(sql)) return { rows: [{ product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false, product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs" }] };
       if (/INSERT INTO auto_listing_source_snapshots/.test(sql)) return { rows: [{
@@ -473,4 +620,26 @@ test("repository persists only a canonical recomputed price with a non-default s
     );
   }
   assert.equal(calls.some(([sql, params]) => /INSERT INTO auto_listing_events/.test(sql) && JSON.stringify(params).includes("rawPayload")), false);
+});
+
+test("repository loads only published upload-policy evidence within the actor account", async () => {
+  const calls = [];
+  const repository = createAutoListingRepository({ pool: {
+    async connect() { assert.fail("policy read must not open a transaction"); },
+    async query(sql, params) {
+      calls.push({ sql, params });
+      return { rows: [{
+        id: "policy-review-v1", account_id: "account-a", version: "1", mode: "REVIEW", enabled: true,
+        published_by: "admin-a", published_at: new Date("2026-08-08T00:00:00.000Z"),
+      }] };
+    },
+  } });
+  assert.deepEqual(await repository.loadPublishedUploadPolicies({ accountId: "account-a" }), [{
+    id: "policy-review-v1", accountId: "account-a", version: 1, mode: "REVIEW", enabled: true,
+    publishedBy: "admin-a", publishedAt: "2026-08-08T00:00:00.000Z",
+  }]);
+  assert.deepEqual(calls[0].params, ["account-a"]);
+  assert.match(calls[0].sql, /WHERE account_id=\$1 AND enabled IS TRUE/iu);
+  assert.match(calls[0].sql, /published_by IS NOT NULL AND published_at IS NOT NULL/iu);
+  assert.doesNotMatch(calls[0].sql, /api.?key|credential|secret/iu);
 });

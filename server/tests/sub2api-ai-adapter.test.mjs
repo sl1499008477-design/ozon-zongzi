@@ -26,10 +26,16 @@ const jsonResponse = (body, init = {}) => new Response(JSON.stringify(body), {
   headers: { "content-type": "application/json", ...(init.headers || {}) },
 });
 
-function adapter(fetchImpl, { logs = [], readSecret = () => secret } = {}) {
+const publicDns = async () => [{ address: "203.0.113.10", family: 4 }];
+
+function adapter(fetchImpl, {
+  logs = [], readSecret = () => secret, allowLocalGateway = false, resolveHostname = publicDns,
+} = {}) {
   return createSub2ApiAdapter({
     fetchImpl,
     readSecret,
+    allowLocalGateway,
+    resolveHostname,
     logger: {
       info(event, fields) { logs.push(["info", event, fields]); },
       warn(event, fields) { logs.push(["warn", event, fields]); },
@@ -617,6 +623,145 @@ test("profile URLs with credentials, query, fragment, or an endpoint-like escape
   }
 });
 
+test("production adapter rejects IPv4, IPv6 and localhost gateway boundaries before DNS, secret, or fetch", async () => {
+  for (const baseUrl of [
+    "http://localhost:8080/v1",
+    "https://localhost/v1",
+    "https://127.0.0.1/v1",
+    "https://10.0.0.1/v1",
+    "https://[::1]/v1",
+    "https://[fc00::1]/v1",
+    "https://[fe80::1]/v1",
+    "https://[::ffff:8.8.8.8]/v1",
+    "https://[::ffff:808:808]/v1",
+    "https://[::808:808]/v1",
+  ]) {
+    let dnsReads = 0;
+    let secretReads = 0;
+    let fetches = 0;
+    const gateway = adapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+      readSecret: () => { secretReads += 1; return secret; },
+      resolveHostname: async () => { dnsReads += 1; return [{ address: "203.0.113.10", family: 4 }]; },
+    });
+    await assert.rejects(gateway.createTextResponse(textInput({ profile: { ...profile, baseUrl } })), {
+      code: "AI_GATEWAY_PROFILE_INVALID",
+    });
+    assert.deepEqual({ dnsReads, secretReads, fetches }, { dnsReads: 0, secretReads: 0, fetches: 0 });
+  }
+});
+
+test("adapter rejects a public hostname resolving to any private address before reading its secret", async () => {
+  let secretReads = 0;
+  let fetches = 0;
+  const gateway = adapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+    readSecret: () => { secretReads += 1; return secret; },
+    resolveHostname: async () => [
+      { address: "203.0.113.10", family: 4 },
+      { address: "fd00::4", family: 6 },
+    ],
+  });
+  await assert.rejects(gateway.createTextResponse(textInput()), (error) =>
+    error?.code === "AI_GATEWAY_PROFILE_INVALID" && error?.retryable === false);
+  assert.equal(secretReads, 0);
+  assert.equal(fetches, 0);
+});
+
+test("adapter rejects every IPv4-mapped or IPv4-compatible DNS answer before secret or fetch", async () => {
+  for (const address of ["::ffff:8.8.8.8", "::ffff:808:808", "::808:808"]) {
+    let dnsReads = 0;
+    let secretReads = 0;
+    let fetches = 0;
+    const gateway = adapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+      readSecret: () => { secretReads += 1; return secret; },
+      resolveHostname: async () => { dnsReads += 1; return [{ address, family: 6 }]; },
+    });
+    await assert.rejects(gateway.createTextResponse(textInput()), (error) =>
+      error?.code === "AI_GATEWAY_PROFILE_INVALID" && error?.retryable === false);
+    assert.deepEqual({ dnsReads, secretReads, fetches }, { dnsReads: 1, secretReads: 0, fetches: 0 }, address);
+  }
+});
+
+test("production policy enforcement rejects an unapproved secret or exact gateway before transport", async () => {
+  for (const options of [
+    { allowedSecretEnvNames: [], allowedGatewayBaseUrls: [profile.baseUrl] },
+    { allowedSecretEnvNames: [profile.apiKeyEnvName], allowedGatewayBaseUrls: [] },
+    { allowedSecretEnvNames: ["SUB2API_OTHER_KEY"], allowedGatewayBaseUrls: [profile.baseUrl] },
+    { allowedSecretEnvNames: [profile.apiKeyEnvName], allowedGatewayBaseUrls: ["https://other.example/v1"] },
+  ]) {
+    let reads = 0;
+    let fetches = 0;
+    const gateway = createSub2ApiAdapter({
+      ...options,
+      resolveHostname: publicDns,
+      readSecret: () => { reads += 1; return secret; },
+      fetchImpl: async () => { fetches += 1; throw new Error("must not fetch"); },
+    });
+    await assert.rejects(gateway.createTextResponse(textInput()), {
+      code: "AI_GATEWAY_PROFILE_INVALID",
+    });
+    assert.deepEqual({ reads, fetches }, { reads: 0, fetches: 0 });
+  }
+});
+
+test("gateway DNS is revalidated immediately before transport so a rebinding answer never receives authorization", async () => {
+  let dnsReads = 0;
+  let fetches = 0;
+  const gateway = adapter(async () => {
+    fetches += 1;
+    throw new Error("transport must not run after rebinding");
+  }, {
+    resolveHostname: async () => (++dnsReads === 1
+      ? [{ address: "203.0.113.10", family: 4 }]
+      : [{ address: "127.0.0.1", family: 4 }]),
+  });
+  await assert.rejects(gateway.createTextResponse(textInput()), {
+    code: "AI_GATEWAY_PROFILE_INVALID",
+  });
+  assert.equal(dnsReads, 2);
+  assert.equal(fetches, 0);
+});
+
+test("returned image downloads run a fresh DNS boundary check", async () => {
+  let dnsReads = 0;
+  let fetches = 0;
+  const gateway = adapter(async () => {
+    fetches += 1;
+    return jsonResponse({ data: [{ url: "https://gateway.example.test/tenant/v1/media/generated.png" }] });
+  }, {
+    resolveHostname: async () => (++dnsReads < 3
+      ? [{ address: "203.0.113.10", family: 4 }]
+      : [{ address: "10.0.0.9", family: 4 }]),
+  });
+  await assert.rejects(gateway.generateImage(imageInput({
+    profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+  })), { code: "AI_GATEWAY_PROFILE_INVALID" });
+  assert.equal(fetches, 1);
+});
+
+test("gateway timeout aborts a DNS resolution that never settles", async () => {
+  const gateway = adapter(async () => { throw new Error("transport must not run"); }, {
+    resolveHostname: () => new Promise(() => {}),
+  });
+  await assert.rejects(gateway.createTextResponse(textInput({ timeoutMs: 10 })), (error) =>
+    error?.code === "GATEWAY_TIMEOUT" && error?.retryable === true);
+});
+
+test("adapter permits loopback HTTP only behind the explicit local gateway switch", async () => {
+  let requested = "";
+  const gateway = adapter(async (url) => {
+    requested = String(url);
+    return jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }] });
+  }, {
+    allowLocalGateway: true,
+    resolveHostname: async () => [{ address: "::1", family: 6 }],
+  });
+  const result = await gateway.createTextResponse(textInput({
+    profile: { ...profile, baseUrl: "http://[::1]:8080/v1" },
+  }));
+  assert.equal(result.value.ok, true);
+  assert.equal(requested, "http://[::1]:8080/v1/responses");
+});
+
 test("profile secret references must be environment-variable names and secret-reader failures stay safe", async () => {
   let reads = 0;
   const invalid = adapter(async () => { throw new Error("fetch must not run"); }, {
@@ -676,6 +821,7 @@ test("decoded base64 image limits are enforced before an oversized payload can b
   const gateway = createSub2ApiAdapter({
     fetchImpl: async () => jsonResponse({ data: [{ b64_json: PNG_1X1 }] }),
     readSecret: () => secret,
+    resolveHostname: publicDns,
     maxImageBytes: 16,
   });
   await assert.rejects(
@@ -720,9 +866,15 @@ test("timeouts and caller cancellation remain active after response headers whil
   assert.equal(textBody.wasCancelled(), true);
 
   const sseBody = stalledBodyResponse({ contentType: "text/event-stream" });
-  const sseGateway = adapter(async () => sseBody.response);
+  let markSseFetchStarted;
+  const sseFetchStarted = new Promise((resolve) => { markSseFetchStarted = resolve; });
+  const sseGateway = adapter(async () => {
+    markSseFetchStarted();
+    return sseBody.response;
+  });
   const controller = new AbortController();
   const pending = sseGateway.generateImage(imageInput({ timeoutMs: 5_000, signal: controller.signal }));
+  await sseFetchStarted;
   controller.abort();
   await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED");
   assert.equal(sseBody.wasCancelled(), true);
@@ -746,13 +898,13 @@ test("chunked JSON, SSE, and image bodies enforce byte limits and cancel their r
   const cases = [
     {
       kind: "json",
-      create: (response) => createSub2ApiAdapter({ fetchImpl: async () => response, readSecret: () => secret, maxJsonBytes: 32 })
+      create: (response) => createSub2ApiAdapter({ fetchImpl: async () => response, readSecret: () => secret, resolveHostname: publicDns, maxJsonBytes: 32 })
         .createTextResponse(textInput()),
       contentType: "application/json",
     },
     {
       kind: "sse",
-      create: (response) => createSub2ApiAdapter({ fetchImpl: async () => response, readSecret: () => secret, maxSseBytes: 32 })
+      create: (response) => createSub2ApiAdapter({ fetchImpl: async () => response, readSecret: () => secret, resolveHostname: publicDns, maxSseBytes: 32 })
         .generateImage(imageInput()),
       contentType: "text/event-stream",
     },
@@ -771,6 +923,7 @@ test("chunked JSON, SSE, and image bodies enforce byte limits and cancel their r
   let cancelled = false;
   const imageGateway = createSub2ApiAdapter({
     readSecret: () => secret,
+    resolveHostname: publicDns,
     maxImageBytes: 16,
     fetchImpl: async () => {
       call += 1;
@@ -811,6 +964,7 @@ test("logger failures never change successful results or stable gateway failures
     const gateway = createSub2ApiAdapter({
       logger,
       readSecret: () => secret,
+      resolveHostname: publicDns,
       fetchImpl: async () => {
         fetches += 1;
         return jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }] });
@@ -826,6 +980,7 @@ test("logger failures never change successful results or stable gateway failures
   const failingGateway = createSub2ApiAdapter({
     logger: { info() {}, warn() { throw new Error("logger masked stable error"); } },
     readSecret: () => secret,
+    resolveHostname: publicDns,
     fetchImpl: async () => {
       fetches += 1;
       return jsonResponse({ error: { message: "private" } }, { status: 401 });

@@ -3,6 +3,7 @@ import test from "node:test";
 import { createAiGatewayProfileService } from "../ai-gateway-profile-service.mjs";
 import {
   assertAutoListingAiRuntimeConfiguration,
+  assertProductionConfiguration,
   autoListingAiEnabled,
 } from "../runtime-config.mjs";
 
@@ -21,18 +22,34 @@ const profile = Object.freeze({
   enabled: false,
 });
 
-function fixture({ gatewayResult, gatewayError, saved = { updated: true }, logger = null } = {}) {
+function fixture({
+  gatewayResult,
+  gatewayError,
+  completion = null,
+  begin = null,
+  logger = null,
+  loadedProfile = profile,
+} = {}) {
   const calls = [];
   const repository = {
-    async loadProfileForCapabilityTest(input) {
-      calls.push(["load", input]);
-      return input.accountId === profile.accountId && input.profileId === profile.id && input.configVersion === profile.configVersion
-        ? { ...profile }
-        : null;
+    async beginCapabilityTest(input) {
+      calls.push(["begin", input]);
+      if (typeof begin === "function") return begin(input);
+      if (begin) return begin;
+      if (input.accountId !== loadedProfile.accountId || input.profileId !== loadedProfile.id
+        || input.configVersion !== loadedProfile.configVersion) return null;
+      return {
+        profile: { ...loadedProfile }, attemptId: input.attemptId, fence: 11,
+        status: "RUNNING", duplicate: false, reclaimed: false,
+        leaseVersion: 1, leaseToken: "caplease_fixture", leaseExpiresAt: "2026-08-04T10:10:00.000Z",
+      };
     },
-    async recordCapabilityResult(input) {
-      calls.push(["save", input]);
-      return saved;
+    async completeCapabilityTest(input) {
+      calls.push(["complete", input]);
+      if (completion) return completion;
+      return { applied: true, stale: false, duplicate: false,
+        response: { profileId: input.profileId, configVersion: input.configVersion,
+          ...input.capabilityResult, enabled: input.capabilityResult.outcome === "FAILED" ? false : loadedProfile.enabled } };
     },
   };
   const gateway = {
@@ -71,7 +88,7 @@ test("capability testing is administrator-only and rejects before repository or 
   assert.deepEqual(calls, []);
 });
 
-test("successful explicit capability test is account/version scoped and persists only safe evidence", async () => {
+test("successful explicit capability test records evidence without automatically publishing an unpublished profile", async () => {
   const { service, calls } = fixture();
   const result = await service.testGatewayCapabilities({
     actor: admin,
@@ -89,13 +106,10 @@ test("successful explicit capability test is account/version scoped and persists
     models: { text: "text-model-a", image: "image-model-a" },
     checkedAt: "2026-08-04T10:00:00.000Z",
     errorCode: null,
-    enabled: true,
+    enabled: false,
   });
-  assert.deepEqual(calls[0], ["load", {
-    accountId: "account-admin",
-    profileId: "profile-a",
-    configVersion: 4,
-  }]);
+  assert.equal(calls[0][0], "begin");
+  assert.match(calls[0][1].attemptId, /^ai_capability_[a-f0-9]{40}$/u);
   const gatewayInput = calls[1][1];
   assert.equal(gatewayInput.profile.accountId, "account-admin");
   assert.equal(gatewayInput.profile.configVersion, 4);
@@ -103,9 +117,12 @@ test("successful explicit capability test is account/version scoped and persists
   assert.match(gatewayInput.requestKey, /^[a-f0-9]{64}$/);
   const saved = calls[2][1];
   assert.equal(saved.accountId, "account-admin");
+  assert.equal(saved.actorId, "account-admin");
   assert.equal(saved.profileId, "profile-a");
-  assert.equal(saved.expectedConfigVersion, 4);
-  assert.equal(saved.enabled, true);
+  assert.equal(saved.configVersion, 4);
+  assert.equal(saved.fence, 11);
+  assert.equal(saved.leaseVersion, 1);
+  assert.equal(saved.leaseToken, "caplease_fixture");
   assert.deepEqual(saved.capabilityResult, {
     outcome: "PASSED",
     features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
@@ -116,6 +133,92 @@ test("successful explicit capability test is account/version scoped and persists
   });
   const serialized = JSON.stringify({ result, saved });
   assert.doesNotMatch(serialized, /apiKeyEnvName|SUB2API_PROFILE_A_KEY|requestIds|authorization|cookie|bytes|prompt/i);
+});
+
+test("successful capability retest preserves an already published profile", async () => {
+  const { service, calls } = fixture({ loadedProfile: { ...profile, enabled: true } });
+  const result = await service.testGatewayCapabilities({
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-published-retest",
+  });
+  assert.equal(result.outcome, "PASSED");
+  assert.equal(result.enabled, true);
+});
+
+test("capability request identity binds the correlation while remaining stable for the same attempt", async () => {
+  const keys = [];
+  for (const correlationId of ["corr-a", "corr-b", "corr-a"]) {
+    const { service, calls } = fixture();
+    await service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId });
+    keys.push(calls.find(([name]) => name === "gateway")[1].requestKey);
+  }
+  assert.notEqual(keys[0], keys[1]);
+  assert.equal(keys[0], keys[2]);
+});
+
+test("a completed duplicate returns its frozen response without another gateway call", async () => {
+  const response = {
+    profileId: "profile-a", configVersion: 4, outcome: "PASSED",
+    features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 9,
+    models: { text: "text-model-a", image: "image-model-a" },
+    checkedAt: "2026-08-04T09:00:00.000Z", errorCode: null, enabled: false,
+  };
+  const { service, calls } = fixture({ begin: (input) => ({
+    profile: { ...profile }, attemptId: input.attemptId, fence: 7,
+    status: "PASSED", response, duplicate: true,
+    leaseVersion: 1, leaseToken: "caplease_completed", leaseExpiresAt: "2026-08-04T10:10:00.000Z",
+  }) });
+  assert.deepEqual(await service.testGatewayCapabilities({
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-existing",
+  }), response);
+  assert.deepEqual(calls.map(([name]) => name), ["begin"]);
+});
+
+test("a duplicate running attempt does not perform the cost-bearing gateway test twice", async () => {
+  const { service, calls } = fixture({ begin: (input) => ({
+    profile: { ...profile }, attemptId: input.attemptId, fence: 7,
+    status: "RUNNING", response: null, duplicate: true, reclaimed: false,
+    leaseVersion: 1, leaseToken: "caplease_running", leaseExpiresAt: "2026-08-04T10:10:00.000Z",
+  }) });
+  await assert.rejects(service.testGatewayCapabilities({
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-running",
+  }), { code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS" });
+  assert.deepEqual(calls.map(([name]) => name), ["begin"]);
+});
+
+test("an expired running attempt is reclaimed with a new lease and keeps the same upstream idempotency key", async () => {
+  const requestKeys = [];
+  for (const lease of [
+    { leaseVersion: 1, leaseToken: "caplease_initial", reclaimed: false },
+    { leaseVersion: 2, leaseToken: "caplease_reclaimed", reclaimed: true },
+  ]) {
+    const { service, calls } = fixture({ begin: (input) => ({
+      profile: { ...profile }, attemptId: input.attemptId, fence: 13,
+      status: "RUNNING", response: null, duplicate: false,
+      leaseVersion: lease.leaseVersion, leaseToken: lease.leaseToken,
+      leaseExpiresAt: "2026-08-04T10:10:00.000Z", reclaimed: lease.reclaimed,
+    }) });
+    const result = await service.testGatewayCapabilities({
+      actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-recover",
+    });
+    assert.equal(result.outcome, "PASSED");
+    requestKeys.push(calls.find(([name]) => name === "gateway")[1].requestKey);
+    const completed = calls.find(([name]) => name === "complete")[1];
+    assert.equal(completed.leaseVersion, lease.leaseVersion);
+    assert.equal(completed.leaseToken, lease.leaseToken);
+  }
+  assert.equal(requestKeys[0], requestKeys[1]);
+});
+
+test("a malformed lease response cannot reach the cost-bearing gateway", async () => {
+  const { service, calls } = fixture({ begin: (input) => ({
+    profile: { ...profile }, attemptId: input.attemptId, fence: 7,
+    status: "RUNNING", response: null, duplicate: false, reclaimed: false,
+    leaseVersion: 0, leaseToken: "", leaseExpiresAt: null,
+  }) });
+  await assert.rejects(service.testGatewayCapabilities({
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-bad-lease",
+  }), { code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS" });
+  assert.deepEqual(calls.map(([name]) => name), ["begin"]);
 });
 
 test("failed capability test disables the exact profile version and returns a stable safe outcome", async () => {
@@ -142,20 +245,19 @@ test("failed capability test disables the exact profile version and returns a st
     enabled: false,
   });
   const saved = calls.at(-1)[1];
-  assert.equal(saved.enabled, false);
-  assert.equal(saved.expectedConfigVersion, 4);
+  assert.equal(saved.capabilityResult.outcome, "FAILED");
+  assert.equal(saved.configVersion, 4);
   assert.doesNotMatch(JSON.stringify(saved), /secret upstream body/);
 });
 
-test("compare-and-swap prevents an old cost-bearing test from enabling a newer profile version", async () => {
-  const { service, calls } = fixture({ saved: { updated: false, currentConfigVersion: 5 } });
+test("attempt fence prevents a slow old capability test from mutating newer evidence", async () => {
+  const { service, calls } = fixture({ completion: { applied: false, stale: true, duplicate: false } });
   await assert.rejects(
     service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-stale" }),
     (error) => error?.code === "AI_GATEWAY_PROFILE_VERSION_CONFLICT" && error?.retryable === false,
   );
-  const saved = calls.at(-1)[1];
-  assert.equal(saved.expectedConfigVersion, 4);
-  assert.equal(saved.enabled, true);
+  assert.equal(calls.at(-1)[0], "complete");
+  assert.equal(calls.at(-1)[1].fence, 11);
 });
 
 test("capability completion stays successful after persistence even when the logger fails", async () => {
@@ -171,9 +273,9 @@ test("capability completion stays successful after persistence even when the log
       correlationId: "corr-logger",
     });
     assert.equal(result.outcome, "PASSED");
-    assert.equal(result.enabled, true);
+    assert.equal(result.enabled, false);
     assert.equal(calls.filter(([name]) => name === "gateway").length, 1);
-    assert.equal(calls.filter(([name]) => name === "save").length, 1);
+    assert.equal(calls.filter(([name]) => name === "complete").length, 1);
     await new Promise((resolve) => setImmediate(resolve));
   }
 });
@@ -226,7 +328,7 @@ test("capability result validation rejects unsafe or incomplete adapter output a
     const result = await service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr" });
     assert.equal(result.outcome, "FAILED");
     assert.equal(result.errorCode, "INVALID_GATEWAY_RESPONSE");
-    assert.equal(calls.at(-1)[1].enabled, false);
+    assert.equal(calls.at(-1)[1].capabilityResult.outcome, "FAILED");
   }
 });
 
@@ -241,14 +343,19 @@ test("AUTO_LISTING_AI_ENABLED defaults off and performs no profile or secret rea
   assert.equal(reads, 0);
 });
 
-test("enabled AI runtime requires the referenced enabled profile and its exact environment secret", () => {
-  const env = { AUTO_LISTING_AI_ENABLED: "1", AUTO_LISTING_AI_PROFILE_ID: "profile-a", SUB2API_PROFILE_A_KEY: "x" };
+test("enabled AI runtime validates the job-frozen profile and ignores the removed global profile selector", () => {
+  const env = {
+    AUTO_LISTING_AI_ENABLED: "1",
+    AUTO_LISTING_AI_PROFILE_ID: "must-not-select-this-profile",
+    AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: "SUB2API_PROFILE_A_KEY",
+    AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: "https://gateway.example/v1",
+    SUB2API_PROFILE_A_KEY: "x",
+  };
   const safe = assertAutoListingAiRuntimeConfiguration({ env, profile: { ...profile, enabled: true } });
   assert.deepEqual(safe, { profileId: "profile-a", configVersion: 4 });
 
   for (const [fixtureEnv, fixtureProfile, code] of [
-    [{ AUTO_LISTING_AI_ENABLED: "1" }, profile, "AUTO_LISTING_AI_PROFILE_REQUIRED"],
-    [{ ...env, AUTO_LISTING_AI_PROFILE_ID: "other" }, profile, "AUTO_LISTING_AI_PROFILE_MISMATCH"],
+    [{ AUTO_LISTING_AI_ENABLED: "1" }, null, "AUTO_LISTING_AI_PROFILE_REQUIRED"],
     [env, { ...profile, enabled: false }, "AUTO_LISTING_AI_PROFILE_NOT_ENABLED"],
     [{ ...env, SUB2API_PROFILE_A_KEY: "" }, { ...profile, enabled: true }, "AUTO_LISTING_AI_SECRET_REQUIRED"],
     [{ ...env, SUB2API_PROFILE_A_KEY: "   " }, { ...profile, enabled: true }, "AUTO_LISTING_AI_SECRET_REQUIRED"],
@@ -258,5 +365,30 @@ test("enabled AI runtime requires the referenced enabled profile and its exact e
       () => assertAutoListingAiRuntimeConfiguration({ env: fixtureEnv, profile: fixtureProfile }),
       (error) => error?.code === code,
     );
+  }
+});
+
+test("production worker startup no longer requires a global AI profile selector", () => {
+  const names = [
+    "NODE_ENV", "DATABASE_URL", "POSTGRES_HOST", "APP_ENCRYPTION_KEY", "POSTGRES_PASSWORD",
+    "LISTING_PIPELINE_V3", "AUTO_LISTING_AI_ENABLED", "AUTO_LISTING_AI_PROFILE_ID",
+  ];
+  const before = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    Object.assign(process.env, {
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://configured.invalid/database",
+      APP_ENCRYPTION_KEY: "a".repeat(32),
+      POSTGRES_PASSWORD: "b".repeat(16),
+      LISTING_PIPELINE_V3: "1",
+      AUTO_LISTING_AI_ENABLED: "1",
+    });
+    delete process.env.AUTO_LISTING_AI_PROFILE_ID;
+    assert.doesNotThrow(() => assertProductionConfiguration("worker"));
+  } finally {
+    for (const name of names) {
+      if (before[name] === undefined) delete process.env[name];
+      else process.env[name] = before[name];
+    }
   }
 });
