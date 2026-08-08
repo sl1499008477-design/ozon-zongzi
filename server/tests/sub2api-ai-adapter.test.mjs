@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 import {
   createSub2ApiAdapter,
@@ -42,6 +43,33 @@ const jsonResponse = (body, init = {}) => new Response(JSON.stringify(body), {
 });
 
 const publicDns = async () => [{ address: "203.0.113.10", family: 4 }];
+
+async function listenCatalogServer(address, port, modelId, observations = []) {
+  const server = http.createServer((request, response) => {
+    observations.push({ host: request.headers.host, path: request.url });
+    response.writeHead(200, {
+      "content-type": "application/json",
+      connection: "keep-alive",
+    });
+    response.end(JSON.stringify({
+      object: "list",
+      data: [{ object: "model", id: modelId, owned_by: "local-test" }],
+    }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, address, resolve);
+  });
+  return server;
+}
+
+async function closeCatalogServers(...servers) {
+  http.globalAgent.destroy();
+  await Promise.all(servers.filter(Boolean).map((server) => new Promise((resolve) => {
+    server.close(resolve);
+    server.closeAllConnections();
+  })));
+}
 
 function adapter(fetchImpl, {
   logs = [], readSecret = () => secret, allowLocalGateway = false, resolveHostname = publicDns,
@@ -345,6 +373,89 @@ test("transport lookup is pinned to the verified public set and never performs a
     { address: "203.0.113.10", family: 4 },
     { address: "2001:db8::10", family: 6 },
   ]);
+});
+
+test("default transport opens a fresh socket when the verified address rotates", async () => {
+  const firstObservations = [];
+  const secondObservations = [];
+  const firstServer = await listenCatalogServer("127.0.0.1", 0, "model-from-first-address", firstObservations);
+  const port = firstServer.address().port;
+  let secondServer;
+  try {
+    secondServer = await listenCatalogServer("::1", port, "model-from-second-address", secondObservations);
+    const baseUrl = `http://catalog.localhost:${port}/tenant/v1`;
+    let dnsReads = 0;
+    const gateway = encryptedAdapter(undefined, {
+      allowLocalGateway: true,
+      allowedGatewayBaseUrls: [baseUrl],
+      resolveSecret: async () => secret,
+      resolveHostname: async () => [{
+        address: ++dnsReads <= 2 ? "127.0.0.1" : "::1",
+        family: dnsReads <= 2 ? 4 : 6,
+      }],
+    });
+    const localConnection = { ...connection, baseUrl };
+
+    assert.deepEqual((await gateway.listModels({
+      connection: localConnection,
+      correlationId: "corr-first-address",
+      requestKey: "request-first-address",
+      timeoutMs: 500,
+    })).models.map((model) => model.id), ["model-from-first-address"]);
+    assert.deepEqual((await gateway.listModels({
+      connection: localConnection,
+      correlationId: "corr-second-address",
+      requestKey: "request-second-address",
+      timeoutMs: 500,
+    })).models.map((model) => model.id), ["model-from-second-address"]);
+    assert.equal(dnsReads, 4);
+    assert.deepEqual(firstObservations, [{ host: `catalog.localhost:${port}`, path: "/tenant/v1/models" }]);
+    assert.deepEqual(secondObservations, [{ host: `catalog.localhost:${port}`, path: "/tenant/v1/models" }]);
+  } finally {
+    await closeCatalogServers(firstServer, secondServer);
+  }
+});
+
+test("default transport ignores a keep-alive socket prewarmed in the global agent", async () => {
+  const firstServer = await listenCatalogServer("127.0.0.1", 0, "model-from-global-pool");
+  const port = firstServer.address().port;
+  let secondServer;
+  try {
+    secondServer = await listenCatalogServer("::1", port, "model-from-pinned-address");
+    await new Promise((resolve, reject) => {
+      const request = http.get({
+        hostname: "catalog.localhost",
+        port,
+        path: "/tenant/v1/models",
+        headers: { connection: "keep-alive" },
+        lookup(_hostname, options, callback) {
+          if (options?.all) callback(null, [{ address: "127.0.0.1", family: 4 }]);
+          else callback(null, "127.0.0.1", 4);
+        },
+      }, (response) => {
+        response.resume();
+        response.once("end", resolve);
+      });
+      request.once("error", reject);
+    });
+
+    const baseUrl = `http://catalog.localhost:${port}/tenant/v1`;
+    const gateway = encryptedAdapter(undefined, {
+      allowLocalGateway: true,
+      allowedGatewayBaseUrls: [baseUrl],
+      resolveSecret: async () => secret,
+      resolveHostname: async () => [{ address: "::1", family: 6 }],
+    });
+    const result = await gateway.listModels({
+      connection: { ...connection, baseUrl },
+      correlationId: "corr-prewarmed-agent",
+      requestKey: "request-prewarmed-agent",
+      timeoutMs: 500,
+    });
+    assert.deepEqual(result.models.map((model) => model.id), ["model-from-pinned-address"]);
+  } finally {
+    await closeCatalogServers(firstServer, secondServer);
+  }
 });
 
 test("model catalog response limit cannot be configured above the 2 MiB hard ceiling", () => {

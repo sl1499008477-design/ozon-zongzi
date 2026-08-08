@@ -465,7 +465,7 @@ function requestPinnedGateway(urlValue, { method = "GET", headers, body, signal,
     }
     let request;
     try {
-      request = transport.request(url, { method, headers, signal, lookup }, (incoming) => {
+      request = transport.request(url, { method, headers, signal, lookup, agent: false }, (incoming) => {
         try {
           const status = Number(incoming.statusCode);
           const noBody = method === "HEAD" || [101, 204, 205, 304].includes(status);
