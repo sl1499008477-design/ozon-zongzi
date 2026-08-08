@@ -21,6 +21,7 @@ import {
   CloudUploadOutlined,
   EyeOutlined,
   ReloadOutlined,
+  SettingOutlined,
   StopOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
@@ -98,7 +99,7 @@ function safeRows(jobs) {
   ));
 }
 
-export default function AutoListingPage({ localData = {}, onRefresh, account = null } = {}) {
+export default function AutoListingPage({ localData = {}, onRefresh, account = null, navigate = () => {} } = {}) {
   const [form] = Form.useForm();
   const [source, setSource] = useState("collect");
   const [collectIds] = useState(() => visibleCollectIds(localData, collectIdsFromLocation()));
@@ -447,7 +448,11 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   return <div className="auto-listing-page">
     <div className="auto-listing-page__header">
       <div><h1>自动上架</h1><p>生成全新的商品图片和富文本；类目、属性、SKU、重量、尺寸等商品底稿保持不变。</p></div>
-      <Tag color="blue">按当前上传策略处理</Tag>
+      <Space wrap>
+        <Tag color="blue">按当前上传策略处理</Tag>
+        {account?.role === "admin" ? <Button icon={<SettingOutlined />}
+          onClick={() => navigate("/ozon/tools/auto-listing/ai-settings")}>AI 模型配置</Button> : null}
+      </Space>
     </div>
     {notice ? <Alert type="success" showIcon title={notice} closable onClose={() => setNotice("")} /> : null}
     {error ? <Alert type="error" showIcon title={error} closable onClose={() => setError("")} /> : null}

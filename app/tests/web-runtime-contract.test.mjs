@@ -27,3 +27,13 @@ test("the app dev server and compatibility proxy keep fixed defaults with isolat
   assert.match(devScript, /\["frontend-compat-proxy", "node", \["scripts\/frontend-compat-proxy\.mjs"\]\]/);
   assert.match(devScript, /\["app", "pnpm", \["--dir", "app", "dev"\]\]/);
 });
+
+test("the application owns a dedicated AI model settings route without adding a left-menu child", async () => {
+  const app = await source("app/src/App.jsx");
+  assert.match(app, /import AiModelSettingsPage from "\.\/AiModelSettingsPage\.jsx"/);
+  assert.match(app, /"\/ozon\/tools\/auto-listing\/ai-settings": "AI 模型配置"/);
+  assert.match(app, /route === "\/ozon\/tools\/auto-listing\/ai-settings"/);
+  assert.match(app, /<AiModelSettingsPage \{\.\.\.pageProps\} \/>/);
+  assert.match(app, /"\/ozon\/tools\/auto-listing\/ai-settings": "ai"/);
+  assert.doesNotMatch(app, /key:\s*"\/ozon\/tools\/auto-listing\/ai-settings"/);
+});

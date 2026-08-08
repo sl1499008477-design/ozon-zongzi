@@ -1,0 +1,575 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Descriptions,
+  Empty,
+  Input,
+  Select,
+  Space,
+  Spin,
+  Table,
+  Tag,
+} from "antd";
+import {
+  ApiOutlined,
+  ArrowLeftOutlined,
+  CheckCircleOutlined,
+  CloudSyncOutlined,
+  ExportOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+} from "@ant-design/icons";
+import {
+  createAiSettingsIntentStore,
+  createGatewayConnection,
+  createModelProfile,
+  loadAiSettings,
+  publishModelProfile,
+  requestModelSync,
+  rollbackModelProfile,
+  testModelProfile,
+} from "./auto-listing-ai-settings-client.js";
+import { aiSettingsPresentation } from "./auto-listing-ai-settings-view.js";
+import "./auto-listing-ai-settings.css";
+
+const DEFAULT_CONNECTION = Object.freeze({
+  displayName: "本地 sub2API",
+  baseUrl: "http://127.0.0.1:8080/v1",
+});
+
+const CONNECTION_STATUS = Object.freeze({
+  PENDING: ["待验证", "processing"],
+  VALIDATED: ["连接正常", "success"],
+  ACTIVE: ["已启用", "success"],
+  RETIRED: ["历史版本", "default"],
+});
+
+const SYNC_STATUS = Object.freeze({
+  PENDING: ["等待同步", "processing"],
+  LEASED: ["同步中", "processing"],
+  SUCCEEDED: ["同步成功", "success"],
+  FAILED: ["同步失败，可重试", "warning"],
+  DEAD: ["同步失败", "error"],
+});
+
+function formatTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+}
+
+function settingsIdentity(overview) {
+  if (!overview?.accountId) return "";
+  return [
+    overview.accountId,
+    overview.activeConnection?.id || "",
+    overview.activeConnection?.statusVersion || 0,
+    ...(overview.connections || []).flatMap((row) => [row.id, row.version, row.statusVersion, row.status]),
+    ...(overview.catalogs || []).flatMap((row) => [row.id, row.createdAt]),
+    ...(overview.syncTasks || []).flatMap((row) => [row.id, row.statusVersion, row.status]),
+    ...(overview.profiles || []).flatMap((row) => [row.id, row.configVersion, row.enabled, row.capabilityCheckedAt || ""]),
+  ].join("|");
+}
+
+function dashboardUrl(baseUrl) {
+  try {
+    const url = new URL(baseUrl);
+    if (!["http:", "https:"].includes(url.protocol) || !url.host) return "";
+    return `${url.protocol}//${url.host}/`;
+  } catch {
+    return "";
+  }
+}
+
+function latestCatalogFor(overview, connection) {
+  if (!connection) return null;
+  const successfulTaskIds = new Set((overview?.syncTasks || [])
+    .filter((task) => task.connectionId === connection.id
+      && task.connectionVersion === connection.version
+      && task.syncPurpose === "CATALOG_SYNC" && task.status === "SUCCEEDED")
+    .map((task) => task.id));
+  return [...(overview?.catalogs || [])]
+    .filter((row) => row.connectionId === connection.id && row.connectionVersion === connection.version
+      && successfulTaskIds.has(row.syncTaskId))
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0] || null;
+}
+
+function latestSyncFor(overview, connection) {
+  if (!connection) return null;
+  return [...(overview?.syncTasks || [])]
+    .filter((row) => row.connectionId === connection.id && row.connectionVersion === connection.version
+      && row.syncPurpose === "CATALOG_SYNC")
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0] || null;
+}
+
+function latestSuccessfulSyncFor(overview, connection) {
+  if (!connection) return null;
+  return [...(overview?.syncTasks || [])]
+    .filter((task) => task.connectionId === connection.id
+      && task.connectionVersion === connection.version && task.syncPurpose === "CATALOG_SYNC"
+      && task.status === "SUCCEEDED")
+    .sort((left, right) => String(right.completedAt).localeCompare(String(left.completedAt)))[0] || null;
+}
+
+function capabilityItems(profile) {
+  const result = profile?.capabilityResult || {};
+  const features = new Set(Array.isArray(result.features) ? result.features : []);
+  const status = (feature) => result.outcome === "FAILED" ? "失败" : features.has(feature) ? "通过" : "待验证";
+  return [
+    ["文字结构化输出", status("STRUCTURED_TEXT")],
+    ["图片生成", status("IMAGE_GENERATION")],
+    ["图片可解码", result.outcome === "FAILED" ? "失败"
+      : [...features].some((value) => value.startsWith("IMAGE_DECODE_")) ? "通过" : "待验证"],
+  ];
+}
+
+function actionError(error, fallback) {
+  if (["REQUEST_TIMEOUT", "AI_SETTINGS_CLIENT_POLL_TIMEOUT"].includes(error?.code)) {
+    return "请求仍可能在后台处理中，请刷新后查看最新状态";
+  }
+  return error?.message || fallback;
+}
+
+function GatewayConnectionSection({
+  activeRequest, baseUrl, busy, canCreateConnection, displayName, gatewayKey,
+  onBaseUrlChange, onDisplayNameChange, onGatewayKeyChange, onOpenDashboard,
+  onSaveAndTest, selectedConnection,
+}) {
+  const connectionStatus = CONNECTION_STATUS[selectedConnection?.status] || ["未配置", "default"];
+  return <Card title={<Space><ApiOutlined />sub2API 连接</Space>}>
+    <div className="ai-model-settings-fields">
+      <label>连接名称<Input value={displayName} disabled={busy} onChange={(event) => onDisplayNameChange(event.target.value)} /></label>
+      <label>网关地址<Input value={baseUrl} disabled={busy} placeholder="http://127.0.0.1:8080/v1" onChange={(event) => onBaseUrlChange(event.target.value)} /></label>
+      <label>新的网关 Key
+        <Input type="password" autoComplete="new-password" value={gatewayKey} disabled={busy}
+          placeholder={selectedConnection ? "已配置；更换时请输入新的 Key" : "只用于本次保存，之后不可回看"}
+          onChange={(event) => onGatewayKeyChange(event.target.value)} />
+      </label>
+    </div>
+    <Descriptions size="small" column={1} className="ai-model-settings-summary" items={[
+      { key: "status", label: "运行状态", children: <Tag color={connectionStatus[1]}>{connectionStatus[0]}</Tag> },
+      { key: "key", label: "网关 Key", children: selectedConnection ? `已配置 · ${selectedConnection.fingerprint || "安全保存"}` : "未配置" },
+      { key: "version", label: "连接版本", children: selectedConnection ? `v${selectedConnection.version}` : "—" },
+      { key: "checked", label: "最近连接检查", children: formatTime(selectedConnection?.validatedAt) },
+    ]} />
+    <Space wrap>
+      <Button type="primary" icon={<SafetyCertificateOutlined />} disabled={busy || !canCreateConnection}
+        loading={activeRequest === "测试连接"} onClick={onSaveAndTest}>测试连接</Button>
+      <Button icon={<ExportOutlined />} disabled={busy || !dashboardUrl(baseUrl || selectedConnection?.baseUrl)}
+        onClick={onOpenDashboard}>打开 sub2API 后台</Button>
+    </Space>
+    <p className="ai-model-settings-hint">完整 Key 只会提交给 ozon 粽子后端加密保存，页面和读取接口都不会再次回显。</p>
+  </Card>;
+}
+
+function ModelSelectionSection({
+  activeRequest, busy, connectionView, currentCatalog, imageCandidates, imageModel,
+  latestSuccessfulSync, latestSync, onConnectionChange, onImageModelChange,
+  onProfileNameChange, onSaveSelection, onSync, onTextModelChange, overview,
+  profileName, selectedConnectionId, selectionPresentation, textCandidates, textModel,
+}) {
+  const syncStatus = SYNC_STATUS[latestSync?.status] || ["尚未同步", "default"];
+  return <Card title={<Space><CloudSyncOutlined />模型同步与选择</Space>}>
+    <div className="ai-model-settings-fields">
+      <label>连接版本<Select value={selectedConnectionId || undefined} disabled={busy} placeholder="请选择连接"
+        onChange={onConnectionChange} options={(overview?.connections || []).map((row) => ({
+          value: row.id,
+          label: `${row.displayName} · v${row.version} · ${CONNECTION_STATUS[row.status]?.[0] || row.status}`,
+        }))} /></label>
+    </div>
+    <Descriptions size="small" column={1} className="ai-model-settings-summary" items={[
+      { key: "sync", label: "同步状态", children: <Tag color={syncStatus[1]}>{syncStatus[0]}</Tag> },
+      { key: "time", label: "最近成功同步", children: formatTime(latestSuccessfulSync?.completedAt) },
+      { key: "error", label: "同步说明", children: latestSync?.lastErrorSafe || latestSync?.lastErrorCode || "—" },
+    ]} />
+    <Button icon={<CloudSyncOutlined />} disabled={busy || !connectionView?.actions?.canSync}
+      loading={activeRequest === "立即同步"} onClick={onSync}>立即同步</Button>
+    {selectionPresentation.recommendations.warnings.length ? <Alert type="warning" showIcon
+      title={selectionPresentation.recommendations.warnings.join("；")}
+      description="系统推荐只依据模型目录元数据，发布前仍必须完成真实能力测试。" /> : null}
+    <div className="ai-model-settings-fields ai-model-settings-fields--selection">
+      <label>配置名称<Input value={profileName} disabled={busy} onChange={(event) => onProfileNameChange(event.target.value)} /></label>
+      <label>文字模型<Select value={textModel || undefined} disabled={busy || !textCandidates.length}
+        placeholder="同步后选择文字模型" onChange={onTextModelChange} options={textCandidates.map((row, index) => ({
+          value: row.modelId,
+          label: `${index === 0 ? "系统推荐 · " : ""}${row.modelId} · 待验证 · ${row.reasons.join("、")}`,
+        }))} /></label>
+      <label>图片模型<Select value={imageModel || undefined} disabled={busy || !imageCandidates.length}
+        placeholder="同步后选择图片模型" onChange={onImageModelChange} options={imageCandidates.map((row, index) => ({
+          value: row.modelId,
+          label: `${index === 0 ? "系统推荐 · " : ""}${row.modelId} · 待验证 · ${row.reasons.join("、")}`,
+        }))} /></label>
+    </div>
+    <Button type="primary" disabled={busy || !currentCatalog || !textModel || !imageModel}
+      loading={activeRequest === "保存模型选择"} onClick={onSaveSelection}>保存模型选择</Button>
+  </Card>;
+}
+
+function CapabilityPublishSection({
+  activeRequest, busy, onCostConfirmationChange, onPublish, onProfileChange, onTest,
+  overview, profileView, selectedProfile, selectedProfileId,
+}) {
+  const capability = selectedProfile?.capabilityResult || {};
+  return <Card title={<Space><CheckCircleOutlined />能力测试与发布</Space>}>
+    <Alert type="warning" showIcon title="能力测试可能产生费用"
+      description="会真实调用一次文字模型和一张最低成本测试图。只有管理员明确确认后才执行；系统不会在后台同步时自动付费测试。" />
+    <div className="ai-model-settings-fields">
+      <label>待操作配置<Select value={selectedProfileId || undefined} disabled={busy} placeholder="请选择配置版本"
+        onChange={onProfileChange} options={(overview?.profiles || []).map((row) => ({
+          value: row.id,
+          label: `${row.displayName} · v${row.configVersion}${row.enabled ? " · 当前正式版本" : ""}`,
+        }))} /></label>
+    </div>
+    {selectedProfile ? <>
+      <div className="ai-model-capability-grid">
+        {capabilityItems(selectedProfile).map(([label, status]) => <div key={label} className={status === "通过" ? "is-passed" : ""}>
+          <span>{label}</span><strong>{status}</strong>
+        </div>)}
+        <div><span>响应耗时</span><strong>{Number.isInteger(capability.latencyMs) ? `${capability.latencyMs} ms` : "—"}</strong></div>
+      </div>
+      {capability.errorCode ? <Alert type="error" showIcon title={`安全错误码：${capability.errorCode}`} /> : null}
+      <p className="ai-model-settings-hint">测试时间：{formatTime(selectedProfile.capabilityCheckedAt)} · 当前状态：{profileView?.verificationLabel || "待刷新"}</p>
+      <Checkbox checked={profileView?.paidTest.ready === true} disabled={busy}
+        onChange={(event) => onCostConfirmationChange(event.target.checked)}>
+        我已了解并确认本次真实能力测试可能产生少量费用
+      </Checkbox>
+      <Space wrap>
+        <Button icon={<SafetyCertificateOutlined />} disabled={busy || !profileView?.actions?.canTest || !profileView?.paidTest.ready}
+          loading={activeRequest === "能力测试"} onClick={onTest}>开始能力测试</Button>
+        <Button type="primary" disabled={busy || !profileView?.actions?.canPublish}
+          loading={activeRequest === "发布启用"} onClick={onPublish}>发布启用</Button>
+      </Space>
+    </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先保存模型选择" />}
+  </Card>;
+}
+
+function ConfigurationHistorySection({
+  activeRequest, busy, onRollback, onRollbackConfirmationChange, overview,
+  presentation, rollbackConfirmedProfileIds,
+}) {
+  const active = overview?.profiles?.find((row) => row.enabled) || null;
+  const columns = [
+    { title: "版本", dataIndex: "configVersion", render: (value, row) => <Space><strong>v{value}</strong>{row.enabled ? <Tag color="success">当前正式版本</Tag> : null}</Space> },
+    { title: "文字模型", dataIndex: "textModel", ellipsis: true },
+    { title: "图片模型", dataIndex: "imageModel", ellipsis: true },
+    { title: "验证状态", key: "capability", render: (_value, row) => presentation.profiles.find((item) => item.id === row.id)?.verificationLabel || "待刷新" },
+    { title: "操作时间", dataIndex: "createdAt", render: formatTime },
+    { title: "操作管理员", key: "operator", render: () => "以审计记录为准" },
+    { title: "操作", key: "action", render: (_value, row) => {
+      const view = presentation.profiles.find((item) => item.id === row.id);
+      if (!view?.actions?.canRollback) return "—";
+      const confirmed = rollbackConfirmedProfileIds.includes(row.id);
+      return <Space direction="vertical" size={4}>
+        <Checkbox checked={confirmed} disabled={busy}
+          onChange={(event) => onRollbackConfirmationChange(row.id, event.target.checked)}>
+          确认重新验证，可能产生费用
+        </Checkbox>
+        <Button danger size="small" disabled={busy || !confirmed || !view.actions.canRollback}
+          loading={activeRequest === "安全回退"} onClick={() => onRollback(row)}>安全回退</Button>
+      </Space>;
+    } },
+  ];
+  return <Card title="当前配置与历史版本">
+    {active ? <Descriptions size="small" column={1} className="ai-model-settings-summary" items={[
+      { key: "version", label: "当前正式版本", children: `v${active.configVersion}` },
+      { key: "gateway", label: "网关地址", children: active.baseUrl },
+      { key: "text", label: "文字模型", children: active.textModel },
+      { key: "image", label: "图片模型", children: active.imageModel },
+      { key: "time", label: "启用时间", children: formatTime(active.createdAt) },
+      { key: "operator", label: "操作管理员", children: "以审计记录为准" },
+    ]} /> : <Alert type="info" showIcon title="尚未发布正式配置" description="请依次完成连接、同步、选择和真实能力测试。" />}
+    <Table className="ai-model-settings-history" rowKey="id" size="small" pagination={false}
+      scroll={{ x: 960 }} dataSource={overview?.profiles || []} columns={columns} locale={{ emptyText: "暂无历史版本" }} />
+  </Card>;
+}
+
+export default function AiModelSettingsPage({ account = null, navigate = () => {} } = {}) {
+  const [overview, setOverview] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeRequest, setActiveRequest] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [displayName, setDisplayName] = useState(DEFAULT_CONNECTION.displayName);
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_CONNECTION.baseUrl);
+  const [gatewayKey, setGatewayKey] = useState("");
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  const [profileName, setProfileName] = useState("自动上架 AI 模型");
+  const [textModel, setTextModel] = useState("");
+  const [imageModel, setImageModel] = useState("");
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [costConfirmedProfileIds, setCostConfirmedProfileIds] = useState([]);
+  const [rollbackConfirmedProfileIds, setRollbackConfirmedProfileIds] = useState([]);
+  const hydratedSettingsVersionRef = useRef("");
+  const requestVersionRef = useRef(0);
+  const actionInFlightRef = useRef(false);
+  const accountId = String(account?.id || "").trim();
+  const intentStore = useMemo(() => createAiSettingsIntentStore(), []);
+  const busy = Boolean(activeRequest);
+
+  const refreshOverview = useCallback(async ({ silent = false } = {}) => {
+    const requestVersion = ++requestVersionRef.current;
+    if (!silent) setLoading(true);
+    try {
+      const result = await loadAiSettings();
+      if (requestVersion !== requestVersionRef.current) return null;
+      setOverview(result);
+      return result;
+    } catch (caught) {
+      if (requestVersion === requestVersionRef.current) {
+        setError(actionError(caught, "AI 模型配置读取失败"));
+      }
+      return null;
+    } finally {
+      if (!silent && requestVersion === requestVersionRef.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (account?.role !== "admin") {
+      setLoading(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    const requestVersion = ++requestVersionRef.current;
+    setLoading(true);
+    loadAiSettings({ signal: controller.signal })
+      .then((result) => {
+        if (requestVersion === requestVersionRef.current) setOverview(result);
+      })
+      .catch((caught) => {
+        if (requestVersion === requestVersionRef.current && caught?.code !== "REQUEST_ABORTED") {
+          setError(actionError(caught, "AI 模型配置读取失败"));
+        }
+      })
+      .finally(() => {
+        if (requestVersion === requestVersionRef.current) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [accountId, account?.role]);
+
+  useEffect(() => () => {
+    requestVersionRef.current += 1;
+  }, []);
+
+  const presentation = useMemo(() => aiSettingsPresentation(overview || {}, {
+    costConfirmedProfileIds,
+  }), [overview, costConfirmedProfileIds]);
+  const settingsVersion = useMemo(() => settingsIdentity(overview), [overview]);
+
+  useEffect(() => {
+    if (!overview || !settingsVersion) return;
+    if (draftDirty || hydratedSettingsVersionRef.current === settingsVersion) return;
+    const preferredConnection = overview.connections?.find((row) => row.id === selectedConnectionId)
+      || overview.activeConnection || overview.connections?.[0] || null;
+    setDisplayName(preferredConnection?.displayName || DEFAULT_CONNECTION.displayName);
+    setBaseUrl(preferredConnection?.baseUrl || DEFAULT_CONNECTION.baseUrl);
+    setSelectedConnectionId(preferredConnection?.id || "");
+    setSelectedProfileId(overview.profiles?.find((row) => row.enabled)?.id || overview.profiles?.[0]?.id || "");
+    hydratedSettingsVersionRef.current = settingsVersion;
+  }, [overview, settingsVersion, draftDirty, selectedConnectionId]);
+
+  const selectedConnection = useMemo(() => (overview?.connections || [])
+    .find((row) => row.id === selectedConnectionId) || null, [overview, selectedConnectionId]);
+  const connectionView = useMemo(() => presentation.connections
+    .find((row) => row.id === selectedConnectionId) || null, [presentation, selectedConnectionId]);
+  const currentCatalog = useMemo(() => latestCatalogFor(overview, selectedConnection), [overview, selectedConnection]);
+  const latestSync = useMemo(() => latestSyncFor(overview, selectedConnection), [overview, selectedConnection]);
+  const latestSuccessfulSync = useMemo(() => latestSuccessfulSyncFor(overview, selectedConnection), [overview, selectedConnection]);
+  const selectionPresentation = useMemo(() => aiSettingsPresentation({
+    ...(overview || {}),
+    catalogs: currentCatalog ? [currentCatalog] : [],
+  }), [overview, currentCatalog]);
+  const textCandidates = selectionPresentation.recommendations.text;
+  const imageCandidates = selectionPresentation.recommendations.image;
+
+  useEffect(() => {
+    if (draftDirty) return;
+    setTextModel((current) => textCandidates.some((row) => row.modelId === current)
+      ? current : textCandidates[0]?.modelId || "");
+    setImageModel((current) => imageCandidates.some((row) => row.modelId === current)
+      ? current : imageCandidates[0]?.modelId || "");
+  }, [draftDirty, currentCatalog?.id, textCandidates, imageCandidates]);
+
+  const selectedProfile = useMemo(() => (overview?.profiles || [])
+    .find((row) => row.id === selectedProfileId) || null, [overview, selectedProfileId]);
+  const profileView = useMemo(() => presentation.profiles
+    .find((row) => row.id === selectedProfileId) || null, [presentation, selectedProfileId]);
+
+  const runAction = async (name, operation, successMessage) => {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setActiveRequest(name);
+    setError("");
+    setNotice("");
+    try {
+      await operation();
+      setNotice(successMessage);
+    } catch (caught) {
+      setError(actionError(caught, `${name}失败`));
+    } finally {
+      await refreshOverview({ silent: true });
+      actionInFlightRef.current = false;
+      setActiveRequest("");
+    }
+  };
+
+  const saveAndTestConnection = () => runAction("测试连接", async () => {
+    const normalizedDisplayName = displayName.trim();
+    const normalizedBaseUrl = baseUrl.trim();
+    if (!normalizedDisplayName || !normalizedBaseUrl || !gatewayKey.trim()) {
+      throw new Error("请完整填写连接名称、网关地址和新的网关 Key");
+    }
+    const gatewayKeyInput = { value: gatewayKey };
+    const connectionIntent = intentStore.connectionIntent({
+      displayName: normalizedDisplayName,
+      baseUrl: normalizedBaseUrl,
+    });
+    const connection = await createGatewayConnection({
+      displayName: normalizedDisplayName,
+      baseUrl: normalizedBaseUrl,
+      gatewayKey,
+      gatewayKeyInput,
+    }, connectionIntent);
+    setGatewayKey("");
+    setDraftDirty(false);
+    setSelectedConnectionId(connection.id);
+    const syncIntent = intentStore.commandIntent({ operation: "sync", targetId: connection.id });
+    await requestModelSync({ connectionId: connection.id, connectionVersion: connection.version }, syncIntent);
+  }, "连接已保存，验证与模型同步任务已提交");
+
+  const syncModels = () => runAction("立即同步", async () => {
+    if (!selectedConnection || !connectionView?.actions?.canSync) throw new Error("当前连接暂不可同步");
+    const intent = intentStore.commandIntent({ operation: "sync", targetId: selectedConnection.id });
+    await requestModelSync({
+      connectionId: selectedConnection.id,
+      connectionVersion: selectedConnection.version,
+    }, intent);
+  }, "模型同步任务已提交");
+
+  const saveSelection = () => runAction("保存模型选择", async () => {
+    if (!selectedConnection || !currentCatalog || !textModel || !imageModel || !profileName.trim()) {
+      throw new Error("请先完成模型同步并选择文字模型和图片模型");
+    }
+    const intent = intentStore.commandIntent({ operation: "profile", targetId: currentCatalog.id });
+    const profile = await createModelProfile({
+      connectionId: selectedConnection.id,
+      connectionVersion: selectedConnection.version,
+      catalogId: currentCatalog.id,
+      displayName: profileName.trim(),
+      textModel,
+      imageModel,
+      textProtocol: "SUB2API_RESPONSES",
+      imageProtocol: "SUB2API_OPENAI_IMAGES",
+    }, intent);
+    setSelectedProfileId(profile.id);
+    setDraftDirty(false);
+  }, "模型选择已保存为待验证配置");
+
+  const testProfile = () => runAction("能力测试", async () => {
+    if (!selectedProfile || !profileView?.actions?.canTest || !profileView.paidTest.ready) {
+      throw new Error("请先确认测试费用提示，并选择后端允许测试的配置");
+    }
+    const intent = intentStore.commandIntent({ operation: "test", targetId: selectedProfile.id });
+    await testModelProfile({
+      profileId: selectedProfile.id,
+      configVersion: selectedProfile.configVersion,
+      costConfirmed: true,
+    }, intent);
+    setCostConfirmedProfileIds((current) => current.filter((id) => id !== selectedProfile.id));
+  }, "真实能力测试已完成");
+
+  const publishProfile = () => runAction("发布启用", async () => {
+    if (!selectedProfile || !profileView?.actions?.canPublish) throw new Error("当前配置尚未达到发布条件");
+    const intent = intentStore.commandIntent({ operation: "publish", targetId: selectedProfile.id });
+    await publishModelProfile({
+      profileId: selectedProfile.id,
+      configVersion: selectedProfile.configVersion,
+    }, intent);
+  }, "AI 模型配置已发布，仅影响新建自动上架任务");
+
+  const rollbackProfile = (profile) => runAction("安全回退", async () => {
+    const view = presentation.profiles.find((row) => row.id === profile.id);
+    if (!view?.actions?.canRollback || !rollbackConfirmedProfileIds.includes(profile.id)) {
+      throw new Error("请先确认回退将重新验证并可能产生少量费用");
+    }
+    const intent = intentStore.commandIntent({ operation: "rollback", targetId: profile.id });
+    await rollbackModelProfile({
+      profileId: profile.id,
+      configVersion: profile.configVersion,
+      costConfirmed: true,
+    }, intent);
+    setRollbackConfirmedProfileIds((current) => current.filter((id) => id !== profile.id));
+  }, "历史配置已完成安全验证并回退");
+
+  const openDashboard = () => {
+    const target = dashboardUrl(baseUrl || selectedConnection?.baseUrl);
+    if (!target) {
+      setError("请先填写有效的 sub2API 网关地址");
+      return;
+    }
+    window.open(target, "_blank", "noopener,noreferrer");
+  };
+
+  if (account?.role !== "admin") {
+    return <div className="ai-model-settings-page">
+      <Alert type="error" showIcon title="无权访问 AI 模型配置" description="请使用管理员账号进入此页面。后端仍会再次校验管理权限。" />
+      <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/ozon/tools/auto-listing")}>返回自动上架</Button>
+    </div>;
+  }
+
+  return <div className="ai-model-settings-page">
+    <div className="ai-model-settings-page__header">
+      <div>
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate("/ozon/tools/auto-listing")}>返回自动上架</Button>
+        <h1>AI 模型配置</h1>
+        <p>统一连接 sub2API、同步可用模型，并由管理员确认文字模型与图片模型。</p>
+      </div>
+      <Button icon={<ReloadOutlined />} disabled={busy} loading={loading} onClick={() => refreshOverview()}>刷新</Button>
+    </div>
+
+    {notice ? <Alert type="success" showIcon title={notice} closable onClose={() => setNotice("")} /> : null}
+    {error ? <Alert type="error" showIcon title={error} closable onClose={() => setError("")} /> : null}
+
+    <Spin spinning={loading}>
+      <div className="ai-model-settings-page__grid">
+        <GatewayConnectionSection activeRequest={activeRequest} baseUrl={baseUrl} busy={busy}
+          canCreateConnection={presentation.canCreateConnection} displayName={displayName} gatewayKey={gatewayKey}
+          onBaseUrlChange={(value) => { setBaseUrl(value); setDraftDirty(true); }}
+          onDisplayNameChange={(value) => { setDisplayName(value); setDraftDirty(true); }}
+          onGatewayKeyChange={(value) => { setGatewayKey(value); setDraftDirty(true); }}
+          onOpenDashboard={openDashboard} onSaveAndTest={saveAndTestConnection} selectedConnection={selectedConnection} />
+        <ModelSelectionSection activeRequest={activeRequest} busy={busy} connectionView={connectionView}
+          currentCatalog={currentCatalog} imageCandidates={imageCandidates} imageModel={imageModel}
+          latestSuccessfulSync={latestSuccessfulSync} latestSync={latestSync} overview={overview}
+          onConnectionChange={(value) => {
+            const connection = overview?.connections?.find((row) => row.id === value);
+            setSelectedConnectionId(value);
+            setDisplayName(connection?.displayName || DEFAULT_CONNECTION.displayName);
+            setBaseUrl(connection?.baseUrl || DEFAULT_CONNECTION.baseUrl);
+            setDraftDirty(false);
+          }}
+          onImageModelChange={(value) => { setImageModel(value); setDraftDirty(true); }}
+          onProfileNameChange={(value) => { setProfileName(value); setDraftDirty(true); }}
+          onSaveSelection={saveSelection} onSync={syncModels}
+          onTextModelChange={(value) => { setTextModel(value); setDraftDirty(true); }}
+          profileName={profileName} selectedConnectionId={selectedConnectionId}
+          selectionPresentation={selectionPresentation} textCandidates={textCandidates} textModel={textModel} />
+        <CapabilityPublishSection activeRequest={activeRequest} busy={busy}
+          onCostConfirmationChange={(checked) => setCostConfirmedProfileIds((current) => (
+            checked ? [...new Set([...current, selectedProfile.id])] : current.filter((id) => id !== selectedProfile.id)
+          ))}
+          onProfileChange={setSelectedProfileId} onPublish={publishProfile} onTest={testProfile}
+          overview={overview} profileView={profileView} selectedProfile={selectedProfile} selectedProfileId={selectedProfileId} />
+        <ConfigurationHistorySection activeRequest={activeRequest} busy={busy} onRollback={rollbackProfile}
+          onRollbackConfirmationChange={(profileId, checked) => setRollbackConfirmedProfileIds((current) => (
+            checked ? [...new Set([...current, profileId])] : current.filter((id) => id !== profileId)
+          ))}
+          overview={overview} presentation={presentation} rollbackConfirmedProfileIds={rollbackConfirmedProfileIds} />
+      </div>
+    </Spin>
+  </div>;
+}

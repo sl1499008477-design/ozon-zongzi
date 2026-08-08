@@ -88,6 +88,7 @@ import PricingSettingsPage from "./PricingSettingsPage.jsx";
 import AccountSettingsPage from "./AccountSettingsPage.jsx";
 import StoresSettingsPage from "./StoresSettingsPage.jsx";
 import AutoListingPage from "./AutoListingPage.jsx";
+import AiModelSettingsPage from "./AiModelSettingsPage.jsx";
 import { buildAutoListingCollectPush } from "./auto-listing-collect-push.js";
 import { createStoreDeletionCleanup } from "./store-deletion-cleanup.js";
 import ProfitTrendPage from "./ProfitTrendPage.jsx";
@@ -254,6 +255,7 @@ const pageTitles = {
   "/ozon/products/reshelf": "下架重上",
   "/ozon/tools/ai-poster-records": "AI 改图神器",
   "/ozon/tools/auto-listing": "自动上架",
+  "/ozon/tools/auto-listing/ai-settings": "AI 模型配置",
   "/ozon/ai-image": "AI 商品套图",
   "/ozon/promotions/prices": "价格与折扣",
   "/ozon/promotions/campaigns": "促销活动",
@@ -545,6 +547,7 @@ const routeParent = {
   "/ozon/products/reshelf": "products",
   "/ozon/tools/ai-poster-records": "ai",
   "/ozon/tools/auto-listing": "ai",
+  "/ozon/tools/auto-listing/ai-settings": "ai",
   "/ozon/promotions/prices": "promotions",
   "/ozon/promotions/campaigns": "promotions",
   "/ozon/ai-image": "ai",
@@ -1685,6 +1688,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
   if (route === "/ozon/products/reshelf") return <ReshelfPage {...pageProps} />;
   if (route === "/ozon/tools/ai-poster-records") return <AiPosterPage {...pageProps} />;
   if (route === "/ozon/tools/auto-listing") return <AutoListingPage {...pageProps} />;
+  if (route === "/ozon/tools/auto-listing/ai-settings") return <AiModelSettingsPage {...pageProps} />;
   if (route === "/ozon/ai-image") return <AiImagePage />;
   if (route === "/ozon/promotions/prices") return <PriceDiscountPage {...pageProps} />;
   if (route === "/ozon/promotions/campaigns") return <CampaignsPage {...pageProps} />;

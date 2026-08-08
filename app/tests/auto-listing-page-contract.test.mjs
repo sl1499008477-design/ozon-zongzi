@@ -172,3 +172,10 @@ test("App wires one AI-tools route and collect-box navigation without duplicatin
   const collectPage = app.slice(app.indexOf("function CollectPage"), app.indexOf("function ImportHistoryPage"));
   assert.doesNotMatch(collectPage, /\/auto-listing\/jobs\/from-collect-box|\/auto-listing\/imports\/excel/);
 });
+
+test("automatic listing shows the AI model settings entry only to administrators", () => {
+  assert.match(page, /navigate\s*=\s*\(\)\s*=>\s*\{\}/);
+  assert.match(page, /account\?\.role === "admin"/);
+  assert.match(page, /navigate\("\/ozon\/tools\/auto-listing\/ai-settings"\)/);
+  assert.match(page, /AI 模型配置/);
+});
