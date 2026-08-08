@@ -46,10 +46,15 @@ function iso(value) {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
-function catalogSelection(catalogs, profile) {
+function catalogSelection(catalogs, syncTasks, profile) {
   for (const raw of Array.isArray(catalogs) ? catalogs : []) {
     const row = record(raw); const catalog = record(row?.catalog);
-    if (row?.connectionId === profile.connectionId && row?.connectionVersion === profile.connectionVersion
+    const task = (Array.isArray(syncTasks) ? syncTasks : []).map(record).find((entry) => entry?.id === row?.syncTaskId
+      && entry.status === "SUCCEEDED" && entry.syncPurpose === "CATALOG_SYNC");
+    const evidence = record(catalog?.activeSelection);
+    if (task && row?.connectionId === profile.connectionId && row?.connectionVersion === profile.connectionVersion
+      && evidence?.profileId === profile.id && evidence?.configVersion === profile.configVersion
+      && evidence?.textModel === profile.textModel && evidence?.imageModel === profile.imageModel
       && typeof catalog?.activeSelectionState === "string") return catalog.activeSelectionState;
   }
   return "NOT_SELECTED";
@@ -94,7 +99,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
   const profiles = (Array.isArray(source.profiles) ? source.profiles : []).map((raw) => {
     const row = record(raw) || {};
     const capability = verification(row.capabilityResult);
-    const selection = catalogSelection(source.catalogs, row);
+    const selection = catalogSelection(source.catalogs, source.syncTasks, row);
     const state = selection === "MISSING" ? { outcome: "MISSING", label: VERIFICATION.MISSING, passed: false }
       : capability.passed && (!iso(row.capabilityCheckedAt) || !iso(record(row.capabilityResult)?.checkedAt))
         ? { outcome: "UNKNOWN", label: VERIFICATION.UNKNOWN, passed: false } : capability;
@@ -103,7 +108,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
     return Object.freeze({ id, displayName: typeof row.displayName === "string" ? row.displayName : "",
       textModel: typeof row.textModel === "string" ? row.textModel : "", imageModel: typeof row.imageModel === "string" ? row.imageModel : "",
       status: state.outcome, statusLabel: state.label, verificationLabel: state.label,
-      selected: row.enabled === true && (row.connectionId === null || state.passed),
+      selected: row.enabled === true,
       management: row.connectionId === null ? "legacy" : "managed", disabled: row.enabled !== true,
       connection: row.connectionId === null ? null : Object.freeze({ id: typeof row.connectionId === "string" ? row.connectionId : "", version: Number.isSafeInteger(row.connectionVersion) ? row.connectionVersion : 0 }),
       paidTest: Object.freeze({ costWarning: "能力测试可能产生费用，请确认后继续", requiresCostConfirmation: true, ready: confirmed }),

@@ -2,6 +2,7 @@ import { apiRequest } from "./client-transport.js";
 
 const BASE = "/admin/auto-listing/ai-settings";
 const MAX_BYTES = 64 * 1024;
+const DEFAULT_TIMEOUT_MS = 15_000;
 const SECRET_KEYS = new Set([
   "gatewayKey", "apiKey", "api_key", "secret", "encryptedSecret", "ciphertext", "iv", "authTag",
   "authorization", "leaseToken", "lease_token", "apiKeyEnvName", "api_key_env_name",
@@ -21,7 +22,7 @@ const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "testablePr
 const CONNECTION_STATUS = new Set(["PENDING", "VALIDATED", "ACTIVE", "RETIRED"]);
 const TASK_STATUS = new Set(["PENDING", "LEASED", "SUCCEEDED", "FAILED", "DEAD"]);
 const CAPABILITY_OUTCOME = new Set(["PASSED", "FAILED", "NOT_TESTED", "MISSING", "UNKNOWN", "STALE"]);
-const intentOwners = new WeakMap();
+const intentOwners = new Map();
 const SAFE_ERROR_CODES = new Set(["AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED", "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID",
   "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_SYNCABLE",
   "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_ACTIVE",
@@ -91,12 +92,12 @@ function version(value) {
 }
 
 function exactIntent(raw, { idempotency = true } = {}) {
-  const result = closed(raw, idempotency ? ["idempotencyKey", "correlationId"] : ["correlationId"], { optional: ["signal", "timeoutMs"] });
+  const result = closed(raw, idempotency ? ["idempotencyKey", "correlationId"] : ["correlationId"], { optional: ["intentId", "signal", "timeoutMs"] });
   if (result.signal !== undefined && (!globalThis.AbortSignal || !(result.signal instanceof globalThis.AbortSignal))) {
     throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   }
   if (result.timeoutMs !== undefined && (!Number.isSafeInteger(result.timeoutMs) || result.timeoutMs < 1 || result.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
-  return Object.freeze({ ...(idempotency ? { idempotencyKey: id(result.idempotencyKey) } : {}), correlationId: id(result.correlationId), signal: result.signal, timeoutMs: result.timeoutMs });
+  return Object.freeze({ ...(idempotency ? { idempotencyKey: id(result.idempotencyKey) } : {}), correlationId: id(result.correlationId), intentId: result.intentId === undefined ? "" : id(result.intentId), signal: result.signal, timeoutMs: result.timeoutMs ?? DEFAULT_TIMEOUT_MS });
 }
 
 function safeJson(value, seen = new WeakSet()) {
@@ -282,12 +283,13 @@ export function createAiSettingsIntentStore(storage = globalThis.sessionStorage)
     const key = storageKey(input);
     let saved = null;
     try { saved = JSON.parse(storage.getItem(key) || "null"); } catch { storage.removeItem(key); }
-    if (!plainRecord(saved) || Reflect.ownKeys(saved).length !== 2 || typeof saved.idempotencyKey !== "string" || typeof saved.correlationId !== "string") {
-      saved = { idempotencyKey: randomId(), correlationId: randomId() };
+    if (!plainRecord(saved) || Reflect.ownKeys(saved).length !== 3 || typeof saved.idempotencyKey !== "string" || typeof saved.correlationId !== "string" || typeof saved.intentId !== "string") {
+      saved = { intentId: randomId(), idempotencyKey: randomId(), correlationId: randomId() };
       storage.setItem(key, JSON.stringify(saved));
     }
-    const intent = Object.freeze({ idempotencyKey: id(saved.idempotencyKey), correlationId: id(saved.correlationId) });
-    intentOwners.set(intent, () => storage.removeItem(key));
+    const serialized = JSON.stringify(saved);
+    const intent = Object.freeze({ intentId: id(saved.intentId), idempotencyKey: id(saved.idempotencyKey), correlationId: id(saved.correlationId) });
+    intentOwners.set(intent.intentId, { storage, key, serialized });
     return intent;
   }
   return Object.freeze({ connectionIntent(raw) {
@@ -303,7 +305,12 @@ export function createAiSettingsIntentStore(storage = globalThis.sessionStorage)
 
 function settleIntent(rawIntent, error = null) {
   if (!error || ["AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT"].includes(error.code)) {
-    intentOwners.get(rawIntent)?.();
+    const intentId = typeof rawIntent?.intentId === "string" ? rawIntent.intentId : "";
+    const owner = intentOwners.get(intentId);
+    if (owner) {
+      if (owner.storage.getItem(owner.key) === owner.serialized) owner.storage.removeItem(owner.key);
+      intentOwners.delete(intentId);
+    }
   }
 }
 
@@ -312,7 +319,7 @@ export async function loadAiSettings(rawOptions = {}) {
   if (options.signal !== undefined && (!globalThis.AbortSignal || !(options.signal instanceof globalThis.AbortSignal))) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   if (options.signal?.aborted) throw invalid("REQUEST_ABORTED");
-  try { const raw = await apiRequest(BASE, { signal: options.signal, timeoutMs: options.timeoutMs, maxResponseBytes: MAX_BYTES }); return unwrap(raw, (data) => {
+  try { const raw = await apiRequest(BASE, { signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxResponseBytes: MAX_BYTES }); return unwrap(raw, (data) => {
     const value = exactResponse(data, ["accountId", "activeConnection", "connections", "catalogs", "syncTasks", "profiles", "actions"]);
     if (!id(value.accountId) || (value.activeConnection !== null && !validateConnection(value.activeConnection))
       || !Array.isArray(value.connections) || !Array.isArray(value.catalogs) || !Array.isArray(value.syncTasks)
@@ -382,8 +389,9 @@ export async function pollAiSettingsUntil(predicate, { signal, timeoutMs } = {})
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw invalid("AI_SETTINGS_CLIENT_POLL_TIMEOUT");
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, Math.min(250, remaining));
-      signal?.addEventListener("abort", () => { clearTimeout(timer); reject(invalid("REQUEST_ABORTED")); }, { once: true });
+      const onAbort = () => { clearTimeout(timer); reject(invalid("REQUEST_ABORTED")); };
+      const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, Math.min(250, remaining));
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 }
