@@ -161,6 +161,8 @@ test("encrypted credential sentinel and connection reference must be present tog
     { ...encryptedProfile, connectionVersion: 0 },
     { ...encryptedProfile, connectionId: "" },
     { ...encryptedProfile, connectionId: "connection-a " },
+    { ...encryptedProfile, accountId: " account-a" },
+    { ...encryptedProfile, apiKeyEnvName: " SUB2API_ENCRYPTED_KEY" },
   ]) {
     await assert.rejects(gateway.createTextResponse(textInput({ profile: invalidProfile })), {
       code: "AI_GATEWAY_PROFILE_INVALID",
@@ -169,6 +171,31 @@ test("encrypted credential sentinel and connection reference must be present tog
   assert.deepEqual({ dnsReads, envReads, resolutions, fetches }, {
     dnsReads: 0, envReads: 0, resolutions: 0, fetches: 0,
   });
+});
+
+test("legacy snake-case rows with null connection references remain environment-backed", async () => {
+  let reads = 0;
+  const legacyRow = {
+    id: profile.id,
+    account_id: profile.accountId,
+    config_version: profile.configVersion,
+    base_url: profile.baseUrl,
+    api_key_env_name: profile.apiKeyEnvName,
+    text_protocol: profile.textProtocol,
+    image_protocol: profile.imageProtocol,
+    text_model: profile.textModel,
+    image_model: profile.imageModel,
+    enabled: true,
+    connection_id: null,
+    connection_version: null,
+  };
+  const gateway = adapter(async () => jsonResponse({
+    model: "gpt-text",
+    output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+  }), { readSecret: () => { reads += 1; return secret; } });
+
+  assert.equal((await gateway.createTextResponse(textInput({ profile: legacyRow }))).value.ok, true);
+  assert.equal(reads, 1);
 });
 
 test("encrypted profile replaces only the env-name allowlist and still requires an approved gateway base or origin", async () => {
@@ -288,6 +315,47 @@ test("model discovery revalidates DNS immediately before transport and never aut
   assert.deepEqual({ dnsReads, resolutions, fetches }, { dnsReads: 2, resolutions: 1, fetches: 0 });
 });
 
+test("transport lookup is pinned to the verified public set and never performs a third DNS resolution", async () => {
+  let dnsReads = 0;
+  let transportAddresses;
+  const gateway = encryptedAdapter(async (url, init) => {
+    transportAddresses = await new Promise((resolve, reject) => {
+      init.lookup(new URL(url).hostname, { all: true }, (error, addresses) => {
+        if (error) reject(error);
+        else resolve(addresses);
+      });
+    });
+    return jsonResponse({ object: "list", data: [] });
+  }, {
+    resolveSecret: async () => secret,
+    resolveHostname: async () => {
+      dnsReads += 1;
+      return dnsReads <= 2
+        ? [{ address: "203.0.113.10", family: 4 }, { address: "2001:db8::10", family: 6 }]
+        : [{ address: "10.0.0.9", family: 4 }];
+    },
+  });
+
+  const result = await gateway.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  });
+  assert.deepEqual(result.models, []);
+  assert.equal(dnsReads, 2);
+  assert.deepEqual(transportAddresses, [
+    { address: "203.0.113.10", family: 4 },
+    { address: "2001:db8::10", family: 6 },
+  ]);
+});
+
+test("model catalog response limit cannot be configured above the 2 MiB hard ceiling", () => {
+  assert.throws(() => createSub2ApiAdapter({
+    fetchImpl: async () => jsonResponse({ object: "list", data: [] }),
+    readSecret: () => secret,
+    resolveHostname: publicDns,
+    maxJsonBytes: 2 * 1024 * 1024 + 1,
+  }), TypeError);
+});
+
 test("model discovery enforces the 2 MiB response and 2,000 unique-model limits", async () => {
   const overTwoMiB = JSON.stringify({ object: "list", data: [], padding: "x".repeat(2 * 1024 * 1024) });
   const oversized = encryptedAdapter(async () => new Response(overTwoMiB, {
@@ -393,6 +461,17 @@ test("model discovery keeps timeout and encrypted resolver failures stable and s
   await assert.rejects(timeout.listModels({
     connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 10,
   }), (error) => error?.code === "GATEWAY_TIMEOUT" && error?.retryable === true);
+
+  const stalledResolver = encryptedAdapter(async () => { throw new Error("must not fetch"); }, {
+    resolveSecret: async () => new Promise(() => {}),
+  });
+  const resolverOutcome = await Promise.race([
+    stalledResolver.listModels({
+      connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 10,
+    }).catch((error) => error?.code),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 100)),
+  ]);
+  assert.equal(resolverOutcome, "GATEWAY_TIMEOUT");
 
   const ciphertext = "opaque-ciphertext-must-not-leak";
   const logs = [];
@@ -1172,6 +1251,124 @@ test("request timeout and caller cancellation abort fetch with distinct stable c
   await assert.rejects(pending, (error) => error?.code === "GATEWAY_CANCELLED" && error?.retryable === false);
 });
 
+test("total timeout completes even when transport and body cleanup promises never settle", async () => {
+  const ignoringTransport = adapter(async () => new Promise(() => {}));
+  const transportResult = await Promise.race([
+    ignoringTransport.createTextResponse(textInput({ timeoutMs: 10 })).catch((error) => error?.code),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 100)),
+  ]);
+  assert.equal(transportResult, "GATEWAY_TIMEOUT");
+
+  let readerCancelled = false;
+  const stalledReaderResponse = {
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-type": "application/json" }),
+    body: {
+      getReader() {
+        return {
+          read: () => new Promise(() => {}),
+          cancel() { readerCancelled = true; return new Promise(() => {}); },
+          releaseLock() {},
+        };
+      },
+    },
+  };
+  const stalledBody = adapter(async () => stalledReaderResponse);
+  const bodyResult = await Promise.race([
+    stalledBody.createTextResponse(textInput({ timeoutMs: 10 })).catch((error) => error?.code),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 100)),
+  ]);
+  assert.equal(bodyResult, "GATEWAY_TIMEOUT");
+  assert.equal(readerCancelled, true);
+});
+
+test("redirect non-2xx header and oversized responses are abandoned without awaiting cleanup", async () => {
+  const outcome = async (promise) => Promise.race([
+    promise.then(() => "resolved", (error) => error?.code),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 100)),
+  ]);
+  const hangingBody = () => {
+    let cancelled = false;
+    return {
+      body: {
+        cancel() { cancelled = true; return new Promise(() => {}); },
+        getReader() { throw new Error("must not read"); },
+      },
+      wasCancelled: () => cancelled,
+    };
+  };
+
+  const redirectBody = hangingBody();
+  const redirect = encryptedAdapter(async () => ({
+    ok: false,
+    status: 307,
+    headers: new Headers({ location: "/tenant/v1/other" }),
+    body: redirectBody.body,
+  }), { resolveSecret: async () => secret });
+  assert.equal(await outcome(redirect.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  })), "GATEWAY_REDIRECT_BLOCKED");
+  assert.equal(redirectBody.wasCancelled(), true);
+
+  const statusBody = hangingBody();
+  const non2xx = adapter(async () => ({
+    ok: false,
+    status: 503,
+    headers: new Headers(),
+    body: statusBody.body,
+  }));
+  assert.equal(await outcome(non2xx.createTextResponse(textInput())), "RETRYABLE_GATEWAY");
+  assert.equal(statusBody.wasCancelled(), true);
+
+  const headerBody = hangingBody();
+  const hostileHeader = adapter(async () => ({
+    ok: true,
+    status: 200,
+    headers: { get() { throw new Error("unsafe header detail"); } },
+    body: headerBody.body,
+  }));
+  assert.equal(await outcome(hostileHeader.createTextResponse(textInput())), "INVALID_GATEWAY_RESPONSE");
+  assert.equal(headerBody.wasCancelled(), true);
+
+  const oversizedBody = hangingBody();
+  const oversized = adapter(async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-length": String(2 * 1024 * 1024 + 1) }),
+    body: oversizedBody.body,
+  }));
+  assert.equal(await outcome(oversized.createTextResponse(textInput())), "INVALID_GATEWAY_RESPONSE");
+  assert.equal(oversizedBody.wasCancelled(), true);
+});
+
+test("async-iterator bodies are destroyed and returned on timeout without blocking the caller", async () => {
+  let destroyed = false;
+  let returned = false;
+  const body = {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => new Promise(() => {}),
+        return() { returned = true; return new Promise(() => {}); },
+      };
+    },
+    destroy() { destroyed = true; },
+  };
+  const gateway = adapter(async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-type": "application/json" }),
+    body,
+  }));
+  const result = await Promise.race([
+    gateway.createTextResponse(textInput({ timeoutMs: 10 })).catch((error) => error?.code),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 100)),
+  ]);
+  assert.equal(result, "GATEWAY_TIMEOUT");
+  assert.equal(destroyed, true);
+  assert.equal(returned, true);
+});
+
 function stalledBodyResponse({ contentType = "application/json", firstChunk = "" } = {}) {
   let cancelled = false;
   const stream = new ReadableStream({
@@ -1267,6 +1464,31 @@ test("chunked JSON, SSE, and image bodies enforce byte limits and cancel their r
   assert.equal(cancelled, true);
 });
 
+test("non-success returned-image responses are abandoned without waiting for body cleanup", async () => {
+  let calls = 0;
+  let cancelled = false;
+  const gateway = adapter(async () => {
+    calls += 1;
+    if (calls === 1) {
+      return jsonResponse({ data: [{ url: "https://gateway.example.test/tenant/v1/image.png" }] });
+    }
+    return {
+      ok: false,
+      status: 503,
+      headers: new Headers(),
+      body: { cancel() { cancelled = true; return new Promise(() => {}); } },
+    };
+  });
+  const result = await Promise.race([
+    gateway.generateImage(imageInput({
+      profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    })).catch((error) => error?.code),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 100)),
+  ]);
+  assert.equal(result, "RETRYABLE_GATEWAY");
+  assert.equal(cancelled, true);
+});
+
 test("secret is read at call time, requires only presence, and never leaks when missing", async () => {
   let value = "a";
   const seen = [];
@@ -1350,9 +1572,12 @@ test("inspectImage uses structured Responses internally without exposing source 
 
 test("explicit capability test performs reachability, structured text, and one decoded image probe", async () => {
   const calls = [];
+  let reachabilityCancelled = false;
   const gateway = adapter(async (url, init) => {
     calls.push({ url: String(url), headers: init.headers, body: init.body ? JSON.parse(init.body) : null });
-    if (calls.length === 1) return jsonResponse({ object: "list", data: [{ id: "gpt-text" }, { id: "gpt-image" }] }, { headers: { "x-request-id": "models-id" } });
+    if (calls.length === 1) return new Response(new ReadableStream({
+      cancel() { reachabilityCancelled = true; },
+    }), { headers: { "x-request-id": "models-id" } });
     if (calls.length === 2) {
       return jsonResponse({
         id: "text-id",
@@ -1390,6 +1615,7 @@ test("explicit capability test performs reachability, structured text, and one d
     gatewayReportedImageModelPresent: false,
     orchestratorModel: "",
   });
+  assert.equal(reachabilityCancelled, true);
 });
 
 test("capability test rejects image bytes that only mimic a supported header but cannot actually decode", async () => {

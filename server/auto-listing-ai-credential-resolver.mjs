@@ -10,25 +10,49 @@ function resolverError(code) {
 }
 
 function normalizedScope(value) {
-  const accountId = typeof value?.accountId === "string" ? value.accountId.trim() : "";
-  const connectionId = typeof value?.connectionId === "string" ? value.connectionId.trim() : "";
-  const connectionVersion = value?.connectionVersion;
-  if (!SAFE_ID.test(accountId) || !SAFE_ID.test(connectionId)
-    || !Number.isSafeInteger(connectionVersion) || connectionVersion < 1) {
+  try {
+    const fields = dataFields(value);
+    const accountId = fields?.accountId;
+    const connectionId = fields?.connectionId;
+    const connectionVersion = fields?.connectionVersion;
+    if (typeof accountId !== "string" || accountId !== accountId.trim() || !SAFE_ID.test(accountId)
+      || typeof connectionId !== "string" || connectionId !== connectionId.trim() || !SAFE_ID.test(connectionId)
+      || !Number.isSafeInteger(connectionVersion) || connectionVersion < 1) {
+      throw resolverError("AI_GATEWAY_REQUEST_INVALID");
+    }
+    return Object.freeze({ accountId, connectionId, connectionVersion });
+  } catch {
     throw resolverError("AI_GATEWAY_REQUEST_INVALID");
   }
-  return Object.freeze({ accountId, connectionId, connectionVersion });
 }
 
-function exactConnection(connection, scope) {
-  return connection
-    && connection.accountId === scope.accountId
-    && connection.id === scope.connectionId
-    && connection.version === scope.connectionVersion
-    && connection.status === "ACTIVE"
-    && connection.encryptedSecret
-    && typeof connection.encryptedSecret === "object"
-    && !Array.isArray(connection.encryptedSecret);
+function dataFields(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const fields = {};
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!Object.hasOwn(descriptor, "value") || typeof descriptor.get === "function" || typeof descriptor.set === "function") {
+      return null;
+    }
+    fields[key] = descriptor.value;
+  }
+  return fields;
+}
+
+function exactEncryptedSecret(connection, scope) {
+  try {
+    const fields = dataFields(connection);
+    const encryptedSecret = dataFields(fields?.encryptedSecret);
+    if (!fields || !encryptedSecret
+      || fields.accountId !== scope.accountId
+      || fields.id !== scope.connectionId
+      || fields.version !== scope.connectionVersion
+      || fields.status !== "ACTIVE") return null;
+    return fields.encryptedSecret;
+  } catch {
+    return null;
+  }
 }
 
 export function createAutoListingAiCredentialResolver({ repository, cipher } = {}) {
@@ -46,9 +70,10 @@ export function createAutoListingAiCredentialResolver({ repository, cipher } = {
       } catch {
         throw resolverError("AI_GATEWAY_SECRET_MISSING");
       }
-      if (!exactConnection(connection, scope)) throw resolverError("AI_GATEWAY_SECRET_MISSING");
+      const encryptedSecret = exactEncryptedSecret(connection, scope);
+      if (!encryptedSecret) throw resolverError("AI_GATEWAY_SECRET_MISSING");
       try {
-        const plaintext = cipher.decrypt(scope, connection.encryptedSecret);
+        const plaintext = cipher.decrypt(scope, encryptedSecret);
         const secret = typeof plaintext === "string" ? plaintext.trim() : "";
         if (!secret) throw resolverError("AI_GATEWAY_SECRET_MISSING");
         return secret;

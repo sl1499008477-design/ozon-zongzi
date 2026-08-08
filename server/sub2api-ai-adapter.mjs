@@ -1,4 +1,7 @@
 import { AiGatewayError, createAiGatewayPort } from "./ai-gateway-port.mjs";
+import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
 import Ajv from "ajv";
 import sharp from "sharp";
 import {
@@ -100,14 +103,16 @@ function profileField(profile, camel, snake = "") {
 }
 
 function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
+  const rawAccountId = profileField(profile, "accountId", "account_id");
+  const rawApiKeyEnvName = profileField(profile, "apiKeyEnvName", "api_key_env_name");
   const rawConnectionId = profileField(profile, "connectionId", "connection_id");
   const rawConnectionVersion = profileField(profile, "connectionVersion", "connection_version");
   const result = {
     id: clean(profileField(profile, "id")),
-    accountId: clean(profileField(profile, "accountId", "account_id")),
+    accountId: clean(rawAccountId),
     configVersion: Number(profileField(profile, "configVersion", "config_version")),
     baseUrl: clean(profileField(profile, "baseUrl", "base_url"), 2048),
-    apiKeyEnvName: clean(profileField(profile, "apiKeyEnvName", "api_key_env_name")),
+    apiKeyEnvName: clean(rawApiKeyEnvName),
     textProtocol: clean(profileField(profile, "textProtocol", "text_protocol")),
     imageProtocol: clean(profileField(profile, "imageProtocol", "image_protocol")),
     textModel: clean(profileField(profile, "textModel", "text_model")),
@@ -117,9 +122,12 @@ function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
     connectionVersion: rawConnectionVersion === undefined || rawConnectionVersion === null
       ? null : Number(rawConnectionVersion),
   };
-  const encryptedReference = result.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE;
-  const connectionReferencePresent = rawConnectionId !== undefined || rawConnectionVersion !== undefined;
-  const validConnectionReference = typeof rawConnectionId === "string"
+  const encryptedReference = rawApiKeyEnvName === ENCRYPTED_SECRET_REFERENCE;
+  const connectionReferencePresent = (rawConnectionId !== undefined && rawConnectionId !== null)
+    || (rawConnectionVersion !== undefined && rawConnectionVersion !== null);
+  const validConnectionReference = typeof rawAccountId === "string"
+    && rawAccountId === result.accountId && SCOPE_ID.test(rawAccountId)
+    && typeof rawConnectionId === "string"
     && rawConnectionId === result.connectionId && SCOPE_ID.test(rawConnectionId)
     && Number.isSafeInteger(rawConnectionVersion) && rawConnectionVersion > 0;
   if (!result.id || !result.accountId || !Number.isInteger(result.configVersion) || result.configVersion < 1
@@ -242,7 +250,8 @@ function parseBoundaryUrl(value, boundary) {
 
 function safeRequestId(response) {
   for (const name of REQUEST_ID_HEADERS) {
-    const value = clean(response?.headers?.get?.(name));
+    let value = "";
+    try { value = clean(response?.headers?.get?.(name)); } catch { return ""; }
     if (value) return value;
   }
   return "";
@@ -400,6 +409,133 @@ function classifyHttp(response) {
   return gatewayError("NON_RETRYABLE_GATEWAY", { status: response.status, requestId });
 }
 
+function pinnedLookup(url, addresses) {
+  const expectedHostname = String(url.hostname).toLowerCase().replace(/^\[|\]$/gu, "");
+  const verified = Array.isArray(addresses) ? addresses.map((entry) => ({
+    address: entry?.address,
+    family: entry?.family,
+  })) : [];
+  if (!verified.length || verified.some((entry) => typeof entry.address !== "string"
+    || ![4, 6].includes(entry.family))) throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
+  return (hostname, options, callback) => {
+    try {
+      const requestedHostname = String(hostname).toLowerCase().replace(/^\[|\]$/gu, "");
+      if (requestedHostname !== expectedHostname || typeof callback !== "function") {
+        throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
+      }
+      const requestedFamily = typeof options === "number" ? options : Number(options?.family || 0);
+      const candidates = requestedFamily === 4 || requestedFamily === 6
+        ? verified.filter((entry) => entry.family === requestedFamily)
+        : verified;
+      if (!candidates.length) throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
+      if (options && typeof options === "object" && options.all === true) {
+        callback(null, candidates.map((entry) => ({ ...entry })));
+        return;
+      }
+      callback(null, candidates[0].address, candidates[0].family);
+    } catch (error) {
+      callback?.(error instanceof AiGatewayError ? error : gatewayError("AI_GATEWAY_PROFILE_INVALID"));
+    }
+  };
+}
+
+function responseHeaders(rawHeaders) {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(rawHeaders || {})) {
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item !== undefined) headers.append(name, String(item));
+    }
+  }
+  return headers;
+}
+
+function requestPinnedGateway(urlValue, { method = "GET", headers, body, signal, lookup } = {}) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = urlValue instanceof URL ? urlValue : new URL(urlValue);
+    } catch {
+      reject(gatewayError("AI_GATEWAY_PROFILE_INVALID"));
+      return;
+    }
+    const transport = url.protocol === "https:" ? https : (url.protocol === "http:" ? http : null);
+    if (!transport || typeof lookup !== "function") {
+      reject(gatewayError("AI_GATEWAY_PROFILE_INVALID"));
+      return;
+    }
+    let request;
+    try {
+      request = transport.request(url, { method, headers, signal, lookup }, (incoming) => {
+        try {
+          const status = Number(incoming.statusCode);
+          const noBody = method === "HEAD" || [101, 204, 205, 304].includes(status);
+          const stream = noBody ? null : Readable.toWeb(incoming);
+          resolve(new Response(stream, {
+            status,
+            statusText: incoming.statusMessage || "",
+            headers: responseHeaders(incoming.headers),
+          }));
+        } catch (error) {
+          try { incoming.destroy(); } catch {}
+          reject(error);
+        }
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    request.once("error", reject);
+    try { request.end(body); } catch (error) { reject(error); }
+  });
+}
+
+function fireAndForget(operation) {
+  try {
+    const pending = operation?.();
+    if (pending && typeof pending.then === "function") Promise.resolve(pending).catch(() => {});
+  } catch {
+    // Cleanup is bounded and best-effort; it never changes the safe outcome.
+  }
+}
+
+function abandonResponse(response, { reader = null, iterator = null } = {}) {
+  const body = (() => { try { return response?.body; } catch { return null; } })();
+  if (reader) fireAndForget(() => reader.cancel?.());
+  if (iterator) fireAndForget(() => iterator.return?.());
+  if (!reader) fireAndForget(() => body?.cancel?.());
+  if (!iterator) {
+    fireAndForget(() => {
+      const createIterator = body?.[Symbol.asyncIterator];
+      if (typeof createIterator !== "function") return undefined;
+      return createIterator.call(body)?.return?.();
+    });
+  }
+  fireAndForget(() => body?.destroy?.());
+  fireAndForget(() => response?.destroy?.());
+  try { reader?.releaseLock?.(); } catch {}
+}
+
+async function abortableResult(promise, signal, abandonLateValue = null) {
+  if (signal?.aborted) throw signal.reason || new DOMException("aborted", "AbortError");
+  const pending = Promise.resolve(promise);
+  let removeAbort = () => {};
+  try {
+    return await Promise.race([pending, new Promise((_, reject) => {
+      if (!signal?.addEventListener) return;
+      const onAbort = () => reject(signal.reason || new DOMException("aborted", "AbortError"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbort = () => signal.removeEventListener?.("abort", onAbort);
+    })]);
+  } catch (error) {
+    if (signal?.aborted && typeof abandonLateValue === "function") {
+      pending.then((value) => abandonLateValue(value), () => {});
+    }
+    throw error;
+  } finally {
+    removeAbort();
+  }
+}
+
 async function fetchWithBoundary({
   fetchImpl, url, init, boundary, authorized, signal, verifyTarget, rejectRedirects = false,
 }) {
@@ -407,16 +543,35 @@ async function fetchWithBoundary({
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     let response;
     try {
-      await verifyTarget?.(target);
-      response = await fetchImpl(target, { ...init, redirect: "manual", signal });
+      const verification = await verifyTarget?.(target);
+      const lookup = pinnedLookup(target, verification?.addresses);
+      const pending = Promise.resolve().then(() => fetchImpl(target, {
+        ...init, redirect: "manual", signal, lookup,
+      }));
+      response = await abortableResult(pending, signal, abandonResponse);
     } catch (error) {
       throw error;
     }
-    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-    if (rejectRedirects) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
-    if (redirects === MAX_REDIRECTS) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
-    const location = response.headers.get("location");
-    if (!location) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
+    let status;
+    try { status = Number(response?.status); } catch {
+      abandonResponse(response);
+      throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    }
+    if (![301, 302, 303, 307, 308].includes(status)) return response;
+    if (rejectRedirects || redirects === MAX_REDIRECTS) {
+      abandonResponse(response);
+      throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
+    }
+    let location;
+    try { location = response?.headers?.get?.("location"); } catch {
+      abandonResponse(response);
+      throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
+    }
+    if (!location) {
+      abandonResponse(response);
+      throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
+    }
+    abandonResponse(response);
     target = parseBoundaryUrl(location, boundary);
     if (!authorized && init.headers?.Authorization) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
   }
@@ -659,9 +814,11 @@ function finalImageFromEvents(events, maxImageBytes) {
   return { bytes: strictBase64(encoded, maxImageBytes), usage, responseId, orchestratorModel, gatewayReportedImageModels };
 }
 
-function positiveByteLimit(value, fallback) {
+function positiveByteLimit(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   const resolved = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(resolved) || resolved < 1) throw new TypeError("body byte limits must be positive integers");
+  if (!Number.isInteger(resolved) || resolved < 1 || resolved > maximum) {
+    throw new TypeError("body byte limits must be positive bounded integers");
+  }
   return resolved;
 }
 
@@ -680,19 +837,40 @@ async function readerRead(reader, signal) {
 }
 
 async function readBodyLimited(response, { maxBytes, abort }) {
-  const declared = Number(response.headers.get("content-length") || 0);
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await response.body?.cancel?.().catch?.(() => {});
+  let body;
+  let declared;
+  try {
+    body = response?.body;
+    declared = Number(response?.headers?.get?.("content-length") || 0);
+  } catch {
+    abandonResponse(response);
     throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
   }
-  if (!response.body?.getReader) throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
-  const reader = response.body.getReader();
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    abandonResponse(response);
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
+  let reader = null;
+  let iterator = null;
+  try {
+    if (typeof body?.getReader === "function") reader = body.getReader();
+    else if (typeof body?.[Symbol.asyncIterator] === "function") iterator = body[Symbol.asyncIterator]();
+  } catch {
+    abandonResponse(response);
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
+  if ((!reader || typeof reader.read !== "function") && (!iterator || typeof iterator.next !== "function")) {
+    abandonResponse(response, { reader, iterator });
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
+  }
   const chunks = [];
   let total = 0;
   let finished = false;
   try {
     while (true) {
-      const { done, value } = await readerRead(reader, abort.signal);
+      const { done, value } = reader
+        ? await readerRead(reader, abort.signal)
+        : await abortableResult(Promise.resolve().then(() => iterator.next()), abort.signal);
       if (done) { finished = true; break; }
       const chunk = Buffer.from(value);
       total += chunk.length;
@@ -701,8 +879,10 @@ async function readBodyLimited(response, { maxBytes, abort }) {
     }
     return Buffer.concat(chunks, total);
   } finally {
-    if (!finished) await reader.cancel().catch(() => {});
-    reader.releaseLock();
+    if (!finished) abandonResponse(response, { reader, iterator });
+    else {
+      try { reader?.releaseLock?.(); } catch {}
+    }
   }
 }
 
@@ -711,6 +891,7 @@ async function readJson(response, abort, maxBytes) {
     const bytes = await readBodyLimited(response, { maxBytes, abort });
     return JSON.parse(bytes.toString("utf8"));
   } catch (error) {
+    abandonResponse(response);
     if (error instanceof AiGatewayError) throw error;
     if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
     throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeRequestId(response) });
@@ -728,7 +909,16 @@ async function readImageUrl(fetchImpl, urlValue, normalizedProfile, abort, maxIm
     signal: abort.signal,
     verifyTarget,
   });
-  if (!response.ok) throw classifyHttp(response);
+  let responseOk;
+  try { responseOk = response?.ok === true; } catch {
+    abandonResponse(response);
+    throw gatewayError("INVALID_GATEWAY_RESPONSE");
+  }
+  if (!responseOk) {
+    const failure = classifyHttp(response);
+    abandonResponse(response);
+    throw failure;
+  }
   const bytes = await readBodyLimited(response, { maxBytes: maxImageBytes, abort });
   if (!bytes.length || bytes.length > maxImageBytes) throw gatewayError("INVALID_GATEWAY_RESPONSE");
   return bytes;
@@ -808,7 +998,7 @@ function normalizeModelCatalog(payload, response) {
 }
 
 export function createSub2ApiAdapter({
-  fetchImpl = globalThis.fetch,
+  fetchImpl = requestPinnedGateway,
   readSecret = (name) => process.env[name],
   resolveSecret,
   logger = null,
@@ -830,7 +1020,7 @@ export function createSub2ApiAdapter({
     throw new TypeError("sub2api adapter requires fetch and secret reader");
   }
   maxImageBytes = positiveByteLimit(maxImageBytes, MAX_IMAGE_BYTES);
-  maxJsonBytes = positiveByteLimit(maxJsonBytes, MAX_JSON_BYTES);
+  maxJsonBytes = positiveByteLimit(maxJsonBytes, MAX_JSON_BYTES, MAX_JSON_BYTES);
   maxSseBytes = positiveByteLimit(maxSseBytes, Math.ceil(maxImageBytes * 4 / 3) + MAX_JSON_BYTES);
   maxSourceImageBytesTotal = positiveByteLimit(maxSourceImageBytesTotal, MAX_SOURCE_IMAGE_BYTES_TOTAL);
   maxRequestBodyBytes = positiveByteLimit(maxRequestBodyBytes, MAX_REQUEST_BODY_BYTES);
@@ -854,7 +1044,7 @@ export function createSub2ApiAdapter({
       const policy = normalizedProfile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
         ? encryptedGatewayPolicy : gatewayPolicy;
       if (policy) requireSub2ApiGatewayPolicy(normalizedProfile, policy);
-      await verifySub2ApiGatewayDnsBoundary({
+      return await verifySub2ApiGatewayDnsBoundary({
         hostname: normalizedProfile.base.hostname,
         allowLocalGateway,
         signal: abort.signal,
@@ -904,14 +1094,15 @@ export function createSub2ApiAdapter({
       let secret;
       try {
         const resolved = normalizedProfile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
-          ? await resolveSecret?.({
-            accountId: normalizedProfile.accountId,
-            connectionId: normalizedProfile.connectionId,
-            connectionVersion: normalizedProfile.connectionVersion,
-          })
+          ? await abortableResult(Promise.resolve().then(() => resolveSecret?.({
+              accountId: normalizedProfile.accountId,
+              connectionId: normalizedProfile.connectionId,
+              connectionVersion: normalizedProfile.connectionVersion,
+            })), abort.signal)
           : readSecret(normalizedProfile.apiKeyEnvName);
         secret = typeof resolved === "string" ? resolved.trim() : "";
-      } catch {
+      } catch (error) {
+        if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
         throw gatewayError("AI_GATEWAY_SECRET_MISSING");
       }
       if (!secret) throw gatewayError("AI_GATEWAY_SECRET_MISSING");
@@ -936,7 +1127,16 @@ export function createSub2ApiAdapter({
         verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
         rejectRedirects,
       });
-      if (!response.ok) throw classifyHttp(response);
+      let responseOk;
+      try { responseOk = response?.ok === true; } catch {
+        abandonResponse(response);
+        throw gatewayError("INVALID_GATEWAY_RESPONSE");
+      }
+      if (!responseOk) {
+        const failure = classifyHttp(response);
+        abandonResponse(response);
+        throw failure;
+      }
       safeLog(logger, "info", "ai_gateway.request_succeeded", {
         profileId: normalizedProfile.id,
         profileVersion: normalizedProfile.configVersion,
@@ -1215,6 +1415,7 @@ export function createSub2ApiAdapter({
     try {
       return safeRequestId(execution.response);
     } finally {
+      abandonResponse(execution.response);
       execution.abort.cleanup();
     }
   }

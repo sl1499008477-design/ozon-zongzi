@@ -197,12 +197,20 @@ export async function verifySub2ApiGatewayDnsBoundary({
   }
   if (!Array.isArray(answers) || answers.length < 1) throw boundaryError("SUB2API_GATEWAY_BOUNDARY_INVALID");
   const localHost = explicitLoopbackHost(host);
+  const verifiedAddresses = [];
   for (const answer of answers) {
     const address = typeof answer === "string" ? answer : answer?.address;
-    if (net.isIP(hostText(address)) === 0) throw boundaryError("SUB2API_GATEWAY_BOUNDARY_INVALID");
+    const normalizedAddress = hostText(address);
+    const family = net.isIP(normalizedAddress);
+    if (family === 0) throw boundaryError("SUB2API_GATEWAY_BOUNDARY_INVALID");
     if (isPrivateOrLocalIp(address) && !(allowLocalGateway && localHost && isLoopbackIp(address))) {
       throw boundaryError("SUB2API_GATEWAY_BOUNDARY_INVALID");
     }
+    verifiedAddresses.push(Object.freeze({ address: normalizedAddress, family }));
   }
-  return Object.freeze({ hostname: host, addressCount: answers.length });
+  return Object.freeze({
+    hostname: host,
+    addressCount: verifiedAddresses.length,
+    addresses: Object.freeze(verifiedAddresses),
+  });
 }

@@ -81,6 +81,67 @@ test("resolver rejects mismatched repository identity and malformed scope withou
   assert.equal(decryptions, 0);
 });
 
+test("resolver rejects non-canonical scope before repository access", async () => {
+  let repositoryReads = 0;
+  const resolver = createAutoListingAiCredentialResolver({
+    repository: {
+      async loadConnectionForSecretResolution() {
+        repositoryReads += 1;
+        return null;
+      },
+    },
+    cipher: { decrypt() { throw new Error("must not decrypt"); } },
+  });
+
+  for (const invalidScope of [
+    { ...scope, accountId: ` ${scope.accountId}` },
+    { ...scope, connectionId: `${scope.connectionId} ` },
+    { ...scope, connectionVersion: "1" },
+    new Proxy({}, {
+      getPrototypeOf() {
+        throw new Proxy({}, { get() { throw new Error("hostile scope detail"); } });
+      },
+    }),
+  ]) {
+    await assert.rejects(() => resolver.resolveSecret(invalidScope), {
+      code: "AI_GATEWAY_REQUEST_INVALID",
+    });
+  }
+  assert.equal(repositoryReads, 0);
+});
+
+test("resolver maps repository DTO accessors and proxies to one secret-missing error", async () => {
+  const leaked = "ciphertext-or-database-detail-must-not-leak";
+  const hostileRows = [
+    Object.defineProperty({}, "accountId", {
+      enumerable: true,
+      get() { throw new Error(leaked); },
+    }),
+    {
+      accountId: scope.accountId,
+      id: scope.connectionId,
+      version: scope.connectionVersion,
+      status: "ACTIVE",
+      get encryptedSecret() { throw new Error(leaked); },
+    },
+    new Proxy({}, {
+      get() { throw new Error(leaked); },
+      getPrototypeOf() { throw new Error(leaked); },
+    }),
+  ];
+
+  for (const row of hostileRows) {
+    const resolver = createAutoListingAiCredentialResolver({
+      repository: { async loadConnectionForSecretResolution() { return row; } },
+      cipher: { decrypt() { throw new Error("must not decrypt"); } },
+    });
+    await assert.rejects(() => resolver.resolveSecret(scope), (error) => (
+      error?.code === "AI_GATEWAY_SECRET_MISSING"
+      && !String(error.message).includes(leaked)
+    ));
+  }
+});
+
 test("repository and decrypt failures map to stable errors without secret or ciphertext leakage", async () => {
   const { connection } = encryptedConnection();
   const ciphertext = connection.encryptedSecret.ciphertext;
