@@ -248,6 +248,7 @@ test("PostgreSQL daily scheduler uses database time, a 24-hour success fence, an
   }]);
   assert.deepEqual(calls[0].params, ["account-a", 20]);
   assert.match(calls[0].sql, /status='ACTIVE'/iu);
+  assert.match(calls[0].sql, /catalog\.created_at AS synced_at/iu);
   assert.match(calls[0].sql, /NOW\(\)\s*-\s*INTERVAL '24 hours'/iu);
   assert.match(calls[0].sql, /sync_purpose='CATALOG_SYNC'/iu);
   assert.match(calls[0].sql, /status IN \('PENDING','LEASED','FAILED'\)/iu);

@@ -175,10 +175,22 @@ function activeSelectionState(overview, input, models) {
     && profile?.accountId === input.accountId
     && profile?.connectionId === input.connectionId
     && profile?.connectionVersion === input.connectionVersion);
-  if (!selected) return "NOT_SELECTED";
+  if (!selected) return { state: "NOT_SELECTED", evidence: null };
+  if (typeof selected.id !== "string" || !SAFE_ID.test(selected.id)
+    || !Number.isSafeInteger(selected.configVersion) || selected.configVersion < 1
+    || typeof selected.textModel !== "string" || typeof selected.imageModel !== "string") {
+    throw serviceError("AUTO_LISTING_AI_MODEL_SYNC_OVERVIEW_INVALID");
+  }
   const ids = new Set(models.map((model) => model.id));
-  return typeof selected.textModel === "string" && typeof selected.imageModel === "string"
-    && ids.has(selected.textModel) && ids.has(selected.imageModel) ? "AVAILABLE" : "MISSING";
+  return {
+    state: ids.has(selected.textModel) && ids.has(selected.imageModel) ? "AVAILABLE" : "MISSING",
+    evidence: {
+      profileId: selected.id,
+      configVersion: selected.configVersion,
+      textModel: selected.textModel,
+      imageModel: selected.imageModel,
+    },
+  };
 }
 
 function hashText(value) {
@@ -187,6 +199,12 @@ function hashText(value) {
 
 function failureDetails(error, input) {
   const sourceCode = safeCode(error);
+  if (sourceCode === "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT") return {
+    errorCode: "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
+    errorSafe: "active gateway connection changed",
+    retryable: false,
+    retryDelayMs: 0,
+  };
   if (AUTH_CODES.has(sourceCode)) return {
     errorCode: sourceCode,
     errorSafe: "gateway authentication failed",
@@ -218,7 +236,7 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
   const clock = options.clock ?? (() => new Date());
   const timeoutMs = options.timeoutMs ?? 30_000;
   const workerId = id(options.workerId, "AUTO_LISTING_AI_MODEL_SYNC_SERVICE_INVALID");
-  if (!["loadConnectionForSecretResolution", "loadSettingsOverview", "completeModelSync", "failModelSync"]
+  if (!["loadCatalogSyncConnectionForSecretResolution", "loadSettingsOverview", "completeModelSync", "failModelSync"]
     .every((key) => typeof repository?.[key] === "function")
     || typeof gateway?.listModels !== "function" || typeof recommendModels !== "function"
     || typeof clock !== "function" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 300_000) {
@@ -243,10 +261,12 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
       const input = commandInput(rawCommand);
       let connection;
       try {
-        connection = await repository.loadConnectionForSecretResolution({
+        connection = await repository.loadCatalogSyncConnectionForSecretResolution({
           accountId: input.accountId,
-          connectionId: input.connectionId,
-          connectionVersion: input.connectionVersion,
+          taskId: input.taskId,
+          workerId,
+          leaseVersion: input.leaseVersion,
+          leaseToken: input.leaseToken,
         });
       } catch (error) {
         return fail(input, failureDetails(error, input));
@@ -262,7 +282,7 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
 
       let normalized;
       let recommendation;
-      let selectionState;
+      let selection;
       try {
         normalized = normalizeModels(await gateway.listModels({
           connection,
@@ -271,7 +291,7 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
           timeoutMs,
         }));
         recommendation = canonicalJson(recommendModels({ models: normalized.models }));
-        selectionState = activeSelectionState(await repository.loadSettingsOverview({
+        selection = activeSelectionState(await repository.loadSettingsOverview({
           accountId: input.accountId,
         }), input, normalized.models);
       } catch (error) {
@@ -284,7 +304,8 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
         connectionVersion: input.connectionVersion,
         syncedAt,
         requestIdHash: hashText(normalized.requestId),
-        activeSelectionState: selectionState,
+        activeSelectionState: selection.state,
+        activeSelection: selection.evidence,
         models: normalized.models,
         recommendation,
       };
@@ -303,7 +324,18 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
           image: false,
         },
       };
-      const result = await replayDatabaseResponse(() => repository.completeModelSync(completion));
+      let result;
+      try {
+        result = await replayDatabaseResponse(() => repository.completeModelSync(completion));
+      } catch (error) {
+        if (safeCode(error, "") !== "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT") throw error;
+        return fail(input, {
+          errorCode: "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
+          errorSafe: "active gateway connection changed",
+          retryable: false,
+          retryDelayMs: 0,
+        });
+      }
       if (!result || result.status !== "SUCCEEDED" || typeof result.catalog?.id !== "string") {
         throw serviceError("AUTO_LISTING_AI_MODEL_SYNC_RESULT_INVALID");
       }
@@ -313,7 +345,7 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
         modelCount: normalized.models.length,
         catalogId: result.catalog.id,
         syncedAt,
-        activeSelectionState: selectionState,
+        activeSelectionState: selection.state,
       });
     },
   });

@@ -166,7 +166,7 @@ export function createAutoListingAiModelSyncSchedulePostgres(rawOptions = {}) {
                   latest.catalog_id AS latest_catalog_id,latest.synced_at AS last_synced_at
              FROM ai_gateway_connection_versions c
              LEFT JOIN LATERAL (
-               SELECT catalog.id AS catalog_id,catalog.tested_at AS synced_at
+               SELECT catalog.id AS catalog_id,catalog.created_at AS synced_at
                  FROM ai_gateway_model_catalogs catalog
                  JOIN ai_gateway_model_sync_tasks task
                    ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
@@ -175,7 +175,7 @@ export function createAutoListingAiModelSyncSchedulePostgres(rawOptions = {}) {
                 WHERE catalog.account_id=c.account_id
                   AND catalog.connection_id=c.id AND catalog.connection_version=c.version
                   AND task.status='SUCCEEDED' AND task.sync_purpose='CATALOG_SYNC'
-                ORDER BY catalog.tested_at DESC,catalog.id DESC
+                ORDER BY catalog.created_at DESC,catalog.id DESC
                 LIMIT 1
              ) latest ON TRUE
             WHERE c.account_id > $1 AND c.status='ACTIVE'

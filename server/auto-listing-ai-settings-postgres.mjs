@@ -718,6 +718,34 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       return secretResolutionDto(result?.rows?.[0]);
     },
 
+    async loadCatalogSyncConnectionForSecretResolution(rawInput = {}) {
+      const input = rollbackSecretRequest(rawInput);
+      const leaseTokenDigest = hash({ leaseToken: input.leaseToken });
+      const result = await query(pool,
+        `SELECT c.*,
+                (c.status='ACTIVE'
+                  AND c.status_version=t.target_connection_status_version)
+                  AS catalog_connection_fence_matches
+           FROM ai_gateway_model_sync_tasks t
+           JOIN ai_gateway_connection_versions c
+             ON c.account_id=t.account_id
+            AND c.id=t.connection_id
+            AND c.version=t.connection_version
+          WHERE t.account_id=$1 AND t.id=$2
+            AND t.sync_purpose='CATALOG_SYNC'
+            AND t.status='LEASED' AND t.lease_owner=$3 AND t.lease_version=$4
+            AND t.lease_token=$5 AND t.lease_expires_at > NOW()`,
+        [input.accountId, input.taskId, input.workerId, input.leaseVersion, leaseTokenDigest]);
+      const connection = result?.rows?.[0];
+      if (!connection) {
+        throw repositoryError("AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT", 409);
+      }
+      if (connection.catalog_connection_fence_matches !== true) {
+        throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", 409);
+      }
+      return secretResolutionDto(connection);
+    },
+
     async loadRollbackConnectionForSecretResolution(rawInput = {}) {
       const input = rollbackSecretRequest(rawInput);
       const leaseTokenDigest = hash({ leaseToken: input.leaseToken });
@@ -1171,7 +1199,18 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
         }
         let rollbackEvidenceIdentity = null;
-        if (task.sync_purpose === "ROLLBACK_CAPABILITY") {
+        if (task.sync_purpose === "CATALOG_SYNC") {
+          const fence = await query(client,
+            `SELECT 1 FROM ai_gateway_connection_versions
+              WHERE account_id=$1 AND id=$2 AND version=$3
+                AND status='ACTIVE' AND status_version=$4
+              FOR KEY SHARE`,
+            [task.account_id, task.connection_id, task.connection_version,
+              task.target_connection_status_version]);
+          if (!fence?.rows?.[0]) {
+            throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", 409);
+          }
+        } else if (task.sync_purpose === "ROLLBACK_CAPABILITY") {
           const fence = await query(client,
             `SELECT 1 FROM ai_gateway_connection_versions
               WHERE account_id=$1 AND id=$2 AND version=$3
@@ -1204,14 +1243,21 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
             WHERE account_id=$1 AND id=$2
               AND status='LEASED' AND lease_owner=$3 AND lease_version=$4
               AND lease_token=$5 AND lease_expires_at > NOW()
-              AND (sync_purpose <> 'ROLLBACK_CAPABILITY' OR EXISTS (
-                SELECT 1 FROM ai_gateway_connection_versions c
-                WHERE c.account_id=ai_gateway_model_sync_tasks.account_id
-                  AND c.id=ai_gateway_model_sync_tasks.connection_id
-                  AND c.version=ai_gateway_model_sync_tasks.connection_version
-                  AND c.status='RETIRED'
-                  AND c.status_version=ai_gateway_model_sync_tasks.target_connection_status_version
-              ))
+              AND ((sync_purpose='CATALOG_SYNC' AND EXISTS (
+                  SELECT 1 FROM ai_gateway_connection_versions c
+                  WHERE c.account_id=ai_gateway_model_sync_tasks.account_id
+                    AND c.id=ai_gateway_model_sync_tasks.connection_id
+                    AND c.version=ai_gateway_model_sync_tasks.connection_version
+                    AND c.status='ACTIVE'
+                    AND c.status_version=ai_gateway_model_sync_tasks.target_connection_status_version
+                )) OR (sync_purpose='ROLLBACK_CAPABILITY' AND EXISTS (
+                  SELECT 1 FROM ai_gateway_connection_versions c
+                  WHERE c.account_id=ai_gateway_model_sync_tasks.account_id
+                    AND c.id=ai_gateway_model_sync_tasks.connection_id
+                    AND c.version=ai_gateway_model_sync_tasks.connection_version
+                    AND c.status='RETIRED'
+                    AND c.status_version=ai_gateway_model_sync_tasks.target_connection_status_version
+                )))
             RETURNING *`,
           [input.accountId, input.taskId, input.workerId, input.leaseVersion,
             leaseTokenDigest, rollbackEvidenceIdentity])).rows[0];

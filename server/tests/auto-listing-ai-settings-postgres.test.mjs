@@ -69,6 +69,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "enqueueModelSync",
     "failModelSync",
     "listRunnableSyncAccountIds",
+    "loadCatalogSyncConnectionForSecretResolution",
     "loadConnectionForSecretResolution",
     "loadRollbackConnectionForSecretResolution",
     "loadSettingsOverview",
@@ -213,6 +214,54 @@ test("rollback secret resolution validates one live rollback lease and stores no
   assert.match(calls[0].sql, /c\.status_version=t\.target_connection_status_version/iu);
   assert.equal(calls[0].params.includes("aiglease_secret-a"), false);
   assert.match(calls[0].params.at(-1), /^[a-f0-9]{64}$/u);
+});
+
+test("catalog secret resolution requires the exact live catalog lease and ACTIVE status fence", async () => {
+  const { pool, calls } = scriptedPool([{
+    rowCount: 1, rows: [{
+      ...connectionRow,
+      status: "ACTIVE",
+      status_version: 3,
+      catalog_connection_fence_matches: true,
+    }],
+  }]);
+  const resolved = await createAutoListingAiSettingsPostgres({ pool })
+    .loadCatalogSyncConnectionForSecretResolution({
+      accountId: "account-a",
+      taskId: "catalog-task-a",
+      workerId: "catalog-worker-a",
+      leaseVersion: 2,
+      leaseToken: "aiglease_catalog-secret",
+    });
+  assert.equal(resolved.status, "ACTIVE");
+  assert.match(calls[0].sql, /sync_purpose='CATALOG_SYNC'/iu);
+  assert.match(calls[0].sql, /lease_expires_at > NOW\(\)/iu);
+  assert.match(calls[0].sql, /c\.status='ACTIVE'/iu);
+  assert.match(calls[0].sql, /c\.status_version=t\.target_connection_status_version/iu);
+  assert.equal(calls[0].params.includes("aiglease_catalog-secret"), false);
+  assert.match(calls[0].params.at(-1), /^[a-f0-9]{64}$/u);
+});
+
+test("catalog secret resolution distinguishes a rotated connection from an invalid lease", async () => {
+  const { pool } = scriptedPool([{
+    rowCount: 1, rows: [{
+      ...connectionRow,
+      status: "RETIRED",
+      status_version: 4,
+      catalog_connection_fence_matches: false,
+    }],
+  }]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool })
+    .loadCatalogSyncConnectionForSecretResolution({
+      accountId: "account-a",
+      taskId: "catalog-task-a",
+      workerId: "catalog-worker-a",
+      leaseVersion: 2,
+      leaseToken: "aiglease_catalog-secret",
+    }), {
+    code: "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT",
+    status: 409,
+  });
 });
 
 test("raw secret-shaped input is rejected before any database access", async () => {

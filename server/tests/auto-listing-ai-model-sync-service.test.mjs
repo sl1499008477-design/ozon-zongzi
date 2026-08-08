@@ -47,6 +47,7 @@ function enabledProfile(overrides = {}) {
   return {
     id: "profile-a",
     accountId: "account-a",
+    configVersion: 4,
     enabled: true,
     connectionId: "connection-a",
     connectionVersion: 3,
@@ -56,23 +57,32 @@ function enabledProfile(overrides = {}) {
   };
 }
 
-function repositoryHarness({ connection = activeConnection(), profiles = [], responseLoss = false } = {}) {
+function repositoryHarness({
+  connection = activeConnection(), profiles = [], responseLoss = false,
+  loadError = null, failError = null, completionError = null,
+} = {}) {
   const state = {
     completeInputs: [],
     failInputs: [],
     overviewReads: 0,
+    connectionReads: [],
     committed: null,
     failed: null,
     responseLoss,
   };
   const repository = {
-    async loadConnectionForSecretResolution() { return connection && structuredClone(connection); },
+    async loadCatalogSyncConnectionForSecretResolution(input) {
+      state.connectionReads.push(structuredClone(input));
+      if (loadError) throw loadError;
+      return connection && structuredClone(connection);
+    },
     async loadSettingsOverview() {
       state.overviewReads += 1;
       return { profiles: structuredClone(profiles) };
     },
     async completeModelSync(input) {
       state.completeInputs.push(structuredClone(input));
+      if (completionError) throw completionError;
       if (state.committed) {
         assert.deepEqual(input, state.committed.input, "same lease replay must carry the identical result");
         return { ...structuredClone(state.committed.result), duplicate: true };
@@ -100,6 +110,7 @@ function repositoryHarness({ connection = activeConnection(), profiles = [], res
     },
     async failModelSync(input) {
       state.failInputs.push(structuredClone(input));
+      if (failError) throw failError;
       if (state.failed) {
         assert.deepEqual(input, state.failed.input);
         return { ...structuredClone(state.failed.result), duplicate: true };
@@ -181,12 +192,25 @@ test("catalog synchronization persists only normalized no-cost evidence and retu
   assert.equal(persisted.catalog.connectionVersion, 3);
   assert.equal(persisted.catalog.syncedAt, SYNCED_AT);
   assert.equal(persisted.catalog.activeSelectionState, "AVAILABLE");
+  assert.deepEqual(persisted.catalog.activeSelection, {
+    profileId: "profile-a",
+    configVersion: 4,
+    textModel: "text-a",
+    imageModel: "image-a",
+  });
   assert.equal(persisted.catalog.recommendation.ruleVersion, "TEST_RULE_V1");
   assert.equal(JSON.stringify(persisted).includes("models-1"), false);
   assert.equal(JSON.stringify(persisted).includes("raw"), false);
   assert.deepEqual(persisted.capabilityResult, {
     outcome: "NOT_TESTED", checkedAt: SYNCED_AT, text: false, image: false,
   });
+  assert.deepEqual(state.connectionReads, [{
+    accountId: "account-a",
+    taskId: "sync-task-a",
+    workerId: "model-sync-worker",
+    leaseVersion: 1,
+    leaseToken: "aiglease_secret-token",
+  }]);
 });
 
 test("model ordering produces identical catalog hash inputs and same-task replay is stable", async () => {
@@ -254,6 +278,51 @@ test("stale connection versions are dead-lettered before gateway access", async 
     retryable: false,
     retryDelayMs: 0,
   });
+});
+
+test("a connection rotated after claim is classified as stale before gateway access", async () => {
+  const rotated = new Error("connection changed after claim");
+  rotated.code = "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT";
+  rotated.retryable = false;
+  const { service, state, paid } = serviceHarness({ repositoryOptions: { loadError: rotated } });
+  const result = await service.syncModelCatalog(command());
+  assert.equal(result.status, "DEAD");
+  assert.equal(paid.lists, 0);
+  assert.equal(state.overviewReads, 0);
+  assert.equal(state.failInputs[0].errorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
+  assert.equal(state.failInputs[0].retryable, false);
+});
+
+test("expired or forged leases cannot resolve credentials or reach the gateway", async () => {
+  const expired = new Error("leaseToken=raw-secret");
+  expired.code = "AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT";
+  expired.retryable = false;
+  const failure = new Error("lease no longer owned");
+  failure.code = "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT";
+  failure.retryable = false;
+  const { service, paid, state } = serviceHarness({
+    repositoryOptions: { loadError: expired, failError: failure },
+  });
+  await assert.rejects(service.syncModelCatalog(command({ leaseToken: "aiglease_forged" })), {
+    code: "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT",
+  });
+  assert.equal(paid.lists, 0);
+  assert.equal(state.overviewReads, 0);
+  assert.equal(JSON.stringify(state.failInputs).includes("raw-secret"), false);
+});
+
+test("connection rotation at completion dead-letters the old task and persists no stale catalog", async () => {
+  const fence = new Error("connection changed");
+  fence.code = "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT";
+  fence.retryable = false;
+  const { service, state } = serviceHarness({
+    repositoryOptions: { completionError: fence, profiles: [enabledProfile()] },
+  });
+  const result = await service.syncModelCatalog(command());
+  assert.equal(result.status, "DEAD");
+  assert.equal(state.completeInputs.length, 1);
+  assert.equal(state.failInputs[0].errorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
+  assert.equal(state.failInputs[0].retryable, false);
 });
 
 test("retryable gateway timeouts use the fixed exponential delays and attempt five becomes DEAD", async () => {

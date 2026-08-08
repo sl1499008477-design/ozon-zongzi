@@ -649,9 +649,13 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       syncPurpose: "CATALOG_SYNC",
     });
     assert.equal(missingLease.taskId, missingTask.id);
+    await assert.rejects(repository.loadCatalogSyncConnectionForSecretResolution({
+      accountId: accountA, taskId: missingTask.id, workerId: "worker-service-replay",
+      leaseVersion: missingLease.leaseVersion, leaseToken: "aiglease_forged",
+    }), { code: "AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT", status: 409 });
     let completionResponseLost = true;
     const responseLossRepository = {
-      loadConnectionForSecretResolution: repository.loadConnectionForSecretResolution,
+      loadCatalogSyncConnectionForSecretResolution: repository.loadCatalogSyncConnectionForSecretResolution,
       loadSettingsOverview: repository.loadSettingsOverview,
       failModelSync: repository.failModelSync,
       async completeModelSync(input) {
@@ -706,6 +710,12 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       [accountA, missingTask.id],
     )).rows[0].catalog;
     assert.equal(missingCatalog.activeSelectionState, "MISSING");
+    assert.deepEqual(missingCatalog.activeSelection, {
+      profileId: profile.id,
+      configVersion: profile.configVersion,
+      textModel: "text-model",
+      imageModel: "image-model",
+    });
     assert.equal(missingCatalog.connectionVersion, active.version);
     assert.match(missingCatalog.requestIdHash, /^[a-f0-9]{64}$/u);
     assert.equal(Object.hasOwn(missingCatalog, "requestId"), false);
@@ -765,6 +775,70 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     assert.equal(dailyTasks.length, 1);
     assert.equal(dailyTasks[0].status, "SUCCEEDED");
     assert.deepEqual(await scheduler.listDueConnections({ afterAccountId: null, limit: 10 }), []);
+
+    const preflightRotationTask = await repository.enqueueModelSync({
+      accountId: accountB, actorId: accountB, connectionId: activeB.id,
+      connectionVersion: activeB.version,
+      expectedConnectionStatusVersion: activeB.statusVersion,
+      idempotencyKey: `sync-preflight-rotation-${suffix}`,
+      correlationId: `corr-sync-preflight-rotation-${suffix}`,
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
+    });
+    const preflightRotationLease = await repository.claimModelSync({
+      accountId: accountB, workerId: "worker-preflight-rotation", leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    assert.equal(preflightRotationLease.taskId, preflightRotationTask.id);
+    const activeBReplacement = await repository.createPendingConnection({
+      accountId: accountB, actorId: accountB,
+      idempotencyKey: `connection-preflight-rotation-${suffix}`,
+      correlationId: `corr-connection-preflight-rotation-${suffix}`,
+      displayName: "Preflight rotation replacement",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      encryptedSecret: { ...encryptedSecret, fingerprint: "fp-preflight-rotation" },
+    });
+    await repository.markConnectionValidated({
+      accountId: accountB, actorId: accountB, connectionId: activeBReplacement.id,
+      connectionVersion: activeBReplacement.version, expectedStatusVersion: 1,
+      idempotencyKey: `activate-preflight-rotation-${suffix}`,
+      correlationId: `corr-activate-preflight-rotation-${suffix}`,
+      rollbackCapabilityEvidence: null,
+      validationResult: { outcome: "PASSED", checkedAt: new Date().toISOString(), endpoint: "models" },
+    });
+    let preflightGatewayCalls = 0;
+    const preflightRotationService = createAutoListingAiModelSyncService({
+      repository,
+      gateway: {
+        async listModels() {
+          preflightGatewayCalls += 1;
+          return { requestId: "must-not-run-after-preflight-rotation", models: [] };
+        },
+      },
+      workerId: "worker-preflight-rotation",
+      timeoutMs: 30_000,
+      clock: () => new Date(),
+    });
+    const preflightRotationResult = await preflightRotationService.syncModelCatalog({
+      accountId: preflightRotationLease.accountId,
+      connectionId: preflightRotationLease.connectionId,
+      connectionVersion: preflightRotationLease.connectionVersion,
+      syncPurpose: preflightRotationLease.syncPurpose,
+      targetConnectionStatusVersion: preflightRotationLease.targetConnectionStatusVersion,
+      taskId: preflightRotationLease.taskId,
+      attemptCount: preflightRotationLease.attemptCount,
+      maxAttempts: preflightRotationLease.maxAttempts,
+      leaseVersion: preflightRotationLease.leaseVersion,
+      leaseToken: preflightRotationLease.leaseToken,
+      leaseExpiresAt: preflightRotationLease.leaseExpiresAt,
+      correlationId: `corr-sync-preflight-rotation-run-${suffix}`,
+    });
+    assert.equal(preflightRotationResult.status, "DEAD");
+    assert.equal(preflightRotationResult.lastErrorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
+    assert.equal(preflightGatewayCalls, 0);
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
+      [accountB, preflightRotationTask.id],
+    )).rows[0].count, 0);
 
     await rejectsCode(() => pool.query(
       "UPDATE ai_gateway_profiles SET connection_id=$1 WHERE account_id=$2 AND id=$3",
@@ -895,6 +969,64 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
         WHERE account_id=$1 AND task_id=$2 AND event_type='DEAD'`,
       [accountA, exhaustedTask.id],
     )).rows[0].count, 1);
+
+    const replacement = await repository.createPendingConnection({
+      ...createInput,
+      idempotencyKey: `connection-rotation-${suffix}`,
+      correlationId: `corr-connection-rotation-${suffix}`,
+      displayName: "Rotation fence replacement",
+      encryptedSecret: { ...encryptedSecret, fingerprint: "fp-rotation" },
+    });
+    const rotationTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: active.id,
+      connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
+      idempotencyKey: `sync-rotation-fence-${suffix}`,
+      correlationId: `corr-sync-rotation-fence-${suffix}`,
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
+    });
+    const rotationLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-rotation", leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    const rotationService = createAutoListingAiModelSyncService({
+      repository,
+      gateway: {
+        async listModels() {
+          await repository.markConnectionValidated({
+            accountId: accountA, actorId: accountA, connectionId: replacement.id,
+            connectionVersion: replacement.version, expectedStatusVersion: 1,
+            idempotencyKey: `activate-rotation-${suffix}`,
+            correlationId: `corr-activate-rotation-${suffix}`,
+            rollbackCapabilityEvidence: null,
+            validationResult: { outcome: "PASSED", checkedAt: new Date().toISOString(), endpoint: "models" },
+          });
+          return { requestId: "models-after-rotation", models: [] };
+        },
+      },
+      workerId: "worker-rotation",
+      timeoutMs: 30_000,
+      clock: () => new Date(),
+    });
+    const rotationResult = await rotationService.syncModelCatalog({
+      accountId: rotationLease.accountId,
+      connectionId: rotationLease.connectionId,
+      connectionVersion: rotationLease.connectionVersion,
+      syncPurpose: rotationLease.syncPurpose,
+      targetConnectionStatusVersion: rotationLease.targetConnectionStatusVersion,
+      taskId: rotationLease.taskId,
+      attemptCount: rotationLease.attemptCount,
+      maxAttempts: rotationLease.maxAttempts,
+      leaseVersion: rotationLease.leaseVersion,
+      leaseToken: rotationLease.leaseToken,
+      leaseExpiresAt: rotationLease.leaseExpiresAt,
+      correlationId: `corr-sync-rotation-complete-${suffix}`,
+    });
+    assert.equal(rotationResult.status, "DEAD");
+    assert.equal(rotationResult.lastErrorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
+      [accountA, rotationTask.id],
+    )).rows[0].count, 0);
 
     const eventRow = (await pool.query(
       "SELECT id FROM ai_gateway_model_sync_events WHERE account_id=$1 AND task_id=$2 ORDER BY created_at LIMIT 1",
