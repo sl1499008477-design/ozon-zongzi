@@ -65,16 +65,21 @@ test("053 only inserts PENDING connections and binds rollback to stored passed c
 
   assert.match(insertGuard, /NEW\.status IS DISTINCT FROM 'PENDING'/iu);
   assert.match(insertGuard, /NEW\.status_version IS DISTINCT FROM 1/iu);
+  assert.match(insertGuard, /NEW\.version IS DISTINCT FROM 1/iu);
   assert.match(sql, /rollback_evidence JSONB/iu);
   assert.match(sql, /rollback_evidence_hash TEXT/iu);
   assert.match(transitionGuard, /OLD\.status = 'RETIRED'[\s\S]*NEW\.status = 'VALIDATED'[\s\S]*ai_gateway_model_catalogs/iu);
-  assert.match(transitionGuard, /capability_result->>'outcome' = 'PASSED'/iu);
+  assert.match(transitionGuard, /t\.status = 'SUCCEEDED'/iu);
+  assert.match(transitionGuard, /t\.sync_purpose = 'ROLLBACK_CAPABILITY'/iu);
   assert.match(transitionGuard, /catalog_hash = NEW\.rollback_evidence->>'catalogHash'/iu);
   assert.match(transitionGuard, /capability_hash = NEW\.rollback_evidence->>'capabilityHash'/iu);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_rollback_evidence_consumptions/iu);
+  assert.match(transitionGuard, /ai_gateway_rollback_evidence_consumptions/iu);
 });
 
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {
   const sql = await migrationSql();
+  const catalogTable = sql.match(/CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs[\s\S]*?\n\);/iu)?.[0] ?? "";
 
   assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs/iu);
   assert.match(sql, /FOREIGN KEY \(account_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_connection_versions\(account_id, id, version\)/iu);
@@ -93,9 +98,14 @@ test("053 stores bounded model catalogs and fenced sync tasks under composite te
   assert.match(sql, /UNIQUE \(account_id, id, connection_id, connection_version\)/iu);
   assert.match(sql, /FOREIGN KEY \(account_id, task_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_model_sync_tasks\(account_id, id, connection_id, connection_version\)/iu);
   assert.match(sql, /FOREIGN KEY \(account_id, sync_task_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_model_sync_tasks\(account_id, id, connection_id, connection_version\)/iu);
-  assert.match(sql, /capability_result->>'outcome' = 'PASSED'/iu);
-  assert.match(sql, /capability_result->>'text' = 'true'/iu);
-  assert.match(sql, /capability_result->>'image' = 'true'/iu);
+  assert.doesNotMatch(catalogTable, /capability_result->>'outcome' = 'PASSED'/iu);
+  assert.doesNotMatch(catalogTable, /capability_result->>'text' = 'true'/iu);
+  assert.doesNotMatch(catalogTable, /capability_result->>'image' = 'true'/iu);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_attempt_outcomes/iu);
+  assert.match(sql, /sync_purpose TEXT NOT NULL/iu);
+  assert.match(sql, /target_connection_status_version INTEGER NOT NULL/iu);
+  assert.match(sql, /auto_listing_require_succeeded_ai_gateway_model_catalog/iu);
+  assert.match(sql, /status = 'SUCCEEDED'/iu);
 });
 
 test("053 makes sync domain events and connection transition audits append-only", async () => {

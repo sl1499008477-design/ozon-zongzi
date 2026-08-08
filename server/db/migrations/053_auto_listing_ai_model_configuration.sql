@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_tasks (
   id TEXT NOT NULL,
   connection_id TEXT NOT NULL,
   connection_version INTEGER NOT NULL CHECK (connection_version > 0),
+  sync_purpose TEXT NOT NULL CHECK (sync_purpose IN ('CATALOG_SYNC', 'ROLLBACK_CAPABILITY')),
+  target_connection_status_version INTEGER NOT NULL CHECK (target_connection_status_version > 0),
+  result_evidence_identity TEXT,
   status TEXT NOT NULL DEFAULT 'PENDING'
     CHECK (status IN ('PENDING', 'LEASED', 'SUCCEEDED', 'FAILED', 'DEAD')),
   status_version INTEGER NOT NULL DEFAULT 1 CHECK (status_version > 0),
@@ -119,7 +122,11 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_tasks (
     OR (last_error_code IS NULL AND last_error_safe IS NULL)),
   CHECK (status NOT IN ('FAILED', 'DEAD')
     OR (NULLIF(BTRIM(last_error_code), '') IS NOT NULL
-      AND NULLIF(BTRIM(last_error_safe), '') IS NOT NULL))
+      AND NULLIF(BTRIM(last_error_safe), '') IS NOT NULL)),
+  CHECK ((sync_purpose = 'ROLLBACK_CAPABILITY' AND status = 'SUCCEEDED'
+      AND result_evidence_identity ~ '^[a-f0-9]{64}$')
+    OR ((sync_purpose <> 'ROLLBACK_CAPABILITY' OR status <> 'SUCCEEDED')
+      AND result_evidence_identity IS NULL))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ai_gateway_model_sync_tasks_one_runnable_uq
@@ -160,6 +167,7 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs (
   catalog_hash TEXT NOT NULL CHECK (catalog_hash ~ '^[a-f0-9]{64}$'),
   capability_result JSONB NOT NULL,
   capability_hash TEXT NOT NULL CHECK (capability_hash ~ '^[a-f0-9]{64}$'),
+  rollback_evidence_identity TEXT,
   tested_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (account_id, id),
@@ -175,9 +183,117 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs (
   CHECK (jsonb_typeof(capability_result) = 'object'),
   CHECK (capability_result <> '{}'::JSONB),
   CHECK (octet_length(capability_result::TEXT) <= 262144),
-  CHECK (capability_result->>'outcome' = 'PASSED'),
-  CHECK (capability_result->>'text' = 'true'),
-  CHECK (capability_result->>'image' = 'true')
+  CHECK (rollback_evidence_identity IS NULL
+    OR rollback_evidence_identity ~ '^[a-f0-9]{64}$')
+);
+
+CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_attempt_outcomes (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connection_version INTEGER NOT NULL CHECK (connection_version > 0),
+  lease_version INTEGER NOT NULL CHECK (lease_version > 0),
+  lease_owner TEXT NOT NULL CHECK (NULLIF(BTRIM(lease_owner), '') IS NOT NULL),
+  lease_token_digest TEXT NOT NULL CHECK (lease_token_digest ~ '^[a-f0-9]{64}$'),
+  lease_identity_hash TEXT NOT NULL CHECK (lease_identity_hash ~ '^[a-f0-9]{64}$'),
+  outcome TEXT NOT NULL CHECK (outcome IN ('SUCCEEDED', 'FAILED', 'DEAD')),
+  result_hash TEXT NOT NULL CHECK (result_hash ~ '^[a-f0-9]{64}$'),
+  task_snapshot JSONB NOT NULL CHECK (jsonb_typeof(task_snapshot) = 'object'),
+  catalog_id TEXT,
+  catalog_hash TEXT,
+  capability_hash TEXT,
+  rollback_evidence_identity TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (account_id, task_id, lease_version),
+  UNIQUE (account_id, task_id, lease_version, lease_identity_hash),
+  FOREIGN KEY (account_id, task_id, connection_id, connection_version)
+    REFERENCES ai_gateway_model_sync_tasks(account_id, id, connection_id, connection_version)
+    ON DELETE CASCADE,
+  CHECK ((outcome = 'SUCCEEDED' AND NULLIF(BTRIM(catalog_id), '') IS NOT NULL)
+    OR (outcome IN ('FAILED', 'DEAD') AND catalog_id IS NULL)),
+  CHECK ((outcome = 'SUCCEEDED' AND catalog_hash ~ '^[a-f0-9]{64}$'
+      AND capability_hash ~ '^[a-f0-9]{64}$')
+    OR (outcome IN ('FAILED', 'DEAD') AND catalog_hash IS NULL AND capability_hash IS NULL)),
+  CHECK (rollback_evidence_identity IS NULL
+    OR (outcome = 'SUCCEEDED' AND rollback_evidence_identity ~ '^[a-f0-9]{64}$'))
+);
+
+CREATE OR REPLACE FUNCTION auto_listing_require_succeeded_ai_gateway_model_catalog()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  source_task ai_gateway_model_sync_tasks%ROWTYPE;
+BEGIN
+  SELECT * INTO source_task
+  FROM ai_gateway_model_sync_tasks
+  WHERE account_id = NEW.account_id
+    AND id = NEW.sync_task_id
+    AND connection_id = NEW.connection_id
+    AND connection_version = NEW.connection_version;
+  IF NOT FOUND OR source_task.status <> 'SUCCEEDED' OR NOT EXISTS (
+    SELECT 1 FROM ai_gateway_model_sync_attempt_outcomes
+    WHERE account_id = NEW.account_id
+      AND task_id = NEW.sync_task_id
+      AND connection_id = NEW.connection_id
+      AND connection_version = NEW.connection_version
+      AND outcome = 'SUCCEEDED'
+      AND catalog_id = NEW.id
+      AND catalog_hash = NEW.catalog_hash
+      AND capability_hash = NEW.capability_hash
+      AND rollback_evidence_identity IS NOT DISTINCT FROM NEW.rollback_evidence_identity
+  ) THEN
+    RAISE EXCEPTION 'model catalog requires a matching succeeded attempt outcome'
+      USING ERRCODE = '23514';
+  END IF;
+  IF source_task.sync_purpose = 'CATALOG_SYNC' THEN
+    IF NEW.rollback_evidence_identity IS NOT NULL
+      OR source_task.result_evidence_identity IS NOT NULL
+    THEN
+      RAISE EXCEPTION 'catalog sync cannot mint rollback evidence' USING ERRCODE = '23514';
+    END IF;
+  ELSIF source_task.sync_purpose = 'ROLLBACK_CAPABILITY' THEN
+    IF NEW.rollback_evidence_identity IS DISTINCT FROM source_task.result_evidence_identity
+      OR NEW.capability_result->>'schemaVersion' IS DISTINCT FROM 'AI_GATEWAY_ROLLBACK_TEST_RESULT_V1'
+      OR NEW.capability_result->>'outcome' IS DISTINCT FROM 'PASSED'
+      OR NEW.capability_result->>'connectionId' IS DISTINCT FROM NEW.connection_id
+      OR NEW.capability_result->>'connectionVersion' IS DISTINCT FROM NEW.connection_version::TEXT
+      OR NEW.capability_result->'checks'->>'authentication' IS DISTINCT FROM 'true'
+      OR NEW.capability_result->'checks'->>'modelsEndpoint' IS DISTINCT FROM 'true'
+      OR NEW.tested_at < source_task.created_at
+    THEN
+      RAISE EXCEPTION 'rollback catalog requires fresh matching capability evidence'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER ai_gateway_model_catalogs_succeeded_attempt_guard
+BEFORE INSERT ON ai_gateway_model_catalogs
+FOR EACH ROW EXECUTE FUNCTION auto_listing_require_succeeded_ai_gateway_model_catalog();
+
+CREATE TABLE IF NOT EXISTS ai_gateway_rollback_evidence_consumptions (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  catalog_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connection_version INTEGER NOT NULL CHECK (connection_version > 0),
+  target_connection_status_version INTEGER NOT NULL CHECK (target_connection_status_version > 0),
+  evidence_identity TEXT NOT NULL CHECK (evidence_identity ~ '^[a-f0-9]{64}$'),
+  validation_hash TEXT NOT NULL CHECK (validation_hash ~ '^[a-f0-9]{64}$'),
+  actor_id TEXT NOT NULL,
+  correlation_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (account_id, catalog_id),
+  UNIQUE (account_id, connection_id, connection_version, target_connection_status_version),
+  FOREIGN KEY (account_id, catalog_id, task_id, connection_id, connection_version)
+    REFERENCES ai_gateway_model_catalogs(account_id, id, sync_task_id, connection_id, connection_version)
+    ON DELETE CASCADE,
+  FOREIGN KEY (account_id, task_id, connection_id, connection_version)
+    REFERENCES ai_gateway_model_sync_tasks(account_id, id, connection_id, connection_version)
+    ON DELETE CASCADE
 );
 
 ALTER TABLE ai_gateway_profiles
@@ -282,6 +398,7 @@ AS $$
 BEGIN
   IF NEW.status IS DISTINCT FROM 'PENDING'
     OR NEW.status_version IS DISTINCT FROM 1
+    OR NEW.version IS DISTINCT FROM 1
     OR NEW.validation_result IS NOT NULL
     OR NEW.validation_hash IS NOT NULL
     OR NEW.rollback_evidence IS NOT NULL
@@ -355,22 +472,48 @@ BEGIN
   END IF;
   IF OLD.status = 'RETIRED' AND NEW.status = 'VALIDATED' AND (
     jsonb_typeof(NEW.rollback_evidence) IS DISTINCT FROM 'object'
-    OR NEW.rollback_evidence->>'schemaVersion' IS DISTINCT FROM 'AI_GATEWAY_ROLLBACK_CAPABILITY_V1'
+    OR NEW.rollback_evidence->>'schemaVersion' IS DISTINCT FROM 'AI_GATEWAY_ROLLBACK_CAPABILITY_V2'
     OR NEW.rollback_evidence_hash !~ '^[a-f0-9]{64}$'
     OR NOT EXISTS (
       SELECT 1
-      FROM ai_gateway_model_catalogs
-      WHERE account_id = OLD.account_id
-        AND connection_id = OLD.id
-        AND connection_version = OLD.version
-        AND id = NEW.rollback_evidence->>'catalogId'
-        AND catalog_hash = NEW.rollback_evidence->>'catalogHash'
-        AND capability_hash = NEW.rollback_evidence->>'capabilityHash'
-        AND capability_result->>'outcome' = 'PASSED'
-        AND capability_result->>'text' = 'true'
-        AND capability_result->>'image' = 'true'
-        AND capability_result = NEW.validation_result
-        AND capability_hash = NEW.validation_hash
+      FROM ai_gateway_model_catalogs c
+      JOIN ai_gateway_model_sync_tasks t
+        ON t.account_id = c.account_id
+       AND t.id = c.sync_task_id
+       AND t.connection_id = c.connection_id
+       AND t.connection_version = c.connection_version
+      JOIN ai_gateway_model_sync_attempt_outcomes o
+        ON o.account_id = t.account_id
+       AND o.task_id = t.id
+       AND o.connection_id = t.connection_id
+       AND o.connection_version = t.connection_version
+       AND o.outcome = 'SUCCEEDED'
+       AND o.catalog_id = c.id
+      JOIN ai_gateway_rollback_evidence_consumptions x
+        ON x.account_id = c.account_id
+       AND x.catalog_id = c.id
+       AND x.task_id = t.id
+       AND x.connection_id = c.connection_id
+       AND x.connection_version = c.connection_version
+      WHERE c.account_id = OLD.account_id
+        AND c.connection_id = OLD.id
+        AND c.connection_version = OLD.version
+        AND c.id = NEW.rollback_evidence->>'catalogId'
+        AND c.sync_task_id = NEW.rollback_evidence->>'taskId'
+        AND c.catalog_hash = NEW.rollback_evidence->>'catalogHash'
+        AND c.capability_hash = NEW.rollback_evidence->>'capabilityHash'
+        AND c.rollback_evidence_identity = NEW.rollback_evidence->>'evidenceIdentity'
+        AND t.status = 'SUCCEEDED'
+        AND t.sync_purpose = 'ROLLBACK_CAPABILITY'
+        AND t.target_connection_status_version = OLD.status_version
+        AND NEW.rollback_evidence->>'targetConnectionStatusVersion' = OLD.status_version::TEXT
+        AND t.result_evidence_identity = c.rollback_evidence_identity
+        AND o.rollback_evidence_identity = c.rollback_evidence_identity
+        AND x.target_connection_status_version = OLD.status_version
+        AND x.evidence_identity = c.rollback_evidence_identity
+        AND x.validation_hash = NEW.validation_hash
+        AND c.capability_result = NEW.validation_result
+        AND c.capability_hash = NEW.validation_hash
     )
   ) THEN
     RAISE EXCEPTION 'rollback requires matching passed capability evidence' USING ERRCODE = '23514';
@@ -412,6 +555,39 @@ CREATE TRIGGER ai_gateway_connection_versions_transition_guard
 BEFORE UPDATE OR DELETE ON ai_gateway_connection_versions
 FOR EACH ROW EXECUTE FUNCTION auto_listing_guard_ai_gateway_connection_version();
 
+CREATE OR REPLACE FUNCTION auto_listing_require_pending_ai_gateway_model_sync_task()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.status IS DISTINCT FROM 'PENDING'
+    OR NEW.status_version IS DISTINCT FROM 1
+    OR NEW.attempt_count IS DISTINCT FROM 0
+    OR NEW.lease_version IS DISTINCT FROM 0
+    OR NEW.result_evidence_identity IS NOT NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM ai_gateway_connection_versions
+      WHERE account_id = NEW.account_id
+        AND id = NEW.connection_id
+        AND version = NEW.connection_version
+        AND status_version = NEW.target_connection_status_version
+        AND status = CASE NEW.sync_purpose
+          WHEN 'CATALOG_SYNC' THEN 'ACTIVE'
+          WHEN 'ROLLBACK_CAPABILITY' THEN 'RETIRED'
+        END
+    )
+  THEN
+    RAISE EXCEPTION 'model sync task must target the exact allowed connection state'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER ai_gateway_model_sync_tasks_pending_insert_guard
+BEFORE INSERT ON ai_gateway_model_sync_tasks
+FOR EACH ROW EXECUTE FUNCTION auto_listing_require_pending_ai_gateway_model_sync_task();
+
 CREATE OR REPLACE FUNCTION auto_listing_guard_ai_gateway_model_sync_task()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -425,6 +601,8 @@ BEGIN
     OR NEW.id IS DISTINCT FROM OLD.id
     OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
     OR NEW.connection_version IS DISTINCT FROM OLD.connection_version
+    OR NEW.sync_purpose IS DISTINCT FROM OLD.sync_purpose
+    OR NEW.target_connection_status_version IS DISTINCT FROM OLD.target_connection_status_version
     OR NEW.max_attempts IS DISTINCT FROM OLD.max_attempts
     OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
     OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
@@ -432,6 +610,8 @@ BEGIN
     OR NEW.created_by IS DISTINCT FROM OLD.created_by
     OR NEW.created_at IS DISTINCT FROM OLD.created_at
     OR NEW.status_version <> OLD.status_version + 1
+    OR (NEW.status <> 'SUCCEEDED'
+      AND NEW.result_evidence_identity IS DISTINCT FROM OLD.result_evidence_identity)
     OR NOT (
       (OLD.status IN ('PENDING', 'FAILED') AND NEW.status = 'LEASED')
       OR (OLD.status = 'LEASED' AND OLD.lease_expires_at <= NOW() AND NEW.status = 'LEASED')
@@ -479,6 +659,14 @@ FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_ai_gateway_settings_evidence_m
 
 CREATE TRIGGER ai_gateway_model_catalogs_append_only
 BEFORE UPDATE OR DELETE ON ai_gateway_model_catalogs
+FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_ai_gateway_settings_evidence_mutation();
+
+CREATE TRIGGER ai_gateway_model_sync_attempt_outcomes_append_only
+BEFORE UPDATE OR DELETE ON ai_gateway_model_sync_attempt_outcomes
+FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_ai_gateway_settings_evidence_mutation();
+
+CREATE TRIGGER ai_gateway_rollback_evidence_consumptions_append_only
+BEFORE UPDATE OR DELETE ON ai_gateway_rollback_evidence_consumptions
 FOR EACH ROW EXECUTE FUNCTION auto_listing_reject_ai_gateway_settings_evidence_mutation();
 
 CREATE TRIGGER ai_gateway_profile_binding_events_append_only

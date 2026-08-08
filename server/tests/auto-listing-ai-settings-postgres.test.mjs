@@ -200,27 +200,24 @@ test("settings overview preserves a legacy profile null connection reference", a
   assert.equal(overview.profiles[0].connectionVersion, null);
 });
 
-test("model sync completion rejects failed or incomplete capability evidence before database access", async () => {
-  const failedPool = scriptedPool([]);
-  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: failedPool.pool }).completeModelSync({
+test("model sync completion accepts empty and single-modal catalog snapshots before database access", async () => {
+  const emptyPool = scriptedPool([]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: emptyPool.pool }).completeModelSync({
     accountId: "account-a",
     workerId: "worker-a",
     taskId: "task-a",
     leaseVersion: 1,
     leaseToken: "lease-a",
-    correlationId: "corr-failed",
-    catalog: { models: [
-      { id: "text-model", capabilities: ["TEXT"] },
-      { id: "image-model", capabilities: ["IMAGE"] },
-    ] },
+    correlationId: "corr-empty",
+    catalog: { models: [] },
     capabilityResult: {
-      outcome: "FAILED", checkedAt: "2026-08-08T00:00:00.000Z", text: false, image: false,
+      outcome: "NOT_TESTED", checkedAt: "2026-08-08T00:00:00.000Z", text: false, image: false,
     },
-  }), { code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_REQUIRED" });
-  assert.equal(failedPool.calls.length, 0);
+  }), { code: "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED" });
+  assert.equal(emptyPool.calls.length > 0, true);
 
-  const incompletePool = scriptedPool([]);
-  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: incompletePool.pool }).completeModelSync({
+  const singleModalPool = scriptedPool([]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: singleModalPool.pool }).completeModelSync({
     accountId: "account-a",
     workerId: "worker-a",
     taskId: "task-a",
@@ -231,8 +228,8 @@ test("model sync completion rejects failed or incomplete capability evidence bef
     capabilityResult: {
       outcome: "PASSED", checkedAt: "2026-08-08T00:00:00.000Z", text: true, image: false,
     },
-  }), { code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_REQUIRED" });
-  assert.equal(incompletePool.calls.length, 0);
+  }), { code: "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED" });
+  assert.equal(singleModalPool.calls.length > 0, true);
 });
 
 test("settings overview reads all collections in one repeatable-read read-only transaction", async () => {
@@ -253,4 +250,19 @@ test("settings overview reads all collections in one repeatable-read read-only t
   assert.equal(overview.accountId, "account-a");
   assert.equal(calls.at(-2).sql, "COMMIT");
   assert.equal(remaining.length, 0);
+});
+
+test("existing enqueue contract remains a catalog sync when purpose is omitted", async () => {
+  const { pool, calls } = scriptedPool([]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).enqueueModelSync({
+    accountId: "account-a",
+    actorId: "account-a",
+    connectionId: "connection-a",
+    connectionVersion: 1,
+    expectedConnectionStatusVersion: 3,
+    idempotencyKey: "sync-existing-contract",
+    correlationId: "corr-existing-contract",
+    maxAttempts: 3,
+  }), { code: "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED" });
+  assert.equal(calls.length > 0, true);
 });

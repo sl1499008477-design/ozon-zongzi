@@ -25,10 +25,6 @@ function databaseFailed() {
   return repositoryError("AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED", 503, true);
 }
 
-function capabilityRequired() {
-  return repositoryError("AUTO_LISTING_AI_SETTINGS_CAPABILITY_REQUIRED", 422);
-}
-
 function plainRecord(value) {
   return Boolean(value)
     && typeof value === "object"
@@ -199,6 +195,8 @@ function taskDto(row, duplicate = false) {
     accountId: row.account_id,
     connectionId: row.connection_id,
     connectionVersion: Number(row.connection_version),
+    syncPurpose: row.sync_purpose,
+    targetConnectionStatusVersion: Number(row.target_connection_status_version),
     status: row.status,
     statusVersion: Number(row.status_version),
     attemptCount: Number(row.attempt_count),
@@ -225,6 +223,7 @@ function catalogDto(row) {
     catalogHash: row.catalog_hash,
     capabilityResult: row.capability_result,
     capabilityHash: row.capability_hash,
+    rollbackEvidenceIdentity: row.rollback_evidence_identity ?? null,
     testedAt: row.tested_at,
     createdAt: row.created_at ?? null,
   };
@@ -359,6 +358,40 @@ async function auditMutation(client, {
   });
 }
 
+async function loadAttemptOutcome(client, {
+  accountId, taskId, leaseVersion, workerId, leaseTokenDigest, leaseIdentity, resultHash,
+}) {
+  const result = await query(client,
+    `SELECT * FROM ai_gateway_model_sync_attempt_outcomes
+      WHERE account_id=$1 AND task_id=$2 AND lease_version=$3
+      FOR UPDATE`,
+    [accountId, taskId, leaseVersion]);
+  const outcome = result?.rows?.[0] ?? null;
+  if (outcome && (outcome.lease_owner !== workerId
+    || outcome.lease_token_digest !== leaseTokenDigest
+    || outcome.lease_identity_hash !== leaseIdentity
+    || outcome.result_hash !== resultHash)) {
+    throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
+  }
+  return outcome;
+}
+
+async function insertAttemptOutcome(client, {
+  task, leaseOwner, leaseTokenDigest, leaseIdentity, outcome, resultHash,
+  taskSnapshot, catalogId = null, catalogHash = null, capabilityHash = null,
+  rollbackEvidenceIdentity = null,
+}) {
+  await query(client,
+    `INSERT INTO ai_gateway_model_sync_attempt_outcomes (
+       account_id,task_id,connection_id,connection_version,lease_version,
+       lease_owner,lease_token_digest,lease_identity_hash,outcome,result_hash,
+       task_snapshot,catalog_id,catalog_hash,capability_hash,rollback_evidence_identity
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::JSONB,$12,$13,$14,$15)`,
+    [task.account_id, task.id, task.connection_id, task.connection_version, task.lease_version,
+      leaseOwner, leaseTokenDigest, leaseIdentity, outcome, resultHash,
+      JSON.stringify(taskSnapshot), catalogId, catalogHash, capabilityHash, rollbackEvidenceIdentity]);
+}
+
 function createConnectionRequest(raw) {
   const input = exactKeys(raw, [
     "accountId", "actorId", "baseUrl", "correlationId", "displayName", "encryptedSecret", "idempotencyKey",
@@ -387,15 +420,20 @@ function validationRequest(raw) {
   let rollbackCapabilityEvidence = null;
   if (input.rollbackCapabilityEvidence !== null) {
     const evidence = exactKeys(input.rollbackCapabilityEvidence, [
-      "capabilityHash", "catalogHash", "catalogId", "schemaVersion",
+      "capabilityHash", "catalogHash", "catalogId", "evidenceIdentity", "schemaVersion",
+      "targetConnectionStatusVersion", "taskId",
     ]);
-    if (evidence.schemaVersion !== "AI_GATEWAY_ROLLBACK_CAPABILITY_V1"
-      || !HASH.test(evidence.capabilityHash) || !HASH.test(evidence.catalogHash)) throw invalid();
+    if (evidence.schemaVersion !== "AI_GATEWAY_ROLLBACK_CAPABILITY_V2"
+      || !HASH.test(evidence.capabilityHash) || !HASH.test(evidence.catalogHash)
+      || !HASH.test(evidence.evidenceIdentity)) throw invalid();
     rollbackCapabilityEvidence = {
       schemaVersion: evidence.schemaVersion,
+      taskId: identifier(evidence.taskId),
       catalogId: identifier(evidence.catalogId),
       catalogHash: evidence.catalogHash,
       capabilityHash: evidence.capabilityHash,
+      evidenceIdentity: evidence.evidenceIdentity,
+      targetConnectionStatusVersion: positiveInteger(evidence.targetConnectionStatusVersion),
     };
   }
   return {
@@ -412,11 +450,16 @@ function validationRequest(raw) {
 }
 
 function enqueueRequest(raw) {
-  const input = exactKeys(raw, [
+  const baseKeys = [
     "accountId", "actorId", "connectionId", "connectionVersion", "correlationId",
     "expectedConnectionStatusVersion", "idempotencyKey", "maxAttempts",
-  ]);
+  ];
+  if (!plainRecord(raw)) throw invalid();
+  const input = exactKeys(raw, Object.hasOwn(raw, "syncPurpose")
+    ? [...baseKeys, "syncPurpose"] : baseKeys);
   const accountId = accountActor(input);
+  const syncPurpose = input.syncPurpose === undefined ? "CATALOG_SYNC" : identifier(input.syncPurpose);
+  if (!["CATALOG_SYNC", "ROLLBACK_CAPABILITY"].includes(syncPurpose)) throw invalid();
   return {
     accountId,
     actorId: accountId,
@@ -426,6 +469,7 @@ function enqueueRequest(raw) {
     idempotencyKey: identifier(input.idempotencyKey),
     correlationId: identifier(input.correlationId),
     maxAttempts: boundedInteger(input.maxAttempts, 1, 20),
+    syncPurpose,
   };
 }
 
@@ -446,13 +490,6 @@ function completionRequest(raw) {
   const capabilityResult = jsonObject(input.capabilityResult, 262_144);
   const testedAt = isoTimestamp(capabilityResult.checkedAt);
   const catalog = jsonObject(input.catalog, 1_048_576);
-  if (capabilityResult.outcome !== "PASSED" || capabilityResult.text !== true
-    || capabilityResult.image !== true
-    || !Array.isArray(catalog.models)
-    || !catalog.models.some((model) => model?.id && Array.isArray(model.capabilities) && model.capabilities.includes("TEXT"))
-    || !catalog.models.some((model) => model?.id && Array.isArray(model.capabilities) && model.capabilities.includes("IMAGE"))) {
-    throw capabilityRequired();
-  }
   return {
     accountId: identifier(input.accountId),
     workerId: identifier(input.workerId),
@@ -464,6 +501,21 @@ function completionRequest(raw) {
     capabilityResult,
     testedAt,
   };
+}
+
+function requireRollbackCapabilityResult(capabilityResult, task) {
+  exactKeys(capabilityResult, [
+    "checkedAt", "checks", "connectionId", "connectionVersion", "outcome", "schemaVersion",
+  ]);
+  const checks = exactKeys(capabilityResult.checks, ["authentication", "modelsEndpoint"]);
+  if (capabilityResult.schemaVersion !== "AI_GATEWAY_ROLLBACK_TEST_RESULT_V1"
+    || capabilityResult.outcome !== "PASSED"
+    || capabilityResult.connectionId !== task.connection_id
+    || capabilityResult.connectionVersion !== Number(task.connection_version)
+    || checks.authentication !== true || checks.modelsEndpoint !== true
+    || Date.parse(capabilityResult.checkedAt) < Date.parse(task.created_at)) {
+    throw repositoryError("AUTO_LISTING_AI_SETTINGS_ROLLBACK_EVIDENCE_REQUIRED", 409);
+  }
 }
 
 function failureRequest(raw) {
@@ -611,23 +663,58 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         if (original.status === "RETIRED" && input.rollbackCapabilityEvidence === null) {
           throw repositoryError("AUTO_LISTING_AI_SETTINGS_ROLLBACK_EVIDENCE_REQUIRED", 409);
         }
+        const validationHash = hash(input.validationResult);
         if (original.status === "RETIRED") {
           const evidence = input.rollbackCapabilityEvidence;
           const catalog = (await query(client,
-            `SELECT * FROM ai_gateway_model_catalogs
-              WHERE account_id=$1 AND id=$2 AND connection_id=$3 AND connection_version=$4
-                AND catalog_hash=$5 AND capability_hash=$6
-                AND capability_result->>'outcome'='PASSED'
-                AND capability_result->>'text'='true'
-                AND capability_result->>'image'='true'
+            `SELECT c.*,o.lease_identity_hash AS outcome_lease_identity_hash
+              FROM ai_gateway_model_catalogs c
+              JOIN ai_gateway_model_sync_tasks t
+                ON t.account_id=c.account_id AND t.id=c.sync_task_id
+               AND t.connection_id=c.connection_id AND t.connection_version=c.connection_version
+              JOIN ai_gateway_model_sync_attempt_outcomes o
+                ON o.account_id=t.account_id AND o.task_id=t.id
+               AND o.connection_id=t.connection_id AND o.connection_version=t.connection_version
+               AND o.outcome='SUCCEEDED' AND o.catalog_id=c.id
+              WHERE c.account_id=$1 AND c.id=$2
+                AND c.connection_id=$3 AND c.connection_version=$4
+                AND c.sync_task_id=$5 AND c.catalog_hash=$6 AND c.capability_hash=$7
+                AND c.rollback_evidence_identity=$8
+                AND t.status='SUCCEEDED' AND t.sync_purpose='ROLLBACK_CAPABILITY'
+                AND t.target_connection_status_version=$9
+                AND t.result_evidence_identity=$8
+                AND o.rollback_evidence_identity=$8
               FOR UPDATE`,
             [input.accountId, evidence.catalogId, input.connectionId, input.connectionVersion,
-              evidence.catalogHash, evidence.capabilityHash])).rows[0];
-          if (!catalog || hash(input.validationResult) !== catalog.capability_hash) {
+              evidence.taskId, evidence.catalogHash, evidence.capabilityHash, evidence.evidenceIdentity,
+              evidence.targetConnectionStatusVersion])).rows[0];
+          const expectedEvidenceIdentity = catalog ? hash({
+            schemaVersion: "AI_GATEWAY_ROLLBACK_EVIDENCE_V1",
+            accountId: input.accountId, taskId: evidence.taskId,
+            connectionId: input.connectionId, connectionVersion: input.connectionVersion,
+            targetConnectionStatusVersion: evidence.targetConnectionStatusVersion,
+            leaseIdentityHash: catalog.outcome_lease_identity_hash,
+            catalogHash: evidence.catalogHash, capabilityHash: evidence.capabilityHash,
+          }) : null;
+          if (!catalog || evidence.targetConnectionStatusVersion !== input.expectedStatusVersion
+            || validationHash !== catalog.capability_hash
+            || evidence.evidenceIdentity !== expectedEvidenceIdentity) {
             throw repositoryError("AUTO_LISTING_AI_SETTINGS_ROLLBACK_EVIDENCE_REQUIRED", 409);
           }
+          const consumed = await query(client,
+            `INSERT INTO ai_gateway_rollback_evidence_consumptions (
+               account_id,catalog_id,task_id,connection_id,connection_version,
+               target_connection_status_version,evidence_identity,validation_hash,actor_id,correlation_id
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             ON CONFLICT DO NOTHING
+             RETURNING catalog_id`,
+            [input.accountId, evidence.catalogId, evidence.taskId, input.connectionId,
+              input.connectionVersion, evidence.targetConnectionStatusVersion,
+              evidence.evidenceIdentity, validationHash, input.actorId, input.correlationId]);
+          if (consumed.rowCount !== 1) {
+            throw repositoryError("AUTO_LISTING_AI_SETTINGS_ROLLBACK_EVIDENCE_CONSUMED", 409);
+          }
         }
-        const validationHash = hash(input.validationResult);
         const rollbackEvidenceHash = input.rollbackCapabilityEvidence === null
           ? null : hash(input.rollbackCapabilityEvidence);
         const validated = (await query(client,
@@ -734,7 +821,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       const requestHash = hash({ action, accountId: input.accountId, connectionId: input.connectionId,
         connectionVersion: input.connectionVersion,
         expectedConnectionStatusVersion: input.expectedConnectionStatusVersion,
-        maxAttempts: input.maxAttempts });
+        maxAttempts: input.maxAttempts, syncPurpose: input.syncPurpose });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
         const replay = await loadAudit(client, { ...input, action, requestHash });
@@ -746,10 +833,16 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         }
         const connection = (await query(client,
           `SELECT * FROM ai_gateway_connection_versions
-            WHERE account_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE'
+            WHERE account_id=$1 AND id=$2 AND version=$3
+              AND status=CASE $4
+                WHEN 'CATALOG_SYNC' THEN 'ACTIVE'
+                WHEN 'ROLLBACK_CAPABILITY' THEN 'RETIRED'
+              END
             FOR UPDATE`,
-          [input.accountId, input.connectionId, input.connectionVersion])).rows[0];
-        if (!connection) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_ACTIVE", 409);
+          [input.accountId, input.connectionId, input.connectionVersion, input.syncPurpose])).rows[0];
+        if (!connection) throw repositoryError(input.syncPurpose === "ROLLBACK_CAPABILITY"
+          ? "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_RETIRED"
+          : "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_ACTIVE", 409);
         if (Number(connection.status_version) !== input.expectedConnectionStatusVersion) {
           throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", 409);
         }
@@ -763,17 +856,21 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         const taskId = deterministicId("aigsync", input.accountId, input.idempotencyKey);
         const inserted = await query(client,
           `INSERT INTO ai_gateway_model_sync_tasks (
-             account_id,id,connection_id,connection_version,status,status_version,
+             account_id,id,connection_id,connection_version,sync_purpose,
+             target_connection_status_version,status,status_version,
              attempt_count,max_attempts,request_hash,idempotency_key,correlation_id,created_by
-           ) VALUES ($1,$2,$3,$4,'PENDING',1,0,$5,$6,$7,$8,$9)
+           ) VALUES ($1,$2,$3,$4,$5,$6,'PENDING',1,0,$7,$8,$9,$10,$11)
            RETURNING *`,
-          [input.accountId, taskId, input.connectionId, input.connectionVersion,
-            input.maxAttempts, requestHash, input.idempotencyKey, input.correlationId, input.actorId]);
+          [input.accountId, taskId, input.connectionId, input.connectionVersion, input.syncPurpose,
+            input.expectedConnectionStatusVersion, input.maxAttempts, requestHash,
+            input.idempotencyKey, input.correlationId, input.actorId]);
         const row = inserted.rows[0];
         await insertSyncEvent(client, row, "ENQUEUED", input.actorId, input.correlationId, { requestHash });
         await auditMutation(client, {
           action, ...input, entityType: "ai_gateway_model_sync_task", entityId: taskId,
-          requestHash, metadata: { connectionId: input.connectionId, connectionVersion: input.connectionVersion },
+          requestHash, metadata: { connectionId: input.connectionId,
+            connectionVersion: input.connectionVersion, syncPurpose: input.syncPurpose,
+            targetConnectionStatusVersion: input.expectedConnectionStatusVersion },
         });
         return taskDto(row, false);
       });
@@ -829,6 +926,13 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
             [input.accountId, current.id])).rows[0];
           if (!dead) throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
           const correlationId = `${dead.id}:${dead.lease_version}:expired`;
+          const resultHash = hash({ errorCode: "AUTO_LISTING_AI_MODEL_SYNC_ATTEMPTS_EXHAUSTED",
+            errorSafe: "model sync attempts exhausted", retryable: false, retryDelayMs: 0 });
+          await insertAttemptOutcome(client, {
+            task: dead, leaseOwner: current.lease_owner, leaseTokenDigest: current.lease_token,
+            leaseIdentity: expiredLeaseIdentityHash, outcome: "DEAD", resultHash,
+            taskSnapshot: taskDto(dead, false),
+          });
           await insertSyncEvent(client, dead, "DEAD", input.workerId, correlationId,
             { errorCode: "AUTO_LISTING_AI_MODEL_SYNC_ATTEMPTS_EXHAUSTED", expiredLease: true });
           const requestHash = hash({ action: "AUTO_LISTING_AI_MODEL_SYNC_DEAD", accountId: input.accountId,
@@ -874,6 +978,8 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           accountId: updated.account_id,
           connectionId: updated.connection_id,
           connectionVersion: Number(updated.connection_version),
+          syncPurpose: updated.sync_purpose,
+          targetConnectionStatusVersion: Number(updated.target_connection_status_version),
           attemptCount: Number(updated.attempt_count),
           maxAttempts: Number(updated.max_attempts),
           leaseVersion: Number(updated.lease_version),
@@ -892,63 +998,83 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       const leaseIdentity = leaseIdentityHash(input.workerId, input.leaseVersion, leaseTokenDigest);
       const action = "AUTO_LISTING_AI_MODEL_SYNC_SUCCEEDED";
       const idempotencyKey = `${input.taskId}:${input.leaseVersion}:succeeded`;
+      const resultHash = hash({ catalogHash, capabilityHash });
       const requestHash = hash({ action, accountId: input.accountId,
         taskId: input.taskId, leaseIdentityHash: leaseIdentity, catalogHash, capabilityHash });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
+        const attemptReplay = await loadAttemptOutcome(client, {
+          ...input, leaseTokenDigest, leaseIdentity, resultHash,
+        });
+        if (attemptReplay) {
+          if (attemptReplay.outcome !== "SUCCEEDED") {
+            throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
+          }
+          const found = (await query(client,
+            `SELECT * FROM ai_gateway_model_catalogs
+              WHERE account_id=$1 AND id=$2 AND sync_task_id=$3`,
+            [input.accountId, attemptReplay.catalog_id, input.taskId])).rows[0];
+          if (!found) throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
+          return { ...attemptReplay.task_snapshot, catalog: catalogDto(found), duplicate: true };
+        }
         const selected = await query(client,
           "SELECT * FROM ai_gateway_model_sync_tasks WHERE account_id=$1 AND id=$2 FOR UPDATE",
           [input.accountId, input.taskId]);
         const task = selected?.rows?.[0];
         if (!task) throw repositoryError("AUTO_LISTING_AI_SETTINGS_SYNC_NOT_FOUND", 404);
-        if (task.status === "SUCCEEDED") {
-          const replay = await loadAudit(client, {
-            action, accountId: input.accountId, idempotencyKey, requestHash,
-          });
-          if (!replay.metadata) throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
-          const found = (await query(client,
-            "SELECT * FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
-            [input.accountId, input.taskId])).rows[0];
-          if (!found || found.catalog_hash !== catalogHash || found.capability_hash !== capabilityHash) {
-            throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
-          }
-          return { ...taskDto(task, true), catalog: catalogDto(found), duplicate: true };
-        }
         if (task.status !== "LEASED" || task.lease_owner !== input.workerId
           || task.lease_token !== leaseTokenDigest
           || Number(task.lease_version) !== input.leaseVersion) {
           throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
         }
+        let rollbackEvidenceIdentity = null;
+        if (task.sync_purpose === "ROLLBACK_CAPABILITY") {
+          requireRollbackCapabilityResult(input.capabilityResult, task);
+          rollbackEvidenceIdentity = hash({
+            schemaVersion: "AI_GATEWAY_ROLLBACK_EVIDENCE_V1",
+            accountId: input.accountId, taskId: input.taskId,
+            connectionId: task.connection_id, connectionVersion: Number(task.connection_version),
+            targetConnectionStatusVersion: Number(task.target_connection_status_version),
+            leaseIdentityHash: leaseIdentity, catalogHash, capabilityHash,
+          });
+        }
         const catalogId = deterministicId("aigcatalog", input.accountId, input.taskId, catalogHash, capabilityHash);
-        const catalogRow = (await query(client,
-          `INSERT INTO ai_gateway_model_catalogs (
-             account_id,id,connection_id,connection_version,sync_task_id,
-             catalog,catalog_hash,capability_result,capability_hash,tested_at
-           ) VALUES ($1,$2,$3,$4,$5,$6::JSONB,$7,$8::JSONB,$9,$10)
-           RETURNING *`,
-          [input.accountId, catalogId, task.connection_id, task.connection_version, input.taskId,
-            JSON.stringify(input.catalog), catalogHash, JSON.stringify(input.capabilityResult), capabilityHash, input.testedAt])).rows[0];
         const updated = (await query(client,
           `UPDATE ai_gateway_model_sync_tasks
               SET status='SUCCEEDED',status_version=status_version+1,
                   lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,
-                  completed_at=NOW(),updated_at=NOW()
+                  result_evidence_identity=$6,completed_at=NOW(),updated_at=NOW()
             WHERE account_id=$1 AND id=$2
               AND status='LEASED' AND lease_owner=$3 AND lease_version=$4
               AND lease_token=$5 AND lease_expires_at > NOW()
             RETURNING *`,
           [input.accountId, input.taskId, input.workerId, input.leaseVersion,
-            leaseTokenDigest])).rows[0];
+            leaseTokenDigest, rollbackEvidenceIdentity])).rows[0];
         if (!updated) throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
+        await insertAttemptOutcome(client, {
+          task: updated, leaseOwner: input.workerId, leaseTokenDigest, leaseIdentity,
+          outcome: "SUCCEEDED", resultHash, taskSnapshot: taskDto(updated, false),
+          catalogId, catalogHash, capabilityHash, rollbackEvidenceIdentity,
+        });
+        const catalogRow = (await query(client,
+          `INSERT INTO ai_gateway_model_catalogs (
+             account_id,id,connection_id,connection_version,sync_task_id,
+             catalog,catalog_hash,capability_result,capability_hash,
+             rollback_evidence_identity,tested_at
+           ) VALUES ($1,$2,$3,$4,$5,$6::JSONB,$7,$8::JSONB,$9,$10,$11)
+           RETURNING *`,
+          [input.accountId, catalogId, task.connection_id, task.connection_version, input.taskId,
+            JSON.stringify(input.catalog), catalogHash, JSON.stringify(input.capabilityResult), capabilityHash,
+            rollbackEvidenceIdentity, input.testedAt])).rows[0];
         await insertSyncEvent(client, updated, "SUCCEEDED", input.workerId, input.correlationId,
-          { catalogId, catalogHash, capabilityHash });
+          { catalogId, catalogHash, capabilityHash, rollbackEvidenceIdentity });
         await auditMutation(client, {
           action, accountId: input.accountId,
           actorType: "worker", actorId: input.workerId, correlationId: input.correlationId,
           entityType: "ai_gateway_model_sync_task", entityId: input.taskId,
           idempotencyKey, requestHash,
           metadata: { catalogId, catalogHash, capabilityHash, leaseVersion: input.leaseVersion,
-            leaseIdentityHash: leaseIdentity },
+            leaseIdentityHash: leaseIdentity, rollbackEvidenceIdentity },
         });
         return { ...taskDto(updated, false), catalog: catalogDto(catalogRow) };
       });
@@ -958,8 +1084,19 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       const input = failureRequest(rawInput);
       const leaseTokenDigest = hash({ leaseToken: input.leaseToken });
       const leaseIdentity = leaseIdentityHash(input.workerId, input.leaseVersion, leaseTokenDigest);
+      const resultHash = hash({ errorCode: input.errorCode, errorSafe: input.errorSafe,
+        retryable: input.retryable, retryDelayMs: input.retryDelayMs });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
+        const attemptReplay = await loadAttemptOutcome(client, {
+          ...input, leaseTokenDigest, leaseIdentity, resultHash,
+        });
+        if (attemptReplay) {
+          if (!["FAILED", "DEAD"].includes(attemptReplay.outcome)) {
+            throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
+          }
+          return { ...attemptReplay.task_snapshot, duplicate: true };
+        }
         const selected = await query(client,
           "SELECT * FROM ai_gateway_model_sync_tasks WHERE account_id=$1 AND id=$2 FOR UPDATE",
           [input.accountId, input.taskId]);
@@ -970,15 +1107,6 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         const requestHash = hash({ action, accountId: input.accountId, taskId: input.taskId,
           leaseIdentityHash: leaseIdentity, errorCode: input.errorCode,
           errorSafe: input.errorSafe, retryable: input.retryable, retryDelayMs: input.retryDelayMs });
-        if (task.status === status && Number(task.lease_version) === input.leaseVersion) {
-          const replay = await loadAudit(client, {
-            action,
-            accountId: input.accountId,
-            idempotencyKey: `${input.taskId}:${input.leaseVersion}:${status}`,
-            requestHash,
-          });
-          if (replay.metadata) return taskDto(task, true);
-        }
         if (task.status !== "LEASED" || task.lease_owner !== input.workerId
           || task.lease_token !== leaseTokenDigest
           || Number(task.lease_version) !== input.leaseVersion) {
@@ -1000,6 +1128,10 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           [input.accountId, input.taskId, status, input.retryDelayMs, input.errorCode, input.errorSafe,
             input.workerId, input.leaseVersion, leaseTokenDigest])).rows[0];
         if (!updated) throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
+        await insertAttemptOutcome(client, {
+          task: updated, leaseOwner: input.workerId, leaseTokenDigest, leaseIdentity,
+          outcome: status, resultHash, taskSnapshot: taskDto(updated, false),
+        });
         await insertSyncEvent(client, updated, status, input.workerId, input.correlationId,
           { errorCode: input.errorCode, retryable: input.retryable });
         await auditMutation(client, {
