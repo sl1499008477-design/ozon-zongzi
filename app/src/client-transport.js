@@ -11,13 +11,49 @@ export function apiResponseError(response = {}, data = null) {
   );
 }
 
+async function readResponseText(response, maximumBytes) {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    return response.text();
+  }
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maximumBytes) {
+      throw Object.assign(new Error("RESPONSE_TOO_LARGE"), { code: "RESPONSE_TOO_LARGE" });
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > maximumBytes) {
+        await reader.cancel();
+        throw Object.assign(new Error("RESPONSE_TOO_LARGE"), { code: "RESPONSE_TOO_LARGE" });
+      }
+      chunks.push(next.value);
+    }
+    const joined = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
+    return new TextDecoder().decode(joined);
+  } finally {
+    reader.releaseLock?.();
+  }
+}
+
 export const apiRequest = async (path, options = {}) => {
   const hasBody = Object.hasOwn(options, "body");
   const hasSerializedBody = Object.hasOwn(options, "serializedBody");
   const maxSerializedBodyBytes = options.maxSerializedBodyBytes ?? 8_388_608;
+  const maxResponseBytes = options.maxResponseBytes;
   if ((hasBody && hasSerializedBody)
     || !Number.isSafeInteger(maxSerializedBodyBytes) || maxSerializedBodyBytes < 1
     || maxSerializedBodyBytes > 96 * 1024 * 1024
+    || (maxResponseBytes !== undefined && (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > 96 * 1024 * 1024))
     || (hasSerializedBody && (typeof options.serializedBody !== "string"
       || new TextEncoder().encode(options.serializedBody).byteLength > maxSerializedBodyBytes))) {
     throw Object.assign(new Error("CLIENT_REQUEST_INVALID"), { code: "CLIENT_REQUEST_INVALID" });
@@ -49,7 +85,7 @@ export const apiRequest = async (path, options = {}) => {
       body: hasSerializedBody ? options.serializedBody : (hasBody ? JSON.stringify(options.body) : undefined),
       signal,
     });
-    const text = await response.text();
+    const text = await readResponseText(response, maxResponseBytes);
     let data = null;
     if (text) {
       try {

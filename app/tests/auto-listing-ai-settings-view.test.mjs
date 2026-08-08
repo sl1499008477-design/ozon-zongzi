@@ -3,7 +3,7 @@ import test from "node:test";
 import { aiSettingsPresentation } from "../src/auto-listing-ai-settings-view.js";
 
 function overview(overrides = {}) {
-  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"] }, capabilityCheckedAt: "2026-08-08T00:00:00.000Z", connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
+  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: { outcome: "PASSED", checkedAt: "2026-08-08T00:00:00.000Z", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"] }, capabilityCheckedAt: "2026-08-08T00:00:00.000Z", connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
 }
 
 test("presentation exposes actions only from the complete server action contract", () => {
@@ -15,14 +15,14 @@ test("presentation exposes actions only from the complete server action contract
 });
 
 test("presentation renders only safe recommendation reasons and candidates stay unverified", () => {
-  const view = aiSettingsPresentation(overview({ catalogs: [{ id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, catalog: { recommendation: { imageCandidates: [{ modelId: "image-a", reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_IMAGE_GENERATION", "DECLARED_REFERENCE_IMAGE", "internal-note"] }] } } }], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", capabilityResult: { outcome: "NOT_TESTED" }, enabled: false }] }));
-  assert.deepEqual(view.recommendations, [{ modelId: "image-a", reasons: ["支持结构化输出", "支持图片生成", "支持参考图"] }]);
+  const view = aiSettingsPresentation(overview({ catalogs: [{ id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, catalog: { recommendation: { verified: false, warnings: [], imageCandidates: [{ modelId: "image-a", reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_IMAGE_GENERATION", "DECLARED_REFERENCE_IMAGE", "internal-note"] }] } } }], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", capabilityResult: { outcome: "NOT_TESTED" }, enabled: false }] }));
+  assert.deepEqual(view.recommendations, { verified: false, warnings: [], text: [], image: [{ modelId: "image-a", reasons: ["支持结构化输出", "支持图片生成", "支持参考图"] }] });
   assert.equal(view.profiles[0].verificationLabel, "待验证");
 });
 
 test("paid tests require an explicit warning and unconfirmed state", () => {
   assert.deepEqual(aiSettingsPresentation(overview()).profiles[0].paidTest, { costWarning: "能力测试可能产生费用，请确认后继续", requiresCostConfirmation: true, ready: false });
-  assert.equal(aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], costConfirmed: true }] })).profiles[0].paidTest.ready, true);
+  assert.equal(aiSettingsPresentation(overview(), { costConfirmedProfileIds: ["profile-a"] }).profiles[0].paidTest.ready, true);
 });
 
 test("MISSING FAILED and UNKNOWN stay explicit and never imply selection or publication", () => {
@@ -30,4 +30,13 @@ test("MISSING FAILED and UNKNOWN stay explicit and never imply selection or publ
     const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], capabilityResult: { outcome }, enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
     assert.equal(view.profiles[0].verificationLabel, label); assert.equal(view.profiles[0].actions.canPublish, false); assert.equal(view.profiles[0].selected, false);
   }
+});
+
+test("recommendations retain independent text and image roles with all Task 5 reason codes", () => {
+  const view = aiSettingsPresentation(overview({ catalogs: [{ catalog: { recommendation: { verified: false,
+    warnings: ["RECOMMENDATIONS_UNVERIFIED", "NO_TEXT_MODEL_CANDIDATE"], textCandidates: [{ modelId: "same", reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_RESPONSES_PROTOCOL", "MODEL_ID_TEXT_HINT"] }],
+    imageCandidates: [{ modelId: "same", reasonCodes: ["DECLARED_IMAGE_GENERATION", "DECLARED_REFERENCE_IMAGE", "DECLARED_TARGET_RESOLUTION", "MODEL_ID_IMAGE_HINT"] }] } } }] }));
+  assert.deepEqual(view.recommendations, { verified: false, warnings: ["推荐结果尚未验证", "未找到文本模型候选"],
+    text: [{ modelId: "same", reasons: ["支持结构化输出", "支持 Responses 协议", "模型名称推测"] }],
+    image: [{ modelId: "same", reasons: ["支持图片生成", "支持参考图", "支持目标分辨率", "模型名称推测"] }] });
 });

@@ -97,7 +97,7 @@ test("client sends only the exact Task 7 paths and closed DTO bodies", async (t)
   await createGatewayConnection({ displayName: "Gateway", baseUrl: "https://gateway.example/v1", gatewayKey: "gateway-secret" }, intent);
   await requestModelSync({ connectionId: "connection-a", connectionVersion: 1 }, intent);
   await createModelProfile({ connectionId: "connection-a", connectionVersion: 1, catalogId: "catalog-a", displayName: "Profile", textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES" }, intent);
-  await testModelProfile({ profileId: "profile-a", configVersion: 1, costConfirmed: true }, { correlationId: "corr-test" });
+  await testModelProfile({ profileId: "profile-a", configVersion: 1, correlationId: "corr-test", costConfirmed: true });
   await publishModelProfile({ profileId: "profile-a", configVersion: 1 }, intent);
   await rollbackModelProfile({ profileId: "profile-a", configVersion: 1, costConfirmed: true }, intent);
   assert.deepEqual(calls.map(({ url, options }) => [new URL(url, "http://localhost").pathname, options.method, JSON.parse(options.body)]), [
@@ -126,15 +126,31 @@ test("abort, 64 KiB body limits, accessors, proxies, secret or oversized respons
   globalThis.fetch = async () => response({ ...connection(), ciphertext: "encrypted-secret" });
   await assert.rejects(createGatewayConnection({ displayName: "Gateway", baseUrl: "https://gateway.example/v1", gatewayKey: "gateway-secret" }, { idempotencyKey: "intent-a", correlationId: "corr-a" }), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
   globalThis.fetch = async () => response({ ...connection(), validationResult: { payload: "x".repeat(70_000) } });
-  await assert.rejects(createGatewayConnection({ displayName: "Gateway", baseUrl: "https://gateway.example/v1", gatewayKey: "gateway-secret" }, { idempotencyKey: "intent-a", correlationId: "corr-a" }), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+  await assert.rejects(createGatewayConnection({ displayName: "Gateway", baseUrl: "https://gateway.example/v1", gatewayKey: "gateway-secret" }, { idempotencyKey: "intent-a", correlationId: "corr-a" }), { code: "RESPONSE_TOO_LARGE" });
 });
 
 test("overview and polling only accept known terminal states and never promote unknown work", async (t) => {
   const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
   let reads = 0;
-  installTransport(t, async () => { reads += 1; return response({ ...base, syncTasks: [syncTask({ status: reads === 1 ? "RUNNING" : "SUCCEEDED" })] }); });
-  assert.equal((await loadAiSettings()).syncTasks[0].status, "RUNNING");
+  installTransport(t, async () => { reads += 1; return response({ ...base, syncTasks: [syncTask({ status: reads === 1 ? "LEASED" : "SUCCEEDED" })] }); });
+  assert.equal((await loadAiSettings()).syncTasks[0].status, "LEASED");
   assert.equal((await pollAiSettingsUntil((value) => value.syncTasks[0]?.status === "SUCCEEDED", { timeoutMs: 1_000 })).syncTasks[0].status, "SUCCEEDED");
   globalThis.fetch = async () => response({ ...base, syncTasks: [syncTask({ status: "MAGIC_DONE" })] });
   await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+});
+
+test("Task 7 sync status is closed to PENDING LEASED SUCCEEDED FAILED DEAD", async (t) => {
+  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  installTransport(t, async () => response({ ...base, syncTasks: [syncTask({ status: "LEASED" })] }));
+  assert.equal((await loadAiSettings()).syncTasks[0].status, "LEASED");
+  globalThis.fetch = async () => response({ ...base, syncTasks: [syncTask({ status: "RUNNING" })] });
+  await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+});
+
+test("public paid test is a one-argument closed command and client exposes no remote error text", async (t) => {
+  installTransport(t, async () => ({ ok: false, status: 503, text: async () => JSON.stringify({ code: "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED", message: "db password=secret" }) }));
+  await assert.rejects(testModelProfile({ profileId: "profile-a", configVersion: 1, correlationId: "corr-a", costConfirmed: true }),
+    (error) => error.code === "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED" && error.message === "AI 模型设置暂时不可用");
+  await assert.rejects(testModelProfile({ profileId: "profile-a", configVersion: 1, correlationId: "corr-a", costConfirmed: true, extra: true }),
+    { code: "AI_SETTINGS_CLIENT_REQUEST_INVALID" });
 });

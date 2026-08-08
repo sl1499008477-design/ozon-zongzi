@@ -1,9 +1,13 @@
 const REASONS = Object.freeze({
   DECLARED_STRUCTURED_TEXT: "支持结构化输出",
-  DECLARED_RESPONSES_PROTOCOL: "支持结构化输出",
+  DECLARED_RESPONSES_PROTOCOL: "支持 Responses 协议",
   DECLARED_IMAGE_GENERATION: "支持图片生成",
   DECLARED_REFERENCE_IMAGE: "支持参考图",
+  DECLARED_TARGET_RESOLUTION: "支持目标分辨率",
+  MODEL_ID_TEXT_HINT: "模型名称推测",
+  MODEL_ID_IMAGE_HINT: "模型名称推测",
 });
+const WARNINGS = Object.freeze({ RECOMMENDATIONS_UNVERIFIED: "推荐结果尚未验证", NO_TEXT_MODEL_CANDIDATE: "未找到文本模型候选", NO_IMAGE_MODEL_CANDIDATE: "未找到图片模型候选" });
 const VERIFICATION = Object.freeze({
   PASSED: "已验证", FAILED: "验证失败", MISSING: "模型不可用", UNKNOWN: "验证结果未知",
   STALE: "验证已过期", NOT_TESTED: "待验证",
@@ -38,35 +42,44 @@ function verification(result) {
   return { outcome, label: VERIFICATION[outcome] || "验证状态未知", passed: outcome === "PASSED" };
 }
 
+function iso(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function catalogSelection(catalogs, profile) {
+  for (const raw of Array.isArray(catalogs) ? catalogs : []) {
+    const row = record(raw); const catalog = record(row?.catalog);
+    if (row?.connectionId === profile.connectionId && row?.connectionVersion === profile.connectionVersion
+      && typeof catalog?.activeSelectionState === "string") return catalog.activeSelectionState;
+  }
+  return "NOT_SELECTED";
+}
+
 function recommendations(catalogs) {
-  const result = [];
-  const seen = new Set();
+  const empty = Object.freeze({ verified: false, warnings: Object.freeze([]), text: Object.freeze([]), image: Object.freeze([]) });
   for (const catalog of Array.isArray(catalogs) ? catalogs : []) {
     const recommendation = record(record(catalog)?.catalog)?.recommendation;
     const recommendationValue = record(recommendation);
-    const candidates = [
-      ...(Array.isArray(recommendationValue?.textCandidates) ? recommendationValue.textCandidates : []),
-      ...(Array.isArray(recommendationValue?.imageCandidates) ? recommendationValue.imageCandidates : []),
-    ];
-    for (const candidate of candidates) {
-      const value = record(candidate);
-      const modelId = typeof value?.modelId === "string" ? value.modelId : "";
-      if (!modelId || seen.has(modelId)) continue;
-      const reasons = [...new Set(strings(value.reasonCodes).map((code) => REASONS[code]).filter(Boolean))];
-      if (reasons.length === 0) continue;
-      seen.add(modelId);
-      result.push(Object.freeze({ modelId, reasons: Object.freeze(reasons) }));
-    }
+    if (!recommendationValue || recommendationValue.verified !== false || !Array.isArray(recommendationValue.warnings)) continue;
+    const role = (candidates) => Object.freeze((Array.isArray(candidates) ? candidates : []).flatMap((candidate) => {
+      const value = record(candidate); const modelId = typeof value?.modelId === "string" ? value.modelId : "";
+      const reasons = [...new Set(strings(value?.reasonCodes).map((code) => REASONS[code]).filter(Boolean))];
+      return modelId && reasons.length ? [Object.freeze({ modelId, reasons: Object.freeze(reasons) })] : [];
+    }));
+    return Object.freeze({ verified: false, warnings: Object.freeze(recommendationValue.warnings.map((code) => WARNINGS[code]).filter(Boolean)),
+      text: role(recommendationValue.textCandidates), image: role(recommendationValue.imageCandidates) });
   }
-  return Object.freeze(result);
+  return empty;
 }
 
 /**
  * Pure safe projection of the server-owned settings contract.  It deliberately never derives
  * permission from status, catalog membership, or an optimistic local selection.
  */
-export function aiSettingsPresentation(overview = {}) {
+export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
   const source = record(overview) || {};
+  const viewState = record(rawViewState) || {};
+  const confirmedProfiles = new Set(strings(viewState.costConfirmedProfileIds));
   const actions = actionContract(source.actions);
   const syncable = new Set(actions?.syncableConnectionIds || []);
   const testable = new Set(actions?.testableProfileIds || []);
@@ -80,13 +93,19 @@ export function aiSettingsPresentation(overview = {}) {
   });
   const profiles = (Array.isArray(source.profiles) ? source.profiles : []).map((raw) => {
     const row = record(raw) || {};
-    const state = verification(row.capabilityResult);
+    const capability = verification(row.capabilityResult);
+    const selection = catalogSelection(source.catalogs, row);
+    const state = selection === "MISSING" ? { outcome: "MISSING", label: VERIFICATION.MISSING, passed: false }
+      : capability.passed && (!iso(row.capabilityCheckedAt) || !iso(record(row.capabilityResult)?.checkedAt))
+        ? { outcome: "UNKNOWN", label: VERIFICATION.UNKNOWN, passed: false } : capability;
     const id = typeof row.id === "string" ? row.id : "";
-    const confirmed = row.costConfirmed === true;
+    const confirmed = confirmedProfiles.has(id);
     return Object.freeze({ id, displayName: typeof row.displayName === "string" ? row.displayName : "",
       textModel: typeof row.textModel === "string" ? row.textModel : "", imageModel: typeof row.imageModel === "string" ? row.imageModel : "",
       status: state.outcome, statusLabel: state.label, verificationLabel: state.label,
-      selected: row.enabled === true && state.passed,
+      selected: row.enabled === true && (row.connectionId === null || state.passed),
+      management: row.connectionId === null ? "legacy" : "managed", disabled: row.enabled !== true,
+      connection: row.connectionId === null ? null : Object.freeze({ id: typeof row.connectionId === "string" ? row.connectionId : "", version: Number.isSafeInteger(row.connectionVersion) ? row.connectionVersion : 0 }),
       paidTest: Object.freeze({ costWarning: "能力测试可能产生费用，请确认后继续", requiresCostConfirmation: true, ready: confirmed }),
       actions: Object.freeze({ canTest: Boolean(id) && testable.has(id), canPublish: Boolean(id) && state.passed && publishable.has(id),
         canRollback: Boolean(id) && rollback.has(id) }) });

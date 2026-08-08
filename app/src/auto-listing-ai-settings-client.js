@@ -19,12 +19,32 @@ const CATALOG_KEYS = ["id", "accountId", "connectionId", "connectionVersion", "s
 const CAPABILITY_KEYS = ["profileId", "configVersion", "outcome", "features", "latencyMs", "models", "checkedAt", "errorCode", "enabled"];
 const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
 const CONNECTION_STATUS = new Set(["PENDING", "VALIDATED", "ACTIVE", "RETIRED"]);
-const TASK_STATUS = new Set(["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]);
+const TASK_STATUS = new Set(["PENDING", "LEASED", "SUCCEEDED", "FAILED", "DEAD"]);
 const CAPABILITY_OUTCOME = new Set(["PASSED", "FAILED", "NOT_TESTED", "MISSING", "UNKNOWN", "STALE"]);
 const intentOwners = new WeakMap();
+const SAFE_ERROR_CODES = new Set(["AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED", "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID",
+  "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_SYNCABLE",
+  "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_ACTIVE",
+  "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_VALIDATED", "AUTO_LISTING_AI_SETTINGS_CATALOG_NOT_FOUND",
+  "AUTO_LISTING_AI_SETTINGS_MODEL_SELECTION_INVALID", "AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT",
+  "AUTO_LISTING_AI_SETTINGS_COST_CONFIRMATION_REQUIRED", "AUTO_LISTING_AI_PROFILE_NOT_FOUND",
+  "AUTO_LISTING_AI_PROFILE_CAPABILITY_REQUIRED", "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", "PERMISSION_FORBIDDEN",
+  "REQUEST_ABORTED", "REQUEST_TIMEOUT", "RESPONSE_TOO_LARGE"]);
+SAFE_ERROR_CODES.add("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+SAFE_ERROR_CODES.add("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+const SAFE_ERROR_LABELS = Object.freeze({ AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED: "AI 模型设置暂时不可用",
+  REQUEST_ABORTED: "请求已取消", REQUEST_TIMEOUT: "请求超时，请稍后重试", RESPONSE_TOO_LARGE: "服务响应过大，已拒绝处理",
+  PERMISSION_FORBIDDEN: "没有 AI 配置管理权限" });
 
 function invalid(kind) {
   return Object.assign(new Error(kind), { code: kind });
+}
+
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
 }
 
 function plainRecord(value) {
@@ -71,11 +91,12 @@ function version(value) {
 }
 
 function exactIntent(raw, { idempotency = true } = {}) {
-  const result = closed(raw, idempotency ? ["idempotencyKey", "correlationId"] : ["correlationId"], { optional: ["signal"] });
+  const result = closed(raw, idempotency ? ["idempotencyKey", "correlationId"] : ["correlationId"], { optional: ["signal", "timeoutMs"] });
   if (result.signal !== undefined && (!globalThis.AbortSignal || !(result.signal instanceof globalThis.AbortSignal))) {
     throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   }
-  return Object.freeze({ ...(idempotency ? { idempotencyKey: id(result.idempotencyKey) } : {}), correlationId: id(result.correlationId), signal: result.signal });
+  if (result.timeoutMs !== undefined && (!Number.isSafeInteger(result.timeoutMs) || result.timeoutMs < 1 || result.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  return Object.freeze({ ...(idempotency ? { idempotencyKey: id(result.idempotencyKey) } : {}), correlationId: id(result.correlationId), signal: result.signal, timeoutMs: result.timeoutMs });
 }
 
 function safeJson(value, seen = new WeakSet()) {
@@ -119,11 +140,15 @@ function exactResponse(raw, keys) {
   if (!plainRecord(value) || Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) {
     throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
   }
-  return responseSize(value);
+  return deepFreeze(responseSize(value));
 }
 
 function nullableText(value) {
   return value === null || typeof value === "string";
+}
+
+function isoTimestamp(value, nullable = false) {
+  return (nullable && value === null) || (typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value);
 }
 
 function responseValidation(validate) {
@@ -135,8 +160,8 @@ function validateConnection(raw) {
     const value = exactResponse(raw, CONNECTION_KEYS);
     if (!id(value.id) || !id(value.accountId) || version(value.version) < 1 || !text(value.displayName, 200)
     || !text(value.baseUrl) || !text(value.fingerprint, 512) || !id(value.keyVersion) || !CONNECTION_STATUS.has(value.status)
-    || version(value.statusVersion) < 1 || !nullableText(value.validatedAt) || !nullableText(value.activatedAt)
-    || !nullableText(value.retiredAt) || !text(value.createdAt) || typeof value.duplicate !== "boolean") {
+    || version(value.statusVersion) < 1 || !isoTimestamp(value.validatedAt, true) || !isoTimestamp(value.activatedAt, true)
+    || !isoTimestamp(value.retiredAt, true) || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
     return Object.freeze(value);
@@ -150,8 +175,8 @@ function validateTask(raw) {
     || !["CATALOG_SYNC", "ROLLBACK_CAPABILITY"].includes(value.syncPurpose) || version(value.targetConnectionStatusVersion) < 1
     || !TASK_STATUS.has(value.status) || version(value.statusVersion) < 1 || !Number.isSafeInteger(value.attemptCount)
     || !Number.isSafeInteger(value.maxAttempts) || !Number.isSafeInteger(value.leaseVersion) || !nullableText(value.availableAt)
-    || !nullableText(value.completedAt) || !nullableText(value.lastErrorCode) || !nullableText(value.lastErrorSafe)
-      || !text(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    || !isoTimestamp(value.completedAt, true) || !nullableText(value.lastErrorCode) || !nullableText(value.lastErrorSafe)
+      || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return Object.freeze(value);
   });
 }
@@ -162,9 +187,10 @@ function validateProfile(raw) {
     if (!id(value.id) || !id(value.accountId) || !text(value.displayName, 200) || version(value.configVersion) < 1
     || !text(value.baseUrl) || value.textProtocol !== "SUB2API_RESPONSES"
     || !["SUB2API_RESPONSES_IMAGE_TOOL", "SUB2API_OPENAI_IMAGES"].includes(value.imageProtocol)
-    || !id(value.textModel) || !id(value.imageModel) || typeof value.enabled !== "boolean" || !nullableText(value.capabilityCheckedAt)
+    || !id(value.textModel) || !id(value.imageModel) || typeof value.enabled !== "boolean" || !isoTimestamp(value.capabilityCheckedAt, true)
     || !nullableText(value.connectionId) || (value.connectionVersion !== null && (!Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1))
-      || !text(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    || ((value.connectionId === null) !== (value.connectionVersion === null))
+      || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return Object.freeze(value);
   });
 }
@@ -174,7 +200,7 @@ function validateCapability(raw) {
     const value = exactResponse(raw, CAPABILITY_KEYS);
     if (!id(value.profileId) || version(value.configVersion) < 1 || !CAPABILITY_OUTCOME.has(value.outcome)
     || !Array.isArray(value.features) || !Number.isFinite(value.latencyMs) && value.latencyMs !== null
-    || !plainRecord(value.models) || !id(value.models.text) || !id(value.models.image) || !text(value.checkedAt)
+    || !plainRecord(value.models) || !id(value.models.text) || !id(value.models.image) || !isoTimestamp(value.checkedAt)
       || !nullableText(value.errorCode) || typeof value.enabled !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return Object.freeze(value);
   });
@@ -195,7 +221,7 @@ function validateCatalog(raw) {
     const value = exactResponse(raw, CATALOG_KEYS);
     if (!id(value.id) || !id(value.accountId) || !id(value.connectionId) || version(value.connectionVersion) < 1
     || !id(value.syncTaskId) || !plainRecord(value.catalog) || !text(value.catalogHash, 128) || !text(value.capabilityHash, 128)
-    || !nullableText(value.rollbackEvidenceIdentity) || !nullableText(value.testedAt) || !text(value.createdAt)) {
+    || !nullableText(value.rollbackEvidenceIdentity) || !isoTimestamp(value.testedAt, true) || !isoTimestamp(value.createdAt)) {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
     return Object.freeze(value);
@@ -215,11 +241,19 @@ function serialize(body) {
   return serialized;
 }
 
-async function request(path, body, signal, validator) {
+function safeRemoteError(error) {
+  try { if (error?.body) safeJson(error.body); } catch { return invalid("AI_SETTINGS_CLIENT_REQUEST_FAILED"); }
+  const code = SAFE_ERROR_CODES.has(error?.code) ? error.code : "AI_SETTINGS_CLIENT_REQUEST_FAILED";
+  return Object.assign(new Error(SAFE_ERROR_LABELS[code] || "AI 模型设置请求未完成"), { code });
+}
+
+async function request(path, body, signal, timeoutMs, validator) {
   if (signal?.aborted) throw invalid("REQUEST_ABORTED");
-  const raw = await apiRequest(path, { method: "POST", serializedBody: serialize(body), maxSerializedBodyBytes: MAX_BYTES,
-    headers: { "X-Client-Ai-Settings": "1" }, signal });
-  return unwrap(raw, validator);
+  try {
+    const raw = await apiRequest(path, { method: "POST", serializedBody: serialize(body), maxSerializedBodyBytes: MAX_BYTES,
+      maxResponseBytes: MAX_BYTES, headers: { "X-Client-Ai-Settings": "1" }, signal, timeoutMs });
+    return unwrap(raw, validator);
+  } catch (error) { throw safeRemoteError(error); }
 }
 
 function connectionInput(raw) {
@@ -259,59 +293,82 @@ export function createAiSettingsIntentStore(storage = globalThis.sessionStorage)
   return Object.freeze({ connectionIntent(raw) {
     const value = closed(raw, ["displayName", "baseUrl"]);
     return read({ displayName: text(value.displayName, 200), baseUrl: text(value.baseUrl) });
+  }, commandIntent(raw) {
+    const value = closed(raw, ["operation", "targetId"]);
+    const operation = ["sync", "profile", "publish", "rollback"].includes(value.operation) ? value.operation : "";
+    if (!operation) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+    return read({ displayName: operation, baseUrl: id(value.targetId) });
   } });
 }
 
-export async function loadAiSettings() {
-  const raw = await apiRequest(BASE);
-  return unwrap(raw, (data) => {
+function settleIntent(rawIntent, error = null) {
+  if (!error || ["AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT"].includes(error.code)) {
+    intentOwners.get(rawIntent)?.();
+  }
+}
+
+export async function loadAiSettings(rawOptions = {}) {
+  const options = closed(rawOptions, [], { optional: ["signal", "timeoutMs"] });
+  if (options.signal !== undefined && (!globalThis.AbortSignal || !(options.signal instanceof globalThis.AbortSignal))) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  if (options.signal?.aborted) throw invalid("REQUEST_ABORTED");
+  try { const raw = await apiRequest(BASE, { signal: options.signal, timeoutMs: options.timeoutMs, maxResponseBytes: MAX_BYTES }); return unwrap(raw, (data) => {
     const value = exactResponse(data, ["accountId", "activeConnection", "connections", "catalogs", "syncTasks", "profiles", "actions"]);
     if (!id(value.accountId) || (value.activeConnection !== null && !validateConnection(value.activeConnection))
       || !Array.isArray(value.connections) || !Array.isArray(value.catalogs) || !Array.isArray(value.syncTasks)
       || !Array.isArray(value.profiles)) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
-    return Object.freeze({ ...value, connections: value.connections.map(validateConnection), catalogs: value.catalogs.map(validateCatalog),
+    return deepFreeze({ ...value, connections: value.connections.map(validateConnection), catalogs: value.catalogs.map(validateCatalog),
       syncTasks: value.syncTasks.map(validateTask), profiles: value.profiles.map(validateProfile), actions: validateActions(value.actions) });
-  });
+  }); } catch (error) { throw safeRemoteError(error); }
 }
 
 export async function createGatewayConnection(raw, rawIntent) {
   const input = connectionInput(raw); const intent = exactIntent(rawIntent);
-  const result = await request(`${BASE}/connections`, { idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId,
-    displayName: input.displayName, baseUrl: input.baseUrl, gatewayKey: input.gatewayKey }, intent.signal, validateConnection);
-  if (input.gatewayKeyInput) input.gatewayKeyInput.value = "";
-  intentOwners.get(rawIntent)?.();
-  return result;
+  try {
+    const result = await request(`${BASE}/connections`, { idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId,
+      displayName: input.displayName, baseUrl: input.baseUrl, gatewayKey: input.gatewayKey }, intent.signal, intent.timeoutMs, validateConnection);
+    if (input.gatewayKeyInput) input.gatewayKeyInput.value = "";
+    settleIntent(rawIntent);
+    return result;
+  } catch (error) { settleIntent(rawIntent, error); throw error; }
 }
 
 export async function requestModelSync(raw, rawIntent) {
   const input = closed(raw, ["connectionId", "connectionVersion"]); const intent = exactIntent(rawIntent);
-  return request(`${BASE}/connections/${encodeURIComponent(id(input.connectionId))}/sync`, { connectionVersion: version(input.connectionVersion),
-    idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId }, intent.signal, validateTask);
+  try { const result = await request(`${BASE}/connections/${encodeURIComponent(id(input.connectionId))}/sync`, { connectionVersion: version(input.connectionVersion),
+    idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId }, intent.signal, intent.timeoutMs, validateTask); settleIntent(rawIntent); return result;
+  } catch (error) { settleIntent(rawIntent, error); throw error; }
 }
 
 export async function createModelProfile(raw, rawIntent) {
   const input = closed(raw, ["connectionId", "connectionVersion", "catalogId", "displayName", "textModel", "imageModel", "textProtocol", "imageProtocol"]); const intent = exactIntent(rawIntent);
   if (input.textProtocol !== "SUB2API_RESPONSES" || !["SUB2API_RESPONSES_IMAGE_TOOL", "SUB2API_OPENAI_IMAGES"].includes(input.imageProtocol)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
-  return request(`${BASE}/profiles`, { connectionId: id(input.connectionId), connectionVersion: version(input.connectionVersion), catalogId: id(input.catalogId),
+  try { const result = await request(`${BASE}/profiles`, { connectionId: id(input.connectionId), connectionVersion: version(input.connectionVersion), catalogId: id(input.catalogId),
     displayName: text(input.displayName, 200), textModel: id(input.textModel), imageModel: id(input.imageModel), textProtocol: input.textProtocol,
-    imageProtocol: input.imageProtocol, idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId }, intent.signal, validateProfile);
+    imageProtocol: input.imageProtocol, idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId }, intent.signal, intent.timeoutMs, validateProfile); settleIntent(rawIntent); return result;
+  } catch (error) { settleIntent(rawIntent, error); throw error; }
 }
 
-export async function testModelProfile(raw, rawIntent) {
-  const input = closed(raw, ["profileId", "configVersion", "costConfirmed"]); const intent = exactIntent(rawIntent, { idempotency: false });
+export async function testModelProfile(raw) {
+  const input = closed(raw, ["profileId", "configVersion", "costConfirmed", "correlationId"], { optional: ["signal", "timeoutMs"] });
+  const intent = Object.freeze({ correlationId: id(input.correlationId), signal: input.signal, timeoutMs: input.timeoutMs });
+  if (intent.signal !== undefined && (!globalThis.AbortSignal || !(intent.signal instanceof globalThis.AbortSignal))) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  if (intent.timeoutMs !== undefined && (!Number.isSafeInteger(intent.timeoutMs) || intent.timeoutMs < 1 || intent.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   if (input.costConfirmed !== true) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
-  return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/test`, { configVersion: version(input.configVersion), correlationId: intent.correlationId, costConfirmed: true }, intent.signal, validateCapability);
+  return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/test`, { configVersion: version(input.configVersion), correlationId: intent.correlationId, costConfirmed: true }, intent.signal, intent.timeoutMs, validateCapability);
 }
 
 export async function publishModelProfile(raw, rawIntent) {
   const input = closed(raw, ["profileId", "configVersion"]); const intent = exactIntent(rawIntent);
-  return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/publish`, { configVersion: version(input.configVersion), idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId }, intent.signal, validateProfile);
+  try { const result = await request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/publish`, { configVersion: version(input.configVersion), idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId }, intent.signal, intent.timeoutMs, validateProfile); settleIntent(rawIntent); return result;
+  } catch (error) { settleIntent(rawIntent, error); throw error; }
 }
 
 export async function rollbackModelProfile(raw, rawIntent) {
   const input = closed(raw, ["profileId", "configVersion", "costConfirmed"]); const intent = exactIntent(rawIntent);
   if (input.costConfirmed !== true) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
-  return request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/rollback`, { configVersion: version(input.configVersion), idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId, costConfirmed: true }, intent.signal, validateProfile);
+  try { const result = await request(`${BASE}/profiles/${encodeURIComponent(id(input.profileId))}/rollback`, { configVersion: version(input.configVersion), idempotencyKey: intent.idempotencyKey, correlationId: intent.correlationId, costConfirmed: true }, intent.signal, intent.timeoutMs, validateProfile); settleIntent(rawIntent); return result;
+  } catch (error) { settleIntent(rawIntent, error); throw error; }
 }
 
 export async function pollAiSettingsUntil(predicate, { signal, timeoutMs } = {}) {
@@ -320,7 +377,7 @@ export async function pollAiSettingsUntil(predicate, { signal, timeoutMs } = {})
   const deadline = Date.now() + timeoutMs;
   while (true) {
     if (signal?.aborted) throw invalid("REQUEST_ABORTED");
-    const current = await loadAiSettings();
+    const current = await loadAiSettings({ signal, timeoutMs: Math.max(1, deadline - Date.now()) });
     if (predicate(current) === true) return current;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw invalid("AI_SETTINGS_CLIENT_POLL_TIMEOUT");

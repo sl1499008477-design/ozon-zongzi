@@ -111,3 +111,16 @@ test("invalid JSON and timeout failures use stable client codes", async (t) => {
   });
   await assert.rejects(apiRequest("/timeout", { timeoutMs: 10 }), { code: "REQUEST_TIMEOUT" });
 });
+
+test("response streams are cancelled once the explicit byte limit is exceeded", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let cancelled = false;
+  const encoder = new TextEncoder();
+  globalThis.fetch = async () => ({ ok: true, status: 200, body: new ReadableStream({
+    start(controller) { controller.enqueue(encoder.encode("x".repeat(32))); },
+    cancel() { cancelled = true; },
+  }) });
+  await assert.rejects(apiRequest("/bounded", { maxResponseBytes: 16 }), { code: "RESPONSE_TOO_LARGE" });
+  assert.equal(cancelled, true);
+});
