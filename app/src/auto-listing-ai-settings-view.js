@@ -50,14 +50,15 @@ function catalogSelection(catalogs, syncTasks, profile) {
   for (const raw of Array.isArray(catalogs) ? catalogs : []) {
     const row = record(raw); const catalog = record(row?.catalog);
     const task = (Array.isArray(syncTasks) ? syncTasks : []).map(record).find((entry) => entry?.id === row?.syncTaskId
-      && entry.status === "SUCCEEDED" && entry.syncPurpose === "CATALOG_SYNC");
+      && entry.status === "SUCCEEDED" && entry.syncPurpose === "CATALOG_SYNC"
+      && entry.connectionId === row?.connectionId && entry.connectionVersion === row?.connectionVersion);
     const evidence = record(catalog?.activeSelection);
     if (task && row?.connectionId === profile.connectionId && row?.connectionVersion === profile.connectionVersion
       && evidence?.profileId === profile.id && evidence?.configVersion === profile.configVersion
       && evidence?.textModel === profile.textModel && evidence?.imageModel === profile.imageModel
       && typeof catalog?.activeSelectionState === "string") return catalog.activeSelectionState;
   }
-  return "NOT_SELECTED";
+  return null;
 }
 
 function recommendations(catalogs) {
@@ -101,6 +102,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
     const capability = verification(row.capabilityResult);
     const selection = catalogSelection(source.catalogs, source.syncTasks, row);
     const state = selection === "MISSING" ? { outcome: "MISSING", label: VERIFICATION.MISSING, passed: false }
+      : selection !== "AVAILABLE" ? { outcome: "REFRESH", label: "待刷新", passed: false }
       : capability.passed && (!iso(row.capabilityCheckedAt) || !iso(record(row.capabilityResult)?.checkedAt))
         ? { outcome: "UNKNOWN", label: VERIFICATION.UNKNOWN, passed: false } : capability;
     const id = typeof row.id === "string" ? row.id : "";

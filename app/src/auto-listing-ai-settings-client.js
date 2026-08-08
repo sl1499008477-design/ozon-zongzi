@@ -358,7 +358,7 @@ export async function createModelProfile(raw, rawIntent) {
 
 export async function testModelProfile(raw) {
   const input = closed(raw, ["profileId", "configVersion", "costConfirmed", "correlationId"], { optional: ["signal", "timeoutMs"] });
-  const intent = Object.freeze({ correlationId: id(input.correlationId), signal: input.signal, timeoutMs: input.timeoutMs });
+  const intent = Object.freeze({ correlationId: id(input.correlationId), signal: input.signal, timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS });
   if (intent.signal !== undefined && (!globalThis.AbortSignal || !(intent.signal instanceof globalThis.AbortSignal))) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   if (intent.timeoutMs !== undefined && (!Number.isSafeInteger(intent.timeoutMs) || intent.timeoutMs < 1 || intent.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   if (input.costConfirmed !== true) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
@@ -384,6 +384,7 @@ export async function pollAiSettingsUntil(predicate, { signal, timeoutMs } = {})
   const deadline = Date.now() + timeoutMs;
   while (true) {
     if (signal?.aborted) throw invalid("REQUEST_ABORTED");
+    if (Date.now() >= deadline) throw invalid("AI_SETTINGS_CLIENT_POLL_TIMEOUT");
     const current = await loadAiSettings({ signal, timeoutMs: Math.max(1, deadline - Date.now()) });
     if (predicate(current) === true) return current;
     const remaining = deadline - Date.now();

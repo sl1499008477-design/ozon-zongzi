@@ -154,3 +154,11 @@ test("public paid test is a one-argument closed command and client exposes no re
   await assert.rejects(testModelProfile({ profileId: "profile-a", configVersion: 1, correlationId: "corr-a", costConfirmed: true, extra: true }),
     { code: "AI_SETTINGS_CLIENT_REQUEST_INVALID" });
 });
+
+test("paid test has a default bounded timeout and poll cannot succeed after its deadline", async (t) => {
+  let observedSignal = null;
+  installTransport(t, async (_url, options) => { observedSignal = options.signal; return response(capability()); });
+  await testModelProfile({ profileId: "profile-a", configVersion: 1, correlationId: "corr-timeout", costConfirmed: true });
+  assert.ok(observedSignal instanceof AbortSignal);
+  await assert.rejects(pollAiSettingsUntil(() => true, { timeoutMs: 1 }), (error) => ["AI_SETTINGS_CLIENT_POLL_TIMEOUT", "REQUEST_TIMEOUT", "AI_SETTINGS_CLIENT_RESPONSE_INVALID"].includes(error.code));
+});
