@@ -5,12 +5,15 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createAutoListingCredentialCipher } from "../auto-listing-ai-credential-crypto.mjs";
+import { createAutoListingAiCatalogSyncCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiModelSyncService } from "../auto-listing-ai-model-sync-service.mjs";
 import {
   createAutoListingAiModelSyncSchedulePostgres,
   createAutoListingAiModelSyncWorker,
 } from "../auto-listing-ai-model-sync-worker.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
+import { createSub2ApiAdapter } from "../sub2api-ai-adapter.mjs";
 
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1"
   && Boolean(process.env.SONLI_MIGRATION_TEST_DATABASE_URL);
@@ -35,6 +38,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
   let pool;
   const accountA = `account-a-${suffix}`;
   const accountB = `account-b-${suffix}`;
+  const accountC = `account-c-${suffix}`;
   const legacyProfileId = `legacy-profile-${suffix}`;
 
   try {
@@ -46,7 +50,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     for (const migration of migrations.filter((file) => file < "053_")) {
       await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
     }
-    for (const accountId of [accountA, accountB]) {
+    for (const accountId of [accountA, accountB, accountC]) {
       await admin.query(
         "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
         [accountId, `user-${accountId}`],
@@ -139,7 +143,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, actorId: accountA, connectionId: first.id,
       connectionVersion: first.version, expectedConnectionStatusVersion: activatedFirst.statusVersion,
       idempotencyKey: `sync-rollback-seed-${suffix}`, correlationId: `corr-sync-rollback-seed-${suffix}`,
-      maxAttempts: 2, syncPurpose: "CATALOG_SYNC",
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
     });
     const seedLease = await repository.claimModelSync({ accountId: accountA, workerId: "worker-seed", leaseMs: 30_000 });
     const rollbackEvidenceCatalog = await repository.completeModelSync({
@@ -501,14 +505,14 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       expectedConnectionStatusVersion: Number(active.status_version),
       idempotencyKey: `sync-a-${suffix}`,
       correlationId: `corr-sync-a-${suffix}`,
-      maxAttempts: 3,
+      maxAttempts: 5,
       syncPurpose: "CATALOG_SYNC",
     });
     await assert.rejects(repository.enqueueModelSync({
       accountId: accountA, actorId: accountA, connectionId: active.id,
       connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
       idempotencyKey: `sync-conflict-${suffix}`, correlationId: `corr-sync-conflict-${suffix}`,
-      maxAttempts: 3,
+      maxAttempts: 5,
       syncPurpose: "CATALOG_SYNC",
     }), { code: "AUTO_LISTING_AI_SETTINGS_SYNC_ALREADY_RUNNABLE", status: 409 });
     assert.deepEqual(await repository.listRunnableSyncAccountIds({ afterAccountId: null, limit: 10 }), [accountA]);
@@ -582,7 +586,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, actorId: accountA, connectionId: active.id,
       connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
       idempotencyKey: `sync-empty-${suffix}`, correlationId: `corr-sync-empty-${suffix}`,
-      maxAttempts: 1, syncPurpose: "CATALOG_SYNC",
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
     });
     const emptyLease = await repository.claimModelSync({ accountId: accountA, workerId: "worker-empty", leaseMs: 30_000 });
     const emptyCompleted = await repository.completeModelSync({
@@ -597,7 +601,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, actorId: accountA, connectionId: active.id,
       connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
       idempotencyKey: `sync-single-${suffix}`, correlationId: `corr-sync-single-${suffix}`,
-      maxAttempts: 1, syncPurpose: "CATALOG_SYNC",
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
     });
     const singleLease = await repository.claimModelSync({ accountId: accountA, workerId: "worker-single", leaseMs: 30_000 });
     const singleCompleted = await repository.completeModelSync({
@@ -652,6 +656,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     await assert.rejects(repository.loadCatalogSyncConnectionForSecretResolution({
       accountId: accountA, taskId: missingTask.id, workerId: "worker-service-replay",
       leaseVersion: missingLease.leaseVersion, leaseToken: "aiglease_forged",
+      minimumLeaseRemainingMs: 45_000,
     }), { code: "AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT", status: 409 });
     let completionResponseLost = true;
     const responseLossRepository = {
@@ -811,7 +816,10 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       gateway: {
         async listModels() {
           preflightGatewayCalls += 1;
-          return { requestId: "must-not-run-after-preflight-rotation", models: [] };
+          const error = new Error("connection changed before credential resolution");
+          error.code = "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE";
+          error.retryable = false;
+          throw error;
         },
       },
       workerId: "worker-preflight-rotation",
@@ -834,7 +842,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     });
     assert.equal(preflightRotationResult.status, "DEAD");
     assert.equal(preflightRotationResult.lastErrorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
-    assert.equal(preflightGatewayCalls, 0);
+    assert.equal(preflightGatewayCalls, 1);
     assert.equal((await pool.query(
       "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
       [accountB, preflightRotationTask.id],
@@ -877,7 +885,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       expectedConnectionStatusVersion: Number(active.status_version),
       idempotencyKey: `sync-retry-${suffix}`,
       correlationId: `corr-sync-retry-${suffix}`,
-      maxAttempts: 2,
+      maxAttempts: 5,
       syncPurpose: "CATALOG_SYNC",
     });
     await rejectsCode(() => pool.query(
@@ -945,14 +953,18 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, actorId: accountA, connectionId: active.id,
       connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
       idempotencyKey: `sync-exhausted-${suffix}`, correlationId: `corr-sync-exhausted-${suffix}`,
-      maxAttempts: 1,
+      maxAttempts: 5,
       syncPurpose: "CATALOG_SYNC",
     });
-    const exhaustedLease = await repository.claimModelSync({
-      accountId: accountA, workerId: "worker-expiring", leaseMs: 1,
-    });
-    assert.equal(exhaustedLease.taskId, exhaustedTask.id);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    let exhaustedLease;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      exhaustedLease = await repository.claimModelSync({
+        accountId: accountA, workerId: `worker-expiring-${attempt}`, leaseMs: 1,
+      });
+      assert.equal(exhaustedLease.taskId, exhaustedTask.id);
+      assert.equal(exhaustedLease.attemptCount, attempt);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     assert.deepEqual(await repository.listRunnableSyncAccountIds({ afterAccountId: null, limit: 10 }), [accountA]);
     assert.equal(await repository.claimModelSync({
       accountId: accountA, workerId: "worker-reaper", leaseMs: 30_000,
@@ -1026,6 +1038,202 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     assert.equal((await pool.query(
       "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
       [accountA, rotationTask.id],
+    )).rows[0].count, 0);
+
+    const historicalActive = (await pool.query(
+      `SELECT id,version,status_version FROM ai_gateway_connection_versions
+        WHERE account_id=$1 AND status='ACTIVE'`,
+      [accountA],
+    )).rows[0];
+    const historicalAttemptTaskId = `historical-max-attempts-${suffix}`;
+    await pool.query(
+      `INSERT INTO ai_gateway_model_sync_tasks (
+         account_id,id,connection_id,connection_version,sync_purpose,
+         target_connection_status_version,status,status_version,attempt_count,max_attempts,
+         request_hash,idempotency_key,correlation_id,created_by
+       ) VALUES ($1,$2,$3,$4,'CATALOG_SYNC',$5,'PENDING',1,0,6,$6,$7,$8,$1)`,
+      [accountA, historicalAttemptTaskId, historicalActive.id, historicalActive.version,
+        historicalActive.status_version, "e".repeat(64), `historical-max-${suffix}`,
+        `corr-historical-max-${suffix}`],
+    );
+    assert.equal(await repository.claimModelSync({
+      accountId: accountA,
+      workerId: "worker-historical-attempt-policy",
+      leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    }), null);
+    assert.deepEqual((await pool.query(
+      `SELECT status,last_error_code,attempt_count,max_attempts
+         FROM ai_gateway_model_sync_tasks WHERE account_id=$1 AND id=$2`,
+      [accountA, historicalAttemptTaskId],
+    )).rows[0], {
+      status: "DEAD",
+      last_error_code: "AUTO_LISTING_AI_MODEL_SYNC_ATTEMPT_POLICY_INVALID",
+      attempt_count: 1,
+      max_attempts: 6,
+    });
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_sync_events
+        WHERE account_id=$1 AND task_id=$2 AND event_type='DEAD'`,
+      [accountA, historicalAttemptTaskId],
+    )).rows[0].count, 1);
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+        WHERE account_id=$1 AND entity_id=$2 AND action='AUTO_LISTING_AI_MODEL_SYNC_DEAD'`,
+      [accountA, historicalAttemptTaskId],
+    )).rows[0].count, 1);
+
+    const catalogCipher = createAutoListingCredentialCipher({
+      key: Buffer.alloc(32, 19), keyVersion: "catalog-sync-v1",
+    });
+    const catalogBaseUrl = "http://127.0.0.1:8080/v1";
+    const catalogPlaintextSecret = "sk-catalog-real-resolver-chain";
+    const deterministicConnectionId = (accountId, idempotencyKey) => `aigconn_${crypto
+      .createHash("sha256").update([accountId, idempotencyKey].join("\0"), "utf8")
+      .digest("hex").slice(0, 40)}`;
+    async function createEncryptedConnection(accountId, label) {
+      const idempotencyKey = `catalog-chain-${label}-${suffix}`;
+      const connectionId = deterministicConnectionId(accountId, idempotencyKey);
+      const encrypted = catalogCipher.encrypt({
+        accountId, connectionId, connectionVersion: 1,
+      }, catalogPlaintextSecret);
+      const pending = await repository.createPendingConnection({
+        accountId, actorId: accountId, idempotencyKey,
+        correlationId: `corr-catalog-chain-${label}-${suffix}`,
+        displayName: `Catalog resolver ${label}`,
+        baseUrl: catalogBaseUrl,
+        encryptedSecret: {
+          ...encrypted,
+          fingerprint: catalogCipher.fingerprint(catalogPlaintextSecret),
+        },
+      });
+      assert.equal(pending.id, connectionId);
+      return repository.markConnectionValidated({
+        accountId, actorId: accountId, connectionId: pending.id,
+        connectionVersion: pending.version, expectedStatusVersion: 1,
+        idempotencyKey: `activate-catalog-chain-${label}-${suffix}`,
+        correlationId: `corr-activate-catalog-chain-${label}-${suffix}`,
+        rollbackCapabilityEvidence: null,
+        validationResult: { outcome: "PASSED", checkedAt: new Date().toISOString(), endpoint: "models" },
+      });
+    }
+    const catalogConnection = await createEncryptedConnection(accountC, "initial");
+    const catalogCredentialResolver = createAutoListingAiCatalogSyncCredentialResolver({
+      repository, cipher: catalogCipher,
+    });
+    let genericSecretReads = 0;
+    let catalogTransportCalls = 0;
+    const task4Gateway = createSub2ApiAdapter({
+      fetchImpl: async (_url, init) => {
+        catalogTransportCalls += 1;
+        assert.equal(init.headers.Authorization, `Bearer ${catalogPlaintextSecret}`);
+        return new Response(JSON.stringify({
+          object: "list",
+          data: [{ object: "model", id: "catalog-text", owned_by: "local-test" }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+      readSecret: () => { throw new Error("environment resolver forbidden"); },
+      resolveSecret: async () => { genericSecretReads += 1; throw new Error("generic resolver forbidden"); },
+      resolveCatalogSyncCredential: catalogCredentialResolver.resolveCredential,
+      allowLocalGateway: true,
+      resolveHostname: async () => [{ address: "127.0.0.1", family: 4 }],
+      allowedSecretEnvNames: [],
+      allowedGatewayBaseUrls: [catalogBaseUrl],
+    });
+    const commandForLease = (leased, correlationId) => ({
+      accountId: leased.accountId,
+      connectionId: leased.connectionId,
+      connectionVersion: leased.connectionVersion,
+      syncPurpose: leased.syncPurpose,
+      targetConnectionStatusVersion: leased.targetConnectionStatusVersion,
+      taskId: leased.taskId,
+      attemptCount: leased.attemptCount,
+      maxAttempts: leased.maxAttempts,
+      leaseVersion: leased.leaseVersion,
+      leaseToken: leased.leaseToken,
+      leaseExpiresAt: leased.leaseExpiresAt,
+      correlationId,
+    });
+    const enqueueCatalogChain = (label, connection = catalogConnection) => repository.enqueueModelSync({
+      accountId: accountC, actorId: accountC, connectionId: connection.id,
+      connectionVersion: connection.version,
+      expectedConnectionStatusVersion: connection.statusVersion,
+      idempotencyKey: `sync-catalog-chain-${label}-${suffix}`,
+      correlationId: `corr-sync-catalog-chain-${label}-${suffix}`,
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
+    });
+    const catalogChainTask = await enqueueCatalogChain("success");
+    const catalogChainLease = await repository.claimModelSync({
+      accountId: accountC, workerId: "worker-catalog-chain", leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    assert.equal(catalogChainLease.taskId, catalogChainTask.id);
+    const catalogChainService = createAutoListingAiModelSyncService({
+      repository, gateway: task4Gateway, workerId: "worker-catalog-chain",
+      timeoutMs: 30_000, clock: () => new Date(),
+    });
+    assert.equal((await catalogChainService.syncModelCatalog(commandForLease(
+      catalogChainLease, `corr-catalog-chain-success-${suffix}`,
+    ))).status, "SUCCEEDED");
+    assert.deepEqual({ genericSecretReads, catalogTransportCalls }, {
+      genericSecretReads: 0, catalogTransportCalls: 1,
+    });
+
+    const expiredChainTask = await enqueueCatalogChain("expired");
+    const expiredChainLease = await repository.claimModelSync({
+      accountId: accountC, workerId: "worker-catalog-expired", leaseMs: 1,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    assert.equal(expiredChainLease.taskId, expiredChainTask.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const expiredChainService = createAutoListingAiModelSyncService({
+      repository, gateway: task4Gateway, workerId: "worker-catalog-expired",
+      timeoutMs: 30_000, clock: () => new Date(),
+    });
+    await assert.rejects(expiredChainService.syncModelCatalog(commandForLease(
+      expiredChainLease, `corr-catalog-chain-expired-${suffix}`,
+    )), { code: "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT" });
+    assert.equal(catalogTransportCalls, 1);
+    const takeoverChainLease = await repository.claimModelSync({
+      accountId: accountC, workerId: "worker-catalog-takeover", leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    await assert.rejects(expiredChainService.syncModelCatalog(commandForLease(
+      expiredChainLease, `corr-catalog-chain-taken-over-${suffix}`,
+    )), { code: "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT" });
+    assert.equal(catalogTransportCalls, 1);
+    assert.equal((await repository.failModelSync({
+      accountId: accountC, workerId: "worker-catalog-takeover",
+      taskId: takeoverChainLease.taskId, leaseVersion: takeoverChainLease.leaseVersion,
+      leaseToken: takeoverChainLease.leaseToken,
+      correlationId: `corr-catalog-chain-takeover-dead-${suffix}`,
+      errorCode: "AUTO_LISTING_AI_MODEL_SYNC_TEST_TERMINAL",
+      errorSafe: "test lease terminalized", retryable: false, retryDelayMs: 0,
+    })).status, "DEAD");
+
+    const rotationChainTask = await enqueueCatalogChain("rotation");
+    const rotationChainLease = await repository.claimModelSync({
+      accountId: accountC, workerId: "worker-catalog-rotation", leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    assert.equal(rotationChainLease.taskId, rotationChainTask.id);
+    await createEncryptedConnection(accountC, "replacement");
+    const rotationChainService = createAutoListingAiModelSyncService({
+      repository, gateway: task4Gateway, workerId: "worker-catalog-rotation",
+      timeoutMs: 30_000, clock: () => new Date(),
+    });
+    const rotationChainResult = await rotationChainService.syncModelCatalog(commandForLease(
+      rotationChainLease, `corr-catalog-chain-rotation-${suffix}`,
+    ));
+    assert.equal(rotationChainResult.status, "DEAD");
+    assert.equal(rotationChainResult.lastErrorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
+    assert.deepEqual({ genericSecretReads, catalogTransportCalls }, {
+      genericSecretReads: 0, catalogTransportCalls: 1,
+    });
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs
+        WHERE account_id=$1 AND sync_task_id IN ($2,$3)`,
+      [accountC, expiredChainTask.id, rotationChainTask.id],
     )).rows[0].count, 0);
 
     const eventRow = (await pool.query(

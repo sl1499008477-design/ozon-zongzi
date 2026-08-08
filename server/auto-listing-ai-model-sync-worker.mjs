@@ -119,7 +119,9 @@ function safeLease(raw, accountId) {
     "AUTO_LISTING_AI_MODEL_SYNC_LEASE_INVALID");
   const maxAttempts = positiveInteger(raw.maxAttempts, 1, 20,
     "AUTO_LISTING_AI_MODEL_SYNC_LEASE_INVALID");
-  if (attemptCount > maxAttempts) throw workerError("AUTO_LISTING_AI_MODEL_SYNC_LEASE_INVALID");
+  if (maxAttempts !== MAX_ATTEMPTS || attemptCount > maxAttempts) {
+    throw workerError("AUTO_LISTING_AI_MODEL_SYNC_LEASE_INVALID");
+  }
   return {
     taskId: id(raw.taskId, "AUTO_LISTING_AI_MODEL_SYNC_LEASE_INVALID"),
     accountId,
@@ -233,21 +235,31 @@ export function createAutoListingAiModelSyncWorker(rawConfig = {}) {
   }
 
   let running = false;
+  let explicitlyStopped = false;
   let timer = null;
-  let inFlight = null;
+  let generation = 0;
+  let activeRun = null;
+
+  function runIsActive(token) {
+    return token.cancelled !== true && token.generation === generation;
+  }
 
   function log(code, taskId = null) {
     try {
-      logger.log(Object.freeze({
+      const pending = logger.log(Object.freeze({
         component: "AUTO_LISTING_AI_MODEL_SYNC_WORKER",
         workerId,
         taskId: typeof taskId === "string" && SAFE_ID.test(taskId) ? taskId : null,
         code,
       }));
+      if (pending && typeof pending.then === "function") {
+        Promise.resolve(pending).catch(() => {});
+      }
     } catch {}
   }
 
-  async function processAccount(accountId, summary) {
+  async function processAccount(accountId, summary, token) {
+    if (!runIsActive(token)) return;
     let rawLease;
     try {
       rawLease = await repository.claimModelSync({
@@ -295,33 +307,40 @@ export function createAutoListingAiModelSyncWorker(rawConfig = {}) {
     }
   }
 
-  async function processRunnable(summary) {
+  async function processRunnable(summary, token) {
     let afterAccountId = null;
     while (true) {
+      if (!runIsActive(token)) return;
       const rawPage = await repository.listRunnableSyncAccountIds({
         afterAccountId,
         limit: accountPageSize,
         syncPurpose: "CATALOG_SYNC",
       });
+      if (!runIsActive(token)) return;
       const page = safeAccountPage(rawPage, afterAccountId, accountPageSize);
       if (page.length === 0) return;
       for (let index = 0; index < page.length; index += CONCURRENCY) {
+        if (!runIsActive(token)) return;
         await Promise.all(page.slice(index, index + CONCURRENCY)
-          .map((accountId) => processAccount(accountId, summary)));
+          .map((accountId) => processAccount(accountId, summary, token)));
       }
       afterAccountId = page.at(-1);
     }
   }
 
-  async function scheduleDaily(summary) {
+  async function scheduleDaily(summary, token) {
     let afterAccountId = null;
     while (true) {
-      const page = safeCandidatePage(await scheduler.listDueConnections({
+      if (!runIsActive(token)) return;
+      const rawPage = await scheduler.listDueConnections({
         afterAccountId,
         limit: accountPageSize,
-      }), afterAccountId, accountPageSize);
+      });
+      if (!runIsActive(token)) return;
+      const page = safeCandidatePage(rawPage, afterAccountId, accountPageSize);
       if (page.length === 0) return;
       for (const due of page) {
+        if (!runIsActive(token)) return;
         const sourceCatalog = due.latestCatalogId ?? "initial";
         const intentHashParts = [due.accountId, due.connectionId, due.connectionVersion,
           due.connectionStatusVersion, sourceCatalog];
@@ -351,46 +370,65 @@ export function createAutoListingAiModelSyncWorker(rawConfig = {}) {
     }
   }
 
-  async function executeOnce() {
+  async function executeOnce(token) {
     const summary = createSummary();
     const before = createSummary();
-    await processRunnable(before);
+    await processRunnable(before, token);
     addSummary(summary, before);
-    await scheduleDaily(summary);
+    if (!runIsActive(token)) return Object.freeze(summary);
+    await scheduleDaily(summary, token);
+    if (!runIsActive(token)) return Object.freeze(summary);
     const after = createSummary();
-    await processRunnable(after);
+    await processRunnable(after, token);
     addSummary(summary, after);
     return Object.freeze(summary);
   }
 
-  async function runOnce() {
-    if (inFlight) return inFlight;
-    inFlight = executeOnce().finally(() => { inFlight = null; });
-    return inFlight;
+  function runForGeneration(runGeneration) {
+    if (activeRun) return activeRun.promise;
+    const token = { cancelled: false, generation: runGeneration };
+    const promise = executeOnce(token).finally(() => {
+      if (activeRun?.token === token) activeRun = null;
+    });
+    activeRun = { promise, token };
+    return promise;
   }
 
-  function schedule(delayMs) {
-    if (!running) return;
-    timer = timers.setTimeout(async () => {
-      timer = null;
-      try { await runOnce(); } catch (error) { log(safeCode(error)); }
-      schedule(pollIntervalMs);
+  async function runOnce() {
+    if (explicitlyStopped && !running) return Object.freeze(createSummary());
+    return runForGeneration(generation);
+  }
+
+  function schedule(delayMs, scheduledGeneration) {
+    if (!running || scheduledGeneration !== generation) return;
+    const record = { id: null, generation: scheduledGeneration };
+    record.id = timers.setTimeout(async () => {
+      if (timer === record) timer = null;
+      if (!running || scheduledGeneration !== generation) return;
+      try { await runForGeneration(scheduledGeneration); } catch (error) { log(safeCode(error)); }
+      schedule(pollIntervalMs, scheduledGeneration);
     }, delayMs);
+    timer = record;
   }
 
   return Object.freeze({
     async start() {
       if (running) return true;
+      explicitlyStopped = false;
       running = true;
-      schedule(0);
+      generation += 1;
+      schedule(0, generation);
       return true;
     },
     runOnce,
     async stop() {
+      explicitlyStopped = true;
       running = false;
-      if (timer !== null) timers.clearTimeout(timer);
+      generation += 1;
+      if (activeRun) activeRun.token.cancelled = true;
+      if (timer !== null) timers.clearTimeout(timer.id);
       timer = null;
-      if (inFlight) await inFlight.catch(() => {});
+      if (activeRun) await activeRun.promise.catch(() => {});
     },
   });
 }

@@ -27,8 +27,13 @@ const MAX_PROMPT_CHARACTERS = 100_000;
 const MAX_PROMPT_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
 const MAX_MODELS = 2_000;
+const MAX_CATALOG_SYNC_TIMEOUT_MS = 60_000;
+const CATALOG_SYNC_DATABASE_MARGIN_MS = 15_000;
 const ENCRYPTED_SECRET_REFERENCE = "SUB2API_ENCRYPTED_KEY";
 const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const CATALOG_SYNC_LEASE_KEYS = new Set([
+  "accountId", "leaseToken", "leaseVersion", "taskId", "workerId",
+]);
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/u;
 const OWNED_BY = /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,239}$/u;
 const DANGEROUS_ENV_NAMES = new Set(["__proto__", "prototype", "constructor"]);
@@ -100,6 +105,68 @@ function gatewayError(code, options = {}) {
 
 function profileField(profile, camel, snake = "") {
   return profile?.[camel] ?? (snake ? profile?.[snake] : undefined);
+}
+
+function ownDataFields(value) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const fields = {};
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (!Object.hasOwn(descriptor, "value") || typeof descriptor.get === "function"
+        || typeof descriptor.set === "function") return null;
+      fields[key] = descriptor.value;
+    }
+    return fields;
+  } catch { return null; }
+}
+
+function normalizeCatalogSyncLease(value) {
+  const fields = ownDataFields(value);
+  if (!fields || Object.keys(fields).length !== CATALOG_SYNC_LEASE_KEYS.size
+    || Object.keys(fields).some((key) => !CATALOG_SYNC_LEASE_KEYS.has(key))
+    || typeof fields.accountId !== "string" || fields.accountId !== fields.accountId.trim()
+    || !SCOPE_ID.test(fields.accountId)
+    || typeof fields.taskId !== "string" || fields.taskId !== fields.taskId.trim()
+    || !SCOPE_ID.test(fields.taskId)
+    || typeof fields.workerId !== "string" || fields.workerId !== fields.workerId.trim()
+    || !SCOPE_ID.test(fields.workerId)
+    || typeof fields.leaseToken !== "string" || fields.leaseToken !== fields.leaseToken.trim()
+    || !SCOPE_ID.test(fields.leaseToken)
+    || !Number.isSafeInteger(fields.leaseVersion) || fields.leaseVersion < 1) {
+    throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+  }
+  return Object.freeze({
+    accountId: fields.accountId,
+    taskId: fields.taskId,
+    workerId: fields.workerId,
+    leaseVersion: fields.leaseVersion,
+    leaseToken: fields.leaseToken,
+  });
+}
+
+function normalizeCatalogSyncCredential(value, expectedAccountId) {
+  const fields = ownDataFields(value);
+  if (!fields || Object.keys(fields).length !== 2
+    || !Object.hasOwn(fields, "connection") || !Object.hasOwn(fields, "secret")) {
+    throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+  }
+  const connectionFields = ownDataFields(fields.connection);
+  const secret = typeof fields.secret === "string" ? fields.secret.trim() : "";
+  if (!connectionFields || connectionFields.accountId !== expectedAccountId || !secret) {
+    throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+  }
+  return { connection: fields.connection, secret };
+}
+
+function externalCode(error) {
+  try {
+    const descriptor = error && (typeof error === "object" || typeof error === "function")
+      ? Object.getOwnPropertyDescriptor(error, "code") : null;
+    return descriptor && Object.hasOwn(descriptor, "value") && typeof descriptor.value === "string"
+      ? descriptor.value : "";
+  } catch { return ""; }
 }
 
 function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
@@ -1001,6 +1068,7 @@ export function createSub2ApiAdapter({
   fetchImpl = requestPinnedGateway,
   readSecret = (name) => process.env[name],
   resolveSecret,
+  resolveCatalogSyncCredential,
   logger = null,
   allowLocalGateway = false,
   resolveHostname,
@@ -1015,6 +1083,7 @@ export function createSub2ApiAdapter({
 } = {}) {
   if (typeof fetchImpl !== "function" || typeof readSecret !== "function"
     || (resolveSecret !== undefined && typeof resolveSecret !== "function")
+    || (resolveCatalogSyncCredential !== undefined && typeof resolveCatalogSyncCredential !== "function")
     || typeof allowLocalGateway !== "boolean"
     || (resolveHostname !== undefined && typeof resolveHostname !== "function")) {
     throw new TypeError("sub2api adapter requires fetch and secret reader");
@@ -1159,6 +1228,104 @@ export function createSub2ApiAdapter({
         status: safe.status,
         errorCode: safe.code,
       });
+      abort.cleanup();
+      throw safe;
+    }
+  }
+
+  async function executeCatalogSyncAuthorized(input) {
+    const timeoutMs = input?.timeoutMs;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CATALOG_SYNC_TIMEOUT_MS
+      || typeof resolveCatalogSyncCredential !== "function") {
+      throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+    }
+    const lease = normalizeCatalogSyncLease(input?.catalogSyncLease);
+    const correlationId = validateIdentity(input?.correlationId);
+    const requestKey = validateIdentity(input?.requestKey);
+    const abort = abortContext(input?.signal, timeoutMs);
+    let normalizedProfile = null;
+    try {
+      let rawCredential;
+      try {
+        rawCredential = await abortableResult(Promise.resolve().then(() => resolveCatalogSyncCredential({
+          ...lease,
+          minimumLeaseRemainingMs: timeoutMs + CATALOG_SYNC_DATABASE_MARGIN_MS,
+        })), abort.signal);
+      } catch (error) {
+        if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
+        const code = externalCode(error);
+        if ([
+          "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT",
+          "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
+          "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED",
+        ].includes(code)) {
+          throw gatewayError(code, { retryable: code === "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED" });
+        }
+        throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+      }
+      const credential = normalizeCatalogSyncCredential(rawCredential, lease.accountId);
+      ({ normalizedProfile } = normalizeCatalogRequest({
+        connection: credential.connection,
+        correlationId,
+        requestKey,
+      }, { allowLocalGateway }));
+      const url = endpointUrl(normalizedProfile, "models");
+      await verifyGatewayBoundary(normalizedProfile, abort);
+      if (abort.signal.aborted) throw classifyFetchFailure(abort.signal.reason, abort.state());
+      safeLog(logger, "info", "ai_gateway.request_started", {
+        profileId: normalizedProfile.id,
+        profileVersion: normalizedProfile.configVersion,
+        protocol: "SUB2API_MODELS",
+        operation: "models",
+        correlationId,
+      });
+      const response = await fetchWithBoundary({
+        fetchImpl,
+        url,
+        init: {
+          method: "GET",
+          headers: baseHeaders(credential.secret, correlationId, requestKey),
+        },
+        boundary: normalizedProfile.boundary,
+        authorized: true,
+        signal: abort.signal,
+        verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
+        rejectRedirects: true,
+      });
+      let responseOk;
+      try { responseOk = response?.ok === true; } catch {
+        abandonResponse(response);
+        throw gatewayError("INVALID_GATEWAY_RESPONSE");
+      }
+      if (!responseOk) {
+        const failure = classifyHttp(response);
+        abandonResponse(response);
+        throw failure;
+      }
+      safeLog(logger, "info", "ai_gateway.request_succeeded", {
+        profileId: normalizedProfile.id,
+        profileVersion: normalizedProfile.configVersion,
+        protocol: "SUB2API_MODELS",
+        operation: "models",
+        correlationId,
+        requestId: safeRequestId(response),
+        status: response.status,
+      });
+      return { response, normalizedProfile, abort };
+    } catch (error) {
+      const safe = classifyFetchFailure(error, abort.state());
+      if (normalizedProfile) {
+        safeLog(logger, "warn", "ai_gateway.request_failed", {
+          profileId: normalizedProfile.id,
+          profileVersion: normalizedProfile.configVersion,
+          protocol: "SUB2API_MODELS",
+          operation: "models",
+          correlationId,
+          requestId: safe.requestId,
+          status: safe.status,
+          errorCode: safe.code,
+        });
+      }
       abort.cleanup();
       throw safe;
     }
@@ -1381,15 +1548,17 @@ export function createSub2ApiAdapter({
   }
 
   async function listModels(input = {}) {
-    const execution = await executeAuthorized({
-      input,
-      operation: "models",
-      protocol: "SUB2API_MODELS",
-      endpoint: "models",
-      body: undefined,
-      normalizeInput: normalizeCatalogRequest,
-      rejectRedirects: true,
-    });
+    const execution = input?.catalogSyncLease === undefined
+      ? await executeAuthorized({
+          input,
+          operation: "models",
+          protocol: "SUB2API_MODELS",
+          endpoint: "models",
+          body: undefined,
+          normalizeInput: normalizeCatalogRequest,
+          rejectRedirects: true,
+        })
+      : await executeCatalogSyncAuthorized(input);
     try {
       const payload = await readJson(execution.response, execution.abort, maxJsonBytes);
       return normalizeModelCatalog(payload, execution.response);

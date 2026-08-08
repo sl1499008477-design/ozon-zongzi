@@ -310,6 +310,96 @@ test("model discovery performs only an authorized GET on the exact normalized mo
   assert.doesNotMatch(JSON.stringify(result), /must-not-escape|permission|upstream_nested|created/iu);
 });
 
+test("catalog sync model discovery consumes one lease-bound in-memory credential and never calls the generic resolver", async () => {
+  const credentialReads = [];
+  let genericReads = 0;
+  const requests = [];
+  const gateway = encryptedAdapter(async (url, init) => {
+    requests.push({ url: String(url), authorization: init.headers.Authorization });
+    return jsonResponse({ object: "list", data: [] });
+  }, {
+    resolveSecret: async () => { genericReads += 1; throw new Error("generic resolver forbidden"); },
+    resolveCatalogSyncCredential: async (input) => {
+      credentialReads.push(structuredClone(input));
+      return { connection, secret: "lease-bound-secret" };
+    },
+  });
+  const catalogSyncLease = {
+    accountId: "account-a",
+    taskId: "catalog-task-a",
+    workerId: "catalog-worker-a",
+    leaseVersion: 2,
+    leaseToken: "aiglease_catalog-secret",
+  };
+
+  assert.deepEqual(await gateway.listModels({
+    catalogSyncLease,
+    correlationId: "corr-models-lease",
+    requestKey: "request-models-lease",
+    timeoutMs: 500,
+  }), { requestId: "", models: [] });
+  assert.deepEqual(credentialReads, [{ ...catalogSyncLease, minimumLeaseRemainingMs: 15_500 }]);
+  assert.equal(genericReads, 0);
+  assert.deepEqual(requests, [{
+    url: "https://gateway.example.test/tenant/v1/models",
+    authorization: "Bearer lease-bound-secret",
+  }]);
+});
+
+test("catalog sync lease or connection fence failures happen before DNS and network", async () => {
+  for (const code of [
+    "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT",
+    "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
+  ]) {
+    let dnsReads = 0;
+    let fetches = 0;
+    let genericReads = 0;
+    const gateway = encryptedAdapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+      resolveSecret: async () => { genericReads += 1; return secret; },
+      resolveCatalogSyncCredential: async () => {
+        const error = new Error("leaseToken=must-not-leak");
+        error.code = code;
+        throw error;
+      },
+      resolveHostname: async () => { dnsReads += 1; return publicDns(); },
+    });
+    await assert.rejects(gateway.listModels({
+      catalogSyncLease: {
+        accountId: "account-a",
+        taskId: "catalog-task-a",
+        workerId: "catalog-worker-a",
+        leaseVersion: 2,
+        leaseToken: "aiglease_catalog-secret",
+      },
+      correlationId: "corr-models-lease",
+      requestKey: "request-models-lease",
+      timeoutMs: 500,
+    }), (error) => error?.code === code && !/must-not-leak/iu.test(error.message));
+    assert.deepEqual({ dnsReads, fetches, genericReads }, { dnsReads: 0, fetches: 0, genericReads: 0 });
+  }
+});
+
+test("catalog sync discovery rejects timeouts above sixty seconds before credentials or network", async () => {
+  let credentialReads = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+    resolveCatalogSyncCredential: async () => { credentialReads += 1; return { connection, secret }; },
+  });
+  await assert.rejects(gateway.listModels({
+    catalogSyncLease: {
+      accountId: "account-a",
+      taskId: "catalog-task-a",
+      workerId: "catalog-worker-a",
+      leaseVersion: 2,
+      leaseToken: "aiglease_catalog-secret",
+    },
+    correlationId: "corr-models-lease",
+    requestKey: "request-models-lease",
+    timeoutMs: 60_001,
+  }), { code: "AI_GATEWAY_REQUEST_INVALID" });
+  assert.deepEqual({ credentialReads, fetches }, { credentialReads: 0, fetches: 0 });
+});
+
 test("model discovery rejects every redirect without authorizing a second path", async () => {
   let fetches = 0;
   const gateway = encryptedAdapter(async () => {

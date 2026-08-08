@@ -23,26 +23,6 @@ function command(overrides = {}) {
   };
 }
 
-function activeConnection(overrides = {}) {
-  return {
-    id: "connection-a",
-    accountId: "account-a",
-    version: 3,
-    displayName: "Local sub2API",
-    baseUrl: "http://127.0.0.1:8080/v1",
-    status: "ACTIVE",
-    encryptedSecret: {
-      algorithm: "aes-256-gcm",
-      ciphertext: "cipher",
-      iv: "iv",
-      authTag: "tag",
-      keyVersion: "local-v1",
-      fingerprint: "fingerprint-a",
-    },
-    ...overrides,
-  };
-}
-
 function enabledProfile(overrides = {}) {
   return {
     id: "profile-a",
@@ -57,25 +37,17 @@ function enabledProfile(overrides = {}) {
   };
 }
 
-function repositoryHarness({
-  connection = activeConnection(), profiles = [], responseLoss = false,
-  loadError = null, failError = null, completionError = null,
-} = {}) {
+function repositoryHarness({ profiles = [], responseLoss = false,
+  failError = null, completionError = null } = {}) {
   const state = {
     completeInputs: [],
     failInputs: [],
     overviewReads: 0,
-    connectionReads: [],
     committed: null,
     failed: null,
     responseLoss,
   };
   const repository = {
-    async loadCatalogSyncConnectionForSecretResolution(input) {
-      state.connectionReads.push(structuredClone(input));
-      if (loadError) throw loadError;
-      return connection && structuredClone(connection);
-    },
     async loadSettingsOverview() {
       state.overviewReads += 1;
       return { profiles: structuredClone(profiles) };
@@ -127,9 +99,11 @@ function repositoryHarness({
 function serviceHarness({ repositoryOptions, gatewayResult, gatewayError, recommendation } = {}) {
   const { repository, state } = repositoryHarness(repositoryOptions);
   const paid = { text: 0, image: 0, capabilities: 0, lists: 0 };
+  const gatewayInputs = [];
   const gateway = {
-    async listModels() {
+    async listModels(input) {
       paid.lists += 1;
+      gatewayInputs.push(structuredClone(input));
       if (gatewayError) throw gatewayError;
       return gatewayResult ?? {
         requestId: "models-1",
@@ -159,11 +133,11 @@ function serviceHarness({ repositoryOptions, gatewayResult, gatewayError, recomm
     timeoutMs: 30_000,
     workerId: "model-sync-worker",
   });
-  return { service, state, paid };
+  return { service, state, paid, gatewayInputs };
 }
 
-test("catalog synchronization persists only normalized no-cost evidence and returns a safe DTO", async () => {
-  const { service, state, paid } = serviceHarness({
+test("catalog synchronization passes only the lease-bound Task 4 credential contract and persists normalized no-cost evidence", async () => {
+  const { service, state, paid, gatewayInputs } = serviceHarness({
     repositoryOptions: { profiles: [enabledProfile()] },
     gatewayResult: {
       requestId: "models-1",
@@ -204,13 +178,18 @@ test("catalog synchronization persists only normalized no-cost evidence and retu
   assert.deepEqual(persisted.capabilityResult, {
     outcome: "NOT_TESTED", checkedAt: SYNCED_AT, text: false, image: false,
   });
-  assert.deepEqual(state.connectionReads, [{
-    accountId: "account-a",
-    taskId: "sync-task-a",
-    workerId: "model-sync-worker",
-    leaseVersion: 1,
-    leaseToken: "aiglease_secret-token",
-  }]);
+  assert.deepEqual(gatewayInputs[0], {
+    catalogSyncLease: {
+      accountId: "account-a",
+      taskId: "sync-task-a",
+      workerId: "model-sync-worker",
+      leaseVersion: 1,
+      leaseToken: "aiglease_secret-token",
+    },
+    correlationId: "sync-task-a:1",
+    requestKey: "model-sync:sync-task-a:1",
+    timeoutMs: 30_000,
+  });
 });
 
 test("model ordering produces identical catalog hash inputs and same-task replay is stable", async () => {
@@ -260,11 +239,14 @@ test("successful empty and single-modal catalogs remain valid and report selecti
   assert.equal((await noSelection.service.syncModelCatalog(command())).activeSelectionState, "NOT_SELECTED");
 });
 
-test("stale connection versions are dead-lettered before gateway access", async () => {
-  const { service, state, paid } = serviceHarness({ repositoryOptions: { connection: null } });
+test("lease-bound gateway stale failures are dead-lettered before catalog evidence", async () => {
+  const stale = new Error("active connection changed");
+  stale.code = "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE";
+  stale.retryable = false;
+  const { service, state, paid } = serviceHarness({ gatewayError: stale });
   const result = await service.syncModelCatalog(command());
   assert.equal(result.status, "DEAD");
-  assert.equal(paid.lists, 0);
+  assert.equal(paid.lists, 1);
   assert.equal(state.overviewReads, 0);
   assert.deepEqual(state.failInputs[0], {
     accountId: "account-a",
@@ -282,12 +264,12 @@ test("stale connection versions are dead-lettered before gateway access", async 
 
 test("a connection rotated after claim is classified as stale before gateway access", async () => {
   const rotated = new Error("connection changed after claim");
-  rotated.code = "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT";
+  rotated.code = "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE";
   rotated.retryable = false;
-  const { service, state, paid } = serviceHarness({ repositoryOptions: { loadError: rotated } });
+  const { service, state, paid } = serviceHarness({ gatewayError: rotated });
   const result = await service.syncModelCatalog(command());
   assert.equal(result.status, "DEAD");
-  assert.equal(paid.lists, 0);
+  assert.equal(paid.lists, 1);
   assert.equal(state.overviewReads, 0);
   assert.equal(state.failInputs[0].errorCode, "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE");
   assert.equal(state.failInputs[0].retryable, false);
@@ -295,19 +277,20 @@ test("a connection rotated after claim is classified as stale before gateway acc
 
 test("expired or forged leases cannot resolve credentials or reach the gateway", async () => {
   const expired = new Error("leaseToken=raw-secret");
-  expired.code = "AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT";
+  expired.code = "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT";
   expired.retryable = false;
   const failure = new Error("lease no longer owned");
   failure.code = "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT";
   failure.retryable = false;
   const { service, paid, state } = serviceHarness({
-    repositoryOptions: { loadError: expired, failError: failure },
+    repositoryOptions: { failError: failure }, gatewayError: expired,
   });
   await assert.rejects(service.syncModelCatalog(command({ leaseToken: "aiglease_forged" })), {
-    code: "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT",
+    code: "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT",
   });
-  assert.equal(paid.lists, 0);
+  assert.equal(paid.lists, 1);
   assert.equal(state.overviewReads, 0);
+  assert.equal(state.failInputs.length, 0);
   assert.equal(JSON.stringify(state.failInputs).includes("raw-secret"), false);
 });
 
@@ -390,4 +373,31 @@ test("service factory maps hostile proxy and accessor traps to one safe stable e
     code: "AUTO_LISTING_AI_MODEL_SYNC_SERVICE_INVALID",
   });
   assert.equal(reads, 0);
+});
+
+test("service rejects a catalog network timeout that can overlap the fixed lease safety margin", () => {
+  const repository = repositoryHarness().repository;
+  const gateway = { async listModels() { return { requestId: "", models: [] }; } };
+  assert.throws(() => createAutoListingAiModelSyncService({
+    repository,
+    gateway,
+    workerId: "model-sync-worker",
+    timeoutMs: 60_001,
+  }), { code: "AUTO_LISTING_AI_MODEL_SYNC_SERVICE_INVALID" });
+  assert.doesNotThrow(() => createAutoListingAiModelSyncService({
+    repository,
+    gateway,
+    workerId: "model-sync-worker",
+    timeoutMs: 60_000,
+  }));
+});
+
+test("service rejects catalog commands whose task attempt policy is not exactly five", async () => {
+  const { service, paid, state } = serviceHarness();
+  await assert.rejects(service.syncModelCatalog(command({ maxAttempts: 6 })), {
+    code: "AUTO_LISTING_AI_MODEL_SYNC_COMMAND_INVALID",
+  });
+  assert.equal(paid.lists, 0);
+  assert.equal(state.completeInputs.length, 0);
+  assert.equal(state.failInputs.length, 0);
 });

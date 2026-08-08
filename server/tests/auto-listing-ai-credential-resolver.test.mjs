@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createAutoListingCredentialCipher } from "../auto-listing-ai-credential-crypto.mjs";
 import { createAutoListingAiCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
+import * as credentialResolvers from "../auto-listing-ai-credential-resolver.mjs";
 
 const scope = Object.freeze({
   accountId: "account-a",
@@ -183,5 +184,85 @@ test("resolver requires the Task 2 repository and cipher ports", () => {
     { repository: { loadConnectionForSecretResolution() {} }, cipher: {} },
   ]) {
     assert.throws(() => createAutoListingAiCredentialResolver(dependencies), TypeError);
+  }
+});
+
+test("catalog sync resolver validates the live lease before decrypting and returns one closed in-memory credential", async () => {
+  assert.equal(typeof credentialResolvers.createAutoListingAiCatalogSyncCredentialResolver, "function");
+  const { cipher, connection } = encryptedConnection("  sk-catalog-lease  ");
+  const reads = [];
+  const decryptions = [];
+  const resolver = credentialResolvers.createAutoListingAiCatalogSyncCredentialResolver({
+    repository: {
+      async loadCatalogSyncConnectionForSecretResolution(input) {
+        reads.push(structuredClone(input));
+        return structuredClone({ ...connection, baseUrl: "https://gateway.example.test/v1" });
+      },
+    },
+    cipher: {
+      decrypt(inputScope, encryptedSecret) {
+        decryptions.push(structuredClone(inputScope));
+        return cipher.decrypt(inputScope, encryptedSecret);
+      },
+    },
+  });
+
+  const credential = await resolver.resolveCredential({
+    accountId: "account-a",
+    taskId: "catalog-task-a",
+    workerId: "catalog-worker-a",
+    leaseVersion: 2,
+    leaseToken: "aiglease_catalog-secret",
+    minimumLeaseRemainingMs: 45_000,
+  });
+
+  assert.deepEqual(reads, [{
+    accountId: "account-a",
+    taskId: "catalog-task-a",
+    workerId: "catalog-worker-a",
+    leaseVersion: 2,
+    leaseToken: "aiglease_catalog-secret",
+    minimumLeaseRemainingMs: 45_000,
+  }]);
+  assert.deepEqual(decryptions, [scope]);
+  assert.deepEqual(credential, {
+    connection: {
+      id: "connection-a",
+      accountId: "account-a",
+      version: 1,
+      baseUrl: "https://gateway.example.test/v1",
+      status: "ACTIVE",
+    },
+    secret: "sk-catalog-lease",
+  });
+  assert.doesNotMatch(JSON.stringify(credential), /cipher|fingerprint|authTag|keyVersion/iu);
+});
+
+test("catalog sync resolver preserves lease versus connection-stale failures and never decrypts either", async () => {
+  assert.equal(typeof credentialResolvers.createAutoListingAiCatalogSyncCredentialResolver, "function");
+  for (const [repositoryCode, expectedCode] of [
+    ["AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT", "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT"],
+    ["AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE"],
+  ]) {
+    let decryptions = 0;
+    const resolver = credentialResolvers.createAutoListingAiCatalogSyncCredentialResolver({
+      repository: {
+        async loadCatalogSyncConnectionForSecretResolution() {
+          const error = new Error("leaseToken=must-not-leak");
+          error.code = repositoryCode;
+          throw error;
+        },
+      },
+      cipher: { decrypt() { decryptions += 1; return "must-not-run"; } },
+    });
+    await assert.rejects(resolver.resolveCredential({
+      accountId: "account-a",
+      taskId: "catalog-task-a",
+      workerId: "catalog-worker-a",
+      leaseVersion: 2,
+      leaseToken: "aiglease_catalog-secret",
+      minimumLeaseRemainingMs: 45_000,
+    }), (error) => error?.code === expectedCode && !/must-not-leak/iu.test(error.message));
+    assert.equal(decryptions, 0);
   }
 });

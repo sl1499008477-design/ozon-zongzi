@@ -514,6 +514,8 @@ function enqueueRequest(raw) {
   const accountId = accountActor(input);
   const syncPurpose = input.syncPurpose === undefined ? "CATALOG_SYNC" : identifier(input.syncPurpose);
   if (!["CATALOG_SYNC", "ROLLBACK_CAPABILITY"].includes(syncPurpose)) throw invalid();
+  const maxAttempts = boundedInteger(input.maxAttempts, 1, 20);
+  if (syncPurpose === "CATALOG_SYNC" && maxAttempts !== 5) throw invalid();
   return {
     accountId,
     actorId: accountId,
@@ -522,7 +524,7 @@ function enqueueRequest(raw) {
     expectedConnectionStatusVersion: positiveInteger(input.expectedConnectionStatusVersion),
     idempotencyKey: identifier(input.idempotencyKey),
     correlationId: identifier(input.correlationId),
-    maxAttempts: boundedInteger(input.maxAttempts, 1, 20),
+    maxAttempts,
     syncPurpose,
   };
 }
@@ -566,6 +568,20 @@ function rollbackSecretRequest(raw) {
     workerId: identifier(input.workerId),
     leaseVersion: positiveInteger(input.leaseVersion),
     leaseToken: identifier(input.leaseToken),
+  };
+}
+
+function catalogSecretRequest(raw) {
+  const input = exactKeys(raw, [
+    "accountId", "leaseToken", "leaseVersion", "minimumLeaseRemainingMs", "taskId", "workerId",
+  ]);
+  return {
+    accountId: identifier(input.accountId),
+    taskId: identifier(input.taskId),
+    workerId: identifier(input.workerId),
+    leaseVersion: positiveInteger(input.leaseVersion),
+    leaseToken: identifier(input.leaseToken),
+    minimumLeaseRemainingMs: boundedInteger(input.minimumLeaseRemainingMs, 15_001, 75_000),
   };
 }
 
@@ -719,7 +735,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
     },
 
     async loadCatalogSyncConnectionForSecretResolution(rawInput = {}) {
-      const input = rollbackSecretRequest(rawInput);
+      const input = catalogSecretRequest(rawInput);
       const leaseTokenDigest = hash({ leaseToken: input.leaseToken });
       const result = await query(pool,
         `SELECT c.*,
@@ -734,8 +750,10 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           WHERE t.account_id=$1 AND t.id=$2
             AND t.sync_purpose='CATALOG_SYNC'
             AND t.status='LEASED' AND t.lease_owner=$3 AND t.lease_version=$4
-            AND t.lease_token=$5 AND t.lease_expires_at > NOW()`,
-        [input.accountId, input.taskId, input.workerId, input.leaseVersion, leaseTokenDigest]);
+            AND t.lease_token=$6
+            AND t.lease_expires_at > NOW()+($5::BIGINT * INTERVAL '1 millisecond')`,
+        [input.accountId, input.taskId, input.workerId, input.leaseVersion,
+          input.minimumLeaseRemainingMs, leaseTokenDigest]);
       const connection = result?.rows?.[0];
       if (!connection) {
         throw repositoryError("AUTO_LISTING_AI_SETTINGS_CATALOG_LEASE_CONFLICT", 409);
@@ -1140,6 +1158,45 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           requestHash, metadata: { leaseVersion: Number(updated.lease_version),
             leaseIdentityHash: leaseIdentity, reclaimed },
         });
+        if (updated.sync_purpose === "CATALOG_SYNC" && Number(updated.max_attempts) !== 5) {
+          const errorCode = "AUTO_LISTING_AI_MODEL_SYNC_ATTEMPT_POLICY_INVALID";
+          const errorSafe = "catalog sync attempt policy is unsupported";
+          const dead = (await query(client,
+            `UPDATE ai_gateway_model_sync_tasks
+                SET status='DEAD',status_version=status_version+1,
+                    lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,
+                    last_error_code=$6,last_error_safe=$7,
+                    completed_at=NOW(),updated_at=NOW()
+              WHERE account_id=$1 AND id=$2
+                AND status='LEASED' AND lease_owner=$3 AND lease_version=$4
+                AND lease_token=$5 AND lease_expires_at > NOW()
+              RETURNING *`,
+            [input.accountId, updated.id, input.workerId, updated.lease_version,
+              leaseTokenDigest, errorCode, errorSafe])).rows[0];
+          if (!dead) throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
+          const deadCorrelationId = `${dead.id}:${dead.lease_version}:attempt-policy`;
+          const resultHash = hash({ errorCode, errorSafe, retryable: false, retryDelayMs: 0 });
+          await insertAttemptOutcome(client, {
+            task: dead, leaseOwner: input.workerId, leaseTokenDigest, leaseIdentity,
+            outcome: "DEAD", resultHash, taskSnapshot: taskDto(dead, false),
+          });
+          await insertSyncEvent(client, dead, "DEAD", input.workerId, deadCorrelationId,
+            { errorCode, historicalMaxAttempts: Number(updated.max_attempts) });
+          const deadRequestHash = hash({
+            action: "AUTO_LISTING_AI_MODEL_SYNC_DEAD", accountId: input.accountId,
+            taskId: dead.id, leaseVersion: Number(dead.lease_version), errorCode,
+          });
+          await auditMutation(client, {
+            action: "AUTO_LISTING_AI_MODEL_SYNC_DEAD", accountId: input.accountId,
+            actorType: "worker", actorId: input.workerId, correlationId: deadCorrelationId,
+            entityType: "ai_gateway_model_sync_task", entityId: dead.id,
+            idempotencyKey: `${dead.id}:${dead.lease_version}:attempt-policy`,
+            requestHash: deadRequestHash,
+            metadata: { leaseVersion: Number(dead.lease_version), leaseIdentityHash: leaseIdentity,
+              errorCode, historicalMaxAttempts: Number(updated.max_attempts) },
+          });
+          return null;
+        }
         return {
           taskId: updated.id,
           accountId: updated.account_id,

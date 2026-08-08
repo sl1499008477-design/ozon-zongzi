@@ -186,6 +186,29 @@ test("expired leases are reclaimed and completed through the same catalog servic
   assert.equal(received[0].leaseVersion, 2);
 });
 
+test("worker rejects a catalog lease whose historical attempt policy is above five before service execution", async () => {
+  let listed = false;
+  let executions = 0;
+  const worker = createAutoListingAiModelSyncWorker(workerConfig({
+    repository: {
+      async listRunnableSyncAccountIds({ afterAccountId }) {
+        if (afterAccountId !== null || listed) return [];
+        listed = true;
+        return ["account-a"];
+      },
+      async claimModelSync() { return lease("account-a", { maxAttempts: 6 }); },
+      async enqueueModelSync() { throw new Error("must not enqueue"); },
+    },
+    syncService: {
+      async syncModelCatalog() { executions += 1; return { status: "SUCCEEDED" }; },
+    },
+  }));
+  const result = await worker.runOnce();
+  assert.equal(result.errors, 1);
+  assert.equal(result.claimed, 0);
+  assert.equal(executions, 0);
+});
+
 test("graceful stop clears the timer and waits for the in-flight lease", async () => {
   let callback;
   let cleared = 0;
@@ -219,6 +242,155 @@ test("graceful stop clears the timer and waits for the in-flight lease", async (
   await Promise.all([running, stopping]);
   assert.equal(stopped, true);
   assert.equal(cleared, 0, "the fired timer is no longer pending");
+});
+
+test("stop lets an already claimed lease finish but prevents every later page schedule enqueue and claim", async () => {
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const serviceStarted = new Promise((resolve) => { started = resolve; });
+  const observations = { runnablePages: 0, claims: 0, duePages: 0, enqueues: 0 };
+  const worker = createAutoListingAiModelSyncWorker(workerConfig({
+    repository: {
+      async listRunnableSyncAccountIds({ afterAccountId }) {
+        observations.runnablePages += 1;
+        return afterAccountId === null ? ["account-a"] : ["account-b"];
+      },
+      async claimModelSync({ accountId }) {
+        observations.claims += 1;
+        return lease(accountId);
+      },
+      async enqueueModelSync() { observations.enqueues += 1; return { status: "PENDING" }; },
+    },
+    scheduler: {
+      async listDueConnections() { observations.duePages += 1; return [candidate]; },
+    },
+    syncService: {
+      async syncModelCatalog() {
+        started();
+        await gate;
+        return { status: "SUCCEEDED" };
+      },
+    },
+  }));
+
+  const running = worker.runOnce();
+  await serviceStarted;
+  const stopping = worker.stop();
+  release();
+  await Promise.all([running, stopping]);
+  assert.deepEqual(observations, { runnablePages: 1, claims: 1, duePages: 0, enqueues: 0 });
+});
+
+test("stop during a due-page read discards that page without enqueueing or starting the second sweep", async () => {
+  let releaseDue;
+  let dueStarted;
+  const dueGate = new Promise((resolve) => { releaseDue = resolve; });
+  const dueRead = new Promise((resolve) => { dueStarted = resolve; });
+  let runnablePages = 0;
+  let enqueues = 0;
+  const worker = createAutoListingAiModelSyncWorker(workerConfig({
+    repository: {
+      async listRunnableSyncAccountIds() { runnablePages += 1; return []; },
+      async claimModelSync() { throw new Error("must not claim"); },
+      async enqueueModelSync() { enqueues += 1; return { status: "PENDING" }; },
+    },
+    scheduler: {
+      async listDueConnections() {
+        dueStarted();
+        await dueGate;
+        return [candidate];
+      },
+    },
+  }));
+
+  const running = worker.runOnce();
+  await dueRead;
+  const stopping = worker.stop();
+  releaseDue();
+  await Promise.all([running, stopping]);
+  assert.equal(runnablePages, 1);
+  assert.equal(enqueues, 0);
+});
+
+test("stop and restart fences a late callback from the previous timer generation", async () => {
+  let nextTimerId = 0;
+  const callbacks = new Map();
+  const cleared = [];
+  let runnablePages = 0;
+  const worker = createAutoListingAiModelSyncWorker(workerConfig({
+    repository: {
+      async listRunnableSyncAccountIds() { runnablePages += 1; return []; },
+      async claimModelSync() { return null; },
+      async enqueueModelSync() { throw new Error("must not enqueue"); },
+    },
+    timers: {
+      setTimeout(callback) {
+        nextTimerId += 1;
+        callbacks.set(nextTimerId, callback);
+        return nextTimerId;
+      },
+      clearTimeout(id) { cleared.push(id); },
+    },
+  }));
+
+  await worker.start();
+  await worker.stop();
+  await worker.start();
+  await callbacks.get(1)();
+  assert.equal(runnablePages, 0, "the stopped generation must remain inert after restart");
+  await callbacks.get(2)();
+  assert.equal(runnablePages, 2);
+  await worker.stop();
+  assert.deepEqual(cleared, [1, 3]);
+});
+
+test("an explicit runOnce after stop stays inert until start opens a new generation", async () => {
+  let runnablePages = 0;
+  const worker = createAutoListingAiModelSyncWorker(workerConfig({
+    repository: {
+      async listRunnableSyncAccountIds() { runnablePages += 1; return []; },
+      async claimModelSync() { return null; },
+      async enqueueModelSync() { throw new Error("must not enqueue"); },
+    },
+  }));
+  await worker.stop();
+  assert.deepEqual(await worker.runOnce(), {
+    scheduled: 0, claimed: 0, reclaimed: 0, succeeded: 0, failed: 0, dead: 0, errors: 0,
+  });
+  assert.equal(runnablePages, 0);
+});
+
+test("worker observes and absorbs an asynchronously rejected logger result", async () => {
+  let rejectionHandlerAttached = false;
+  const rejectedThenable = {
+    then(_resolve, reject) {
+      rejectionHandlerAttached = typeof reject === "function";
+      reject?.(new Error("authorization=must-not-leak"));
+    },
+  };
+  let listed = false;
+  const worker = createAutoListingAiModelSyncWorker(workerConfig({
+    repository: {
+      async listRunnableSyncAccountIds({ afterAccountId }) {
+        if (afterAccountId !== null || listed) return [];
+        listed = true;
+        return ["account-a"];
+      },
+      async claimModelSync() {
+        const error = new Error("database unavailable");
+        error.code = "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED";
+        throw error;
+      },
+      async enqueueModelSync() { throw new Error("must not enqueue"); },
+    },
+    logger: { log() { return rejectedThenable; } },
+  }));
+
+  const result = await worker.runOnce();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.errors, 1);
+  assert.equal(rejectionHandlerAttached, true);
 });
 
 test("PostgreSQL daily scheduler uses database time, a 24-hour success fence, and strict account paging", async () => {

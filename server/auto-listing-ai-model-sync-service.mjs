@@ -141,7 +141,7 @@ function commandInput(raw) {
   const input = dataProperties(raw, COMMAND_KEYS, "AUTO_LISTING_AI_MODEL_SYNC_COMMAND_INVALID");
   const attemptCount = positiveInteger(input.attemptCount, 20);
   const maxAttempts = positiveInteger(input.maxAttempts, 20);
-  if (attemptCount > maxAttempts || input.syncPurpose !== "CATALOG_SYNC") {
+  if (maxAttempts !== 5 || attemptCount > maxAttempts || input.syncPurpose !== "CATALOG_SYNC") {
     throw serviceError("AUTO_LISTING_AI_MODEL_SYNC_COMMAND_INVALID");
   }
   return {
@@ -158,13 +158,6 @@ function commandInput(raw) {
     leaseExpiresAt: timestamp(input.leaseExpiresAt, "AUTO_LISTING_AI_MODEL_SYNC_COMMAND_INVALID"),
     correlationId: id(input.correlationId),
   };
-}
-
-function connectionMatches(connection, input) {
-  return connection?.id === input.connectionId
-    && connection?.accountId === input.accountId
-    && connection?.version === input.connectionVersion
-    && connection?.status === "ACTIVE";
 }
 
 function activeSelectionState(overview, input, models) {
@@ -199,7 +192,10 @@ function hashText(value) {
 
 function failureDetails(error, input) {
   const sourceCode = safeCode(error);
-  if (sourceCode === "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT") return {
+  if ([
+    "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT",
+    "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
+  ].includes(sourceCode)) return {
     errorCode: "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
     errorSafe: "active gateway connection changed",
     retryable: false,
@@ -236,10 +232,10 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
   const clock = options.clock ?? (() => new Date());
   const timeoutMs = options.timeoutMs ?? 30_000;
   const workerId = id(options.workerId, "AUTO_LISTING_AI_MODEL_SYNC_SERVICE_INVALID");
-  if (!["loadCatalogSyncConnectionForSecretResolution", "loadSettingsOverview", "completeModelSync", "failModelSync"]
+  if (!["loadSettingsOverview", "completeModelSync", "failModelSync"]
     .every((key) => typeof repository?.[key] === "function")
     || typeof gateway?.listModels !== "function" || typeof recommendModels !== "function"
-    || typeof clock !== "function" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 300_000) {
+    || typeof clock !== "function" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 60_000) {
     throw serviceError("AUTO_LISTING_AI_MODEL_SYNC_SERVICE_INVALID");
   }
 
@@ -259,33 +255,18 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
   return Object.freeze({
     async syncModelCatalog(rawCommand = {}) {
       const input = commandInput(rawCommand);
-      let connection;
-      try {
-        connection = await repository.loadCatalogSyncConnectionForSecretResolution({
-          accountId: input.accountId,
-          taskId: input.taskId,
-          workerId,
-          leaseVersion: input.leaseVersion,
-          leaseToken: input.leaseToken,
-        });
-      } catch (error) {
-        return fail(input, failureDetails(error, input));
-      }
-      if (!connectionMatches(connection, input)) {
-        return fail(input, {
-          errorCode: "AUTO_LISTING_AI_MODEL_SYNC_CONNECTION_STALE",
-          errorSafe: "active gateway connection changed",
-          retryable: false,
-          retryDelayMs: 0,
-        });
-      }
-
       let normalized;
       let recommendation;
       let selection;
       try {
         normalized = normalizeModels(await gateway.listModels({
-          connection,
+          catalogSyncLease: {
+            accountId: input.accountId,
+            taskId: input.taskId,
+            workerId,
+            leaseVersion: input.leaseVersion,
+            leaseToken: input.leaseToken,
+          },
           correlationId: input.correlationId,
           requestKey: `model-sync:${input.taskId}:${input.leaseVersion}`,
           timeoutMs,
@@ -295,6 +276,11 @@ export function createAutoListingAiModelSyncService(rawOptions = {}) {
           accountId: input.accountId,
         }), input, normalized.models);
       } catch (error) {
+        if (safeCode(error, "") === "AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT") {
+          const conflict = serviceError("AUTO_LISTING_AI_MODEL_SYNC_LEASE_CONFLICT");
+          conflict.status = 409;
+          throw conflict;
+        }
         return fail(input, failureDetails(error, input));
       }
 

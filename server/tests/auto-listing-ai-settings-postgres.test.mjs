@@ -232,13 +232,16 @@ test("catalog secret resolution requires the exact live catalog lease and ACTIVE
       workerId: "catalog-worker-a",
       leaseVersion: 2,
       leaseToken: "aiglease_catalog-secret",
+      minimumLeaseRemainingMs: 45_000,
     });
   assert.equal(resolved.status, "ACTIVE");
   assert.match(calls[0].sql, /sync_purpose='CATALOG_SYNC'/iu);
   assert.match(calls[0].sql, /lease_expires_at > NOW\(\)/iu);
+  assert.match(calls[0].sql, /INTERVAL '1 millisecond'/iu);
   assert.match(calls[0].sql, /c\.status='ACTIVE'/iu);
   assert.match(calls[0].sql, /c\.status_version=t\.target_connection_status_version/iu);
   assert.equal(calls[0].params.includes("aiglease_catalog-secret"), false);
+  assert.equal(calls[0].params.at(-2), 45_000);
   assert.match(calls[0].params.at(-1), /^[a-f0-9]{64}$/u);
 });
 
@@ -258,6 +261,7 @@ test("catalog secret resolution distinguishes a rotated connection from an inval
       workerId: "catalog-worker-a",
       leaseVersion: 2,
       leaseToken: "aiglease_catalog-secret",
+      minimumLeaseRemainingMs: 45_000,
     }), {
     code: "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT",
     status: 409,
@@ -358,7 +362,23 @@ test("existing enqueue contract remains a catalog sync when purpose is omitted",
     expectedConnectionStatusVersion: 3,
     idempotencyKey: "sync-existing-contract",
     correlationId: "corr-existing-contract",
-    maxAttempts: 3,
+    maxAttempts: 5,
   }), { code: "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED" });
   assert.equal(calls.length > 0, true);
+});
+
+test("catalog enqueue rejects any attempt policy other than five before database access", async () => {
+  const { pool, calls } = scriptedPool([]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool }).enqueueModelSync({
+    accountId: "account-a",
+    actorId: "account-a",
+    connectionId: "connection-a",
+    connectionVersion: 1,
+    expectedConnectionStatusVersion: 3,
+    idempotencyKey: "sync-invalid-attempt-policy",
+    correlationId: "corr-invalid-attempt-policy",
+    maxAttempts: 6,
+    syncPurpose: "CATALOG_SYNC",
+  }), { code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID" });
+  assert.equal(calls.length, 0);
 });
