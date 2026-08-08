@@ -45,6 +45,8 @@ function requireDependencies(repository, gateway) {
 }
 
 function normalizedProfile(row) {
+  const connectionId = row?.connectionId ?? row?.connection_id ?? null;
+  const connectionVersion = row?.connectionVersion ?? row?.connection_version ?? null;
   const result = {
     id: clean(row?.id),
     accountId: clean(row?.accountId ?? row?.account_id),
@@ -56,10 +58,21 @@ function normalizedProfile(row) {
     textModel: clean(row?.textModel ?? row?.text_model),
     imageModel: clean(row?.imageModel ?? row?.image_model),
     enabled: row?.enabled === true,
+    connectionId,
+    connectionVersion: connectionVersion === null ? null : Number(connectionVersion),
   };
   if (!result.id || !result.accountId || !Number.isInteger(result.configVersion) || result.configVersion < 1
-    || !result.baseUrl || !result.apiKeyEnvName || !result.textModel || !result.imageModel) {
+    || !result.baseUrl || !result.apiKeyEnvName || !result.textModel || !result.imageModel
+    || ((result.connectionId === null) !== (result.connectionVersion === null))
+    || (result.connectionId !== null && (!clean(result.connectionId)
+      || !Number.isSafeInteger(result.connectionVersion) || result.connectionVersion < 1))) {
     throw serviceError("AI_GATEWAY_PROFILE_INVALID");
+  }
+  if (result.connectionId === null) {
+    delete result.connectionId;
+    delete result.connectionVersion;
+  } else {
+    result.connectionId = clean(result.connectionId);
   }
   return result;
 }
@@ -90,15 +103,15 @@ function validateCapabilityResult(result, profile) {
   };
 }
 
-function attemptId(accountId, profileId, configVersion, correlationId) {
+function attemptId(accountId, profileId, configVersion, correlationId, purpose) {
   return `ai_capability_${crypto.createHash("sha256")
-    .update(`ai-gateway-capability-attempt\0${accountId}\0${profileId}\0${configVersion}\0${correlationId}`)
+    .update(`ai-gateway-capability-attempt\0${purpose}\0${accountId}\0${profileId}\0${configVersion}\0${correlationId}`)
     .digest("hex").slice(0, 40)}`;
 }
 
-function requestKey(accountId, profileId, configVersion, capabilityAttemptId) {
+function requestKey(accountId, profileId, configVersion, capabilityAttemptId, purpose) {
   return crypto.createHash("sha256")
-    .update(`ai-gateway-capability\0${accountId}\0${profileId}\0${configVersion}\0${capabilityAttemptId}`)
+    .update(`ai-gateway-capability\0${purpose}\0${accountId}\0${profileId}\0${configVersion}\0${capabilityAttemptId}`)
     .digest("hex");
 }
 
@@ -156,13 +169,20 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
       const profileId = clean(input.profileId);
       const configVersion = Number(input.configVersion);
       const correlationId = clean(input.correlationId);
+      const purpose = input.purpose === undefined ? "PROFILE_CAPABILITY" : clean(input.purpose);
       if (!accountId || !profileId || !Number.isInteger(configVersion) || configVersion < 1 || !correlationId) {
         throw serviceError("AI_GATEWAY_CAPABILITY_REQUEST_INVALID");
       }
-      const capabilityAttemptId = attemptId(accountId, profileId, configVersion, correlationId);
+      if (input.costConfirmed !== true) {
+        throw serviceError("AI_GATEWAY_COST_CONFIRMATION_REQUIRED", 409, false);
+      }
+      if (!["PROFILE_CAPABILITY", "ROLLBACK_CAPABILITY"].includes(purpose)) {
+        throw serviceError("AI_GATEWAY_CAPABILITY_REQUEST_INVALID");
+      }
+      const capabilityAttemptId = attemptId(accountId, profileId, configVersion, correlationId, purpose);
       const begun = await repository.beginCapabilityTest({
         accountId, actorId: accountId, profileId, configVersion, correlationId,
-        attemptId: capabilityAttemptId,
+        attemptId: capabilityAttemptId, purpose, costConfirmed: true,
       });
       if (!begun) throw serviceError("AI_GATEWAY_PROFILE_NOT_FOUND", 404);
       const profile = normalizedProfile(begun.profile);
@@ -188,7 +208,7 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
         const raw = await gateway.testCapabilities({
           profile,
           correlationId,
-          requestKey: requestKey(accountId, profileId, configVersion, capabilityAttemptId),
+          requestKey: requestKey(accountId, profileId, configVersion, capabilityAttemptId, purpose),
           timeoutMs: 120_000,
           signal: input.signal,
         });
@@ -213,7 +233,7 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
       const saved = await repository.completeCapabilityTest({
         accountId, actorId: accountId, profileId, configVersion, correlationId,
         attemptId: capabilityAttemptId, fence: Number(begun.fence),
-        leaseVersion, leaseToken,
+        leaseVersion, leaseToken, purpose, costConfirmed: true,
         capabilityResult,
       });
       if (saved?.applied !== true || saved?.stale === true) {

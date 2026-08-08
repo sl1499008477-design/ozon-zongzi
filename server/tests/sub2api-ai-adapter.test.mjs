@@ -312,6 +312,7 @@ test("model discovery performs only an authorized GET on the exact normalized mo
 
 test("catalog sync model discovery consumes one lease-bound in-memory credential and never calls the generic resolver", async () => {
   const credentialReads = [];
+  const credentialStatuses = ["PENDING", "VALIDATED", "ACTIVE"];
   let genericReads = 0;
   const requests = [];
   const gateway = encryptedAdapter(async (url, init) => {
@@ -321,7 +322,8 @@ test("catalog sync model discovery consumes one lease-bound in-memory credential
     resolveSecret: async () => { genericReads += 1; throw new Error("generic resolver forbidden"); },
     resolveCatalogSyncCredential: async (input) => {
       credentialReads.push(structuredClone(input));
-      return { connection, secret: "lease-bound-secret" };
+      return { connection: { ...connection, status: credentialStatuses[credentialReads.length - 1] },
+        secret: "lease-bound-secret" };
     },
   });
   const catalogSyncLease = {
@@ -332,18 +334,22 @@ test("catalog sync model discovery consumes one lease-bound in-memory credential
     leaseToken: "aiglease_catalog-secret",
   };
 
-  assert.deepEqual(await gateway.listModels({
-    catalogSyncLease,
-    correlationId: "corr-models-lease",
-    requestKey: "request-models-lease",
-    timeoutMs: 500,
-  }), { requestId: "", models: [] });
-  assert.deepEqual(credentialReads, [{ ...catalogSyncLease, minimumLeaseRemainingMs: 15_500 }]);
+  for (const status of credentialStatuses) {
+    assert.deepEqual(await gateway.listModels({
+      catalogSyncLease,
+      correlationId: `corr-models-lease-${status}`,
+      requestKey: `request-models-lease-${status}`,
+      timeoutMs: 500,
+    }), { requestId: "", models: [] });
+  }
+  assert.deepEqual(credentialReads, credentialStatuses.map(() => ({
+    ...catalogSyncLease, minimumLeaseRemainingMs: 15_500,
+  })));
   assert.equal(genericReads, 0);
-  assert.deepEqual(requests, [{
+  assert.deepEqual(requests, credentialStatuses.map(() => ({
     url: "https://gateway.example.test/tenant/v1/models",
     authorization: "Bearer lease-bound-secret",
-  }]);
+  })));
 });
 
 test("catalog sync lease or connection fence failures happen before DNS and network", async () => {

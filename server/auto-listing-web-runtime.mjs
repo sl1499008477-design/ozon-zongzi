@@ -1,5 +1,7 @@
 import { createAutoListingAiAdminHttpHandler } from "./auto-listing-ai-admin-routes.mjs";
 import { createAutoListingAiAdminRuntime } from "./auto-listing-ai-admin-runtime.mjs";
+import { createAutoListingAiSettingsHttpHandler } from "./auto-listing-ai-settings-routes.mjs";
+import { createAutoListingAiSettingsRuntime } from "./auto-listing-ai-settings-runtime.mjs";
 import { createAutoListingDirectSystemReadiness } from "./auto-listing-direct-system-readiness.mjs";
 import { createAutoListingItemHttpHandler } from "./auto-listing-item-routes.mjs";
 import { createAutoListingItemRuntime } from "./auto-listing-item-runtime.mjs";
@@ -41,6 +43,9 @@ export function createAutoListingWebRuntime({
   createUploadRuntime = createAutoListingUploadRuntime,
   createReconciliationRuntime = createAutoListingSubmissionReconciliationRuntime,
   createOperationsRuntime = createAutoListingOperationsRuntime,
+  createUserWorkflowRuntime = createAutoListingUserWorkflowRuntime,
+  createAiSettingsRuntime = createAutoListingAiSettingsRuntime,
+  createAiSettingsHandler = createAutoListingAiSettingsHttpHandler,
   storage = publicationStorage,
   probePublicPolicy = createListingAssetPublicationProbe({ storage }),
   assertDirectSystemReady = createAutoListingDirectSystemReadiness({ env, resolvePool }),
@@ -49,13 +54,15 @@ export function createAutoListingWebRuntime({
     || typeof collectSku !== "function" || typeof readJson !== "function" || typeof sendJson !== "function"
     || typeof resolvePool !== "function" || typeof createPublicationRuntime !== "function"
     || typeof createUploadRuntime !== "function" || typeof createReconciliationRuntime !== "function"
-    || typeof createOperationsRuntime !== "function"
+    || typeof createOperationsRuntime !== "function" || typeof createUserWorkflowRuntime !== "function"
+    || typeof createAiSettingsRuntime !== "function" || typeof createAiSettingsHandler !== "function"
     || typeof assertDirectSystemReady !== "function" || typeof probePublicPolicy !== "function") {
     throw new TypeError("AUTO_LISTING_WEB_RUNTIME_DEPENDENCY_REQUIRED");
   }
 
   const adminRuntime = createAutoListingAiAdminRuntime();
-  const userWorkflowRuntime = createAutoListingUserWorkflowRuntime({
+  const settingsRuntime = createAiSettingsRuntime({ env, getPostgresPool: resolvePool });
+  const userWorkflowRuntime = createUserWorkflowRuntime({
     env,
     getAutoListingService,
     collectSku,
@@ -136,12 +143,22 @@ export function createAutoListingWebRuntime({
     getPool: resolvePool,
   });
 
-  const handleAiAdminRoute = createAutoListingAiAdminHttpHandler({
+  const handleLegacyAiAdminRoute = createAutoListingAiAdminHttpHandler({
     authenticate,
     getService: adminRuntime.getService,
     readJson: (req) => readJson(req, { maxBytes: 256 * 1024, requireBody: true }),
     sendJson,
   });
+  const handleAiSettingsRoute = createAiSettingsHandler({
+    authenticate,
+    getService: settingsRuntime.getService,
+    readJson: (req) => readJson(req, { maxBytes: 64 * 1024, requireBody: true }),
+    sendJson,
+  });
+  async function handleAiAdminRoute(req, res, url) {
+    if (await handleAiSettingsRoute(req, res, url)) return true;
+    return handleLegacyAiAdminRoute(req, res, url);
+  }
   const handleUserWorkflowRoute = createAutoListingUserWorkflowHttpHandler({
     authenticate,
     getService: userWorkflowRuntime.getService,
@@ -182,25 +199,39 @@ export function createAutoListingWebRuntime({
 
   async function startWorkers() {
     let userStarted = false;
+    let operationsStarted = false;
+    let settingsAttempted = false;
     try {
       await userWorkflowRuntime.startWorkers();
       userStarted = true;
       await operationsRuntime.start();
+      operationsStarted = true;
+      settingsAttempted = true;
+      await settingsRuntime.startWorker();
       return true;
     } catch (error) {
-      await operationsRuntime.stop().catch(() => {});
+      if (settingsAttempted) await settingsRuntime.stopWorker().catch(() => {});
+      if (operationsStarted || userStarted) await operationsRuntime.stop().catch(() => {});
       if (userStarted) await userWorkflowRuntime.stopWorkers().catch(() => {});
       throw error;
     }
   }
 
   async function stopWorkers() {
-    await operationsRuntime.stop();
-    await userWorkflowRuntime.stopWorkers();
+    let firstError = null;
+    for (const stop of [
+      () => settingsRuntime.stopWorker(),
+      () => operationsRuntime.stop(),
+      () => userWorkflowRuntime.stopWorkers(),
+    ]) {
+      try { await stop(); } catch (error) { firstError ??= error; }
+    }
+    if (firstError) throw firstError;
   }
 
   return Object.freeze({
     handleAiAdminRoute,
+    handleAiSettingsRoute,
     handleUserWorkflowRoute,
     handleReviewAssetRoute,
     handleItemRoute,

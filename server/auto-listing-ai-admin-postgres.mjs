@@ -98,8 +98,31 @@ function profileRow(row) {
     imageModel: row.image_model,
     enabled: row.enabled === true,
     capabilityResult: row.capability_result || {},
-    capabilityCheckedAt: row.capability_checked_at ?? null,
-    createdAt: row.created_at ?? null,
+    capabilityCheckedAt: row.capability_checked_at instanceof Date
+      ? row.capability_checked_at.toISOString() : row.capability_checked_at ?? null,
+    connectionId: row.connection_id ?? null,
+    connectionVersion: row.connection_version == null ? null : Number(row.connection_version),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at ?? null,
+  };
+}
+
+function capabilitySecretRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    version: Number(row.version),
+    displayName: row.display_name,
+    baseUrl: row.base_url,
+    status: row.status,
+    encryptedSecret: {
+      algorithm: row.algorithm,
+      ciphertext: row.ciphertext,
+      iv: row.iv,
+      authTag: row.auth_tag,
+      keyVersion: row.key_version,
+      fingerprint: row.fingerprint,
+    },
   };
 }
 
@@ -166,6 +189,31 @@ async function insertAudit(client, {
   if (result?.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
 }
 
+async function insertConnectionEvent(client, {
+  accountId, connectionId, connectionVersion, eventType, statusVersion, actorId, correlationId, payload = {},
+}) {
+  const eventId = deterministicId("aigconn_event", accountId, connectionId,
+    String(connectionVersion), String(statusVersion));
+  await query(client,
+    `INSERT INTO ai_gateway_connection_events (
+       account_id,id,connection_id,connection_version,event_type,status_version,
+       actor_id,correlation_id,payload
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::JSONB)`,
+    [accountId, eventId, connectionId, connectionVersion, eventType, statusVersion,
+      actorId, correlationId, JSON.stringify(payload)]);
+}
+
+async function insertConnectionAudit(client, {
+  action, accountId, actorId, correlationId, connectionId, connectionVersion,
+  statusVersion, idempotencyKey, requestHash, metadata = {},
+}) {
+  await insertAudit(client, {
+    eventId: auditIdentity(action, accountId, idempotencyKey), action, accountId, actorId,
+    correlationId, entityType: "ai_gateway_connection_version", entityId: connectionId,
+    metadata: { requestHash, connectionVersion, statusVersion, ...metadata },
+  });
+}
+
 async function transaction(pool, operation) {
   let client;
   try {
@@ -227,6 +275,9 @@ function capabilityPassed(row) {
 
 function capabilityBeginRequest(input) {
   const accountId = sameActor(input);
+  const purpose = input.purpose === undefined ? "PROFILE_CAPABILITY" : id(input.purpose);
+  if (!["PROFILE_CAPABILITY", "ROLLBACK_CAPABILITY"].includes(purpose)
+    || input.costConfirmed !== true) throw invalid();
   return {
     accountId,
     actorId: accountId,
@@ -234,6 +285,8 @@ function capabilityBeginRequest(input) {
     configVersion: version(input.configVersion),
     correlationId: id(input.correlationId),
     attemptId: id(input.attemptId),
+    purpose,
+    costConfirmed: true,
   };
 }
 
@@ -263,6 +316,104 @@ function capabilityCompleteRequest(input) {
   if (!Number.isSafeInteger(fence) || fence < 1 || !Number.isSafeInteger(leaseVersion) || leaseVersion < 1) throw invalid();
   return { ...begin, fence, leaseVersion, leaseToken: id(input.leaseToken),
     capabilityResult: capabilityResult(input.capabilityResult) };
+}
+
+async function requireConnectionCapabilityFence(client, profile, purpose) {
+  if (profile.connectionId === null) return null;
+  const requiredStatus = purpose === "ROLLBACK_CAPABILITY" ? "RETIRED" : "VALIDATED";
+  const result = await query(client,
+    `SELECT c.id,c.status_version,c.retired_at,latest.id AS catalog_id
+       FROM ai_gateway_connection_versions c
+       JOIN LATERAL (
+         SELECT catalog.id,catalog.catalog
+           FROM ai_gateway_model_catalogs catalog
+           JOIN ai_gateway_model_sync_tasks task
+             ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
+            AND task.connection_id=catalog.connection_id
+            AND task.connection_version=catalog.connection_version
+          WHERE catalog.account_id=c.account_id
+            AND catalog.connection_id=c.id AND catalog.connection_version=c.version
+            AND task.status='SUCCEEDED' AND task.sync_purpose='CATALOG_SYNC'
+          ORDER BY catalog.created_at DESC,catalog.id DESC
+          LIMIT 1
+       ) latest ON TRUE
+      WHERE c.account_id=$1 AND c.id=$2 AND c.version=$3
+        AND c.status='${requiredStatus}'
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(latest.catalog->'models') model
+                    WHERE model->>'id'=$4)
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(latest.catalog->'models') model
+                    WHERE model->>'id'=$5)
+      FOR UPDATE OF c`,
+    [profile.accountId, profile.connectionId, profile.connectionVersion,
+      profile.textModel, profile.imageModel]);
+  if (!result?.rows?.[0]) {
+    throw repositoryError(purpose === "ROLLBACK_CAPABILITY"
+      ? "AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY"
+      : "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", 409);
+  }
+  return result.rows[0];
+}
+
+async function activatePublishedConnection(client, { input, profile, requestHash }) {
+  const currentResult = await query(client,
+    `SELECT id,version,status_version
+       FROM ai_gateway_connection_versions
+      WHERE account_id=$1 AND status='ACTIVE'
+      FOR UPDATE`,
+    [input.accountId]);
+  if (currentResult.rows.length > 1) {
+    throw repositoryError("AUTO_LISTING_AI_PROFILE_AMBIGUOUS", 409);
+  }
+  for (const current of currentResult.rows) {
+    if (current.id === profile.connectionId && Number(current.version) === profile.connectionVersion) continue;
+    const retired = (await query(client,
+      `UPDATE ai_gateway_connection_versions
+          SET status='RETIRED',status_version=status_version+1,
+              retired_at=NOW(),retired_by=$4
+        WHERE account_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE'
+        RETURNING id,version,status_version`,
+      [input.accountId, current.id, Number(current.version), input.actorId])).rows[0];
+    if (!retired) throw repositoryError("AUTO_LISTING_AI_PROFILE_VERSION_CONFLICT", 409);
+    await insertConnectionEvent(client, {
+      accountId: input.accountId, connectionId: current.id, connectionVersion: Number(current.version),
+      eventType: "RETIRED", statusVersion: Number(retired.status_version), actorId: input.actorId,
+      correlationId: input.correlationId,
+      payload: profile.connectionId === null
+        ? { supersededByProfileId: profile.id, supersededByProfileVersion: profile.configVersion }
+        : { supersededById: profile.connectionId, supersededByVersion: profile.connectionVersion },
+    });
+    await insertConnectionAudit(client, {
+      action: "AUTO_LISTING_AI_CONNECTION_RETIRED", accountId: input.accountId, actorId: input.actorId,
+      correlationId: input.correlationId, connectionId: current.id,
+      connectionVersion: Number(current.version), statusVersion: Number(retired.status_version),
+      idempotencyKey: `${input.idempotencyKey}:retired:${current.id}:${current.version}`,
+      requestHash, metadata: profile.connectionId === null
+        ? { supersededByProfileId: profile.id, supersededByProfileVersion: profile.configVersion }
+        : { supersededById: profile.connectionId, supersededByVersion: profile.connectionVersion },
+    });
+  }
+  if (profile.connectionId === null) return;
+  const activated = (await query(client,
+    `UPDATE ai_gateway_connection_versions
+        SET status='ACTIVE',status_version=status_version+1,
+            activated_at=NOW(),activated_by=$4
+      WHERE account_id=$1 AND id=$2 AND version=$3 AND status='VALIDATED'
+      RETURNING id,version,status_version`,
+    [input.accountId, profile.connectionId, profile.connectionVersion, input.actorId])).rows[0];
+  if (!activated) throw repositoryError("AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", 409);
+  await insertConnectionEvent(client, {
+    accountId: input.accountId, connectionId: profile.connectionId,
+    connectionVersion: profile.connectionVersion, eventType: "ACTIVATED",
+    statusVersion: Number(activated.status_version), actorId: input.actorId,
+    correlationId: input.correlationId, payload: { profileId: profile.id, configVersion: profile.configVersion },
+  });
+  await insertConnectionAudit(client, {
+    action: "AUTO_LISTING_AI_CONNECTION_ACTIVATE", accountId: input.accountId, actorId: input.actorId,
+    correlationId: input.correlationId, connectionId: profile.connectionId,
+    connectionVersion: profile.connectionVersion, statusVersion: Number(activated.status_version),
+    idempotencyKey: `${input.idempotencyKey}:activated`, requestHash,
+    metadata: { profileId: profile.id, configVersion: profile.configVersion },
+  });
 }
 
 function capabilityAttemptRow(row, profile) {
@@ -311,6 +462,20 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") throw invalid();
 
   return Object.freeze({
+    async loadConnectionForCapabilitySecretResolution(rawInput = {}) {
+      const input = canonical(rawInput);
+      if (!input || Object.keys(input).length !== 3) throw invalid();
+      const accountId = id(input.accountId);
+      const connectionId = id(input.connectionId);
+      const connectionVersion = version(input.connectionVersion);
+      const result = await query(pool,
+        `SELECT * FROM ai_gateway_connection_versions
+          WHERE account_id=$1 AND id=$2 AND version=$3
+            AND status IN ('VALIDATED','RETIRED')`,
+        [accountId, connectionId, connectionVersion]);
+      return capabilitySecretRow(result?.rows?.[0]);
+    },
+
     async createProfile(rawInput = {}) {
       const input = profileRequest(rawInput);
       const action = "AUTO_LISTING_AI_PROFILE_CREATE";
@@ -321,7 +486,8 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         if (audit.metadata) {
           const found = await query(client,
             `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                    text_model,image_model,enabled,capability_result,capability_checked_at,created_at
+                    text_model,image_model,enabled,capability_result,capability_checked_at,
+                    connection_id,connection_version,created_at
                FROM ai_gateway_profiles
               WHERE account_id=$1 AND id=$2 AND config_version=$3`,
             [input.accountId, audit.metadata.entityId, audit.metadata.configVersion]);
@@ -336,7 +502,8 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
              text_model,image_model,config_version,enabled,created_by
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,FALSE,$11)
            RETURNING id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                     text_model,image_model,enabled,capability_result,capability_checked_at,created_at`,
+                     text_model,image_model,enabled,capability_result,capability_checked_at,
+                     connection_id,connection_version,created_at`,
           [profileId, input.accountId, input.profile.displayName, input.profile.baseUrl, input.profile.apiKeyEnvName,
             input.profile.textProtocol, input.profile.imageProtocol, input.profile.textModel, input.profile.imageModel,
             input.profile.configVersion, input.actorId]);
@@ -354,7 +521,8 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
       const accountId = id(rawInput.accountId);
       const result = await query(pool,
         `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                text_model,image_model,enabled,capability_result,capability_checked_at,created_at
+                text_model,image_model,enabled,capability_result,capability_checked_at,
+                connection_id,connection_version,created_at
            FROM ai_gateway_profiles
           WHERE account_id=$1
           ORDER BY created_at ASC,id ASC`,
@@ -368,23 +536,44 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         await lockAccount(client, input.accountId);
         const loaded = await query(client,
           `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                  text_model,image_model,enabled,capability_result,capability_checked_at,created_at
+                  text_model,image_model,enabled,capability_result,capability_checked_at,
+                  connection_id,connection_version,created_at
              FROM ai_gateway_profiles
             WHERE account_id=$1 AND id=$2 AND config_version=$3 FOR UPDATE`,
           [input.accountId, input.profileId, input.configVersion]);
         const profile = profileRow(loaded.rows[0]);
         if (!profile || profile.accountId !== input.accountId) return null;
         const existing = await query(client,
-          `SELECT id,fence,account_id,profile_id,config_version,correlation_id,status,response,
-                  lease_version,lease_token,lease_expires_at
-             FROM ai_gateway_capability_attempts
+          `SELECT attempt.id,attempt.fence,attempt.account_id,attempt.profile_id,attempt.config_version,
+                  attempt.correlation_id,attempt.status,attempt.response,attempt.lease_version,
+                  attempt.lease_token,attempt.lease_expires_at,
+                  EXISTS (
+                    SELECT 1 FROM audit_events confirmation
+                     WHERE confirmation.account_id=attempt.account_id
+                       AND confirmation.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+                       AND confirmation.entity_type='ai_gateway_profile'
+                       AND confirmation.entity_id=attempt.profile_id
+                       AND confirmation.metadata->>'attemptId'=attempt.id
+                       AND confirmation.metadata->>'purpose'=$5
+                       AND confirmation.metadata->'costConfirmed'='true'::JSONB
+                  ) AS confirmation_matches
+             FROM ai_gateway_capability_attempts attempt
             WHERE account_id=$1 AND profile_id=$2 AND config_version=$3 AND correlation_id=$4
             FOR UPDATE`,
-          [input.accountId, input.profileId, input.configVersion, input.correlationId]);
+          [input.accountId, input.profileId, input.configVersion, input.correlationId, input.purpose]);
         if (existing.rows[0]) {
           if (existing.rows[0].id !== input.attemptId) {
             throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
           }
+          if (["PASSED", "FAILED", "STALE"].includes(existing.rows[0].status)) {
+            if (existing.rows[0].confirmation_matches !== true) {
+              throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+            }
+            return { ...capabilityAttemptRow(existing.rows[0], profile), duplicate: true, reclaimed: false };
+          }
+        }
+        await requireConnectionCapabilityFence(client, profile, input.purpose);
+        if (existing.rows[0]) {
           if (existing.rows[0].status === "RUNNING") {
             const leaseToken = `caplease_${crypto.randomUUID().replaceAll("-", "")}`;
             const reclaimed = await query(client,
@@ -420,13 +609,14 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
       const action = "AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST";
       const completionHash = hash({ action, accountId: input.accountId, profileId: input.profileId,
         configVersion: input.configVersion, attemptId: input.attemptId, fence: input.fence,
-        leaseVersion: input.leaseVersion,
+        leaseVersion: input.leaseVersion, purpose: input.purpose, costConfirmed: input.costConfirmed,
         capabilityResult: input.capabilityResult });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
         const loaded = await query(client,
           `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                  text_model,image_model,enabled,capability_result,capability_checked_at,created_at
+                  text_model,image_model,enabled,capability_result,capability_checked_at,
+                  connection_id,connection_version,created_at
              FROM ai_gateway_profiles
             WHERE account_id=$1 AND id=$2 AND config_version=$3 FOR UPDATE`,
           [input.accountId, input.profileId, input.configVersion]);
@@ -453,6 +643,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           return { applied: attempt.status !== "STALE", stale: attempt.status === "STALE",
             duplicate: true, response: attempt.response };
         }
+        await requireConnectionCapabilityFence(client, profile, input.purpose);
         const newest = await query(client,
           `SELECT id,fence FROM ai_gateway_capability_attempts
             WHERE account_id=$1 AND profile_id=$2 AND config_version=$3
@@ -498,7 +689,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             status: !stale && input.capabilityResult.outcome === "PASSED" ? "SUCCESS" : "FAILED",
             metadata: { requestHash: completionHash, entityId: input.profileId,
               configVersion: input.configVersion, attemptId: input.attemptId, fence: input.fence,
-              leaseVersion: input.leaseVersion,
+              leaseVersion: input.leaseVersion, purpose: input.purpose, costConfirmed: true,
               outcome: input.capabilityResult.outcome, errorCode: input.capabilityResult.errorCode, stale },
           });
         }
@@ -517,7 +708,8 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         if (audit.metadata) {
           const replay = await query(client,
             `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                    text_model,image_model,enabled,capability_result,capability_checked_at,created_at
+                    text_model,image_model,enabled,capability_result,capability_checked_at,
+                    connection_id,connection_version,created_at
                FROM ai_gateway_profiles
               WHERE account_id=$1 AND id=$2 AND config_version=$3`,
             [input.accountId, audit.metadata.entityId, audit.metadata.configVersion]);
@@ -527,13 +719,28 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         }
         const target = await query(client,
           `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                  text_model,image_model,enabled,capability_result,capability_checked_at,created_at
+                  text_model,image_model,enabled,capability_result,capability_checked_at,
+                  connection_id,connection_version,created_at
              FROM ai_gateway_profiles
             WHERE account_id=$1 AND id=$2 AND config_version=$3 FOR UPDATE`,
           [input.accountId, input.profileId, input.configVersion]);
         const rawTarget = target.rows[0];
         if (!rawTarget || rawTarget.account_id !== input.accountId) throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_FOUND", 404);
         if (!capabilityPassed(rawTarget)) throw repositoryError("AUTO_LISTING_AI_PROFILE_CAPABILITY_REQUIRED", 409);
+        const profile = profileRow(rawTarget);
+        await requireConnectionCapabilityFence(client, profile, "PROFILE_CAPABILITY");
+        if (profile.connectionId === null) {
+          const priorPublication = await query(client,
+            `SELECT 1 FROM audit_events
+              WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_PUBLISH'
+                AND status='SUCCESS' AND entity_type='ai_gateway_profile' AND entity_id=$2
+              LIMIT 1
+              FOR UPDATE`,
+            [input.accountId, input.profileId]);
+          if (priorPublication.rows[0]) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY", 409);
+          }
+        }
         const enabled = await query(client,
           `SELECT id,config_version FROM ai_gateway_profiles
             WHERE account_id=$1 AND enabled IS TRUE
@@ -545,17 +752,188 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             WHERE account_id=$1 AND enabled IS TRUE AND (id<>$2 OR config_version<>$3)
             RETURNING id`,
           [input.accountId, input.profileId, input.configVersion]);
+        await activatePublishedConnection(client, { input, profile, requestHash });
         const published = await query(client,
           `UPDATE ai_gateway_profiles SET enabled=TRUE,updated_at=NOW()
             WHERE account_id=$1 AND id=$2 AND config_version=$3
             RETURNING id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                      text_model,image_model,enabled,capability_result,capability_checked_at,created_at`,
+                      text_model,image_model,enabled,capability_result,capability_checked_at,
+                      connection_id,connection_version,created_at`,
           [input.accountId, input.profileId, input.configVersion]);
         const row = profileRow(published.rows[0]);
         if (!row || !row.enabled || row.accountId !== input.accountId) throw databaseFailed();
         await insertAudit(client, {
           ...input, ...audit, action, entityType: "ai_gateway_profile", entityId: row.id,
           metadata: { requestHash, entityId: row.id, configVersion: row.configVersion },
+        });
+        return { ...row, duplicate: false };
+      });
+    },
+
+    async prepareProfileRollback(rawInput = {}) {
+      const input = profilePublishRequest(rawInput);
+      const action = "AUTO_LISTING_AI_PROFILE_ROLLBACK";
+      const intentAction = "AUTO_LISTING_AI_PROFILE_ROLLBACK_INTENT";
+      const requestHash = hash({ action, accountId: input.accountId, profileId: input.profileId,
+        configVersion: input.configVersion });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const completed = await loadAudit(client, { ...input, action, requestHash });
+        if (completed.metadata) {
+          const replay = await query(client,
+            `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
+                    text_model,image_model,enabled,capability_result,capability_checked_at,
+                    connection_id,connection_version,created_at
+               FROM ai_gateway_profiles
+              WHERE account_id=$1 AND id=$2 AND config_version=$3`,
+            [input.accountId, completed.metadata.entityId, completed.metadata.configVersion]);
+          const row = profileRow(replay.rows[0]);
+          if (!row || row.accountId !== input.accountId) {
+            throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+          }
+          return { completed: true, duplicate: true, profile: row };
+        }
+        const intent = await loadAudit(client, { ...input, action: intentAction, requestHash });
+        if (!intent.metadata) {
+          const target = await query(client,
+            `SELECT id,account_id,config_version FROM ai_gateway_profiles
+              WHERE account_id=$1 AND id=$2 AND config_version=$3`,
+            [input.accountId, input.profileId, input.configVersion]);
+          if (!target.rows[0]) throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_FOUND", 404);
+          await insertAudit(client, {
+            ...intent, action: intentAction, accountId: input.accountId, actorId: input.actorId,
+            correlationId: input.correlationId, entityType: "ai_gateway_profile", entityId: input.profileId,
+            status: "PENDING", metadata: { requestHash, entityId: input.profileId,
+              configVersion: input.configVersion, purpose: "ROLLBACK_CAPABILITY", costConfirmed: true },
+          });
+        }
+        return { completed: false, duplicate: intent.metadata !== null, profile: null };
+      });
+    },
+
+    async rollbackProfile(rawInput = {}) {
+      const input = profilePublishRequest(rawInput);
+      const action = "AUTO_LISTING_AI_PROFILE_ROLLBACK";
+      const requestHash = hash({ action, accountId: input.accountId, profileId: input.profileId,
+        configVersion: input.configVersion });
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const audit = await loadAudit(client, { ...input, action, requestHash });
+        if (audit.metadata) {
+          const replay = await query(client,
+            `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
+                    text_model,image_model,enabled,capability_result,capability_checked_at,
+                    connection_id,connection_version,created_at
+               FROM ai_gateway_profiles
+              WHERE account_id=$1 AND id=$2 AND config_version=$3`,
+            [input.accountId, audit.metadata.entityId, audit.metadata.configVersion]);
+          const replayRow = profileRow(replay.rows[0]);
+          if (!replayRow) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+          return { ...replayRow, duplicate: true };
+        }
+        const target = await query(client,
+          `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
+                  text_model,image_model,enabled,capability_result,capability_checked_at,
+                  connection_id,connection_version,created_at
+             FROM ai_gateway_profiles
+            WHERE account_id=$1 AND id=$2 AND config_version=$3 FOR UPDATE`,
+          [input.accountId, input.profileId, input.configVersion]);
+        const rawTarget = target.rows[0];
+        if (!rawTarget || rawTarget.account_id !== input.accountId) {
+          throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_FOUND", 404);
+        }
+        if (!capabilityPassed(rawTarget)) {
+          throw repositoryError("AUTO_LISTING_AI_PROFILE_CAPABILITY_REQUIRED", 409);
+        }
+        const profile = profileRow(rawTarget);
+        if (profile.connectionId === null) {
+          throw repositoryError("AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY", 409);
+        }
+        const connectionFence = await requireConnectionCapabilityFence(client, profile, "ROLLBACK_CAPABILITY");
+        const attemptResult = await query(client,
+          `SELECT a.id,a.completed_at
+             FROM ai_gateway_capability_attempts a
+             JOIN audit_events capability_audit
+               ON capability_audit.account_id=a.account_id
+              AND capability_audit.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+              AND capability_audit.entity_type='ai_gateway_profile'
+              AND capability_audit.entity_id=a.profile_id
+              AND capability_audit.metadata->>'attemptId'=a.id
+              AND capability_audit.metadata->>'purpose'='ROLLBACK_CAPABILITY'
+            WHERE a.account_id=$1 AND a.profile_id=$2 AND a.config_version=$3
+              AND a.status='PASSED' AND a.response->>'outcome'='PASSED'
+              AND a.response->>'checkedAt'=$4 AND (a.response->>'checkedAt')::TIMESTAMPTZ >= $5
+              AND a.completed_at >= $5
+              AND (a.response - 'profileId' - 'configVersion' - 'enabled')=$6::JSONB
+            ORDER BY a.fence DESC
+            LIMIT 1
+            FOR UPDATE OF a`,
+          [input.accountId, input.profileId, input.configVersion, profile.capabilityCheckedAt,
+            connectionFence.retired_at, JSON.stringify(profile.capabilityResult)]);
+        const attempt = attemptResult.rows[0];
+        if (!attempt) throw repositoryError("AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY", 409);
+        const validationHash = hash(profile.capabilityResult);
+        const rollbackEvidence = {
+          schemaVersion: "AI_GATEWAY_PROFILE_ROLLBACK_CAPABILITY_V1",
+          attemptId: attempt.id,
+          profileId: profile.id,
+          configVersion: profile.configVersion,
+          checkedAt: profile.capabilityCheckedAt,
+        };
+        const rollbackEvidenceHash = hash(rollbackEvidence);
+        const validated = (await query(client,
+          `UPDATE ai_gateway_connection_versions
+              SET status='VALIDATED',status_version=status_version+1,
+                  validation_result=$4::JSONB,validation_hash=$5,
+                  validated_at=NOW(),validated_by=$6,
+                  rollback_evidence=$8::JSONB,rollback_evidence_hash=$9
+            WHERE account_id=$1 AND id=$2 AND version=$3
+              AND status='RETIRED' AND status_version=$7
+            RETURNING id,version,status_version`,
+          [input.accountId, profile.connectionId, profile.connectionVersion,
+            JSON.stringify(profile.capabilityResult), validationHash, input.actorId,
+            Number(connectionFence.status_version), JSON.stringify(rollbackEvidence), rollbackEvidenceHash])).rows[0];
+        if (!validated) throw repositoryError("AUTO_LISTING_AI_PROFILE_VERSION_CONFLICT", 409);
+        await insertConnectionEvent(client, {
+          accountId: input.accountId, connectionId: profile.connectionId,
+          connectionVersion: profile.connectionVersion, eventType: "ROLLBACK_VALIDATED",
+          statusVersion: Number(validated.status_version), actorId: input.actorId,
+          correlationId: input.correlationId,
+          payload: { validationHash, rollbackEvidenceHash, purpose: "ROLLBACK_CAPABILITY" },
+        });
+        await insertConnectionAudit(client, {
+          action: "AUTO_LISTING_AI_CONNECTION_VALIDATED", accountId: input.accountId,
+          actorId: input.actorId, correlationId: input.correlationId,
+          connectionId: profile.connectionId, connectionVersion: profile.connectionVersion,
+          statusVersion: Number(validated.status_version),
+          idempotencyKey: `${input.idempotencyKey}:rollback-validated`, requestHash,
+          metadata: { validationHash, rollbackEvidenceHash, purpose: "ROLLBACK_CAPABILITY" },
+        });
+        const enabled = await query(client,
+          `SELECT id,config_version FROM ai_gateway_profiles
+            WHERE account_id=$1 AND enabled IS TRUE
+            FOR UPDATE`,
+          [input.accountId]);
+        if (enabled.rows.length > 1) throw repositoryError("AUTO_LISTING_AI_PROFILE_AMBIGUOUS", 409);
+        await query(client,
+          `UPDATE ai_gateway_profiles SET enabled=FALSE,updated_at=NOW()
+            WHERE account_id=$1 AND enabled IS TRUE AND (id<>$2 OR config_version<>$3)
+            RETURNING id`,
+          [input.accountId, input.profileId, input.configVersion]);
+        await activatePublishedConnection(client, { input, profile, requestHash });
+        const published = await query(client,
+          `UPDATE ai_gateway_profiles SET enabled=TRUE,updated_at=NOW()
+            WHERE account_id=$1 AND id=$2 AND config_version=$3
+            RETURNING id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
+                      text_model,image_model,enabled,capability_result,capability_checked_at,
+                      connection_id,connection_version,created_at`,
+          [input.accountId, input.profileId, input.configVersion]);
+        const row = profileRow(published.rows[0]);
+        if (!row || !row.enabled || row.accountId !== input.accountId) throw databaseFailed();
+        await insertAudit(client, {
+          ...input, ...audit, action, entityType: "ai_gateway_profile", entityId: row.id,
+          metadata: { requestHash, entityId: row.id, configVersion: row.configVersion,
+            purpose: "ROLLBACK_CAPABILITY", attemptId: attempt.id },
         });
         return { ...row, duplicate: false };
       });

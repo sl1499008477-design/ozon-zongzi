@@ -152,6 +152,11 @@ function profileDto(row, accountId, { allowLocalGateway }) {
   const rowAccountId = text(row?.accountId ?? row?.account_id);
   if (rowAccountId !== accountId) throw adminError("AUTO_LISTING_AI_ADMIN_DATA_BOUNDARY", 500);
   const capability = row?.capabilityResult ?? row?.capability_result;
+  const rawConnectionId = row?.connectionId ?? row?.connection_id ?? null;
+  const rawConnectionVersion = row?.connectionVersion ?? row?.connection_version ?? null;
+  if ((rawConnectionId === null) !== (rawConnectionVersion === null)) {
+    throw adminError("AUTO_LISTING_AI_ADMIN_DATA_BOUNDARY", 500);
+  }
   const outcome = ["PASSED", "FAILED"].includes(capability?.outcome) ? capability.outcome : null;
   const dto = {
     id: text(row?.id),
@@ -164,6 +169,8 @@ function profileDto(row, accountId, { allowLocalGateway }) {
     textModel: text(row?.textModel ?? row?.text_model, { max: 160, pattern: null }),
     imageModel: text(row?.imageModel ?? row?.image_model, { max: 160, pattern: null }),
     enabled: row?.enabled === true,
+    connectionId: rawConnectionId === null ? null : text(rawConnectionId),
+    connectionVersion: rawConnectionVersion === null ? null : positiveVersion(Number(rawConnectionVersion)),
     capabilityOutcome: outcome,
     capabilityCheckedAt: row?.capabilityCheckedAt ?? row?.capability_checked_at ?? null,
     createdAt: row?.createdAt ?? row?.created_at ?? null,
@@ -324,15 +331,16 @@ export function createAutoListingAiAdminService({
     },
 
     async testGatewayCapabilities(raw = {}) {
-      const input = closedObject(raw, new Set(["actor", "profileId", "configVersion", "correlationId"]),
+      const input = closedObject(raw, new Set(["actor", "profileId", "configVersion", "correlationId", "costConfirmed"]),
         "AUTO_LISTING_AI_ADMIN_REQUEST_INVALID");
       const accountId = actorScope(input.actor);
+      if (input.costConfirmed !== true) throw adminError("AI_GATEWAY_COST_CONFIRMATION_REQUIRED", 409);
       const profileId = text(input.profileId);
       const configVersion = positiveVersion(input.configVersion);
       const correlationId = text(input.correlationId);
       try {
         const tested = await capabilityService.testGatewayCapabilities({
-          actor: input.actor, profileId, configVersion, correlationId,
+          actor: input.actor, profileId, configVersion, correlationId, costConfirmed: true,
         });
         const result = safeCapabilityResult(tested);
         return result;

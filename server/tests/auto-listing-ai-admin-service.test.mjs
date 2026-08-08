@@ -30,6 +30,8 @@ const profileRow = Object.freeze({
   enabled: false,
   capabilityResult: {},
   capabilityCheckedAt: null,
+  connectionId: null,
+  connectionVersion: null,
   createdAt: "2026-08-04T10:00:00.000Z",
 });
 
@@ -114,7 +116,7 @@ test("every admin operation rejects ordinary users before repository or capabili
   const invocations = [
     () => service.createGatewayProfile({ actor: ordinary, idempotencyKey: "idem-a", correlationId: "corr-a", profile: profileInput }),
     () => service.listGatewayProfiles({ actor: ordinary }),
-    () => service.testGatewayCapabilities({ actor: ordinary, profileId: "profile-a", configVersion: 1, correlationId: "corr-a" }),
+    () => service.testGatewayCapabilities({ costConfirmed: true, actor: ordinary, profileId: "profile-a", configVersion: 1, correlationId: "corr-a" }),
     () => service.publishGatewayProfile({ actor: ordinary, profileId: "profile-a", configVersion: 1,
       idempotencyKey: "idem-a", correlationId: "corr-a" }),
     () => service.createStrategyVersion({ actor: ordinary, strategyKey: "default", version: 1,
@@ -223,17 +225,19 @@ test("profile reads redact environment names and never expose repository-only ac
     baseUrl: "https://gateway.example/v1", apiKeyEnvNameMasked: "SUB2…_KEY",
     textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES",
     textModel: "text-model-a", imageModel: "image-model-a", enabled: false,
+    connectionId: null, connectionVersion: null,
     capabilityOutcome: null, capabilityCheckedAt: null, createdAt: "2026-08-04T10:00:00.000Z",
   }]);
 });
 
 test("capability testing reuses the service whose repository transaction owns result and audit persistence", async () => {
   const { service, calls } = fixture();
-  const result = await service.testGatewayCapabilities({
+  const result = await service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-capability-a",
   });
   assert.deepEqual(calls[0], ["testGatewayCapabilities", {
     actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-capability-a",
+    costConfirmed: true,
   }]);
   assert.equal(calls.length, 1);
   assert.deepEqual(result, {
@@ -245,16 +249,26 @@ test("capability testing reuses the service whose repository transaction owns re
   assert.doesNotMatch(JSON.stringify(result), /requestIds|enabled|secret|api.?key/i);
 });
 
+test("legacy admin capability service rejects missing cost confirmation before paid work", async () => {
+  const { service, calls } = fixture();
+  await assert.rejects(service.testGatewayCapabilities({
+    actor: admin, profileId: "profile-a", configVersion: 1,
+    correlationId: "corr-unconfirmed", costConfirmed: false,
+  }), { code: "AI_GATEWAY_COST_CONFIRMATION_REQUIRED", status: 409 });
+  assert.deepEqual(calls, []);
+});
+
 test("known capability service failures are re-created with only their stable code", async () => {
   const failure = Object.assign(new Error("raw database details"), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT" });
   const { service, calls } = fixture({ capabilityError: failure });
   await assert.rejects(
-    service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-failed" }),
+    service.testGatewayCapabilities({ costConfirmed: true, actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-failed" }),
     (error) => error !== failure && error?.code === "AI_GATEWAY_PROFILE_VERSION_CONFLICT"
       && !/raw database details/iu.test(error?.message || ""),
   );
   assert.deepEqual(calls, [["testGatewayCapabilities", {
     actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-failed",
+    costConfirmed: true,
   }]]);
 });
 
@@ -264,7 +278,7 @@ test("unknown capability failures are mapped to a closed safe admin error", asyn
   });
   const { service } = fixture({ capabilityError: failure });
   await assert.rejects(
-    service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-unsafe" }),
+    service.testGatewayCapabilities({ costConfirmed: true, actor: admin, profileId: "profile-a", configVersion: 1, correlationId: "corr-unsafe" }),
     (error) => error !== failure
       && error?.code === "AUTO_LISTING_AI_CAPABILITY_FAILED"
       && !/password|prod-secret|internal/iu.test(error?.message || ""),

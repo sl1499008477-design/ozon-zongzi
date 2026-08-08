@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postgres.mjs";
+import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
 
 const connectionString = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(connectionString);
@@ -96,11 +97,11 @@ if (!enabled) {
         };
         const correlationId = `capability-${idempotencyKey}`;
         const attemptId = `attempt-${idempotencyKey}`;
-        const begun = await repository.beginCapabilityTest({
+        const begun = await repository.beginCapabilityTest({ costConfirmed: true,
           accountId: accountA, actorId: accountA, profileId: created.id, configVersion: 1,
           correlationId, attemptId,
         });
-        const completed = await repository.completeCapabilityTest({
+        const completed = await repository.completeCapabilityTest({ costConfirmed: true,
           accountId: accountA, actorId: accountA, profileId: created.id, configVersion: 1,
           correlationId, attemptId, fence: begun.fence,
           leaseVersion: begun.leaseVersion, leaseToken: begun.leaseToken, capabilityResult,
@@ -117,16 +118,16 @@ if (!enabled) {
       assert.equal(replay.id, first.id);
       assert.equal(replay.duplicate, true);
       const second = await createPassedProfile("beta", `create-beta-${suffix}`);
-      assert.equal(await repository.beginCapabilityTest({
+      assert.equal(await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountB, actorId: accountB, profileId: first.id, configVersion: 1,
         correlationId: `foreign-capability-${suffix}`, attemptId: `foreign-attempt-${suffix}`,
       }), null);
 
-      const oldAttempt = await repository.beginCapabilityTest({
+      const oldAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-old-${suffix}`, attemptId: `attempt-old-${suffix}`,
       });
-      const newAttempt = await repository.beginCapabilityTest({
+      const newAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-new-${suffix}`, attemptId: `attempt-new-${suffix}`,
       });
@@ -135,13 +136,13 @@ if (!enabled) {
         outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 7,
         models: { text: "text-model", image: "image-model" }, checkedAt: newestCheckedAt, errorCode: null,
       };
-      assert.equal((await repository.completeCapabilityTest({
+      assert.equal((await repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-new-${suffix}`, attemptId: `attempt-new-${suffix}`,
         fence: newAttempt.fence, leaseVersion: newAttempt.leaseVersion, leaseToken: newAttempt.leaseToken,
         capabilityResult: newestResult,
       })).applied, true);
-      const stale = await repository.completeCapabilityTest({
+      const stale = await repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-old-${suffix}`, attemptId: `attempt-old-${suffix}`,
         fence: oldAttempt.fence, leaseVersion: oldAttempt.leaseVersion, leaseToken: oldAttempt.leaseToken,
@@ -158,7 +159,7 @@ if (!enabled) {
 
       const crashCorrelation = `capability-crash-${suffix}`;
       const crashAttemptId = `attempt-crash-${suffix}`;
-      const crashAttempt = await repository.beginCapabilityTest({
+      const crashAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: crashCorrelation, attemptId: crashAttemptId,
       });
@@ -180,7 +181,7 @@ if (!enabled) {
       const crashResult = { outcome: "PASSED",
         features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 8,
         models: { text: "text-model", image: "image-model" }, checkedAt: new Date().toISOString(), errorCode: null };
-      await assert.rejects(repository.completeCapabilityTest({
+      await assert.rejects(repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: crashCorrelation, attemptId: crashAttemptId, fence: crashAttempt.fence,
         leaseVersion: crashAttempt.leaseVersion, leaseToken: crashAttempt.leaseToken,
@@ -199,7 +200,7 @@ if (!enabled) {
       assert.equal(rolledBack.rows[0].response, null);
       await pool.query("DROP TRIGGER reject_selected_capability_audit_trigger ON audit_events");
       await pool.query("DROP FUNCTION reject_selected_capability_audit()");
-      assert.equal((await repository.completeCapabilityTest({
+      assert.equal((await repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: crashCorrelation, attemptId: crashAttemptId, fence: crashAttempt.fence,
         leaseVersion: crashAttempt.leaseVersion, leaseToken: crashAttempt.leaseToken,
@@ -223,7 +224,7 @@ if (!enabled) {
          ) VALUES ($1,$2,$3,1,$4,'RUNNING',1,'caplease_crashed',NOW()-INTERVAL '1 minute')`,
         [recoveryAttemptId, accountA, second.id, recoveryCorrelation],
       );
-      const recoveredAttempt = await repository.beginCapabilityTest({
+      const recoveredAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: recoveryCorrelation, attemptId: recoveryAttemptId,
       });
@@ -233,12 +234,12 @@ if (!enabled) {
       const recoveryResult = { outcome: "PASSED",
         features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 6,
         models: { text: "text-model", image: "image-model" }, checkedAt: new Date().toISOString(), errorCode: null };
-      await assert.rejects(repository.completeCapabilityTest({
+      await assert.rejects(repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: recoveryCorrelation, attemptId: recoveryAttemptId, fence: recoveredAttempt.fence,
         leaseVersion: 1, leaseToken: "caplease_crashed", capabilityResult: recoveryResult,
       }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT", status: 409 });
-      const recoveredCompletion = await repository.completeCapabilityTest({
+      const recoveredCompletion = await repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: recoveryCorrelation, attemptId: recoveryAttemptId, fence: recoveredAttempt.fence,
         leaseVersion: recoveredAttempt.leaseVersion, leaseToken: recoveredAttempt.leaseToken,
@@ -356,6 +357,154 @@ if (!enabled) {
         AUTO_LISTING_AI_STRATEGY_VERSION_CREATE: 2,
         AUTO_LISTING_AI_STRATEGY_VERSION_PUBLISH: 2,
       });
+    } finally {
+      try {
+        await pool?.end();
+        await admin.query("SET search_path TO public");
+        await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`);
+      } finally {
+        admin.release();
+        await adminPool.end();
+      }
+    }
+  });
+
+  test("connection-backed publish and paid rollback switch profile plus connection state atomically", {
+    timeout: 60_000,
+  }, async () => {
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString, max: 1 });
+    const admin = await adminPool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `auto_listing_ai_connected_${suffix}`;
+    const schemaSql = quote(schema);
+    const accountId = `account-connected-${suffix}`;
+    let pool;
+    try {
+      await admin.query(`CREATE SCHEMA ${schemaSql}`);
+      await admin.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir))
+        .filter((file) => /^\d{3}_.+\.sql$/u.test(file))
+        .sort();
+      for (const migration of migrations) {
+        await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      }
+      await admin.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [accountId],
+      );
+      pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema},public` });
+      const settings = createAutoListingAiSettingsPostgres({ pool });
+      const profiles = createAutoListingAiAdminPostgres({ pool });
+
+      async function createConnected(label) {
+        const connection = await settings.createPendingConnection({
+          accountId, actorId: accountId, idempotencyKey: `connection-${label}-${suffix}`,
+          correlationId: `connection-corr-${label}-${suffix}`, displayName: `Connection ${label}`,
+          baseUrl: "https://gateway.example.test/v1",
+          encryptedSecret: { algorithm: "aes-256-gcm", ciphertext: "Y2lwaGVy", iv: "aXY=",
+            authTag: "dGFn", keyVersion: "local-v1", fingerprint: `fp-${label}-${suffix}` },
+        });
+        const task = await settings.enqueueModelSync({
+          accountId, actorId: accountId, connectionId: connection.id, connectionVersion: 1,
+          expectedConnectionStatusVersion: 1, syncPurpose: "CATALOG_SYNC", maxAttempts: 5,
+          idempotencyKey: `catalog-${label}-${suffix}`, correlationId: `catalog-corr-${label}-${suffix}`,
+        });
+        const workerId = `worker-${label}-${suffix}`;
+        const lease = await settings.claimModelSync({ accountId, workerId, leaseMs: 30_000,
+          syncPurpose: "CATALOG_SYNC" });
+        assert.equal(lease.taskId, task.id);
+        const checkedAt = new Date().toISOString();
+        const completed = await settings.completeModelSync({
+          accountId, workerId, taskId: task.id, leaseVersion: lease.leaseVersion,
+          leaseToken: lease.leaseToken, correlationId: `complete-${label}-${suffix}`,
+          catalog: { models: [{ id: "image-model" }, { id: "text-model" }] },
+          capabilityResult: { outcome: "NOT_TESTED", checkedAt, text: false, image: false },
+        });
+        const profileRow = await settings.createProfileFromSelection({
+          accountId, actorId: accountId, connectionId: connection.id, connectionVersion: 1,
+          catalogId: completed.catalog.id, displayName: `Profile ${label}`,
+          textModel: "text-model", imageModel: "image-model",
+          textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES",
+          idempotencyKey: `profile-${label}-${suffix}`, correlationId: `profile-corr-${label}-${suffix}`,
+        });
+        return { connection, profile: profileRow };
+      }
+
+      async function passCapability(target, purpose, label) {
+        const correlationId = `paid-${purpose}-${label}-${suffix}`;
+        const attemptId = `attempt-${purpose}-${label}-${suffix}`;
+        const begun = await profiles.beginCapabilityTest({ costConfirmed: true,
+          accountId, actorId: accountId, profileId: target.profile.id, configVersion: 1,
+          correlationId, attemptId, purpose,
+        });
+        const retiredAt = purpose === "ROLLBACK_CAPABILITY"
+          ? (await pool.query(
+            `SELECT retired_at FROM ai_gateway_connection_versions
+              WHERE account_id=$1 AND id=$2 AND version=1`,
+            [accountId, target.connection.id],
+          )).rows[0]?.retired_at
+          : null;
+        const checkedAt = new Date(Math.max(Date.now(), retiredAt ? retiredAt.getTime() + 1 : 0)).toISOString();
+        const capabilityResult = {
+          outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+          latencyMs: 5, models: { text: "text-model", image: "image-model" },
+          checkedAt, errorCode: null,
+        };
+        await profiles.completeCapabilityTest({ costConfirmed: true,
+          accountId, actorId: accountId, profileId: target.profile.id, configVersion: 1,
+          correlationId, attemptId, fence: begun.fence, leaseVersion: begun.leaseVersion,
+          leaseToken: begun.leaseToken, purpose, capabilityResult,
+        });
+      }
+
+      const first = await createConnected("first");
+      await passCapability(first, "PROFILE_CAPABILITY", "first");
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        idempotencyKey: `publish-first-${suffix}`, correlationId: `publish-first-corr-${suffix}`,
+      });
+      const second = await createConnected("second");
+      await passCapability(second, "PROFILE_CAPABILITY", "second");
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: second.profile.id, configVersion: 1,
+        idempotencyKey: `publish-second-${suffix}`, correlationId: `publish-second-corr-${suffix}`,
+      });
+      const rollbackInput = {
+        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        idempotencyKey: `rollback-first-${suffix}`, correlationId: `rollback-first-corr-${suffix}`,
+      };
+      assert.deepEqual(await profiles.prepareProfileRollback(rollbackInput), {
+        completed: false, duplicate: false, profile: null,
+      });
+      await assert.rejects(profiles.prepareProfileRollback({ ...rollbackInput,
+        profileId: second.profile.id, correlationId: `rollback-conflict-${suffix}` }), {
+        code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409,
+      });
+      await passCapability(first, "ROLLBACK_CAPABILITY", "first");
+      const rolledBack = await profiles.rollbackProfile(rollbackInput);
+      assert.equal(rolledBack.enabled, true);
+      assert.equal((await profiles.rollbackProfile(rollbackInput)).duplicate, true);
+      const preparedReplay = await profiles.prepareProfileRollback({ ...rollbackInput,
+        correlationId: `rollback-response-loss-${suffix}` });
+      assert.equal(preparedReplay.completed, true);
+      assert.equal(preparedReplay.profile.enabled, true);
+      const states = await pool.query(
+        `SELECT id,status FROM ai_gateway_connection_versions
+          WHERE account_id=$1 ORDER BY id`,
+        [accountId],
+      );
+      assert.deepEqual(Object.fromEntries(states.rows.map((row) => [row.id, row.status])), {
+        [first.connection.id]: "ACTIVE",
+        [second.connection.id]: "RETIRED",
+      });
+      const purposeAudit = await pool.query(
+        `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+            AND metadata->>'purpose'='ROLLBACK_CAPABILITY'`,
+        [accountId],
+      );
+      assert.equal(purposeAudit.rows[0].count, 1);
     } finally {
       try {
         await pool?.end();

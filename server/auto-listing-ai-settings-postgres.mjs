@@ -147,6 +147,11 @@ function isoTimestamp(value) {
   return new Date(timestamp).toISOString();
 }
 
+function dtoTimestamp(value) {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
 function connectionDto(row, duplicate = false) {
   if (!row) return null;
   return {
@@ -160,10 +165,10 @@ function connectionDto(row, duplicate = false) {
     status: row.status,
     statusVersion: Number(row.status_version),
     validationResult: row.validation_result ?? null,
-    validatedAt: row.validated_at ?? null,
-    activatedAt: row.activated_at ?? null,
-    retiredAt: row.retired_at ?? null,
-    createdAt: row.created_at ?? null,
+    validatedAt: dtoTimestamp(row.validated_at),
+    activatedAt: dtoTimestamp(row.activated_at),
+    retiredAt: dtoTimestamp(row.retired_at),
+    createdAt: dtoTimestamp(row.created_at),
     duplicate,
   };
 }
@@ -202,11 +207,11 @@ function taskDto(row, duplicate = false) {
     attemptCount: Number(row.attempt_count),
     maxAttempts: Number(row.max_attempts),
     leaseVersion: Number(row.lease_version),
-    availableAt: row.available_at ?? null,
-    completedAt: row.completed_at ?? null,
+    availableAt: dtoTimestamp(row.available_at),
+    completedAt: dtoTimestamp(row.completed_at),
     lastErrorCode: row.last_error_code ?? null,
     lastErrorSafe: row.last_error_safe ?? null,
-    createdAt: row.created_at ?? null,
+    createdAt: dtoTimestamp(row.created_at),
     duplicate,
   };
 }
@@ -224,8 +229,8 @@ function catalogDto(row) {
     capabilityResult: row.capability_result,
     capabilityHash: row.capability_hash,
     rollbackEvidenceIdentity: row.rollback_evidence_identity ?? null,
-    testedAt: row.tested_at,
-    createdAt: row.created_at ?? null,
+    testedAt: dtoTimestamp(row.tested_at),
+    createdAt: dtoTimestamp(row.created_at),
   };
 }
 
@@ -244,10 +249,10 @@ function profileDto(row, duplicate = false) {
     imageModel: row.image_model,
     enabled: row.enabled === true,
     capabilityResult: row.capability_result ?? {},
-    capabilityCheckedAt: row.capability_checked_at ?? null,
+    capabilityCheckedAt: dtoTimestamp(row.capability_checked_at),
     connectionId: row.connection_id,
     connectionVersion: row.connection_version == null ? null : Number(row.connection_version),
-    createdAt: row.created_at ?? null,
+    createdAt: dtoTimestamp(row.created_at),
     duplicate,
   };
 }
@@ -447,14 +452,21 @@ async function terminalizeExpiredRollbackFence(client, task, {
 }
 
 function createConnectionRequest(raw) {
+  if (!plainRecord(raw)) throw invalid();
+  const hasConnectionId = Object.hasOwn(raw, "connectionId");
   const input = exactKeys(raw, [
     "accountId", "actorId", "baseUrl", "correlationId", "displayName", "encryptedSecret", "idempotencyKey",
+    ...(hasConnectionId ? ["connectionId"] : []),
   ]);
   const accountId = accountActor(input);
+  const idempotencyKey = identifier(input.idempotencyKey);
+  const connectionId = deterministicId("aigconn", accountId, idempotencyKey);
+  if (hasConnectionId && identifier(input.connectionId) !== connectionId) throw invalid();
   return {
     accountId,
     actorId: accountId,
-    idempotencyKey: identifier(input.idempotencyKey),
+    connectionId,
+    idempotencyKey,
     correlationId: identifier(input.correlationId),
     displayName: nonEmpty(input.displayName, 200),
     baseUrl: normalizedBaseUrl(input.baseUrl),
@@ -667,9 +679,8 @@ function profileRequest(raw) {
   };
 }
 
-function catalogHasModel(catalog, modelId, capability) {
-  return Array.isArray(catalog?.models) && catalog.models.some((model) => model?.id === modelId
-    && Array.isArray(model.capabilities) && model.capabilities.includes(capability));
+function catalogHasModel(catalog, modelId) {
+  return Array.isArray(catalog?.models) && catalog.models.some((model) => model?.id === modelId);
 }
 
 export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
@@ -677,11 +688,20 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") throw invalid();
 
   return Object.freeze({
+    connectionIdForIntent(rawInput = {}) {
+      const input = exactKeys(rawInput, ["accountId", "idempotencyKey"]);
+      return deterministicId("aigconn", identifier(input.accountId), identifier(input.idempotencyKey));
+    },
+
     async createPendingConnection(rawInput = {}) {
       const input = createConnectionRequest(rawInput);
       const action = "AUTO_LISTING_AI_CONNECTION_CREATE";
       const requestHash = hash({ action, accountId: input.accountId, displayName: input.displayName,
-        baseUrl: input.baseUrl, encryptedSecret: input.encryptedSecret });
+        baseUrl: input.baseUrl, encryptedSecret: {
+          algorithm: input.encryptedSecret.algorithm,
+          keyVersion: input.encryptedSecret.keyVersion,
+          fingerprint: input.encryptedSecret.fingerprint,
+        } });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
         const existing = await query(client,
@@ -696,7 +716,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           }
           return connectionDto(existing.rows[0], true);
         }
-        const connectionId = deterministicId("aigconn", input.accountId, input.idempotencyKey);
+        const connectionId = input.connectionId;
         const inserted = await query(client,
           `INSERT INTO ai_gateway_connection_versions (
              account_id,id,version,display_name,base_url,
@@ -729,7 +749,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       const connectionVersion = positiveInteger(input.connectionVersion);
       const result = await query(pool,
         `SELECT * FROM ai_gateway_connection_versions
-          WHERE account_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE'`,
+          WHERE account_id=$1 AND id=$2 AND version=$3 AND status IN ('VALIDATED','ACTIVE','RETIRED')`,
         [accountId, connectionId, connectionVersion]);
       return secretResolutionDto(result?.rows?.[0]);
     },
@@ -739,7 +759,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       const leaseTokenDigest = hash({ leaseToken: input.leaseToken });
       const result = await query(pool,
         `SELECT c.*,
-                (c.status='ACTIVE'
+                (c.status IN ('PENDING','VALIDATED','ACTIVE')
                   AND c.status_version=t.target_connection_status_version)
                   AS catalog_connection_fence_matches
            FROM ai_gateway_model_sync_tasks t
@@ -957,7 +977,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
       const accountId = identifier(input.accountId);
       return transaction(pool, async (client) => {
         const connections = await query(client, `SELECT * FROM ai_gateway_connection_versions WHERE account_id=$1 ORDER BY created_at DESC,fence DESC`, [accountId]);
-        const catalogs = await query(client, `SELECT * FROM ai_gateway_model_catalogs WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
+        const catalogs = await query(client, `SELECT * FROM ai_gateway_model_catalogs WHERE account_id=$1 ORDER BY created_at DESC,id DESC`, [accountId]);
         const tasks = await query(client, `SELECT * FROM ai_gateway_model_sync_tasks WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
         const profiles = await query(client, `SELECT * FROM ai_gateway_profiles WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
         const safeConnections = connections.rows.map((row) => connectionDto(row));
@@ -991,10 +1011,8 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         const connection = (await query(client,
           `SELECT * FROM ai_gateway_connection_versions
             WHERE account_id=$1 AND id=$2 AND version=$3
-              AND status=CASE $4
-                WHEN 'CATALOG_SYNC' THEN 'ACTIVE'
-                WHEN 'ROLLBACK_CAPABILITY' THEN 'RETIRED'
-              END
+              AND (($4='CATALOG_SYNC' AND status IN ('PENDING','VALIDATED','ACTIVE'))
+                OR ($4='ROLLBACK_CAPABILITY' AND status='RETIRED'))
             FOR UPDATE`,
           [input.accountId, input.connectionId, input.connectionVersion, input.syncPurpose])).rows[0];
         if (!connection) throw repositoryError(input.syncPurpose === "ROLLBACK_CAPABILITY"
@@ -1258,9 +1276,9 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         let rollbackEvidenceIdentity = null;
         if (task.sync_purpose === "CATALOG_SYNC") {
           const fence = await query(client,
-            `SELECT 1 FROM ai_gateway_connection_versions
+            `SELECT status,status_version FROM ai_gateway_connection_versions
               WHERE account_id=$1 AND id=$2 AND version=$3
-                AND status='ACTIVE' AND status_version=$4
+                AND status IN ('PENDING','VALIDATED','ACTIVE') AND status_version=$4
               FOR KEY SHARE`,
             [task.account_id, task.connection_id, task.connection_version,
               task.target_connection_status_version]);
@@ -1293,7 +1311,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         }
         const catalogId = deterministicId("aigcatalog", input.accountId, input.taskId, catalogHash, capabilityHash);
         const updated = (await query(client,
-          `UPDATE ai_gateway_model_sync_tasks
+            `UPDATE ai_gateway_model_sync_tasks
               SET status='SUCCEEDED',status_version=status_version+1,
                   lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,
                   result_evidence_identity=$6,completed_at=NOW(),updated_at=NOW()
@@ -1305,7 +1323,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
                   WHERE c.account_id=ai_gateway_model_sync_tasks.account_id
                     AND c.id=ai_gateway_model_sync_tasks.connection_id
                     AND c.version=ai_gateway_model_sync_tasks.connection_version
-                    AND c.status='ACTIVE'
+                    AND c.status IN ('PENDING','VALIDATED','ACTIVE')
                     AND c.status_version=ai_gateway_model_sync_tasks.target_connection_status_version
                 )) OR (sync_purpose='ROLLBACK_CAPABILITY' AND EXISTS (
                   SELECT 1 FROM ai_gateway_connection_versions c
@@ -1334,6 +1352,64 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           [input.accountId, catalogId, task.connection_id, task.connection_version, input.taskId,
             JSON.stringify(input.catalog), catalogHash, JSON.stringify(input.capabilityResult), capabilityHash,
             rollbackEvidenceIdentity, input.testedAt])).rows[0];
+        if (task.sync_purpose === "CATALOG_SYNC") {
+          const pending = (await query(client,
+            `SELECT status,status_version FROM ai_gateway_connection_versions
+              WHERE account_id=$1 AND id=$2 AND version=$3
+                AND status_version=$4
+              FOR UPDATE`,
+            [input.accountId, task.connection_id, task.connection_version,
+              task.target_connection_status_version])).rows[0];
+          if (!pending) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", 409);
+          if (pending.status === "PENDING") {
+            const validationResult = {
+              schemaVersion: "AI_GATEWAY_CONNECTION_TEST_V1",
+              outcome: "PASSED",
+              checkedAt: input.testedAt,
+              checks: { authentication: true, modelsEndpoint: true },
+              catalogId,
+              catalogHash,
+            };
+            const validationHash = hash(validationResult);
+            const validated = (await query(client,
+              `UPDATE ai_gateway_connection_versions
+                  SET status='VALIDATED',status_version=status_version+1,
+                      validation_result=$5::JSONB,validation_hash=$6,
+                      validated_at=NOW(),validated_by=$7
+                WHERE account_id=$1 AND id=$2 AND version=$3
+                  AND status='PENDING' AND status_version=$4
+                RETURNING *`,
+              [input.accountId, task.connection_id, task.connection_version,
+                task.target_connection_status_version, JSON.stringify(validationResult),
+                validationHash, input.workerId])).rows[0];
+            if (!validated) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", 409);
+            await insertConnectionEvent(client, {
+              accountId: input.accountId, connectionId: task.connection_id,
+              connectionVersion: Number(task.connection_version), eventType: "VALIDATED",
+              statusVersion: Number(validated.status_version), actorId: input.workerId,
+              correlationId: input.correlationId,
+              payload: { validationHash, catalogId, catalogHash, purpose: "MANUAL_CATALOG_SYNC" },
+            });
+            const validationAction = "AUTO_LISTING_AI_CONNECTION_VALIDATED";
+            const validationRequestHash = hash({
+              action: validationAction, accountId: input.accountId, taskId: input.taskId,
+              connectionId: task.connection_id, connectionVersion: Number(task.connection_version),
+              targetConnectionStatusVersion: Number(task.target_connection_status_version),
+              catalogId, catalogHash, validationHash,
+            });
+            await auditMutation(client, {
+              action: validationAction, accountId: input.accountId, actorType: "worker",
+              actorId: input.workerId, correlationId: input.correlationId,
+              entityType: "ai_gateway_connection_version", entityId: task.connection_id,
+              idempotencyKey: `${input.taskId}:connection-validated`, requestHash: validationRequestHash,
+              metadata: { connectionVersion: Number(task.connection_version),
+                statusVersion: Number(validated.status_version), validationHash,
+                catalogId, catalogHash, purpose: "MANUAL_CATALOG_SYNC" },
+            });
+          } else if (!["VALIDATED", "ACTIVE"].includes(pending.status)) {
+            throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT", 409);
+          }
+        }
         await insertSyncEvent(client, updated, "SUCCEEDED", input.workerId, input.correlationId,
           { catalogId, catalogHash, capabilityHash, rollbackEvidenceIdentity });
         await auditMutation(client, {
@@ -1431,22 +1507,38 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         }
         const connection = (await query(client,
           `SELECT * FROM ai_gateway_connection_versions
-            WHERE account_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE'
+            WHERE account_id=$1 AND id=$2 AND version=$3 AND status='VALIDATED'
             FOR UPDATE`,
           [input.accountId, input.connectionId, input.connectionVersion])).rows[0];
         if (!connection) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_ACTIVE", 409);
         const catalog = (await query(client,
-          `SELECT * FROM ai_gateway_model_catalogs
-            WHERE account_id=$1 AND id=$2
-              AND connection_id=$3 AND connection_version=$4
-            FOR UPDATE`,
+          `SELECT ai_gateway_model_catalogs.* FROM ai_gateway_model_catalogs
+            JOIN ai_gateway_model_sync_tasks selected_task
+              ON selected_task.account_id=ai_gateway_model_catalogs.account_id
+             AND selected_task.id=ai_gateway_model_catalogs.sync_task_id
+             AND selected_task.connection_id=ai_gateway_model_catalogs.connection_id
+             AND selected_task.connection_version=ai_gateway_model_catalogs.connection_version
+            WHERE ai_gateway_model_catalogs.account_id=$1 AND ai_gateway_model_catalogs.id=$2
+              AND ai_gateway_model_catalogs.connection_id=$3
+              AND ai_gateway_model_catalogs.connection_version=$4
+              AND selected_task.status='SUCCEEDED' AND selected_task.sync_purpose='CATALOG_SYNC'
+              AND NOT EXISTS (
+                SELECT 1 FROM ai_gateway_model_catalogs newer
+                JOIN ai_gateway_model_sync_tasks newer_task
+                  ON newer_task.account_id=newer.account_id AND newer_task.id=newer.sync_task_id
+                 AND newer_task.connection_id=newer.connection_id
+                 AND newer_task.connection_version=newer.connection_version
+                WHERE newer.account_id=ai_gateway_model_catalogs.account_id
+                  AND newer.connection_id=ai_gateway_model_catalogs.connection_id
+                  AND newer.connection_version=ai_gateway_model_catalogs.connection_version
+                  AND newer_task.status='SUCCEEDED' AND newer_task.sync_purpose='CATALOG_SYNC'
+                  AND (newer.created_at,newer.id) > (ai_gateway_model_catalogs.created_at,ai_gateway_model_catalogs.id)
+              )
+            FOR UPDATE OF ai_gateway_model_catalogs`,
           [input.accountId, input.catalogId, input.connectionId, input.connectionVersion])).rows[0];
         if (!catalog) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CATALOG_NOT_FOUND", 404);
-        if (catalog.capability_result?.outcome !== "PASSED"
-          || catalog.capability_result?.text !== true
-          || catalog.capability_result?.image !== true
-          || !catalogHasModel(catalog.catalog, input.textModel, "TEXT")
-          || !catalogHasModel(catalog.catalog, input.imageModel, "IMAGE")) {
+        if (!catalogHasModel(catalog.catalog, input.textModel)
+          || !catalogHasModel(catalog.catalog, input.imageModel)) {
           throw repositoryError("AUTO_LISTING_AI_SETTINGS_MODEL_SELECTION_INVALID");
         }
         const profileId = deterministicId("aigprofile", input.accountId, input.idempotencyKey);

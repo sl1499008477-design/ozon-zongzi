@@ -830,8 +830,15 @@ export function createAutoListingRepository({
         let aiProfileId = null;
         let aiProfileVersion = null;
         if (stageInitialPlanWork) {
+          const accountFence = await client.query(
+            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+            [graph.accountId],
+          );
+          if (accountFence.rows.length !== 1) {
+            throw repositoryError("AUTO_LISTING_ACCOUNT_REQUIRED", 401);
+          }
           const profiles = await client.query(
-            `SELECT id,config_version FROM ai_gateway_profiles
+            `SELECT id,config_version,connection_id,connection_version,text_model,image_model FROM ai_gateway_profiles
               WHERE account_id=$1 AND enabled IS TRUE
               FOR SHARE`,
             [graph.accountId],
@@ -846,6 +853,48 @@ export function createAutoListingRepository({
           aiProfileVersion = Number(profiles.rows[0].config_version);
           if (!Number.isInteger(aiProfileVersion) || aiProfileVersion < 1) {
             throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED", 409);
+          }
+          const selectedProfile = profiles.rows[0];
+          const hasConnectionId = selectedProfile.connection_id !== null
+            && selectedProfile.connection_id !== undefined;
+          const hasConnectionVersion = selectedProfile.connection_version !== null
+            && selectedProfile.connection_version !== undefined;
+          if (hasConnectionId !== hasConnectionVersion) {
+            throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED", 409);
+          }
+          if (hasConnectionId) {
+            const connectionId = requiredText(selectedProfile.connection_id,
+              "AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED");
+            const connectionVersion = Number(selectedProfile.connection_version);
+            const textModel = requiredText(selectedProfile.text_model,
+              "AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED");
+            const imageModel = requiredText(selectedProfile.image_model,
+              "AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED");
+            if (!Number.isInteger(connectionVersion) || connectionVersion < 1) {
+              throw repositoryError("AUTO_LISTING_AI_PROFILE_NOT_CONFIGURED", 409);
+            }
+            const latestCatalog = await client.query(
+              `SELECT catalog.catalog
+                 FROM ai_gateway_model_catalogs catalog
+                 JOIN ai_gateway_model_sync_tasks task
+                   ON task.account_id=catalog.account_id AND task.id=catalog.sync_task_id
+                  AND task.connection_id=catalog.connection_id
+                  AND task.connection_version=catalog.connection_version
+                WHERE catalog.account_id=$1 AND catalog.connection_id=$2
+                  AND catalog.connection_version=$3
+                  AND task.status='SUCCEEDED' AND task.sync_purpose='CATALOG_SYNC'
+                ORDER BY catalog.created_at DESC,catalog.id DESC
+                LIMIT 1
+                FOR SHARE OF catalog,task`,
+              [graph.accountId, connectionId, connectionVersion],
+            );
+            const models = latestCatalog.rows[0]?.catalog?.models;
+            const modelIds = Array.isArray(models) ? new Set(models
+              .map((model) => plainJsonObject(model) && typeof model.id === "string" ? model.id : null)
+              .filter(Boolean)) : new Set();
+            if (!modelIds.has(textModel) || !modelIds.has(imageModel)) {
+              throw repositoryError("AUTO_LISTING_AI_ACTIVE_MODEL_UNAVAILABLE", 409);
+            }
           }
         }
         const rules = await client.query(

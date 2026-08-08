@@ -77,6 +77,18 @@ test("053 only inserts PENDING connections and binds rollback to stored passed c
   assert.match(transitionGuard, /ai_gateway_rollback_evidence_consumptions/iu);
 });
 
+test("053 accepts profile rollback only from a fresh audited paid capability attempt", async () => {
+  const sql = await migrationSql();
+  const transitionGuard = functionBlock(sql, "auto_listing_guard_ai_gateway_connection_version");
+  assert.match(transitionGuard, /AI_GATEWAY_PROFILE_ROLLBACK_CAPABILITY_V1/iu);
+  assert.match(transitionGuard, /ai_gateway_capability_attempts/iu);
+  assert.match(transitionGuard, /AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST/iu);
+  assert.match(transitionGuard, /metadata->>'purpose'[\s\S]*ROLLBACK_CAPABILITY/iu);
+  assert.match(transitionGuard, /metadata->'costConfirmed'[\s\S]*'true'::JSONB/iu);
+  assert.match(transitionGuard, /response->>'checkedAt'[\s\S]*TIMESTAMPTZ >= OLD\.retired_at/iu);
+  assert.match(transitionGuard, /completed_at >= OLD\.retired_at/iu);
+});
+
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {
   const sql = await migrationSql();
   const catalogTable = sql.match(/CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs[\s\S]*?\n\);/iu)?.[0] ?? "";
@@ -106,6 +118,15 @@ test("053 stores bounded model catalogs and fenced sync tasks under composite te
   assert.match(sql, /target_connection_status_version INTEGER NOT NULL/iu);
   assert.match(sql, /auto_listing_require_succeeded_ai_gateway_model_catalog/iu);
   assert.match(sql, /status = 'SUCCEEDED'/iu);
+});
+
+test("053 permits manual catalog sync only on exact PENDING or VALIDATED fences while daily scheduling stays ACTIVE", async () => {
+  const sql = await migrationSql();
+  const insertGuard = functionBlock(sql, "auto_listing_require_pending_ai_gateway_model_sync_task");
+  assert.match(insertGuard, /NEW\.sync_purpose = 'CATALOG_SYNC'/iu);
+  assert.match(insertGuard, /NEW\.created_by = NEW\.account_id/iu);
+  assert.match(insertGuard, /status IN \('PENDING', 'VALIDATED', 'ACTIVE'\)/iu);
+  assert.match(insertGuard, /NEW\.sync_purpose = 'ROLLBACK_CAPABILITY'[\s\S]*status = 'RETIRED'/iu);
 });
 
 test("053 makes sync domain events and connection transition audits append-only", async () => {

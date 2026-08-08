@@ -95,13 +95,19 @@ test("profile routes pass only closed versioned references and return masked DTO
     input: { actor: ADMIN, idempotencyKey: "create-profile-1", correlationId: "trace-1", profile },
   });
 
-  await call(h, "POST", "/admin/auto-listing/ai-profiles/profile-a/test", {
-    configVersion: 1, correlationId: "test-attempt-1",
+  const retiredCapability = await call(h, "POST", "/admin/auto-listing/ai-profiles/profile-a/test", {
+    configVersion: 1, correlationId: "test-attempt-1", costConfirmed: true,
   });
-  assert.deepEqual(h.calls.at(-1), {
-    method: "testGatewayCapabilities",
-    input: { actor: ADMIN, profileId: "profile-a", configVersion: 1, correlationId: "test-attempt-1" },
+  assert.equal(retiredCapability.status, 410);
+  assert.equal(retiredCapability.body.code, "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_ROUTE_RETIRED");
+
+  const beforeUnconfirmed = h.calls.length;
+  const unconfirmed = await call(h, "POST", "/admin/auto-listing/ai-profiles/profile-a/test", {
+    configVersion: 1, correlationId: "test-unconfirmed", costConfirmed: false,
   });
+  assert.equal(unconfirmed.status, 410);
+  assert.equal(unconfirmed.body.code, "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_ROUTE_RETIRED");
+  assert.equal(h.calls.length, beforeUnconfirmed);
 
   await call(h, "POST", "/admin/auto-listing/ai-profiles/profile-a/publish", {
     configVersion: 1, idempotencyKey: "publish-profile-1", correlationId: "trace-publish-1",

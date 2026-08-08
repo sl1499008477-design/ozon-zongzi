@@ -33,6 +33,8 @@ function enabledEnv(overrides = {}) {
     MINIO_BUCKET: "auto-listing",
     ACCOUNT_A_AI_KEY: "account-a-secret",
     ACCOUNT_B_AI_KEY: "account-b-secret",
+    AUTO_LISTING_CREDENTIAL_MASTER_KEY: Buffer.alloc(32, 7).toString("base64url"),
+    AUTO_LISTING_CREDENTIAL_KEY_VERSION: "runtime-v1",
     ...overrides,
   };
 }
@@ -53,10 +55,27 @@ function testPorts(events) {
   const repository = (name) => ({ name });
   return Object.freeze({
     createBoss(input) { events.push(["boss", input]); return { name: "boss-a" }; },
-    createGateway({ readSecret, gatewayPolicy }) {
-      events.push(["gateway", gatewayPolicy]);
+    async loadCredentialKey({ env }) {
+      events.push(["credential-key", env.AUTO_LISTING_CREDENTIAL_KEY_VERSION]);
+      return Buffer.alloc(32, 7);
+    },
+    createCipher(input) {
+      events.push(["cipher", input.keyVersion]);
+      return Object.freeze({ decrypt() { return "connection-secret"; } });
+    },
+    createCredentialRepository({ pool }) {
+      events.push(["credential-repository", pool]);
+      return Object.freeze({ async loadConnectionForSecretResolution() {} });
+    },
+    createCredentialResolver(input) {
+      events.push(["credential-resolver", input]);
+      return Object.freeze({ async resolveSecret() { return "connection-secret"; } });
+    },
+    createGateway({ readSecret, resolveSecret, gatewayPolicy, allowLocalGateway }) {
+      events.push(["gateway", gatewayPolicy, allowLocalGateway]);
       return Object.freeze({
         readSecret,
+        resolveSecret,
         async createTextResponse() { throw new Error("real AI must not be called by composition"); },
         async generateImage() { throw new Error("real AI must not be called by composition"); },
         async inspectImage() { throw new Error("real AI must not be called by composition"); },
@@ -155,6 +174,9 @@ test("production composition keeps account/job-frozen profiles per message and h
   assert.equal(gateway.readSecret(accountA.phaseInput.gatewayProfile.apiKeyEnvName), "account-a-secret");
   assert.equal(gateway.readSecret(accountB.phaseInput.gatewayProfile.apiKeyEnvName), "account-b-secret");
   assert.equal(gateway.readSecret("MINIO_SECRET_KEY"), undefined);
+  assert.equal(await gateway.resolveSecret({
+    accountId: "account-a", connectionId: "connection-a", connectionVersion: 1,
+  }), "connection-secret");
   assert.equal(JSON.stringify(dependencies).includes("secret"), false);
   assert.deepEqual(Object.keys(dependencies.workflow), ["applyOutcome"]);
   const appliedMessage = message("account-a", "item-a");
@@ -170,13 +192,52 @@ test("production composition keeps account/job-frozen profiles per message and h
   assert.equal(events.filter(([name]) => name === "boss").length, 1);
 });
 
+test("production worker carries the same development-only local gateway opt-in as administrator testing", async () => {
+  const events = [];
+  await createAutoListingAiProductionDependencies({
+    env: enabledEnv({
+      AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY: "true",
+      AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: "http://127.0.0.1:8080/v1",
+    }),
+    resolvePool: async () => Object.freeze({ async query() {}, async connect() {} }),
+    ports: testPorts(events),
+  });
+  const gateway = events.find(([name]) => name === "gateway");
+  assert.equal(gateway[2], true);
+
+  const productionEvents = [];
+  await assert.rejects(createAutoListingAiProductionDependencies({
+    env: enabledEnv({
+      NODE_ENV: "production",
+      AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY: "true",
+      AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: "http://127.0.0.1:8080/v1",
+    }),
+    resolvePool: async () => { productionEvents.push("pool"); return {}; },
+    ports: testPorts(productionEvents),
+  }), { code: "AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID" });
+  assert.deepEqual(productionEvents, []);
+});
+
+test("production worker internally allowlists the encrypted sentinel without reading it from env", async () => {
+  const events = [];
+  await createAutoListingAiProductionDependencies({
+    env: enabledEnv({ AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: "",
+      SUB2API_ENCRYPTED_KEY: "must-not-be-read-as-legacy" }),
+    resolvePool: async () => Object.freeze({ async query() {}, async connect() {} }),
+    ports: testPorts(events),
+  });
+  const gatewayEvent = events.find(([name]) => name === "gateway");
+  assert.deepEqual(gatewayEvent[1].allowedSecretEnvNames, ["SUB2API_ENCRYPTED_KEY"]);
+  const gateway = events.find(([name]) => name === "context-loader")[1].gateway;
+  assert.equal(gateway.readSecret("SUB2API_ENCRYPTED_KEY"), undefined);
+});
+
 test("production composition fails safely on missing database or storage configuration before any factory", async () => {
   for (const env of [
     enabledEnv({ DATABASE_URL: "" }),
     enabledEnv({ MINIO_SECRET_KEY: "" }),
     enabledEnv({ MINIO_PORT: "not-a-port" }),
     enabledEnv({ MINIO_USE_SSL: "sometimes" }),
-    enabledEnv({ AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: "" }),
     enabledEnv({ AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: "" }),
   ]) {
     const events = [];

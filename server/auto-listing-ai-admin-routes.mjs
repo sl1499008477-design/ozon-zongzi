@@ -109,6 +109,9 @@ export function createAutoListingAiAdminHttpHandler({
       const strategyKey = assertQuery(route, url, req.method);
       const actor = await authenticate(req);
       assertPermission(actor, PERMISSIONS.AI_CONTENT_MANAGE);
+      if (route.kind === "profile-test") {
+        throw routeError("AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_ROUTE_RETIRED", 410);
+      }
       const service = await getService();
       let data;
       let status = 200;
@@ -123,9 +126,6 @@ export function createAutoListingAiAdminHttpHandler({
           const input = closedBody(body, ["idempotencyKey", "correlationId", "profile"]);
           data = await service.createGatewayProfile({ actor, ...input });
           status = 201;
-        } else if (route.kind === "profile-test") {
-          const input = closedBody(body, ["configVersion", "correlationId"]);
-          data = await service.testGatewayCapabilities({ actor, profileId: route.id, ...input });
         } else if (route.kind === "profile-publish") {
           const input = closedBody(body, ["configVersion", "idempotencyKey", "correlationId"]);
           data = await service.publishGatewayProfile({ actor, profileId: route.id, ...input });

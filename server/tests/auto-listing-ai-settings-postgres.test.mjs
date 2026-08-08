@@ -64,6 +64,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
   assert.deepEqual(Object.keys(createAutoListingAiSettingsPostgres({ pool })).sort(), [
     "claimModelSync",
     "completeModelSync",
+    "connectionIdForIntent",
     "createPendingConnection",
     "createProfileFromSelection",
     "enqueueModelSync",
@@ -81,6 +82,33 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
   assert.throws(() => createAutoListingAiSettingsPostgres({ pool: {} }), {
     code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID",
   });
+});
+
+test("connection intent identity is deterministic and rejects cross-shape input before database access", () => {
+  const pool = { async connect() {}, async query() {} };
+  const repository = createAutoListingAiSettingsPostgres({ pool });
+  const first = repository.connectionIdForIntent({ accountId: "account-a", idempotencyKey: "intent-a" });
+  const second = repository.connectionIdForIntent({ accountId: "account-a", idempotencyKey: "intent-a" });
+  assert.equal(first, second);
+  assert.match(first, /^aigconn_[a-f0-9]{40}$/u);
+  assert.notEqual(repository.connectionIdForIntent({ accountId: "account-b", idempotencyKey: "intent-a" }), first);
+  assert.throws(() => repository.connectionIdForIntent({ accountId: "account-a", idempotencyKey: "intent-a", extra: true }), {
+    code: "AUTO_LISTING_AI_SETTINGS_REPOSITORY_INVALID",
+  });
+});
+
+test("service-derived connection identity accepts randomized ciphertext replay by stable fingerprint", async () => {
+  const connectionId = "aigconn_066ef301d634906b00caefb38b3d6276d8448b11";
+  const input = { ...connectionInput, connectionId };
+  const replayPool = scriptedPool([
+    { rows: [] },
+    { rowCount: 1, rows: [{ id: "account-a" }] },
+    (_sql, params) => ({ rowCount: 1, rows: [{ ...connectionRow, id: connectionId, request_hash: params[2] }] }),
+    { rows: [] },
+  ]);
+  const replay = await createAutoListingAiSettingsPostgres({ pool: replayPool.pool }).createPendingConnection(input);
+  assert.equal(replay.id, connectionId);
+  assert.equal(replay.duplicate, true);
 });
 
 test("runnable paging and claims optionally isolate catalog sync from rollback tasks", async () => {
@@ -174,8 +202,8 @@ test("same connection idempotency key replays and a different payload conflicts 
   assert.equal(conflictPool.calls.at(-2).sql, "ROLLBACK");
 });
 
-test("secret resolution is exact tenant scoped and returns ciphertext only in the encrypted payload", async () => {
-  const { pool, calls } = scriptedPool([{ rowCount: 1, rows: [{ ...connectionRow, status: "ACTIVE" }] }]);
+test("runtime secret resolution is tenant scoped, supports frozen retired jobs, and returns ciphertext only", async () => {
+  const { pool, calls } = scriptedPool([{ rowCount: 1, rows: [{ ...connectionRow, status: "RETIRED" }] }]);
   const resolved = await createAutoListingAiSettingsPostgres({ pool }).loadConnectionForSecretResolution({
     accountId: "account-a",
     connectionId: "connection-a",
@@ -190,7 +218,7 @@ test("secret resolution is exact tenant scoped and returns ciphertext only in th
     keyVersion: "local-v1",
     fingerprint: "fp",
   });
-  assert.match(calls[0].sql, /WHERE account_id=\$1 AND id=\$2 AND version=\$3 AND status='ACTIVE'/iu);
+  assert.match(calls[0].sql, /WHERE account_id=\$1 AND id=\$2 AND version=\$3 AND status IN \('VALIDATED','ACTIVE','RETIRED'\)/iu);
   assert.deepEqual(calls[0].params, ["account-a", "connection-a", 1]);
 });
 
@@ -216,7 +244,7 @@ test("rollback secret resolution validates one live rollback lease and stores no
   assert.match(calls[0].params.at(-1), /^[a-f0-9]{64}$/u);
 });
 
-test("catalog secret resolution requires the exact live catalog lease and ACTIVE status fence", async () => {
+test("catalog secret resolution requires the exact live manual-or-active catalog status fence", async () => {
   const { pool, calls } = scriptedPool([{
     rowCount: 1, rows: [{
       ...connectionRow,
@@ -238,7 +266,7 @@ test("catalog secret resolution requires the exact live catalog lease and ACTIVE
   assert.match(calls[0].sql, /sync_purpose='CATALOG_SYNC'/iu);
   assert.match(calls[0].sql, /lease_expires_at > NOW\(\)/iu);
   assert.match(calls[0].sql, /INTERVAL '1 millisecond'/iu);
-  assert.match(calls[0].sql, /c\.status='ACTIVE'/iu);
+  assert.match(calls[0].sql, /c\.status IN \('PENDING','VALIDATED','ACTIVE'\)/iu);
   assert.match(calls[0].sql, /c\.status_version=t\.target_connection_status_version/iu);
   assert.equal(calls[0].params.includes("aiglease_catalog-secret"), false);
   assert.equal(calls[0].params.at(-2), 45_000);
@@ -332,6 +360,34 @@ test("model sync completion accepts empty and single-modal catalog snapshots bef
   assert.equal(singleModalPool.calls.length > 0, true);
 });
 
+test("profile binding accepts exact model IDs from the latest normalized successful catalog without invented modality metadata", async () => {
+  const profile = {
+    id: "profile-a", account_id: "account-a", display_name: "Profile A", config_version: 1,
+    base_url: connectionRow.base_url, api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES",
+    text_model: "text-model-a", image_model: "image-model-a", enabled: false,
+    capability_result: {}, capability_checked_at: null,
+    connection_id: "connection-a", connection_version: 1,
+  };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] },
+    { rows: [{ ...connectionRow, status: "VALIDATED", status_version: 2 }] },
+    { rows: [{ id: "catalog-a", catalog: { models: [{ id: "image-model-a" }, { id: "text-model-a" }] },
+      catalog_hash: "a".repeat(64), capability_result: {}, tested_at: null }] },
+    { rows: [profile] }, { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-a" }] }, { rows: [] },
+  ]);
+  const result = await createAutoListingAiSettingsPostgres({ pool }).createProfileFromSelection({
+    accountId: "account-a", actorId: "account-a", connectionId: "connection-a", connectionVersion: 1,
+    catalogId: "catalog-a", displayName: "Profile A", textModel: "text-model-a", imageModel: "image-model-a",
+    textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES",
+    idempotencyKey: "bind-profile-a", correlationId: "corr-bind-profile-a",
+  });
+  assert.equal(result.id, "profile-a");
+  assert.match(calls[3].sql, /status='VALIDATED'/u);
+  assert.match(calls[4].sql, /NOT EXISTS[\s\S]*newer\.created_at,newer\.id/iu);
+  assert.equal(calls.some(({ sql }) => /capabilities|capability_result->>'outcome'/iu.test(sql)), false);
+});
+
 test("settings overview reads all collections in one repeatable-read read-only transaction", async () => {
   const { pool, calls, remaining } = scriptedPool([
     (sql) => {
@@ -350,6 +406,33 @@ test("settings overview reads all collections in one repeatable-read read-only t
   assert.equal(overview.accountId, "account-a");
   assert.equal(calls.at(-2).sql, "COMMIT");
   assert.equal(remaining.length, 0);
+});
+
+test("settings overview normalizes PostgreSQL timestamps into closed JSON DTO values", async () => {
+  const timestamp = new Date("2026-08-08T00:00:00.000Z");
+  const { pool } = scriptedPool([
+    { rows: [] },
+    { rows: [{ ...connectionRow, created_at: timestamp, validated_at: timestamp }] },
+    { rows: [{ id: "catalog-a", account_id: "account-a", connection_id: "connection-a",
+      connection_version: 1, sync_task_id: "task-a", catalog: { models: [] },
+      catalog_hash: "a".repeat(64), capability_result: { outcome: "NOT_TESTED" },
+      capability_hash: "b".repeat(64), tested_at: timestamp, created_at: timestamp }] },
+    { rows: [{ id: "task-a", account_id: "account-a", connection_id: "connection-a",
+      connection_version: 1, sync_purpose: "CATALOG_SYNC", target_connection_status_version: 1,
+      status: "SUCCEEDED", status_version: 3, attempt_count: 1, max_attempts: 5,
+      lease_version: 1, available_at: timestamp, completed_at: timestamp, created_at: timestamp }] },
+    { rows: [] },
+    { rows: [] },
+  ]);
+  const overview = await createAutoListingAiSettingsPostgres({ pool }).loadSettingsOverview({
+    accountId: "account-a",
+  });
+  assert.equal(overview.connections[0].createdAt, timestamp.toISOString());
+  assert.equal(overview.connections[0].validatedAt, timestamp.toISOString());
+  assert.equal(overview.catalogs[0].testedAt, timestamp.toISOString());
+  assert.equal(overview.catalogs[0].createdAt, timestamp.toISOString());
+  assert.equal(overview.syncTasks[0].availableAt, timestamp.toISOString());
+  assert.equal(overview.syncTasks[0].completedAt, timestamp.toISOString());
 });
 
 test("existing enqueue contract remains a catalog sync when purpose is omitted", async () => {

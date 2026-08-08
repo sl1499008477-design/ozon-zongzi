@@ -438,7 +438,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
       [accountA, staleLeasedTask.id],
     )).rows[0].count, 0);
-    const active = {
+    let active = {
       id: rolledBackAgain.id,
       version: rolledBackAgain.version,
       status_version: rolledBackAgain.statusVersion,
@@ -582,9 +582,11 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       ...completionInput, leaseToken: "aiglease_forged",
     }), { code: "AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", status: 409 });
 
+    const selectionConnection = await createPending("selection");
     const emptyTask = await repository.enqueueModelSync({
-      accountId: accountA, actorId: accountA, connectionId: active.id,
-      connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
+      accountId: accountA, actorId: accountA, connectionId: selectionConnection.id,
+      connectionVersion: selectionConnection.version,
+      expectedConnectionStatusVersion: selectionConnection.statusVersion,
       idempotencyKey: `sync-empty-${suffix}`, correlationId: `corr-sync-empty-${suffix}`,
       maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
     });
@@ -596,10 +598,17 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       capabilityResult: { outcome: "NOT_TESTED", checkedAt: new Date().toISOString(), text: false, image: false },
     });
     assert.equal(emptyCompleted.status, "SUCCEEDED");
+    const validatedSelection = (await pool.query(
+      `SELECT id,version,status,status_version FROM ai_gateway_connection_versions
+        WHERE account_id=$1 AND id=$2 AND version=$3`,
+      [accountA, selectionConnection.id, selectionConnection.version],
+    )).rows[0];
+    assert.equal(validatedSelection.status, "VALIDATED");
 
     const singleTask = await repository.enqueueModelSync({
-      accountId: accountA, actorId: accountA, connectionId: active.id,
-      connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
+      accountId: accountA, actorId: accountA, connectionId: validatedSelection.id,
+      connectionVersion: Number(validatedSelection.version),
+      expectedConnectionStatusVersion: Number(validatedSelection.status_version),
       idempotencyKey: `sync-single-${suffix}`, correlationId: `corr-sync-single-${suffix}`,
       maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
     });
@@ -613,19 +622,36 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     });
     assert.equal(singleCompleted.status, "SUCCEEDED");
     await assert.rejects(repository.createProfileFromSelection({
-      accountId: accountA, actorId: accountA, connectionId: active.id,
-      connectionVersion: active.version, catalogId: singleCompleted.catalog.id,
+      accountId: accountA, actorId: accountA, connectionId: validatedSelection.id,
+      connectionVersion: Number(validatedSelection.version), catalogId: singleCompleted.catalog.id,
       displayName: "invalid single mode", textModel: "text-only", imageModel: "missing-image",
       textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES",
       idempotencyKey: `profile-single-${suffix}`, correlationId: `corr-profile-single-${suffix}`,
     }), { code: "AUTO_LISTING_AI_SETTINGS_MODEL_SELECTION_INVALID" });
 
+    const latestFullTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: validatedSelection.id,
+      connectionVersion: Number(validatedSelection.version),
+      expectedConnectionStatusVersion: Number(validatedSelection.status_version),
+      idempotencyKey: `sync-latest-full-${suffix}`, correlationId: `corr-sync-latest-full-${suffix}`,
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
+    });
+    const latestFullLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-latest-full", leaseMs: 30_000,
+    });
+    const latestFullCompleted = await repository.completeModelSync({
+      accountId: accountA, workerId: "worker-latest-full", taskId: latestFullTask.id,
+      leaseVersion: latestFullLease.leaseVersion, leaseToken: latestFullLease.leaseToken,
+      correlationId: `corr-sync-latest-full-complete-${suffix}`, catalog,
+      capabilityResult: { outcome: "NOT_TESTED", checkedAt: new Date().toISOString(), text: false, image: false },
+    });
+
     const profile = await repository.createProfileFromSelection({
       accountId: accountA,
       actorId: accountA,
-      connectionId: active.id,
-      connectionVersion: active.version,
-      catalogId: completed.catalog.id,
+      connectionId: validatedSelection.id,
+      connectionVersion: Number(validatedSelection.version),
+      catalogId: latestFullCompleted.catalog.id,
       displayName: "本地模型组合",
       textModel: "text-model",
       imageModel: "image-model",
@@ -635,11 +661,41 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       correlationId: `corr-profile-a-${suffix}`,
     });
     assert.equal(profile.apiKeyEnvName, "SUB2API_ENCRYPTED_KEY");
-    assert.equal(profile.connectionId, active.id);
-    await pool.query(
-      "UPDATE ai_gateway_profiles SET enabled=TRUE WHERE account_id=$1 AND id=$2 AND config_version=$3",
-      [accountA, profile.id, profile.configVersion],
-    );
+    assert.equal(profile.connectionId, validatedSelection.id);
+    const fixtureClient = await pool.connect();
+    try {
+      await fixtureClient.query("BEGIN");
+      await fixtureClient.query(
+        `UPDATE ai_gateway_connection_versions
+            SET status='RETIRED',status_version=status_version+1,
+                retired_at=NOW(),retired_by=$4
+          WHERE account_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE'`,
+        [accountA, active.id, active.version, accountA],
+      );
+      await fixtureClient.query(
+        `UPDATE ai_gateway_connection_versions
+            SET status='ACTIVE',status_version=status_version+1,
+                activated_at=NOW(),activated_by=$4
+          WHERE account_id=$1 AND id=$2 AND version=$3 AND status='VALIDATED'`,
+        [accountA, validatedSelection.id, Number(validatedSelection.version), accountA],
+      );
+      await fixtureClient.query(
+        "UPDATE ai_gateway_profiles SET enabled=TRUE WHERE account_id=$1 AND id=$2 AND config_version=$3",
+        [accountA, profile.id, profile.configVersion],
+      );
+      await fixtureClient.query("COMMIT");
+    } catch (error) {
+      await fixtureClient.query("ROLLBACK");
+      throw error;
+    } finally {
+      fixtureClient.release();
+    }
+    active = (await pool.query(
+      `SELECT id,version,status_version FROM ai_gateway_connection_versions
+        WHERE account_id=$1 AND status='ACTIVE'`,
+      [accountA],
+    )).rows[0];
+    assert.equal(active.id, validatedSelection.id);
 
     const missingTask = await repository.enqueueModelSync({
       accountId: accountA, actorId: accountA, connectionId: active.id,

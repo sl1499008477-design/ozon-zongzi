@@ -472,48 +472,82 @@ BEGIN
   END IF;
   IF OLD.status = 'RETIRED' AND NEW.status = 'VALIDATED' AND (
     jsonb_typeof(NEW.rollback_evidence) IS DISTINCT FROM 'object'
-    OR NEW.rollback_evidence->>'schemaVersion' IS DISTINCT FROM 'AI_GATEWAY_ROLLBACK_CAPABILITY_V2'
     OR NEW.rollback_evidence_hash !~ '^[a-f0-9]{64}$'
-    OR NOT EXISTS (
-      SELECT 1
-      FROM ai_gateway_model_catalogs c
-      JOIN ai_gateway_model_sync_tasks t
-        ON t.account_id = c.account_id
-       AND t.id = c.sync_task_id
-       AND t.connection_id = c.connection_id
-       AND t.connection_version = c.connection_version
-      JOIN ai_gateway_model_sync_attempt_outcomes o
-        ON o.account_id = t.account_id
-       AND o.task_id = t.id
-       AND o.connection_id = t.connection_id
-       AND o.connection_version = t.connection_version
-       AND o.outcome = 'SUCCEEDED'
-       AND o.catalog_id = c.id
-      JOIN ai_gateway_rollback_evidence_consumptions x
-        ON x.account_id = c.account_id
-       AND x.catalog_id = c.id
-       AND x.task_id = t.id
-       AND x.connection_id = c.connection_id
-       AND x.connection_version = c.connection_version
-      WHERE c.account_id = OLD.account_id
-        AND c.connection_id = OLD.id
-        AND c.connection_version = OLD.version
-        AND c.id = NEW.rollback_evidence->>'catalogId'
-        AND c.sync_task_id = NEW.rollback_evidence->>'taskId'
-        AND c.catalog_hash = NEW.rollback_evidence->>'catalogHash'
-        AND c.capability_hash = NEW.rollback_evidence->>'capabilityHash'
-        AND c.rollback_evidence_identity = NEW.rollback_evidence->>'evidenceIdentity'
-        AND t.status = 'SUCCEEDED'
-        AND t.sync_purpose = 'ROLLBACK_CAPABILITY'
-        AND t.target_connection_status_version = OLD.status_version
-        AND NEW.rollback_evidence->>'targetConnectionStatusVersion' = OLD.status_version::TEXT
-        AND t.result_evidence_identity = c.rollback_evidence_identity
-        AND o.rollback_evidence_identity = c.rollback_evidence_identity
-        AND x.target_connection_status_version = OLD.status_version
-        AND x.evidence_identity = c.rollback_evidence_identity
-        AND x.validation_hash = NEW.validation_hash
-        AND c.capability_result = NEW.validation_result
-        AND c.capability_hash = NEW.validation_hash
+    OR NOT (
+      (NEW.rollback_evidence->>'schemaVersion' = 'AI_GATEWAY_ROLLBACK_CAPABILITY_V2'
+       AND EXISTS (
+        SELECT 1
+        FROM ai_gateway_model_catalogs c
+        JOIN ai_gateway_model_sync_tasks t
+          ON t.account_id = c.account_id
+         AND t.id = c.sync_task_id
+         AND t.connection_id = c.connection_id
+         AND t.connection_version = c.connection_version
+        JOIN ai_gateway_model_sync_attempt_outcomes o
+          ON o.account_id = t.account_id
+         AND o.task_id = t.id
+         AND o.connection_id = t.connection_id
+         AND o.connection_version = t.connection_version
+         AND o.outcome = 'SUCCEEDED'
+         AND o.catalog_id = c.id
+        JOIN ai_gateway_rollback_evidence_consumptions x
+          ON x.account_id = c.account_id
+         AND x.catalog_id = c.id
+         AND x.task_id = t.id
+         AND x.connection_id = c.connection_id
+         AND x.connection_version = c.connection_version
+        WHERE c.account_id = OLD.account_id
+          AND c.connection_id = OLD.id
+          AND c.connection_version = OLD.version
+          AND c.id = NEW.rollback_evidence->>'catalogId'
+          AND c.sync_task_id = NEW.rollback_evidence->>'taskId'
+          AND c.catalog_hash = NEW.rollback_evidence->>'catalogHash'
+          AND c.capability_hash = NEW.rollback_evidence->>'capabilityHash'
+          AND c.rollback_evidence_identity = NEW.rollback_evidence->>'evidenceIdentity'
+          AND t.status = 'SUCCEEDED'
+          AND t.sync_purpose = 'ROLLBACK_CAPABILITY'
+          AND t.target_connection_status_version = OLD.status_version
+          AND NEW.rollback_evidence->>'targetConnectionStatusVersion' = OLD.status_version::TEXT
+          AND t.result_evidence_identity = c.rollback_evidence_identity
+          AND o.rollback_evidence_identity = c.rollback_evidence_identity
+          AND x.target_connection_status_version = OLD.status_version
+          AND x.evidence_identity = c.rollback_evidence_identity
+          AND x.validation_hash = NEW.validation_hash
+          AND c.capability_result = NEW.validation_result
+          AND c.capability_hash = NEW.validation_hash
+      ))
+      OR
+      (NEW.rollback_evidence->>'schemaVersion' = 'AI_GATEWAY_PROFILE_ROLLBACK_CAPABILITY_V1'
+       AND EXISTS (
+        SELECT 1
+        FROM ai_gateway_capability_attempts a
+        JOIN ai_gateway_profiles p
+          ON p.account_id = a.account_id
+         AND p.id = a.profile_id
+         AND p.config_version = a.config_version
+        JOIN audit_events capability_audit
+          ON capability_audit.account_id = a.account_id
+         AND capability_audit.action = 'AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+         AND capability_audit.status = 'SUCCESS'
+         AND capability_audit.entity_type = 'ai_gateway_profile'
+         AND capability_audit.entity_id = a.profile_id
+         AND capability_audit.metadata->>'attemptId' = a.id
+         AND capability_audit.metadata->>'purpose' = 'ROLLBACK_CAPABILITY'
+         AND capability_audit.metadata->'costConfirmed' = 'true'::JSONB
+        WHERE a.account_id = OLD.account_id
+          AND a.id = NEW.rollback_evidence->>'attemptId'
+          AND a.profile_id = NEW.rollback_evidence->>'profileId'
+          AND a.config_version::TEXT = NEW.rollback_evidence->>'configVersion'
+          AND a.status = 'PASSED'
+          AND a.response->>'outcome' = 'PASSED'
+          AND a.response->>'checkedAt' = NEW.rollback_evidence->>'checkedAt'
+          AND (a.response->>'checkedAt')::TIMESTAMPTZ >= OLD.retired_at
+          AND a.completed_at >= OLD.retired_at
+          AND p.connection_id = OLD.id
+          AND p.connection_version = OLD.version
+          AND p.capability_result = NEW.validation_result
+          AND (a.response - 'profileId' - 'configVersion' - 'enabled') = NEW.validation_result
+      ))
     )
   ) THEN
     RAISE EXCEPTION 'rollback requires matching passed capability evidence' USING ERRCODE = '23514';
@@ -571,10 +605,12 @@ BEGIN
         AND id = NEW.connection_id
         AND version = NEW.connection_version
         AND status_version = NEW.target_connection_status_version
-        AND status = CASE NEW.sync_purpose
-          WHEN 'CATALOG_SYNC' THEN 'ACTIVE'
-          WHEN 'ROLLBACK_CAPABILITY' THEN 'RETIRED'
-        END
+        AND (
+          (NEW.sync_purpose = 'CATALOG_SYNC'
+            AND NEW.created_by = NEW.account_id
+            AND status IN ('PENDING', 'VALIDATED', 'ACTIVE'))
+          OR (NEW.sync_purpose = 'ROLLBACK_CAPABILITY' AND status = 'RETIRED')
+        )
     )
   THEN
     RAISE EXCEPTION 'model sync task must target the exact allowed connection state'

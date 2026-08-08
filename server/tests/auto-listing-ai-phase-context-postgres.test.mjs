@@ -108,9 +108,10 @@ function derivedPlanRow() {
 
 const profileColumns = {
   profile_id: "profile-a", profile_account_id: "account-a", profile_config_version: 3,
-  profile_base_url: "https://gateway.invalid", profile_api_key_env_name: "SUB2API_ACCOUNT_A_KEY",
+  profile_base_url: "https://gateway.invalid", profile_api_key_env_name: "SUB2API_ENCRYPTED_KEY",
   profile_text_protocol: "SUB2API_RESPONSES", profile_image_protocol: "SUB2API_OPENAI_IMAGES",
-  profile_text_model: "text-model", profile_image_model: "image-model", profile_enabled: true,
+  profile_text_model: "text-model", profile_image_model: "image-model", profile_enabled: false,
+  profile_connection_id: "connection-a", profile_connection_version: 1,
 };
 
 function planBundle(plan = basePlanRow(), overrides = {}) {
@@ -242,8 +243,11 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.equal(context.phaseInput.sourceSnapshotId, "snapshot-a");
   assert.equal(context.phaseInput.gateway, options.gateway);
   assert.equal(context.phaseInput.repository, options.contentPlanRepository);
-  assert.equal(context.phaseInput.gatewayProfile.apiKeyEnvName, "SUB2API_ACCOUNT_A_KEY");
+  assert.equal(context.phaseInput.gatewayProfile.apiKeyEnvName, "SUB2API_ENCRYPTED_KEY");
   assert.equal(context.phaseInput.gatewayProfile.apiKey, undefined);
+  assert.equal(context.phaseInput.gatewayProfile.enabled, true);
+  assert.equal(context.phaseInput.gatewayProfile.connectionId, "connection-a");
+  assert.equal(context.phaseInput.gatewayProfile.connectionVersion, 1);
   assert.deepEqual(context.phaseInput.configCapture, { configSnapshot, configHash: CONFIG_HASH });
   assert.equal(context.phaseInput.strategyCapture.strategySnapshot.strategyVersionId, "strategy-v1");
   assert.equal(context.phaseInput.strategyCapture.strategySnapshot.matchedBy, "DEFAULT");
@@ -254,6 +258,9 @@ test("PLAN_CONTENT loads the exact snapshot, frozen config/strategy and configur
   assert.deepEqual(pool.calls[1].values, ["account-a", "job-a", "item-a", "snapshot-a"]);
   assert.match(pool.calls[1].sql,
     /p\.account_id=j\.account_id\s+AND\s+p\.id=j\.ai_profile_id\s+AND\s+p\.config_version=j\.ai_profile_version/iu);
+  assert.match(pool.calls[1].sql, /p\.connection_id AS profile_connection_id/iu);
+  assert.match(pool.calls[1].sql, /p\.connection_version AS profile_connection_version/iu);
+  assert.doesNotMatch(pool.calls[1].sql, /p\.enabled IS TRUE/iu);
   assert.doesNotMatch(pool.calls[1].sql, /ORDER\s+BY|LIMIT\s+1/iu);
   assert.deepEqual(pool.calls[2].values, ["account-a", "strategy-v1"]);
 });

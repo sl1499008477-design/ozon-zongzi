@@ -357,6 +357,7 @@ function excelWarehouseGraph() {
 function warehouseEvidenceFixture({
   store = {}, credential = true, warehouse = {}, associations = true,
   profiles = [{ id: "profile-a", config_version: 3 }],
+  catalog = null,
   stageInitialPlanWork = null,
 } = {}) {
   const calls = [];
@@ -366,9 +367,11 @@ function warehouseEvidenceFixture({
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
+      if (/FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
       if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
+      if (/FROM ai_gateway_model_catalogs/.test(sql)) return { rows: catalog === null ? [] : [{ catalog }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_import_rows/.test(sql)) return { rows: [{
         draft_id: `draft-${params[1]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
@@ -483,7 +486,7 @@ test("job creation locks and freezes the one enabled account AI profile without 
   const profileCall = calls[profileIndex];
   const insertCall = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
   assert.ok(profileIndex > strategyIndex);
-  assert.match(profileCall.sql, /SELECT\s+id,config_version\s+FROM ai_gateway_profiles/iu);
+  assert.match(profileCall.sql, /SELECT\s+id,config_version,connection_id,connection_version,text_model,image_model\s+FROM ai_gateway_profiles/iu);
   assert.match(profileCall.sql, /WHERE account_id=\$1 AND enabled IS TRUE/iu);
   assert.match(profileCall.sql, /FOR SHARE/iu);
   assert.doesNotMatch(profileCall.sql, /ORDER\s+BY|LIMIT|latest|api_key/iu);
@@ -492,6 +495,44 @@ test("job creation locks and freezes the one enabled account AI profile without 
   assert.deepEqual(insertCall.params.slice(6), [
     "strategy-version-a", "upload-policy-review-a", "profile-a", 3, "account-a", "lock-evidence-correlation",
   ]);
+});
+
+test("new jobs accept a connection-backed profile only when its latest successful catalog still contains both frozen models", async () => {
+  const { repository, calls, stop } = warehouseEvidenceFixture({
+    profiles: [{
+      id: "profile-connected", config_version: 1, connection_id: "connection-a", connection_version: 1,
+      text_model: "text-model-a", image_model: "image-model-a",
+    }],
+    catalog: { models: [{ id: "image-model-a" }, { id: "text-model-a" }] },
+    stageInitialPlanWork: async () => ({ status: "PLANNING", statusVersion: 2 }),
+  });
+  await assert.rejects(repository.createJobGraph(warehouseGraph()), (error) => error === stop);
+  const accountFenceIndex = calls.findIndex(({ sql }) => /FROM accounts WHERE id=\$1 FOR UPDATE/iu.test(sql));
+  const profileIndex = calls.findIndex(({ sql }) => /FROM ai_gateway_profiles/iu.test(sql));
+  const catalogCall = calls.find(({ sql }) => /FROM ai_gateway_model_catalogs/iu.test(sql));
+  assert.ok(accountFenceIndex >= 0 && profileIndex > accountFenceIndex,
+    "new-job catalog eligibility must share the account fence used by catalog completion and publication");
+  assert.deepEqual(catalogCall.params, ["account-a", "connection-a", 1]);
+  assert.match(catalogCall.sql, /JOIN ai_gateway_model_sync_tasks/iu);
+  assert.match(catalogCall.sql, /task\.status='SUCCEEDED'/iu);
+  assert.match(catalogCall.sql, /task\.sync_purpose='CATALOG_SYNC'/iu);
+  assert.match(catalogCall.sql, /ORDER BY catalog\.created_at DESC,catalog\.id DESC[\s\S]*LIMIT 1/iu);
+});
+
+test("a latest successful MISSING catalog blocks new jobs without changing the published profile or creating rows", async () => {
+  const { repository, calls } = warehouseEvidenceFixture({
+    profiles: [{
+      id: "profile-connected", config_version: 1, connection_id: "connection-a", connection_version: 1,
+      text_model: "text-model-a", image_model: "image-model-a",
+    }],
+    catalog: { models: [{ id: "text-model-a" }, { id: "different-image-model" }] },
+    stageInitialPlanWork: async () => ({ status: "PLANNING", statusVersion: 2 }),
+  });
+  await assert.rejects(repository.createJobGraph(warehouseGraph()), {
+    code: "AUTO_LISTING_AI_ACTIVE_MODEL_UNAVAILABLE", status: 409,
+  });
+  assert.equal(calls.some(({ sql }) => /UPDATE ai_gateway_profiles|INSERT INTO auto_listing_jobs|INSERT INTO outbox_events/iu.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
 });
 
 test("job creation fails closed when the account has no enabled AI profile", async () => {
@@ -595,6 +636,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/.test(sql)) return { rows: [] };
+      if (/FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
         client_id: "client-a", currency_code: "RUB", status: "active",

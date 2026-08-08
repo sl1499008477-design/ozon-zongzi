@@ -156,13 +156,23 @@ function gatewayProfile(row) {
     imageProtocol: row.profile_image_protocol,
     textModel: row.profile_text_model,
     imageModel: row.profile_image_model,
-    enabled: row.profile_enabled === true,
+    connectionId: row.profile_connection_id ?? null,
+    connectionVersion: row.profile_connection_version === null || row.profile_connection_version === undefined
+      ? null : Number(row.profile_connection_version),
+    // The job already froze this exact profile version while it was enabled. A later publication
+    // may disable the profile row, but must not silently switch or invalidate in-flight jobs.
+    enabled: true,
   };
+  const encryptedReference = profile.apiKeyEnvName === "SUB2API_ENCRYPTED_KEY";
+  const hasConnection = profile.connectionId !== null || profile.connectionVersion !== null;
   if (![profile.id, profile.accountId].every(isSafeAutoListingAiIdentifier)
     || !validVersion(profile.configVersion) || !validText(profile.baseUrl, 2048)
     || !validText(profile.apiKeyEnvName) || !validText(profile.textProtocol)
     || !validText(profile.imageProtocol) || !validText(profile.textModel)
-    || !validText(profile.imageModel) || profile.enabled !== true) throw evidenceInvalid();
+    || !validText(profile.imageModel)
+    || (hasConnection && (!isSafeAutoListingAiIdentifier(profile.connectionId)
+      || !validVersion(profile.connectionVersion)))
+    || encryptedReference !== hasConnection) throw evidenceInvalid();
   return Object.freeze(profile);
 }
 
@@ -364,7 +374,8 @@ async function loadPlanInput(options, message, boundary) {
             p.id AS profile_id,p.account_id AS profile_account_id,p.config_version AS profile_config_version,
             p.base_url AS profile_base_url,p.api_key_env_name AS profile_api_key_env_name,
             p.text_protocol AS profile_text_protocol,p.image_protocol AS profile_image_protocol,
-            p.text_model AS profile_text_model,p.image_model AS profile_image_model,p.enabled AS profile_enabled
+            p.text_model AS profile_text_model,p.image_model AS profile_image_model,p.enabled AS profile_enabled,
+            p.connection_id AS profile_connection_id,p.connection_version AS profile_connection_version
        FROM auto_listing_job_items i
        JOIN auto_listing_jobs j ON j.account_id=i.account_id AND j.id=i.job_id
        JOIN auto_listing_source_snapshots s ON s.account_id=i.account_id AND s.id=i.snapshot_id
@@ -422,7 +433,8 @@ async function loadActiveBundle(options, boundary) {
             gp.id AS profile_id,gp.account_id AS profile_account_id,gp.config_version AS profile_config_version,
             gp.base_url AS profile_base_url,gp.api_key_env_name AS profile_api_key_env_name,
             gp.text_protocol AS profile_text_protocol,gp.image_protocol AS profile_image_protocol,
-            gp.text_model AS profile_text_model,gp.image_model AS profile_image_model,gp.enabled AS profile_enabled
+            gp.text_model AS profile_text_model,gp.image_model AS profile_image_model,gp.enabled AS profile_enabled,
+            gp.connection_id AS profile_connection_id,gp.connection_version AS profile_connection_version
        FROM auto_listing_job_items i
        JOIN auto_listing_jobs j ON j.account_id=i.account_id AND j.id=i.job_id
        JOIN ai_content_plans p ON p.account_id=i.account_id AND p.job_id=i.job_id

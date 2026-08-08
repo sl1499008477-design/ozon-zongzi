@@ -219,7 +219,9 @@ function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
   return Object.freeze(result);
 }
 
-function normalizeCatalogRequest(input, { allowLocalGateway = false } = {}) {
+function normalizeCatalogRequest(input, {
+  allowLocalGateway = false, allowedStatuses = new Set(["ACTIVE"]),
+} = {}) {
   const source = input?.connection;
   const id = profileField(source, "id");
   const accountId = profileField(source, "accountId", "account_id");
@@ -230,7 +232,7 @@ function normalizeCatalogRequest(input, { allowLocalGateway = false } = {}) {
     || typeof accountId !== "string" || accountId !== accountId.trim() || !SCOPE_ID.test(accountId)
     || !Number.isSafeInteger(version) || version < 1
     || typeof baseUrl !== "string" || baseUrl !== baseUrl.trim() || !baseUrl
-    || status !== "ACTIVE") {
+    || !(allowedStatuses instanceof Set) || !allowedStatuses.has(status)) {
     throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
   }
   let normalizedBaseUrl;
@@ -1268,7 +1270,7 @@ export function createSub2ApiAdapter({
         connection: credential.connection,
         correlationId,
         requestKey,
-      }, { allowLocalGateway }));
+      }, { allowLocalGateway, allowedStatuses: new Set(["PENDING", "VALIDATED", "ACTIVE"]) }));
       const url = endpointUrl(normalizedProfile, "models");
       await verifyGatewayBoundary(normalizedProfile, abort);
       if (abort.signal.aborted) throw classifyFetchFailure(abort.signal.reason, abort.state());

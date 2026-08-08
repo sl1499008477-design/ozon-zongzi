@@ -102,14 +102,14 @@ function exactCatalogSyncConnection(connection, accountId) {
       || typeof fields.id !== "string" || fields.id !== fields.id.trim() || !SAFE_ID.test(fields.id)
       || !Number.isSafeInteger(fields.version) || fields.version < 1
       || typeof fields.baseUrl !== "string" || fields.baseUrl !== fields.baseUrl.trim() || !fields.baseUrl
-      || fields.status !== "ACTIVE") return null;
+      || !["PENDING", "VALIDATED", "ACTIVE"].includes(fields.status)) return null;
     return {
       connection: Object.freeze({
         id: fields.id,
         accountId: fields.accountId,
         version: fields.version,
         baseUrl: fields.baseUrl,
-        status: "ACTIVE",
+        status: fields.status,
       }),
       encryptedSecret: fields.encryptedSecret,
     };
@@ -124,7 +124,7 @@ function exactEncryptedSecret(connection, scope) {
       || fields.accountId !== scope.accountId
       || fields.id !== scope.connectionId
       || fields.version !== scope.connectionVersion
-      || fields.status !== "ACTIVE") return null;
+      || !["VALIDATED", "ACTIVE", "RETIRED"].includes(fields.status)) return null;
     return fields.encryptedSecret;
   } catch {
     return null;

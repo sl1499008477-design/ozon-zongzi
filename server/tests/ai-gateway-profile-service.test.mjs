@@ -82,7 +82,7 @@ function fixture({
 test("capability testing is administrator-only and rejects before repository or gateway work", async () => {
   const { service, calls } = fixture();
   await assert.rejects(
-    service.testGatewayCapabilities({ actor: ordinary, profileId: "profile-a", configVersion: 4, correlationId: "corr" }),
+    service.testGatewayCapabilities({ costConfirmed: true, actor: ordinary, profileId: "profile-a", configVersion: 4, correlationId: "corr" }),
     (error) => error?.code === "PERMISSION_FORBIDDEN",
   );
   assert.deepEqual(calls, []);
@@ -90,7 +90,7 @@ test("capability testing is administrator-only and rejects before repository or 
 
 test("successful explicit capability test records evidence without automatically publishing an unpublished profile", async () => {
   const { service, calls } = fixture();
-  const result = await service.testGatewayCapabilities({
+  const result = await service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin,
     profileId: "profile-a",
     configVersion: 4,
@@ -109,6 +109,7 @@ test("successful explicit capability test records evidence without automatically
     enabled: false,
   });
   assert.equal(calls[0][0], "begin");
+  assert.equal(calls[0][1].purpose, "PROFILE_CAPABILITY");
   assert.match(calls[0][1].attemptId, /^ai_capability_[a-f0-9]{40}$/u);
   const gatewayInput = calls[1][1];
   assert.equal(gatewayInput.profile.accountId, "account-admin");
@@ -123,6 +124,7 @@ test("successful explicit capability test records evidence without automatically
   assert.equal(saved.fence, 11);
   assert.equal(saved.leaseVersion, 1);
   assert.equal(saved.leaseToken, "caplease_fixture");
+  assert.equal(saved.purpose, "PROFILE_CAPABILITY");
   assert.deepEqual(saved.capabilityResult, {
     outcome: "PASSED",
     features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
@@ -135,9 +137,41 @@ test("successful explicit capability test records evidence without automatically
   assert.doesNotMatch(serialized, /apiKeyEnvName|SUB2API_PROFILE_A_KEY|requestIds|authorization|cookie|bytes|prompt/i);
 });
 
+test("rollback capability has a distinct attempt identity and persisted purpose", async () => {
+  const normal = fixture();
+  await normal.service.testGatewayCapabilities({ costConfirmed: true,
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-purpose",
+  });
+  const rollback = fixture();
+  await rollback.service.testGatewayCapabilities({ costConfirmed: true,
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-purpose",
+    purpose: "ROLLBACK_CAPABILITY",
+  });
+  assert.notEqual(normal.calls[0][1].attemptId, rollback.calls[0][1].attemptId);
+  assert.equal(rollback.calls[0][1].purpose, "ROLLBACK_CAPABILITY");
+  assert.equal(rollback.calls.at(-1)[1].purpose, "ROLLBACK_CAPABILITY");
+});
+
+test("encrypted profile capability calls preserve the immutable connection reference", async () => {
+  const encryptedProfile = {
+    ...profile,
+    apiKeyEnvName: "SUB2API_ENCRYPTED_KEY",
+    connectionId: "connection-a",
+    connectionVersion: 3,
+  };
+  const { service, calls } = fixture({ loadedProfile: encryptedProfile });
+  const result = await service.testGatewayCapabilities({ costConfirmed: true,
+    actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-encrypted",
+  });
+  assert.equal(result.outcome, "PASSED");
+  const gatewayProfile = calls.find(([name]) => name === "gateway")[1].profile;
+  assert.equal(gatewayProfile.connectionId, "connection-a");
+  assert.equal(gatewayProfile.connectionVersion, 3);
+});
+
 test("successful capability retest preserves an already published profile", async () => {
   const { service, calls } = fixture({ loadedProfile: { ...profile, enabled: true } });
-  const result = await service.testGatewayCapabilities({
+  const result = await service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-published-retest",
   });
   assert.equal(result.outcome, "PASSED");
@@ -148,7 +182,7 @@ test("capability request identity binds the correlation while remaining stable f
   const keys = [];
   for (const correlationId of ["corr-a", "corr-b", "corr-a"]) {
     const { service, calls } = fixture();
-    await service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId });
+    await service.testGatewayCapabilities({ costConfirmed: true, actor: admin, profileId: "profile-a", configVersion: 4, correlationId });
     keys.push(calls.find(([name]) => name === "gateway")[1].requestKey);
   }
   assert.notEqual(keys[0], keys[1]);
@@ -167,7 +201,7 @@ test("a completed duplicate returns its frozen response without another gateway 
     status: "PASSED", response, duplicate: true,
     leaseVersion: 1, leaseToken: "caplease_completed", leaseExpiresAt: "2026-08-04T10:10:00.000Z",
   }) });
-  assert.deepEqual(await service.testGatewayCapabilities({
+  assert.deepEqual(await service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-existing",
   }), response);
   assert.deepEqual(calls.map(([name]) => name), ["begin"]);
@@ -179,7 +213,7 @@ test("a duplicate running attempt does not perform the cost-bearing gateway test
     status: "RUNNING", response: null, duplicate: true, reclaimed: false,
     leaseVersion: 1, leaseToken: "caplease_running", leaseExpiresAt: "2026-08-04T10:10:00.000Z",
   }) });
-  await assert.rejects(service.testGatewayCapabilities({
+  await assert.rejects(service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-running",
   }), { code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS" });
   assert.deepEqual(calls.map(([name]) => name), ["begin"]);
@@ -197,7 +231,7 @@ test("an expired running attempt is reclaimed with a new lease and keeps the sam
       leaseVersion: lease.leaseVersion, leaseToken: lease.leaseToken,
       leaseExpiresAt: "2026-08-04T10:10:00.000Z", reclaimed: lease.reclaimed,
     }) });
-    const result = await service.testGatewayCapabilities({
+    const result = await service.testGatewayCapabilities({ costConfirmed: true,
       actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-recover",
     });
     assert.equal(result.outcome, "PASSED");
@@ -215,7 +249,7 @@ test("a malformed lease response cannot reach the cost-bearing gateway", async (
     status: "RUNNING", response: null, duplicate: false, reclaimed: false,
     leaseVersion: 0, leaseToken: "", leaseExpiresAt: null,
   }) });
-  await assert.rejects(service.testGatewayCapabilities({
+  await assert.rejects(service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-bad-lease",
   }), { code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS" });
   assert.deepEqual(calls.map(([name]) => name), ["begin"]);
@@ -227,7 +261,7 @@ test("failed capability test disables the exact profile version and returns a st
     retryable: false,
   });
   const { service, calls } = fixture({ gatewayError: upstream });
-  const result = await service.testGatewayCapabilities({
+  const result = await service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin,
     profileId: "profile-a",
     configVersion: 4,
@@ -253,7 +287,7 @@ test("failed capability test disables the exact profile version and returns a st
 test("attempt fence prevents a slow old capability test from mutating newer evidence", async () => {
   const { service, calls } = fixture({ completion: { applied: false, stale: true, duplicate: false } });
   await assert.rejects(
-    service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-stale" }),
+    service.testGatewayCapabilities({ costConfirmed: true, actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-stale" }),
     (error) => error?.code === "AI_GATEWAY_PROFILE_VERSION_CONFLICT" && error?.retryable === false,
   );
   assert.equal(calls.at(-1)[0], "complete");
@@ -266,7 +300,7 @@ test("capability completion stays successful after persistence even when the log
     { info() { return Promise.reject(new Error("logger async failure")); } },
   ]) {
     const { service, calls } = fixture({ logger });
-    const result = await service.testGatewayCapabilities({
+    const result = await service.testGatewayCapabilities({ costConfirmed: true,
       actor: admin,
       profileId: "profile-a",
       configVersion: 4,
@@ -282,9 +316,9 @@ test("capability completion stays successful after persistence even when the log
 
 test("foreign, missing, or malformed profile identity never reaches the gateway", async () => {
   for (const input of [
-    { actor: admin, profileId: "foreign", configVersion: 4, correlationId: "corr" },
-    { actor: admin, profileId: "profile-a", configVersion: 0, correlationId: "corr" },
-    { actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "" },
+    { actor: admin, profileId: "foreign", configVersion: 4, correlationId: "corr", costConfirmed: true },
+    { actor: admin, profileId: "profile-a", configVersion: 0, correlationId: "corr", costConfirmed: true },
+    { actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "", costConfirmed: true },
   ]) {
     const { service, calls } = fixture();
     await assert.rejects(service.testGatewayCapabilities(input), (error) => [
@@ -325,7 +359,7 @@ test("capability result validation rejects unsafe or incomplete adapter output a
     },
   ]) {
     const { service, calls } = fixture({ gatewayResult });
-    const result = await service.testGatewayCapabilities({ actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr" });
+    const result = await service.testGatewayCapabilities({ costConfirmed: true, actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr" });
     assert.equal(result.outcome, "FAILED");
     assert.equal(result.errorCode, "INVALID_GATEWAY_RESPONSE");
     assert.equal(calls.at(-1)[1].capabilityResult.outcome, "FAILED");

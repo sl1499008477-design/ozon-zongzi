@@ -1,4 +1,8 @@
 import { createPostgresAutoListingAiPhaseContextLoader } from "./auto-listing-ai-phase-context-postgres.mjs";
+import { loadAutoListingCredentialKey } from "./auto-listing-ai-credential-config.mjs";
+import { createAutoListingCredentialCipher } from "./auto-listing-ai-credential-crypto.mjs";
+import { createAutoListingAiCredentialResolver } from "./auto-listing-ai-credential-resolver.mjs";
+import { createAutoListingAiSettingsPostgres } from "./auto-listing-ai-settings-postgres.mjs";
 import { createPostgresAiOutboxRepository } from "./auto-listing-ai-outbox-postgres.mjs";
 import {
   createAutoListingAiOutboxPublisher,
@@ -33,6 +37,7 @@ const PORT_KEYS = new Set([
   "createSourceMaterializationRepository", "createGenerationRepository",
   "createRichContentRepository", "createDownloader", "createStorage",
   "createSourceAssetLoader", "createContextLoader", "orchestratePhase", "phaseServices",
+  "loadCredentialKey", "createCipher", "createCredentialRepository", "createCredentialResolver",
 ]);
 const WORKFLOW_PORT_KEYS = new Set(["stageInitialPlanWork", "applyPhaseOutcome"]);
 const SERVICE_KEYS = new Set([
@@ -80,6 +85,14 @@ function enabled(env, name) {
   return value === "1" || value === "true";
 }
 
+function strictBoolean(env, name, fallback = false) {
+  const value = typeof env?.[name] === "string" ? env[name].trim().toLowerCase() : "";
+  if (!value) return fallback;
+  if (["1", "true"].includes(value)) return true;
+  if (["0", "false"].includes(value)) return false;
+  throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+}
+
 function required(env, name) {
   const value = typeof env?.[name] === "string" ? env[name].trim() : "";
   if (!value) throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
@@ -94,10 +107,10 @@ function positiveInteger(value, fallback, maximum) {
   return parsed;
 }
 
-function csvList(env, name) {
+function csvList(env, name, { allowEmpty = false } = {}) {
   const raw = typeof env?.[name] === "string" ? env[name] : "";
   const values = raw.split(",").map((value) => value.trim()).filter(Boolean);
-  if (values.length === 0 || new Set(values).size !== values.length) {
+  if ((!allowEmpty && values.length === 0) || new Set(values).size !== values.length) {
     throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
   }
   return values;
@@ -138,16 +151,26 @@ function closedConfiguration(env) {
       || !/^[A-Za-z0-9_.-]{1,63}$/u.test(applicationName)) {
       throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
     }
+    const allowLocalGateway = strictBoolean(env, "AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY", false);
+    if (allowLocalGateway && String(env.NODE_ENV || "").trim().toLowerCase() === "production") {
+      throw compositionError("AUTO_LISTING_AI_RUNTIME_CONFIGURATION_INVALID");
+    }
+    const credentialKeyVersion = required(env, "AUTO_LISTING_CREDENTIAL_KEY_VERSION");
+    const legacySecretEnvNames = csvList(env, "AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES", { allowEmpty: true });
     const gatewayPolicy = createSub2ApiGatewayPolicy({
-      allowedSecretEnvNames: csvList(env, "AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES"),
+      allowedSecretEnvNames: [...legacySecretEnvNames, "SUB2API_ENCRYPTED_KEY"],
       allowedGatewayBaseUrls: csvList(env, "AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS"),
       allowedGatewayOrigins: typeof env.AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS === "string"
         && env.AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS.trim()
         ? csvList(env, "AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS") : [],
+      allowLocalGateway,
     });
     return Object.freeze({
       database: databaseConfig(env),
       gatewayPolicy,
+      legacySecretEnvNames: Object.freeze([...legacySecretEnvNames]),
+      allowLocalGateway,
+      credentialKeyVersion,
       queue: Object.freeze({
         schema,
         application_name: applicationName,
@@ -185,8 +208,14 @@ const DEFAULT_PORTS = Object.freeze({
     const { PgBoss } = await import("pg-boss");
     return new PgBoss({ ...database, ...queue });
   },
-  createGateway: ({ readSecret, gatewayPolicy }) => createSub2ApiAdapter({
+  loadCredentialKey: ({ env }) => loadAutoListingCredentialKey({ env }),
+  createCipher: (options) => createAutoListingCredentialCipher(options),
+  createCredentialRepository: ({ pool }) => createAutoListingAiSettingsPostgres({ pool }),
+  createCredentialResolver: (options) => createAutoListingAiCredentialResolver(options),
+  createGateway: ({ readSecret, resolveSecret, gatewayPolicy, allowLocalGateway }) => createSub2ApiAdapter({
     readSecret,
+    resolveSecret,
+    allowLocalGateway,
     allowedSecretEnvNames: gatewayPolicy.allowedSecretEnvNames,
     allowedGatewayBaseUrls: gatewayPolicy.allowedGatewayBaseUrls,
     allowedGatewayOrigins: gatewayPolicy.allowedGatewayOrigins,
@@ -254,10 +283,22 @@ export async function createAutoListingAiProductionDependencies(input = {}) {
   }
 
   try {
+    const credentialKey = await ports.loadCredentialKey({ env });
+    const credentialCipher = ports.createCipher({
+      key: credentialKey,
+      keyVersion: config.credentialKeyVersion,
+    });
+    const credentialRepository = ports.createCredentialRepository({ pool });
+    const credentialResolver = assertPortShape(ports.createCredentialResolver({
+      repository: credentialRepository,
+      cipher: credentialCipher,
+    }), ["resolveSecret"]);
     const aiWorkflow = assertWorkflowPort(await ports.createWorkflow({ pool }));
     const gateway = assertPortShape(ports.createGateway({
-      readSecret: secretReader(env, config.gatewayPolicy.allowedSecretEnvNames),
+      readSecret: secretReader(env, config.legacySecretEnvNames),
+      resolveSecret: (scope) => credentialResolver.resolveSecret(scope),
       gatewayPolicy: config.gatewayPolicy,
+      allowLocalGateway: config.allowLocalGateway,
     }), [
       "createTextResponse", "generateImage", "inspectImage",
     ]);

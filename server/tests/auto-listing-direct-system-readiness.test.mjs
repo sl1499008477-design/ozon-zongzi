@@ -73,6 +73,30 @@ test("verified DIRECT readiness checks the account, one capable AI profile and a
   for (const call of db.calls) assert.deepEqual(call.values, ["account-a"]);
 });
 
+test("verified DIRECT readiness accepts an exact active encrypted connection without secret readback", async () => {
+  const encryptedEnv = Object.freeze({
+    ...env,
+    AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: "SUB2API_ENCRYPTED_KEY",
+    SUB2API_KEY: undefined,
+  });
+  const db = pool({ profiles: [profile({
+    api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    connection_id: "connection-a",
+    connection_version: 3,
+    connection_status: "ACTIVE",
+    connection_base_url: "https://gateway.example.com/v1",
+    connection_bound: true,
+  })] });
+  const readiness = createAutoListingDirectSystemReadiness({
+    env: encryptedEnv, resolvePool: async () => db,
+    richContentContractVersion: "AUTO_LISTING_OZON_RICH_CONTENT_V1",
+  });
+  assert.deepEqual(await readiness({ accountId: "account-a" }), { ready: true });
+  const profileRead = db.calls.find(({ sql }) => /FROM ai_gateway_profiles/u.test(sql));
+  assert.match(profileRead.sql, /connection_id[\s\S]*connection_version[\s\S]*ai_gateway_connection_versions/iu);
+  assert.doesNotMatch(profileRead.sql, /SELECT[\s\S]*ciphertext[\s\S]*FROM/iu);
+});
+
 test("DIRECT readiness fails closed for missing scope, ambiguous/uncapable profiles or no published strategy", async () => {
   for (const fixture of [
     pool({ profiles: [] }),

@@ -56,6 +56,16 @@ test("resolver decrypts only the exact account connection and version scope", as
   }]);
 });
 
+test("resolver keeps an old job on its exact retired connection after a newer profile is published", async () => {
+  const { cipher, connection } = encryptedConnection("old-job-secret");
+  const retired = { ...connection, status: "RETIRED" };
+  const resolver = createAutoListingAiCredentialResolver({
+    repository: { async loadConnectionForSecretResolution() { return structuredClone(retired); } },
+    cipher,
+  });
+  assert.equal(await resolver.resolveSecret(scope), "old-job-secret");
+});
+
 test("resolver rejects mismatched repository identity and malformed scope without decrypting", async () => {
   const { cipher, connection } = encryptedConnection();
   let decryptions = 0;
@@ -196,7 +206,7 @@ test("catalog sync resolver validates the live lease before decrypting and retur
     repository: {
       async loadCatalogSyncConnectionForSecretResolution(input) {
         reads.push(structuredClone(input));
-        return structuredClone({ ...connection, baseUrl: "https://gateway.example.test/v1" });
+        return structuredClone({ ...connection, status: "PENDING", baseUrl: "https://gateway.example.test/v1" });
       },
     },
     cipher: {
@@ -231,7 +241,7 @@ test("catalog sync resolver validates the live lease before decrypting and retur
       accountId: "account-a",
       version: 1,
       baseUrl: "https://gateway.example.test/v1",
-      status: "ACTIVE",
+      status: "PENDING",
     },
     secret: "sk-catalog-lease",
   });

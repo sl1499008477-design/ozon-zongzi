@@ -8,6 +8,10 @@ import {
   autoListingEnabled,
   autoListingUploadEnabled,
 } from "./runtime-config.mjs";
+import {
+  createSub2ApiGatewayPolicy,
+  requireSub2ApiGatewayPolicy,
+} from "./sub2api-gateway-boundary.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 
@@ -35,6 +39,29 @@ function capableProfile(row) {
     && typeof result?.checkedAt === "string" && result.checkedAt === checkedAt;
 }
 
+function assertEncryptedProfileConfiguration(env, profile) {
+  const connectionId = typeof profile?.connection_id === "string" ? profile.connection_id.trim() : "";
+  const connectionVersion = Number(profile?.connection_version);
+  if (profile?.api_key_env_name !== "SUB2API_ENCRYPTED_KEY" || !SAFE_ID.test(connectionId)
+    || !Number.isSafeInteger(connectionVersion) || connectionVersion < 1
+    || profile?.connection_status !== "ACTIVE" || profile?.connection_bound !== true
+    || profile?.connection_base_url !== profile?.base_url) throw notReady();
+  const allowLocalGateway = enabled(env.AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY);
+  if (allowLocalGateway && String(env.NODE_ENV || "").trim().toLowerCase() === "production") throw notReady();
+  const list = (name) => String(env?.[name] || "").split(",").map((value) => value.trim()).filter(Boolean);
+  try {
+    const policy = createSub2ApiGatewayPolicy({
+      allowedSecretEnvNames: [...list("AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES"), "SUB2API_ENCRYPTED_KEY"],
+      allowedGatewayBaseUrls: list("AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS"),
+      allowedGatewayOrigins: list("AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS"),
+      allowLocalGateway,
+    });
+    requireSub2ApiGatewayPolicy(profile, policy);
+  } catch {
+    throw notReady();
+  }
+}
+
 export function createAutoListingDirectSystemReadiness({
   env = process.env,
   resolvePool,
@@ -56,11 +83,17 @@ export function createAutoListingDirectSystemReadiness({
       const [account, profiles, strategies] = await Promise.all([
         pool.query("SELECT id FROM accounts WHERE id=$1", [scope]),
         pool.query(
-          `SELECT id,account_id,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
-                  text_model,image_model,enabled,capability_result,capability_checked_at
-             FROM ai_gateway_profiles
-            WHERE account_id=$1 AND enabled IS TRUE
-            ORDER BY id ASC`,
+          `SELECT p.id,p.account_id,p.config_version,p.base_url,p.api_key_env_name,
+                  p.text_protocol,p.image_protocol,p.text_model,p.image_model,p.enabled,
+                  p.capability_result,p.capability_checked_at,p.connection_id,p.connection_version,
+                  c.status AS connection_status,c.base_url AS connection_base_url,
+                  c.id IS NOT NULL AS connection_bound
+             FROM ai_gateway_profiles p
+             LEFT JOIN ai_gateway_connection_versions c
+               ON c.account_id=p.account_id AND c.id=p.connection_id AND c.version=p.connection_version
+              AND c.status='ACTIVE'
+            WHERE p.account_id=$1 AND p.enabled IS TRUE
+            ORDER BY p.id ASC`,
           [scope],
         ),
         pool.query(
@@ -77,7 +110,12 @@ export function createAutoListingDirectSystemReadiness({
       ]);
       if (account?.rows?.length !== 1 || profiles?.rows?.length !== 1
         || strategies?.rows?.length < 1 || !capableProfile(profiles.rows[0])) throw notReady();
-      assertAutoListingAiRuntimeConfiguration({ env, profile: profiles.rows[0] });
+      if (profiles.rows[0].api_key_env_name === "SUB2API_ENCRYPTED_KEY") {
+        assertEncryptedProfileConfiguration(env, profiles.rows[0]);
+      } else {
+        if (profiles.rows[0].connection_id !== null && profiles.rows[0].connection_id !== undefined) throw notReady();
+        assertAutoListingAiRuntimeConfiguration({ env, profile: profiles.rows[0] });
+      }
       return Object.freeze({ ready: true });
     } catch (error) {
       if (error?.code === "AUTO_LISTING_DIRECT_SYSTEM_HEALTH_NOT_READY") throw error;
