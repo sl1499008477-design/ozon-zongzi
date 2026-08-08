@@ -86,12 +86,14 @@ function text(value, maximum = 2048) {
 }
 
 function id(value) {
+  if (typeof value !== "string" || value !== value.trim() || value.includes("..")) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   const result = text(value, 240);
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u.test(result)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   return result;
 }
 
 function modelId(value) {
+  if (typeof value !== "string" || value !== value.trim()) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   const result = text(value, 300);
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,299}$/u.test(result)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   return result;
@@ -163,6 +165,44 @@ function isoTimestamp(value, nullable = false) {
   return (nullable && value === null) || (typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value);
 }
 
+function capabilityResult(value) {
+  if (plainRecord(value) && Reflect.ownKeys(value).length === 0) return true;
+  if (!plainRecord(value)) return false;
+  const keys = ["outcome", "features", "latencyMs", "models", "checkedAt", "errorCode"];
+  if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key)) || !["PASSED", "FAILED"].includes(value.outcome)
+    || !Array.isArray(value.features) || new Set(value.features).size !== value.features.length || value.features.some((feature) => typeof feature !== "string")
+    || !plainRecord(value.models) || Reflect.ownKeys(value.models).length !== 2 || !modelId(value.models.text) || !modelId(value.models.image)
+    || !isoTimestamp(value.checkedAt) || !nullableText(value.errorCode)) return false;
+  return value.outcome === "PASSED" ? value.errorCode === null && Number.isFinite(value.latencyMs) : value.latencyMs === null && typeof value.errorCode === "string";
+}
+
+function validationResult(value) {
+  if (value === null) return true;
+  if (!plainRecord(value) || Reflect.ownKeys(value).length !== 3 || !["outcome", "checkedAt", "endpoint"].every((key) => Object.hasOwn(value, key))) return false;
+  return ["PASSED", "FAILED"].includes(value.outcome) && isoTimestamp(value.checkedAt) && value.endpoint === "models";
+}
+
+function catalogEnvelope(value) {
+  if (!plainRecord(value)) return false;
+  const keys = ["schemaVersion", "connectionVersion", "syncedAt", "requestIdHash", "activeSelectionState", "activeSelection", "models", "recommendation"];
+  if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))
+    || value.schemaVersion !== "AUTO_LISTING_AI_MODEL_CATALOG_V1" || !Number.isSafeInteger(value.connectionVersion)
+    || !isoTimestamp(value.syncedAt) || typeof value.requestIdHash !== "string" || !["AVAILABLE", "MISSING", "NOT_SELECTED"].includes(value.activeSelectionState)
+    || !Array.isArray(value.models) || !plainRecord(value.recommendation)) return false;
+  const modelIds = new Set();
+  for (const model of value.models) {
+    if (!plainRecord(model) || Reflect.ownKeys(model).length !== 3 || !["id", "ownedBy", "metadata"].every((key) => Object.hasOwn(model, key)) || !modelId(model.id) || modelIds.has(model.id) || typeof model.ownedBy !== "string" || !plainRecord(model.metadata)) return false;
+    modelIds.add(model.id);
+  }
+  return true;
+}
+
+function uniqueIds(values, field = "id") {
+  if (!Array.isArray(values)) return false;
+  const seen = new Set();
+  return values.every((value) => typeof value?.[field] === "string" && !seen.has(value[field]) && (seen.add(value[field]), true));
+}
+
 function responseValidation(validate) {
   try { return validate(); } catch { throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID"); }
 }
@@ -172,7 +212,7 @@ function validateConnection(raw) {
     const value = exactResponse(raw, CONNECTION_KEYS);
     if (!id(value.id) || !id(value.accountId) || version(value.version) < 1 || !text(value.displayName, 200)
     || !text(value.baseUrl) || !text(value.fingerprint, 512) || !id(value.keyVersion) || !CONNECTION_STATUS.has(value.status)
-    || version(value.statusVersion) < 1 || !isoTimestamp(value.validatedAt, true) || !isoTimestamp(value.activatedAt, true)
+    || version(value.statusVersion) < 1 || !validationResult(value.validationResult) || !isoTimestamp(value.validatedAt, true) || !isoTimestamp(value.activatedAt, true)
     || !isoTimestamp(value.retiredAt, true) || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
@@ -199,7 +239,7 @@ function validateProfile(raw) {
     if (!id(value.id) || !id(value.accountId) || !text(value.displayName, 200) || version(value.configVersion) < 1
     || !text(value.baseUrl) || value.textProtocol !== "SUB2API_RESPONSES"
     || !["SUB2API_RESPONSES_IMAGE_TOOL", "SUB2API_OPENAI_IMAGES"].includes(value.imageProtocol)
-    || !modelId(value.textModel) || !modelId(value.imageModel) || typeof value.enabled !== "boolean" || !isoTimestamp(value.capabilityCheckedAt, true)
+    || !modelId(value.textModel) || !modelId(value.imageModel) || typeof value.enabled !== "boolean" || !capabilityResult(value.capabilityResult) || !isoTimestamp(value.capabilityCheckedAt, true)
     || !nullableText(value.connectionId) || (value.connectionVersion !== null && (!Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1))
     || ((value.connectionId === null) !== (value.connectionVersion === null))
       || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
@@ -232,7 +272,7 @@ function validateCatalog(raw) {
   return responseValidation(() => {
     const value = exactResponse(raw, CATALOG_KEYS);
     if (!id(value.id) || !id(value.accountId) || !id(value.connectionId) || version(value.connectionVersion) < 1
-    || !id(value.syncTaskId) || !plainRecord(value.catalog) || !text(value.catalogHash, 128) || !text(value.capabilityHash, 128)
+    || !id(value.syncTaskId) || !catalogEnvelope(value.catalog) || !text(value.catalogHash, 128) || !text(value.capabilityHash, 128)
     || !nullableText(value.rollbackEvidenceIdentity) || !isoTimestamp(value.testedAt, true) || !isoTimestamp(value.createdAt)) {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
@@ -334,7 +374,7 @@ export async function loadAiSettings(rawOptions = {}) {
     const value = exactResponse(data, ["accountId", "activeConnection", "connections", "catalogs", "syncTasks", "profiles", "actions"]);
     if (!id(value.accountId) || (value.activeConnection !== null && !validateConnection(value.activeConnection))
       || !Array.isArray(value.connections) || !Array.isArray(value.catalogs) || !Array.isArray(value.syncTasks)
-      || !Array.isArray(value.profiles)) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+      || !Array.isArray(value.profiles) || !uniqueIds(value.connections) || !uniqueIds(value.catalogs) || !uniqueIds(value.syncTasks) || !uniqueIds(value.profiles)) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return deepFreeze({ ...value, connections: value.connections.map(validateConnection), catalogs: value.catalogs.map(validateCatalog),
       syncTasks: value.syncTasks.map(validateTask), profiles: value.profiles.map(validateProfile), actions: validateActions(value.actions) });
   }); } catch (error) { throw safeRemoteError(error); }

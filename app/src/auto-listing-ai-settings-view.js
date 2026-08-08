@@ -101,7 +101,8 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
     const row = record(raw) || {};
     const capability = verification(row.capabilityResult);
     const selection = catalogSelection(source.catalogs, source.syncTasks, row);
-    const state = selection === "MISSING" ? { outcome: "MISSING", label: VERIFICATION.MISSING, passed: false }
+    const state = row.enabled !== true ? capability
+      : selection === "MISSING" ? { outcome: "MISSING", label: VERIFICATION.MISSING, passed: false }
       : selection !== "AVAILABLE" ? { outcome: "REFRESH", label: "待刷新", passed: false }
       : capability.passed && (!iso(row.capabilityCheckedAt) || !iso(record(row.capabilityResult)?.checkedAt))
         ? { outcome: "UNKNOWN", label: VERIFICATION.UNKNOWN, passed: false } : capability;

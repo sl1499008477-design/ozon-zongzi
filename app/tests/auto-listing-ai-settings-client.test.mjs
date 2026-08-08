@@ -176,3 +176,26 @@ test("paid-test command intent persists and reuses its correlation identity", as
   await testModelProfile({ profileId: "profile-a", configVersion: 1, costConfirmed: true }, intent);
   assert.equal(storage.getItem("ozon-ai-settings:connection:test:profile-a"), null);
 });
+
+test("paid-test response loss preserves the stored intent and retries the same correlation", async (t) => {
+  const storage = memoryStorage(); const intents = createAiSettingsIntentStore(storage);
+  const intent = intents.commandIntent({ operation: "test", targetId: "profile-a" });
+  const sent = []; let call = 0;
+  installTransport(t, async (_url, options) => { sent.push(JSON.parse(options.body)); call += 1; if (call === 1) throw Object.assign(new Error("lost"), { code: "REQUEST_TIMEOUT" }); return response(capability()); });
+  await assert.rejects(testModelProfile({ profileId: "profile-a", configVersion: 1, costConfirmed: true }, intent), { code: "REQUEST_TIMEOUT" });
+  assert.notEqual(storage.getItem("ozon-ai-settings:connection:test:profile-a"), null);
+  await testModelProfile({ profileId: "profile-a", configVersion: 1, costConfirmed: true }, intent);
+  assert.deepEqual(sent[1], sent[0]);
+  assert.equal(storage.getItem("ozon-ai-settings:connection:test:profile-a"), null);
+});
+
+test("Task 7 entity IDs reject whitespace and traversal while model IDs stay independent", async () => {
+  await assert.rejects(requestModelSync({ connectionId: " connection-a", connectionVersion: 1 }, { idempotencyKey: "sync-a", correlationId: "corr-a" }), { code: "AI_SETTINGS_CLIENT_REQUEST_INVALID" });
+  await assert.rejects(requestModelSync({ connectionId: "connection..a", connectionVersion: 1 }, { idempotencyKey: "sync-a", correlationId: "corr-a" }), { code: "AI_SETTINGS_CLIENT_REQUEST_INVALID" });
+});
+
+test("overview rejects duplicate entity IDs and malformed nested validation evidence", async (t) => {
+  const base = { accountId: "account-a", activeConnection: null, catalogs: [], syncTasks: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  installTransport(t, async () => response({ ...base, connections: [connection(), connection()] }));
+  await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+});
