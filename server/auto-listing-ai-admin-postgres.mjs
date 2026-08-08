@@ -2,6 +2,14 @@ import crypto from "node:crypto";
 
 const FACTORY_KEYS = new Set(["pool"]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const CAPABILITY_AUTHORIZATION_SCHEMA = "AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1";
+const CAPABILITY_AUTHORIZATION_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED";
+const CAPABILITY_EXECUTION_KEYS = new Set([
+  "accountId", "profileId", "configVersion", "attemptId", "fence", "leaseVersion", "leaseToken",
+  "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
+  "expectedConnectionStatus", "expectedConnectionStatusVersion", "probe",
+]);
 const CAPABILITY_FEATURES = new Set([
   "STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE_DECODE_WEBP",
 ]);
@@ -52,6 +60,11 @@ function id(value) {
 
 function version(value) {
   if (!Number.isInteger(value) || value < 1 || value > 2_147_483_646) throw invalid();
+  return value;
+}
+
+function sha256(value) {
+  if (typeof value !== "string" || !SHA256.test(value)) throw invalid();
   return value;
 }
 
@@ -124,6 +137,36 @@ function capabilitySecretRow(row) {
       fingerprint: row.fingerprint,
     },
   };
+}
+
+function capabilityExecutionSecretRow(row) {
+  if (!row) return null;
+  const connectionId = row.connection_id ?? null;
+  const result = {
+    accountId: row.account_id,
+    profileId: row.profile_id,
+    configVersion: Number(row.config_version),
+    apiKeyEnvName: row.api_key_env_name,
+    connection: null,
+  };
+  if (connectionId !== null) {
+    result.connection = {
+      id: connectionId,
+      accountId: row.account_id,
+      version: Number(row.connection_version),
+      status: row.connection_status,
+      statusVersion: Number(row.connection_status_version),
+      encryptedSecret: {
+        algorithm: row.algorithm,
+        ciphertext: row.ciphertext,
+        iv: row.iv,
+        authTag: row.auth_tag,
+        keyVersion: row.key_version,
+        fingerprint: row.fingerprint,
+      },
+    };
+  }
+  return result;
 }
 
 function strategyRow(row, rules) {
@@ -285,6 +328,7 @@ function capabilityBeginRequest(input) {
     configVersion: version(input.configVersion),
     correlationId: id(input.correlationId),
     attemptId: id(input.attemptId),
+    requestKey: sha256(input.requestKey),
     purpose,
     costConfirmed: true,
   };
@@ -319,10 +363,15 @@ function capabilityCompleteRequest(input) {
 }
 
 async function requireConnectionCapabilityFence(client, profile, purpose) {
-  if (profile.connectionId === null) return null;
+  if (profile.connectionId === null) {
+    if (purpose !== "PROFILE_CAPABILITY") {
+      throw repositoryError("AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY", 409);
+    }
+    return { id: null, version: null, status: "LEGACY", status_version: 0, retired_at: null };
+  }
   const requiredStatus = purpose === "ROLLBACK_CAPABILITY" ? "RETIRED" : "VALIDATED";
   const result = await query(client,
-    `SELECT c.id,c.status_version,c.retired_at,latest.id AS catalog_id
+    `SELECT c.id,c.version,c.status,c.status_version,c.retired_at,latest.id AS catalog_id
        FROM ai_gateway_connection_versions c
        JOIN LATERAL (
          SELECT catalog.id,catalog.catalog
@@ -352,6 +401,118 @@ async function requireConnectionCapabilityFence(client, profile, purpose) {
       : "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", 409);
   }
   return result.rows[0];
+}
+
+function capabilityAuthorization(input, connectionFence) {
+  const evidence = {
+    schemaVersion: CAPABILITY_AUTHORIZATION_SCHEMA,
+    accountId: input.accountId,
+    actorId: input.actorId,
+    profileId: input.profileId,
+    configVersion: input.configVersion,
+    attemptId: input.attemptId,
+    correlationId: input.correlationId,
+    purpose: input.purpose,
+    costConfirmed: true,
+    requestKey: input.requestKey,
+    targetConnectionId: connectionFence.id ?? null,
+    targetConnectionVersion: connectionFence.version == null ? null : Number(connectionFence.version),
+    targetConnectionStatus: connectionFence.status,
+    targetConnectionStatusVersion: Number(connectionFence.status_version),
+  };
+  return Object.freeze({ ...evidence, authorizationHash: hash(evidence) });
+}
+
+function capabilityExecutionFromAttempt(row) {
+  if (!row || row.authorization_schema_version !== CAPABILITY_AUTHORIZATION_SCHEMA
+    || !SHA256.test(row.authorization_hash) || !SHA256.test(row.request_key)) return null;
+  return Object.freeze({
+    accountId: row.account_id,
+    profileId: row.profile_id,
+    configVersion: Number(row.config_version),
+    attemptId: row.id,
+    fence: Number(row.fence),
+    leaseVersion: Number(row.lease_version),
+    leaseToken: row.lease_token,
+    purpose: row.purpose,
+    authorizationHash: row.authorization_hash,
+    requestKey: row.request_key,
+    connectionId: row.target_connection_id ?? null,
+    connectionVersion: row.target_connection_version == null ? null : Number(row.target_connection_version),
+    expectedConnectionStatus: row.target_connection_status,
+    expectedConnectionStatusVersion: Number(row.target_connection_status_version),
+  });
+}
+
+async function insertCapabilityAuthorizationAudit(client, input, attemptRow) {
+  const execution = capabilityExecutionFromAttempt(attemptRow);
+  if (!execution) throw databaseFailed();
+  await insertAudit(client, {
+    eventId: auditIdentity(CAPABILITY_AUTHORIZATION_ACTION, input.accountId,
+      `${input.attemptId}:${execution.leaseVersion}`),
+    action: CAPABILITY_AUTHORIZATION_ACTION,
+    accountId: input.accountId,
+    actorId: input.actorId,
+    correlationId: input.correlationId,
+    entityType: "ai_gateway_profile",
+    entityId: input.profileId,
+    status: "SUCCESS",
+    metadata: {
+      requestHash: execution.authorizationHash,
+      schemaVersion: CAPABILITY_AUTHORIZATION_SCHEMA,
+      attemptId: execution.attemptId,
+      fence: execution.fence,
+      leaseVersion: execution.leaseVersion,
+      leaseTokenHash: hash(execution.leaseToken),
+      requestKey: execution.requestKey,
+      purpose: execution.purpose,
+      costConfirmed: true,
+      targetConnectionId: execution.connectionId,
+      targetConnectionVersion: execution.connectionVersion,
+      targetConnectionStatus: execution.expectedConnectionStatus,
+      targetConnectionStatusVersion: execution.expectedConnectionStatusVersion,
+      authorizationHash: execution.authorizationHash,
+      authorizedAt: attemptRow.authorized_at instanceof Date
+        ? attemptRow.authorized_at.toISOString() : attemptRow.authorized_at,
+    },
+  });
+  return execution;
+}
+
+function capabilityExecutionRequest(rawInput) {
+  const input = canonical(rawInput);
+  const keys = input && typeof input === "object" ? Object.keys(input) : [];
+  if (!input || keys.length !== CAPABILITY_EXECUTION_KEYS.size
+    || keys.some((key) => !CAPABILITY_EXECUTION_KEYS.has(key))) throw invalid();
+  const accountId = id(input.accountId);
+  if (id(input.profileId) !== input.profileId || id(input.attemptId) !== input.attemptId
+    || id(input.leaseToken) !== input.leaseToken) throw invalid();
+  const connectionBacked = ["VALIDATED", "RETIRED"].includes(input.expectedConnectionStatus);
+  const purpose = id(input.purpose);
+  if (!["PROFILE_CAPABILITY", "ROLLBACK_CAPABILITY"].includes(purpose)
+    || !["REACHABILITY", "TEXT", "IMAGE"].includes(input.probe)
+    || (purpose === "PROFILE_CAPABILITY" && !["VALIDATED", "LEGACY"].includes(input.expectedConnectionStatus))
+    || (purpose === "ROLLBACK_CAPABILITY" && input.expectedConnectionStatus !== "RETIRED")) throw invalid();
+  const result = {
+    accountId,
+    profileId: input.profileId,
+    configVersion: version(input.configVersion),
+    attemptId: input.attemptId,
+    fence: version(input.fence),
+    leaseVersion: version(input.leaseVersion),
+    leaseToken: input.leaseToken,
+    purpose,
+    authorizationHash: sha256(input.authorizationHash),
+    requestKey: sha256(input.requestKey),
+    connectionId: connectionBacked ? id(input.connectionId) : null,
+    connectionVersion: connectionBacked ? version(input.connectionVersion) : null,
+    expectedConnectionStatus: input.expectedConnectionStatus,
+    expectedConnectionStatusVersion: connectionBacked ? version(input.expectedConnectionStatusVersion) : 0,
+    probe: input.probe,
+  };
+  if (!connectionBacked && (input.connectionId !== null || input.connectionVersion !== null
+    || input.expectedConnectionStatus !== "LEGACY" || input.expectedConnectionStatusVersion !== 0)) throw invalid();
+  return result;
 }
 
 async function activatePublishedConnection(client, { input, profile, requestHash }) {
@@ -418,7 +579,7 @@ async function activatePublishedConnection(client, { input, profile, requestHash
 
 function capabilityAttemptRow(row, profile) {
   if (!row) return null;
-  return {
+  const result = {
     profile,
     attemptId: row.id,
     fence: Number(row.fence),
@@ -428,6 +589,9 @@ function capabilityAttemptRow(row, profile) {
     leaseToken: row.lease_token,
     leaseExpiresAt: row.lease_expires_at ?? null,
   };
+  const capabilityExecution = capabilityExecutionFromAttempt(row);
+  if (capabilityExecution) result.capabilityExecution = capabilityExecution;
+  return result;
 }
 
 function strategyCreateRequest(input) {
@@ -474,6 +638,128 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             AND status IN ('VALIDATED','RETIRED')`,
         [accountId, connectionId, connectionVersion]);
       return capabilitySecretRow(result?.rows?.[0]);
+    },
+
+    async loadCapabilityExecutionForSecretResolution(rawInput = {}) {
+      const input = capabilityExecutionRequest(rawInput);
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const loaded = await query(client,
+          `SELECT a.id,a.status,a.account_id,a.profile_id,a.config_version,
+                  p.api_key_env_name,a.target_connection_id AS connection_id,
+                  a.target_connection_version AS connection_version,
+                  c.status AS connection_status,c.status_version AS connection_status_version,
+                  c.ciphertext,c.iv,c.auth_tag,c.algorithm,c.key_version,c.fingerprint
+             FROM ai_gateway_capability_attempts a
+             JOIN ai_gateway_profiles p
+               ON p.account_id=a.account_id AND p.id=a.profile_id AND p.config_version=a.config_version
+             LEFT JOIN ai_gateway_connection_versions c
+               ON c.account_id=a.account_id AND c.id=a.target_connection_id
+              AND c.version=a.target_connection_version
+            WHERE a.account_id=$1 AND a.profile_id=$2 AND a.config_version=$3
+              AND a.id=$4 AND a.fence=$5 AND a.lease_version=$6 AND a.lease_token=$7
+              AND a.status='RUNNING' AND a.lease_expires_at > NOW()
+              AND a.authorization_schema_version=$8 AND a.purpose=$9
+              AND a.cost_confirmed IS TRUE AND a.authorization_hash=$10 AND a.request_key=$11
+              AND a.target_connection_id IS NOT DISTINCT FROM $12
+              AND a.target_connection_version IS NOT DISTINCT FROM $13
+              AND a.target_connection_status=$14 AND a.target_connection_status_version=$15
+              AND p.connection_id IS NOT DISTINCT FROM a.target_connection_id
+              AND p.connection_version IS NOT DISTINCT FROM a.target_connection_version
+              AND NOT EXISTS (
+                SELECT 1 FROM ai_gateway_capability_attempts newer
+                 WHERE newer.account_id=a.account_id AND newer.profile_id=a.profile_id
+                   AND newer.config_version=a.config_version AND newer.fence>a.fence
+              )
+              AND EXISTS (
+                SELECT 1 FROM audit_events authorization_event
+                 WHERE authorization_event.account_id=a.account_id
+                   AND authorization_event.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED'
+                   AND authorization_event.status='SUCCESS'
+                   AND authorization_event.entity_type='ai_gateway_profile'
+                   AND authorization_event.entity_id=a.profile_id
+                   AND authorization_event.correlation_id=a.correlation_id
+                   AND authorization_event.metadata->>'schemaVersion'=$8
+                   AND authorization_event.metadata->>'attemptId'=a.id
+                   AND (authorization_event.metadata->>'fence')::BIGINT=a.fence
+                   AND (authorization_event.metadata->>'leaseVersion')::INTEGER=a.lease_version
+                   AND authorization_event.metadata->>'leaseTokenHash'=$16
+                   AND authorization_event.metadata->>'authorizationHash'=a.authorization_hash
+                   AND authorization_event.metadata->>'requestKey'=a.request_key
+                   AND authorization_event.metadata->>'purpose'=a.purpose
+                   AND authorization_event.metadata->'costConfirmed'='true'::JSONB
+              )
+              AND (($14='LEGACY' AND a.purpose='PROFILE_CAPABILITY'
+                    AND a.target_connection_id IS NULL AND c.id IS NULL)
+                OR ($14 IN ('VALIDATED','RETIRED') AND c.status=$14 AND c.status_version=$15))
+            FOR UPDATE OF a,p`,
+          [input.accountId, input.profileId, input.configVersion, input.attemptId, input.fence,
+            input.leaseVersion, input.leaseToken, CAPABILITY_AUTHORIZATION_SCHEMA, input.purpose,
+            input.authorizationHash, input.requestKey, input.connectionId, input.connectionVersion,
+            input.expectedConnectionStatus, input.expectedConnectionStatusVersion, hash(input.leaseToken)]);
+        const row = capabilityExecutionSecretRow(loaded.rows[0]);
+        if (row) return row;
+
+        const diagnostic = await query(client,
+          `SELECT status,lease_expires_at > NOW() AS lease_live,correlation_id,actor_id
+             FROM ai_gateway_capability_attempts
+            WHERE account_id=$1 AND profile_id=$2 AND config_version=$3 AND id=$4
+              AND fence=$5 AND lease_version=$6 AND lease_token=$7
+              AND authorization_schema_version=$8 AND purpose=$9
+              AND cost_confirmed IS TRUE AND authorization_hash=$10 AND request_key=$11
+            FOR UPDATE`,
+          [input.accountId, input.profileId, input.configVersion, input.attemptId, input.fence,
+            input.leaseVersion, input.leaseToken, CAPABILITY_AUTHORIZATION_SCHEMA, input.purpose,
+            input.authorizationHash, input.requestKey]);
+        if (!diagnostic.rows[0] || diagnostic.rows[0].status !== "RUNNING"
+          || diagnostic.rows[0].lease_live !== true) {
+          throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_LEASE_CONFLICT", 409);
+        }
+
+        const staleResponse = {
+          profileId: input.profileId,
+          configVersion: input.configVersion,
+          outcome: "STALE",
+          errorCode: "AI_GATEWAY_PROFILE_VERSION_CONFLICT",
+          probe: input.probe,
+        };
+        const staleHash = hash({ action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST",
+          attemptId: input.attemptId, fence: input.fence, leaseVersion: input.leaseVersion,
+          authorizationHash: input.authorizationHash, outcome: "STALE" });
+        const terminal = await query(client,
+          `UPDATE ai_gateway_capability_attempts
+              SET status='STALE',completion_hash=$8,response=$9::JSONB,completed_at=NOW()
+            WHERE account_id=$1 AND profile_id=$2 AND config_version=$3 AND id=$4
+              AND fence=$5 AND lease_version=$6 AND lease_token=$7 AND status='RUNNING'
+            RETURNING id`,
+          [input.accountId, input.profileId, input.configVersion, input.attemptId, input.fence,
+            input.leaseVersion, input.leaseToken, staleHash, JSON.stringify(staleResponse)]);
+        if (terminal.rowCount !== 1) {
+          throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_LEASE_CONFLICT", 409);
+        }
+        const audit = await loadAudit(client, {
+          action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST", accountId: input.accountId,
+          idempotencyKey: input.attemptId, requestHash: staleHash,
+        });
+        if (!audit.metadata) {
+          await insertAudit(client, {
+            ...audit, action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST",
+            accountId: input.accountId, actorId: diagnostic.rows[0].actor_id,
+            correlationId: diagnostic.rows[0].correlation_id,
+            entityType: "ai_gateway_profile", entityId: input.profileId,
+            status: "FAILED", metadata: { requestHash: staleHash, entityId: input.profileId,
+              configVersion: input.configVersion, attemptId: input.attemptId, fence: input.fence,
+              leaseVersion: input.leaseVersion, purpose: input.purpose, costConfirmed: true,
+              outcome: "STALE", errorCode: "AI_GATEWAY_PROFILE_VERSION_CONFLICT", stale: true },
+          });
+        }
+        return { stale: true };
+      }).then((result) => {
+        if (result?.stale === true) {
+          throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE", 409);
+        }
+        return result;
+      });
     },
 
     async createProfile(rawInput = {}) {
@@ -546,7 +832,10 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         const existing = await query(client,
           `SELECT attempt.id,attempt.fence,attempt.account_id,attempt.profile_id,attempt.config_version,
                   attempt.correlation_id,attempt.status,attempt.response,attempt.lease_version,
-                  attempt.lease_token,attempt.lease_expires_at,
+                  attempt.lease_token,attempt.lease_expires_at,attempt.authorization_schema_version,
+                  attempt.purpose,attempt.cost_confirmed,attempt.authorization_hash,attempt.request_key,
+                  attempt.actor_id,attempt.target_connection_id,attempt.target_connection_version,
+                  attempt.target_connection_status,attempt.target_connection_status_version,attempt.authorized_at,
                   EXISTS (
                     SELECT 1 FROM audit_events confirmation
                      WHERE confirmation.account_id=attempt.account_id
@@ -569,11 +858,27 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             if (existing.rows[0].confirmation_matches !== true) {
               throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
             }
+            if (existing.rows[0].authorization_schema_version === CAPABILITY_AUTHORIZATION_SCHEMA
+              && (existing.rows[0].purpose !== input.purpose
+                || existing.rows[0].request_key !== input.requestKey
+                || existing.rows[0].actor_id !== input.actorId)) {
+              throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+            }
             return { ...capabilityAttemptRow(existing.rows[0], profile), duplicate: true, reclaimed: false };
           }
         }
-        await requireConnectionCapabilityFence(client, profile, input.purpose);
+        const connectionFence = await requireConnectionCapabilityFence(client, profile, input.purpose);
+        const authorization = capabilityAuthorization(input, connectionFence);
         if (existing.rows[0]) {
+          const existingExecution = capabilityExecutionFromAttempt(existing.rows[0]);
+          if (!existingExecution || existingExecution.requestKey !== input.requestKey
+            || existingExecution.purpose !== input.purpose
+            || existingExecution.connectionId !== authorization.targetConnectionId
+            || existingExecution.connectionVersion !== authorization.targetConnectionVersion
+            || existingExecution.expectedConnectionStatus !== authorization.targetConnectionStatus
+            || existingExecution.expectedConnectionStatusVersion !== authorization.targetConnectionStatusVersion) {
+            throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+          }
           if (existing.rows[0].status === "RUNNING") {
             const leaseToken = `caplease_${crypto.randomUUID().replaceAll("-", "")}`;
             const reclaimed = await query(client,
@@ -582,24 +887,47 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
                 WHERE account_id=$1 AND profile_id=$2 AND config_version=$3 AND id=$4
                   AND status='RUNNING' AND lease_expires_at<=NOW()
                 RETURNING id,fence,account_id,profile_id,config_version,correlation_id,status,response,
-                          lease_version,lease_token,lease_expires_at`,
+                          lease_version,lease_token,lease_expires_at,authorization_schema_version,
+                          purpose,cost_confirmed,authorization_hash,request_key,actor_id,
+                          target_connection_id,target_connection_version,target_connection_status,
+                          target_connection_status_version,authorized_at`,
               [input.accountId, input.profileId, input.configVersion, input.attemptId, leaseToken]);
             if (reclaimed.rows[0]) {
+              await insertCapabilityAuthorizationAudit(client, input, reclaimed.rows[0]);
               return { ...capabilityAttemptRow(reclaimed.rows[0], profile), duplicate: false, reclaimed: true };
             }
           }
           return { ...capabilityAttemptRow(existing.rows[0], profile), duplicate: true, reclaimed: false };
         }
         const leaseToken = `caplease_${crypto.randomUUID().replaceAll("-", "")}`;
-        const inserted = await query(client,
-          `INSERT INTO ai_gateway_capability_attempts (
-             id,account_id,profile_id,config_version,correlation_id,status,lease_token,lease_expires_at
-           ) VALUES ($1,$2,$3,$4,$5,'RUNNING',$6,NOW()+INTERVAL '10 minutes')
+        let inserted;
+        try {
+          inserted = await client.query(
+            `INSERT INTO ai_gateway_capability_attempts (
+             id,account_id,profile_id,config_version,correlation_id,status,lease_token,lease_expires_at,
+             authorization_schema_version,purpose,cost_confirmed,authorization_hash,request_key,actor_id,
+             target_connection_id,target_connection_version,target_connection_status,
+             target_connection_status_version,authorized_at
+           ) VALUES ($1,$2,$3,$4,$5,'RUNNING',$6,NOW()+INTERVAL '10 minutes',
+             $7,$8,TRUE,$9,$10,$11,$12,$13,$14,$15,NOW())
            RETURNING id,fence,account_id,profile_id,config_version,correlation_id,status,response,
-                     lease_version,lease_token,lease_expires_at`,
-          [input.attemptId, input.accountId, input.profileId, input.configVersion, input.correlationId, leaseToken]);
+                     lease_version,lease_token,lease_expires_at,authorization_schema_version,
+                     purpose,cost_confirmed,authorization_hash,request_key,actor_id,
+                     target_connection_id,target_connection_version,target_connection_status,
+                     target_connection_status_version,authorized_at`,
+            [input.attemptId, input.accountId, input.profileId, input.configVersion, input.correlationId, leaseToken,
+              CAPABILITY_AUTHORIZATION_SCHEMA, input.purpose, authorization.authorizationHash, input.requestKey,
+              input.actorId, authorization.targetConnectionId, authorization.targetConnectionVersion,
+              authorization.targetConnectionStatus, authorization.targetConnectionStatusVersion]);
+        } catch (error) {
+          if (error?.code === "23505") {
+            throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+          }
+          throw databaseFailed();
+        }
         const attempt = capabilityAttemptRow(inserted.rows[0], profile);
         if (!attempt || attempt.status !== "RUNNING") throw databaseFailed();
+        await insertCapabilityAuthorizationAudit(client, input, inserted.rows[0]);
         return { ...attempt, duplicate: false, reclaimed: false };
       });
     },
@@ -610,6 +938,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
       const completionHash = hash({ action, accountId: input.accountId, profileId: input.profileId,
         configVersion: input.configVersion, attemptId: input.attemptId, fence: input.fence,
         leaseVersion: input.leaseVersion, purpose: input.purpose, costConfirmed: input.costConfirmed,
+        requestKey: input.requestKey,
         capabilityResult: input.capabilityResult });
       return transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
@@ -626,30 +955,52 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         }
         const found = await query(client,
           `SELECT id,fence,account_id,profile_id,config_version,correlation_id,status,completion_hash,response,
-                  lease_version,lease_token
+                  lease_version,lease_token,authorization_schema_version,purpose,cost_confirmed,
+                  authorization_hash,request_key,actor_id,target_connection_id,target_connection_version,
+                  target_connection_status,target_connection_status_version,authorized_at,
+                  lease_expires_at > NOW() AS lease_live
              FROM ai_gateway_capability_attempts
             WHERE account_id=$1 AND profile_id=$2 AND config_version=$3 AND id=$4
             FOR UPDATE`,
           [input.accountId, input.profileId, input.configVersion, input.attemptId]);
         const attempt = found.rows[0];
         if (!attempt || Number(attempt.fence) !== input.fence || attempt.correlation_id !== input.correlationId
-          || Number(attempt.lease_version) !== input.leaseVersion || attempt.lease_token !== input.leaseToken) {
+          || Number(attempt.lease_version) !== input.leaseVersion || attempt.lease_token !== input.leaseToken
+          || attempt.authorization_schema_version !== CAPABILITY_AUTHORIZATION_SCHEMA
+          || attempt.purpose !== input.purpose || attempt.cost_confirmed !== true
+          || attempt.request_key !== input.requestKey || attempt.actor_id !== input.actorId) {
           throw repositoryError("AI_GATEWAY_PROFILE_VERSION_CONFLICT", 409);
         }
         if (attempt.status !== "RUNNING") {
+          if (attempt.status === "STALE" && attempt.response) {
+            return { applied: false, stale: true, duplicate: true, response: attempt.response };
+          }
           if (attempt.completion_hash !== completionHash || !attempt.response) {
             throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
           }
           return { applied: attempt.status !== "STALE", stale: attempt.status === "STALE",
             duplicate: true, response: attempt.response };
         }
-        await requireConnectionCapabilityFence(client, profile, input.purpose);
+        let connectionStale = false;
+        try {
+          const connectionFence = await requireConnectionCapabilityFence(client, profile, input.purpose);
+          connectionStale = (connectionFence.id ?? null) !== (attempt.target_connection_id ?? null)
+            || (connectionFence.version == null ? null : Number(connectionFence.version))
+              !== (attempt.target_connection_version == null ? null : Number(attempt.target_connection_version))
+            || connectionFence.status !== attempt.target_connection_status
+            || Number(connectionFence.status_version) !== Number(attempt.target_connection_status_version);
+        } catch (error) {
+          if (!["AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED",
+            "AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY"].includes(error?.code)) throw error;
+          connectionStale = true;
+        }
         const newest = await query(client,
           `SELECT id,fence FROM ai_gateway_capability_attempts
             WHERE account_id=$1 AND profile_id=$2 AND config_version=$3
             ORDER BY fence DESC LIMIT 1 FOR UPDATE`,
           [input.accountId, input.profileId, input.configVersion]);
-        const stale = newest.rows[0]?.id !== input.attemptId || Number(newest.rows[0]?.fence) !== input.fence;
+        const stale = attempt.lease_live !== true || connectionStale || newest.rows[0]?.id !== input.attemptId
+          || Number(newest.rows[0]?.fence) !== input.fence;
         let enabled = profile.enabled;
         if (!stale) {
           const updated = await query(client,

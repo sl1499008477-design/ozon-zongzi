@@ -4,7 +4,7 @@ import { loadAutoListingCredentialKey } from "./auto-listing-ai-credential-confi
 import { createAutoListingCredentialCipher } from "./auto-listing-ai-credential-crypto.mjs";
 import {
   createAutoListingAiCatalogSyncCredentialResolver,
-  createAutoListingAiCredentialResolver,
+  createAutoListingAiCapabilityCredentialResolver,
 } from "./auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiModelSyncService } from "./auto-listing-ai-model-sync-service.mjs";
 import {
@@ -103,7 +103,7 @@ export function createAutoListingAiSettingsRuntime({
   createCipher = createAutoListingCredentialCipher,
   createSettingsRepository = createAutoListingAiSettingsPostgres,
   createProfileRepository = createAutoListingAiAdminPostgres,
-  createCredentialResolver = createAutoListingAiCredentialResolver,
+  createCapabilityCredentialResolver = createAutoListingAiCapabilityCredentialResolver,
   createCatalogCredentialResolver = createAutoListingAiCatalogSyncCredentialResolver,
   createGateway = createSub2ApiAdapter,
   createProfileService = createAiGatewayProfileService,
@@ -116,7 +116,7 @@ export function createAutoListingAiSettingsRuntime({
   resolveGatewayHostname,
 } = {}) {
   const dependencies = [resolvePool, loadCredentialKey, createCipher, createSettingsRepository,
-    createProfileRepository, createCredentialResolver, createCatalogCredentialResolver, createGateway,
+    createProfileRepository, createCapabilityCredentialResolver, createCatalogCredentialResolver, createGateway,
     createProfileService, createSettingsService, createSyncService, createScheduler, createWorker];
   if (!env || typeof env !== "object" || Array.isArray(env)
     || dependencies.some((dependency) => typeof dependency !== "function")
@@ -149,11 +149,14 @@ export function createAutoListingAiSettingsRuntime({
           const cipher = createCipher({ key, keyVersion: config.keyVersion });
           const repository = createSettingsRepository({ pool });
           const profileRepository = createProfileRepository({ pool });
-          const credentialResolver = createCredentialResolver({ repository, cipher });
+          const readSecret = secretReader(env, config.legacySecretEnvNames);
+          const capabilityCredentialResolver = createCapabilityCredentialResolver({
+            repository: profileRepository, cipher, readSecret,
+          });
           const catalogCredentialResolver = createCatalogCredentialResolver({ repository, cipher });
           const gateway = createGateway({
-            readSecret: secretReader(env, config.legacySecretEnvNames),
-            resolveSecret: (scope) => credentialResolver.resolveSecret(scope),
+            readSecret,
+            resolveCapabilityCredential: (execution) => capabilityCredentialResolver.resolveCredential(execution),
             resolveCatalogSyncCredential: (lease) => catalogCredentialResolver.resolveCredential(lease),
             allowLocalGateway: config.allowLocalGateway,
             ...(resolveGatewayHostname ? { resolveHostname: resolveGatewayHostname } : {}),
@@ -164,6 +167,7 @@ export function createAutoListingAiSettingsRuntime({
           const capabilityService = createProfileService({ repository: profileRepository, gateway });
           const service = createSettingsService({
             repository, profileRepository, cipher, capabilityService,
+            allowLocalGateway: config.allowLocalGateway,
           });
           const syncService = createSyncService({ repository, gateway, workerId: WORKER_ID });
           const scheduler = createScheduler({ pool });

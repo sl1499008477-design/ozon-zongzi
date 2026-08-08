@@ -276,3 +276,111 @@ test("catalog sync resolver preserves lease versus connection-stale failures and
     assert.equal(decryptions, 0);
   }
 });
+
+const capabilityExecution = Object.freeze({
+  accountId: "account-a",
+  profileId: "profile-a",
+  configVersion: 1,
+  attemptId: "attempt-capability-a",
+  fence: 7,
+  leaseVersion: 2,
+  leaseToken: "caplease_capability-a",
+  purpose: "PROFILE_CAPABILITY",
+  authorizationHash: "a".repeat(64),
+  requestKey: "b".repeat(64),
+  connectionId: "connection-a",
+  connectionVersion: 1,
+  expectedConnectionStatus: "VALIDATED",
+  expectedConnectionStatusVersion: 2,
+  probe: "TEXT",
+});
+
+test("paid capability resolver binds decryption to the exact persisted attempt execution", async () => {
+  assert.equal(typeof credentialResolvers.createAutoListingAiCapabilityCredentialResolver, "function");
+  const { cipher, connection } = encryptedConnection("  sk-paid-capability  ");
+  const reads = [];
+  const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
+    repository: {
+      async loadCapabilityExecutionForSecretResolution(input) {
+        reads.push(structuredClone(input));
+        return {
+          accountId: "account-a",
+          profileId: "profile-a",
+          configVersion: 1,
+          apiKeyEnvName: "SUB2API_ENCRYPTED_KEY",
+          connection: { ...connection, status: "VALIDATED", statusVersion: 2 },
+        };
+      },
+    },
+    cipher,
+    readSecret() { throw new Error("encrypted capability must not read env"); },
+  });
+
+  const credential = await resolver.resolveCredential(capabilityExecution);
+  assert.deepEqual(reads, [capabilityExecution]);
+  assert.deepEqual(credential, {
+    accountId: "account-a",
+    profileId: "profile-a",
+    configVersion: 1,
+    connectionId: "connection-a",
+    connectionVersion: 1,
+    secret: "sk-paid-capability",
+  });
+  assert.doesNotMatch(JSON.stringify(credential), /cipher|fingerprint|authTag|keyVersion/iu);
+});
+
+test("paid capability resolver keeps legacy profiles attempt-bound and maps secret-reader failures safely", async () => {
+  const legacyExecution = { ...capabilityExecution, connectionId: null, connectionVersion: null,
+    expectedConnectionStatus: "LEGACY", expectedConnectionStatusVersion: 0 };
+  const repository = {
+    async loadCapabilityExecutionForSecretResolution(input) {
+      assert.deepEqual(input, legacyExecution);
+      return { accountId: "account-a", profileId: "profile-a", configVersion: 1,
+        apiKeyEnvName: "SUB2API_LEGACY_KEY", connection: null };
+    },
+  };
+  const cipher = { decrypt() { throw new Error("legacy must not decrypt"); } };
+  const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
+    repository, cipher, readSecret(name) { assert.equal(name, "SUB2API_LEGACY_KEY"); return "  legacy-secret  "; },
+  });
+  assert.deepEqual(await resolver.resolveCredential(legacyExecution), {
+    accountId: "account-a", profileId: "profile-a", configVersion: 1,
+    connectionId: null, connectionVersion: null, secret: "legacy-secret",
+  });
+  const failing = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
+    repository, cipher, readSecret() { throw new Error("raw-env-secret-must-not-leak"); },
+  });
+  await assert.rejects(failing.resolveCredential(legacyExecution), (error) => (
+    error?.code === "AI_GATEWAY_SECRET_MISSING" && !/raw-env-secret/iu.test(error.message)
+  ));
+});
+
+test("paid capability resolver preserves execution fence failures without decrypting or reading env", async () => {
+  assert.equal(typeof credentialResolvers.createAutoListingAiCapabilityCredentialResolver, "function");
+  for (const repositoryCode of [
+    "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE",
+    "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_LEASE_CONFLICT",
+  ]) {
+    let secretReads = 0;
+    let decryptions = 0;
+    const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
+      repository: {
+        async loadCapabilityExecutionForSecretResolution() {
+          const error = new Error("leaseToken=must-not-leak");
+          error.code = repositoryCode;
+          throw error;
+        },
+      },
+      cipher: { decrypt() { decryptions += 1; return "must-not-run"; } },
+      readSecret() { secretReads += 1; return "must-not-run"; },
+    });
+    await assert.rejects(resolver.resolveCredential(capabilityExecution), (error) => (
+      error?.code === (repositoryCode.endsWith("STALE")
+        ? "AI_GATEWAY_PROFILE_VERSION_CONFLICT"
+        : "AI_GATEWAY_CAPABILITY_IN_PROGRESS")
+      && !/must-not-leak/iu.test(error.message)
+    ));
+    assert.equal(decryptions, 0);
+    assert.equal(secretReads, 0);
+  }
+});

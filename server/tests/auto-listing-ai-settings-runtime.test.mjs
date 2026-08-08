@@ -25,7 +25,9 @@ function harness(env = enabledEnv()) {
   const settingsRepository = Object.freeze({ marker: "settings-repository" });
   const profileRepository = Object.freeze({ marker: "profile-repository" });
   const cipher = Object.freeze({ encrypt() {}, decrypt() {}, fingerprint() {} });
-  const credentialResolver = Object.freeze({ async resolveSecret(scope) { return `resolved:${scope.connectionId}`; } });
+  const capabilityResolver = Object.freeze({
+    async resolveCredential(execution) { return { resolvedAttemptId: execution.attemptId }; },
+  });
   const catalogResolver = Object.freeze({ async resolveCredential(lease) { return { lease }; } });
   const gateway = Object.freeze({ marker: "gateway" });
   const capabilityService = Object.freeze({ marker: "capability" });
@@ -44,7 +46,10 @@ function harness(env = enabledEnv()) {
     createCipher(input) { calls.push(["cipher", input]); return cipher; },
     createSettingsRepository(input) { calls.push(["settings-repository", input]); return settingsRepository; },
     createProfileRepository(input) { calls.push(["profile-repository", input]); return profileRepository; },
-    createCredentialResolver(input) { calls.push(["credential-resolver", input]); return credentialResolver; },
+    createCapabilityCredentialResolver(input) {
+      calls.push(["capability-resolver", input]);
+      return capabilityResolver;
+    },
     createCatalogCredentialResolver(input) { calls.push(["catalog-resolver", input]); return catalogResolver; },
     createGateway(input) {
       calls.push(["gateway", {
@@ -53,7 +58,7 @@ function harness(env = enabledEnv()) {
         allowedGatewayBaseUrls: input.allowedGatewayBaseUrls,
         legacySecret: input.readSecret("SUB2API_API_KEY"),
         hiddenSecret: input.readSecret("POSTGRES_PASSWORD"),
-        resolveSecret: input.resolveSecret,
+        resolveCapabilityCredential: input.resolveCapabilityCredential,
         resolveCatalogSyncCredential: input.resolveCatalogSyncCredential,
       }]);
       return gateway;
@@ -68,7 +73,7 @@ function harness(env = enabledEnv()) {
     resolveGatewayHostname: async () => [{ address: "127.0.0.1", family: 4 }],
   });
   return { runtime, calls, pool, settingsRepository, profileRepository, cipher,
-    credentialResolver, catalogResolver, gateway, capabilityService, settingsService, syncService, scheduler };
+    capabilityResolver, catalogResolver, gateway, capabilityService, settingsService, syncService, scheduler };
 }
 
 test("settings runtime stays completely dormant when either feature flag is off", async () => {
@@ -98,8 +103,11 @@ test("settings runtime composes every Task 2-6 security port once and uses one w
     ["settings-repository", { pool: h.pool }]);
   assert.deepEqual(h.calls.find(([name]) => name === "profile-repository"),
     ["profile-repository", { pool: h.pool }]);
-  assert.deepEqual(h.calls.find(([name]) => name === "credential-resolver"),
-    ["credential-resolver", { repository: h.settingsRepository, cipher: h.cipher }]);
+  const capabilityResolverInput = h.calls.find(([name]) => name === "capability-resolver")[1];
+  assert.equal(capabilityResolverInput.repository, h.profileRepository);
+  assert.equal(capabilityResolverInput.cipher, h.cipher);
+  assert.equal(capabilityResolverInput.readSecret("SUB2API_API_KEY"), "legacy-secret");
+  assert.equal(capabilityResolverInput.readSecret("POSTGRES_PASSWORD"), undefined);
   assert.deepEqual(h.calls.find(([name]) => name === "catalog-resolver"),
     ["catalog-resolver", { repository: h.settingsRepository, cipher: h.cipher }]);
   const gatewayInput = h.calls.find(([name]) => name === "gateway")[1];
@@ -108,7 +116,9 @@ test("settings runtime composes every Task 2-6 security port once and uses one w
   assert.deepEqual(gatewayInput.allowedGatewayBaseUrls, ["http://127.0.0.1:8080/v1"]);
   assert.equal(gatewayInput.legacySecret, "legacy-secret");
   assert.equal(gatewayInput.hiddenSecret, undefined);
-  assert.equal(await gatewayInput.resolveSecret({ connectionId: "connection-a" }), "resolved:connection-a");
+  assert.deepEqual(await gatewayInput.resolveCapabilityCredential({ attemptId: "attempt-a" }), {
+    resolvedAttemptId: "attempt-a",
+  });
   assert.deepEqual(await gatewayInput.resolveCatalogSyncCredential({ taskId: "task-a" }), {
     lease: { taskId: "task-a" },
   });
@@ -116,7 +126,7 @@ test("settings runtime composes every Task 2-6 security port once and uses one w
     ["profile-service", { repository: h.profileRepository, gateway: h.gateway }]);
   assert.deepEqual(h.calls.find(([name]) => name === "settings-service"), ["settings-service", {
     repository: h.settingsRepository, profileRepository: h.profileRepository,
-    cipher: h.cipher, capabilityService: h.capabilityService,
+    cipher: h.cipher, capabilityService: h.capabilityService, allowLocalGateway: true,
   }]);
   const syncInput = h.calls.find(([name]) => name === "sync-service")[1];
   const workerInput = h.calls.find(([name]) => name === "worker")[1];

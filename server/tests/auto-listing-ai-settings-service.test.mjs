@@ -18,7 +18,7 @@ function overview(overrides = {}) {
   };
 }
 
-function harness({ currentOverview = overview() } = {}) {
+function harness({ currentOverview = overview(), allowLocalGateway = true } = {}) {
   const calls = [];
   const rollbackIntents = new Map();
   const rollbackResults = new Map();
@@ -110,7 +110,9 @@ function harness({ currentOverview = overview() } = {}) {
         errorCode: null, enabled: false };
     },
   };
-  const service = createAutoListingAiSettingsService({ repository, profileRepository, cipher, capabilityService });
+  const service = createAutoListingAiSettingsService({
+    repository, profileRepository, cipher, capabilityService, allowLocalGateway,
+  });
   return { service, calls, repository, profileRepository, cipher, capabilityService };
 }
 
@@ -147,6 +149,29 @@ test("connection creation encrypts with the immutable connection scope and never
   assert.equal(persisted.encryptedSecret.ciphertext, "ciphertext-safe");
   assert.equal(JSON.stringify(result).includes("raw-gateway-key"), false);
   assert.equal(JSON.stringify(result).includes("ciphertext-safe"), false);
+});
+
+test("connection creation rejects unsafe gateway base URLs at the service boundary before encryption", async () => {
+  for (const baseUrl of [
+    "not-a-url",
+    "ftp://gateway.example/v1",
+    "https://user:password@gateway.example/v1",
+    "https://gateway.example/v1?redirect=https://evil.example",
+    "https://gateway.example/v1#secret",
+    "http://127.0.0.1:8080/v1",
+  ]) {
+    const { service, calls } = harness({ allowLocalGateway: false });
+    await assert.rejects(service.createConnection({ actor: admin, idempotencyKey: "intent-a",
+      correlationId: "corr-a", displayName: "Gateway", baseUrl, gatewayKey: "raw-gateway-key" }),
+    (error) => error?.code === "AUTO_LISTING_AI_SETTINGS_BASE_URL_INVALID" && error?.status === 422);
+    assert.deepEqual(calls, []);
+  }
+  const { service, calls } = harness({ allowLocalGateway: true });
+  await service.createConnection({ actor: admin, idempotencyKey: "intent-local",
+    correlationId: "corr-local", displayName: "Local gateway",
+    baseUrl: "http://127.0.0.1:8080/v1/", gatewayKey: "raw-gateway-key" });
+  assert.equal(calls.find(([name]) => name === "create-connection")[1].baseUrl,
+    "http://127.0.0.1:8080/v1");
 });
 
 test("manual model synchronization uses the exact PENDING or VALIDATED fence and never invokes paid capability work", async () => {

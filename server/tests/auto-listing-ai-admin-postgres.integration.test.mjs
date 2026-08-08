@@ -6,12 +6,17 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createAutoListingAiAdminPostgres } from "../auto-listing-ai-admin-postgres.mjs";
+import { createAiGatewayProfileService } from "../ai-gateway-profile-service.mjs";
+import { createAutoListingAiCapabilityCredentialResolver } from "../auto-listing-ai-credential-resolver.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
+import { createSub2ApiAdapter } from "../sub2api-ai-adapter.mjs";
 
 const connectionString = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(connectionString);
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../db/migrations");
 const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
+const requestKeyFor = (attemptId) => crypto.createHash("sha256")
+  .update(`integration-capability\0${attemptId}`).digest("hex");
 
 const profile = (displayName) => ({
   displayName,
@@ -99,18 +104,26 @@ if (!enabled) {
         const attemptId = `attempt-${idempotencyKey}`;
         const begun = await repository.beginCapabilityTest({ costConfirmed: true,
           accountId: accountA, actorId: accountA, profileId: created.id, configVersion: 1,
-          correlationId, attemptId,
+          correlationId, attemptId, requestKey: requestKeyFor(attemptId),
         });
         const completed = await repository.completeCapabilityTest({ costConfirmed: true,
           accountId: accountA, actorId: accountA, profileId: created.id, configVersion: 1,
           correlationId, attemptId, fence: begun.fence,
-          leaseVersion: begun.leaseVersion, leaseToken: begun.leaseToken, capabilityResult,
+          leaseVersion: begun.leaseVersion, leaseToken: begun.leaseToken,
+          requestKey: requestKeyFor(attemptId), capabilityResult,
         });
         assert.equal(completed.applied, true);
         return created;
       }
 
       const first = await createPassedProfile("alpha", `create-alpha-${suffix}`);
+      assert.equal(await rawRejectsCode(() => pool.query(
+        `INSERT INTO ai_gateway_capability_attempts (
+           id,account_id,profile_id,config_version,correlation_id,status,
+           lease_version,lease_token,lease_expires_at
+         ) VALUES ($1,$2,$3,1,$4,'RUNNING',1,'caplease_unauthorized',NOW()+INTERVAL '1 minute')`,
+        [`unauthorized-attempt-${suffix}`, accountA, first.id, `unauthorized-corr-${suffix}`],
+      ), "23514"), true);
       const replay = await repository.createProfile({
         accountId: accountA, actorId: accountA, idempotencyKey: `create-alpha-${suffix}`,
         correlationId: `correlation-create-alpha-${suffix}`, profile: profile("alpha"),
@@ -121,15 +134,18 @@ if (!enabled) {
       assert.equal(await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountB, actorId: accountB, profileId: first.id, configVersion: 1,
         correlationId: `foreign-capability-${suffix}`, attemptId: `foreign-attempt-${suffix}`,
+        requestKey: requestKeyFor(`foreign-attempt-${suffix}`),
       }), null);
 
       const oldAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-old-${suffix}`, attemptId: `attempt-old-${suffix}`,
+        requestKey: requestKeyFor(`attempt-old-${suffix}`),
       });
       const newAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-new-${suffix}`, attemptId: `attempt-new-${suffix}`,
+        requestKey: requestKeyFor(`attempt-new-${suffix}`),
       });
       const newestCheckedAt = new Date().toISOString();
       const newestResult = {
@@ -140,12 +156,14 @@ if (!enabled) {
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-new-${suffix}`, attemptId: `attempt-new-${suffix}`,
         fence: newAttempt.fence, leaseVersion: newAttempt.leaseVersion, leaseToken: newAttempt.leaseToken,
+        requestKey: requestKeyFor(`attempt-new-${suffix}`),
         capabilityResult: newestResult,
       })).applied, true);
       const stale = await repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: first.id, configVersion: 1,
         correlationId: `capability-old-${suffix}`, attemptId: `attempt-old-${suffix}`,
         fence: oldAttempt.fence, leaseVersion: oldAttempt.leaseVersion, leaseToken: oldAttempt.leaseToken,
+        requestKey: requestKeyFor(`attempt-old-${suffix}`),
         capabilityResult: { outcome: "FAILED", features: [], latencyMs: null,
           models: { text: "text-model", image: "image-model" }, checkedAt: new Date().toISOString(),
           errorCode: "NON_RETRYABLE_AUTH" },
@@ -161,7 +179,7 @@ if (!enabled) {
       const crashAttemptId = `attempt-crash-${suffix}`;
       const crashAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
-        correlationId: crashCorrelation, attemptId: crashAttemptId,
+        correlationId: crashCorrelation, attemptId: crashAttemptId, requestKey: requestKeyFor(crashAttemptId),
       });
       const beforeCrash = await pool.query(
         "SELECT capability_result FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2",
@@ -185,6 +203,7 @@ if (!enabled) {
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: crashCorrelation, attemptId: crashAttemptId, fence: crashAttempt.fence,
         leaseVersion: crashAttempt.leaseVersion, leaseToken: crashAttempt.leaseToken,
+        requestKey: requestKeyFor(crashAttemptId),
         capabilityResult: crashResult,
       }), { code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED" });
       const rolledBack = await pool.query(
@@ -204,6 +223,7 @@ if (!enabled) {
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: crashCorrelation, attemptId: crashAttemptId, fence: crashAttempt.fence,
         leaseVersion: crashAttempt.leaseVersion, leaseToken: crashAttempt.leaseToken,
+        requestKey: requestKeyFor(crashAttemptId),
         capabilityResult: crashResult,
       })).applied, true);
       assert.equal(await rawRejectsCode(() => pool.query(
@@ -220,13 +240,18 @@ if (!enabled) {
       await pool.query(
         `INSERT INTO ai_gateway_capability_attempts (
            id,account_id,profile_id,config_version,correlation_id,status,
-           lease_version,lease_token,lease_expires_at
-         ) VALUES ($1,$2,$3,1,$4,'RUNNING',1,'caplease_crashed',NOW()-INTERVAL '1 minute')`,
-        [recoveryAttemptId, accountA, second.id, recoveryCorrelation],
+           lease_version,lease_token,lease_expires_at,authorization_schema_version,
+           purpose,cost_confirmed,authorization_hash,request_key,actor_id,
+           target_connection_status,target_connection_status_version,authorized_at
+         ) VALUES ($1,$2,$3,1,$4,'RUNNING',1,'caplease_crashed',NOW()-INTERVAL '1 minute',
+           'AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1','PROFILE_CAPABILITY',TRUE,$5,$6,$2,'LEGACY',0,NOW())`,
+        [recoveryAttemptId, accountA, second.id, recoveryCorrelation,
+          "a".repeat(64), requestKeyFor(recoveryAttemptId)],
       );
       const recoveredAttempt = await repository.beginCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: recoveryCorrelation, attemptId: recoveryAttemptId,
+        requestKey: requestKeyFor(recoveryAttemptId),
       });
       assert.equal(recoveredAttempt.reclaimed, true);
       assert.equal(recoveredAttempt.leaseVersion, 2);
@@ -237,12 +262,14 @@ if (!enabled) {
       await assert.rejects(repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: recoveryCorrelation, attemptId: recoveryAttemptId, fence: recoveredAttempt.fence,
-        leaseVersion: 1, leaseToken: "caplease_crashed", capabilityResult: recoveryResult,
+        leaseVersion: 1, leaseToken: "caplease_crashed", requestKey: requestKeyFor(recoveryAttemptId),
+        capabilityResult: recoveryResult,
       }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT", status: 409 });
       const recoveredCompletion = await repository.completeCapabilityTest({ costConfirmed: true,
         accountId: accountA, actorId: accountA, profileId: second.id, configVersion: 1,
         correlationId: recoveryCorrelation, attemptId: recoveryAttemptId, fence: recoveredAttempt.fence,
         leaseVersion: recoveredAttempt.leaseVersion, leaseToken: recoveredAttempt.leaseToken,
+        requestKey: requestKeyFor(recoveryAttemptId),
         capabilityResult: recoveryResult,
       });
       assert.equal(recoveredCompletion.applied, true);
@@ -351,6 +378,7 @@ if (!enabled) {
       );
       const counts = Object.fromEntries(audits.rows.map((row) => [row.action, row.count]));
       assert.deepEqual(counts, {
+        AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED: 6,
         AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST: 6,
         AUTO_LISTING_AI_PROFILE_CREATE: 2,
         AUTO_LISTING_AI_PROFILE_PUBLISH: 2,
@@ -436,7 +464,7 @@ if (!enabled) {
         const attemptId = `attempt-${purpose}-${label}-${suffix}`;
         const begun = await profiles.beginCapabilityTest({ costConfirmed: true,
           accountId, actorId: accountId, profileId: target.profile.id, configVersion: 1,
-          correlationId, attemptId, purpose,
+          correlationId, attemptId, purpose, requestKey: requestKeyFor(attemptId),
         });
         const retiredAt = purpose === "ROLLBACK_CAPABILITY"
           ? (await pool.query(
@@ -454,7 +482,7 @@ if (!enabled) {
         await profiles.completeCapabilityTest({ costConfirmed: true,
           accountId, actorId: accountId, profileId: target.profile.id, configVersion: 1,
           correlationId, attemptId, fence: begun.fence, leaseVersion: begun.leaseVersion,
-          leaseToken: begun.leaseToken, purpose, capabilityResult,
+          leaseToken: begun.leaseToken, purpose, requestKey: requestKeyFor(attemptId), capabilityResult,
         });
       }
 
@@ -505,6 +533,165 @@ if (!enabled) {
         [accountId],
       );
       assert.equal(purposeAudit.rows[0].count, 1);
+
+      const beforeFirstProbe = await createConnected("before-first-probe");
+      await passCapability(beforeFirstProbe, "PROFILE_CAPABILITY", "before-first-probe-seed");
+      const beforeFirstCorrelation = `paid-before-first-probe-${suffix}`;
+      const beforeFirstAttemptId = `attempt-before-first-probe-${suffix}`;
+      const beforeFirstAttempt = await profiles.beginCapabilityTest({
+        costConfirmed: true, accountId, actorId: accountId,
+        profileId: beforeFirstProbe.profile.id, configVersion: 1,
+        correlationId: beforeFirstCorrelation, attemptId: beforeFirstAttemptId,
+        purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(beforeFirstAttemptId),
+      });
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: beforeFirstProbe.profile.id, configVersion: 1,
+        idempotencyKey: `publish-before-first-probe-${suffix}`,
+        correlationId: `publish-before-first-probe-corr-${suffix}`,
+      });
+      await assert.rejects(profiles.loadCapabilityExecutionForSecretResolution({
+        ...beforeFirstAttempt.capabilityExecution, probe: "REACHABILITY",
+      }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE", status: 409 });
+      const beforeFirstStored = await pool.query(
+        "SELECT status FROM ai_gateway_capability_attempts WHERE account_id=$1 AND id=$2",
+        [accountId, beforeFirstAttemptId],
+      );
+      assert.equal(beforeFirstStored.rows[0].status, "STALE");
+
+      const afterFirstProbe = await createConnected("after-first-probe");
+      await passCapability(afterFirstProbe, "PROFILE_CAPABILITY", "after-first-probe-seed");
+      let paidFetches = 0;
+      const resolver = createAutoListingAiCapabilityCredentialResolver({
+        repository: profiles,
+        cipher: { async decrypt() { return "paid-test-secret"; } },
+        readSecret() { return undefined; },
+      });
+      const adapter = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic secret path must not authorize paid work"); },
+        resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async () => {
+          paidFetches += 1;
+          if (paidFetches === 1) {
+            await profiles.publishProfile({
+              accountId, actorId: accountId, profileId: afterFirstProbe.profile.id, configVersion: 1,
+              idempotencyKey: `publish-after-first-probe-${suffix}`,
+              correlationId: `publish-after-first-probe-corr-${suffix}`,
+            });
+          }
+          return new Response(JSON.stringify({ object: "list", data: [] }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+        },
+      });
+      const fencedService = createAiGatewayProfileService({ repository: profiles, gateway: adapter });
+      const fencedCorrelation = `fenced-after-first-probe-${suffix}`;
+      await assert.rejects(fencedService.testGatewayCapabilities({
+        actor: { id: accountId, role: "admin" }, profileId: afterFirstProbe.profile.id,
+        configVersion: 1, correlationId: fencedCorrelation, costConfirmed: true,
+      }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT", status: 409 });
+      assert.equal(paidFetches, 1, "the changed connection fence must block text and image paid calls");
+      const fencedStored = await pool.query(
+        `SELECT status FROM ai_gateway_capability_attempts
+          WHERE account_id=$1 AND profile_id=$2 AND correlation_id=$3`,
+        [accountId, afterFirstProbe.profile.id, fencedCorrelation],
+      );
+      assert.equal(fencedStored.rows[0].status, "STALE");
+
+      const crashReplay = await createConnected("provider-response-loss");
+      let providerCalls = 0;
+      const chargedRequestKeys = new Set();
+      const replayGateway = {
+        async testCapabilities(input) {
+          providerCalls += 1;
+          chargedRequestKeys.add(input.requestKey);
+          return {
+            features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 5,
+            models: { text: "text-model", image: "image-model" },
+            modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "",
+              gatewayReportedImageModelPresent: false, orchestratorModel: "" },
+          };
+        },
+      };
+      const replayService = createAiGatewayProfileService({ repository: profiles, gateway: replayGateway });
+      const replayCorrelation = `provider-response-loss-${suffix}`;
+      await pool.query(`CREATE OR REPLACE FUNCTION reject_capability_completion_${suffix}()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+            AND NEW.correlation_id='${replayCorrelation}' THEN
+            RAISE EXCEPTION 'forced completion persistence failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$`);
+      await pool.query(`CREATE TRIGGER reject_capability_completion_${suffix}_trigger
+        BEFORE INSERT ON audit_events FOR EACH ROW
+        EXECUTE FUNCTION reject_capability_completion_${suffix}()`);
+      const replayInput = { actor: { id: accountId, role: "admin" },
+        profileId: crashReplay.profile.id, configVersion: 1,
+        correlationId: replayCorrelation, costConfirmed: true };
+      await assert.rejects(replayService.testGatewayCapabilities(replayInput), {
+        code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED",
+      });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 1, charged: 1 });
+      await assert.rejects(replayService.testGatewayCapabilities(replayInput), {
+        code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS", status: 409,
+      });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 1, charged: 1 });
+      const replayAttempt = await pool.query(
+        `SELECT id,request_key FROM ai_gateway_capability_attempts
+          WHERE account_id=$1 AND profile_id=$2 AND correlation_id=$3`,
+        [accountId, crashReplay.profile.id, replayCorrelation],
+      );
+      await assert.rejects(profiles.beginCapabilityTest({
+        costConfirmed: true, accountId, actorId: accountId, profileId: crashReplay.profile.id,
+        configVersion: 1, correlationId: replayCorrelation, attemptId: replayAttempt.rows[0].id,
+        purpose: "PROFILE_CAPABILITY", requestKey: "f".repeat(64),
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      assert.equal(providerCalls, 1, "a conflicting persisted intent must not reach the provider");
+      await pool.query(`DROP TRIGGER reject_capability_completion_${suffix}_trigger ON audit_events`);
+      await pool.query(`DROP FUNCTION reject_capability_completion_${suffix}()`);
+      const faultClient = await pool.connect();
+      try {
+        await faultClient.query("SET session_replication_role='replica'");
+        await faultClient.query(
+          "UPDATE ai_gateway_capability_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+          [accountId, replayAttempt.rows[0].id],
+        );
+      } finally {
+        await faultClient.query("SET session_replication_role='origin'").catch(() => {});
+        faultClient.release();
+      }
+      const recovered = await replayService.testGatewayCapabilities(replayInput);
+      assert.equal(recovered.outcome, "PASSED");
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 2, charged: 1 });
+      assert.deepEqual(await replayService.testGatewayCapabilities(replayInput), recovered);
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 2, charged: 1 });
+      await assert.rejects(profiles.beginCapabilityTest({
+        costConfirmed: true, accountId, actorId: accountId, profileId: crashReplay.profile.id,
+        configVersion: 1, correlationId: `changed-payload-${suffix}`,
+        attemptId: `changed-payload-attempt-${suffix}`, purpose: "PROFILE_CAPABILITY",
+        requestKey: replayAttempt.rows[0].request_key,
+      }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 2, charged: 1 });
+
+      const immutableAuthorization = await pool.query(
+        `SELECT event_id FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED'
+          ORDER BY created_at DESC LIMIT 1`,
+        [accountId],
+      );
+      assert.equal(await rawRejectsCode(() => pool.query(
+        "UPDATE audit_events SET status='FAILED' WHERE event_id=$1",
+        [immutableAuthorization.rows[0].event_id],
+      ), "23514"), true);
+      assert.equal(await rawRejectsCode(() => pool.query(
+        "UPDATE ai_gateway_capability_attempts SET request_key=$3 WHERE account_id=$1 AND id=$2",
+        [accountId, replayAttempt.rows[0].id, "e".repeat(64)],
+      ), "23514"), true);
     } finally {
       try {
         await pool?.end();

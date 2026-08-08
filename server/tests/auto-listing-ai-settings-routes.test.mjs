@@ -144,6 +144,7 @@ test("responses reject secret-bearing or accessor output and expose only fixed s
   }
 
   for (const error of [
+    Object.assign(new Error("unsafe URL"), { code: "AUTO_LISTING_AI_SETTINGS_BASE_URL_INVALID", status: 422 }),
     Object.assign(new Error("safe"), { code: "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", status: 404 }),
     Object.assign(new Error("expected state"), { code: "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", status: 409 }),
     Object.assign(new Error("confirmed cost required"), { code: "AI_GATEWAY_COST_CONFIRMATION_REQUIRED", status: 409 }),

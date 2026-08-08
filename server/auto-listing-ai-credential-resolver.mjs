@@ -2,6 +2,12 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const CATALOG_SYNC_LEASE_KEYS = new Set([
   "accountId", "leaseToken", "leaseVersion", "minimumLeaseRemainingMs", "taskId", "workerId",
 ]);
+const CAPABILITY_EXECUTION_KEYS = new Set([
+  "accountId", "profileId", "configVersion", "attemptId", "fence", "leaseVersion", "leaseToken",
+  "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
+  "expectedConnectionStatus", "expectedConnectionStatusVersion", "probe",
+]);
+const HASH = /^[a-f0-9]{64}$/u;
 
 function resolverError(code) {
   const error = new Error(code === "AI_GATEWAY_REQUEST_INVALID"
@@ -82,6 +88,40 @@ function normalizedCatalogSyncLease(value) {
     });
   } catch {
     throw catalogResolverError("AI_GATEWAY_REQUEST_INVALID");
+  }
+}
+
+function normalizedCapabilityExecution(value) {
+  try {
+    const fields = dataFields(value);
+    const keys = fields ? Object.keys(fields) : [];
+    const connectionBacked = ["VALIDATED", "RETIRED"].includes(fields?.expectedConnectionStatus);
+    if (!fields || keys.length !== CAPABILITY_EXECUTION_KEYS.size
+      || keys.some((key) => !CAPABILITY_EXECUTION_KEYS.has(key))
+      || ![fields.accountId, fields.profileId, fields.attemptId, fields.leaseToken]
+        .every((entry) => typeof entry === "string" && entry === entry.trim() && SAFE_ID.test(entry))
+      || ![fields.configVersion, fields.fence, fields.leaseVersion]
+        .every((entry) => Number.isSafeInteger(entry) && entry >= 1)
+      || !["PROFILE_CAPABILITY", "ROLLBACK_CAPABILITY"].includes(fields.purpose)
+      || !HASH.test(fields.authorizationHash) || !HASH.test(fields.requestKey)
+      || !["REACHABILITY", "TEXT", "IMAGE"].includes(fields.probe)
+      || (connectionBacked && (
+        typeof fields.connectionId !== "string" || fields.connectionId !== fields.connectionId.trim()
+        || !SAFE_ID.test(fields.connectionId)
+        || !Number.isSafeInteger(fields.connectionVersion) || fields.connectionVersion < 1
+        || !Number.isSafeInteger(fields.expectedConnectionStatusVersion)
+        || fields.expectedConnectionStatusVersion < 1
+        || (fields.purpose === "PROFILE_CAPABILITY" && fields.expectedConnectionStatus !== "VALIDATED")
+        || (fields.purpose === "ROLLBACK_CAPABILITY" && fields.expectedConnectionStatus !== "RETIRED")
+      ))
+      || (!connectionBacked && (fields.expectedConnectionStatus !== "LEGACY"
+        || fields.connectionId !== null || fields.connectionVersion !== null
+        || fields.expectedConnectionStatusVersion !== 0 || fields.purpose !== "PROFILE_CAPABILITY"))) {
+      throw resolverError("AI_GATEWAY_REQUEST_INVALID");
+    }
+    return Object.freeze(Object.fromEntries(keys.map((key) => [key, fields[key]])));
+  } catch {
+    throw resolverError("AI_GATEWAY_REQUEST_INVALID");
   }
 }
 
@@ -198,6 +238,75 @@ export function createAutoListingAiCatalogSyncCredentialResolver({ repository, c
         return Object.freeze({ connection: exact.connection, secret });
       } catch {
         throw catalogResolverError("AI_GATEWAY_SECRET_MISSING");
+      }
+    },
+  });
+}
+
+export function createAutoListingAiCapabilityCredentialResolver({ repository, cipher, readSecret } = {}) {
+  if (typeof repository?.loadCapabilityExecutionForSecretResolution !== "function"
+    || typeof cipher?.decrypt !== "function" || typeof readSecret !== "function") {
+    throw new TypeError("capability credential repository, cipher, and legacy secret reader are required");
+  }
+
+  return Object.freeze({
+    async resolveCredential(rawExecution = {}) {
+      const execution = normalizedCapabilityExecution(rawExecution);
+      let loaded;
+      try {
+        loaded = await repository.loadCapabilityExecutionForSecretResolution(execution);
+      } catch (error) {
+        const code = errorCode(error);
+        if (code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE") {
+          throw resolverError("AI_GATEWAY_PROFILE_VERSION_CONFLICT");
+        }
+        if (code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_LEASE_CONFLICT") {
+          throw resolverError("AI_GATEWAY_CAPABILITY_IN_PROGRESS");
+        }
+        throw resolverError("AI_GATEWAY_SECRET_MISSING");
+      }
+      const fields = dataFields(loaded);
+      if (!fields || fields.accountId !== execution.accountId || fields.profileId !== execution.profileId
+        || fields.configVersion !== execution.configVersion) {
+        throw resolverError("AI_GATEWAY_SECRET_MISSING");
+      }
+      const apiKeyEnvName = fields.apiKeyEnvName;
+      if (execution.expectedConnectionStatus === "LEGACY") {
+        let secret;
+        try {
+          secret = typeof apiKeyEnvName === "string" ? readSecret(apiKeyEnvName) : undefined;
+        } catch {
+          throw resolverError("AI_GATEWAY_SECRET_MISSING");
+        }
+        const normalized = typeof secret === "string" ? secret.trim() : "";
+        if (!normalized || apiKeyEnvName === "SUB2API_ENCRYPTED_KEY") {
+          throw resolverError("AI_GATEWAY_SECRET_MISSING");
+        }
+        return Object.freeze({ accountId: execution.accountId, profileId: execution.profileId,
+          configVersion: execution.configVersion, connectionId: null, connectionVersion: null, secret: normalized });
+      }
+      const connection = dataFields(fields.connection);
+      const encryptedSecret = dataFields(connection?.encryptedSecret);
+      if (!connection || !encryptedSecret || apiKeyEnvName !== "SUB2API_ENCRYPTED_KEY"
+        || connection.accountId !== execution.accountId || connection.id !== execution.connectionId
+        || connection.version !== execution.connectionVersion
+        || connection.status !== execution.expectedConnectionStatus
+        || connection.statusVersion !== execution.expectedConnectionStatusVersion) {
+        throw resolverError("AI_GATEWAY_SECRET_MISSING");
+      }
+      try {
+        const plaintext = await cipher.decrypt({
+          accountId: execution.accountId,
+          connectionId: execution.connectionId,
+          connectionVersion: execution.connectionVersion,
+        }, connection.encryptedSecret);
+        const secret = typeof plaintext === "string" ? plaintext.trim() : "";
+        if (!secret) throw resolverError("AI_GATEWAY_SECRET_MISSING");
+        return Object.freeze({ accountId: execution.accountId, profileId: execution.profileId,
+          configVersion: execution.configVersion, connectionId: execution.connectionId,
+          connectionVersion: execution.connectionVersion, secret });
+      } catch {
+        throw resolverError("AI_GATEWAY_SECRET_MISSING");
       }
     },
   });

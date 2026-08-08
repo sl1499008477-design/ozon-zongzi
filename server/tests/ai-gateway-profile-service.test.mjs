@@ -42,6 +42,24 @@ function fixture({
         profile: { ...loadedProfile }, attemptId: input.attemptId, fence: 11,
         status: "RUNNING", duplicate: false, reclaimed: false,
         leaseVersion: 1, leaseToken: "caplease_fixture", leaseExpiresAt: "2026-08-04T10:10:00.000Z",
+        capabilityExecution: {
+          accountId: loadedProfile.accountId,
+          profileId: loadedProfile.id,
+          configVersion: loadedProfile.configVersion,
+          attemptId: input.attemptId,
+          fence: 11,
+          leaseVersion: 1,
+          leaseToken: "caplease_fixture",
+          purpose: input.purpose,
+          authorizationHash: "a".repeat(64),
+          requestKey: input.requestKey,
+          connectionId: loadedProfile.connectionId ?? null,
+          connectionVersion: loadedProfile.connectionVersion ?? null,
+          expectedConnectionStatus: loadedProfile.connectionId
+            ? (input.purpose === "ROLLBACK_CAPABILITY" ? "RETIRED" : "VALIDATED")
+            : "LEGACY",
+          expectedConnectionStatusVersion: loadedProfile.connectionId ? 2 : 0,
+        },
       };
     },
     async completeCapabilityTest(input) {
@@ -111,11 +129,28 @@ test("successful explicit capability test records evidence without automatically
   assert.equal(calls[0][0], "begin");
   assert.equal(calls[0][1].purpose, "PROFILE_CAPABILITY");
   assert.match(calls[0][1].attemptId, /^ai_capability_[a-f0-9]{40}$/u);
+  assert.match(calls[0][1].requestKey, /^[a-f0-9]{64}$/u);
   const gatewayInput = calls[1][1];
   assert.equal(gatewayInput.profile.accountId, "account-admin");
   assert.equal(gatewayInput.profile.configVersion, 4);
   assert.equal(gatewayInput.correlationId, "corr-capability");
   assert.match(gatewayInput.requestKey, /^[a-f0-9]{64}$/);
+  assert.deepEqual(gatewayInput.capabilityExecution, {
+    accountId: "account-admin",
+    profileId: "profile-a",
+    configVersion: 4,
+    attemptId: calls[0][1].attemptId,
+    fence: 11,
+    leaseVersion: 1,
+    leaseToken: "caplease_fixture",
+    purpose: "PROFILE_CAPABILITY",
+    authorizationHash: "a".repeat(64),
+    requestKey: gatewayInput.requestKey,
+    connectionId: null,
+    connectionVersion: null,
+    expectedConnectionStatus: "LEGACY",
+    expectedConnectionStatusVersion: 0,
+  });
   const saved = calls[2][1];
   assert.equal(saved.accountId, "account-admin");
   assert.equal(saved.actorId, "account-admin");

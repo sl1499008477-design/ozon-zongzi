@@ -6,9 +6,17 @@ const migrationUrl = new URL(
   "../db/migrations/053_auto_listing_ai_model_configuration.sql",
   import.meta.url,
 );
+const authorizationUpgradeUrl = new URL(
+  "../db/migrations/054_auto_listing_ai_capability_authorization.sql",
+  import.meta.url,
+);
 
 async function migrationSql() {
   return readFile(migrationUrl, "utf8");
+}
+
+async function authorizationUpgradeSql() {
+  return readFile(authorizationUpgradeUrl, "utf8");
 }
 
 function functionBlock(sql, name) {
@@ -87,6 +95,41 @@ test("053 accepts profile rollback only from a fresh audited paid capability att
   assert.match(transitionGuard, /metadata->'costConfirmed'[\s\S]*'true'::JSONB/iu);
   assert.match(transitionGuard, /response->>'checkedAt'[\s\S]*TIMESTAMPTZ >= OLD\.retired_at/iu);
   assert.match(transitionGuard, /completed_at >= OLD\.retired_at/iu);
+});
+
+test("053 makes paid RUNNING attempts self-authorizing and keeps authorization identity immutable", async () => {
+  const sql = await migrationSql();
+  for (const column of [
+    "authorization_schema_version", "purpose", "cost_confirmed", "authorization_hash", "request_key",
+    "actor_id", "target_connection_id", "target_connection_version", "target_connection_status",
+    "target_connection_status_version", "authorized_at",
+  ]) assert.match(sql, new RegExp(`ADD COLUMN IF NOT EXISTS ${column}`, "iu"));
+  assert.match(sql, /AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1/iu);
+  assert.match(sql, /purpose IN \('PROFILE_CAPABILITY','ROLLBACK_CAPABILITY'\)/iu);
+  assert.match(sql, /cost_confirmed IS TRUE/iu);
+  assert.match(sql, /authorization_hash ~ '\^\[a-f0-9\]\{64\}\$'/iu);
+  assert.match(sql, /request_key ~ '\^\[a-f0-9\]\{64\}\$'/iu);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS ai_gateway_capability_attempts_request_key_uq[\s\S]*account_id,request_key[\s\S]*request_key IS NOT NULL/iu);
+  const insertGuard = functionBlock(sql, "auto_listing_require_authorized_gateway_capability_attempt_insert");
+  assert.match(insertGuard, /NEW\.authorization_schema_version IS DISTINCT FROM 'AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1'/iu);
+  assert.match(insertGuard, /NEW\.cost_confirmed IS DISTINCT FROM TRUE/iu);
+  const guard = functionBlock(sql, "auto_listing_reject_terminal_gateway_capability_attempt_mutation");
+  for (const column of [
+    "authorization_schema_version", "purpose", "cost_confirmed", "authorization_hash", "request_key",
+    "actor_id", "target_connection_id", "target_connection_version", "target_connection_status",
+    "target_connection_status_version", "authorized_at",
+  ]) assert.match(guard, new RegExp(`NEW\\.${column} IS DISTINCT FROM OLD\\.${column}`, "iu"));
+});
+
+test("054 upgrades already-applied Task 7 databases and makes capability authorization audit append-only", async () => {
+  const sql = await authorizationUpgradeSql();
+  assert.match(sql, /ALTER TABLE ai_gateway_capability_attempts[\s\S]*authorization_schema_version/iu);
+  assert.match(sql, /AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1/iu);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS ai_gateway_capability_attempts_request_key_uq/iu);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_reject_terminal_gateway_capability_attempt_mutation/iu);
+  assert.match(sql, /NEW\.authorization_hash IS DISTINCT FROM OLD\.authorization_hash/iu);
+  assert.match(sql, /OLD\.source IN \('auto-listing-ai-settings','auto-listing-ai-admin'\)/iu);
+  assert.match(sql, /NEW\.source IN \('auto-listing-ai-settings','auto-listing-ai-admin'\)/iu);
 });
 
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {

@@ -34,6 +34,11 @@ const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const CATALOG_SYNC_LEASE_KEYS = new Set([
   "accountId", "leaseToken", "leaseVersion", "taskId", "workerId",
 ]);
+const CAPABILITY_EXECUTION_BASE_KEYS = new Set([
+  "accountId", "profileId", "configVersion", "attemptId", "fence", "leaseVersion", "leaseToken",
+  "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
+  "expectedConnectionStatus", "expectedConnectionStatusVersion",
+]);
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/u;
 const OWNED_BY = /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,239}$/u;
 const DANGEROUS_ENV_NAMES = new Set(["__proto__", "prototype", "constructor"]);
@@ -158,6 +163,34 @@ function normalizeCatalogSyncCredential(value, expectedAccountId) {
     throw gatewayError("AI_GATEWAY_SECRET_MISSING");
   }
   return { connection: fields.connection, secret };
+}
+
+function capabilityExecutionForProbe(value, probe) {
+  const fields = ownDataFields(value);
+  const keys = fields ? Object.keys(fields) : [];
+  if (!fields || keys.length !== CAPABILITY_EXECUTION_BASE_KEYS.size
+    || keys.some((key) => !CAPABILITY_EXECUTION_BASE_KEYS.has(key))
+    || !["REACHABILITY", "TEXT", "IMAGE"].includes(probe)) {
+    throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+  }
+  return Object.freeze({ ...fields, probe });
+}
+
+function normalizeCapabilityCredential(value, profile) {
+  const fields = ownDataFields(value);
+  const secret = typeof fields?.secret === "string" ? fields.secret.trim() : "";
+  const expectedConnectionId = profile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
+    ? profile.connectionId : null;
+  const expectedConnectionVersion = profile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
+    ? profile.connectionVersion : null;
+  if (!fields || Object.keys(fields).length !== 6 || !secret
+    || fields.accountId !== profile.accountId || fields.profileId !== profile.id
+    || fields.configVersion !== profile.configVersion
+    || fields.connectionId !== expectedConnectionId
+    || fields.connectionVersion !== expectedConnectionVersion) {
+    throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+  }
+  return secret;
 }
 
 function externalCode(error) {
@@ -1071,6 +1104,7 @@ export function createSub2ApiAdapter({
   readSecret = (name) => process.env[name],
   resolveSecret,
   resolveCatalogSyncCredential,
+  resolveCapabilityCredential,
   logger = null,
   allowLocalGateway = false,
   resolveHostname,
@@ -1086,6 +1120,7 @@ export function createSub2ApiAdapter({
   if (typeof fetchImpl !== "function" || typeof readSecret !== "function"
     || (resolveSecret !== undefined && typeof resolveSecret !== "function")
     || (resolveCatalogSyncCredential !== undefined && typeof resolveCatalogSyncCredential !== "function")
+    || (resolveCapabilityCredential !== undefined && typeof resolveCapabilityCredential !== "function")
     || typeof allowLocalGateway !== "boolean"
     || (resolveHostname !== undefined && typeof resolveHostname !== "function")) {
     throw new TypeError("sub2api adapter requires fetch and secret reader");
@@ -1158,19 +1193,39 @@ export function createSub2ApiAdapter({
     const abort = abortContext(input.signal, input.timeoutMs);
     const url = endpointUrl(normalizedProfile, endpoint);
     try {
+      let capabilitySecret = null;
+      if (input.capabilityExecution !== undefined) {
+        if (!allowDisabled || typeof resolveCapabilityCredential !== "function") {
+          throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+        }
+        try {
+          const execution = capabilityExecutionForProbe(input.capabilityExecution, input.capabilityProbe);
+          const credential = await abortableResult(Promise.resolve()
+            .then(() => resolveCapabilityCredential(execution)), abort.signal);
+          capabilitySecret = normalizeCapabilityCredential(credential, normalizedProfile);
+        } catch (error) {
+          if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
+          const code = externalCode(error);
+          if (["AI_GATEWAY_PROFILE_VERSION_CONFLICT", "AI_GATEWAY_CAPABILITY_IN_PROGRESS"].includes(code)) {
+            throw gatewayError(code, { retryable: code === "AI_GATEWAY_CAPABILITY_IN_PROGRESS" });
+          }
+          if (error instanceof AiGatewayError) throw error;
+          throw gatewayError("AI_GATEWAY_SECRET_MISSING");
+        }
+      }
       await verifyGatewayBoundary(normalizedProfile, abort);
       if (abort.signal.aborted) {
         throw classifyFetchFailure(abort.signal.reason, abort.state());
       }
       let secret;
       try {
-        const resolved = normalizedProfile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
+        const resolved = capabilitySecret ?? (normalizedProfile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
           ? await abortableResult(Promise.resolve().then(() => resolveSecret?.({
               accountId: normalizedProfile.accountId,
               connectionId: normalizedProfile.connectionId,
               connectionVersion: normalizedProfile.connectionVersion,
             })), abort.signal)
-          : readSecret(normalizedProfile.apiKeyEnvName);
+          : readSecret(normalizedProfile.apiKeyEnvName));
         secret = typeof resolved === "string" ? resolved.trim() : "";
       } catch (error) {
         if (abort.signal.aborted) throw classifyFetchFailure(error, abort.state());
@@ -1592,6 +1647,9 @@ export function createSub2ApiAdapter({
   }
 
   async function testCapabilities(input = {}) {
+    if (input.capabilityExecution === undefined || typeof resolveCapabilityCredential !== "function") {
+      throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+    }
     const started = Date.now();
     const normalizedProfile = normalizeProfile(input.profile, { allowLocalGateway });
     const base = {
@@ -1602,11 +1660,15 @@ export function createSub2ApiAdapter({
     };
     const reachabilityId = await probeReachability({
       ...base,
+      capabilityExecution: input.capabilityExecution,
+      capabilityProbe: "REACHABILITY",
       requestKey: `${validateIdentity(input.requestKey)}:reachability`,
       profile: { ...input.profile, textModel: normalizedProfile.textModel },
     }, { allowDisabled: true });
     const text = await createTextResponseInternal({
       ...base,
+      capabilityExecution: input.capabilityExecution,
+      capabilityProbe: "TEXT",
       model: normalizedProfile.textModel,
       requestKey: `${input.requestKey}:text-schema`,
       prompt: "Return exactly the requested capability JSON.",
@@ -1620,6 +1682,8 @@ export function createSub2ApiAdapter({
     if (text.value?.ok !== true) throw gatewayError("INVALID_GATEWAY_RESPONSE");
     const image = await generateImageInternal({
       ...base,
+      capabilityExecution: input.capabilityExecution,
+      capabilityProbe: "IMAGE",
       model: normalizedProfile.imageModel,
       requestKey: `${input.requestKey}:image`,
       prompt: "A plain blue square on a white background, no text.",

@@ -65,6 +65,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       [legacyProfileId, accountA],
     );
     await admin.query(await readFile(path.join(migrationsDir, "053_auto_listing_ai_model_configuration.sql"), "utf8"));
+    await admin.query(await readFile(path.join(migrationsDir, "054_auto_listing_ai_capability_authorization.sql"), "utf8"));
 
     const legacy = (await admin.query(
       "SELECT api_key_env_name,connection_id,connection_version FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2",

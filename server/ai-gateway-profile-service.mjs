@@ -180,9 +180,13 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
         throw serviceError("AI_GATEWAY_CAPABILITY_REQUEST_INVALID");
       }
       const capabilityAttemptId = attemptId(accountId, profileId, configVersion, correlationId, purpose);
+      const capabilityRequestKey = requestKey(
+        accountId, profileId, configVersion, capabilityAttemptId, purpose,
+      );
       const begun = await repository.beginCapabilityTest({
         accountId, actorId: accountId, profileId, configVersion, correlationId,
         attemptId: capabilityAttemptId, purpose, costConfirmed: true,
+        requestKey: capabilityRequestKey,
       });
       if (!begun) throw serviceError("AI_GATEWAY_PROFILE_NOT_FOUND", 404);
       const profile = normalizedProfile(begun.profile);
@@ -208,7 +212,8 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
         const raw = await gateway.testCapabilities({
           profile,
           correlationId,
-          requestKey: requestKey(accountId, profileId, configVersion, capabilityAttemptId, purpose),
+          requestKey: capabilityRequestKey,
+          capabilityExecution: begun.capabilityExecution,
           timeoutMs: 120_000,
           signal: input.signal,
         });
@@ -234,6 +239,7 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
         accountId, actorId: accountId, profileId, configVersion, correlationId,
         attemptId: capabilityAttemptId, fence: Number(begun.fence),
         leaseVersion, leaseToken, purpose, costConfirmed: true,
+        requestKey: capabilityRequestKey,
         capabilityResult,
       });
       if (saved?.applied !== true || saved?.stale === true) {

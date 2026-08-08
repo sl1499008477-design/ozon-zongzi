@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { assertPermission, PERMISSIONS } from "./permissions.mjs";
+import { normalizeSub2ApiGatewayBaseUrl } from "./sub2api-gateway-boundary.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,299}$/u;
@@ -165,9 +166,12 @@ function requireDependencies(repository, profileRepository, cipher, capabilitySe
 }
 
 export function createAutoListingAiSettingsService({
-  repository, profileRepository, cipher, capabilityService,
+  repository, profileRepository, cipher, capabilityService, allowLocalGateway = false,
 } = {}) {
   requireDependencies(repository, profileRepository, cipher, capabilityService);
+  if (typeof allowLocalGateway !== "boolean") {
+    throw new TypeError("Auto-listing AI settings local gateway policy must be boolean");
+  }
 
   return Object.freeze({
     async getOverview(raw = {}) {
@@ -189,7 +193,15 @@ export function createAutoListingAiSettingsService({
       const idempotencyKey = text(input.idempotencyKey);
       const correlationId = text(input.correlationId);
       const displayName = text(input.displayName, { maximum: 200, pattern: null });
-      const baseUrl = text(input.baseUrl, { maximum: 2048, pattern: null });
+      let baseUrl;
+      try {
+        baseUrl = normalizeSub2ApiGatewayBaseUrl(
+          text(input.baseUrl, { maximum: 2048, pattern: null }),
+          { allowLocalGateway },
+        );
+      } catch {
+        throw settingsError("AUTO_LISTING_AI_SETTINGS_BASE_URL_INVALID", 422, false);
+      }
       const gatewayKey = text(input.gatewayKey, { maximum: 16_384, pattern: null });
       const connectionId = repository.connectionIdForIntent({ accountId, idempotencyKey });
       const encryptedSecret = {
