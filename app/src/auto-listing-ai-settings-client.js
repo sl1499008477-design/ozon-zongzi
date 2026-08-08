@@ -21,7 +21,37 @@ const CAPABILITY_KEYS = ["profileId", "configVersion", "outcome", "features", "l
 const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
 const CONNECTION_STATUS = new Set(["PENDING", "VALIDATED", "ACTIVE", "RETIRED"]);
 const TASK_STATUS = new Set(["PENDING", "LEASED", "SUCCEEDED", "FAILED", "DEAD"]);
-const CAPABILITY_OUTCOME = new Set(["PASSED", "FAILED", "NOT_TESTED", "MISSING", "UNKNOWN", "STALE"]);
+const SHA256 = /^[a-f0-9]{64}$/u;
+const PAID_FEATURES = new Set([
+  "STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE_DECODE_WEBP",
+]);
+const DECODE_FEATURES = new Set(["IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE_DECODE_WEBP"]);
+const PAID_ERROR_CODES = new Set([
+  "AI_GATEWAY_CAPABILITY_FAILED", "AI_GATEWAY_PROFILE_INVALID", "AI_GATEWAY_PROFILE_DISABLED",
+  "AI_GATEWAY_REQUEST_INVALID", "AI_GATEWAY_SECRET_MISSING", "AI_GATEWAY_PROTOCOL_UNSUPPORTED",
+  "AI_GATEWAY_MODEL_MISMATCH", "AI_GATEWAY_INPUT_UNSUPPORTED", "GATEWAY_REDIRECT_BLOCKED",
+  "GATEWAY_TIMEOUT", "GATEWAY_CANCELLED", "RETRYABLE_GATEWAY", "NON_RETRYABLE_AUTH",
+  "NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE",
+]);
+const RECOMMENDATION_WARNINGS = new Set([
+  "RECOMMENDATIONS_UNVERIFIED", "NO_TEXT_MODEL_CANDIDATE", "NO_IMAGE_MODEL_CANDIDATE",
+]);
+const TEXT_REASONS = Object.freeze({
+  DECLARED_STRUCTURED_TEXT: 100, DECLARED_RESPONSES_PROTOCOL: 60, MODEL_ID_TEXT_HINT: 10,
+});
+const IMAGE_REASONS = Object.freeze({
+  DECLARED_IMAGE_GENERATION: 100, DECLARED_REFERENCE_IMAGE: 40,
+  DECLARED_TARGET_RESOLUTION: 20, MODEL_ID_IMAGE_HINT: 10,
+});
+const TEXT_RECOMMENDATION = Object.freeze({ reasons: TEXT_REASONS,
+  declarations: Object.freeze([["structured_text", "DECLARED_STRUCTURED_TEXT"], ["responses_protocol", "DECLARED_RESPONSES_PROTOCOL"]]),
+  hint: /(?:^|[-_.\/])(chat|claude|gpt|instruct|llama|mistral|qwen|text)(?:$|[-_.\/])/iu, hintReason: "MODEL_ID_TEXT_HINT",
+  missingWarning: "NO_TEXT_MODEL_CANDIDATE" });
+const IMAGE_RECOMMENDATION = Object.freeze({ reasons: IMAGE_REASONS,
+  declarations: Object.freeze([["image_generation", "DECLARED_IMAGE_GENERATION"], ["image_edit", "DECLARED_REFERENCE_IMAGE"],
+    ["target_resolution", "DECLARED_TARGET_RESOLUTION"]]),
+  hint: /(?:^|[-_.\/])(dall-?e|flux|image|midjourney|sdxl|stable-diffusion)(?:$|[-_.\/])/iu,
+  hintReason: "MODEL_ID_IMAGE_HINT", missingWarning: "NO_IMAGE_MODEL_CANDIDATE" });
 const intentOwners = new Map();
 export const AI_SETTINGS_SAFE_ERROR_CODES = Object.freeze(["AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED", "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID",
   "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_SYNCABLE",
@@ -95,7 +125,10 @@ function id(value) {
 function modelId(value) {
   if (typeof value !== "string" || value !== value.trim()) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   const result = text(value, 300);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,299}$/u.test(result)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,299}$/u.test(result)
+    || result.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  }
   return result;
 }
 
@@ -165,36 +198,146 @@ function isoTimestamp(value, nullable = false) {
   return (nullable && value === null) || (typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value);
 }
 
-function capabilityResult(value) {
-  if (plainRecord(value) && Reflect.ownKeys(value).length === 0) return true;
-  if (!plainRecord(value)) return false;
-  const keys = ["outcome", "features", "latencyMs", "models", "checkedAt", "errorCode"];
-  if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key)) || !["PASSED", "FAILED"].includes(value.outcome)
-    || !Array.isArray(value.features) || new Set(value.features).size !== value.features.length || value.features.some((feature) => typeof feature !== "string")
-    || !plainRecord(value.models) || Reflect.ownKeys(value.models).length !== 2 || !modelId(value.models.text) || !modelId(value.models.image)
-    || !isoTimestamp(value.checkedAt) || !nullableText(value.errorCode)) return false;
-  return value.outcome === "PASSED" ? value.errorCode === null && Number.isFinite(value.latencyMs) : value.latencyMs === null && typeof value.errorCode === "string";
+function exactRecord(value, keys) {
+  return plainRecord(value) && Reflect.ownKeys(value).length === keys.length
+    && keys.every((key) => Object.hasOwn(value, key));
 }
 
-function validationResult(value) {
+function paidCapabilityResult(value) {
+  const keys = ["outcome", "features", "latencyMs", "models", "checkedAt", "errorCode"];
+  if (!exactRecord(value, keys) || !["PASSED", "FAILED"].includes(value.outcome)
+    || !Array.isArray(value.features) || new Set(value.features).size !== value.features.length
+    || value.features.some((feature) => !PAID_FEATURES.has(feature))
+    || !exactRecord(value.models, ["text", "image"]) || !modelId(value.models.text) || !modelId(value.models.image)
+    || !isoTimestamp(value.checkedAt)) return false;
+  if (value.outcome === "PASSED") {
+    return value.features.length === 3 && value.features.includes("STRUCTURED_TEXT")
+      && value.features.includes("IMAGE_GENERATION") && value.features.filter((feature) => DECODE_FEATURES.has(feature)).length === 1
+      && Number.isInteger(value.latencyMs) && value.latencyMs >= 0 && value.errorCode === null;
+  }
+  return value.features.length === 0 && value.latencyMs === null && PAID_ERROR_CODES.has(value.errorCode);
+}
+
+function catalogCapabilityResult(value) {
+  return exactRecord(value, ["outcome", "checkedAt", "text", "image"])
+    && value.outcome === "NOT_TESTED" && isoTimestamp(value.checkedAt)
+    && value.text === false && value.image === false;
+}
+
+function rollbackCapabilityResult(value, connectionId, connectionVersion) {
+  return exactRecord(value, ["schemaVersion", "outcome", "checkedAt", "connectionId", "connectionVersion", "checks"])
+    && value.schemaVersion === "AI_GATEWAY_ROLLBACK_TEST_RESULT_V1" && value.outcome === "PASSED"
+    && isoTimestamp(value.checkedAt) && id(value.connectionId) === connectionId
+    && value.connectionVersion === connectionVersion
+    && exactRecord(value.checks, ["authentication", "modelsEndpoint"])
+    && value.checks.authentication === true && value.checks.modelsEndpoint === true;
+}
+
+function profileCapabilityResult(value) {
+  return exactRecord(value, []) || catalogCapabilityResult(value) || paidCapabilityResult(value);
+}
+
+function connectionValidationResult(value, connectionId, connectionVersion) {
   if (value === null) return true;
-  if (!plainRecord(value) || Reflect.ownKeys(value).length !== 3 || !["outcome", "checkedAt", "endpoint"].every((key) => Object.hasOwn(value, key))) return false;
-  return ["PASSED", "FAILED"].includes(value.outcome) && isoTimestamp(value.checkedAt) && value.endpoint === "models";
+  if (rollbackCapabilityResult(value, connectionId, connectionVersion)) return true;
+  if (!exactRecord(value, ["schemaVersion", "outcome", "checkedAt", "checks", "catalogId", "catalogHash"])
+    || value.schemaVersion !== "AI_GATEWAY_CONNECTION_TEST_V1" || value.outcome !== "PASSED"
+    || !isoTimestamp(value.checkedAt) || !exactRecord(value.checks, ["authentication", "modelsEndpoint"])) return false;
+  return value.checks.authentication === true && value.checks.modelsEndpoint === true
+    && Boolean(id(value.catalogId)) && SHA256.test(value.catalogHash);
+}
+
+function recommendationCandidate(value, expected, reasons) {
+  if (!exactRecord(value, ["modelId", "score", "confidence", "verified", "reasonCodes"])
+    || !modelId(value.modelId) || !Number.isSafeInteger(value.score) || value.score < 1
+    || !["DECLARED", "LOW"].includes(value.confidence) || value.verified !== false
+    || !Array.isArray(value.reasonCodes) || value.reasonCodes.length === 0
+    || new Set(value.reasonCodes).size !== value.reasonCodes.length
+    || value.reasonCodes.some((reason) => !Object.hasOwn(reasons, reason))) return false;
+  const expectedScore = value.reasonCodes.reduce((sum, reason) => sum + reasons[reason], 0);
+  const hint = Object.keys(reasons).find((reason) => reason.startsWith("MODEL_ID_"));
+  return value.score === expectedScore && (value.confidence === "LOW"
+    ? value.reasonCodes.length === 1 && value.reasonCodes[0] === hint
+    : value.reasonCodes.every((reason) => reason.startsWith("DECLARED_")))
+    && Boolean(expected) && value.modelId === expected.modelId && value.score === expected.score
+    && value.confidence === expected.confidence && value.reasonCodes.length === expected.reasonCodes.length
+    && value.reasonCodes.every((reason, index) => reason === expected.reasonCodes[index]);
+}
+
+function expectedRecommendationCandidate(model, specification) {
+  const capabilities = Array.isArray(model.metadata.capabilities)
+    ? new Set(model.metadata.capabilities.filter((value) => typeof value === "string")) : new Set();
+  const incompatible = Array.isArray(model.metadata.incompatibleCapabilities)
+    ? new Set(model.metadata.incompatibleCapabilities.filter((value) => typeof value === "string")) : new Set();
+  if (specification.declarations.some(([capability]) => incompatible.has(capability))) return null;
+  const reasonCodes = specification.declarations
+    .filter(([capability]) => capabilities.has(capability)).map(([, reason]) => reason);
+  if (reasonCodes.length === 0 && capabilities.size === 0 && specification.hint.test(model.id)) {
+    reasonCodes.push(specification.hintReason);
+  }
+  if (reasonCodes.length === 0) return null;
+  return { modelId: model.id, score: reasonCodes.reduce((sum, reason) => sum + specification.reasons[reason], 0),
+    confidence: reasonCodes[0].startsWith("DECLARED_") ? "DECLARED" : "LOW", reasonCodes };
+}
+
+function expectedCandidates(models, specification) {
+  return models.map((model) => expectedRecommendationCandidate(model, specification)).filter(Boolean)
+    .sort((left, right) => right.score - left.score
+      || (left.modelId < right.modelId ? -1 : left.modelId > right.modelId ? 1 : 0)).slice(0, 50);
+}
+
+function recommendationResult(value, models) {
+  if (!exactRecord(value, ["ruleVersion", "verified", "warnings", "textCandidates", "imageCandidates"])
+    || value.ruleVersion !== "AUTO_LISTING_MODEL_RECOMMENDATION_V1" || value.verified !== false
+    || !Array.isArray(value.warnings) || value.warnings[0] !== "RECOMMENDATIONS_UNVERIFIED"
+    || new Set(value.warnings).size !== value.warnings.length
+    || value.warnings.some((warning) => !RECOMMENDATION_WARNINGS.has(warning))) return false;
+  const expectedWarnings = ["RECOMMENDATIONS_UNVERIFIED"];
+  for (const [key, specification] of [
+    ["textCandidates", TEXT_RECOMMENDATION],
+    ["imageCandidates", IMAGE_RECOMMENDATION],
+  ]) {
+    const candidates = value[key];
+    const expected = expectedCandidates(models, specification);
+    if (!Array.isArray(candidates) || candidates.length > 50 || !uniqueIds(candidates, "modelId")
+      || candidates.length !== expected.length
+      || candidates.some((candidate, index) => !recommendationCandidate(candidate, expected[index], specification.reasons))) return false;
+    if (candidates.length === 0) expectedWarnings.push(specification.missingWarning);
+  }
+  return value.warnings.length === expectedWarnings.length
+    && value.warnings.every((warning, index) => warning === expectedWarnings[index]);
 }
 
 function catalogEnvelope(value) {
-  if (!plainRecord(value)) return false;
   const keys = ["schemaVersion", "connectionVersion", "syncedAt", "requestIdHash", "activeSelectionState", "activeSelection", "models", "recommendation"];
-  if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))
-    || value.schemaVersion !== "AUTO_LISTING_AI_MODEL_CATALOG_V1" || !Number.isSafeInteger(value.connectionVersion)
-    || !isoTimestamp(value.syncedAt) || typeof value.requestIdHash !== "string" || !["AVAILABLE", "MISSING", "NOT_SELECTED"].includes(value.activeSelectionState)
-    || !Array.isArray(value.models) || !plainRecord(value.recommendation)) return false;
+  if (!exactRecord(value, keys) || value.schemaVersion !== "AUTO_LISTING_AI_MODEL_CATALOG_V1"
+    || !Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1
+    || !isoTimestamp(value.syncedAt) || !SHA256.test(value.requestIdHash)
+    || !["AVAILABLE", "MISSING", "NOT_SELECTED"].includes(value.activeSelectionState)
+    || !Array.isArray(value.models) || value.models.length > 2_000) return false;
   const modelIds = new Set();
-  for (const model of value.models) {
-    if (!plainRecord(model) || Reflect.ownKeys(model).length !== 3 || !["id", "ownedBy", "metadata"].every((key) => Object.hasOwn(model, key)) || !modelId(model.id) || modelIds.has(model.id) || typeof model.ownedBy !== "string" || !plainRecord(model.metadata)) return false;
+  for (const [index, model] of value.models.entries()) {
+    if (!exactRecord(model, ["id", "ownedBy", "metadata"]) || !modelId(model.id) || modelIds.has(model.id)
+      || (index > 0 && value.models[index - 1].id >= model.id)
+      || typeof model.ownedBy !== "string" || model.ownedBy !== model.ownedBy.trim()
+      || model.ownedBy.length > 200 || !plainRecord(model.metadata)) return false;
     modelIds.add(model.id);
   }
-  return true;
+  if (value.activeSelectionState === "NOT_SELECTED") {
+    if (value.activeSelection !== null) return false;
+  } else {
+    const selection = value.activeSelection;
+    if (!exactRecord(selection, ["profileId", "configVersion", "textModel", "imageModel"])
+      || !id(selection.profileId) || !Number.isSafeInteger(selection.configVersion) || selection.configVersion < 1
+      || !modelId(selection.textModel) || !modelId(selection.imageModel)) return false;
+    const available = modelIds.has(selection.textModel) && modelIds.has(selection.imageModel);
+    if (available !== (value.activeSelectionState === "AVAILABLE")) return false;
+  }
+  return recommendationResult(value.recommendation, value.models);
+}
+
+function rollbackCatalogEnvelope(value) {
+  return exactRecord(value, ["models"]) && Array.isArray(value.models) && value.models.length === 0;
 }
 
 function uniqueIds(values, field = "id") {
@@ -212,7 +355,8 @@ function validateConnection(raw) {
     const value = exactResponse(raw, CONNECTION_KEYS);
     if (!id(value.id) || !id(value.accountId) || version(value.version) < 1 || !text(value.displayName, 200)
     || !text(value.baseUrl) || !text(value.fingerprint, 512) || !id(value.keyVersion) || !CONNECTION_STATUS.has(value.status)
-    || version(value.statusVersion) < 1 || !validationResult(value.validationResult) || !isoTimestamp(value.validatedAt, true) || !isoTimestamp(value.activatedAt, true)
+    || version(value.statusVersion) < 1 || !connectionValidationResult(value.validationResult, value.id, value.version)
+    || !isoTimestamp(value.validatedAt, true) || !isoTimestamp(value.activatedAt, true)
     || !isoTimestamp(value.retiredAt, true) || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
@@ -225,8 +369,9 @@ function validateTask(raw) {
     const value = exactResponse(raw, TASK_KEYS);
     if (!id(value.id) || !id(value.accountId) || !id(value.connectionId) || version(value.connectionVersion) < 1
     || !["CATALOG_SYNC", "ROLLBACK_CAPABILITY"].includes(value.syncPurpose) || version(value.targetConnectionStatusVersion) < 1
-    || !TASK_STATUS.has(value.status) || version(value.statusVersion) < 1 || !Number.isSafeInteger(value.attemptCount)
-    || !Number.isSafeInteger(value.maxAttempts) || !Number.isSafeInteger(value.leaseVersion) || !nullableText(value.availableAt)
+    || !TASK_STATUS.has(value.status) || version(value.statusVersion) < 1 || !Number.isSafeInteger(value.attemptCount) || value.attemptCount < 0
+    || !Number.isSafeInteger(value.maxAttempts) || value.maxAttempts < 1 || value.attemptCount > value.maxAttempts
+    || !Number.isSafeInteger(value.leaseVersion) || value.leaseVersion < 0 || !isoTimestamp(value.availableAt)
     || !isoTimestamp(value.completedAt, true) || !nullableText(value.lastErrorCode) || !nullableText(value.lastErrorSafe)
       || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return Object.freeze(value);
@@ -239,8 +384,12 @@ function validateProfile(raw) {
     if (!id(value.id) || !id(value.accountId) || !text(value.displayName, 200) || version(value.configVersion) < 1
     || !text(value.baseUrl) || value.textProtocol !== "SUB2API_RESPONSES"
     || !["SUB2API_RESPONSES_IMAGE_TOOL", "SUB2API_OPENAI_IMAGES"].includes(value.imageProtocol)
-    || !modelId(value.textModel) || !modelId(value.imageModel) || typeof value.enabled !== "boolean" || !capabilityResult(value.capabilityResult) || !isoTimestamp(value.capabilityCheckedAt, true)
-    || !nullableText(value.connectionId) || (value.connectionVersion !== null && (!Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1))
+    || !modelId(value.textModel) || !modelId(value.imageModel) || typeof value.enabled !== "boolean" || !profileCapabilityResult(value.capabilityResult)
+    || !isoTimestamp(value.capabilityCheckedAt, true)
+    || (!exactRecord(value.capabilityResult, []) && value.capabilityCheckedAt !== value.capabilityResult.checkedAt)
+    || (exactRecord(value.capabilityResult, []) && value.capabilityCheckedAt !== null)
+    || (value.capabilityResult.outcome === "FAILED" && value.enabled !== false)
+    || (value.connectionId !== null && !id(value.connectionId)) || (value.connectionVersion !== null && (!Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1))
     || ((value.connectionId === null) !== (value.connectionVersion === null))
       || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return Object.freeze(value);
@@ -250,10 +399,12 @@ function validateProfile(raw) {
 function validateCapability(raw) {
   return responseValidation(() => {
     const value = exactResponse(raw, CAPABILITY_KEYS);
-    if (!id(value.profileId) || version(value.configVersion) < 1 || !CAPABILITY_OUTCOME.has(value.outcome)
-    || !Array.isArray(value.features) || !Number.isFinite(value.latencyMs) && value.latencyMs !== null
-    || !plainRecord(value.models) || !modelId(value.models.text) || !modelId(value.models.image) || !isoTimestamp(value.checkedAt)
-      || !nullableText(value.errorCode) || typeof value.enabled !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    const paid = { outcome: value.outcome, features: value.features, latencyMs: value.latencyMs,
+      models: value.models, checkedAt: value.checkedAt, errorCode: value.errorCode };
+    if (!id(value.profileId) || version(value.configVersion) < 1 || !paidCapabilityResult(paid)
+      || typeof value.enabled !== "boolean" || (value.outcome === "FAILED" && value.enabled !== false)) {
+      throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    }
     return Object.freeze(value);
   });
 }
@@ -261,9 +412,11 @@ function validateCapability(raw) {
 function validateActions(raw) {
   return responseValidation(() => {
     const value = exactResponse(raw, ACTION_KEYS);
-    if (typeof value.canCreateConnection !== "boolean" || ACTION_KEYS.slice(1).some((key) => !Array.isArray(value[key]) || value[key].some((entry) => {
-    try { id(entry); return false; } catch { return true; }
-    }))) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    if (typeof value.canCreateConnection !== "boolean" || ACTION_KEYS.slice(1).some((key) => !Array.isArray(value[key])
+      || new Set(value[key]).size !== value[key].length
+      || value[key].some((entry) => { try { id(entry); return false; } catch { return true; } }))) {
+      throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    }
     return Object.freeze(value);
   });
 }
@@ -271,9 +424,18 @@ function validateActions(raw) {
 function validateCatalog(raw) {
   return responseValidation(() => {
     const value = exactResponse(raw, CATALOG_KEYS);
+    const catalogSyncEvidence = catalogEnvelope(value.catalog)
+      && value.catalog.connectionVersion === value.connectionVersion
+      && catalogCapabilityResult(value.capabilityResult)
+      && value.catalog.syncedAt === value.capabilityResult.checkedAt
+      && value.rollbackEvidenceIdentity === null;
+    const rollbackEvidence = rollbackCatalogEnvelope(value.catalog)
+      && rollbackCapabilityResult(value.capabilityResult, value.connectionId, value.connectionVersion)
+      && SHA256.test(value.rollbackEvidenceIdentity);
     if (!id(value.id) || !id(value.accountId) || !id(value.connectionId) || version(value.connectionVersion) < 1
-    || !id(value.syncTaskId) || !catalogEnvelope(value.catalog) || !text(value.catalogHash, 128) || !text(value.capabilityHash, 128)
-    || !nullableText(value.rollbackEvidenceIdentity) || !isoTimestamp(value.testedAt, true) || !isoTimestamp(value.createdAt)) {
+    || !id(value.syncTaskId) || !SHA256.test(value.catalogHash) || !SHA256.test(value.capabilityHash)
+    || (!catalogSyncEvidence && !rollbackEvidence) || value.testedAt !== value.capabilityResult.checkedAt
+    || !isoTimestamp(value.testedAt) || !isoTimestamp(value.createdAt)) {
       throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     }
     return Object.freeze(value);

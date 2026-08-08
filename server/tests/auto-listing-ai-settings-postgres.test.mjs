@@ -328,6 +328,28 @@ test("settings overview preserves a legacy profile null connection reference", a
   assert.equal(overview.profiles[0].connectionVersion, null);
 });
 
+test("settings overview producer keeps task and profile duplicate flags boolean across multiple rows", async () => {
+  const task = (id) => ({ id, account_id: "account-a", connection_id: "connection-a", connection_version: 1,
+    sync_purpose: "CATALOG_SYNC", target_connection_status_version: 1, status: "PENDING", status_version: 1,
+    attempt_count: 0, max_attempts: 5, lease_version: 0, available_at: "2026-08-08T00:00:00.000Z",
+    completed_at: null, last_error_code: null, last_error_safe: null, created_at: "2026-08-08T00:00:00.000Z" });
+  const profile = (id) => ({ id, account_id: "account-a", display_name: id, config_version: 1,
+    base_url: "https://legacy.example/v1", api_key_env_name: "SUB2API_LEGACY_KEY",
+    text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES",
+    text_model: "legacy-text", image_model: "legacy-image", enabled: false,
+    capability_result: {}, capability_checked_at: null, connection_id: null, connection_version: null,
+    created_at: "2026-08-08T00:00:00.000Z" });
+  const { pool } = scriptedPool([
+    { rows: [] }, { rows: [] }, { rows: [] }, { rows: [task("task-a"), task("task-b")] },
+    { rows: [profile("profile-a"), profile("profile-b")] }, { rows: [] },
+  ]);
+
+  const overview = await createAutoListingAiSettingsPostgres({ pool }).loadSettingsOverview({ accountId: "account-a" });
+
+  assert.deepEqual(overview.syncTasks.map((row) => row.duplicate), [false, false]);
+  assert.deepEqual(overview.profiles.map((row) => row.duplicate), [false, false]);
+});
+
 test("model sync completion accepts empty and single-modal catalog snapshots before database access", async () => {
   const emptyPool = scriptedPool([]);
   await assert.rejects(createAutoListingAiSettingsPostgres({ pool: emptyPool.pool }).completeModelSync({

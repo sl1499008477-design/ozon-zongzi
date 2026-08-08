@@ -990,8 +990,8 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           activeConnection: safeConnections.find((row) => row.status === "ACTIVE") ?? null,
           connections: safeConnections,
           catalogs: catalogs.rows.map(catalogDto),
-          syncTasks: tasks.rows.map(taskDto),
-          profiles: profiles.rows.map(profileDto),
+          syncTasks: tasks.rows.map((row) => taskDto(row)),
+          profiles: profiles.rows.map((row) => profileDto(row)),
         };
       }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     },

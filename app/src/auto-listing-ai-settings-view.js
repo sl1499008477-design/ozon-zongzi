@@ -12,6 +12,17 @@ const VERIFICATION = Object.freeze({
   PASSED: "已验证", FAILED: "验证失败", MISSING: "模型不可用", UNKNOWN: "验证结果未知",
   STALE: "验证已过期", NOT_TESTED: "待验证",
 });
+const PAID_FEATURES = new Set([
+  "STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE_DECODE_WEBP",
+]);
+const DECODE_FEATURES = new Set(["IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE_DECODE_WEBP"]);
+const PAID_ERROR_CODES = new Set([
+  "AI_GATEWAY_CAPABILITY_FAILED", "AI_GATEWAY_PROFILE_INVALID", "AI_GATEWAY_PROFILE_DISABLED",
+  "AI_GATEWAY_REQUEST_INVALID", "AI_GATEWAY_SECRET_MISSING", "AI_GATEWAY_PROTOCOL_UNSUPPORTED",
+  "AI_GATEWAY_MODEL_MISMATCH", "AI_GATEWAY_INPUT_UNSUPPORTED", "GATEWAY_REDIRECT_BLOCKED",
+  "GATEWAY_TIMEOUT", "GATEWAY_CANCELLED", "RETRYABLE_GATEWAY", "NON_RETRYABLE_AUTH",
+  "NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE",
+]);
 
 function record(value) {
   try {
@@ -28,11 +39,28 @@ function strings(value) {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : [];
 }
 
+function exactRecord(value, keys) {
+  const input = record(value);
+  return input && Object.keys(input).length === keys.length && keys.every((key) => Object.hasOwn(input, key)) ? input : null;
+}
+
+function safeEntityId(value) {
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= 240
+    && !value.includes("..") && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u.test(value);
+}
+
+function safeModelId(value) {
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= 300
+    && /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,299}$/u.test(value)
+    && value.split("/").every((part) => part && part !== "." && part !== "..");
+}
+
 function actionContract(value) {
   const input = record(value);
   const keys = ["canCreateConnection", "syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
   if (!input || Object.keys(input).length !== keys.length || keys.some((key) => !Object.hasOwn(input, key))
-    || typeof input.canCreateConnection !== "boolean" || keys.slice(1).some((key) => !Array.isArray(input[key]) || input[key].some((id) => typeof id !== "string"))) return null;
+    || typeof input.canCreateConnection !== "boolean" || keys.slice(1).some((key) => !Array.isArray(input[key])
+      || new Set(input[key]).size !== input[key].length || input[key].some((id) => !safeEntityId(id)))) return null;
   return input;
 }
 
@@ -43,22 +71,48 @@ function verification(result) {
 }
 
 function iso(value) {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function paidCapabilityResult(raw) {
+  const value = exactRecord(raw, ["outcome", "features", "latencyMs", "models", "checkedAt", "errorCode"]);
+  const models = exactRecord(value?.models, ["text", "image"]);
+  if (!value || !["PASSED", "FAILED"].includes(value.outcome) || !Array.isArray(value.features)
+    || new Set(value.features).size !== value.features.length || value.features.some((feature) => !PAID_FEATURES.has(feature))
+    || !models || !safeModelId(models.text) || !safeModelId(models.image) || !iso(value.checkedAt)) return null;
+  if (value.outcome === "PASSED") {
+    if (value.features.length !== 3 || !value.features.includes("STRUCTURED_TEXT")
+      || !value.features.includes("IMAGE_GENERATION")
+      || value.features.filter((feature) => DECODE_FEATURES.has(feature)).length !== 1
+      || !Number.isInteger(value.latencyMs) || value.latencyMs < 0 || value.errorCode !== null) return null;
+  } else if (value.features.length !== 0 || value.latencyMs !== null || !PAID_ERROR_CODES.has(value.errorCode)) return null;
+  return value;
+}
+
+function currentPaidEvidence(profile) {
+  const result = paidCapabilityResult(profile.capabilityResult);
+  return Boolean(result) && iso(profile.capabilityCheckedAt) && result.checkedAt === profile.capabilityCheckedAt
+    && result.models.text === profile.textModel && result.models.image === profile.imageModel
+    && !(result.outcome === "FAILED" && profile.enabled === true);
 }
 
 function catalogSelection(catalogs, syncTasks, profile) {
+  const evidenceRows = [];
   for (const raw of Array.isArray(catalogs) ? catalogs : []) {
     const row = record(raw); const catalog = record(row?.catalog);
     const task = (Array.isArray(syncTasks) ? syncTasks : []).map(record).find((entry) => entry?.id === row?.syncTaskId
       && entry.status === "SUCCEEDED" && entry.syncPurpose === "CATALOG_SYNC"
       && entry.connectionId === row?.connectionId && entry.connectionVersion === row?.connectionVersion);
-    const evidence = record(catalog?.activeSelection);
-    if (task && row?.connectionId === profile.connectionId && row?.connectionVersion === profile.connectionVersion
-      && evidence?.profileId === profile.id && evidence?.configVersion === profile.configVersion
-      && evidence?.textModel === profile.textModel && evidence?.imageModel === profile.imageModel
-      && typeof catalog?.activeSelectionState === "string") return catalog.activeSelectionState;
+    if (task && safeEntityId(row?.id) && iso(row?.createdAt)
+      && row.connectionId === profile.connectionId && row.connectionVersion === profile.connectionVersion) evidenceRows.push({ row, catalog });
   }
-  return null;
+  evidenceRows.sort((left, right) => right.row.createdAt.localeCompare(left.row.createdAt) || right.row.id.localeCompare(left.row.id));
+  const latest = evidenceRows[0]?.catalog;
+  const evidence = exactRecord(latest?.activeSelection, ["profileId", "configVersion", "textModel", "imageModel"]);
+  if (!["AVAILABLE", "MISSING"].includes(latest?.activeSelectionState) || !evidence
+    || evidence.profileId !== profile.id || evidence.configVersion !== profile.configVersion
+    || evidence.textModel !== profile.textModel || evidence.imageModel !== profile.imageModel) return null;
+  return latest.activeSelectionState;
 }
 
 function recommendations(catalogs) {
@@ -101,11 +155,11 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
     const row = record(raw) || {};
     const capability = verification(row.capabilityResult);
     const selection = catalogSelection(source.catalogs, source.syncTasks, row);
-    const state = row.enabled !== true ? capability
+    const currentPaid = currentPaidEvidence(row);
+    const stale = { outcome: "REFRESH", label: "待刷新", passed: false };
+    const state = row.enabled !== true ? (["PASSED", "FAILED"].includes(capability.outcome) && !currentPaid ? stale : capability)
       : selection === "MISSING" ? { outcome: "MISSING", label: VERIFICATION.MISSING, passed: false }
-      : selection !== "AVAILABLE" ? { outcome: "REFRESH", label: "待刷新", passed: false }
-      : capability.passed && (!iso(row.capabilityCheckedAt) || !iso(record(row.capabilityResult)?.checkedAt))
-        ? { outcome: "UNKNOWN", label: VERIFICATION.UNKNOWN, passed: false } : capability;
+      : selection !== "AVAILABLE" || !currentPaid ? stale : capability;
     const id = typeof row.id === "string" ? row.id : "";
     const confirmed = confirmedProfiles.has(id);
     return Object.freeze({ id, displayName: typeof row.displayName === "string" ? row.displayName : "",

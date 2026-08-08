@@ -14,6 +14,21 @@ import {
   testModelProfile,
 } from "../src/auto-listing-ai-settings-client.js";
 import { AUTO_LISTING_AI_SETTINGS_SAFE_CODES } from "../../server/auto-listing-ai-settings-routes.mjs";
+import { createAutoListingAiSettingsService } from "../../server/auto-listing-ai-settings-service.mjs";
+import { createAutoListingAiSettingsPostgres } from "../../server/auto-listing-ai-settings-postgres.mjs";
+import { recommendAutoListingModels } from "../../server/auto-listing-ai-model-recommendation.mjs";
+
+const CHECKED_AT = "2026-08-08T00:00:00.000Z";
+const CATALOG_HASH = "a".repeat(64);
+const CAPABILITY_HASH = "b".repeat(64);
+const PAID_FEATURES = Object.freeze(["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"]);
+const PAID_ERROR_CODES = Object.freeze([
+  "AI_GATEWAY_CAPABILITY_FAILED", "AI_GATEWAY_PROFILE_INVALID", "AI_GATEWAY_PROFILE_DISABLED",
+  "AI_GATEWAY_REQUEST_INVALID", "AI_GATEWAY_SECRET_MISSING", "AI_GATEWAY_PROTOCOL_UNSUPPORTED",
+  "AI_GATEWAY_MODEL_MISMATCH", "AI_GATEWAY_INPUT_UNSUPPORTED", "GATEWAY_REDIRECT_BLOCKED",
+  "GATEWAY_TIMEOUT", "GATEWAY_CANCELLED", "RETRYABLE_GATEWAY", "NON_RETRYABLE_AUTH",
+  "NON_RETRYABLE_GATEWAY", "INVALID_GATEWAY_RESPONSE",
+]);
 
 function memoryStorage() {
   const values = new Map();
@@ -35,8 +50,8 @@ function connection(overrides = {}) {
 function syncTask(overrides = {}) {
   return { id: "sync-a", accountId: "account-a", connectionId: "connection-a", connectionVersion: 1,
     syncPurpose: "CATALOG_SYNC", targetConnectionStatusVersion: 1, status: "PENDING", statusVersion: 1,
-    attemptCount: 0, maxAttempts: 5, leaseVersion: 0, availableAt: null, completedAt: null, lastErrorCode: null,
-    lastErrorSafe: null, createdAt: "2026-08-08T00:00:00.000Z", duplicate: false, ...overrides };
+    attemptCount: 0, maxAttempts: 5, leaseVersion: 0, availableAt: CHECKED_AT, completedAt: null, lastErrorCode: null,
+    lastErrorSafe: null, createdAt: CHECKED_AT, duplicate: false, ...overrides };
 }
 
 function profile(overrides = {}) {
@@ -48,9 +63,118 @@ function profile(overrides = {}) {
 
 function capability(overrides = {}) {
   return { profileId: "profile-a", configVersion: 1, outcome: "PASSED",
-    features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 123,
-    models: { text: "text-a", image: "image-a" }, checkedAt: "2026-08-08T00:00:00.000Z",
+    features: [...PAID_FEATURES], latencyMs: 123,
+    models: { text: "text-a", image: "image-a" }, checkedAt: CHECKED_AT,
     errorCode: null, enabled: false, ...overrides };
+}
+
+function paidCapability(overrides = {}) {
+  return { outcome: "PASSED", features: [...PAID_FEATURES], latencyMs: 123,
+    models: { text: "text-a", image: "image-a" }, checkedAt: CHECKED_AT,
+    errorCode: null, ...overrides };
+}
+
+function catalogCapability(overrides = {}) {
+  return { outcome: "NOT_TESTED", checkedAt: CHECKED_AT, text: false, image: false, ...overrides };
+}
+
+function rollbackCapability(overrides = {}) {
+  return { schemaVersion: "AI_GATEWAY_ROLLBACK_TEST_RESULT_V1", outcome: "PASSED", checkedAt: CHECKED_AT,
+    connectionId: "connection-rollback", connectionVersion: 1,
+    checks: { authentication: true, modelsEndpoint: true }, ...overrides };
+}
+
+function catalogEnvelope(overrides = {}) {
+  const models = [
+    { id: "image-a", ownedBy: "", metadata: {} },
+    { id: "text-a", ownedBy: "", metadata: {} },
+  ];
+  return { schemaVersion: "AUTO_LISTING_AI_MODEL_CATALOG_V1", connectionVersion: 1,
+    syncedAt: CHECKED_AT, requestIdHash: "c".repeat(64), activeSelectionState: "NOT_SELECTED",
+    activeSelection: null, models, recommendation: recommendAutoListingModels({ models }), ...overrides };
+}
+
+function catalog(overrides = {}) {
+  return { id: "catalog-a", accountId: "account-a", connectionId: "connection-a", connectionVersion: 1,
+    syncTaskId: "sync-a", catalog: catalogEnvelope(), catalogHash: CATALOG_HASH,
+    capabilityResult: catalogCapability(), capabilityHash: CAPABILITY_HASH, rollbackEvidenceIdentity: null,
+    testedAt: CHECKED_AT, createdAt: CHECKED_AT, ...overrides };
+}
+
+function overview(overrides = {}) {
+  return { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], syncTasks: [], profiles: [],
+    actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] },
+    ...overrides };
+}
+
+async function task7ProducerOverview() {
+  const catalogResult = catalogCapability();
+  const catalogValue = catalogEnvelope();
+  const connectionValidation = {
+    schemaVersion: "AI_GATEWAY_CONNECTION_TEST_V1", outcome: "PASSED", checkedAt: CHECKED_AT,
+    checks: { authentication: true, modelsEndpoint: true }, catalogId: "catalog-a", catalogHash: CATALOG_HASH,
+  };
+  const rows = {
+    connections: [{ id: "connection-a", account_id: "account-a", version: 1, display_name: "本地 sub2API",
+      base_url: "http://127.0.0.1:8080/v1", fingerprint: "fingerprint-a", key_version: "local-v1",
+      status: "VALIDATED", status_version: 2, validation_result: connectionValidation, validated_at: new Date(CHECKED_AT),
+      activated_at: null, retired_at: null, created_at: new Date(CHECKED_AT) },
+    { id: "connection-rollback", account_id: "account-a", version: 1, display_name: "回退 sub2API",
+      base_url: "http://127.0.0.1:8080/v1", fingerprint: "fingerprint-b", key_version: "local-v1",
+      status: "VALIDATED", status_version: 4, validation_result: rollbackCapability(), validated_at: new Date(CHECKED_AT),
+      activated_at: null, retired_at: new Date("2026-08-07T00:00:00.000Z"), created_at: new Date(CHECKED_AT) }],
+    catalogs: [{ id: "catalog-a", account_id: "account-a", connection_id: "connection-a", connection_version: 1,
+      sync_task_id: "sync-a", catalog: catalogValue, catalog_hash: CATALOG_HASH, capability_result: catalogResult,
+      capability_hash: CAPABILITY_HASH, rollback_evidence_identity: null, tested_at: new Date(CHECKED_AT), created_at: new Date(CHECKED_AT) },
+    { id: "catalog-rollback", account_id: "account-a", connection_id: "connection-rollback", connection_version: 1,
+      sync_task_id: "sync-rollback", catalog: { models: [] }, catalog_hash: "d".repeat(64),
+      capability_result: rollbackCapability(), capability_hash: "e".repeat(64), rollback_evidence_identity: "f".repeat(64),
+      tested_at: new Date(CHECKED_AT), created_at: new Date(CHECKED_AT) }],
+    tasks: [{ id: "sync-a", account_id: "account-a", connection_id: "connection-a", connection_version: 1,
+      sync_purpose: "CATALOG_SYNC", target_connection_status_version: 1, status: "SUCCEEDED", status_version: 3,
+      attempt_count: 1, max_attempts: 5, lease_version: 1, available_at: new Date(CHECKED_AT),
+      completed_at: new Date(CHECKED_AT), last_error_code: null, last_error_safe: null, created_at: new Date(CHECKED_AT) },
+    { id: "sync-rollback", account_id: "account-a", connection_id: "connection-rollback", connection_version: 1,
+      sync_purpose: "ROLLBACK_CAPABILITY", target_connection_status_version: 3, status: "SUCCEEDED", status_version: 3,
+      attempt_count: 1, max_attempts: 1, lease_version: 1, available_at: new Date(CHECKED_AT),
+      completed_at: new Date(CHECKED_AT), last_error_code: null, last_error_safe: null, created_at: new Date(CHECKED_AT) }],
+    profiles: [{ id: "profile-seeded", account_id: "account-a", display_name: "目录选型", config_version: 1,
+      base_url: "http://127.0.0.1:8080/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+      text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES", text_model: "text-a", image_model: "image-a",
+      enabled: false, capability_result: catalogResult, capability_checked_at: new Date(CHECKED_AT),
+      connection_id: "connection-a", connection_version: 1, created_at: new Date(CHECKED_AT) },
+    { id: "profile-paid", account_id: "account-a", display_name: "已付费验证", config_version: 2,
+      base_url: "http://127.0.0.1:8080/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+      text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES", text_model: "text-a", image_model: "image-a",
+      enabled: false, capability_result: paidCapability(), capability_checked_at: new Date(CHECKED_AT),
+      connection_id: "connection-a", connection_version: 1, created_at: new Date(CHECKED_AT) },
+    { id: "profile-failed", account_id: "account-a", display_name: "付费验证失败", config_version: 3,
+      base_url: "http://127.0.0.1:8080/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+      text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES", text_model: "text-a", image_model: "image-a",
+      enabled: false, capability_result: paidCapability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "GATEWAY_TIMEOUT" }),
+      capability_checked_at: new Date(CHECKED_AT), connection_id: "connection-a", connection_version: 1,
+      created_at: new Date(CHECKED_AT) },
+    { id: "profile-empty", account_id: "account-a", display_name: "旧配置", config_version: 1,
+      base_url: "https://gateway.example/v1", api_key_env_name: "SUB2API_LEGACY_KEY",
+      text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES", text_model: "text-a", image_model: "image-a",
+      enabled: false, capability_result: {}, capability_checked_at: null,
+      connection_id: null, connection_version: null, created_at: new Date(CHECKED_AT) }],
+  };
+  const client = { async query(sql) {
+    if (/FROM ai_gateway_connection_versions WHERE/u.test(sql)) return { rows: rows.connections };
+    if (/FROM ai_gateway_model_catalogs WHERE/u.test(sql)) return { rows: rows.catalogs };
+    if (/FROM ai_gateway_model_sync_tasks WHERE/u.test(sql)) return { rows: rows.tasks };
+    if (/FROM ai_gateway_profiles WHERE/u.test(sql)) return { rows: rows.profiles };
+    return { rows: [] };
+  }, release() {} };
+  const pool = { async connect() { return client; }, async query() { return { rows: [] }; } };
+  const producer = createAutoListingAiSettingsPostgres({ pool });
+  const repository = { ...producer, connectionIdForIntent() { return "unused"; }, async createPendingConnection() {},
+    async enqueueModelSync() {}, async createProfileFromSelection() {} };
+  const service = createAutoListingAiSettingsService({ repository,
+    profileRepository: { async publishProfile() {}, async prepareProfileRollback() {}, async rollbackProfile() {} },
+    cipher: { encrypt() {}, fingerprint() {} }, capabilityService: { async testGatewayCapabilities() {} }, allowLocalGateway: true });
+  return service.getOverview({ actor: { id: "account-a", role: "admin" } });
 }
 
 function installTransport(t, handler) {
@@ -198,4 +322,126 @@ test("overview rejects duplicate entity IDs and malformed nested validation evid
   const base = { accountId: "account-a", activeConnection: null, catalogs: [], syncTasks: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
   installTransport(t, async () => response({ ...base, connections: [connection(), connection()] }));
   await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+});
+
+test("client accepts the exact Task 7 repository and service overview DTO variants", async (t) => {
+  const produced = await task7ProducerOverview();
+  installTransport(t, async () => response(produced));
+
+  const loaded = await loadAiSettings();
+
+  assert.equal(loaded.connections[0].validationResult.schemaVersion, "AI_GATEWAY_CONNECTION_TEST_V1");
+  assert.deepEqual(loaded.connections[1].validationResult, rollbackCapability());
+  assert.deepEqual(loaded.catalogs[0].capabilityResult, catalogCapability());
+  assert.deepEqual(loaded.catalogs[1].capabilityResult, rollbackCapability());
+  assert.deepEqual(loaded.profiles.map((row) => row.capabilityResult.outcome ?? "EMPTY"),
+    ["NOT_TESTED", "PASSED", "FAILED", "EMPTY"]);
+  assert.equal(loaded.syncTasks[0].availableAt, CHECKED_AT);
+});
+
+test("paid test response accepts only Task 7 PASSED and FAILED outcome-specific DTOs", async (t) => {
+  let result = capability();
+  installTransport(t, async () => response(result));
+  assert.equal((await testModelProfile({ profileId: "profile-a", configVersion: 1,
+    correlationId: "corr-paid-pass", costConfirmed: true })).outcome, "PASSED");
+
+  result = capability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "GATEWAY_TIMEOUT" });
+  assert.equal((await testModelProfile({ profileId: "profile-a", configVersion: 1,
+    correlationId: "corr-paid-fail", costConfirmed: true })).outcome, "FAILED");
+
+  for (const [label, malformed] of [
+    ["unknown outcome", capability({ outcome: "NOT_TESTED" })],
+    ["duplicate feature", capability({ features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_GENERATION"] })],
+    ["unknown feature", capability({ features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_GIF"] })],
+    ["negative latency", capability({ latencyMs: -1 })],
+    ["fractional latency", capability({ latencyMs: 1.5 })],
+    ["PASSED error", capability({ errorCode: "GATEWAY_TIMEOUT" })],
+    ["FAILED features", capability({ outcome: "FAILED", features: ["STRUCTURED_TEXT"], latencyMs: null, errorCode: "GATEWAY_TIMEOUT" })],
+    ["FAILED latency", capability({ outcome: "FAILED", features: [], latencyMs: 1, errorCode: "GATEWAY_TIMEOUT" })],
+    ["FAILED unsafe code", capability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "INTERNAL_SECRET" })],
+    ["FAILED enabled", capability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "GATEWAY_TIMEOUT", enabled: true })],
+    ["open models", capability({ models: { text: "text-a", image: "image-a", extra: true } })],
+  ]) {
+    await t.test(label, async () => {
+      result = malformed;
+      await assert.rejects(testModelProfile({ profileId: "profile-a", configVersion: 1,
+        correlationId: `corr-${label.replaceAll(" ", "-")}`, costConfirmed: true }),
+      { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+    });
+  }
+});
+
+test("overview rejects every open or contradictory Task 7 nested DTO", async (t) => {
+  const produced = await task7ProducerOverview();
+  const baseline = structuredClone(produced);
+  let current = baseline;
+  installTransport(t, async () => response(current));
+  await loadAiSettings();
+  const cases = [
+    ["connection catalog validation open", (value) => { value.connections[0].validationResult.extra = true; }],
+    ["connection catalog validation combination", (value) => { value.connections[0].validationResult.checks.authentication = false; }],
+    ["connection rollback validation open", (value) => { value.connections[1].validationResult.extra = true; }],
+    ["connection rollback validation identity", (value) => { value.connections[1].validationResult.connectionId = "connection-other"; }],
+    ["connection rollback validation combination", (value) => { value.connections[1].validationResult.checks.modelsEndpoint = false; }],
+    ["catalog capability open", (value) => { value.catalogs[0].capabilityResult.extra = true; }],
+    ["catalog capability combination", (value) => { value.catalogs[0].capabilityResult.text = true; }],
+    ["rollback catalog capability open", (value) => { value.catalogs[1].capabilityResult.extra = true; }],
+    ["rollback catalog capability identity", (value) => { value.catalogs[1].capabilityResult.connectionVersion = 2; }],
+    ["rollback catalog capability combination", (value) => { value.catalogs[1].capabilityResult.checks.authentication = false; }],
+    ["rollback catalog envelope open", (value) => { value.catalogs[1].catalog.extra = true; }],
+    ["rollback catalog missing identity", (value) => { value.catalogs[1].rollbackEvidenceIdentity = null; }],
+    ["catalog sync unexpected rollback identity", (value) => { value.catalogs[0].rollbackEvidenceIdentity = "f".repeat(64); }],
+    ["active selection open", (value) => { value.catalogs[0].catalog.activeSelection = { profileId: "profile-paid", configVersion: 2, textModel: "text-a", imageModel: "image-a", extra: true }; value.catalogs[0].catalog.activeSelectionState = "AVAILABLE"; }],
+    ["active selection state mismatch", (value) => { value.catalogs[0].catalog.activeSelectionState = "AVAILABLE"; }],
+    ["active selection missing contradiction", (value) => { value.catalogs[0].catalog.activeSelection = { profileId: "profile-paid", configVersion: 2, textModel: "text-a", imageModel: "image-a" }; value.catalogs[0].catalog.activeSelectionState = "MISSING"; }],
+    ["recommendation open", (value) => { value.catalogs[0].catalog.recommendation.extra = true; }],
+    ["candidate open", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].extra = true; }],
+    ["candidate score", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].score += 1; }],
+    ["candidate confidence", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].confidence = "DECLARED"; }],
+    ["candidate declaration without metadata", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0] = {
+      modelId: "text-a", score: 160, confidence: "DECLARED", verified: false,
+      reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_RESPONSES_PROTOCOL"] }; }],
+    ["candidate duplicate model ID", (value) => { value.catalogs[0].catalog.recommendation.textCandidates.push(structuredClone(value.catalogs[0].catalog.recommendation.textCandidates[0])); }],
+    ["candidate unknown reason", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].reasonCodes = ["INTERNAL_HINT"]; }],
+    ["warning duplicate", (value) => { value.catalogs[0].catalog.recommendation.warnings.push("RECOMMENDATIONS_UNVERIFIED"); }],
+    ["warning combination", (value) => { value.catalogs[0].catalog.recommendation.warnings.push("NO_TEXT_MODEL_CANDIDATE"); }],
+    ["warning order", (value) => { value.catalogs[0].catalog.recommendation.textCandidates = [];
+      value.catalogs[0].catalog.recommendation.imageCandidates = [];
+      value.catalogs[0].catalog.recommendation.warnings = ["RECOMMENDATIONS_UNVERIFIED", "NO_IMAGE_MODEL_CANDIDATE", "NO_TEXT_MODEL_CANDIDATE"]; }],
+    ["model duplicate ID", (value) => { value.catalogs[0].catalog.models.push(structuredClone(value.catalogs[0].catalog.models[0])); }],
+    ["model noncanonical order", (value) => { value.catalogs[0].catalog.models.reverse(); }],
+    ["model traversal segment", (value) => { value.catalogs[0].catalog.models[0].id = "provider/../image-a"; }],
+    ["request hash", (value) => { value.catalogs[0].catalog.requestIdHash = "not-a-hash"; }],
+    ["catalog hash", (value) => { value.catalogs[0].catalogHash = "not-a-hash"; }],
+    ["nullable testedAt", (value) => { value.catalogs[0].testedAt = null; }],
+    ["noncanonical availableAt", (value) => { value.syncTasks[0].availableAt = "2026-08-08T00:00:00Z"; }],
+    ["unsafe profile connection ID", (value) => { value.profiles[0].connectionId = "connection..a"; }],
+    ["profile paid unknown feature", (value) => { value.profiles[1].capabilityResult.features[2] = "IMAGE_DECODE_GIF"; }],
+    ["profile paid FAILED combination", (value) => { value.profiles[2].capabilityResult.features = ["STRUCTURED_TEXT"]; }],
+    ["profile paid FAILED enabled", (value) => { value.profiles[2].enabled = true; }],
+    ["profile paid unsafe error", (value) => { value.profiles[2].capabilityResult.errorCode = "INTERNAL_SECRET"; }],
+  ];
+  for (const [label, mutate] of cases) {
+    await t.test(label, async () => {
+      current = structuredClone(baseline);
+      mutate(current);
+      await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+    });
+  }
+});
+
+test("overview rejects duplicate IDs inside each server action array", async (t) => {
+  const produced = await task7ProducerOverview();
+  const baseline = structuredClone(produced);
+  let current = baseline;
+  installTransport(t, async () => response(current));
+  await loadAiSettings();
+  for (const key of ["syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"]) {
+    await t.test(key, async () => {
+      current = structuredClone(baseline);
+      const id = key === "syncableConnectionIds" ? "connection-a" : "profile-paid";
+      current.actions[key] = [id, id];
+      await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+    });
+  }
 });

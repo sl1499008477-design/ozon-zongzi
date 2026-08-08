@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { aiSettingsPresentation } from "../src/auto-listing-ai-settings-view.js";
 
+const CHECKED_AT = "2026-08-08T00:00:00.000Z";
+
+function paidCapability(overrides = {}) {
+  return { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+    latencyMs: 123, models: { text: "text-a", image: "image-a" }, checkedAt: CHECKED_AT,
+    errorCode: null, ...overrides };
+}
+
 function overview(overrides = {}) {
-  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: { outcome: "PASSED", checkedAt: "2026-08-08T00:00:00.000Z", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"] }, capabilityCheckedAt: "2026-08-08T00:00:00.000Z", connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
+  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: paidCapability(), capabilityCheckedAt: CHECKED_AT, connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
 }
 
 test("presentation exposes actions only from the complete server action contract", () => {
@@ -15,7 +23,7 @@ test("presentation exposes actions only from the complete server action contract
 });
 
 test("presentation renders only safe recommendation reasons and candidates stay unverified", () => {
-  const view = aiSettingsPresentation(overview({ catalogs: [{ id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, catalog: { recommendation: { verified: false, warnings: [], imageCandidates: [{ modelId: "image-a", reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_IMAGE_GENERATION", "DECLARED_REFERENCE_IMAGE", "internal-note"] }] } } }], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", capabilityResult: { outcome: "NOT_TESTED" }, enabled: false }] }));
+  const view = aiSettingsPresentation(overview({ catalogs: [{ id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, catalog: { recommendation: { verified: false, warnings: [], imageCandidates: [{ modelId: "image-a", reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_IMAGE_GENERATION", "DECLARED_REFERENCE_IMAGE", "internal-note"] }] } } }], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", capabilityResult: { outcome: "NOT_TESTED", checkedAt: CHECKED_AT, text: false, image: false }, capabilityCheckedAt: CHECKED_AT, enabled: false }] }));
   assert.deepEqual(view.recommendations, { verified: false, warnings: [], text: [], image: [{ modelId: "image-a", reasons: ["支持结构化输出", "支持图片生成", "支持参考图"] }] });
   assert.equal(view.profiles[0].verificationLabel, "待验证");
 });
@@ -27,7 +35,9 @@ test("paid tests require an explicit warning and unconfirmed state", () => {
 
 test("MISSING FAILED and UNKNOWN stay explicit and never imply selection or publication", () => {
   for (const [outcome, label] of [["MISSING", "模型不可用"], ["FAILED", "验证失败"], ["UNKNOWN", "验证结果未知"]]) {
-    const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], capabilityResult: { outcome }, enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
+    const capabilityResult = outcome === "FAILED"
+      ? paidCapability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "GATEWAY_TIMEOUT" }) : { outcome };
+    const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], capabilityResult, enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
     assert.equal(view.profiles[0].verificationLabel, label); assert.equal(view.profiles[0].actions.canPublish, true); assert.equal(view.profiles[0].selected, false);
   }
 });
@@ -43,9 +53,9 @@ test("recommendations retain independent text and image roles with all Task 5 re
 
 test("a passed profile is only verified with its exact latest successful catalog evidence", () => {
   const profile = overview().profiles[0];
-  const catalog = { id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, syncTaskId: "task-a", catalog: {
+  const catalog = { id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, syncTaskId: "task-a", createdAt: CHECKED_AT, catalog: {
     activeSelectionState: "AVAILABLE", activeSelection: { profileId: "profile-a", configVersion: 1, textModel: "text-a", imageModel: "image-a" } } };
-  const current = aiSettingsPresentation(overview({ catalogs: [catalog], syncTasks: [{ id: "task-a", status: "SUCCEEDED", syncPurpose: "CATALOG_SYNC", connectionId: "connection-a", connectionVersion: 1 }] }));
+  const current = aiSettingsPresentation(overview({ profiles: [{ ...profile, enabled: true }], catalogs: [catalog], syncTasks: [{ id: "task-a", status: "SUCCEEDED", syncPurpose: "CATALOG_SYNC", connectionId: "connection-a", connectionVersion: 1 }] }));
   assert.equal(current.profiles[0].verificationLabel, "已验证");
   const stale = aiSettingsPresentation(overview({ profiles: [{ ...profile, enabled: true }], catalogs: [catalog], syncTasks: [{ id: "task-a", status: "SUCCEEDED", syncPurpose: "CATALOG_SYNC", connectionId: "other", connectionVersion: 1 }] }));
   assert.equal(stale.profiles[0].verificationLabel, "待刷新");
@@ -63,4 +73,59 @@ test("disabled publish candidate uses its own current paid capability rather tha
   const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
   assert.equal(view.profiles[0].verificationLabel, "已验证");
   assert.equal(view.profiles[0].actions.canPublish, true);
+});
+
+test("duplicate action IDs make the pure presentation fail closed even without the client", () => {
+  for (const key of ["syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"]) {
+    const actions = structuredClone(overview().actions);
+    const id = key === "syncableConnectionIds" ? "connection-a" : "profile-a";
+    actions[key] = [id, id];
+    const view = aiSettingsPresentation(overview({ actions }));
+    assert.equal(view.canCreateConnection, false, key);
+    assert.deepEqual(view.connections[0].actions, { canSync: false }, key);
+    assert.deepEqual(view.profiles[0].actions, { canTest: false, canPublish: false, canRollback: false }, key);
+  }
+});
+
+test("disabled profile is verified only by exact current paid evidence for its selected models", () => {
+  const cases = [
+    ["checkedAt mismatch", { capabilityCheckedAt: "2026-08-08T00:00:01.000Z" }],
+    ["noncanonical stored timestamp", { capabilityCheckedAt: "2026-08-08T00:00:00Z" }],
+    ["noncanonical result timestamp", { capabilityResult: paidCapability({ checkedAt: "2026-08-08T00:00:00Z" }) }],
+    ["text model mismatch", { capabilityResult: paidCapability({ models: { text: "text-b", image: "image-a" } }) }],
+    ["image model mismatch", { capabilityResult: paidCapability({ models: { text: "text-a", image: "image-b" } }) }],
+    ["missing paid feature", { capabilityResult: paidCapability({ features: ["STRUCTURED_TEXT", "IMAGE_GENERATION"] }) }],
+    ["open paid evidence", { capabilityResult: { ...paidCapability(), extra: true } }],
+  ];
+  for (const [label, mutation] of cases) {
+    const profile = { ...overview().profiles[0], ...mutation };
+    const view = aiSettingsPresentation(overview({ profiles: [profile] }));
+    assert.equal(view.profiles[0].verificationLabel, "待刷新", label);
+    assert.equal(view.profiles[0].actions.canPublish, true, label);
+  }
+  assert.equal(aiSettingsPresentation(overview()).profiles[0].verificationLabel, "已验证");
+});
+
+test("enabled profile requires matching canonical paid timestamps and the latest exact catalog evidence", () => {
+  const profile = { ...overview().profiles[0], enabled: true };
+  const available = { id: "catalog-old", connectionId: "connection-a", connectionVersion: 1, syncTaskId: "task-old",
+    createdAt: "2026-08-08T00:01:00.000Z", catalog: { activeSelectionState: "AVAILABLE",
+      activeSelection: { profileId: "profile-a", configVersion: 1, textModel: "text-a", imageModel: "image-a" } } };
+  const missing = { id: "catalog-new", connectionId: "connection-a", connectionVersion: 1, syncTaskId: "task-new",
+    createdAt: "2026-08-08T00:02:00.000Z", catalog: { activeSelectionState: "MISSING",
+      activeSelection: { profileId: "profile-a", configVersion: 1, textModel: "text-a", imageModel: "image-a" } } };
+  const tasks = [
+    { id: "task-old", status: "SUCCEEDED", syncPurpose: "CATALOG_SYNC", connectionId: "connection-a", connectionVersion: 1 },
+    { id: "task-new", status: "SUCCEEDED", syncPurpose: "CATALOG_SYNC", connectionId: "connection-a", connectionVersion: 1 },
+  ];
+  const latestMissing = aiSettingsPresentation(overview({ profiles: [profile], catalogs: [available, missing], syncTasks: tasks }));
+  assert.equal(latestMissing.profiles[0].verificationLabel, "模型不可用");
+  assert.equal(latestMissing.profiles[0].actions.canPublish, true);
+
+  const current = aiSettingsPresentation(overview({ profiles: [profile], catalogs: [available], syncTasks: [tasks[0]] }));
+  assert.equal(current.profiles[0].verificationLabel, "已验证");
+  const stale = aiSettingsPresentation(overview({ profiles: [{ ...profile, capabilityCheckedAt: "2026-08-08T00:00:01.000Z" }], catalogs: [available], syncTasks: [tasks[0]] }));
+  assert.equal(stale.profiles[0].verificationLabel, "待刷新");
+  assert.equal(stale.profiles[0].selected, true);
+  assert.equal(stale.profiles[0].actions.canPublish, true);
 });
