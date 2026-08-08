@@ -18,6 +18,10 @@ const preparedRecoveryUpgradeUrl = new URL(
   "../db/migrations/056_auto_listing_ai_prepared_capability_recovery.sql",
   import.meta.url,
 );
+const sentReservationRecoveryUpgradeUrl = new URL(
+  "../db/migrations/057_auto_listing_ai_sent_reservation_recovery.sql",
+  import.meta.url,
+);
 
 async function migrationSql() {
   return readFile(migrationUrl, "utf8");
@@ -33,6 +37,10 @@ async function reservationUpgradeSql() {
 
 async function preparedRecoveryUpgradeSql() {
   return readFile(preparedRecoveryUpgradeUrl, "utf8");
+}
+
+async function sentReservationRecoveryUpgradeSql() {
+  return readFile(sentReservationRecoveryUpgradeUrl, "utf8");
 }
 
 function functionBlock(sql, name) {
@@ -178,6 +186,30 @@ test("056 safely terminals only expired PREPARED work before account state trans
   assert.match(sql, /'system','expired-prepared-cleanup'/iu);
   assert.match(sql, /PERFORM auto_listing_cleanup_expired_prepared_capability_subcalls\(OLD\.account_id\)/iu);
   assert.doesNotMatch(sql, /reservation\.status='SENDING'[\s\S]*SET status='FAILED'/iu);
+});
+
+test("057 makes provider-send evidence irreversible and excludes it from PREPARED cleanup", async () => {
+  const sql = await sentReservationRecoveryUpgradeSql();
+  const guardDrop = sql.indexOf("DROP TRIGGER IF EXISTS ai_gateway_capability_subcall_reservations_guard");
+  const historicalBackfill = sql.indexOf("UPDATE ai_gateway_capability_subcall_reservations");
+  const guardRestore = sql.indexOf("CREATE TRIGGER ai_gateway_capability_subcall_reservations_guard");
+  assert.ok(guardDrop >= 0 && guardDrop < historicalBackfill && historicalBackfill < guardRestore,
+    "057 must suspend the old 055 guard only inside its transaction while historical send evidence is backfilled");
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS ever_sending_at TIMESTAMPTZ/iu);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS terminal_reason TEXT/iu);
+  assert.match(sql, /AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_SENDING/iu);
+  assert.match(sql, /metadata->>'attemptId'=reservation\.attempt_id/iu);
+  assert.match(sql, /metadata->>'stage'=reservation\.stage/iu);
+  assert.match(sql, /metadata->>'providerRequestKey'=reservation\.provider_request_key/iu);
+  assert.match(sql, /metadata->>'providerCorrelationId'=reservation\.provider_correlation_id/iu);
+  assert.match(sql, /SET ever_sending_at=sending_at[\s\S]*ever_sending_at IS NULL[\s\S]*sending_at IS NOT NULL/iu);
+  assert.match(sql, /SET status='SENDING',sending_at=ever_sending_at[\s\S]*status='PREPARED'[\s\S]*ever_sending_at IS NOT NULL/iu);
+  assert.match(sql, /OLD\.ever_sending_at IS NOT NULL[\s\S]*NEW\.ever_sending_at IS DISTINCT FROM OLD\.ever_sending_at/iu);
+  assert.match(sql, /OLD\.status='SENDING'[\s\S]*NEW\.status='SENDING'/iu);
+  assert.match(sql, /OLD\.status='SENDING'[\s\S]*NEW\.status='FAILED'[\s\S]*NEW\.terminal_reason='PROVIDER_REJECTED'/iu);
+  assert.match(sql, /OLD\.status='PREPARED'[\s\S]*OLD\.ever_sending_at IS NULL[\s\S]*NEW\.status='FAILED'[\s\S]*NEW\.terminal_reason IN/iu);
+  assert.match(sql, /reservation\.status='PREPARED'[\s\S]*reservation\.ever_sending_at IS NULL/iu);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_cleanup_expired_prepared_capability_subcalls/iu);
 });
 
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {

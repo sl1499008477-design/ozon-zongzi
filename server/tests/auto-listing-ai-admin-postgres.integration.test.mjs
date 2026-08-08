@@ -772,7 +772,8 @@ if (!enabled) {
       assert.equal(subcallTransports.length, 1);
       const ambiguousAttempt = await pool.query(
         `SELECT attempt.id,attempt.status,reservation.status AS reservation_status,
-                reservation.provider_request_key,reservation.provider_correlation_id
+                attempt.request_key,reservation.provider_request_key,
+                reservation.provider_correlation_id,reservation.ever_sending_at
            FROM ai_gateway_capability_attempts attempt
            JOIN ai_gateway_capability_subcall_reservations reservation
              ON reservation.account_id=attempt.account_id AND reservation.attempt_id=attempt.id
@@ -781,6 +782,7 @@ if (!enabled) {
       );
       assert.equal(ambiguousAttempt.rows[0].status, "RUNNING");
       assert.equal(ambiguousAttempt.rows[0].reservation_status, "SENDING");
+      assert.ok(ambiguousAttempt.rows[0].ever_sending_at instanceof Date);
       assert.equal(ambiguousAttempt.rows[0].provider_request_key, subcallTransports[0].requestKey);
       assert.equal(ambiguousAttempt.rows[0].provider_correlation_id, subcallTransports[0].correlationId);
       await assert.rejects(profiles.publishProfile({
@@ -805,6 +807,100 @@ if (!enabled) {
         await subcallFaultClient.query("SET session_replication_role='origin'").catch(() => {});
         subcallFaultClient.release();
       }
+      let recoveredSecretFailureFetches = 0;
+      const recoveredSecretFailureResolver = createAutoListingAiCapabilityCredentialResolver({
+        repository: profiles,
+        cipher: { async decrypt() { throw new Error("forced recovered secret failure"); } },
+        readSecret() { return undefined; },
+      });
+      const recoveredSecretFailureGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize recovered paid work"); },
+        prepareCapabilitySubcall: (execution) => recoveredSecretFailureResolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => recoveredSecretFailureResolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => recoveredSecretFailureResolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) =>
+          recoveredSecretFailureResolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async () => {
+          recoveredSecretFailureFetches += 1;
+          throw new Error("recovered secret failure must not reach provider transport");
+        },
+      });
+      const recoveredSecretFailureService = createAiGatewayProfileService({
+        repository: profiles, gateway: recoveredSecretFailureGateway,
+      });
+      await assert.rejects(recoveredSecretFailureService.testGatewayCapabilities(subcallWriteInput), {
+        code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", status: 409,
+      });
+      assert.equal(recoveredSecretFailureFetches, 0);
+      const reclaimedSending = await pool.query(
+        `SELECT reservation.status,reservation.lease_version,reservation.ever_sending_at,
+                reservation.provider_request_key,reservation.provider_correlation_id,attempt.status AS attempt_status
+           FROM ai_gateway_capability_subcall_reservations reservation
+           JOIN ai_gateway_capability_attempts attempt
+             ON attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+          WHERE reservation.account_id=$1 AND reservation.attempt_id=$2
+            AND reservation.stage='REACHABILITY'`,
+        [accountId, ambiguousAttempt.rows[0].id],
+      );
+      assert.equal(reclaimedSending.rows[0].status, "SENDING",
+        "an unresolved provider send must never reclaim as PREPARED");
+      assert.equal(Number(reclaimedSending.rows[0].lease_version), 2);
+      assert.equal(reclaimedSending.rows[0].attempt_status, "RUNNING");
+      assert.ok(reclaimedSending.rows[0].ever_sending_at instanceof Date);
+      assert.equal(reclaimedSending.rows[0].provider_request_key,
+        ambiguousAttempt.rows[0].provider_request_key);
+      assert.equal(reclaimedSending.rows[0].provider_correlation_id,
+        ambiguousAttempt.rows[0].provider_correlation_id);
+      await assert.rejects(pool.query(
+        `UPDATE ai_gateway_capability_subcall_reservations
+            SET lease_version=lease_version+1,reservation_version=reservation_version+1,
+                status='PREPARED',prepared_at=NOW(),sending_at=NULL,completed_at=NULL
+          WHERE account_id=$1 AND attempt_id=$2 AND stage='REACHABILITY'`,
+        [accountId, ambiguousAttempt.rows[0].id],
+      ), { code: "23514" });
+      await assert.rejects(pool.query(
+        `UPDATE ai_gateway_capability_subcall_reservations
+            SET status='FAILED',completed_at=NOW(),terminal_reason='PRE_SEND_FAILED'
+          WHERE account_id=$1 AND attempt_id=$2 AND stage='REACHABILITY'`,
+        [accountId, ambiguousAttempt.rows[0].id],
+      ), { code: "23514" });
+      const secondCrashClient = await pool.connect();
+      try {
+        await secondCrashClient.query("SET session_replication_role='replica'");
+        await secondCrashClient.query(
+          "UPDATE ai_gateway_capability_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+          [accountId, ambiguousAttempt.rows[0].id],
+        );
+      } finally {
+        await secondCrashClient.query("SET session_replication_role='origin'").catch(() => {});
+        secondCrashClient.release();
+      }
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: subcallWriteFailure.profile.id, configVersion: 1,
+        idempotencyKey: `publish-after-double-crash-${suffix}`,
+        correlationId: `publish-after-double-crash-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
+      const preservedAmbiguity = await pool.query(
+        `SELECT reservation.status,reservation.ever_sending_at,
+                COUNT(cleanup.event_id)::INTEGER AS cleanup_count
+           FROM ai_gateway_capability_subcall_reservations reservation
+           LEFT JOIN audit_events cleanup
+             ON cleanup.account_id=reservation.account_id
+            AND cleanup.actor_type='system' AND cleanup.actor_id='expired-prepared-cleanup'
+            AND cleanup.metadata->>'attemptId'=reservation.attempt_id
+            AND cleanup.metadata->>'stage'=reservation.stage
+          WHERE reservation.account_id=$1 AND reservation.attempt_id=$2
+            AND reservation.stage='REACHABILITY'
+          GROUP BY reservation.status,reservation.ever_sending_at`,
+        [accountId, ambiguousAttempt.rows[0].id],
+      );
+      assert.equal(preservedAmbiguity.rows[0].status, "SENDING");
+      assert.ok(preservedAmbiguity.rows[0].ever_sending_at instanceof Date);
+      assert.equal(preservedAmbiguity.rows[0].cleanup_count, 0,
+        "expired PREPARED cleanup must never rewrite a stage that reached provider sending");
       const subcallRecovered = await subcallWriteService.testGatewayCapabilities(subcallWriteInput);
       assert.equal(subcallRecovered.outcome, "PASSED");
       assert.equal(subcallTransports.length, 4);
@@ -1281,6 +1377,108 @@ if (!enabled) {
       await admin.query(await readFile(path.join(migrationsDir,
         "056_auto_listing_ai_prepared_capability_recovery.sql"), "utf8"));
 
+      const sentUpgradeAccountId = `account-sent-upgrade-${suffix}`;
+      const sentUpgradeProfileId = `profile-sent-upgrade-${suffix}`;
+      const sentUpgradeAttemptId = `attempt-sent-upgrade-${suffix}`;
+      const sentUpgradeRequestKey = "b".repeat(64);
+      await admin.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [sentUpgradeAccountId],
+      );
+      await admin.query(
+        `INSERT INTO ai_gateway_profiles (
+           id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+           text_model,image_model,config_version,enabled,created_by
+         ) VALUES ($1,$2,'Sent upgrade profile','https://gateway.example.test/v1','SUB2API_LEGACY_KEY',
+           'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text-model','image-model',1,FALSE,$2)`,
+        [sentUpgradeProfileId, sentUpgradeAccountId],
+      );
+      const sentUpgradeAttempt = await admin.query(
+        `INSERT INTO ai_gateway_capability_attempts (
+           id,account_id,profile_id,config_version,correlation_id,status,
+           lease_version,lease_token,lease_expires_at,authorization_schema_version,
+           purpose,cost_confirmed,authorization_hash,request_key,actor_id,
+           target_connection_id,target_connection_version,target_connection_status,
+           target_connection_status_version,authorized_at
+         ) VALUES ($1,$2,$3,1,$4,'RUNNING',1,$5,NOW()-INTERVAL '1 second',
+           'AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1','PROFILE_CAPABILITY',TRUE,$6,$7,$2,
+           NULL,NULL,'LEGACY',0,NOW())
+         RETURNING fence`,
+        [sentUpgradeAttemptId, sentUpgradeAccountId, sentUpgradeProfileId,
+          `corr-sent-upgrade-${suffix}`, `caplease_sent_upgrade_${suffix}`, "a".repeat(64),
+          sentUpgradeRequestKey],
+      );
+      const sentUpgradeProviderRequestKey = crypto.createHash("sha256").update(JSON.stringify({
+        schemaVersion: "AI_GATEWAY_CAPABILITY_SUBCALL_V1",
+        accountId: sentUpgradeAccountId,
+        attemptId: sentUpgradeAttemptId,
+        fence: Number(sentUpgradeAttempt.rows[0].fence),
+        requestKey: sentUpgradeRequestKey,
+        stage: "REACHABILITY",
+      }), "utf8").digest("hex");
+      const sentUpgradeProviderCorrelationId = `cap_${sentUpgradeProviderRequestKey.slice(0, 40)}`;
+      const sentUpgradeSendingAt = new Date(Date.now() - 60_000).toISOString();
+      await admin.query(
+        `INSERT INTO ai_gateway_capability_subcall_reservations (
+           id,account_id,attempt_id,profile_id,config_version,attempt_fence,lease_version,
+           stage,status,provider_request_key,provider_correlation_id,prepared_at,sending_at
+         ) VALUES ($1,$2,$3,$4,1,$5,1,'REACHABILITY','SENDING',$6,$7,$8,$8)`,
+        [`reservation-sent-upgrade-${suffix}`, sentUpgradeAccountId, sentUpgradeAttemptId,
+          sentUpgradeProfileId, sentUpgradeAttempt.rows[0].fence, sentUpgradeProviderRequestKey,
+          sentUpgradeProviderCorrelationId, sentUpgradeSendingAt],
+      );
+      await admin.query(
+        `INSERT INTO audit_events (
+           event_id,account_id,action,status,actor_type,actor_id,source,entity_type,
+           entity_id,correlation_id,metadata
+         ) VALUES ($1,$2,'AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_SENDING','SUCCESS',
+           'account',$2,'auto-listing-ai-admin','ai_gateway_profile',$3,$4,$5::JSONB)`,
+        [`audit-sent-upgrade-${suffix}`, sentUpgradeAccountId, sentUpgradeProfileId,
+          `corr-sent-upgrade-${suffix}`, JSON.stringify({
+            requestHash: "e".repeat(64), attemptId: sentUpgradeAttemptId,
+            stage: "REACHABILITY", providerRequestKey: sentUpgradeProviderRequestKey,
+            providerRequestKeyHash: crypto.createHash("sha256").update(sentUpgradeProviderRequestKey).digest("hex"),
+            providerCorrelationId: sentUpgradeProviderCorrelationId,
+            leaseVersion: 1, reservationVersion: 1,
+          })],
+      );
+      await admin.query(
+        `UPDATE ai_gateway_capability_attempts
+            SET lease_version=2,lease_token=$3,lease_expires_at=NOW()-INTERVAL '1 second'
+          WHERE account_id=$1 AND id=$2`,
+        [sentUpgradeAccountId, sentUpgradeAttemptId, `caplease_sent_upgrade_reclaimed_${suffix}`],
+      );
+      await admin.query(
+        `UPDATE ai_gateway_capability_subcall_reservations
+            SET lease_version=2,reservation_version=2,status='PREPARED',
+                prepared_at=NOW(),sending_at=NULL,completed_at=NULL
+          WHERE account_id=$1 AND attempt_id=$2`,
+        [sentUpgradeAccountId, sentUpgradeAttemptId],
+      );
+      await admin.query(await readFile(path.join(migrationsDir,
+        "057_auto_listing_ai_sent_reservation_recovery.sql"), "utf8"));
+      const upgradedSending = await admin.query(
+        `SELECT status,sending_at,ever_sending_at,
+                auto_listing_cleanup_expired_prepared_capability_subcalls($1) AS cleaned_count
+           FROM ai_gateway_capability_subcall_reservations
+          WHERE account_id=$1 AND attempt_id=$2`,
+        [sentUpgradeAccountId, sentUpgradeAttemptId],
+      );
+      assert.equal(upgradedSending.rows[0].status, "SENDING",
+        "057 must reverse the old unsafe SENDING to PREPARED downgrade");
+      assert.ok(upgradedSending.rows[0].sending_at instanceof Date);
+      assert.ok(upgradedSending.rows[0].ever_sending_at instanceof Date,
+        "057 must restore send evidence from the append-only SENDING audit after old reclaim erased sending_at");
+      assert.equal(upgradedSending.rows[0].sending_at.toISOString(),
+        upgradedSending.rows[0].ever_sending_at.toISOString());
+      assert.equal(upgradedSending.rows[0].cleaned_count, 0);
+      await assert.rejects(admin.query(
+        `UPDATE ai_gateway_capability_subcall_reservations
+            SET status='FAILED',completed_at=NOW(),terminal_reason='PRE_SEND_FAILED'
+          WHERE account_id=$1 AND attempt_id=$2`,
+        [sentUpgradeAccountId, sentUpgradeAttemptId],
+      ), { code: "23514" });
+
       const quarantined = await admin.query(
         `SELECT status,authorization_schema_version,response->>'errorCode' AS error_code
            FROM ai_gateway_capability_attempts WHERE account_id=$1 AND id=$2`,
@@ -1303,6 +1501,111 @@ if (!enabled) {
 
       pool = new Pool({ connectionString, max: 2, options: `-c search_path=${schema},public` });
       const repository = createAutoListingAiAdminPostgres({ pool });
+      const sentUpgradeReclaimed = await repository.beginCapabilityTest({
+        costConfirmed: true, accountId: sentUpgradeAccountId, actorId: sentUpgradeAccountId,
+        profileId: sentUpgradeProfileId, configVersion: 1,
+        correlationId: `corr-sent-upgrade-${suffix}`, attemptId: sentUpgradeAttemptId,
+        purpose: "PROFILE_CAPABILITY", requestKey: sentUpgradeRequestKey,
+      });
+      assert.equal(sentUpgradeReclaimed.reclaimed, true);
+      let sentUpgradeNetworkCalls = 0;
+      const sentUpgradeMissingResolver = createAutoListingAiCapabilityCredentialResolver({
+        repository,
+        cipher: { async decrypt() { throw new Error("legacy capability must not decrypt"); } },
+        readSecret() { return undefined; },
+      });
+      const sentUpgradeMissingGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic path must not authorize upgraded capability"); },
+        prepareCapabilitySubcall: (execution) => sentUpgradeMissingResolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => sentUpgradeMissingResolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => sentUpgradeMissingResolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) =>
+          sentUpgradeMissingResolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_LEGACY_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async () => {
+          sentUpgradeNetworkCalls += 1;
+          throw new Error("missing upgraded secret must not reach transport");
+        },
+      });
+      await assert.rejects(sentUpgradeMissingGateway.testCapabilities({
+        profile: sentUpgradeReclaimed.profile, timeoutMs: 500,
+        capabilityExecution: sentUpgradeReclaimed.capabilityExecution,
+      }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", status: 409 });
+      assert.equal(sentUpgradeNetworkCalls, 0);
+      const sentUpgradeStillUnknown = await pool.query(
+        `SELECT attempt.status AS attempt_status,reservation.status AS reservation_status,
+                reservation.ever_sending_at,reservation.provider_request_key
+           FROM ai_gateway_capability_attempts attempt
+           JOIN ai_gateway_capability_subcall_reservations reservation
+             ON reservation.account_id=attempt.account_id AND reservation.attempt_id=attempt.id
+          WHERE attempt.account_id=$1 AND attempt.id=$2 AND reservation.stage='REACHABILITY'`,
+        [sentUpgradeAccountId, sentUpgradeAttemptId],
+      );
+      assert.equal(sentUpgradeStillUnknown.rows[0].attempt_status, "RUNNING");
+      assert.equal(sentUpgradeStillUnknown.rows[0].reservation_status, "SENDING");
+      assert.ok(sentUpgradeStillUnknown.rows[0].ever_sending_at instanceof Date);
+      assert.equal(sentUpgradeStillUnknown.rows[0].provider_request_key, sentUpgradeProviderRequestKey);
+
+      const sentUpgradeTransports = [];
+      const sentUpgradeResolver = createAutoListingAiCapabilityCredentialResolver({
+        repository,
+        cipher: { async decrypt() { throw new Error("legacy capability must not decrypt"); } },
+        readSecret() { return "paid-test-secret"; },
+      });
+      const sentUpgradeGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic path must not authorize upgraded capability"); },
+        prepareCapabilitySubcall: (execution) => sentUpgradeResolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => sentUpgradeResolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => sentUpgradeResolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) =>
+          sentUpgradeResolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_LEGACY_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async (url, init) => {
+          sentUpgradeTransports.push(init.headers["Idempotency-Key"]);
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({
+            object: "list", data: [{ id: "text-model" }, { id: "image-model" }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          if (String(url).endsWith("/responses")) return new Response(JSON.stringify({
+            id: "text-sent-upgrade", output: [{ type: "message",
+              content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ id: "image-sent-upgrade", data: [{
+            b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          }] }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+      const sentUpgradeCapability = await sentUpgradeGateway.testCapabilities({
+        profile: sentUpgradeReclaimed.profile, timeoutMs: 500,
+        capabilityExecution: sentUpgradeReclaimed.capabilityExecution,
+      });
+      assert.equal(sentUpgradeTransports.length, 3);
+      assert.equal(sentUpgradeTransports[0], sentUpgradeProviderRequestKey);
+      const sentUpgradeCheckedAt = new Date().toISOString();
+      const sentUpgradeCompleted = await repository.completeCapabilityTest({
+        costConfirmed: true, accountId: sentUpgradeAccountId, actorId: sentUpgradeAccountId,
+        profileId: sentUpgradeProfileId, configVersion: 1,
+        correlationId: `corr-sent-upgrade-${suffix}`, attemptId: sentUpgradeAttemptId,
+        fence: sentUpgradeReclaimed.fence, leaseVersion: sentUpgradeReclaimed.leaseVersion,
+        leaseToken: sentUpgradeReclaimed.leaseToken, purpose: "PROFILE_CAPABILITY",
+        requestKey: sentUpgradeRequestKey, capabilityResult: {
+          outcome: "PASSED", features: sentUpgradeCapability.features,
+          latencyMs: sentUpgradeCapability.latencyMs, models: sentUpgradeCapability.models,
+          checkedAt: sentUpgradeCheckedAt, errorCode: null,
+        },
+      });
+      assert.equal(sentUpgradeCompleted.applied, true);
+      const sentUpgradePublished = await repository.publishProfile({
+        accountId: sentUpgradeAccountId, actorId: sentUpgradeAccountId,
+        profileId: sentUpgradeProfileId, configVersion: 1,
+        idempotencyKey: `publish-sent-upgrade-${suffix}`,
+        correlationId: `publish-sent-upgrade-corr-${suffix}`,
+      });
+      assert.equal(sentUpgradePublished.enabled, true);
+
       await assert.rejects(repository.beginCapabilityTest({
         costConfirmed: true, accountId, actorId: accountId, profileId, configVersion: 1,
         correlationId: `corr-new-paid-${suffix}`, attemptId: `attempt-new-paid-${suffix}`,

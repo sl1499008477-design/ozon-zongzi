@@ -464,6 +464,7 @@ test("capability subcall completion reconciles an exact committed success after 
       assert.deepEqual(params.slice(0, 4), ["account-a", "attempt-authorized", "TEXT", 1]);
       return { rowCount: 1, rows: [{ status: "SUCCEEDED", provider_request_key: providerRequestKey,
         provider_correlation_id: providerCorrelationId, reservation_version: 1,
+        terminal_reason: "PROVIDER_ACCEPTED",
         terminal_audit_matches: true }] };
     },
   ]);

@@ -2083,6 +2083,53 @@ test("a PREPARED terminal-write failure stays unknown and reclaimable instead of
   assert.deepEqual({ terminalWrites, fetches }, { terminalWrites: 1, fetches: 0 });
 });
 
+test("recovered SENDING stays unknown when secret DNS or abort fails before same-key resend", async () => {
+  for (const failurePoint of ["secret", "dns", "abort"]) {
+    const controller = new AbortController();
+    let fetches = 0;
+    let marks = 0;
+    const settlements = [];
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      throw new Error("recovered send must not reach transport after a pre-send failure");
+    }, {
+      resolveHostname: async () => {
+        if (failurePoint === "abort") controller.abort();
+        return failurePoint === "dns" ? [{ address: "127.0.0.1", family: 4 }] : publicDns();
+      },
+      async prepareCapabilitySubcall(execution) {
+        return capabilityProviderIdentities[execution.probe];
+      },
+      async resolveCapabilityCredential(execution) {
+        if (failurePoint === "secret") {
+          throw Object.assign(new Error("recovered decrypt failed"), { code: "AI_GATEWAY_SECRET_MISSING" });
+        }
+        return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+          connectionId: "connection-a", connectionVersion: 3,
+          ...capabilityProviderIdentities[execution.probe], secret };
+      },
+      async markCapabilitySubcallSending() {
+        marks += 1;
+        throw new Error("must not mark before recovered pre-send failure");
+      },
+      async completeCapabilitySubcall(execution, outcome, reason) {
+        settlements.push([execution.probe, outcome, reason]);
+        throw Object.assign(new Error("historical provider send remains unresolved"), {
+          code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", retryable: true,
+        });
+      },
+    });
+    await assert.rejects(gateway.testCapabilities({
+      profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+      timeoutMs: 500, signal: controller.signal, capabilityExecution,
+    }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+    assert.equal(fetches, 0);
+    assert.equal(marks, 0);
+    assert.deepEqual(settlements, [["REACHABILITY", "FAILED",
+      failurePoint === "abort" ? "PRE_SEND_ABORTED" : "PRE_SEND_FAILED"]]);
+  }
+});
+
 test("provider 2xx plus completion persistence ambiguity never rewrites the stage FAILED", async () => {
   const settlements = [];
   let fetches = 0;

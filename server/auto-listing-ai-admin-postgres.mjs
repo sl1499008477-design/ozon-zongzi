@@ -556,7 +556,7 @@ function capabilitySubcallCompleteRequest(rawInput) {
 async function loadCapabilitySubcallTerminalEvidence(target, input, identity, { forUpdate = false } = {}) {
   const result = await query(target,
     `SELECT reservation.status,reservation.provider_request_key,reservation.provider_correlation_id,
-            reservation.reservation_version,
+            reservation.reservation_version,reservation.terminal_reason,
             EXISTS (
               SELECT 1 FROM audit_events terminal_event
                WHERE terminal_event.account_id=reservation.account_id
@@ -584,6 +584,7 @@ async function loadCapabilitySubcallTerminalEvidence(target, input, identity, { 
       input.outcome, input.reason, hash(identity.providerRequestKey)]);
   const row = result.rows[0];
   return row?.status === input.outcome
+    && row.terminal_reason === input.reason
     && row.provider_request_key === identity.providerRequestKey
     && row.provider_correlation_id === identity.providerCorrelationId
     && row.terminal_audit_matches === true
@@ -624,7 +625,7 @@ async function loadCapabilitySubcallPreparedEvidence(target, input, identity) {
          ON connection.account_id=attempt.account_id AND connection.id=attempt.target_connection_id
         AND connection.version=attempt.target_connection_version
       WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
-        AND reservation.lease_version=$4 AND reservation.status='PREPARED'
+        AND reservation.lease_version=$4 AND reservation.status IN ('PREPARED','SENDING')
         AND reservation.provider_request_key=$5 AND reservation.provider_correlation_id=$6
         AND attempt.profile_id=$8 AND attempt.correlation_id=$9 AND attempt.config_version=$11
         AND attempt.fence=$12 AND attempt.lease_version=$4 AND attempt.lease_token=$13
@@ -666,7 +667,7 @@ async function loadCapabilitySubcallPreparedEvidence(target, input, identity) {
       CAPABILITY_AUTHORIZATION_ACTION]);
   const row = result.rows[0];
   const secret = capabilityExecutionSecretRow(row);
-  return secret && row.reservation_status === "PREPARED"
+  return secret && ["PREPARED", "SENDING"].includes(row.reservation_status)
     && row.provider_request_key === identity.providerRequestKey
     && row.provider_correlation_id === identity.providerCorrelationId
     && row.prepared_audit_matches === true
@@ -749,12 +750,16 @@ async function prepareCapabilitySubcallReservation(client, input) {
   } else if (Number(reservation.lease_version) < input.leaseVersion) {
     reservation = (await query(client,
       `UPDATE ai_gateway_capability_subcall_reservations
-          SET lease_version=$4,reservation_version=reservation_version+1,status='PREPARED',
-              prepared_at=NOW(),sending_at=NULL,completed_at=NULL
+          SET lease_version=$4,reservation_version=reservation_version+1,
+              status=CASE WHEN status='SENDING' THEN 'SENDING' ELSE 'PREPARED' END,
+              prepared_at=NOW(),
+              sending_at=CASE WHEN status='SENDING' THEN sending_at ELSE NULL END,
+              completed_at=NULL,terminal_reason=NULL
         WHERE account_id=$1 AND attempt_id=$2 AND stage=$3 AND lease_version<$4
         RETURNING id,status,lease_version,reservation_version,provider_request_key,provider_correlation_id`,
       [input.accountId, input.attemptId, input.probe, input.leaseVersion])).rows[0];
-  } else if (Number(reservation.lease_version) !== input.leaseVersion || reservation.status !== "PREPARED") {
+  } else if (Number(reservation.lease_version) !== input.leaseVersion
+    || !["PREPARED", "SENDING"].includes(reservation.status)) {
     throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
   }
   const requestHash = hash({ action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED",
@@ -1051,10 +1056,12 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         await lockAccount(client, input.accountId);
         const updated = await query(client,
           `UPDATE ai_gateway_capability_subcall_reservations reservation
-              SET status='SENDING',sending_at=NOW()
+              SET status='SENDING',sending_at=COALESCE(reservation.sending_at,NOW()),
+                  ever_sending_at=COALESCE(reservation.ever_sending_at,reservation.sending_at,NOW()),
+                  terminal_reason=NULL
              FROM ai_gateway_capability_attempts attempt
             WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
-              AND reservation.lease_version=$4 AND reservation.status='PREPARED'
+              AND reservation.lease_version=$4 AND reservation.status IN ('PREPARED','SENDING')
               AND reservation.provider_request_key=$5 AND reservation.provider_correlation_id=$6
               AND attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
               AND attempt.status='RUNNING' AND attempt.fence=$7 AND attempt.lease_version=$4
@@ -1102,10 +1109,14 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           await lockAccount(client, input.accountId);
           const completed = await query(client,
             `UPDATE ai_gateway_capability_subcall_reservations reservation
-                SET status=$5,completed_at=NOW()
+                SET status=$5,completed_at=NOW(),terminal_reason=$14
                FROM ai_gateway_capability_attempts attempt
               WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
                 AND reservation.lease_version=$4 AND reservation.status IN ('PREPARED','SENDING')
+                AND ((reservation.status='PREPARED' AND reservation.ever_sending_at IS NULL
+                      AND $14 IN ('PRE_SEND_ABORTED','PRE_SEND_FAILED'))
+                  OR (reservation.status='SENDING'
+                      AND $14 IN ('PROVIDER_REJECTED','PROVIDER_ACCEPTED')))
                 AND reservation.provider_request_key=$12 AND reservation.provider_correlation_id=$13
                 AND attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
                 AND attempt.status='RUNNING' AND attempt.fence=$6 AND attempt.lease_version=$4
@@ -1116,7 +1127,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             [input.accountId, input.attemptId, input.probe, input.leaseVersion, input.outcome,
               input.fence, input.leaseToken, input.authorizationHash, input.requestKey,
               input.purpose, input.correlationId, identity.providerRequestKey,
-              identity.providerCorrelationId]);
+              identity.providerCorrelationId, input.reason]);
           const row = completed.rows[0];
           if (!row) {
             const replay = await loadCapabilitySubcallTerminalEvidence(client, input, identity,
@@ -1297,8 +1308,11 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             if (reclaimed.rows[0]) {
               await query(client,
                 `UPDATE ai_gateway_capability_subcall_reservations
-                    SET lease_version=$3,reservation_version=reservation_version+1,status='PREPARED',
-                        prepared_at=NOW(),sending_at=NULL,completed_at=NULL
+                    SET lease_version=$3,reservation_version=reservation_version+1,
+                        status=CASE WHEN status='SENDING' THEN 'SENDING' ELSE 'PREPARED' END,
+                        prepared_at=NOW(),
+                        sending_at=CASE WHEN status='SENDING' THEN sending_at ELSE NULL END,
+                        completed_at=NULL,terminal_reason=NULL
                   WHERE account_id=$1 AND attempt_id=$2 AND lease_version<$3`,
                 [input.accountId, input.attemptId, Number(reclaimed.rows[0].lease_version)]);
               await insertCapabilityAuthorizationAudit(client, input, reclaimed.rows[0]);
