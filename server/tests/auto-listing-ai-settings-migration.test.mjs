@@ -58,6 +58,21 @@ test("053 closes connection state transitions and keeps connection identity and 
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS ai_gateway_connection_versions_one_active_per_account_uq[\s\S]*ON ai_gateway_connection_versions\(account_id\)[\s\S]*WHERE status = 'ACTIVE'/iu);
 });
 
+test("053 only inserts PENDING connections and binds rollback to stored passed capability evidence", async () => {
+  const sql = await migrationSql();
+  const insertGuard = functionBlock(sql, "auto_listing_require_pending_ai_gateway_connection_insert");
+  const transitionGuard = functionBlock(sql, "auto_listing_guard_ai_gateway_connection_version");
+
+  assert.match(insertGuard, /NEW\.status IS DISTINCT FROM 'PENDING'/iu);
+  assert.match(insertGuard, /NEW\.status_version IS DISTINCT FROM 1/iu);
+  assert.match(sql, /rollback_evidence JSONB/iu);
+  assert.match(sql, /rollback_evidence_hash TEXT/iu);
+  assert.match(transitionGuard, /OLD\.status = 'RETIRED'[\s\S]*NEW\.status = 'VALIDATED'[\s\S]*ai_gateway_model_catalogs/iu);
+  assert.match(transitionGuard, /capability_result->>'outcome' = 'PASSED'/iu);
+  assert.match(transitionGuard, /catalog_hash = NEW\.rollback_evidence->>'catalogHash'/iu);
+  assert.match(transitionGuard, /capability_hash = NEW\.rollback_evidence->>'capabilityHash'/iu);
+});
+
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {
   const sql = await migrationSql();
 
@@ -71,16 +86,23 @@ test("053 stores bounded model catalogs and fenced sync tasks under composite te
   assert.match(sql, /attempt_count INTEGER NOT NULL DEFAULT 0 CHECK \(attempt_count >= 0 AND attempt_count <= max_attempts\)/iu);
   assert.match(sql, /lease_version INTEGER NOT NULL DEFAULT 0 CHECK \(lease_version >= 0\)/iu);
   assert.match(sql, /lease_token TEXT/iu);
+  assert.match(sql, /lease_token ~ '\^\[a-f0-9\]\{64\}\$'/iu);
   assert.match(sql, /lease_expires_at TIMESTAMPTZ/iu);
   assert.match(sql, /request_hash TEXT NOT NULL CHECK \(request_hash ~ '\^\[a-f0-9\]\{64\}\$'\)/iu);
   assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS ai_gateway_model_sync_tasks_one_runnable_uq[\s\S]*ON ai_gateway_model_sync_tasks\(account_id, connection_id, connection_version\)[\s\S]*WHERE status IN \('PENDING', 'LEASED', 'FAILED'\)/iu);
+  assert.match(sql, /UNIQUE \(account_id, id, connection_id, connection_version\)/iu);
+  assert.match(sql, /FOREIGN KEY \(account_id, task_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_model_sync_tasks\(account_id, id, connection_id, connection_version\)/iu);
+  assert.match(sql, /FOREIGN KEY \(account_id, sync_task_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_model_sync_tasks\(account_id, id, connection_id, connection_version\)/iu);
+  assert.match(sql, /capability_result->>'outcome' = 'PASSED'/iu);
+  assert.match(sql, /capability_result->>'text' = 'true'/iu);
+  assert.match(sql, /capability_result->>'image' = 'true'/iu);
 });
 
 test("053 makes sync domain events and connection transition audits append-only", async () => {
   const sql = await migrationSql();
 
   assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_events/iu);
-  assert.match(sql, /FOREIGN KEY \(account_id, task_id\)[\s\S]*REFERENCES ai_gateway_model_sync_tasks\(account_id, id\)/iu);
+  assert.match(sql, /FOREIGN KEY \(account_id, task_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_model_sync_tasks\(account_id, id, connection_id, connection_version\)/iu);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_connection_events/iu);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_profile_binding_events/iu);
   assert.match(sql, /BEFORE UPDATE OR DELETE ON ai_gateway_model_sync_events/iu);
@@ -88,4 +110,15 @@ test("053 makes sync domain events and connection transition audits append-only"
   assert.match(sql, /BEFORE UPDATE OR DELETE ON ai_gateway_profile_binding_events/iu);
   assert.match(sql, /BEFORE UPDATE OR DELETE ON audit_events/iu);
   assert.doesNotMatch(sql, /\b(?:DROP\s+(?:TABLE|COLUMN)|TRUNCATE|DELETE\s+FROM)\b/iu);
+});
+
+test("053 binds profiles and catalog evidence bidirectionally and keeps account privacy deletion coherent", async () => {
+  const sql = await migrationSql();
+
+  assert.match(sql, /connection_id IS NULL AND connection_version IS NULL[\s\S]*api_key_env_name <> 'SUB2API_ENCRYPTED_KEY'/iu);
+  assert.match(sql, /UNIQUE \(account_id, id, config_version, connection_id, connection_version\)/iu);
+  assert.match(sql, /FOREIGN KEY \(account_id, profile_id, config_version, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_profiles\(account_id, id, config_version, connection_id, connection_version\)/iu);
+  assert.match(sql, /FOREIGN KEY \(account_id, catalog_id, connection_id, connection_version\)[\s\S]*REFERENCES ai_gateway_model_catalogs\(account_id, id, connection_id, connection_version\)/iu);
+  assert.match(sql, /NOT EXISTS \(SELECT 1 FROM accounts WHERE id = OLD\.account_id\)/iu);
+  assert.match(sql, /NEW\.account_id IS NULL[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id = OLD\.account_id\)/iu);
 });

@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS ai_gateway_connection_versions (
   status_version INTEGER NOT NULL DEFAULT 1 CHECK (status_version > 0),
   validation_result JSONB,
   validation_hash TEXT,
+  rollback_evidence JSONB,
+  rollback_evidence_hash TEXT,
   validated_at TIMESTAMPTZ,
   validated_by TEXT,
   activated_at TIMESTAMPTZ,
@@ -36,7 +38,11 @@ CREATE TABLE IF NOT EXISTS ai_gateway_connection_versions (
   CHECK ((validation_result IS NULL AND validation_hash IS NULL)
     OR (jsonb_typeof(validation_result) = 'object'
       AND validation_result <> '{}'::JSONB
-      AND validation_hash ~ '^[a-f0-9]{64}$'))
+      AND validation_hash ~ '^[a-f0-9]{64}$')),
+  CHECK ((rollback_evidence IS NULL AND rollback_evidence_hash IS NULL)
+    OR (jsonb_typeof(rollback_evidence) = 'object'
+      AND rollback_evidence <> '{}'::JSONB
+      AND rollback_evidence_hash ~ '^[a-f0-9]{64}$'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ai_gateway_connection_versions_one_active_per_account_uq
@@ -62,7 +68,7 @@ CREATE TABLE IF NOT EXISTS ai_gateway_connection_events (
   PRIMARY KEY (account_id, id),
   UNIQUE (account_id, connection_id, connection_version, status_version),
   FOREIGN KEY (account_id, connection_id, connection_version)
-    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE RESTRICT
+    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_tasks (
@@ -90,13 +96,15 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_tasks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ,
   PRIMARY KEY (account_id, id),
+  UNIQUE (account_id, id, connection_id, connection_version),
   UNIQUE (account_id, idempotency_key),
   FOREIGN KEY (account_id, connection_id, connection_version)
-    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE RESTRICT,
+    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE CASCADE,
   CHECK (
     (status = 'LEASED'
       AND attempt_count > 0
       AND NULLIF(BTRIM(lease_token), '') IS NOT NULL
+      AND lease_token ~ '^[a-f0-9]{64}$'
       AND NULLIF(BTRIM(lease_owner), '') IS NOT NULL
       AND lease_expires_at IS NOT NULL
       AND completed_at IS NULL)
@@ -137,10 +145,9 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_sync_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (account_id, id),
   UNIQUE (account_id, task_id, status_version),
-  FOREIGN KEY (account_id, task_id)
-    REFERENCES ai_gateway_model_sync_tasks(account_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (account_id, connection_id, connection_version)
-    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE RESTRICT
+  FOREIGN KEY (account_id, task_id, connection_id, connection_version)
+    REFERENCES ai_gateway_model_sync_tasks(account_id, id, connection_id, connection_version)
+    ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs (
@@ -156,17 +163,21 @@ CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs (
   tested_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (account_id, id),
+  UNIQUE (account_id, id, connection_id, connection_version),
+  UNIQUE (account_id, id, sync_task_id, connection_id, connection_version),
   UNIQUE (account_id, sync_task_id),
-  FOREIGN KEY (account_id, connection_id, connection_version)
-    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE RESTRICT,
-  FOREIGN KEY (account_id, sync_task_id)
-    REFERENCES ai_gateway_model_sync_tasks(account_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (account_id, sync_task_id, connection_id, connection_version)
+    REFERENCES ai_gateway_model_sync_tasks(account_id, id, connection_id, connection_version)
+    ON DELETE CASCADE,
   CHECK (jsonb_typeof(catalog) = 'object'),
   CHECK (catalog <> '{}'::JSONB),
   CHECK (octet_length(catalog::TEXT) <= 1048576),
   CHECK (jsonb_typeof(capability_result) = 'object'),
   CHECK (capability_result <> '{}'::JSONB),
-  CHECK (octet_length(capability_result::TEXT) <= 262144)
+  CHECK (octet_length(capability_result::TEXT) <= 262144),
+  CHECK (capability_result->>'outcome' = 'PASSED'),
+  CHECK (capability_result->>'text' = 'true'),
+  CHECK (capability_result->>'image' = 'true')
 );
 
 ALTER TABLE ai_gateway_profiles
@@ -182,12 +193,27 @@ BEGIN
   ) THEN
     ALTER TABLE ai_gateway_profiles
       ADD CONSTRAINT ai_gateway_profiles_connection_shape_check CHECK (
-        (connection_id IS NULL AND connection_version IS NULL)
+        (connection_id IS NULL AND connection_version IS NULL
+          AND api_key_env_name <> 'SUB2API_ENCRYPTED_KEY')
         OR (connection_id IS NOT NULL
           AND connection_version IS NOT NULL
           AND connection_version > 0
           AND api_key_env_name = 'SUB2API_ENCRYPTED_KEY')
       ) NOT VALID;
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM ai_gateway_profiles
+    WHERE connection_id IS NULL
+      AND connection_version IS NULL
+      AND api_key_env_name = 'SUB2API_ENCRYPTED_KEY'
+  ) THEN
+    RAISE EXCEPTION 'legacy AI gateway profile uses encrypted sentinel without a connection binding'
+      USING ERRCODE = '23514';
   END IF;
 END;
 $$;
@@ -203,7 +229,7 @@ BEGIN
       ADD CONSTRAINT ai_gateway_profiles_account_connection_fkey
       FOREIGN KEY (account_id, connection_id, connection_version)
       REFERENCES ai_gateway_connection_versions(account_id, id, version)
-      ON DELETE RESTRICT NOT VALID;
+      ON DELETE CASCADE NOT VALID;
   END IF;
 END;
 $$;
@@ -212,6 +238,20 @@ ALTER TABLE ai_gateway_profiles
   VALIDATE CONSTRAINT ai_gateway_profiles_connection_shape_check;
 ALTER TABLE ai_gateway_profiles
   VALIDATE CONSTRAINT ai_gateway_profiles_account_connection_fkey;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'ai_gateway_profiles_account_config_connection_key'
+      AND conrelid = 'ai_gateway_profiles'::regclass
+  ) THEN
+    ALTER TABLE ai_gateway_profiles
+      ADD CONSTRAINT ai_gateway_profiles_account_config_connection_key
+      UNIQUE (account_id, id, config_version, connection_id, connection_version);
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS ai_gateway_profile_binding_events (
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -227,13 +267,42 @@ CREATE TABLE IF NOT EXISTS ai_gateway_profile_binding_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (account_id, id),
   UNIQUE (account_id, profile_id, config_version),
-  FOREIGN KEY (account_id, profile_id, config_version)
-    REFERENCES ai_gateway_profiles(account_id, id, config_version) ON DELETE RESTRICT,
-  FOREIGN KEY (account_id, connection_id, connection_version)
-    REFERENCES ai_gateway_connection_versions(account_id, id, version) ON DELETE RESTRICT,
-  FOREIGN KEY (account_id, catalog_id)
-    REFERENCES ai_gateway_model_catalogs(account_id, id) ON DELETE RESTRICT
+  FOREIGN KEY (account_id, profile_id, config_version, connection_id, connection_version)
+    REFERENCES ai_gateway_profiles(account_id, id, config_version, connection_id, connection_version)
+    ON DELETE CASCADE,
+  FOREIGN KEY (account_id, catalog_id, connection_id, connection_version)
+    REFERENCES ai_gateway_model_catalogs(account_id, id, connection_id, connection_version)
+    ON DELETE CASCADE
 );
+
+CREATE OR REPLACE FUNCTION auto_listing_require_pending_ai_gateway_connection_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.status IS DISTINCT FROM 'PENDING'
+    OR NEW.status_version IS DISTINCT FROM 1
+    OR NEW.validation_result IS NOT NULL
+    OR NEW.validation_hash IS NOT NULL
+    OR NEW.rollback_evidence IS NOT NULL
+    OR NEW.rollback_evidence_hash IS NOT NULL
+    OR NEW.validated_at IS NOT NULL
+    OR NEW.validated_by IS NOT NULL
+    OR NEW.activated_at IS NOT NULL
+    OR NEW.activated_by IS NOT NULL
+    OR NEW.retired_at IS NOT NULL
+    OR NEW.retired_by IS NOT NULL
+  THEN
+    RAISE EXCEPTION 'AI gateway connection versions must be inserted as PENDING'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER ai_gateway_connection_versions_pending_insert_guard
+BEFORE INSERT ON ai_gateway_connection_versions
+FOR EACH ROW EXECUTE FUNCTION auto_listing_require_pending_ai_gateway_connection_insert();
 
 CREATE OR REPLACE FUNCTION auto_listing_guard_ai_gateway_connection_version()
 RETURNS TRIGGER
@@ -241,6 +310,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
+    IF NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id) THEN RETURN OLD; END IF;
     RAISE EXCEPTION 'AI gateway connection versions are immutable' USING ERRCODE = '23514';
   END IF;
   IF NEW.id IS DISTINCT FROM OLD.id
@@ -278,6 +348,33 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'validated AI gateway connection requires capability evidence' USING ERRCODE = '23514';
   END IF;
+  IF OLD.status = 'PENDING' AND NEW.status = 'VALIDATED' AND (
+    NEW.rollback_evidence IS NOT NULL OR NEW.rollback_evidence_hash IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'initial validation cannot claim rollback evidence' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status = 'RETIRED' AND NEW.status = 'VALIDATED' AND (
+    jsonb_typeof(NEW.rollback_evidence) IS DISTINCT FROM 'object'
+    OR NEW.rollback_evidence->>'schemaVersion' IS DISTINCT FROM 'AI_GATEWAY_ROLLBACK_CAPABILITY_V1'
+    OR NEW.rollback_evidence_hash !~ '^[a-f0-9]{64}$'
+    OR NOT EXISTS (
+      SELECT 1
+      FROM ai_gateway_model_catalogs
+      WHERE account_id = OLD.account_id
+        AND connection_id = OLD.id
+        AND connection_version = OLD.version
+        AND id = NEW.rollback_evidence->>'catalogId'
+        AND catalog_hash = NEW.rollback_evidence->>'catalogHash'
+        AND capability_hash = NEW.rollback_evidence->>'capabilityHash'
+        AND capability_result->>'outcome' = 'PASSED'
+        AND capability_result->>'text' = 'true'
+        AND capability_result->>'image' = 'true'
+        AND capability_result = NEW.validation_result
+        AND capability_hash = NEW.validation_hash
+    )
+  ) THEN
+    RAISE EXCEPTION 'rollback requires matching passed capability evidence' USING ERRCODE = '23514';
+  END IF;
   IF (NEW.status = 'VALIDATED' AND (
       NEW.activated_at IS DISTINCT FROM OLD.activated_at
       OR NEW.activated_by IS DISTINCT FROM OLD.activated_by
@@ -291,6 +388,8 @@ BEGIN
       OR NEW.validated_by IS DISTINCT FROM OLD.validated_by
       OR NEW.retired_at IS DISTINCT FROM OLD.retired_at
       OR NEW.retired_by IS DISTINCT FROM OLD.retired_by
+      OR NEW.rollback_evidence IS DISTINCT FROM OLD.rollback_evidence
+      OR NEW.rollback_evidence_hash IS DISTINCT FROM OLD.rollback_evidence_hash
     ))
     OR (NEW.status = 'RETIRED' AND (
       NEW.validation_result IS DISTINCT FROM OLD.validation_result
@@ -299,6 +398,8 @@ BEGIN
       OR NEW.validated_by IS DISTINCT FROM OLD.validated_by
       OR NEW.activated_at IS DISTINCT FROM OLD.activated_at
       OR NEW.activated_by IS DISTINCT FROM OLD.activated_by
+      OR NEW.rollback_evidence IS DISTINCT FROM OLD.rollback_evidence
+      OR NEW.rollback_evidence_hash IS DISTINCT FROM OLD.rollback_evidence_hash
     ))
   THEN
     RAISE EXCEPTION 'AI gateway connection transition evidence is immutable' USING ERRCODE = '23514';
@@ -317,6 +418,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
+    IF NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id) THEN RETURN OLD; END IF;
     RAISE EXCEPTION 'AI gateway model sync tasks are durable evidence' USING ERRCODE = '23514';
   END IF;
   IF NEW.account_id IS DISTINCT FROM OLD.account_id
@@ -358,6 +460,11 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  IF TG_OP = 'DELETE'
+    AND NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id)
+  THEN
+    RETURN OLD;
+  END IF;
   RAISE EXCEPTION 'AI gateway settings evidence is append-only' USING ERRCODE = '23514';
 END;
 $$;
@@ -412,6 +519,14 @@ BEGIN
   IF OLD.source = 'auto-listing-ai-settings'
     OR (TG_OP = 'UPDATE' AND NEW.source = 'auto-listing-ai-settings')
   THEN
+    IF TG_OP = 'UPDATE'
+      AND OLD.account_id IS NOT NULL
+      AND NEW.account_id IS NULL
+      AND (TO_JSONB(NEW) - 'account_id') IS NOT DISTINCT FROM (TO_JSONB(OLD) - 'account_id')
+      AND NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id)
+    THEN
+      RETURN NEW;
+    END IF;
     RAISE EXCEPTION 'AI gateway settings audits are append-only' USING ERRCODE = '23514';
   END IF;
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;

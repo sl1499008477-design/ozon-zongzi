@@ -182,6 +182,7 @@ test("settings overview preserves a legacy profile null connection reference", a
     { rows: [] },
     { rows: [] },
     { rows: [] },
+    { rows: [] },
     { rows: [{
       id: "legacy-profile", account_id: "account-a", display_name: "Legacy", config_version: 1,
       base_url: "https://legacy.example/v1", api_key_env_name: "SUB2API_LEGACY_KEY",
@@ -190,10 +191,66 @@ test("settings overview preserves a legacy profile null connection reference", a
       capability_result: {}, capability_checked_at: null,
       connection_id: null, connection_version: null, created_at: "2026-08-08T00:00:00.000Z",
     }] },
+    { rows: [] },
   ]);
   const overview = await createAutoListingAiSettingsPostgres({ pool }).loadSettingsOverview({
     accountId: "account-a",
   });
   assert.equal(overview.profiles[0].connectionId, null);
   assert.equal(overview.profiles[0].connectionVersion, null);
+});
+
+test("model sync completion rejects failed or incomplete capability evidence before database access", async () => {
+  const failedPool = scriptedPool([]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: failedPool.pool }).completeModelSync({
+    accountId: "account-a",
+    workerId: "worker-a",
+    taskId: "task-a",
+    leaseVersion: 1,
+    leaseToken: "lease-a",
+    correlationId: "corr-failed",
+    catalog: { models: [
+      { id: "text-model", capabilities: ["TEXT"] },
+      { id: "image-model", capabilities: ["IMAGE"] },
+    ] },
+    capabilityResult: {
+      outcome: "FAILED", checkedAt: "2026-08-08T00:00:00.000Z", text: false, image: false,
+    },
+  }), { code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_REQUIRED" });
+  assert.equal(failedPool.calls.length, 0);
+
+  const incompletePool = scriptedPool([]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: incompletePool.pool }).completeModelSync({
+    accountId: "account-a",
+    workerId: "worker-a",
+    taskId: "task-a",
+    leaseVersion: 1,
+    leaseToken: "lease-a",
+    correlationId: "corr-incomplete",
+    catalog: { models: [{ id: "text-model", capabilities: ["TEXT"] }] },
+    capabilityResult: {
+      outcome: "PASSED", checkedAt: "2026-08-08T00:00:00.000Z", text: true, image: false,
+    },
+  }), { code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_REQUIRED" });
+  assert.equal(incompletePool.calls.length, 0);
+});
+
+test("settings overview reads all collections in one repeatable-read read-only transaction", async () => {
+  const { pool, calls, remaining } = scriptedPool([
+    (sql) => {
+      assert.match(sql, /^BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY$/iu);
+      return { rows: [] };
+    },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+  ]);
+  const overview = await createAutoListingAiSettingsPostgres({ pool }).loadSettingsOverview({
+    accountId: "account-a",
+  });
+  assert.equal(overview.accountId, "account-a");
+  assert.equal(calls.at(-2).sql, "COMMIT");
+  assert.equal(remaining.length, 0);
 });

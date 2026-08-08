@@ -113,6 +113,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       expectedStatusVersion: 1,
       idempotencyKey: `activate-a-${suffix}`,
       correlationId: `corr-activate-a-${suffix}`,
+      rollbackCapabilityEvidence: null,
       validationResult,
     });
     assert.equal(activatedFirst.status, "ACTIVE");
@@ -121,6 +122,27 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       connectionId: first.id,
       connectionVersion: first.version,
     })).encryptedSecret, encryptedSecret);
+
+    const rollbackCapability = {
+      outcome: "PASSED", checkedAt: new Date().toISOString(), text: true, image: true,
+    };
+    const rollbackCatalog = { models: [
+      { id: "text-model", capabilities: ["TEXT"] },
+      { id: "image-model", capabilities: ["IMAGE"] },
+    ] };
+    const seedTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version, expectedConnectionStatusVersion: activatedFirst.statusVersion,
+      idempotencyKey: `sync-rollback-seed-${suffix}`, correlationId: `corr-sync-rollback-seed-${suffix}`,
+      maxAttempts: 2,
+    });
+    const seedLease = await repository.claimModelSync({ accountId: accountA, workerId: "worker-seed", leaseMs: 30_000 });
+    const rollbackEvidenceCatalog = await repository.completeModelSync({
+      accountId: accountA, workerId: "worker-seed", taskId: seedTask.id,
+      leaseVersion: seedLease.leaseVersion, leaseToken: seedLease.leaseToken,
+      correlationId: `corr-sync-rollback-seed-complete-${suffix}`,
+      catalog: rollbackCatalog, capabilityResult: rollbackCapability,
+    });
 
     async function createPending(label) {
       return repository.createPendingConnection({
@@ -140,6 +162,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       expectedStatusVersion: 1,
       idempotencyKey: `activate-concurrent-${index}-${suffix}`,
       correlationId: `corr-activate-concurrent-${index}-${suffix}`,
+      rollbackCapabilityEvidence: null,
       validationResult: { ...validationResult, checkedAt: new Date(Date.now() + index).toISOString() },
     })));
     const activeRows = await pool.query(
@@ -152,6 +175,25 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       [accountA, first.id, first.version],
     )).rows[0];
     assert.equal(retiredFirst.status, "RETIRED");
+    await assert.rejects(repository.markConnectionValidated({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version, expectedStatusVersion: Number(retiredFirst.status_version),
+      idempotencyKey: `rollback-without-evidence-${suffix}`,
+      correlationId: `corr-rollback-without-evidence-${suffix}`,
+      rollbackCapabilityEvidence: null, validationResult: rollbackCapability,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_ROLLBACK_EVIDENCE_REQUIRED", status: 409 });
+    await assert.rejects(repository.markConnectionValidated({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version, expectedStatusVersion: Number(retiredFirst.status_version),
+      idempotencyKey: `rollback-forged-evidence-${suffix}`,
+      correlationId: `corr-rollback-forged-evidence-${suffix}`,
+      rollbackCapabilityEvidence: {
+        schemaVersion: "AI_GATEWAY_ROLLBACK_CAPABILITY_V1",
+        catalogId: rollbackEvidenceCatalog.catalog.id,
+        catalogHash: "d".repeat(64), capabilityHash: "e".repeat(64),
+      },
+      validationResult: rollbackCapability,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_ROLLBACK_EVIDENCE_REQUIRED", status: 409 });
     const rolledBack = await repository.markConnectionValidated({
       accountId: accountA,
       actorId: accountA,
@@ -160,7 +202,13 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       expectedStatusVersion: Number(retiredFirst.status_version),
       idempotencyKey: `rollback-first-${suffix}`,
       correlationId: `corr-rollback-first-${suffix}`,
-      validationResult: { ...validationResult, checkedAt: new Date().toISOString(), rollbackTest: true },
+      rollbackCapabilityEvidence: {
+        schemaVersion: "AI_GATEWAY_ROLLBACK_CAPABILITY_V1",
+        catalogId: rollbackEvidenceCatalog.catalog.id,
+        catalogHash: rollbackEvidenceCatalog.catalog.catalogHash,
+        capabilityHash: rollbackEvidenceCatalog.catalog.capabilityHash,
+      },
+      validationResult: rollbackCapability,
     });
     assert.equal(rolledBack.status, "ACTIVE");
     assert.equal((await pool.query(
@@ -203,6 +251,22 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       "UPDATE ai_gateway_connection_versions SET ciphertext='changed' WHERE account_id=$1 AND id=$2 AND version=$3",
       [accountA, active.id, active.version],
     ), "23514");
+    await rejectsCode(() => pool.query(
+      `INSERT INTO ai_gateway_connection_versions (
+         account_id,id,version,display_name,base_url,ciphertext,iv,auth_tag,algorithm,key_version,
+         fingerprint,status,status_version,idempotency_key,request_hash,correlation_id,created_by
+       ) VALUES ($1,$2,1,'Bypass','http://127.0.0.1:8080/v1','cipher','iv','tag','aes-256-gcm','v1',
+         'bypass','ACTIVE',1,$3,$4,$3,$1)`,
+      [accountA, `bypass-active-${suffix}`, `bypass-${suffix}`, "a".repeat(64)],
+    ), "23514");
+    await rejectsCode(() => pool.query(
+      `INSERT INTO ai_gateway_profiles (
+         id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+         text_model,image_model,config_version,enabled,created_by
+       ) VALUES ($1,$2,'Bad sentinel','https://legacy.example/v1','SUB2API_ENCRYPTED_KEY',
+         'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text','image',1,FALSE,$2)`,
+      [`bad-sentinel-${suffix}`, accountA],
+    ), "23514");
 
     const task = await repository.enqueueModelSync({
       accountId: accountA,
@@ -214,10 +278,37 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       correlationId: `corr-sync-a-${suffix}`,
       maxAttempts: 3,
     });
+    await assert.rejects(repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: active.id,
+      connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
+      idempotencyKey: `sync-conflict-${suffix}`, correlationId: `corr-sync-conflict-${suffix}`,
+      maxAttempts: 3,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_SYNC_ALREADY_RUNNABLE", status: 409 });
     assert.deepEqual(await repository.listRunnableSyncAccountIds({ afterAccountId: null, limit: 10 }), [accountA]);
     const leased = await repository.claimModelSync({ accountId: accountA, workerId: "worker-a", leaseMs: 1 });
     assert.equal(leased.taskId, task.id);
+    const storedLeaseToken = (await pool.query(
+      "SELECT lease_token FROM ai_gateway_model_sync_tasks WHERE account_id=$1 AND id=$2",
+      [accountA, task.id],
+    )).rows[0].lease_token;
+    assert.notEqual(storedLeaseToken, leased.leaseToken);
+    assert.match(storedLeaseToken, /^[a-f0-9]{64}$/u);
     await new Promise((resolve) => setTimeout(resolve, 10));
+    const expiredCompletion = {
+      accountId: accountA, workerId: "worker-a", taskId: task.id,
+      leaseVersion: leased.leaseVersion, leaseToken: leased.leaseToken,
+      correlationId: `corr-expired-complete-${suffix}`, catalog: rollbackCatalog,
+      capabilityResult: { ...rollbackCapability, checkedAt: new Date().toISOString() },
+    };
+    await assert.rejects(repository.completeModelSync(expiredCompletion), {
+      code: "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", status: 409,
+    });
+    await assert.rejects(repository.failModelSync({
+      accountId: accountA, workerId: "worker-a", taskId: task.id,
+      leaseVersion: leased.leaseVersion, leaseToken: leased.leaseToken,
+      correlationId: `corr-expired-fail-${suffix}`, errorCode: "EXPIRED_WORKER",
+      errorSafe: "expired worker", retryable: true, retryDelayMs: 0,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", status: 409 });
     const reclaimed = await repository.claimModelSync({ accountId: accountA, workerId: "worker-b", leaseMs: 30_000 });
     assert.equal(reclaimed.taskId, task.id);
     assert.equal(reclaimed.leaseVersion, leased.leaseVersion + 1);
@@ -228,8 +319,8 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       leaseVersion: leased.leaseVersion,
       leaseToken: leased.leaseToken,
       correlationId: `corr-stale-${suffix}`,
-      catalog: { models: [{ id: "text-model", capabilities: ["TEXT"] }] },
-      capabilityResult: { outcome: "PASSED", checkedAt: new Date().toISOString() },
+      catalog: rollbackCatalog,
+      capabilityResult: { ...rollbackCapability, checkedAt: new Date().toISOString() },
     }), { code: "AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", status: 409 });
 
     const testedAt = new Date().toISOString();
@@ -239,7 +330,7 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
         { id: "image-model", capabilities: ["IMAGE"] },
       ],
     };
-    const completed = await repository.completeModelSync({
+    const completionInput = {
       accountId: accountA,
       workerId: "worker-b",
       taskId: task.id,
@@ -248,9 +339,17 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       correlationId: `corr-complete-${suffix}`,
       catalog,
       capabilityResult: { outcome: "PASSED", checkedAt: testedAt, text: true, image: true },
-    });
+    };
+    const completed = await repository.completeModelSync(completionInput);
     assert.equal(completed.status, "SUCCEEDED");
     assert.equal(completed.catalog.catalogHash.length, 64);
+    assert.equal((await repository.completeModelSync(completionInput)).duplicate, true);
+    await assert.rejects(repository.completeModelSync({
+      ...completionInput, workerId: "worker-forged",
+    }), { code: "AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", status: 409 });
+    await assert.rejects(repository.completeModelSync({
+      ...completionInput, leaseToken: "aiglease_forged",
+    }), { code: "AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", status: 409 });
 
     const profile = await repository.createProfileFromSelection({
       accountId: accountA,
@@ -276,6 +375,21 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       "UPDATE ai_gateway_model_catalogs SET catalog='{}'::JSONB WHERE account_id=$1 AND id=$2",
       [accountA, completed.catalog.id],
     ), "23514");
+    await rejectsCode(() => pool.query(
+      `INSERT INTO ai_gateway_model_sync_events (
+         account_id,id,task_id,connection_id,connection_version,event_type,status_version,
+         lease_version,actor_id,correlation_id,payload
+       ) VALUES ($1,$2,$3,$4,$5,'SUCCEEDED',999,1,$1,$2,'{}'::JSONB)`,
+      [accountA, `mismatched-event-${suffix}`, task.id, second.id, second.version],
+    ), "23503");
+    await rejectsCode(() => pool.query(
+      `INSERT INTO ai_gateway_profile_binding_events (
+         account_id,id,profile_id,config_version,connection_id,connection_version,
+         catalog_id,actor_id,correlation_id,payload
+       ) VALUES ($1,$2,$3,2,$4,$5,$6,$1,$2,'{}'::JSONB)`,
+      [accountA, `mismatched-profile-event-${suffix}`, profile.id,
+        second.id, second.version, completed.catalog.id],
+    ), "23503");
 
     const overview = await repository.loadSettingsOverview({ accountId: accountA });
     assert.equal(overview.activeConnection.id, active.id);
@@ -292,6 +406,23 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       correlationId: `corr-sync-retry-${suffix}`,
       maxAttempts: 2,
     });
+    await rejectsCode(() => pool.query(
+      `INSERT INTO ai_gateway_model_catalogs (
+         account_id,id,connection_id,connection_version,sync_task_id,catalog,catalog_hash,
+         capability_result,capability_hash,tested_at
+       ) VALUES ($1,$2,$3,$4,$5,$6::JSONB,$7,$8::JSONB,$9,NOW())`,
+      [accountA, `mismatched-catalog-${suffix}`, second.id, second.version, retryTask.id,
+        JSON.stringify(rollbackCatalog), "b".repeat(64), JSON.stringify(rollbackCapability), "c".repeat(64)],
+    ), "23503");
+    await rejectsCode(() => pool.query(
+      `INSERT INTO ai_gateway_model_catalogs (
+         account_id,id,connection_id,connection_version,sync_task_id,catalog,catalog_hash,
+         capability_result,capability_hash,tested_at
+       ) VALUES ($1,$2,$3,$4,$5,$6::JSONB,$7,$8::JSONB,$9,NOW())`,
+      [accountA, `failed-capability-${suffix}`, active.id, active.version, retryTask.id,
+        JSON.stringify(rollbackCatalog), "d".repeat(64),
+        JSON.stringify({ ...rollbackCapability, outcome: "FAILED", text: false }), "e".repeat(64)],
+    ), "23514");
     const retryLease = await repository.claimModelSync({ accountId: accountA, workerId: "worker-c", leaseMs: 30_000 });
     await repository.failModelSync({
       accountId: accountA,
@@ -323,6 +454,40 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     const deadReplay = await repository.failModelSync(finalFailureInput);
     assert.equal(deadReplay.status, "DEAD");
     assert.equal(deadReplay.duplicate, true);
+    await assert.rejects(repository.failModelSync({
+      ...finalFailureInput, workerId: "worker-forged",
+    }), { code: "AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", status: 409 });
+    await assert.rejects(repository.failModelSync({
+      ...finalFailureInput, leaseToken: "aiglease_forged",
+    }), { code: "AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", status: 409 });
+
+    const exhaustedTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: active.id,
+      connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
+      idempotencyKey: `sync-exhausted-${suffix}`, correlationId: `corr-sync-exhausted-${suffix}`,
+      maxAttempts: 1,
+    });
+    const exhaustedLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-expiring", leaseMs: 1,
+    });
+    assert.equal(exhaustedLease.taskId, exhaustedTask.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(await repository.listRunnableSyncAccountIds({ afterAccountId: null, limit: 10 }), [accountA]);
+    assert.equal(await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-reaper", leaseMs: 30_000,
+    }), null);
+    const exhausted = (await pool.query(
+      "SELECT status,last_error_code FROM ai_gateway_model_sync_tasks WHERE account_id=$1 AND id=$2",
+      [accountA, exhaustedTask.id],
+    )).rows[0];
+    assert.deepEqual(exhausted, {
+      status: "DEAD", last_error_code: "AUTO_LISTING_AI_MODEL_SYNC_ATTEMPTS_EXHAUSTED",
+    });
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_sync_events
+        WHERE account_id=$1 AND task_id=$2 AND event_type='DEAD'`,
+      [accountA, exhaustedTask.id],
+    )).rows[0].count, 1);
 
     const eventRow = (await pool.query(
       "SELECT id FROM ai_gateway_model_sync_events WHERE account_id=$1 AND task_id=$2 ORDER BY created_at LIMIT 1",
@@ -344,6 +509,38 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_profile_binding_events WHERE account_id=$1 AND profile_id=$2",
       [accountA, profile.id],
     )).rows[0].count), 1);
+    const workerAudits = (await pool.query(
+      `SELECT actor_type,metadata::TEXT AS metadata FROM audit_events
+        WHERE account_id=$1 AND source='auto-listing-ai-settings'
+          AND action IN ('AUTO_LISTING_AI_MODEL_SYNC_LEASE','AUTO_LISTING_AI_MODEL_SYNC_SUCCEEDED',
+            'AUTO_LISTING_AI_MODEL_SYNC_FAILED','AUTO_LISTING_AI_MODEL_SYNC_DEAD')`,
+      [accountA],
+    )).rows;
+    assert.equal(workerAudits.length > 0, true);
+    assert.equal(workerAudits.every((row) => row.actor_type === "worker"), true);
+    assert.equal(workerAudits.some((row) => /"leaseIdentityHash"\s*:\s*"[a-f0-9]{64}"/iu.test(row.metadata)), true);
+    for (const token of [seedLease.leaseToken, leased.leaseToken, reclaimed.leaseToken,
+      retryLease.leaseToken, finalLease.leaseToken, exhaustedLease.leaseToken]) {
+      assert.doesNotMatch(workerAudits.map((row) => row.metadata).join("\n"), new RegExp(token, "u"));
+    }
+
+    const retainedAuditCount = (await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND source='auto-listing-ai-settings'",
+      [accountA],
+    )).rows[0].count;
+    await pool.query("DELETE FROM accounts WHERE id=$1", [accountA]);
+    for (const table of [
+      "ai_gateway_connection_versions", "ai_gateway_connection_events", "ai_gateway_model_sync_tasks",
+      "ai_gateway_model_sync_events", "ai_gateway_model_catalogs", "ai_gateway_profiles",
+      "ai_gateway_profile_binding_events",
+    ]) {
+      assert.equal((await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM ${table} WHERE account_id=$1`,
+        [accountA])).rows[0].count, 0);
+    }
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id IS NULL AND source='auto-listing-ai-settings'",
+    )).rows[0].count, retainedAuditCount);
+    assert.equal((await pool.query("SELECT COUNT(*)::INTEGER AS count FROM accounts WHERE id=$1", [accountB])).rows[0].count, 1);
   } finally {
     await pool?.end();
     try {
