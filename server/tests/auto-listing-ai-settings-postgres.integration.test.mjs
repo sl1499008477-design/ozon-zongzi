@@ -216,6 +216,22 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       accountId: accountA, workerId: "worker-rollback", leaseMs: 30_000,
     });
     assert.equal(rollbackLease.taskId, rollbackTask.id);
+    const restartedRepository = createAutoListingAiSettingsPostgres({ pool });
+    const rollbackSecret = await restartedRepository.loadRollbackConnectionForSecretResolution({
+      accountId: accountA, taskId: rollbackTask.id, workerId: "worker-rollback",
+      leaseVersion: rollbackLease.leaseVersion, leaseToken: rollbackLease.leaseToken,
+    });
+    assert.equal(rollbackSecret.status, "RETIRED");
+    assert.deepEqual(rollbackSecret.encryptedSecret, encryptedSecret);
+    for (const rejectedLease of [
+      { accountId: accountB, workerId: "worker-rollback", leaseToken: rollbackLease.leaseToken },
+      { accountId: accountA, workerId: "worker-other", leaseToken: rollbackLease.leaseToken },
+      { accountId: accountA, workerId: "worker-rollback", leaseToken: "aiglease_wrong" },
+    ]) {
+      await assert.rejects(restartedRepository.loadRollbackConnectionForSecretResolution({
+        ...rejectedLease, taskId: rollbackTask.id, leaseVersion: rollbackLease.leaseVersion,
+      }), { code: "AUTO_LISTING_AI_SETTINGS_ROLLBACK_LEASE_CONFLICT", status: 409 });
+    }
     const rollbackTestResult = {
       schemaVersion: "AI_GATEWAY_ROLLBACK_TEST_RESULT_V1",
       outcome: "PASSED", checkedAt: new Date().toISOString(),
@@ -229,6 +245,13 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       catalog: { models: [] }, capabilityResult: rollbackTestResult,
     });
     assert.match(freshRollbackEvidence.catalog.rollbackEvidenceIdentity, /^[a-f0-9]{64}$/u);
+    const stalePendingRollback = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version, expectedConnectionStatusVersion: Number(retiredFirst.status_version),
+      idempotencyKey: `rollback-stale-pending-${suffix}`,
+      correlationId: `corr-rollback-stale-pending-${suffix}`,
+      maxAttempts: 1, syncPurpose: "ROLLBACK_CAPABILITY",
+    });
     const rolledBack = await repository.markConnectionValidated({
       accountId: accountA,
       actorId: accountA,
@@ -249,6 +272,27 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
       validationResult: rollbackTestResult,
     });
     assert.equal(rolledBack.status, "ACTIVE");
+    assert.equal(await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-stale-claim", leaseMs: 30_000,
+    }), null);
+    assert.deepEqual((await pool.query(
+      `SELECT status,last_error_code FROM ai_gateway_model_sync_tasks
+        WHERE account_id=$1 AND id=$2`,
+      [accountA, stalePendingRollback.id],
+    )).rows[0], {
+      status: "DEAD", last_error_code: "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED",
+    });
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_sync_events
+        WHERE account_id=$1 AND task_id=$2 AND event_type='DEAD'`,
+      [accountA, stalePendingRollback.id],
+    )).rows[0].count, 1);
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+        WHERE account_id=$1 AND source='auto-listing-ai-settings'
+          AND entity_id=$2 AND action='AUTO_LISTING_AI_MODEL_SYNC_DEAD'`,
+      [accountA, stalePendingRollback.id],
+    )).rows[0].count, 1);
     assert.equal((await pool.query(
       `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_connection_events
         WHERE account_id=$1 AND connection_id=$2 AND connection_version=$3
@@ -265,10 +309,130 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
         WHERE account_id=$1 AND catalog_id=$3`,
       [accountA, `duplicate-consumption-${suffix}`, freshRollbackEvidence.catalog.id],
     ), "23505");
+
+    const fourth = await createPending("d");
+    await repository.markConnectionValidated({
+      accountId: accountA, actorId: accountA, connectionId: fourth.id,
+      connectionVersion: fourth.version, expectedStatusVersion: 1,
+      idempotencyKey: `activate-d-${suffix}`, correlationId: `corr-activate-d-${suffix}`,
+      rollbackCapabilityEvidence: null,
+      validationResult: { ...validationResult, checkedAt: new Date().toISOString() },
+    });
+    const retiredAgain = (await pool.query(
+      `SELECT status,status_version FROM ai_gateway_connection_versions
+        WHERE account_id=$1 AND id=$2 AND version=$3`,
+      [accountA, first.id, first.version],
+    )).rows[0];
+    assert.equal(retiredAgain.status, "RETIRED");
+    const secondEvidenceTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version,
+      expectedConnectionStatusVersion: Number(retiredAgain.status_version),
+      idempotencyKey: `rollback-second-evidence-${suffix}`,
+      correlationId: `corr-rollback-second-evidence-${suffix}`,
+      maxAttempts: 1, syncPurpose: "ROLLBACK_CAPABILITY",
+    });
+    const secondEvidenceLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-rollback-second", leaseMs: 30_000,
+    });
+    const secondRollbackTestResult = {
+      schemaVersion: "AI_GATEWAY_ROLLBACK_TEST_RESULT_V1", outcome: "PASSED",
+      checkedAt: new Date().toISOString(), connectionId: first.id,
+      connectionVersion: first.version,
+      checks: { authentication: true, modelsEndpoint: true },
+    };
+    const secondEvidence = await repository.completeModelSync({
+      accountId: accountA, workerId: "worker-rollback-second", taskId: secondEvidenceTask.id,
+      leaseVersion: secondEvidenceLease.leaseVersion, leaseToken: secondEvidenceLease.leaseToken,
+      correlationId: `corr-rollback-second-evidence-complete-${suffix}`,
+      catalog: { models: [] }, capabilityResult: secondRollbackTestResult,
+    });
+    const expiredSecretTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version,
+      expectedConnectionStatusVersion: Number(retiredAgain.status_version),
+      idempotencyKey: `rollback-expired-secret-${suffix}`,
+      correlationId: `corr-rollback-expired-secret-${suffix}`,
+      maxAttempts: 1, syncPurpose: "ROLLBACK_CAPABILITY",
+    });
+    const expiredSecretLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-expired-secret", leaseMs: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await assert.rejects(restartedRepository.loadRollbackConnectionForSecretResolution({
+      accountId: accountA, taskId: expiredSecretTask.id, workerId: "worker-expired-secret",
+      leaseVersion: expiredSecretLease.leaseVersion, leaseToken: expiredSecretLease.leaseToken,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_ROLLBACK_LEASE_CONFLICT", status: 409 });
+    assert.equal(await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-expired-secret-reaper", leaseMs: 30_000,
+    }), null);
+    const staleLeasedTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version,
+      expectedConnectionStatusVersion: Number(retiredAgain.status_version),
+      idempotencyKey: `rollback-stale-leased-${suffix}`,
+      correlationId: `corr-rollback-stale-leased-${suffix}`,
+      maxAttempts: 1, syncPurpose: "ROLLBACK_CAPABILITY",
+    });
+    const staleLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-stale-complete", leaseMs: 30_000,
+    });
+    assert.equal(staleLease.taskId, staleLeasedTask.id);
+    assert.equal((await restartedRepository.loadRollbackConnectionForSecretResolution({
+      accountId: accountA, taskId: staleLeasedTask.id, workerId: "worker-stale-complete",
+      leaseVersion: staleLease.leaseVersion, leaseToken: staleLease.leaseToken,
+    })).status, "RETIRED");
+    const rolledBackAgain = await repository.markConnectionValidated({
+      accountId: accountA, actorId: accountA, connectionId: first.id,
+      connectionVersion: first.version, expectedStatusVersion: Number(retiredAgain.status_version),
+      idempotencyKey: `rollback-first-again-${suffix}`,
+      correlationId: `corr-rollback-first-again-${suffix}`,
+      rollbackCapabilityEvidence: {
+        schemaVersion: "AI_GATEWAY_ROLLBACK_CAPABILITY_V2", taskId: secondEvidenceTask.id,
+        catalogId: secondEvidence.catalog.id, catalogHash: secondEvidence.catalog.catalogHash,
+        capabilityHash: secondEvidence.catalog.capabilityHash,
+        evidenceIdentity: secondEvidence.catalog.rollbackEvidenceIdentity,
+        targetConnectionStatusVersion: Number(retiredAgain.status_version),
+      },
+      validationResult: secondRollbackTestResult,
+    });
+    await assert.rejects(restartedRepository.loadRollbackConnectionForSecretResolution({
+      accountId: accountA, taskId: staleLeasedTask.id, workerId: "worker-stale-complete",
+      leaseVersion: staleLease.leaseVersion, leaseToken: staleLease.leaseToken,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_ROLLBACK_LEASE_CONFLICT", status: 409 });
+    const staleCompletionInput = {
+      accountId: accountA, workerId: "worker-stale-complete", taskId: staleLeasedTask.id,
+      leaseVersion: staleLease.leaseVersion, leaseToken: staleLease.leaseToken,
+      correlationId: `corr-stale-rollback-complete-${suffix}`, catalog: { models: [] },
+      capabilityResult: {
+        ...secondRollbackTestResult, checkedAt: new Date().toISOString(),
+      },
+    };
+    const staleCompletion = await repository.completeModelSync(staleCompletionInput);
+    assert.deepEqual({ status: staleCompletion.status, error: staleCompletion.lastErrorCode }, {
+      status: "DEAD", error: "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED",
+    });
+    const staleCompletionReplay = await repository.completeModelSync(staleCompletionInput);
+    assert.equal(staleCompletionReplay.duplicate, true);
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_sync_events
+        WHERE account_id=$1 AND task_id=$2 AND event_type='DEAD'`,
+      [accountA, staleLeasedTask.id],
+    )).rows[0].count, 1);
+    assert.equal((await pool.query(
+      `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+        WHERE account_id=$1 AND source='auto-listing-ai-settings'
+          AND entity_id=$2 AND action='AUTO_LISTING_AI_MODEL_SYNC_DEAD'`,
+      [accountA, staleLeasedTask.id],
+    )).rows[0].count, 1);
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
+      [accountA, staleLeasedTask.id],
+    )).rows[0].count, 0);
     const active = {
-      id: rolledBack.id,
-      version: rolledBack.version,
-      status_version: rolledBack.statusVersion,
+      id: rolledBackAgain.id,
+      version: rolledBackAgain.version,
+      status_version: rolledBackAgain.statusVersion,
     };
 
     await rejectsCode(() => pool.query(
@@ -623,7 +787,8 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     assert.equal(workerAudits.length > 0, true);
     assert.equal(workerAudits.every((row) => row.actor_type === "worker"), true);
     assert.equal(workerAudits.some((row) => /"leaseIdentityHash"\s*:\s*"[a-f0-9]{64}"/iu.test(row.metadata)), true);
-    for (const token of [seedLease.leaseToken, rollbackLease.leaseToken, leased.leaseToken,
+    for (const token of [seedLease.leaseToken, rollbackLease.leaseToken,
+      secondEvidenceLease.leaseToken, expiredSecretLease.leaseToken, staleLease.leaseToken, leased.leaseToken,
       reclaimed.leaseToken, emptyLease.leaseToken, singleLease.leaseToken,
       retryLease.leaseToken, finalLease.leaseToken, exhaustedLease.leaseToken]) {
       assert.doesNotMatch(workerAudits.map((row) => row.metadata).join("\n"), new RegExp(token, "u"));

@@ -614,6 +614,17 @@ BEGIN
       AND NEW.result_evidence_identity IS DISTINCT FROM OLD.result_evidence_identity)
     OR NOT (
       (OLD.status IN ('PENDING', 'FAILED') AND NEW.status = 'LEASED')
+      OR (OLD.status IN ('PENDING', 'FAILED')
+        AND OLD.sync_purpose = 'ROLLBACK_CAPABILITY'
+        AND NEW.status = 'DEAD'
+        AND NOT EXISTS (
+          SELECT 1 FROM ai_gateway_connection_versions
+          WHERE account_id = OLD.account_id
+            AND id = OLD.connection_id
+            AND version = OLD.connection_version
+            AND status = 'RETIRED'
+            AND status_version = OLD.target_connection_status_version
+        ))
       OR (OLD.status = 'LEASED' AND OLD.lease_expires_at <= NOW() AND NEW.status = 'LEASED')
       OR (OLD.status = 'LEASED' AND NEW.status IN ('SUCCEEDED', 'FAILED', 'DEAD'))
     )

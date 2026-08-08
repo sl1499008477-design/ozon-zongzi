@@ -392,6 +392,60 @@ async function insertAttemptOutcome(client, {
       JSON.stringify(taskSnapshot), catalogId, catalogHash, capabilityHash, rollbackEvidenceIdentity]);
 }
 
+async function terminalizeExpiredRollbackFence(client, task, {
+  actorId, correlationId, resultHash = null, leaseIdentity = null, requireLiveLease = false,
+}) {
+  const updated = (await query(client,
+    `UPDATE ai_gateway_model_sync_tasks t
+        SET status='DEAD',status_version=status_version+1,
+            lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,
+            last_error_code='AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED',
+            last_error_safe='rollback connection fence expired',
+            completed_at=NOW(),updated_at=NOW()
+      WHERE t.account_id=$1 AND t.id=$2
+        AND t.sync_purpose='ROLLBACK_CAPABILITY'
+        AND t.status IN ('PENDING','FAILED','LEASED')
+        AND ($3::BOOLEAN=FALSE OR (t.status='LEASED' AND t.lease_owner=$4
+          AND t.lease_version=$5 AND t.lease_token=$6 AND t.lease_expires_at > NOW()))
+        AND NOT EXISTS (
+          SELECT 1 FROM ai_gateway_connection_versions c
+          WHERE c.account_id=t.account_id AND c.id=t.connection_id AND c.version=t.connection_version
+            AND c.status='RETIRED' AND c.status_version=t.target_connection_status_version
+        )
+      RETURNING t.*`,
+    [task.account_id, task.id, requireLiveLease, task.lease_owner,
+      task.lease_version, task.lease_token])).rows[0];
+  if (!updated) return null;
+  if (task.status === "LEASED") {
+    const outcomeResultHash = resultHash ?? hash({
+      errorCode: "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED",
+      errorSafe: "rollback connection fence expired", retryable: false, retryDelayMs: 0,
+    });
+    const outcomeLeaseIdentity = leaseIdentity ?? leaseIdentityHash(task.lease_owner,
+      Number(task.lease_version), task.lease_token);
+    await insertAttemptOutcome(client, {
+      task: updated, leaseOwner: task.lease_owner, leaseTokenDigest: task.lease_token,
+      leaseIdentity: outcomeLeaseIdentity, outcome: "DEAD", resultHash: outcomeResultHash,
+      taskSnapshot: taskDto(updated, false),
+    });
+  }
+  await insertSyncEvent(client, updated, "DEAD", actorId, correlationId,
+    { errorCode: "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED", targetConnectionStatusVersion: Number(task.target_connection_status_version) });
+  const action = "AUTO_LISTING_AI_MODEL_SYNC_DEAD";
+  const requestHash = hash({ action, accountId: task.account_id, taskId: task.id,
+    leaseVersion: Number(task.lease_version), statusVersion: Number(updated.status_version),
+    errorCode: "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED" });
+  await auditMutation(client, {
+    action, accountId: task.account_id, actorType: "worker", actorId, correlationId,
+    entityType: "ai_gateway_model_sync_task", entityId: task.id,
+    idempotencyKey: `${task.id}:${task.lease_version}:rollback-fence:${updated.status_version}`,
+    requestHash, metadata: { leaseVersion: Number(task.lease_version),
+      statusVersion: Number(updated.status_version), targetConnectionStatusVersion: Number(task.target_connection_status_version),
+      errorCode: "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED" },
+  });
+  return updated;
+}
+
 function createConnectionRequest(raw) {
   const input = exactKeys(raw, [
     "accountId", "actorId", "baseUrl", "correlationId", "displayName", "encryptedSecret", "idempotencyKey",
@@ -479,6 +533,19 @@ function leaseRequest(raw) {
     accountId: identifier(input.accountId),
     workerId: identifier(input.workerId),
     leaseMs: boundedInteger(input.leaseMs, 1, 3_600_000),
+  };
+}
+
+function rollbackSecretRequest(raw) {
+  const input = exactKeys(raw, [
+    "accountId", "leaseToken", "leaseVersion", "taskId", "workerId",
+  ]);
+  return {
+    accountId: identifier(input.accountId),
+    taskId: identifier(input.taskId),
+    workerId: identifier(input.workerId),
+    leaseVersion: positiveInteger(input.leaseVersion),
+    leaseToken: identifier(input.leaseToken),
   };
 }
 
@@ -629,6 +696,30 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           WHERE account_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE'`,
         [accountId, connectionId, connectionVersion]);
       return secretResolutionDto(result?.rows?.[0]);
+    },
+
+    async loadRollbackConnectionForSecretResolution(rawInput = {}) {
+      const input = rollbackSecretRequest(rawInput);
+      const leaseTokenDigest = hash({ leaseToken: input.leaseToken });
+      const result = await query(pool,
+        `SELECT c.*
+           FROM ai_gateway_model_sync_tasks t
+           JOIN ai_gateway_connection_versions c
+             ON c.account_id=t.account_id
+            AND c.id=t.connection_id
+            AND c.version=t.connection_version
+          WHERE t.account_id=$1 AND t.id=$2
+            AND t.sync_purpose='ROLLBACK_CAPABILITY'
+            AND t.status='LEASED' AND t.lease_owner=$3 AND t.lease_version=$4
+            AND t.lease_token=$5 AND t.lease_expires_at > NOW()
+            AND c.status='RETIRED'
+            AND c.status_version=t.target_connection_status_version`,
+        [input.accountId, input.taskId, input.workerId, input.leaseVersion, leaseTokenDigest]);
+      const connection = result?.rows?.[0];
+      if (!connection) {
+        throw repositoryError("AUTO_LISTING_AI_SETTINGS_ROLLBACK_LEASE_CONFLICT", 409);
+      }
+      return secretResolutionDto(connection);
     },
 
     async markConnectionValidated(rawInput = {}) {
@@ -911,6 +1002,20 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         const current = selected?.rows?.[0];
         if (!current) return null;
         const reclaimed = current.status === "LEASED";
+        if (current.sync_purpose === "ROLLBACK_CAPABILITY") {
+          const fence = await query(client,
+            `SELECT 1 FROM ai_gateway_connection_versions
+              WHERE account_id=$1 AND id=$2 AND version=$3
+                AND status='RETIRED' AND status_version=$4`,
+            [current.account_id, current.connection_id, current.connection_version,
+              current.target_connection_status_version]);
+          if (!fence?.rows?.[0]) {
+            await terminalizeExpiredRollbackFence(client, current, {
+              actorId: input.workerId, correlationId: `${current.id}:rollback-fence-expired`,
+            });
+            return null;
+          }
+        }
         if (reclaimed && Number(current.attempt_count) >= Number(current.max_attempts)) {
           const expiredLeaseIdentityHash = leaseIdentityHash(current.lease_owner,
             Number(current.lease_version), current.lease_token);
@@ -957,8 +1062,22 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
                   lease_expires_at=NOW()+($5::BIGINT * INTERVAL '1 millisecond'),
                   last_error_code=NULL,last_error_safe=NULL,updated_at=NOW()
             WHERE account_id=$1 AND id=$2
+              AND (sync_purpose <> 'ROLLBACK_CAPABILITY' OR EXISTS (
+                SELECT 1 FROM ai_gateway_connection_versions c
+                WHERE c.account_id=ai_gateway_model_sync_tasks.account_id
+                  AND c.id=ai_gateway_model_sync_tasks.connection_id
+                  AND c.version=ai_gateway_model_sync_tasks.connection_version
+                  AND c.status='RETIRED'
+                  AND c.status_version=ai_gateway_model_sync_tasks.target_connection_status_version
+              ))
             RETURNING *`,
           [input.accountId, current.id, leaseTokenDigest, input.workerId, input.leaseMs])).rows[0];
+        if (!updated) {
+          await terminalizeExpiredRollbackFence(client, current, {
+            actorId: input.workerId, correlationId: `${current.id}:rollback-fence-expired`,
+          });
+          return null;
+        }
         const correlationId = `${updated.id}:${updated.lease_version}`;
         const leaseIdentity = leaseIdentityHash(input.workerId,
           Number(updated.lease_version), leaseTokenDigest);
@@ -1007,6 +1126,10 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           ...input, leaseTokenDigest, leaseIdentity, resultHash,
         });
         if (attemptReplay) {
+          if (attemptReplay.outcome === "DEAD"
+            && attemptReplay.task_snapshot?.lastErrorCode === "AUTO_LISTING_AI_ROLLBACK_FENCE_EXPIRED") {
+            return { ...attemptReplay.task_snapshot, duplicate: true };
+          }
           if (attemptReplay.outcome !== "SUCCEEDED") {
             throw repositoryError("AUTO_LISTING_AI_SETTINGS_IDEMPOTENCY_CONFLICT", 409);
           }
@@ -1029,6 +1152,20 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         }
         let rollbackEvidenceIdentity = null;
         if (task.sync_purpose === "ROLLBACK_CAPABILITY") {
+          const fence = await query(client,
+            `SELECT 1 FROM ai_gateway_connection_versions
+              WHERE account_id=$1 AND id=$2 AND version=$3
+                AND status='RETIRED' AND status_version=$4`,
+            [task.account_id, task.connection_id, task.connection_version,
+              task.target_connection_status_version]);
+          if (!fence?.rows?.[0]) {
+            const dead = await terminalizeExpiredRollbackFence(client, task, {
+              actorId: input.workerId, correlationId: input.correlationId,
+              resultHash, leaseIdentity, requireLiveLease: true,
+            });
+            if (!dead) throw repositoryError("AUTO_LISTING_AI_SETTINGS_LEASE_CONFLICT", 409);
+            return taskDto(dead, false);
+          }
           requireRollbackCapabilityResult(input.capabilityResult, task);
           rollbackEvidenceIdentity = hash({
             schemaVersion: "AI_GATEWAY_ROLLBACK_EVIDENCE_V1",
@@ -1047,6 +1184,14 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
             WHERE account_id=$1 AND id=$2
               AND status='LEASED' AND lease_owner=$3 AND lease_version=$4
               AND lease_token=$5 AND lease_expires_at > NOW()
+              AND (sync_purpose <> 'ROLLBACK_CAPABILITY' OR EXISTS (
+                SELECT 1 FROM ai_gateway_connection_versions c
+                WHERE c.account_id=ai_gateway_model_sync_tasks.account_id
+                  AND c.id=ai_gateway_model_sync_tasks.connection_id
+                  AND c.version=ai_gateway_model_sync_tasks.connection_version
+                  AND c.status='RETIRED'
+                  AND c.status_version=ai_gateway_model_sync_tasks.target_connection_status_version
+              ))
             RETURNING *`,
           [input.accountId, input.taskId, input.workerId, input.leaseVersion,
             leaseTokenDigest, rollbackEvidenceIdentity])).rows[0];

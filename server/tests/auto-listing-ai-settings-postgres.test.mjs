@@ -70,6 +70,7 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "failModelSync",
     "listRunnableSyncAccountIds",
     "loadConnectionForSecretResolution",
+    "loadRollbackConnectionForSecretResolution",
     "loadSettingsOverview",
     "markConnectionValidated",
   ]);
@@ -166,6 +167,28 @@ test("secret resolution is exact tenant scoped and returns ciphertext only in th
   });
   assert.match(calls[0].sql, /WHERE account_id=\$1 AND id=\$2 AND version=\$3 AND status='ACTIVE'/iu);
   assert.deepEqual(calls[0].params, ["account-a", "connection-a", 1]);
+});
+
+test("rollback secret resolution validates one live rollback lease and stores no raw token in the query", async () => {
+  const { pool, calls } = scriptedPool([{
+    rowCount: 1, rows: [{ ...connectionRow, status: "RETIRED" }],
+  }]);
+  const resolved = await createAutoListingAiSettingsPostgres({ pool })
+    .loadRollbackConnectionForSecretResolution({
+      accountId: "account-a",
+      taskId: "rollback-task-a",
+      workerId: "worker-a",
+      leaseVersion: 2,
+      leaseToken: "aiglease_secret-a",
+    });
+  assert.equal(resolved.status, "RETIRED");
+  assert.equal(resolved.encryptedSecret.ciphertext, "cipher");
+  assert.match(calls[0].sql, /sync_purpose='ROLLBACK_CAPABILITY'/iu);
+  assert.match(calls[0].sql, /lease_expires_at > NOW\(\)/iu);
+  assert.match(calls[0].sql, /c\.status='RETIRED'/iu);
+  assert.match(calls[0].sql, /c\.status_version=t\.target_connection_status_version/iu);
+  assert.equal(calls[0].params.includes("aiglease_secret-a"), false);
+  assert.match(calls[0].params.at(-1), /^[a-f0-9]{64}$/u);
 });
 
 test("raw secret-shaped input is rejected before any database access", async () => {
