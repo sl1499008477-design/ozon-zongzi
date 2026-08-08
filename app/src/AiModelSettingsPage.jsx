@@ -133,6 +133,20 @@ function actionError(error, fallback) {
   return error?.message || fallback;
 }
 
+function accountScopedSessionStorage(accountId) {
+  const storage = globalThis.sessionStorage;
+  const prefix = `ozon-ai-settings-account:${encodeURIComponent(accountId)}:`;
+  return Object.freeze({
+    getItem: (key) => storage.getItem(`${prefix}${key}`),
+    setItem: (key, value) => storage.setItem(`${prefix}${key}`, value),
+    removeItem: (key) => storage.removeItem(`${prefix}${key}`),
+  });
+}
+
+function withSignal(intent, signal) {
+  return Object.freeze({ ...intent, signal });
+}
+
 function GatewayConnectionSection({
   activeRequest, baseUrl, busy, canCreateConnection, displayName, gatewayKey,
   onBaseUrlChange, onDisplayNameChange, onGatewayKeyChange, onOpenDashboard,
@@ -256,8 +270,8 @@ function ConfigurationHistorySection({
     { title: "文字模型", dataIndex: "textModel", ellipsis: true },
     { title: "图片模型", dataIndex: "imageModel", ellipsis: true },
     { title: "验证状态", key: "capability", render: (_value, row) => presentation.profiles.find((item) => item.id === row.id)?.verificationLabel || "待刷新" },
-    { title: "操作时间", dataIndex: "createdAt", render: formatTime },
-    { title: "操作管理员", key: "operator", render: () => "以审计记录为准" },
+    { title: "配置创建时间", dataIndex: "createdAt", render: formatTime },
+    { title: "操作管理员", key: "operator", render: () => "当前接口未提供；请查审计日志" },
     { title: "操作", key: "action", render: (_value, row) => {
       const view = presentation.profiles.find((item) => item.id === row.id);
       if (!view?.actions?.canRollback) return "—";
@@ -278,8 +292,8 @@ function ConfigurationHistorySection({
       { key: "gateway", label: "网关地址", children: active.baseUrl },
       { key: "text", label: "文字模型", children: active.textModel },
       { key: "image", label: "图片模型", children: active.imageModel },
-      { key: "time", label: "启用时间", children: formatTime(active.createdAt) },
-      { key: "operator", label: "操作管理员", children: "以审计记录为准" },
+      { key: "time", label: "配置创建时间", children: formatTime(active.createdAt) },
+      { key: "operator", label: "操作管理员", children: "当前接口未提供；请查审计日志" },
     ]} /> : <Alert type="info" showIcon title="尚未发布正式配置" description="请依次完成连接、同步、选择和真实能力测试。" />}
     <Table className="ai-model-settings-history" rowKey="id" size="small" pagination={false}
       scroll={{ x: 960 }} dataSource={overview?.profiles || []} columns={columns} locale={{ emptyText: "暂无历史版本" }} />
@@ -306,8 +320,11 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
   const hydratedSettingsVersionRef = useRef("");
   const requestVersionRef = useRef(0);
   const actionInFlightRef = useRef(false);
+  const activeActionControllerRef = useRef(null);
   const accountId = String(account?.id || "").trim();
-  const intentStore = useMemo(() => createAiSettingsIntentStore(), []);
+  const intentStore = useMemo(() => createAiSettingsIntentStore(
+    accountScopedSessionStorage(accountId),
+  ), [accountId]);
   const busy = Boolean(activeRequest);
 
   const refreshOverview = useCallback(async ({ silent = false } = {}) => {
@@ -329,6 +346,25 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
   }, []);
 
   useEffect(() => {
+    activeActionControllerRef.current?.abort();
+    activeActionControllerRef.current = null;
+    actionInFlightRef.current = false;
+    hydratedSettingsVersionRef.current = "";
+    setOverview(null);
+    setActiveRequest("");
+    setError("");
+    setNotice("");
+    setDisplayName(DEFAULT_CONNECTION.displayName);
+    setBaseUrl(DEFAULT_CONNECTION.baseUrl);
+    setGatewayKey("");
+    setDraftDirty(false);
+    setSelectedConnectionId("");
+    setProfileName("自动上架 AI 模型");
+    setTextModel("");
+    setImageModel("");
+    setSelectedProfileId("");
+    setCostConfirmedProfileIds([]);
+    setRollbackConfirmedProfileIds([]);
     if (account?.role !== "admin") {
       setLoading(false);
       return undefined;
@@ -353,6 +389,8 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
 
   useEffect(() => () => {
     requestVersionRef.current += 1;
+    activeActionControllerRef.current?.abort();
+    activeActionControllerRef.current = null;
   }, []);
 
   const presentation = useMemo(() => aiSettingsPresentation(overview || {}, {
@@ -368,7 +406,8 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     setDisplayName(preferredConnection?.displayName || DEFAULT_CONNECTION.displayName);
     setBaseUrl(preferredConnection?.baseUrl || DEFAULT_CONNECTION.baseUrl);
     setSelectedConnectionId(preferredConnection?.id || "");
-    setSelectedProfileId(overview.profiles?.find((row) => row.enabled)?.id || overview.profiles?.[0]?.id || "");
+    setSelectedProfileId((current) => overview.profiles?.some((row) => row.id === current)
+      ? current : overview.profiles?.find((row) => row.enabled)?.id || overview.profiles?.[0]?.id || "");
     hydratedSettingsVersionRef.current = settingsVersion;
   }, [overview, settingsVersion, draftDirty, selectedConnectionId]);
 
@@ -402,22 +441,29 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
   const runAction = async (name, operation, successMessage) => {
     if (actionInFlightRef.current) return;
     actionInFlightRef.current = true;
+    const controller = new AbortController();
+    activeActionControllerRef.current = controller;
     setActiveRequest(name);
     setError("");
     setNotice("");
     try {
-      await operation();
-      setNotice(successMessage);
+      await operation(controller.signal);
+      if (activeActionControllerRef.current === controller) setNotice(successMessage);
     } catch (caught) {
-      setError(actionError(caught, `${name}失败`));
+      if (activeActionControllerRef.current === controller && caught?.code !== "REQUEST_ABORTED") {
+        setError(actionError(caught, `${name}失败`));
+      }
     } finally {
+      if (activeActionControllerRef.current !== controller) return;
       await refreshOverview({ silent: true });
+      if (activeActionControllerRef.current !== controller) return;
+      activeActionControllerRef.current = null;
       actionInFlightRef.current = false;
       setActiveRequest("");
     }
   };
 
-  const saveAndTestConnection = () => runAction("测试连接", async () => {
+  const saveAndTestConnection = () => runAction("测试连接", async (signal) => {
     const normalizedDisplayName = displayName.trim();
     const normalizedBaseUrl = baseUrl.trim();
     if (!normalizedDisplayName || !normalizedBaseUrl || !gatewayKey.trim()) {
@@ -433,24 +479,24 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
       baseUrl: normalizedBaseUrl,
       gatewayKey,
       gatewayKeyInput,
-    }, connectionIntent);
+    }, withSignal(connectionIntent, signal));
     setGatewayKey("");
     setDraftDirty(false);
     setSelectedConnectionId(connection.id);
     const syncIntent = intentStore.commandIntent({ operation: "sync", targetId: connection.id });
-    await requestModelSync({ connectionId: connection.id, connectionVersion: connection.version }, syncIntent);
+    await requestModelSync({ connectionId: connection.id, connectionVersion: connection.version }, withSignal(syncIntent, signal));
   }, "连接已保存，验证与模型同步任务已提交");
 
-  const syncModels = () => runAction("立即同步", async () => {
+  const syncModels = () => runAction("立即同步", async (signal) => {
     if (!selectedConnection || !connectionView?.actions?.canSync) throw new Error("当前连接暂不可同步");
     const intent = intentStore.commandIntent({ operation: "sync", targetId: selectedConnection.id });
     await requestModelSync({
       connectionId: selectedConnection.id,
       connectionVersion: selectedConnection.version,
-    }, intent);
+    }, withSignal(intent, signal));
   }, "模型同步任务已提交");
 
-  const saveSelection = () => runAction("保存模型选择", async () => {
+  const saveSelection = () => runAction("保存模型选择", async (signal) => {
     if (!selectedConnection || !currentCatalog || !textModel || !imageModel || !profileName.trim()) {
       throw new Error("请先完成模型同步并选择文字模型和图片模型");
     }
@@ -464,12 +510,12 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
       imageModel,
       textProtocol: "SUB2API_RESPONSES",
       imageProtocol: "SUB2API_OPENAI_IMAGES",
-    }, intent);
+    }, withSignal(intent, signal));
     setSelectedProfileId(profile.id);
     setDraftDirty(false);
   }, "模型选择已保存为待验证配置");
 
-  const testProfile = () => runAction("能力测试", async () => {
+  const testProfile = () => runAction("能力测试", async (signal) => {
     if (!selectedProfile || !profileView?.actions?.canTest || !profileView.paidTest.ready) {
       throw new Error("请先确认测试费用提示，并选择后端允许测试的配置");
     }
@@ -478,20 +524,20 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
       profileId: selectedProfile.id,
       configVersion: selectedProfile.configVersion,
       costConfirmed: true,
-    }, intent);
+    }, withSignal(intent, signal));
     setCostConfirmedProfileIds((current) => current.filter((id) => id !== selectedProfile.id));
   }, "真实能力测试已完成");
 
-  const publishProfile = () => runAction("发布启用", async () => {
+  const publishProfile = () => runAction("发布启用", async (signal) => {
     if (!selectedProfile || !profileView?.actions?.canPublish) throw new Error("当前配置尚未达到发布条件");
     const intent = intentStore.commandIntent({ operation: "publish", targetId: selectedProfile.id });
     await publishModelProfile({
       profileId: selectedProfile.id,
       configVersion: selectedProfile.configVersion,
-    }, intent);
+    }, withSignal(intent, signal));
   }, "AI 模型配置已发布，仅影响新建自动上架任务");
 
-  const rollbackProfile = (profile) => runAction("安全回退", async () => {
+  const rollbackProfile = (profile) => runAction("安全回退", async (signal) => {
     const view = presentation.profiles.find((row) => row.id === profile.id);
     if (!view?.actions?.canRollback || !rollbackConfirmedProfileIds.includes(profile.id)) {
       throw new Error("请先确认回退将重新验证并可能产生少量费用");
@@ -501,7 +547,7 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
       profileId: profile.id,
       configVersion: profile.configVersion,
       costConfirmed: true,
-    }, intent);
+    }, withSignal(intent, signal));
     setRollbackConfirmedProfileIds((current) => current.filter((id) => id !== profile.id));
   }, "历史配置已完成安全验证并回退");
 
@@ -547,6 +593,7 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
           latestSuccessfulSync={latestSuccessfulSync} latestSync={latestSync} overview={overview}
           onConnectionChange={(value) => {
             const connection = overview?.connections?.find((row) => row.id === value);
+            setGatewayKey("");
             setSelectedConnectionId(value);
             setDisplayName(connection?.displayName || DEFAULT_CONNECTION.displayName);
             setBaseUrl(connection?.baseUrl || DEFAULT_CONNECTION.baseUrl);

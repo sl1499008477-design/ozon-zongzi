@@ -4,37 +4,37 @@
   min-width: 0;
 }
 
-.ai-model-settings-page__header {
+.ai-model-settings-page .ai-model-settings-page__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-.ai-model-settings-page__header h1 {
+.ai-model-settings-page .ai-model-settings-page__header h1 {
   margin: 6px 0 4px;
   color: #17213a;
   font-size: 24px;
 }
 
-.ai-model-settings-page__header p {
+.ai-model-settings-page .ai-model-settings-page__header p {
   margin: 0;
   color: #6f7b91;
 }
 
-.ai-model-settings-page__grid {
+.ai-model-settings-page .ai-model-settings-page__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
-.ai-model-settings-page__grid > .ant-card {
+.ai-model-settings-page .ai-model-settings-page__grid > .ant-card {
   min-width: 0;
   border: 1px solid #e3ebf8;
   box-shadow: 0 8px 22px rgba(42, 84, 146, 0.05);
 }
 
-.ai-model-settings-page__grid > .ant-card:last-child {
+.ai-model-settings-page .ai-model-settings-page__grid > .ant-card:last-child {
   grid-column: 1 / -1;
 }
 
@@ -43,16 +43,16 @@
   gap: 14px;
 }
 
-.ai-model-settings-fields {
+.ai-model-settings-page .ai-model-settings-fields {
   display: grid;
   gap: 12px;
 }
 
-.ai-model-settings-fields--selection {
+.ai-model-settings-page .ai-model-settings-fields--selection {
   margin-top: 2px;
 }
 
-.ai-model-settings-fields label {
+.ai-model-settings-page .ai-model-settings-fields label {
   display: grid;
   gap: 7px;
   min-width: 0;
@@ -60,20 +60,20 @@
   font-weight: 600;
 }
 
-.ai-model-settings-fields .ant-select,
-.ai-model-settings-fields .ant-input {
+.ai-model-settings-page .ai-model-settings-fields .ant-select,
+.ai-model-settings-page .ai-model-settings-fields .ant-input {
   width: 100%;
   font-weight: 400;
 }
 
-.ai-model-settings-summary {
+.ai-model-settings-page .ai-model-settings-summary {
   padding: 12px 14px;
   border: 1px solid #edf2fa;
   border-radius: 10px;
   background: #f8fbff;
 }
 
-.ai-model-settings-hint {
+.ai-model-settings-page .ai-model-settings-hint {
   margin: 0;
   color: #7a8699;
   font-size: 12px;
@@ -81,13 +81,13 @@
   overflow-wrap: anywhere;
 }
 
-.ai-model-capability-grid {
+.ai-model-settings-page .ai-model-capability-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
-.ai-model-capability-grid > div {
+.ai-model-settings-page .ai-model-capability-grid > div {
   display: grid;
   gap: 4px;
   padding: 12px;
@@ -96,49 +96,49 @@
   background: #fafcff;
 }
 
-.ai-model-capability-grid span {
+.ai-model-settings-page .ai-model-capability-grid span {
   color: #758095;
   font-size: 12px;
 }
 
-.ai-model-capability-grid strong {
+.ai-model-settings-page .ai-model-capability-grid strong {
   color: #7b8799;
 }
 
-.ai-model-capability-grid .is-passed {
+.ai-model-settings-page .ai-model-capability-grid .is-passed {
   border-color: #b7ebc6;
   background: #f2fff6;
 }
 
-.ai-model-capability-grid .is-passed strong {
+.ai-model-settings-page .ai-model-capability-grid .is-passed strong {
   color: #16863c;
 }
 
-.ai-model-settings-history {
+.ai-model-settings-page .ai-model-settings-history {
   min-width: 0;
 }
 
-.ai-model-settings-history .ant-table-cell {
+.ai-model-settings-page .ai-model-settings-history .ant-table-cell {
   overflow-wrap: anywhere;
 }
 
 @media (max-width: 1100px) {
-  .ai-model-settings-page__grid {
+  .ai-model-settings-page .ai-model-settings-page__grid {
     grid-template-columns: 1fr;
   }
 
-  .ai-model-settings-page__grid > .ant-card:last-child {
+  .ai-model-settings-page .ai-model-settings-page__grid > .ant-card:last-child {
     grid-column: auto;
   }
 }
 
 @media (max-width: 768px) {
-  .ai-model-settings-page__header {
+  .ai-model-settings-page .ai-model-settings-page__header {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .ai-model-capability-grid {
+  .ai-model-settings-page .ai-model-capability-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

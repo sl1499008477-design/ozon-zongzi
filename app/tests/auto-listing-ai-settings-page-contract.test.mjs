@@ -4,6 +4,7 @@ import test from "node:test";
 
 const page = await readFile(new URL("../src/AiModelSettingsPage.jsx", import.meta.url), "utf8").catch(() => "");
 const css = await readFile(new URL("../src/auto-listing-ai-settings.css", import.meta.url), "utf8").catch(() => "");
+const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8").catch(() => "");
 
 test("administrator settings page composes the closed Task 8 client and presentation contracts", () => {
   assert.match(page, /from "\.\/auto-listing-ai-settings-client\.js"/);
@@ -67,6 +68,14 @@ test("a successful paid action consumes its explicit fee confirmation", () => {
   assert.match(page, /await rollbackModelProfile\([\s\S]*?setRollbackConfirmedProfileIds\(\(current\) => current\.filter\(\(id\) => id !== profile\.id\)\)/);
 });
 
+test("account and connection boundaries cannot carry a gateway key into another scope", () => {
+  assert.match(app, /<AiModelSettingsPage\s+key=\{`ai-settings:\$\{account\?\.id \|\| ""\}:\$\{account\?\.role \|\| ""\}`\}/);
+  assert.match(page, /createAiSettingsIntentStore\(\s*accountScopedSessionStorage\(accountId\)/);
+  assert.match(page, /activeActionControllerRef\.current\?\.abort\(\)/);
+  assert.match(page, /onConnectionChange[\s\S]*?setGatewayKey\(""\)/);
+  assert.match(page, /requestModelSync\([\s\S]*?withSignal\(syncIntent, signal\)/);
+});
+
 test("background account refresh cannot overwrite a dirty draft", () => {
   assert.match(page, /const \[draftDirty, setDraftDirty\] = useState\(false\)/);
   assert.match(page, /const settingsVersion = useMemo/);
@@ -74,6 +83,7 @@ test("background account refresh cannot overwrite a dirty draft", () => {
   assert.match(page, /if \(draftDirty/);
   assert.match(page, /hydratedSettingsVersionRef\.current === settingsVersion/);
   assert.match(page, /const preferredConnection = overview\.connections\?\.find\(\(row\) => row\.id === selectedConnectionId\)/);
+  assert.match(page, /setSelectedProfileId\(\(current\) => overview\.profiles\?\.some\(\(row\) => row\.id === current\)[\s\S]*?current/);
 });
 
 test("dashboard navigation accepts only explicit HTTP origins", () => {
@@ -85,4 +95,13 @@ test("page styling is scoped and remains usable on narrow screens", () => {
   assert.match(css, /\.ai-model-settings-page/);
   assert.match(css, /@media\s*\(max-width:\s*768px\)/);
   assert.match(css, /overflow-wrap:\s*anywhere/);
+  const topLevelSelectors = [...css.matchAll(/(?:^|\n)(\.[^{\n]+)\s*\{/gu)].map((match) => match[1].trim());
+  assert.ok(topLevelSelectors.length > 0);
+  for (const selector of topLevelSelectors) assert.match(selector, /^\.ai-model-settings-page(?:\s|$)/u);
+});
+
+test("history labels do not claim unavailable creation timestamps are publish audit evidence", () => {
+  assert.match(page, /配置创建时间/);
+  assert.match(page, /当前接口未提供；请查审计日志/);
+  assert.doesNotMatch(page, /label: "启用时间"|title: "操作时间"/);
 });

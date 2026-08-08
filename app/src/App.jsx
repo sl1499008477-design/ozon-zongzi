@@ -1688,7 +1688,8 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
   if (route === "/ozon/products/reshelf") return <ReshelfPage {...pageProps} />;
   if (route === "/ozon/tools/ai-poster-records") return <AiPosterPage {...pageProps} />;
   if (route === "/ozon/tools/auto-listing") return <AutoListingPage {...pageProps} />;
-  if (route === "/ozon/tools/auto-listing/ai-settings") return <AiModelSettingsPage {...pageProps} />;
+  if (route === "/ozon/tools/auto-listing/ai-settings") return <AiModelSettingsPage
+    key={`ai-settings:${account?.id || ""}:${account?.role || ""}`} {...pageProps} />;
   if (route === "/ozon/ai-image") return <AiImagePage />;
   if (route === "/ozon/promotions/prices") return <PriceDiscountPage {...pageProps} />;
   if (route === "/ozon/promotions/campaigns") return <CampaignsPage {...pageProps} />;

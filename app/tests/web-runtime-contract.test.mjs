@@ -33,7 +33,7 @@ test("the application owns a dedicated AI model settings route without adding a 
   assert.match(app, /import AiModelSettingsPage from "\.\/AiModelSettingsPage\.jsx"/);
   assert.match(app, /"\/ozon\/tools\/auto-listing\/ai-settings": "AI 模型配置"/);
   assert.match(app, /route === "\/ozon\/tools\/auto-listing\/ai-settings"/);
-  assert.match(app, /<AiModelSettingsPage \{\.\.\.pageProps\} \/>/);
+  assert.match(app, /<AiModelSettingsPage\s+key=\{`ai-settings:\$\{account\?\.id \|\| ""\}:\$\{account\?\.role \|\| ""\}`\}\s+\{\.\.\.pageProps\} \/>/);
   assert.match(app, /"\/ozon\/tools\/auto-listing\/ai-settings": "ai"/);
   assert.doesNotMatch(app, /key:\s*"\/ozon\/tools\/auto-listing\/ai-settings"/);
 });
