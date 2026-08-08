@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { loadAutoListingCredentialKey } from "../auto-listing-ai-credential-config.mjs";
 
 const [compose, example, indexSource, connectionSource, storageSource] = await Promise.all([
   readFile(new URL("../../docker-compose.yml", import.meta.url), "utf8"),
@@ -50,8 +51,31 @@ assert.match(example, /^AUTO_LISTING_EXCEL_MAX_BYTES=2097152$/mu);
 assert.match(example, /^AUTO_LISTING_EXCEL_MAX_ROWS=1000$/mu);
 assert.match(compose, /AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: \$\{AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES:-\}/u);
 assert.match(compose, /AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: \$\{AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS:-\}/u);
+assert.match(compose, /AUTO_LISTING_CREDENTIAL_MASTER_KEY: \$\{AUTO_LISTING_CREDENTIAL_MASTER_KEY:-\}/u);
+assert.match(compose, /AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE: \$\{AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:\+\/run\/secrets\/auto-listing-credential-master\.key\}/u);
+assert.match(compose, /AUTO_LISTING_CREDENTIAL_KEY_VERSION: \$\{AUTO_LISTING_CREDENTIAL_KEY_VERSION:-local-v1\}/u);
+for (const service of ["api", "worker", "auto-listing-ai-worker"]) {
+  assert.match(
+    compose,
+    new RegExp(`${service}:[\\s\\S]*?AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null\\}:/run/secrets/auto-listing-credential-master\\.key:ro`, "u"),
+    `${service} must mount only a placeholder when no credential key file is configured`,
+  );
+}
+assert.match(example, /^AUTO_LISTING_CREDENTIAL_MASTER_KEY=$/mu);
+assert.match(example, /^AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE=server-data\/sub2api-local\/credential-master\.key$/mu);
+assert.match(example, /^AUTO_LISTING_CREDENTIAL_KEY_VERSION=local-v1$/mu);
 assert.match(compose, /auto-listing-ai-worker:[\s\S]*?restart: on-failure[\s\S]*?stop_grace_period: 5m/u);
 assert.match(compose, /^      SUB2API_API_KEY: \$\{SUB2API_API_KEY:-\}$/mu,
   "AI key must only come from the environment");
+
+await assert.rejects(
+  loadAutoListingCredentialKey({
+    env: { AUTO_LISTING_ENABLED: "true" },
+    readFile: async () => "",
+    stat: async () => ({}),
+  }),
+  (error) => error?.code === "AUTO_LISTING_AI_CREDENTIAL_KEY_MISSING",
+  "enabled auto-listing must not run without a credential-key source",
+);
 
 console.log("infrastructure configuration contract passed");

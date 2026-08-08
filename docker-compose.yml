@@ -86,6 +86,9 @@ services:
       AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: ${AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS:-}
       AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS: ${AUTO_LISTING_AI_ALLOWED_GATEWAY_ORIGINS:-}
       AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY: ${AUTO_LISTING_AI_ALLOW_LOCAL_GATEWAY:-false}
+      AUTO_LISTING_CREDENTIAL_MASTER_KEY: ${AUTO_LISTING_CREDENTIAL_MASTER_KEY:-}
+      AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE: ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:+/run/secrets/auto-listing-credential-master.key}
+      AUTO_LISTING_CREDENTIAL_KEY_VERSION: ${AUTO_LISTING_CREDENTIAL_KEY_VERSION:-local-v1}
       AUTO_LISTING_UPLOAD_ENABLED: ${AUTO_LISTING_UPLOAD_ENABLED:-false}
       AUTO_LISTING_DIRECT_UPLOAD_ALLOWED: ${AUTO_LISTING_DIRECT_UPLOAD_ALLOWED:-false}
       LISTING_ASSET_PUBLIC_BASE_URL: ${LISTING_ASSET_PUBLIC_BASE_URL:-}
@@ -100,6 +103,8 @@ services:
       OZON_RICH_CONTENT_RULE_VERSION: ${OZON_RICH_CONTENT_RULE_VERSION:-2026-07-v1}
     expose:
       - "3001"
+    volumes:
+      - ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}:/run/secrets/auto-listing-credential-master.key:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,6 +126,8 @@ services:
     restart: unless-stopped
     command: ["node", "server/listing-worker.mjs"]
     environment: *application-environment
+    volumes:
+      - ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}:/run/secrets/auto-listing-credential-master.key:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -137,6 +144,8 @@ services:
     environment:
       <<: *application-environment
       PG_BOSS_APPLICATION_NAME: sonli-auto-listing-ai-worker
+    volumes:
+      - ${AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE:-/dev/null}:/run/secrets/auto-listing-credential-master.key:ro
     depends_on:
       postgres:
         condition: service_healthy
