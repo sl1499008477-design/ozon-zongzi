@@ -16,6 +16,7 @@ import {
 import { AUTO_LISTING_AI_SETTINGS_SAFE_CODES } from "../../server/auto-listing-ai-settings-routes.mjs";
 import { createAutoListingAiSettingsService } from "../../server/auto-listing-ai-settings-service.mjs";
 import { createAutoListingAiSettingsPostgres } from "../../server/auto-listing-ai-settings-postgres.mjs";
+import { createAutoListingAiAdminPostgres } from "../../server/auto-listing-ai-admin-postgres.mjs";
 import { recommendAutoListingModels } from "../../server/auto-listing-ai-model-recommendation.mjs";
 
 const CHECKED_AT = "2026-08-08T00:00:00.000Z";
@@ -107,7 +108,61 @@ function overview(overrides = {}) {
     ...overrides };
 }
 
+async function task7ProfileRollbackValidation() {
+  let persistedValidation = null;
+  const paid = paidCapability();
+  const passedProfile = {
+    id: "profile-rollback", account_id: "account-a", display_name: "Profile rollback", config_version: 1,
+    base_url: "http://127.0.0.1:8080/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES",
+    text_model: "text-a", image_model: "image-a", enabled: false,
+    capability_result: paid, capability_checked_at: CHECKED_AT,
+    connection_id: "connection-profile-rollback", connection_version: 1, created_at: CHECKED_AT,
+  };
+  const steps = [
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] }, { rows: [passedProfile] },
+    { rows: [{ id: "connection-profile-rollback", retired_at: "2026-08-07T00:00:00.000Z", status_version: 4 }] },
+    { rows: [{ id: "attempt-profile-rollback", completed_at: CHECKED_AT }] },
+    (sql, params) => {
+      assert.match(sql, /SET status='VALIDATED'/u);
+      persistedValidation = JSON.parse(params[3]);
+      return { rows: [{ id: "connection-profile-rollback", version: 1, status_version: 5 }] };
+    },
+    { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-validated" }] },
+    { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
+    { rows: [{ id: "connection-current", version: 1, status_version: 3 }] },
+    { rows: [{ id: "connection-current", version: 1, status_version: 4 }] },
+    { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-retired" }] },
+    { rows: [{ id: "connection-profile-rollback", version: 1, status_version: 6 }] },
+    { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
+    { rows: [{ ...passedProfile, enabled: true }] },
+    { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
+  ];
+  const client = {
+    async query(sql, params = []) {
+      if (/auto_listing_cleanup_expired_prepared_capability_subcalls/u.test(sql)
+        || /SELECT id FROM ai_gateway_capability_subcall_reservations[\s\S]*status IN \('PREPARED','SENDING'\)/u.test(sql)) {
+        return { rowCount: 0, rows: [] };
+      }
+      const step = steps.shift();
+      assert.ok(step, `unexpected profile rollback query: ${sql}`);
+      return typeof step === "function" ? step(sql, params) : step;
+    },
+    release() {},
+  };
+  const pool = { async connect() { return client; }, async query(sql, params) { return client.query(sql, params); } };
+  const rolledBack = await createAutoListingAiAdminPostgres({ pool }).rollbackProfile({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-rollback", configVersion: 1,
+    idempotencyKey: "rollback-profile-producer", correlationId: "rollback-profile-producer-corr",
+  });
+  assert.equal(rolledBack.enabled, true);
+  assert.equal(steps.length, 0);
+  assert.deepEqual(persistedValidation, paid);
+  return persistedValidation;
+}
+
 async function task7ProducerOverview() {
+  const profileRollbackValidation = await task7ProfileRollbackValidation();
   const catalogResult = catalogCapability();
   const catalogValue = catalogEnvelope();
   const connectionValidation = {
@@ -122,7 +177,11 @@ async function task7ProducerOverview() {
     { id: "connection-rollback", account_id: "account-a", version: 1, display_name: "回退 sub2API",
       base_url: "http://127.0.0.1:8080/v1", fingerprint: "fingerprint-b", key_version: "local-v1",
       status: "VALIDATED", status_version: 4, validation_result: rollbackCapability(), validated_at: new Date(CHECKED_AT),
-      activated_at: null, retired_at: new Date("2026-08-07T00:00:00.000Z"), created_at: new Date(CHECKED_AT) }],
+      activated_at: null, retired_at: new Date("2026-08-07T00:00:00.000Z"), created_at: new Date(CHECKED_AT) },
+    { id: "connection-profile-rollback", account_id: "account-a", version: 1, display_name: "Profile 回退 sub2API",
+      base_url: "http://127.0.0.1:8080/v1", fingerprint: "fingerprint-c", key_version: "local-v1",
+      status: "ACTIVE", status_version: 6, validation_result: profileRollbackValidation, validated_at: new Date(CHECKED_AT),
+      activated_at: new Date(CHECKED_AT), retired_at: new Date("2026-08-07T00:00:00.000Z"), created_at: new Date(CHECKED_AT) }],
     catalogs: [{ id: "catalog-a", account_id: "account-a", connection_id: "connection-a", connection_version: 1,
       sync_task_id: "sync-a", catalog: catalogValue, catalog_hash: CATALOG_HASH, capability_result: catalogResult,
       capability_hash: CAPABILITY_HASH, rollback_evidence_identity: null, tested_at: new Date(CHECKED_AT), created_at: new Date(CHECKED_AT) },
@@ -332,6 +391,7 @@ test("client accepts the exact Task 7 repository and service overview DTO varian
 
   assert.equal(loaded.connections[0].validationResult.schemaVersion, "AI_GATEWAY_CONNECTION_TEST_V1");
   assert.deepEqual(loaded.connections[1].validationResult, rollbackCapability());
+  assert.deepEqual(loaded.connections[2].validationResult, paidCapability());
   assert.deepEqual(loaded.catalogs[0].capabilityResult, catalogCapability());
   assert.deepEqual(loaded.catalogs[1].capabilityResult, rollbackCapability());
   assert.deepEqual(loaded.profiles.map((row) => row.capabilityResult.outcome ?? "EMPTY"),
@@ -383,6 +443,10 @@ test("overview rejects every open or contradictory Task 7 nested DTO", async (t)
     ["connection rollback validation open", (value) => { value.connections[1].validationResult.extra = true; }],
     ["connection rollback validation identity", (value) => { value.connections[1].validationResult.connectionId = "connection-other"; }],
     ["connection rollback validation combination", (value) => { value.connections[1].validationResult.checks.modelsEndpoint = false; }],
+    ["connection profile rollback paid open", (value) => { value.connections[2].validationResult.extra = true; }],
+    ["connection profile rollback paid FAILED", (value) => { value.connections[2].validationResult = paidCapability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "GATEWAY_TIMEOUT" }); }],
+    ["connection profile rollback paid NOT_TESTED", (value) => { value.connections[2].validationResult = catalogCapability(); }],
+    ["connection profile rollback paid combination", (value) => { value.connections[2].validationResult.features = ["STRUCTURED_TEXT", "IMAGE_GENERATION"]; }],
     ["catalog capability open", (value) => { value.catalogs[0].capabilityResult.extra = true; }],
     ["catalog capability combination", (value) => { value.catalogs[0].capabilityResult.text = true; }],
     ["rollback catalog capability open", (value) => { value.catalogs[1].capabilityResult.extra = true; }],

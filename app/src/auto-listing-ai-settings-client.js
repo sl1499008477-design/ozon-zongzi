@@ -237,9 +237,14 @@ function profileCapabilityResult(value) {
   return exactRecord(value, []) || catalogCapabilityResult(value) || paidCapabilityResult(value);
 }
 
+function profileRollbackConnectionValidationResult(value) {
+  return paidCapabilityResult(value) && value.outcome === "PASSED";
+}
+
 function connectionValidationResult(value, connectionId, connectionVersion) {
   if (value === null) return true;
   if (rollbackCapabilityResult(value, connectionId, connectionVersion)) return true;
+  if (profileRollbackConnectionValidationResult(value)) return true;
   if (!exactRecord(value, ["schemaVersion", "outcome", "checkedAt", "checks", "catalogId", "catalogHash"])
     || value.schemaVersion !== "AI_GATEWAY_CONNECTION_TEST_V1" || value.outcome !== "PASSED"
     || !isoTimestamp(value.checkedAt) || !exactRecord(value.checks, ["authentication", "modelsEndpoint"])) return false;
