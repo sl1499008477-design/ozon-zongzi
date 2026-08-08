@@ -47,6 +47,7 @@ function fixture({
           profileId: loadedProfile.id,
           configVersion: loadedProfile.configVersion,
           attemptId: input.attemptId,
+          correlationId: input.correlationId,
           fence: 11,
           leaseVersion: 1,
           leaseToken: "caplease_fixture",
@@ -133,19 +134,20 @@ test("successful explicit capability test records evidence without automatically
   const gatewayInput = calls[1][1];
   assert.equal(gatewayInput.profile.accountId, "account-admin");
   assert.equal(gatewayInput.profile.configVersion, 4);
-  assert.equal(gatewayInput.correlationId, "corr-capability");
-  assert.match(gatewayInput.requestKey, /^[a-f0-9]{64}$/);
+  assert.equal(Object.hasOwn(gatewayInput, "correlationId"), false);
+  assert.equal(Object.hasOwn(gatewayInput, "requestKey"), false);
   assert.deepEqual(gatewayInput.capabilityExecution, {
     accountId: "account-admin",
     profileId: "profile-a",
     configVersion: 4,
     attemptId: calls[0][1].attemptId,
+    correlationId: "corr-capability",
     fence: 11,
     leaseVersion: 1,
     leaseToken: "caplease_fixture",
     purpose: "PROFILE_CAPABILITY",
     authorizationHash: "a".repeat(64),
-    requestKey: gatewayInput.requestKey,
+    requestKey: calls[0][1].requestKey,
     connectionId: null,
     connectionVersion: null,
     expectedConnectionStatus: "LEGACY",
@@ -218,7 +220,7 @@ test("capability request identity binds the correlation while remaining stable f
   for (const correlationId of ["corr-a", "corr-b", "corr-a"]) {
     const { service, calls } = fixture();
     await service.testGatewayCapabilities({ costConfirmed: true, actor: admin, profileId: "profile-a", configVersion: 4, correlationId });
-    keys.push(calls.find(([name]) => name === "gateway")[1].requestKey);
+    keys.push(calls.find(([name]) => name === "gateway")[1].capabilityExecution.requestKey);
   }
   assert.notEqual(keys[0], keys[1]);
   assert.equal(keys[0], keys[2]);
@@ -265,12 +267,20 @@ test("an expired running attempt is reclaimed with a new lease and keeps the sam
       status: "RUNNING", response: null, duplicate: false,
       leaseVersion: lease.leaseVersion, leaseToken: lease.leaseToken,
       leaseExpiresAt: "2026-08-04T10:10:00.000Z", reclaimed: lease.reclaimed,
+      capabilityExecution: {
+        accountId: input.accountId, profileId: input.profileId, configVersion: input.configVersion,
+        attemptId: input.attemptId, correlationId: input.correlationId, fence: 13,
+        leaseVersion: lease.leaseVersion, leaseToken: lease.leaseToken,
+        purpose: input.purpose, authorizationHash: "a".repeat(64), requestKey: input.requestKey,
+        connectionId: null, connectionVersion: null,
+        expectedConnectionStatus: "LEGACY", expectedConnectionStatusVersion: 0,
+      },
     }) });
     const result = await service.testGatewayCapabilities({ costConfirmed: true,
       actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-recover",
     });
     assert.equal(result.outcome, "PASSED");
-    requestKeys.push(calls.find(([name]) => name === "gateway")[1].requestKey);
+    requestKeys.push(calls.find(([name]) => name === "gateway")[1].capabilityExecution.requestKey);
     const completed = calls.find(([name]) => name === "complete")[1];
     assert.equal(completed.leaseVersion, lease.leaseVersion);
     assert.equal(completed.leaseToken, lease.leaseToken);

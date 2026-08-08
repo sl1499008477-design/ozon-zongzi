@@ -6,7 +6,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const CAPABILITY_AUTHORIZATION_SCHEMA = "AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1";
 const CAPABILITY_AUTHORIZATION_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED";
 const CAPABILITY_EXECUTION_KEYS = new Set([
-  "accountId", "profileId", "configVersion", "attemptId", "fence", "leaseVersion", "leaseToken",
+  "accountId", "profileId", "configVersion", "attemptId", "correlationId", "fence", "leaseVersion", "leaseToken",
   "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
   "expectedConnectionStatus", "expectedConnectionStatusVersion", "probe",
 ]);
@@ -219,16 +219,19 @@ async function loadAudit(client, { action, accountId, idempotencyKey, requestHas
 }
 
 async function insertAudit(client, {
-  eventId, action, accountId, actorId, correlationId, entityType, entityId, metadata, status = "SUCCESS",
+  eventId, action, accountId, actorId, correlationId, entityType, entityId, metadata,
+  status = "SUCCESS", actorType = "account",
 }) {
+  if (!["account", "system"].includes(actorType)) throw invalid();
   const result = await query(client,
     `INSERT INTO audit_events (
        event_id,account_id,store_id,action,status,actor_type,actor_id,device_id,source,
        entity_type,entity_id,correlation_id,metadata,occurred_at,created_at
-     ) VALUES ($1,$2,NULL,$3,$9,'account',$4,'','auto-listing-ai-admin',$5,$6,$7,$8::JSONB,NOW(),NOW())
+     ) VALUES ($1,$2,NULL,$3,$9,$10,$4,'','auto-listing-ai-admin',$5,$6,$7,$8::JSONB,NOW(),NOW())
      ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING
      RETURNING event_id`,
-    [eventId, accountId, action, actorId, entityType, entityId, correlationId, JSON.stringify(metadata), status]);
+    [eventId, accountId, action, actorId, entityType, entityId, correlationId,
+      JSON.stringify(metadata), status, actorType]);
   if (result?.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
 }
 
@@ -431,6 +434,7 @@ function capabilityExecutionFromAttempt(row) {
     profileId: row.profile_id,
     configVersion: Number(row.config_version),
     attemptId: row.id,
+    correlationId: row.correlation_id,
     fence: Number(row.fence),
     leaseVersion: Number(row.lease_version),
     leaseToken: row.lease_token,
@@ -486,6 +490,7 @@ function capabilityExecutionRequest(rawInput) {
     || keys.some((key) => !CAPABILITY_EXECUTION_KEYS.has(key))) throw invalid();
   const accountId = id(input.accountId);
   if (id(input.profileId) !== input.profileId || id(input.attemptId) !== input.attemptId
+    || id(input.correlationId) !== input.correlationId
     || id(input.leaseToken) !== input.leaseToken) throw invalid();
   const connectionBacked = ["VALIDATED", "RETIRED"].includes(input.expectedConnectionStatus);
   const purpose = id(input.purpose);
@@ -498,6 +503,7 @@ function capabilityExecutionRequest(rawInput) {
     profileId: input.profileId,
     configVersion: version(input.configVersion),
     attemptId: input.attemptId,
+    correlationId: input.correlationId,
     fence: version(input.fence),
     leaseVersion: version(input.leaseVersion),
     leaseToken: input.leaseToken,
@@ -513,6 +519,133 @@ function capabilityExecutionRequest(rawInput) {
   if (!connectionBacked && (input.connectionId !== null || input.connectionVersion !== null
     || input.expectedConnectionStatus !== "LEGACY" || input.expectedConnectionStatusVersion !== 0)) throw invalid();
   return result;
+}
+
+function capabilitySubcallProviderIdentity(execution) {
+  const providerRequestKey = crypto.createHash("sha256").update(JSON.stringify({
+    schemaVersion: "AI_GATEWAY_CAPABILITY_SUBCALL_V1",
+    accountId: execution.accountId,
+    attemptId: execution.attemptId,
+    fence: execution.fence,
+    requestKey: execution.requestKey,
+    stage: execution.probe,
+  }), "utf8").digest("hex");
+  return Object.freeze({
+    providerRequestKey,
+    providerCorrelationId: `cap_${providerRequestKey.slice(0, 40)}`,
+  });
+}
+
+function capabilitySubcallCompleteRequest(rawInput) {
+  const input = canonical(rawInput);
+  const outcome = input?.outcome;
+  if (!input || !["SUCCEEDED", "FAILED"].includes(outcome)) throw invalid();
+  const { outcome: _outcome, ...executionInput } = input;
+  return { ...capabilityExecutionRequest(executionInput), outcome };
+}
+
+async function assertNoActivePaidReservation(client, accountId) {
+  const active = await query(client,
+    `SELECT id FROM ai_gateway_capability_subcall_reservations
+      WHERE account_id=$1 AND status IN ('PREPARED','SENDING')
+      ORDER BY created_at,id LIMIT 1 FOR UPDATE`, [accountId]);
+  if (active.rows[0]) {
+    throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+  }
+}
+
+async function quarantineLegacyCapabilityAttempts(client, input) {
+  const quarantined = await query(client,
+    `UPDATE ai_gateway_capability_attempts
+        SET status='STALE',
+            completion_hash=MD5('AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED:' || account_id || ':' || id)
+              || MD5(id || ':' || account_id || ':AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'),
+            response=JSONB_BUILD_OBJECT('profileId',profile_id,'configVersion',config_version,
+              'outcome','STALE','errorCode','AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'),
+            completed_at=NOW()
+      WHERE account_id=$1 AND profile_id=$2 AND config_version=$3
+        AND status='RUNNING' AND authorization_schema_version IS NULL
+      RETURNING id,fence,correlation_id,completion_hash`,
+    [input.accountId, input.profileId, input.configVersion]);
+  for (const row of quarantined.rows) {
+    await insertAudit(client, {
+      eventId: auditIdentity("AUTO_LISTING_AI_PROFILE_CAPABILITY_UPGRADE_QUARANTINED",
+        input.accountId, row.id),
+      action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_UPGRADE_QUARANTINED",
+      accountId: input.accountId, actorId: "runtime-quarantine",
+      correlationId: row.correlation_id, entityType: "ai_gateway_profile", entityId: input.profileId,
+      status: "FAILED", actorType: "system", metadata: {
+        requestHash: row.completion_hash,
+        schemaVersion: "AI_GATEWAY_LEGACY_CAPABILITY_QUARANTINE_V1",
+        attemptId: row.id, fence: Number(row.fence), outcome: "STALE",
+        errorCode: "AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED",
+      },
+    });
+  }
+  const blocked = await query(client,
+    `SELECT id FROM ai_gateway_capability_attempts
+      WHERE account_id=$1 AND profile_id=$2 AND config_version=$3
+        AND status='STALE' AND authorization_schema_version IS NULL
+        AND response->>'errorCode'='AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'
+      LIMIT 1 FOR UPDATE`, [input.accountId, input.profileId, input.configVersion]);
+  return Boolean(blocked.rows[0]);
+}
+
+async function prepareCapabilitySubcallReservation(client, input) {
+  const identity = capabilitySubcallProviderIdentity(input);
+  const reservationId = deterministicId("aigcap_subcall", input.accountId, input.attemptId, input.probe);
+  const existing = await query(client,
+    `SELECT id,status,lease_version,reservation_version,provider_request_key,provider_correlation_id
+       FROM ai_gateway_capability_subcall_reservations
+      WHERE account_id=$1 AND attempt_id=$2 AND stage=$3 FOR UPDATE`,
+    [input.accountId, input.attemptId, input.probe]);
+  let reservation = existing.rows[0];
+  if (reservation && (reservation.provider_request_key !== identity.providerRequestKey
+    || reservation.provider_correlation_id !== identity.providerCorrelationId)) {
+    throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+  }
+  if (!reservation) {
+    reservation = (await query(client,
+      `INSERT INTO ai_gateway_capability_subcall_reservations (
+         id,account_id,attempt_id,profile_id,config_version,attempt_fence,lease_version,
+         stage,status,provider_request_key,provider_correlation_id
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PREPARED',$9,$10)
+       RETURNING id,status,lease_version,reservation_version,provider_request_key,provider_correlation_id`,
+      [reservationId, input.accountId, input.attemptId, input.profileId, input.configVersion,
+        input.fence, input.leaseVersion, input.probe,
+        identity.providerRequestKey, identity.providerCorrelationId])).rows[0];
+  } else if (Number(reservation.lease_version) < input.leaseVersion) {
+    reservation = (await query(client,
+      `UPDATE ai_gateway_capability_subcall_reservations
+          SET lease_version=$4,reservation_version=reservation_version+1,status='PREPARED',
+              prepared_at=NOW(),sending_at=NULL,completed_at=NULL
+        WHERE account_id=$1 AND attempt_id=$2 AND stage=$3 AND lease_version<$4
+        RETURNING id,status,lease_version,reservation_version,provider_request_key,provider_correlation_id`,
+      [input.accountId, input.attemptId, input.probe, input.leaseVersion])).rows[0];
+  } else if (Number(reservation.lease_version) !== input.leaseVersion || reservation.status !== "PREPARED") {
+    throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+  }
+  const requestHash = hash({ action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED",
+    attemptId: input.attemptId, stage: input.probe, providerRequestKey: identity.providerRequestKey,
+    reservationVersion: Number(reservation.reservation_version) });
+  const audit = await loadAudit(client, {
+    action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED", accountId: input.accountId,
+    idempotencyKey: `${input.attemptId}:${input.probe}:${reservation.reservation_version}`, requestHash,
+  });
+  if (!audit.metadata) {
+    await insertAudit(client, {
+      ...audit, action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED",
+      accountId: input.accountId, actorId: input.accountId, correlationId: input.correlationId,
+      entityType: "ai_gateway_profile", entityId: input.profileId, metadata: {
+        requestHash, attemptId: input.attemptId, stage: input.probe,
+        providerRequestKey: identity.providerRequestKey,
+        providerRequestKeyHash: hash(identity.providerRequestKey),
+        providerCorrelationId: identity.providerCorrelationId,
+        leaseVersion: input.leaseVersion, reservationVersion: Number(reservation.reservation_version),
+      },
+    });
+  }
+  return identity;
 }
 
 async function activatePublishedConnection(client, { input, profile, requestHash }) {
@@ -698,7 +831,10 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             input.authorizationHash, input.requestKey, input.connectionId, input.connectionVersion,
             input.expectedConnectionStatus, input.expectedConnectionStatusVersion, hash(input.leaseToken)]);
         const row = capabilityExecutionSecretRow(loaded.rows[0]);
-        if (row) return row;
+        if (row) {
+          const providerIdentity = await prepareCapabilitySubcallReservation(client, input);
+          return { ...row, ...providerIdentity };
+        }
 
         const diagnostic = await query(client,
           `SELECT status,lease_expires_at > NOW() AS lease_live,correlation_id,actor_id
@@ -759,6 +895,87 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE", 409);
         }
         return result;
+      });
+    },
+
+    async markCapabilitySubcallSending(rawInput = {}) {
+      const input = capabilityExecutionRequest(rawInput);
+      const identity = capabilitySubcallProviderIdentity(input);
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const updated = await query(client,
+          `UPDATE ai_gateway_capability_subcall_reservations reservation
+              SET status='SENDING',sending_at=NOW()
+             FROM ai_gateway_capability_attempts attempt
+            WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
+              AND reservation.lease_version=$4 AND reservation.status='PREPARED'
+              AND reservation.provider_request_key=$5 AND reservation.provider_correlation_id=$6
+              AND attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+              AND attempt.status='RUNNING' AND attempt.fence=$7 AND attempt.lease_version=$4
+              AND attempt.lease_token=$8 AND attempt.lease_expires_at>NOW()
+              AND attempt.authorization_hash=$9 AND attempt.request_key=$10
+              AND attempt.purpose=$11 AND attempt.correlation_id=$12
+            RETURNING reservation.provider_request_key,reservation.provider_correlation_id,
+                      reservation.reservation_version`,
+          [input.accountId, input.attemptId, input.probe, input.leaseVersion,
+            identity.providerRequestKey, identity.providerCorrelationId, input.fence,
+            input.leaseToken, input.authorizationHash, input.requestKey, input.purpose,
+            input.correlationId]);
+        const row = updated.rows[0];
+        if (!row) throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+        const requestHash = hash({ action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_SENDING",
+          attemptId: input.attemptId, stage: input.probe,
+          providerRequestKey: identity.providerRequestKey,
+          reservationVersion: Number(row.reservation_version) });
+        const audit = await loadAudit(client, {
+          action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_SENDING", accountId: input.accountId,
+          idempotencyKey: `${input.attemptId}:${input.probe}:${row.reservation_version}`, requestHash,
+        });
+        if (!audit.metadata) {
+          await insertAudit(client, {
+            ...audit, action: "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_SENDING",
+            accountId: input.accountId, actorId: input.accountId, correlationId: input.correlationId,
+            entityType: "ai_gateway_profile", entityId: input.profileId, metadata: {
+              requestHash, attemptId: input.attemptId, stage: input.probe,
+              providerRequestKey: identity.providerRequestKey,
+              providerRequestKeyHash: hash(identity.providerRequestKey),
+              providerCorrelationId: identity.providerCorrelationId,
+              leaseVersion: input.leaseVersion, reservationVersion: Number(row.reservation_version),
+            },
+          });
+        }
+        return identity;
+      });
+    },
+
+    async completeCapabilitySubcall(rawInput = {}) {
+      const input = capabilitySubcallCompleteRequest(rawInput);
+      return transaction(pool, async (client) => {
+        await lockAccount(client, input.accountId);
+        const completed = await query(client,
+          `UPDATE ai_gateway_capability_subcall_reservations reservation
+              SET status=$5,completed_at=NOW()
+             FROM ai_gateway_capability_attempts attempt
+            WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
+              AND reservation.lease_version=$4 AND reservation.status IN ('PREPARED','SENDING')
+              AND attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+              AND attempt.status='RUNNING' AND attempt.fence=$6 AND attempt.lease_version=$4
+              AND attempt.lease_token=$7 AND attempt.authorization_hash=$8
+              AND attempt.request_key=$9 AND attempt.purpose=$10 AND attempt.correlation_id=$11
+            RETURNING reservation.status,reservation.provider_request_key,
+                      reservation.provider_correlation_id,reservation.reservation_version`,
+          [input.accountId, input.attemptId, input.probe, input.leaseVersion, input.outcome,
+            input.fence, input.leaseToken, input.authorizationHash, input.requestKey,
+            input.purpose, input.correlationId]);
+        if (!completed.rows[0]) {
+          const replay = await query(client,
+            `SELECT status FROM ai_gateway_capability_subcall_reservations
+              WHERE account_id=$1 AND attempt_id=$2 AND stage=$3 AND lease_version=$4 FOR UPDATE`,
+            [input.accountId, input.attemptId, input.probe, input.leaseVersion]);
+          if (replay.rows[0]?.status === input.outcome) return { terminal: true, duplicate: true };
+          throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+        }
+        return { terminal: true, duplicate: false };
       });
     },
 
@@ -829,6 +1046,9 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.configVersion]);
         const profile = profileRow(loaded.rows[0]);
         if (!profile || profile.accountId !== input.accountId) return null;
+        if (await quarantineLegacyCapabilityAttempts(client, input)) {
+          return { legacyCapabilityQuarantined: true };
+        }
         const existing = await query(client,
           `SELECT attempt.id,attempt.fence,attempt.account_id,attempt.profile_id,attempt.config_version,
                   attempt.correlation_id,attempt.status,attempt.response,attempt.lease_version,
@@ -893,6 +1113,12 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
                           target_connection_status_version,authorized_at`,
               [input.accountId, input.profileId, input.configVersion, input.attemptId, leaseToken]);
             if (reclaimed.rows[0]) {
+              await query(client,
+                `UPDATE ai_gateway_capability_subcall_reservations
+                    SET lease_version=$3,reservation_version=reservation_version+1,status='PREPARED',
+                        prepared_at=NOW(),sending_at=NULL,completed_at=NULL
+                  WHERE account_id=$1 AND attempt_id=$2 AND lease_version<$3`,
+                [input.accountId, input.attemptId, Number(reclaimed.rows[0].lease_version)]);
               await insertCapabilityAuthorizationAudit(client, input, reclaimed.rows[0]);
               return { ...capabilityAttemptRow(reclaimed.rows[0], profile), duplicate: false, reclaimed: true };
             }
@@ -929,6 +1155,11 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         if (!attempt || attempt.status !== "RUNNING") throw databaseFailed();
         await insertCapabilityAuthorizationAudit(client, input, inserted.rows[0]);
         return { ...attempt, duplicate: false, reclaimed: false };
+      }).then((result) => {
+        if (result?.legacyCapabilityQuarantined === true) {
+          throw repositoryError("AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_QUARANTINED", 409);
+        }
+        return result;
       });
     },
 
@@ -980,6 +1211,13 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           }
           return { applied: attempt.status !== "STALE", stale: attempt.status === "STALE",
             duplicate: true, response: attempt.response };
+        }
+        const activeReservation = await query(client,
+          `SELECT id FROM ai_gateway_capability_subcall_reservations
+            WHERE account_id=$1 AND attempt_id=$2 AND status IN ('PREPARED','SENDING')
+            LIMIT 1 FOR UPDATE`, [input.accountId, input.attemptId]);
+        if (activeReservation.rows[0]) {
+          throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
         }
         let connectionStale = false;
         try {
@@ -1068,6 +1306,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           if (!row || row.accountId !== input.accountId) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
           return { ...row, duplicate: true };
         }
+        await assertNoActivePaidReservation(client, input.accountId);
         const target = await query(client,
           `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
                   text_model,image_model,enabled,capability_result,capability_checked_at,
@@ -1182,6 +1421,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           if (!replayRow) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
           return { ...replayRow, duplicate: true };
         }
+        await assertNoActivePaidReservation(client, input.accountId);
         const target = await query(client,
           `SELECT id,account_id,display_name,config_version,base_url,api_key_env_name,text_protocol,image_protocol,
                   text_model,image_model,enabled,capability_result,capability_checked_at,

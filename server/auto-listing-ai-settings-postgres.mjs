@@ -262,6 +262,10 @@ async function query(target, sql, params = []) {
     return await target.query(sql, params);
   } catch (error) {
     if (typeof error?.code === "string" && error.code.startsWith("AUTO_LISTING_AI_SETTINGS_")) throw error;
+    if (error?.code === "23514"
+      && error?.message === "active paid capability subcall blocks connection state transition") {
+      throw repositoryError("AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+    }
     throw databaseFailed();
   }
 }

@@ -211,8 +211,6 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
       try {
         const raw = await gateway.testCapabilities({
           profile,
-          correlationId,
-          requestKey: capabilityRequestKey,
           capabilityExecution: begun.capabilityExecution,
           timeoutMs: 120_000,
           signal: input.signal,

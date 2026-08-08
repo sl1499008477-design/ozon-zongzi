@@ -27,6 +27,8 @@ function harness(env = enabledEnv()) {
   const cipher = Object.freeze({ encrypt() {}, decrypt() {}, fingerprint() {} });
   const capabilityResolver = Object.freeze({
     async resolveCredential(execution) { return { resolvedAttemptId: execution.attemptId }; },
+    async markSending(execution) { return { sendingAttemptId: execution.attemptId }; },
+    async completeSubcall(execution, outcome) { return { completedAttemptId: execution.attemptId, outcome }; },
   });
   const catalogResolver = Object.freeze({ async resolveCredential(lease) { return { lease }; } });
   const gateway = Object.freeze({ marker: "gateway" });
@@ -59,6 +61,8 @@ function harness(env = enabledEnv()) {
         legacySecret: input.readSecret("SUB2API_API_KEY"),
         hiddenSecret: input.readSecret("POSTGRES_PASSWORD"),
         resolveCapabilityCredential: input.resolveCapabilityCredential,
+        markCapabilitySubcallSending: input.markCapabilitySubcallSending,
+        completeCapabilitySubcall: input.completeCapabilitySubcall,
         resolveCatalogSyncCredential: input.resolveCatalogSyncCredential,
       }]);
       return gateway;
@@ -118,6 +122,12 @@ test("settings runtime composes every Task 2-6 security port once and uses one w
   assert.equal(gatewayInput.hiddenSecret, undefined);
   assert.deepEqual(await gatewayInput.resolveCapabilityCredential({ attemptId: "attempt-a" }), {
     resolvedAttemptId: "attempt-a",
+  });
+  assert.deepEqual(await gatewayInput.markCapabilitySubcallSending({ attemptId: "attempt-a" }), {
+    sendingAttemptId: "attempt-a",
+  });
+  assert.deepEqual(await gatewayInput.completeCapabilitySubcall({ attemptId: "attempt-a" }, "SUCCEEDED"), {
+    completedAttemptId: "attempt-a", outcome: "SUCCEEDED",
   });
   assert.deepEqual(await gatewayInput.resolveCatalogSyncCredential({ taskId: "task-a" }), {
     lease: { taskId: "task-a" },

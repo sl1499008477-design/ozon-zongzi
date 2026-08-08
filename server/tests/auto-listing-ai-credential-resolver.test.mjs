@@ -282,6 +282,7 @@ const capabilityExecution = Object.freeze({
   profileId: "profile-a",
   configVersion: 1,
   attemptId: "attempt-capability-a",
+  correlationId: "corr-capability-a",
   fence: 7,
   leaseVersion: 2,
   leaseToken: "caplease_capability-a",
@@ -299,6 +300,7 @@ test("paid capability resolver binds decryption to the exact persisted attempt e
   assert.equal(typeof credentialResolvers.createAutoListingAiCapabilityCredentialResolver, "function");
   const { cipher, connection } = encryptedConnection("  sk-paid-capability  ");
   const reads = [];
+  const transitions = [];
   const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
     repository: {
       async loadCapabilityExecutionForSecretResolution(input) {
@@ -309,7 +311,17 @@ test("paid capability resolver binds decryption to the exact persisted attempt e
           configVersion: 1,
           apiKeyEnvName: "SUB2API_ENCRYPTED_KEY",
           connection: { ...connection, status: "VALIDATED", statusVersion: 2 },
+          providerRequestKey: "c".repeat(64),
+          providerCorrelationId: "capcorr-text-a",
         };
+      },
+      async markCapabilitySubcallSending(input) {
+        transitions.push(["SENDING", structuredClone(input)]);
+        return { providerRequestKey: "c".repeat(64), providerCorrelationId: "capcorr-text-a" };
+      },
+      async completeCapabilitySubcall(input) {
+        transitions.push(["SUCCEEDED", structuredClone(input)]);
+        return { terminal: true };
       },
     },
     cipher,
@@ -324,8 +336,18 @@ test("paid capability resolver binds decryption to the exact persisted attempt e
     configVersion: 1,
     connectionId: "connection-a",
     connectionVersion: 1,
+    providerRequestKey: "c".repeat(64),
+    providerCorrelationId: "capcorr-text-a",
     secret: "sk-paid-capability",
   });
+  assert.deepEqual(await resolver.markSending(capabilityExecution), {
+    providerRequestKey: "c".repeat(64), providerCorrelationId: "capcorr-text-a",
+  });
+  assert.deepEqual(await resolver.completeSubcall(capabilityExecution, "SUCCEEDED"), { terminal: true });
+  assert.deepEqual(transitions, [
+    ["SENDING", capabilityExecution],
+    ["SUCCEEDED", { ...capabilityExecution, outcome: "SUCCEEDED" }],
+  ]);
   assert.doesNotMatch(JSON.stringify(credential), /cipher|fingerprint|authTag|keyVersion/iu);
 });
 
@@ -336,8 +358,13 @@ test("paid capability resolver keeps legacy profiles attempt-bound and maps secr
     async loadCapabilityExecutionForSecretResolution(input) {
       assert.deepEqual(input, legacyExecution);
       return { accountId: "account-a", profileId: "profile-a", configVersion: 1,
-        apiKeyEnvName: "SUB2API_LEGACY_KEY", connection: null };
+        apiKeyEnvName: "SUB2API_LEGACY_KEY", connection: null,
+        providerRequestKey: "d".repeat(64), providerCorrelationId: "capcorr-legacy-text" };
     },
+    async markCapabilitySubcallSending() {
+      return { providerRequestKey: "d".repeat(64), providerCorrelationId: "capcorr-legacy-text" };
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
   };
   const cipher = { decrypt() { throw new Error("legacy must not decrypt"); } };
   const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
@@ -345,7 +372,9 @@ test("paid capability resolver keeps legacy profiles attempt-bound and maps secr
   });
   assert.deepEqual(await resolver.resolveCredential(legacyExecution), {
     accountId: "account-a", profileId: "profile-a", configVersion: 1,
-    connectionId: null, connectionVersion: null, secret: "legacy-secret",
+    connectionId: null, connectionVersion: null,
+    providerRequestKey: "d".repeat(64), providerCorrelationId: "capcorr-legacy-text",
+    secret: "legacy-secret",
   });
   const failing = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
     repository, cipher, readSecret() { throw new Error("raw-env-secret-must-not-leak"); },
@@ -370,6 +399,8 @@ test("paid capability resolver preserves execution fence failures without decryp
           error.code = repositoryCode;
           throw error;
         },
+        async markCapabilitySubcallSending() { throw new Error("must not run"); },
+        async completeCapabilitySubcall() { throw new Error("must not run"); },
       },
       cipher: { decrypt() { decryptions += 1; return "must-not-run"; } },
       readSecret() { secretReads += 1; return "must-not-run"; },

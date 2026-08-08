@@ -157,6 +157,8 @@ export function createAutoListingAiSettingsRuntime({
           const gateway = createGateway({
             readSecret,
             resolveCapabilityCredential: (execution) => capabilityCredentialResolver.resolveCredential(execution),
+            markCapabilitySubcallSending: (execution) => capabilityCredentialResolver.markSending(execution),
+            completeCapabilitySubcall: (execution, outcome) => capabilityCredentialResolver.completeSubcall(execution, outcome),
             resolveCatalogSyncCredential: (lease) => catalogCredentialResolver.resolveCredential(lease),
             allowLocalGateway: config.allowLocalGateway,
             ...(resolveGatewayHostname ? { resolveHostname: resolveGatewayHostname } : {}),

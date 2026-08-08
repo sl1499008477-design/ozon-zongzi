@@ -360,6 +360,27 @@ test("model sync completion accepts empty and single-modal catalog snapshots bef
   assert.equal(singleModalPool.calls.length > 0, true);
 });
 
+test("active paid reservation maps the database state guard to one stable 409", async () => {
+  const guarded = scriptedPool([
+    { rows: [] },
+    { rowCount: 1, rows: [{ id: "account-a" }] },
+    { rows: [] },
+    { rows: [{ ...connectionRow, status: "PENDING", status_version: 1 }] },
+    () => { throw Object.assign(new Error("active paid capability subcall blocks connection state transition"), {
+      code: "23514",
+    }); },
+    { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiSettingsPostgres({ pool: guarded.pool }).markConnectionValidated({
+    accountId: "account-a", actorId: "account-a", connectionId: "connection-a", connectionVersion: 1,
+    expectedStatusVersion: 1, idempotencyKey: "validate-during-paid-subcall",
+    correlationId: "validate-during-paid-subcall-corr", rollbackCapabilityEvidence: null,
+    validationResult: { outcome: "PASSED", checkedAt: "2026-08-08T00:00:00.000Z", endpoint: "models" },
+  }), {
+    code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT", status: 409, retryable: true,
+  });
+});
+
 test("profile binding accepts exact model IDs from the latest normalized successful catalog without invented modality metadata", async () => {
   const profile = {
     id: "profile-a", account_id: "account-a", display_name: "Profile A", config_version: 1,

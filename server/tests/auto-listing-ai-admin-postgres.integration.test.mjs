@@ -544,6 +544,18 @@ if (!enabled) {
         correlationId: beforeFirstCorrelation, attemptId: beforeFirstAttemptId,
         purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(beforeFirstAttemptId),
       });
+      const preparedCredential = await profiles.loadCapabilityExecutionForSecretResolution({
+        ...beforeFirstAttempt.capabilityExecution, probe: "REACHABILITY",
+      });
+      assert.match(preparedCredential.providerRequestKey, /^[a-f0-9]{64}$/u);
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: beforeFirstProbe.profile.id, configVersion: 1,
+        idempotencyKey: `publish-before-first-probe-${suffix}`,
+        correlationId: `publish-before-first-probe-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
+      await profiles.completeCapabilitySubcall({
+        ...beforeFirstAttempt.capabilityExecution, probe: "REACHABILITY", outcome: "FAILED",
+      });
       await profiles.publishProfile({
         accountId, actorId: accountId, profileId: beforeFirstProbe.profile.id, configVersion: 1,
         idempotencyKey: `publish-before-first-probe-${suffix}`,
@@ -560,7 +572,19 @@ if (!enabled) {
 
       const afterFirstProbe = await createConnected("after-first-probe");
       await passCapability(afterFirstProbe, "PROFILE_CAPABILITY", "after-first-probe-seed");
+      const transitionCandidate = await settings.createPendingConnection({
+        accountId, actorId: accountId, idempotencyKey: `connection-transition-${suffix}`,
+        correlationId: `connection-transition-corr-${suffix}`, displayName: "Transition candidate",
+        baseUrl: "https://gateway.example.test/v1",
+        encryptedSecret: { algorithm: "aes-256-gcm", ciphertext: "Y2lwaGVy", iv: "aXY=",
+          authTag: "dGFn", keyVersion: "local-v1", fingerprint: `fp-transition-${suffix}` },
+      });
       let paidFetches = 0;
+      let releaseFirstDns;
+      let signalFirstDns;
+      const firstDnsEntered = new Promise((resolve) => { signalFirstDns = resolve; });
+      const firstDnsGate = new Promise((resolve) => { releaseFirstDns = resolve; });
+      let gateDns = true;
       const resolver = createAutoListingAiCapabilityCredentialResolver({
         repository: profiles,
         cipher: { async decrypt() { return "paid-test-secret"; } },
@@ -569,18 +593,34 @@ if (!enabled) {
       const adapter = createSub2ApiAdapter({
         readSecret() { throw new Error("generic secret path must not authorize paid work"); },
         resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
-        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        markCapabilitySubcallSending: (execution) => resolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome) => resolver.completeSubcall(execution, outcome),
+        resolveHostname: async () => {
+          if (gateDns) {
+            gateDns = false;
+            signalFirstDns();
+            await firstDnsGate;
+          }
+          return [{ address: "203.0.113.10", family: 4 }];
+        },
         allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
         allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
         fetchImpl: async () => {
           paidFetches += 1;
           if (paidFetches === 1) {
-            await profiles.publishProfile({
+            await assert.rejects(profiles.publishProfile({
               accountId, actorId: accountId, profileId: afterFirstProbe.profile.id, configVersion: 1,
               idempotencyKey: `publish-after-first-probe-${suffix}`,
               correlationId: `publish-after-first-probe-corr-${suffix}`,
-            });
+            }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
           }
+          if (paidFetches === 2) return new Response(JSON.stringify({
+            id: "text-reservation", output: [{ type: "message",
+              content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          if (paidFetches === 3) return new Response(JSON.stringify({
+            id: "image-reservation", data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
           return new Response(JSON.stringify({ object: "list", data: [] }), {
             status: 200, headers: { "content-type": "application/json" },
           });
@@ -588,33 +628,64 @@ if (!enabled) {
       });
       const fencedService = createAiGatewayProfileService({ repository: profiles, gateway: adapter });
       const fencedCorrelation = `fenced-after-first-probe-${suffix}`;
-      await assert.rejects(fencedService.testGatewayCapabilities({
+      const fencedPromise = fencedService.testGatewayCapabilities({
         actor: { id: accountId, role: "admin" }, profileId: afterFirstProbe.profile.id,
         configVersion: 1, correlationId: fencedCorrelation, costConfirmed: true,
-      }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT", status: 409 });
-      assert.equal(paidFetches, 1, "the changed connection fence must block text and image paid calls");
+      });
+      await firstDnsEntered;
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: afterFirstProbe.profile.id, configVersion: 1,
+        idempotencyKey: `publish-during-dns-${suffix}`,
+        correlationId: `publish-during-dns-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
+      await assert.rejects(settings.markConnectionValidated({
+        accountId, actorId: accountId, connectionId: transitionCandidate.id, connectionVersion: 1,
+        expectedStatusVersion: 1, idempotencyKey: `validate-during-dns-${suffix}`,
+        correlationId: `validate-during-dns-corr-${suffix}`, rollbackCapabilityEvidence: null,
+        validationResult: { outcome: "PASSED", checkedAt: new Date().toISOString(), endpoint: "models" },
+      }), { code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
+      releaseFirstDns();
+      const fencedResult = await fencedPromise;
+      assert.equal(fencedResult.outcome, "PASSED");
+      assert.equal(paidFetches, 3, "all paid stages use terminal reservations before moving on");
       const fencedStored = await pool.query(
         `SELECT status FROM ai_gateway_capability_attempts
           WHERE account_id=$1 AND profile_id=$2 AND correlation_id=$3`,
         [accountId, afterFirstProbe.profile.id, fencedCorrelation],
       );
-      assert.equal(fencedStored.rows[0].status, "STALE");
+      assert.equal(fencedStored.rows[0].status, "PASSED");
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: afterFirstProbe.profile.id, configVersion: 1,
+        idempotencyKey: `publish-after-first-probe-${suffix}`,
+        correlationId: `publish-after-first-probe-corr-${suffix}`,
+      });
 
       const crashReplay = await createConnected("provider-response-loss");
       let providerCalls = 0;
       const chargedRequestKeys = new Set();
-      const replayGateway = {
-        async testCapabilities(input) {
+      const replayGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize paid replay"); },
+        resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => resolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome) => resolver.completeSubcall(execution, outcome),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async (url, init) => {
           providerCalls += 1;
-          chargedRequestKeys.add(input.requestKey);
-          return {
-            features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"], latencyMs: 5,
-            models: { text: "text-model", image: "image-model" },
-            modelEvidence: { requestedImageModel: "image-model", gatewayReportedImageModel: "",
-              gatewayReportedImageModelPresent: false, orchestratorModel: "" },
-          };
+          chargedRequestKeys.add(init.headers["Idempotency-Key"]);
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({ object: "list", data: [] }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+          if (String(url).endsWith("/responses")) return new Response(JSON.stringify({
+            id: "text-replay", output: [{ type: "message",
+              content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ id: "image-replay", data: [{
+            b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          }] }), { status: 200, headers: { "content-type": "application/json" } });
         },
-      };
+      });
       const replayService = createAiGatewayProfileService({ repository: profiles, gateway: replayGateway });
       const replayCorrelation = `provider-response-loss-${suffix}`;
       await pool.query(`CREATE OR REPLACE FUNCTION reject_capability_completion_${suffix}()
@@ -636,11 +707,11 @@ if (!enabled) {
       await assert.rejects(replayService.testGatewayCapabilities(replayInput), {
         code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED",
       });
-      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 1, charged: 1 });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 3, charged: 3 });
       await assert.rejects(replayService.testGatewayCapabilities(replayInput), {
         code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS", status: 409,
       });
-      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 1, charged: 1 });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 3, charged: 3 });
       const replayAttempt = await pool.query(
         `SELECT id,request_key FROM ai_gateway_capability_attempts
           WHERE account_id=$1 AND profile_id=$2 AND correlation_id=$3`,
@@ -651,7 +722,7 @@ if (!enabled) {
         configVersion: 1, correlationId: replayCorrelation, attemptId: replayAttempt.rows[0].id,
         purpose: "PROFILE_CAPABILITY", requestKey: "f".repeat(64),
       }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
-      assert.equal(providerCalls, 1, "a conflicting persisted intent must not reach the provider");
+      assert.equal(providerCalls, 3, "a conflicting persisted intent must not reach the provider");
       await pool.query(`DROP TRIGGER reject_capability_completion_${suffix}_trigger ON audit_events`);
       await pool.query(`DROP FUNCTION reject_capability_completion_${suffix}()`);
       const faultClient = await pool.connect();
@@ -667,16 +738,25 @@ if (!enabled) {
       }
       const recovered = await replayService.testGatewayCapabilities(replayInput);
       assert.equal(recovered.outcome, "PASSED");
-      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 2, charged: 1 });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 6, charged: 3 });
       assert.deepEqual(await replayService.testGatewayCapabilities(replayInput), recovered);
-      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 2, charged: 1 });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 6, charged: 3 });
       await assert.rejects(profiles.beginCapabilityTest({
         costConfirmed: true, accountId, actorId: accountId, profileId: crashReplay.profile.id,
         configVersion: 1, correlationId: `changed-payload-${suffix}`,
         attemptId: `changed-payload-attempt-${suffix}`, purpose: "PROFILE_CAPABILITY",
         requestKey: replayAttempt.rows[0].request_key,
       }), { code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409 });
-      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 2, charged: 1 });
+      assert.deepEqual({ providerCalls, charged: chargedRequestKeys.size }, { providerCalls: 6, charged: 3 });
+      const replayReservations = await pool.query(
+        `SELECT stage,provider_request_key,reservation_version,status
+           FROM ai_gateway_capability_subcall_reservations
+          WHERE account_id=$1 AND attempt_id=$2 ORDER BY stage`,
+        [accountId, replayAttempt.rows[0].id],
+      );
+      assert.equal(replayReservations.rows.length, 3);
+      assert.equal(replayReservations.rows.every((row) => chargedRequestKeys.has(row.provider_request_key)
+        && Number(row.reservation_version) === 2 && row.status === "SUCCEEDED"), true);
 
       const immutableAuthorization = await pool.query(
         `SELECT event_id FROM audit_events
@@ -692,6 +772,216 @@ if (!enabled) {
         "UPDATE ai_gateway_capability_attempts SET request_key=$3 WHERE account_id=$1 AND id=$2",
         [accountId, replayAttempt.rows[0].id, "e".repeat(64)],
       ), "23514"), true);
+
+      const privacyAccountId = `account-paid-privacy-${suffix}`;
+      const privacyProfileId = `profile-paid-privacy-${suffix}`;
+      const privacyAttemptId = `attempt-paid-privacy-${suffix}`;
+      await pool.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [privacyAccountId],
+      );
+      await pool.query(
+        `INSERT INTO ai_gateway_profiles (
+           id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+           text_model,image_model,config_version,enabled,created_by
+         ) VALUES ($1,$2,'Privacy profile','https://gateway.example.test/v1','SUB2API_LEGACY_KEY',
+           'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text-model','image-model',1,FALSE,$2)`,
+        [privacyProfileId, privacyAccountId],
+      );
+      const privacyAttempt = await profiles.beginCapabilityTest({
+        costConfirmed: true, accountId: privacyAccountId, actorId: privacyAccountId,
+        profileId: privacyProfileId, configVersion: 1,
+        correlationId: `privacy-paid-${suffix}`, attemptId: privacyAttemptId,
+        purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(privacyAttemptId),
+      });
+      await profiles.loadCapabilityExecutionForSecretResolution({
+        ...privacyAttempt.capabilityExecution, probe: "REACHABILITY",
+      });
+      assert.equal((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_subcall_reservations WHERE account_id=$1",
+        [privacyAccountId],
+      )).rows[0].count, 1);
+      assert.equal(await rawRejectsCode(() => pool.query(
+        "DELETE FROM ai_gateway_capability_subcall_reservations WHERE account_id=$1",
+        [privacyAccountId],
+      ), "23514"), true);
+      assert.equal(await rawRejectsCode(() => pool.query(
+        "DELETE FROM ai_gateway_capability_attempts WHERE account_id=$1",
+        [privacyAccountId],
+      ), "23514"), true);
+      await pool.query("DELETE FROM accounts WHERE id=$1", [privacyAccountId]);
+      assert.equal((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_subcall_reservations WHERE account_id=$1",
+        [privacyAccountId],
+      )).rows[0].count, 0);
+    } finally {
+      try {
+        await pool?.end();
+        await admin.query("SET search_path TO public");
+        await admin.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`);
+      } finally {
+        admin.release();
+        await adminPool.end();
+      }
+    }
+  });
+
+  test("054 quarantines legacy unknown RUNNING attempts and runtime blocks new paid correlation", {
+    timeout: 60_000,
+  }, async () => {
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString, max: 1 });
+    const admin = await adminPool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `auto_listing_ai_legacy_attempt_${suffix}`;
+    const schemaSql = quote(schema);
+    const accountId = `account-legacy-attempt-${suffix}`;
+    const profileId = `profile-legacy-attempt-${suffix}`;
+    const attemptId = `attempt-legacy-unknown-${suffix}`;
+    let pool;
+    try {
+      await admin.query(`CREATE SCHEMA ${schemaSql}`);
+      await admin.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir))
+        .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && file < "053_")
+        .sort();
+      for (const migration of migrations) {
+        await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      }
+      await admin.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [accountId],
+      );
+      await admin.query(
+        `INSERT INTO ai_gateway_profiles (
+           id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+           text_model,image_model,config_version,enabled,created_by
+         ) VALUES ($1,$2,'Legacy profile','https://gateway.example.test/v1','SUB2API_LEGACY_KEY',
+           'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text-model','image-model',1,FALSE,$2)`,
+        [profileId, accountId],
+      );
+      await admin.query(
+        `INSERT INTO ai_gateway_capability_attempts (
+           id,account_id,profile_id,config_version,correlation_id,lease_token,lease_expires_at,status
+         ) VALUES ($1,$2,$3,1,$4,$5,NOW()+INTERVAL '1 hour','RUNNING')`,
+        [attemptId, accountId, profileId, `corr-legacy-unknown-${suffix}`, `caplease_legacy_${suffix}`],
+      );
+      for (const migration of [
+        "053_auto_listing_ai_model_configuration.sql",
+        "054_auto_listing_ai_capability_authorization.sql",
+      ]) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      await admin.query(`CREATE OR REPLACE FUNCTION auto_listing_reject_terminal_gateway_capability_attempt_mutation()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_OP='DELETE' OR OLD.status IN ('PASSED','FAILED','STALE') THEN
+            RAISE EXCEPTION 'legacy 054 capability attempts are append-only' USING ERRCODE='23514';
+          END IF;
+          RETURN NEW;
+        END;
+        $$`);
+      await admin.query(await readFile(path.join(migrationsDir,
+        "055_auto_listing_ai_capability_subcall_reservations.sql"), "utf8"));
+
+      const quarantined = await admin.query(
+        `SELECT status,authorization_schema_version,response->>'errorCode' AS error_code
+           FROM ai_gateway_capability_attempts WHERE account_id=$1 AND id=$2`,
+        [accountId, attemptId],
+      );
+      assert.deepEqual(quarantined.rows[0], {
+        status: "STALE", authorization_schema_version: null,
+        error_code: "AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED",
+      });
+      const upgradeAudit = await admin.query(
+        `SELECT actor_type,actor_id,metadata FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CAPABILITY_UPGRADE_QUARANTINED'`,
+        [accountId],
+      );
+      assert.equal(upgradeAudit.rows.length, 1);
+      assert.equal(upgradeAudit.rows[0].actor_type, "system");
+      assert.equal(upgradeAudit.rows[0].metadata.schemaVersion,
+        "AI_GATEWAY_LEGACY_CAPABILITY_QUARANTINE_V1");
+      assert.equal(Object.hasOwn(upgradeAudit.rows[0].metadata, "costConfirmed"), false);
+
+      pool = new Pool({ connectionString, max: 2, options: `-c search_path=${schema},public` });
+      const repository = createAutoListingAiAdminPostgres({ pool });
+      await assert.rejects(repository.beginCapabilityTest({
+        costConfirmed: true, accountId, actorId: accountId, profileId, configVersion: 1,
+        correlationId: `corr-new-paid-${suffix}`, attemptId: `attempt-new-paid-${suffix}`,
+        purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(`attempt-new-paid-${suffix}`),
+      }), { code: "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_QUARANTINED", status: 409 });
+      const attempts = await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_attempts WHERE account_id=$1 AND profile_id=$2",
+        [accountId, profileId],
+      );
+      assert.equal(attempts.rows[0].count, 1);
+
+      const runtimeAttemptId = `attempt-runtime-legacy-${suffix}`;
+      await pool.query(
+        "ALTER TABLE ai_gateway_capability_attempts DISABLE TRIGGER ai_gateway_capability_attempts_authorized_insert",
+      );
+      try {
+        await pool.query(
+          `INSERT INTO ai_gateway_capability_attempts (
+             id,account_id,profile_id,config_version,correlation_id,lease_token,lease_expires_at,status
+           ) VALUES ($1,$2,$3,1,$4,$5,NOW()+INTERVAL '1 hour','RUNNING')`,
+          [runtimeAttemptId, accountId, profileId,
+            `corr-runtime-legacy-${suffix}`, `caplease_runtime_legacy_${suffix}`],
+        );
+      } finally {
+        await pool.query(
+          "ALTER TABLE ai_gateway_capability_attempts ENABLE TRIGGER ai_gateway_capability_attempts_authorized_insert",
+        );
+      }
+      await assert.rejects(repository.beginCapabilityTest({
+        costConfirmed: true, accountId, actorId: accountId, profileId, configVersion: 1,
+        correlationId: `corr-runtime-new-${suffix}`, attemptId: `attempt-runtime-new-${suffix}`,
+        purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(`attempt-runtime-new-${suffix}`),
+      }), { code: "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_QUARANTINED", status: 409 });
+      const runtimeQuarantined = await pool.query(
+        `SELECT status,response->>'errorCode' AS error_code
+           FROM ai_gateway_capability_attempts WHERE account_id=$1 AND id=$2`,
+        [accountId, runtimeAttemptId],
+      );
+      assert.deepEqual(runtimeQuarantined.rows[0], {
+        status: "STALE", error_code: "AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED",
+      });
+      const runtimeAudit = await pool.query(
+        `SELECT actor_type,actor_id FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CAPABILITY_UPGRADE_QUARANTINED'
+            AND metadata->>'attemptId'=$2`,
+        [accountId, runtimeAttemptId],
+      );
+      assert.deepEqual(runtimeAudit.rows[0], { actor_type: "system", actor_id: "runtime-quarantine" });
+
+      const upgradedDeleteAccountId = `account-upgraded-delete-${suffix}`;
+      const upgradedDeleteProfileId = `profile-upgraded-delete-${suffix}`;
+      const upgradedDeleteAttemptId = `attempt-upgraded-delete-${suffix}`;
+      await pool.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$1,$1,'admin','active')",
+        [upgradedDeleteAccountId],
+      );
+      await pool.query(
+        `INSERT INTO ai_gateway_profiles (
+           id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,
+           text_model,image_model,config_version,enabled,created_by
+         ) VALUES ($1,$2,'Upgraded delete','https://gateway.example.test/v1','SUB2API_LEGACY_KEY',
+           'SUB2API_RESPONSES','SUB2API_OPENAI_IMAGES','text-model','image-model',1,FALSE,$2)`,
+        [upgradedDeleteProfileId, upgradedDeleteAccountId],
+      );
+      const upgradedDeleteAttempt = await repository.beginCapabilityTest({
+        costConfirmed: true, accountId: upgradedDeleteAccountId, actorId: upgradedDeleteAccountId,
+        profileId: upgradedDeleteProfileId, configVersion: 1,
+        correlationId: `corr-upgraded-delete-${suffix}`, attemptId: upgradedDeleteAttemptId,
+        purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(upgradedDeleteAttemptId),
+      });
+      await repository.loadCapabilityExecutionForSecretResolution({
+        ...upgradedDeleteAttempt.capabilityExecution, probe: "REACHABILITY",
+      });
+      await pool.query("DELETE FROM accounts WHERE id=$1", [upgradedDeleteAccountId]);
+      assert.equal((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_subcall_reservations WHERE account_id=$1",
+        [upgradedDeleteAccountId],
+      )).rows[0].count, 0);
     } finally {
       try {
         await pool?.end();

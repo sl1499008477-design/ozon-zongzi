@@ -15,6 +15,38 @@ ALTER TABLE ai_gateway_capability_attempts
   ADD COLUMN IF NOT EXISTS target_connection_status_version INTEGER,
   ADD COLUMN IF NOT EXISTS authorized_at TIMESTAMPTZ;
 
+-- Pre-authorization RUNNING rows cannot prove whether a provider accepted a
+-- paid request. Quarantine them as terminal evidence; never manufacture V1
+-- authorization fields and never let a new correlation bypass the unknown call.
+WITH quarantined AS (
+  UPDATE ai_gateway_capability_attempts
+     SET status='STALE',
+         completion_hash=MD5('AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED:' || account_id || ':' || id)
+           || MD5(id || ':' || account_id || ':AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'),
+         response=JSONB_BUILD_OBJECT(
+           'profileId',profile_id,'configVersion',config_version,'outcome','STALE',
+           'errorCode','AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'),
+         completed_at=NOW()
+   WHERE authorization_schema_version IS NULL AND status='RUNNING'
+   RETURNING *
+)
+INSERT INTO audit_events (
+  event_id,account_id,store_id,action,status,actor_type,actor_id,device_id,source,
+  entity_type,entity_id,correlation_id,metadata,occurred_at,created_at
+)
+SELECT 'audit_ai_capability_quarantine_' || MD5(account_id || ':' || id),
+       account_id,NULL,'AUTO_LISTING_AI_PROFILE_CAPABILITY_UPGRADE_QUARANTINED','FAILED',
+       'system','migration-054','','auto-listing-ai-admin','ai_gateway_profile',profile_id,
+       correlation_id,
+       JSONB_BUILD_OBJECT(
+         'schemaVersion','AI_GATEWAY_LEGACY_CAPABILITY_QUARANTINE_V1',
+         'attemptId',id,'fence',fence,'outcome','STALE',
+         'errorCode','AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED',
+         'requestHash',completion_hash),
+       NOW(),NOW()
+  FROM quarantined
+ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING;
+
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -110,7 +142,13 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF TG_OP = 'DELETE' OR OLD.status IN ('PASSED', 'FAILED', 'STALE') THEN
+  IF TG_OP = 'DELETE' THEN
+    IF NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id) THEN
+      RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'AI gateway capability attempts are append-only' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status IN ('PASSED', 'FAILED', 'STALE') THEN
     RAISE EXCEPTION 'terminal AI gateway capability attempts are immutable' USING ERRCODE = '23514';
   END IF;
   IF NEW.id IS DISTINCT FROM OLD.id

@@ -43,6 +43,12 @@ function scriptedPool(steps) {
   const calls = [];
   const client = {
     async query(sql, params = []) {
+      if (/UPDATE ai_gateway_capability_attempts[\s\S]*AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED/iu.test(sql)
+        || /response->>'errorCode'='AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'/iu.test(sql)
+        || /SELECT id FROM ai_gateway_capability_subcall_reservations[\s\S]*status IN \('PREPARED','SENDING'\)/iu.test(sql)
+        || /UPDATE ai_gateway_capability_subcall_reservations[\s\S]*reservation_version=reservation_version\+1/iu.test(sql)) {
+        return { rowCount: 0, rows: [] };
+      }
       calls.push({ sql, params });
       const step = steps.shift();
       assert.ok(step, `unexpected query: ${sql}`);
@@ -61,9 +67,10 @@ function scriptedPool(steps) {
 test("admin PostgreSQL repository factory is closed and requires a real pool", () => {
   const pool = { async connect() {}, async query() {} };
   assert.deepEqual(Object.keys(createAutoListingAiAdminPostgres({ pool })).sort(), [
-    "beginCapabilityTest", "completeCapabilityTest", "createProfile", "createStrategyVersion",
+    "beginCapabilityTest", "completeCapabilitySubcall", "completeCapabilityTest", "createProfile", "createStrategyVersion",
     "listProfiles", "listStrategyVersions", "loadCapabilityExecutionForSecretResolution",
     "loadConnectionForCapabilitySecretResolution",
+    "markCapabilitySubcallSending",
     "prepareProfileRollback", "publishProfile", "publishStrategyVersion", "rollbackProfile",
   ]);
   assert.throws(() => createAutoListingAiAdminPostgres({ pool, apiKey: "raw" }), {
@@ -239,7 +246,8 @@ test("capability begin durably authorizes purpose cost identity and connection f
         "target_connection_id", "target_connection_version", "target_connection_status",
         "target_connection_status_version", "authorized_at"]) assert.match(sql, new RegExp(column, "iu"));
       return { rowCount: 1, rows: [{ id: "attempt-authorized", fence: 12, account_id: "account-a",
-        profile_id: "profile-a", config_version: 1, status: "RUNNING", response: null,
+        profile_id: "profile-a", config_version: 1, correlation_id: "corr-authorized",
+        status: "RUNNING", response: null,
         lease_version: 1, lease_token: "caplease_authorized", lease_expires_at: "2026-08-08T00:10:00.000Z",
         authorization_schema_version: "AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1",
         purpose: "PROFILE_CAPABILITY", cost_confirmed: true, authorization_hash: authorizationHash,
@@ -269,7 +277,7 @@ test("capability begin durably authorizes purpose cost identity and connection f
   });
   assert.deepEqual(result.capabilityExecution, {
     accountId: "account-a", profileId: "profile-a", configVersion: 1,
-    attemptId: "attempt-authorized", fence: 12, leaseVersion: 1,
+    attemptId: "attempt-authorized", correlationId: "corr-authorized", fence: 12, leaseVersion: 1,
     leaseToken: "caplease_authorized", purpose: "PROFILE_CAPABILITY",
     authorizationHash, requestKey, connectionId: "connection-a", connectionVersion: 1,
     expectedConnectionStatus: "VALIDATED", expectedConnectionStatusVersion: 2,
@@ -281,7 +289,7 @@ test("capability begin durably authorizes purpose cost identity and connection f
 test("paid credential loading atomically binds authorization audit lease latest attempt and connection status fence", async () => {
   const execution = {
     accountId: "account-a", profileId: "profile-a", configVersion: 1,
-    attemptId: "attempt-authorized", fence: 12, leaseVersion: 1,
+    attemptId: "attempt-authorized", correlationId: "corr-authorized", fence: 12, leaseVersion: 1,
     leaseToken: "caplease_authorized", purpose: "PROFILE_CAPABILITY",
     authorizationHash: "a".repeat(64), requestKey: "b".repeat(64),
     connectionId: "connection-a", connectionVersion: 1,
@@ -296,6 +304,12 @@ test("paid credential loading atomically binds authorization audit lease latest 
       ciphertext: "cipher", iv: "iv", auth_tag: "tag", algorithm: "aes-256-gcm",
       key_version: "local-v1", fingerprint: "fp",
     }] },
+    { rowCount: 0, rows: [] },
+    (sql, params) => ({ rowCount: 1, rows: [{ id: params[0], status: "PREPARED",
+      lease_version: 1, reservation_version: 1,
+      provider_request_key: params[8], provider_correlation_id: params[9] }] }),
+    { rowCount: 0, rows: [] },
+    { rowCount: 1, rows: [{ event_id: "reservation-audit" }] },
     { rows: [] },
   ]);
   const loaded = await createAutoListingAiAdminPostgres({ pool })
@@ -303,6 +317,8 @@ test("paid credential loading atomically binds authorization audit lease latest 
   assert.equal(loaded.connection.status, "VALIDATED");
   assert.equal(loaded.connection.statusVersion, 2);
   assert.equal(loaded.connection.encryptedSecret.ciphertext, "cipher");
+  assert.match(loaded.providerRequestKey, /^[a-f0-9]{64}$/u);
+  assert.match(loaded.providerCorrelationId, /^cap_[a-f0-9]{40}$/u);
   assert.match(calls[2].sql, /ai_gateway_capability_attempts/iu);
   assert.match(calls[2].sql, /AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED/iu);
   assert.match(calls[2].sql, /lease_expires_at\s*>\s*NOW\(\)/iu);

@@ -127,7 +127,7 @@ const imageInput = (overrides = {}) => ({
 
 const capabilityExecution = Object.freeze({
   accountId: "account-a", profileId: "profile-1", configVersion: 7,
-  attemptId: "attempt-capability-a", fence: 11,
+  attemptId: "attempt-capability-a", correlationId: "corr-persisted-capability", fence: 11,
   leaseVersion: 1, leaseToken: "caplease_capability-a",
   purpose: "PROFILE_CAPABILITY", authorizationHash: "a".repeat(64), requestKey: "b".repeat(64),
   connectionId: "connection-a", connectionVersion: 3,
@@ -140,6 +140,15 @@ const legacyCapabilityExecution = Object.freeze({
   connectionVersion: null,
   expectedConnectionStatus: "LEGACY",
   expectedConnectionStatusVersion: 0,
+});
+
+const capabilityProviderIdentities = Object.freeze({
+  REACHABILITY: Object.freeze({ providerRequestKey: "4d82d0f8260ce4d269de0cd885c46b23fa6e2cbfb7c6a98be1297976d976caad",
+    providerCorrelationId: "cap_4d82d0f8260ce4d269de0cd885c46b23fa6e2cbf" }),
+  TEXT: Object.freeze({ providerRequestKey: "f290e389fa2ce2ca67e41089fa5928e73162e8f109878a113d459f9f79dcf1da",
+    providerCorrelationId: "cap_f290e389fa2ce2ca67e41089fa5928e73162e8f1" }),
+  IMAGE: Object.freeze({ providerRequestKey: "429d5110a49d896c50aefb94cd698bf39e34a8f78a77c9b49c0260a44f77ffec",
+    providerCorrelationId: "cap_429d5110a49d896c50aefb94cd698bf39e34a8f7" }),
 });
 
 test("exports only the three closed profile protocols", () => {
@@ -1795,8 +1804,11 @@ test("inspectImage uses structured Responses internally without exposing source 
 });
 
 test("explicit capability test performs reachability, structured text, and one decoded image probe", async () => {
+  const providerIdentities = capabilityProviderIdentities;
   const calls = [];
   const credentialResolutions = [];
+  const sending = [];
+  const completed = [];
   let reachabilityCancelled = false;
   const gateway = encryptedAdapter(async (url, init) => {
     calls.push({ url: String(url), headers: init.headers, body: init.body ? JSON.parse(init.body) : null });
@@ -1815,14 +1827,21 @@ test("explicit capability test performs reachability, structured text, and one d
     async resolveCapabilityCredential(execution) {
       credentialResolutions.push(structuredClone(execution));
       return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
-        connectionId: "connection-a", connectionVersion: 3, secret };
+        connectionId: "connection-a", connectionVersion: 3,
+        ...providerIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending(execution) {
+      sending.push(structuredClone(execution));
+      return providerIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall(execution, outcome) {
+      completed.push([structuredClone(execution), outcome]);
+      return { terminal: true };
     },
   });
 
   const result = await gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
-    correlationId: "corr-capability",
-    requestKey: "capability-fixed",
     timeoutMs: 500,
     capabilityExecution,
   });
@@ -1833,9 +1852,14 @@ test("explicit capability test performs reachability, structured text, and one d
     "https://gateway.example.test/tenant/v1/images/edits",
   ]);
   assert.deepEqual(calls.map((call) => call.headers["Idempotency-Key"]), [
-    "capability-fixed:reachability",
-    "capability-fixed:text-schema",
-    "capability-fixed:image",
+    providerIdentities.REACHABILITY.providerRequestKey,
+    providerIdentities.TEXT.providerRequestKey,
+    providerIdentities.IMAGE.providerRequestKey,
+  ]);
+  assert.deepEqual(calls.map((call) => call.headers["X-Correlation-Id"]), [
+    providerIdentities.REACHABILITY.providerCorrelationId,
+    providerIdentities.TEXT.providerCorrelationId,
+    providerIdentities.IMAGE.providerCorrelationId,
   ]);
   assert.deepEqual(result.features, ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"]);
   assert.deepEqual(result.models, { text: "gpt-text", image: "gpt-image" });
@@ -1852,6 +1876,59 @@ test("explicit capability test performs reachability, structured text, and one d
   assert.deepEqual(credentialResolutions.map(({ probe }) => probe), ["REACHABILITY", "TEXT", "IMAGE"]);
   assert.equal(credentialResolutions.every(({ probe, ...execution }) =>
     JSON.stringify(execution) === JSON.stringify(capabilityExecution)), true);
+  assert.deepEqual(sending.map(({ probe }) => probe), ["REACHABILITY", "TEXT", "IMAGE"]);
+  assert.deepEqual(completed.map(([{ probe }, outcome]) => [probe, outcome]), [
+    ["REACHABILITY", "SUCCEEDED"], ["TEXT", "SUCCEEDED"], ["IMAGE", "SUCCEEDED"],
+  ]);
+});
+
+test("capability test rejects independent request identity before DNS or network", async () => {
+  let resolutions = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+    async resolveCapabilityCredential() { resolutions += 1; throw new Error("must not resolve"); },
+    async markCapabilitySubcallSending() { throw new Error("must not mark"); },
+    async completeCapabilitySubcall() { throw new Error("must not complete"); },
+  });
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    correlationId: "caller-controlled-correlation", requestKey: "caller-controlled-key",
+    timeoutMs: 500, capabilityExecution,
+  }), { code: "AI_GATEWAY_REQUEST_INVALID" });
+  assert.deepEqual({ resolutions, fetches }, { resolutions: 0, fetches: 0 });
+});
+
+test("capability reservation becomes terminal when DNS rejects after PREPARED", async () => {
+  let fetches = 0;
+  let sending = 0;
+  const completed = [];
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    throw new Error("must not fetch");
+  }, {
+    resolveHostname: async () => [{ address: "127.0.0.1", family: 4 }],
+    async resolveCapabilityCredential(execution) {
+      return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending() {
+      sending += 1;
+      throw new Error("must not mark SENDING after DNS rejection");
+    },
+    async completeCapabilitySubcall(execution, outcome) {
+      completed.push([execution.probe, outcome]);
+      return { terminal: true };
+    },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500,
+    capabilityExecution,
+  }), { code: "AI_GATEWAY_PROFILE_INVALID" });
+  assert.deepEqual({ fetches, sending }, { fetches: 0, sending: 0 });
+  assert.deepEqual(completed, [["REACHABILITY", "FAILED"]]);
 });
 
 test("capability test has no generic secret or network fallback without persisted execution authority", async () => {
@@ -1875,7 +1952,7 @@ test("capability execution fence changes stop every later paid probe before netw
     return jsonResponse({ object: "list", data: [] });
   }, {
     resolveSecret() { throw new Error("generic resolver must not authorize paid work"); },
-    async resolveCapabilityCredential() {
+    async resolveCapabilityCredential(execution) {
       resolutions += 1;
       if (resolutions > 1) {
         const error = new Error("connection status fence changed");
@@ -1883,13 +1960,17 @@ test("capability execution fence changes stop every later paid probe before netw
         throw error;
       }
       return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
-        connectionId: "connection-a", connectionVersion: 3, secret };
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret };
     },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
   });
   await assert.rejects(gateway.testCapabilities({
     profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
-    correlationId: "corr-capability-fenced", requestKey: "capability-fenced", timeoutMs: 500,
-    capabilityExecution,
+    timeoutMs: 500, capabilityExecution,
   }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT" });
   assert.deepEqual({ resolutions, fetches }, { resolutions: 2, fetches: 1 });
 });
@@ -1905,15 +1986,16 @@ test("capability test rejects image bytes that only mimic a supported header but
     if (call === 1) return jsonResponse({ data: [] });
     if (call === 2) return jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }] });
     return jsonResponse({ data: [{ b64_json: fakePngHeader.toString("base64") }] });
-  }, { async resolveCapabilityCredential() {
+  }, { async resolveCapabilityCredential(execution) {
     return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
-      connectionId: null, connectionVersion: null, secret };
-  } });
+      connectionId: null, connectionVersion: null,
+      ...capabilityProviderIdentities[execution.probe], secret };
+  }, async markCapabilitySubcallSending(execution) {
+    return capabilityProviderIdentities[execution.probe];
+  }, async completeCapabilitySubcall() { return { terminal: true }; } });
   await assert.rejects(
     gateway.testCapabilities({
       profile: { ...profile, imageProtocol: "SUB2API_OPENAI_IMAGES" },
-      correlationId: "corr-decode",
-      requestKey: "capability-decode",
       timeoutMs: 500,
       capabilityExecution: legacyCapabilityExecution,
     }),

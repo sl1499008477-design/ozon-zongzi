@@ -3,7 +3,7 @@ const CATALOG_SYNC_LEASE_KEYS = new Set([
   "accountId", "leaseToken", "leaseVersion", "minimumLeaseRemainingMs", "taskId", "workerId",
 ]);
 const CAPABILITY_EXECUTION_KEYS = new Set([
-  "accountId", "profileId", "configVersion", "attemptId", "fence", "leaseVersion", "leaseToken",
+  "accountId", "profileId", "configVersion", "attemptId", "correlationId", "fence", "leaseVersion", "leaseToken",
   "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
   "expectedConnectionStatus", "expectedConnectionStatusVersion", "probe",
 ]);
@@ -98,7 +98,7 @@ function normalizedCapabilityExecution(value) {
     const connectionBacked = ["VALIDATED", "RETIRED"].includes(fields?.expectedConnectionStatus);
     if (!fields || keys.length !== CAPABILITY_EXECUTION_KEYS.size
       || keys.some((key) => !CAPABILITY_EXECUTION_KEYS.has(key))
-      || ![fields.accountId, fields.profileId, fields.attemptId, fields.leaseToken]
+      || ![fields.accountId, fields.profileId, fields.attemptId, fields.correlationId, fields.leaseToken]
         .every((entry) => typeof entry === "string" && entry === entry.trim() && SAFE_ID.test(entry))
       || ![fields.configVersion, fields.fence, fields.leaseVersion]
         .every((entry) => Number.isSafeInteger(entry) && entry >= 1)
@@ -123,6 +123,32 @@ function normalizedCapabilityExecution(value) {
   } catch {
     throw resolverError("AI_GATEWAY_REQUEST_INVALID");
   }
+}
+
+function capabilityProviderIdentity(value) {
+  const fields = dataFields(value);
+  if (!fields || !HASH.test(fields.providerRequestKey)
+    || typeof fields.providerCorrelationId !== "string"
+    || fields.providerCorrelationId !== fields.providerCorrelationId.trim()
+    || !SAFE_ID.test(fields.providerCorrelationId)) {
+    throw resolverError("AI_GATEWAY_SECRET_MISSING");
+  }
+  return Object.freeze({
+    providerRequestKey: fields.providerRequestKey,
+    providerCorrelationId: fields.providerCorrelationId,
+  });
+}
+
+function mapCapabilityRepositoryError(error) {
+  const code = errorCode(error);
+  if (code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE") {
+    throw resolverError("AI_GATEWAY_PROFILE_VERSION_CONFLICT");
+  }
+  if (code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_LEASE_CONFLICT"
+    || code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT") {
+    throw resolverError("AI_GATEWAY_CAPABILITY_IN_PROGRESS");
+  }
+  throw resolverError("AI_GATEWAY_SECRET_MISSING");
 }
 
 function errorCode(error) {
@@ -245,6 +271,8 @@ export function createAutoListingAiCatalogSyncCredentialResolver({ repository, c
 
 export function createAutoListingAiCapabilityCredentialResolver({ repository, cipher, readSecret } = {}) {
   if (typeof repository?.loadCapabilityExecutionForSecretResolution !== "function"
+    || typeof repository?.markCapabilitySubcallSending !== "function"
+    || typeof repository?.completeCapabilitySubcall !== "function"
     || typeof cipher?.decrypt !== "function" || typeof readSecret !== "function") {
     throw new TypeError("capability credential repository, cipher, and legacy secret reader are required");
   }
@@ -256,14 +284,7 @@ export function createAutoListingAiCapabilityCredentialResolver({ repository, ci
       try {
         loaded = await repository.loadCapabilityExecutionForSecretResolution(execution);
       } catch (error) {
-        const code = errorCode(error);
-        if (code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_STALE") {
-          throw resolverError("AI_GATEWAY_PROFILE_VERSION_CONFLICT");
-        }
-        if (code === "AUTO_LISTING_AI_ADMIN_CAPABILITY_EXECUTION_LEASE_CONFLICT") {
-          throw resolverError("AI_GATEWAY_CAPABILITY_IN_PROGRESS");
-        }
-        throw resolverError("AI_GATEWAY_SECRET_MISSING");
+        mapCapabilityRepositoryError(error);
       }
       const fields = dataFields(loaded);
       if (!fields || fields.accountId !== execution.accountId || fields.profileId !== execution.profileId
@@ -271,6 +292,7 @@ export function createAutoListingAiCapabilityCredentialResolver({ repository, ci
         throw resolverError("AI_GATEWAY_SECRET_MISSING");
       }
       const apiKeyEnvName = fields.apiKeyEnvName;
+      const providerIdentity = capabilityProviderIdentity(fields);
       if (execution.expectedConnectionStatus === "LEGACY") {
         let secret;
         try {
@@ -283,7 +305,8 @@ export function createAutoListingAiCapabilityCredentialResolver({ repository, ci
           throw resolverError("AI_GATEWAY_SECRET_MISSING");
         }
         return Object.freeze({ accountId: execution.accountId, profileId: execution.profileId,
-          configVersion: execution.configVersion, connectionId: null, connectionVersion: null, secret: normalized });
+          configVersion: execution.configVersion, connectionId: null, connectionVersion: null,
+          ...providerIdentity, secret: normalized });
       }
       const connection = dataFields(fields.connection);
       const encryptedSecret = dataFields(connection?.encryptedSecret);
@@ -304,9 +327,26 @@ export function createAutoListingAiCapabilityCredentialResolver({ repository, ci
         if (!secret) throw resolverError("AI_GATEWAY_SECRET_MISSING");
         return Object.freeze({ accountId: execution.accountId, profileId: execution.profileId,
           configVersion: execution.configVersion, connectionId: execution.connectionId,
-          connectionVersion: execution.connectionVersion, secret });
+          connectionVersion: execution.connectionVersion, ...providerIdentity, secret });
       } catch {
         throw resolverError("AI_GATEWAY_SECRET_MISSING");
+      }
+    },
+    async markSending(rawExecution = {}) {
+      const execution = normalizedCapabilityExecution(rawExecution);
+      try {
+        return capabilityProviderIdentity(await repository.markCapabilitySubcallSending(execution));
+      } catch (error) {
+        mapCapabilityRepositoryError(error);
+      }
+    },
+    async completeSubcall(rawExecution = {}, outcome) {
+      const execution = normalizedCapabilityExecution(rawExecution);
+      if (!['SUCCEEDED', 'FAILED'].includes(outcome)) throw resolverError("AI_GATEWAY_REQUEST_INVALID");
+      try {
+        return await repository.completeCapabilitySubcall({ ...execution, outcome });
+      } catch (error) {
+        mapCapabilityRepositoryError(error);
       }
     },
   });

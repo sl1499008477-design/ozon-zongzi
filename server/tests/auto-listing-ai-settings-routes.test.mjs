@@ -147,6 +147,9 @@ test("responses reject secret-bearing or accessor output and expose only fixed s
     Object.assign(new Error("unsafe URL"), { code: "AUTO_LISTING_AI_SETTINGS_BASE_URL_INVALID", status: 422 }),
     Object.assign(new Error("safe"), { code: "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", status: 404 }),
     Object.assign(new Error("expected state"), { code: "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", status: 409 }),
+    Object.assign(new Error("paid subcall active"), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 }),
+    Object.assign(new Error("settings transition blocked by paid subcall"), { code: "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT", status: 409 }),
+    Object.assign(new Error("legacy paid state unknown"), { code: "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_QUARANTINED", status: 409 }),
     Object.assign(new Error("confirmed cost required"), { code: "AI_GATEWAY_COST_CONFIRMATION_REQUIRED", status: 409 }),
     Object.assign(new Error("database unavailable"), { code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", status: 503 }),
     Object.assign(new Error("password=prod-secret"), { code: "ECONNRESET", status: 418 }),
@@ -155,7 +158,9 @@ test("responses reject secret-bearing or accessor output and expose only fixed s
     const { response } = await h.request("GET", "/admin/auto-listing/ai-settings");
     assert.equal(response.payload.code, error.code.startsWith("AUTO_LISTING_AI_SETTINGS_")
       || ["AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", "AI_GATEWAY_COST_CONFIRMATION_REQUIRED",
-        "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED"].includes(error.code)
+        "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED", "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT",
+        "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT",
+        "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_QUARANTINED"].includes(error.code)
       ? error.code : "AUTO_LISTING_AI_SETTINGS_INTERNAL_ERROR");
     assert.equal(JSON.stringify(response).includes("prod-secret"), false);
   }

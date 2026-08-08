@@ -10,6 +10,10 @@ const authorizationUpgradeUrl = new URL(
   "../db/migrations/054_auto_listing_ai_capability_authorization.sql",
   import.meta.url,
 );
+const reservationUpgradeUrl = new URL(
+  "../db/migrations/055_auto_listing_ai_capability_subcall_reservations.sql",
+  import.meta.url,
+);
 
 async function migrationSql() {
   return readFile(migrationUrl, "utf8");
@@ -17,6 +21,10 @@ async function migrationSql() {
 
 async function authorizationUpgradeSql() {
   return readFile(authorizationUpgradeUrl, "utf8");
+}
+
+async function reservationUpgradeSql() {
+  return readFile(reservationUpgradeUrl, "utf8");
 }
 
 function functionBlock(sql, name) {
@@ -130,6 +138,25 @@ test("054 upgrades already-applied Task 7 databases and makes capability authori
   assert.match(sql, /NEW\.authorization_hash IS DISTINCT FROM OLD\.authorization_hash/iu);
   assert.match(sql, /OLD\.source IN \('auto-listing-ai-settings','auto-listing-ai-admin'\)/iu);
   assert.match(sql, /NEW\.source IN \('auto-listing-ai-settings','auto-listing-ai-admin'\)/iu);
+  assert.match(sql, /UPDATE ai_gateway_capability_attempts[\s\S]*status='STALE'[\s\S]*authorization_schema_version IS NULL[\s\S]*status='RUNNING'/iu);
+  assert.match(sql, /AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED/iu);
+  assert.match(sql, /AUTO_LISTING_AI_PROFILE_CAPABILITY_UPGRADE_QUARANTINED/iu);
+  assert.match(sql, /TG_OP = 'DELETE'[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id = OLD\.account_id\)[\s\S]*RETURN OLD/iu);
+});
+
+test("055 persists immutable paid subcall reservations and protects state transitions", async () => {
+  const sql = await reservationUpgradeSql();
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS ai_gateway_capability_subcall_reservations/iu);
+  assert.match(sql, /stage TEXT NOT NULL[\s\S]*REACHABILITY[\s\S]*TEXT[\s\S]*IMAGE/iu);
+  assert.match(sql, /status TEXT NOT NULL[\s\S]*PREPARED[\s\S]*SENDING[\s\S]*SUCCEEDED[\s\S]*FAILED[\s\S]*STALE/iu);
+  assert.match(sql, /provider_request_key TEXT NOT NULL[\s\S]*provider_correlation_id TEXT NOT NULL/iu);
+  assert.match(sql, /UNIQUE \(account_id,attempt_id,stage\)/iu);
+  assert.match(sql, /provider_request_key IS DISTINCT FROM OLD\.provider_request_key/iu);
+  assert.match(sql, /provider_correlation_id IS DISTINCT FROM OLD\.provider_correlation_id/iu);
+  assert.match(sql, /AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED/iu);
+  assert.match(sql, /account_id TEXT NOT NULL REFERENCES accounts\(id\) ON DELETE CASCADE/iu);
+  assert.match(sql, /TG_OP='DELETE'[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id=OLD\.account_id\)[\s\S]*RETURN OLD/iu);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_reject_terminal_gateway_capability_attempt_mutation\(\)[\s\S]*TG_OP = 'DELETE'[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id = OLD\.account_id\)/iu);
 });
 
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {
