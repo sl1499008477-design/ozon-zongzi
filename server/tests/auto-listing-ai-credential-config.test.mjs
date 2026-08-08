@@ -23,8 +23,6 @@ function keyError(code) {
 test("credential key loader accepts exactly one base64url environment key", async () => {
   const key = await loadAutoListingCredentialKey({
     env: { AUTO_LISTING_CREDENTIAL_MASTER_KEY: validKey },
-    readFile: async () => { throw new Error("must not read a file"); },
-    stat: async () => { throw new Error("must not stat a file"); },
   });
 
   assert.deepEqual(key, Buffer.alloc(32, 11));
@@ -36,11 +34,12 @@ test("credential key loader rejects missing, conflicting, short, and malformed e
     [{ AUTO_LISTING_CREDENTIAL_MASTER_KEY: validKey, AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE: "/run/secrets/credential-master.key" }, "AUTO_LISTING_AI_CREDENTIAL_KEY_SOURCE_CONFLICT"],
     [{ AUTO_LISTING_CREDENTIAL_MASTER_KEY: Buffer.alloc(31, 11).toString("base64url") }, "AUTO_LISTING_AI_CREDENTIAL_KEY_INVALID"],
     [{ AUTO_LISTING_CREDENTIAL_MASTER_KEY: `${validKey}!` }, "AUTO_LISTING_AI_CREDENTIAL_KEY_INVALID"],
+    [{ AUTO_LISTING_CREDENTIAL_MASTER_KEY: `${validKey.slice(0, -1)}x` }, "AUTO_LISTING_AI_CREDENTIAL_KEY_INVALID"],
   ];
 
   for (const [env, code] of cases) {
     await assert.rejects(
-      loadAutoListingCredentialKey({ env, readFile: async () => "", stat: async () => secureFileStat }),
+      loadAutoListingCredentialKey({ env }),
       keyError(code),
     );
   }
@@ -118,17 +117,6 @@ test("credential key loader reads a verified open descriptor instead of reopenin
 
   assert.deepEqual(key, Buffer.alloc(32, 11));
   assert.equal(closeCount, 1);
-});
-
-test("credential key loader rejects legacy path read stubs without an open descriptor", async () => {
-  await assert.rejects(
-    loadAutoListingCredentialKey({
-      env: { AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE: "/run/secrets/credential-master.key" },
-      readFile: async () => validKey,
-      stat: async () => secureFileStat,
-    }),
-    keyError("AUTO_LISTING_AI_CREDENTIAL_KEY_FILE_INVALID"),
-  );
 });
 
 test("credential key loader normalizes file read failures without leaking the path or key", async () => {

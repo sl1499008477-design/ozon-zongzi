@@ -29,6 +29,17 @@ test("cipher binds ciphertext to account, connection, and version", () => {
   assert.doesNotMatch(JSON.stringify(encrypted), /sk-gateway-secret/);
 });
 
+test("cipher binds ciphertext to the normalized key version", () => {
+  const v1Cipher = createAutoListingCredentialCipher({ key, keyVersion: "local-v1" });
+  const v2Cipher = createAutoListingCredentialCipher({ key, keyVersion: "local-v2" });
+  const encrypted = v1Cipher.encrypt(scope, "sk-gateway-secret");
+
+  assert.throws(
+    () => v2Cipher.decrypt(scope, { ...encrypted, keyVersion: "local-v2" }),
+    (error) => error?.code === "AUTO_LISTING_AI_CREDENTIAL_DECRYPT_FAILED",
+  );
+});
+
 test("cipher emits opaque versioned payloads and stable fingerprints", () => {
   const cipher = createAutoListingCredentialCipher({ key, keyVersion: "local-v1" });
   const encrypted = cipher.encrypt(scope, "sk-gateway-secret");

@@ -20,7 +20,7 @@ function decodeKey(value) {
   const encoded = typeof value === "string" ? value.trim() : "";
   if (!/^[A-Za-z0-9_-]{43}$/u.test(encoded)) return null;
   const key = Buffer.from(encoded, "base64url");
-  return key.length === KEY_BYTES ? key : null;
+  return key.length === KEY_BYTES && key.toString("base64url") === encoded ? key : null;
 }
 
 function secureRegularFile(fileStat) {
@@ -62,9 +62,7 @@ async function readVerifiedDescriptor(filePath, open) {
 
 export async function loadAutoListingCredentialKey({
   env = process.env,
-  readFile,
-  stat,
-  open,
+  open = openKeyFile,
 } = {}) {
   const environmentValue = env?.[ENV_KEY];
   const filePath = typeof env?.[ENV_KEY_FILE] === "string" ? env[ENV_KEY_FILE].trim() : env?.[ENV_KEY_FILE];
@@ -87,10 +85,7 @@ export async function loadAutoListingCredentialKey({
     throw credentialConfigError("AUTO_LISTING_AI_CREDENTIAL_KEY_PRODUCTION_SOURCE_REQUIRED");
   }
 
-  if ((readFile !== undefined || stat !== undefined) && typeof open !== "function") {
-    throw credentialConfigError("AUTO_LISTING_AI_CREDENTIAL_KEY_FILE_INVALID");
-  }
-  const key = decodeKey(await readVerifiedDescriptor(filePath, open || openKeyFile));
+  const key = decodeKey(await readVerifiedDescriptor(filePath, open));
   if (!key) throw credentialConfigError("AUTO_LISTING_AI_CREDENTIAL_KEY_INVALID");
   return key;
 }

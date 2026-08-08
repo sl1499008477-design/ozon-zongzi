@@ -18,13 +18,14 @@ function validScope(scope) {
     && Number.isSafeInteger(scope.connectionVersion) && scope.connectionVersion > 0;
 }
 
-function aadFor(scope) {
+function aadFor(scope, keyVersion) {
   if (!validScope(scope)) throw credentialCryptoError("AUTO_LISTING_AI_CREDENTIAL_SCOPE_INVALID");
   return Buffer.from(JSON.stringify({
     purpose: PURPOSE,
     accountId: scope.accountId,
     connectionId: scope.connectionId,
     connectionVersion: scope.connectionVersion,
+    keyVersion,
   }), "utf8");
 }
 
@@ -66,7 +67,7 @@ export function createAutoListingCredentialCipher({ key, keyVersion } = {}) {
         }
         const iv = crypto.randomBytes(IV_BYTES);
         const cipher = crypto.createCipheriv(ALGORITHM, encryptionKey, iv);
-        cipher.setAAD(aadFor(scope));
+        cipher.setAAD(aadFor(scope, normalizedKeyVersion));
         const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
         return {
           algorithm: ALGORITHM,
@@ -86,7 +87,7 @@ export function createAutoListingCredentialCipher({ key, keyVersion } = {}) {
         const encoded = validPayload(payload, normalizedKeyVersion);
         if (!encoded) throw credentialCryptoError("AUTO_LISTING_AI_CREDENTIAL_DECRYPT_FAILED");
         const decipher = crypto.createDecipheriv(ALGORITHM, encryptionKey, encoded.iv);
-        decipher.setAAD(aadFor(scope));
+        decipher.setAAD(aadFor(scope, normalizedKeyVersion));
         decipher.setAuthTag(encoded.authTag);
         return Buffer.concat([decipher.update(encoded.ciphertext), decipher.final()]).toString("utf8");
       } catch {

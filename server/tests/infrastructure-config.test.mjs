@@ -71,8 +71,6 @@ assert.match(compose, /^      SUB2API_API_KEY: \$\{SUB2API_API_KEY:-\}$/mu,
 await assert.rejects(
   loadAutoListingCredentialKey({
     env: { AUTO_LISTING_ENABLED: "true" },
-    readFile: async () => "",
-    stat: async () => ({}),
   }),
   (error) => error?.code === "AUTO_LISTING_AI_CREDENTIAL_KEY_MISSING",
   "enabled auto-listing must not run without a credential-key source",
