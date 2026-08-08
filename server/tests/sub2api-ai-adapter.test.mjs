@@ -21,6 +21,21 @@ const profile = Object.freeze({
   enabled: true,
 });
 
+const encryptedProfile = Object.freeze({
+  ...profile,
+  apiKeyEnvName: "SUB2API_ENCRYPTED_KEY",
+  connectionId: "connection-a",
+  connectionVersion: 3,
+});
+
+const connection = Object.freeze({
+  id: "connection-a",
+  accountId: "account-a",
+  version: 3,
+  baseUrl: profile.baseUrl,
+  status: "ACTIVE",
+});
+
 const jsonResponse = (body, init = {}) => new Response(JSON.stringify(body), {
   status: init.status || 200,
   headers: { "content-type": "application/json", ...(init.headers || {}) },
@@ -30,16 +45,26 @@ const publicDns = async () => [{ address: "203.0.113.10", family: 4 }];
 
 function adapter(fetchImpl, {
   logs = [], readSecret = () => secret, allowLocalGateway = false, resolveHostname = publicDns,
+  ...options
 } = {}) {
   return createSub2ApiAdapter({
     fetchImpl,
     readSecret,
     allowLocalGateway,
     resolveHostname,
+    ...options,
     logger: {
       info(event, fields) { logs.push(["info", event, fields]); },
       warn(event, fields) { logs.push(["warn", event, fields]); },
     },
+  });
+}
+
+function encryptedAdapter(fetchImpl, options = {}) {
+  return adapter(fetchImpl, {
+    allowedSecretEnvNames: [profile.apiKeyEnvName],
+    allowedGatewayBaseUrls: [profile.baseUrl],
+    ...options,
   });
 }
 
@@ -78,6 +103,308 @@ test("exports only the three closed profile protocols", () => {
     "SUB2API_RESPONSES_IMAGE_TOOL",
     "SUB2API_OPENAI_IMAGES",
   ]);
+});
+
+test("encrypted profiles resolve the exact tenant connection version asynchronously while legacy profiles stay on env secrets", async () => {
+  const scopes = [];
+  let reads = 0;
+  const requests = [];
+  const logs = [];
+  const gateway = encryptedAdapter(async (url, init) => {
+    requests.push({ url: String(url), authorization: init.headers.Authorization });
+    return jsonResponse({
+      model: "gpt-text",
+      output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+    });
+  }, {
+    logs,
+    readSecret: () => { reads += 1; return "legacy-secret"; },
+    resolveSecret: async (value) => {
+      await Promise.resolve();
+      scopes.push(structuredClone(value));
+      return "encrypted-secret";
+    },
+  });
+
+  await gateway.createTextResponse(textInput({ profile: encryptedProfile }));
+  await gateway.createTextResponse(textInput());
+
+  assert.deepEqual(scopes, [{
+    accountId: "account-a",
+    connectionId: "connection-a",
+    connectionVersion: 3,
+  }]);
+  assert.equal(reads, 1);
+  assert.deepEqual(requests.map(({ authorization }) => authorization), [
+    "Bearer encrypted-secret",
+    "Bearer legacy-secret",
+  ]);
+  const recorded = JSON.stringify(logs);
+  for (const forbidden of ["encrypted-secret", "legacy-secret", "Authorization", "SUB2API_ENCRYPTED_KEY"]) {
+    assert.doesNotMatch(recorded, new RegExp(forbidden, "iu"));
+  }
+});
+
+test("encrypted credential sentinel and connection reference must be present together before DNS or secret resolution", async () => {
+  let dnsReads = 0;
+  let envReads = 0;
+  let resolutions = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+    readSecret: () => { envReads += 1; return secret; },
+    resolveSecret: async () => { resolutions += 1; return secret; },
+    resolveHostname: async () => { dnsReads += 1; return publicDns(); },
+  });
+  for (const invalidProfile of [
+    { ...profile, apiKeyEnvName: "SUB2API_ENCRYPTED_KEY" },
+    { ...profile, connectionId: "connection-a", connectionVersion: 3 },
+    { ...encryptedProfile, connectionVersion: 0 },
+    { ...encryptedProfile, connectionId: "" },
+    { ...encryptedProfile, connectionId: "connection-a " },
+  ]) {
+    await assert.rejects(gateway.createTextResponse(textInput({ profile: invalidProfile })), {
+      code: "AI_GATEWAY_PROFILE_INVALID",
+    });
+  }
+  assert.deepEqual({ dnsReads, envReads, resolutions, fetches }, {
+    dnsReads: 0, envReads: 0, resolutions: 0, fetches: 0,
+  });
+});
+
+test("encrypted profile replaces only the env-name allowlist and still requires an approved gateway base or origin", async () => {
+  let defaultResolutions = 0;
+  let defaultFetches = 0;
+  const defaultClosed = createSub2ApiAdapter({
+    fetchImpl: async () => { defaultFetches += 1; throw new Error("must not fetch"); },
+    readSecret: () => { throw new Error("must not read env"); },
+    resolveSecret: async () => { defaultResolutions += 1; return secret; },
+    resolveHostname: publicDns,
+  });
+  await assert.rejects(defaultClosed.createTextResponse(textInput({ profile: encryptedProfile })), {
+    code: "AI_GATEWAY_PROFILE_INVALID",
+  });
+  assert.deepEqual({ defaultResolutions, defaultFetches }, { defaultResolutions: 0, defaultFetches: 0 });
+
+  for (const policy of [
+    { allowedGatewayBaseUrls: [], allowedGatewayOrigins: [] },
+    { allowedGatewayBaseUrls: ["https://other.example/v1"], allowedGatewayOrigins: [] },
+  ]) {
+    let resolutions = 0;
+    let fetches = 0;
+    const gateway = adapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+      resolveSecret: async () => { resolutions += 1; return secret; },
+      allowedSecretEnvNames: [],
+      ...policy,
+    });
+    await assert.rejects(gateway.createTextResponse(textInput({ profile: encryptedProfile })), {
+      code: "AI_GATEWAY_PROFILE_INVALID",
+    });
+    assert.deepEqual({ resolutions, fetches }, { resolutions: 0, fetches: 0 });
+  }
+
+  const accepted = adapter(async () => jsonResponse({
+    model: "gpt-text",
+    output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+  }), {
+    resolveSecret: async () => secret,
+    allowedSecretEnvNames: [],
+    allowedGatewayOrigins: ["https://gateway.example.test"],
+  });
+  assert.equal((await accepted.createTextResponse(textInput({ profile: encryptedProfile }))).value.ok, true);
+});
+
+test("model discovery performs only an authorized GET on the exact normalized models path and returns a closed DTO", async () => {
+  const requests = [];
+  const scopes = [];
+  const gateway = encryptedAdapter(async (url, init) => {
+    requests.push({ url: String(url), init });
+    return jsonResponse({
+      object: "list",
+      data: [{
+        id: "provider/text-model:1",
+        object: "model",
+        created: 1_700_000_000,
+        owned_by: "provider-a",
+        permission: [{ id: "must-not-escape" }],
+        upstream_nested: { token: "must-not-escape" },
+      }],
+    }, { headers: { "x-request-id": "models-request-1" } });
+  }, {
+    readSecret: () => { throw new Error("env secret path must not run"); },
+    resolveSecret: async (value) => { scopes.push(structuredClone(value)); return secret; },
+  });
+
+  const result = await gateway.listModels({
+    connection,
+    correlationId: "corr-models",
+    requestKey: "request-models-fixed",
+    timeoutMs: 500,
+  });
+
+  assert.deepEqual(result, {
+    requestId: "models-request-1",
+    models: [{ id: "provider/text-model:1", ownedBy: "provider-a", metadata: {} }],
+  });
+  assert.deepEqual(scopes, [{ accountId: "account-a", connectionId: "connection-a", connectionVersion: 3 }]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://gateway.example.test/tenant/v1/models");
+  assert.equal(requests[0].init.method, "GET");
+  assert.equal(Object.hasOwn(requests[0].init, "body"), false);
+  assert.equal(requests[0].init.headers.Authorization, `Bearer ${secret}`);
+  assert.equal(requests[0].init.headers["Idempotency-Key"], "request-models-fixed");
+  assert.doesNotMatch(JSON.stringify(result), /must-not-escape|permission|upstream_nested|created/iu);
+});
+
+test("model discovery rejects every redirect without authorizing a second path", async () => {
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    return new Response(null, {
+      status: 307,
+      headers: { location: "/tenant/v1/models-shadow" },
+    });
+  }, { resolveSecret: async () => secret });
+
+  await assert.rejects(gateway.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), { code: "GATEWAY_REDIRECT_BLOCKED" });
+  assert.equal(fetches, 1);
+});
+
+test("model discovery revalidates DNS immediately before transport and never authorizes a public-to-private change", async () => {
+  let dnsReads = 0;
+  let resolutions = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+    resolveSecret: async () => { resolutions += 1; return secret; },
+    resolveHostname: async () => (++dnsReads === 1
+      ? [{ address: "203.0.113.10", family: 4 }]
+      : [{ address: "10.0.0.9", family: 4 }]),
+  });
+
+  await assert.rejects(gateway.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), { code: "AI_GATEWAY_PROFILE_INVALID" });
+  assert.deepEqual({ dnsReads, resolutions, fetches }, { dnsReads: 2, resolutions: 1, fetches: 0 });
+});
+
+test("model discovery enforces the 2 MiB response and 2,000 unique-model limits", async () => {
+  const overTwoMiB = JSON.stringify({ object: "list", data: [], padding: "x".repeat(2 * 1024 * 1024) });
+  const oversized = encryptedAdapter(async () => new Response(overTwoMiB, {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  }), { resolveSecret: async () => secret });
+  await assert.rejects(oversized.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), { code: "INVALID_GATEWAY_RESPONSE" });
+
+  const models = Array.from({ length: 2_001 }, (_, index) => ({
+    id: `model-${index}`,
+    object: "model",
+    owned_by: "provider",
+  }));
+  const tooMany = encryptedAdapter(async () => jsonResponse({ object: "list", data: models }), {
+    resolveSecret: async () => secret,
+  });
+  await assert.rejects(tooMany.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), { code: "INVALID_GATEWAY_RESPONSE" });
+
+  const exactLimit = encryptedAdapter(async () => jsonResponse({ object: "list", data: models.slice(0, 2_000) }), {
+    resolveSecret: async () => secret,
+  });
+  assert.equal((await exactLimit.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  })).models.length, 2_000);
+});
+
+test("model discovery rejects duplicate or conflicting IDs invalid identifiers and unknown response shapes", async () => {
+  const invalidBodies = [
+    { object: "list", data: [
+      { id: "model-a", object: "model", owned_by: "provider" },
+      { id: "model-a", object: "model", owned_by: "provider" },
+    ] },
+    { object: "list", data: [
+      { id: "model-a", object: "model", owned_by: "provider-a" },
+      { id: "model-a", object: "model", owned_by: "provider-b" },
+    ] },
+    { object: "list", data: [{ id: "../admin", object: "model", owned_by: "provider" }] },
+    { object: "list", data: [{ id: "a/../b", object: "model", owned_by: "provider" }] },
+    { object: "list", data: [{ id: "a//b", object: "model", owned_by: "provider" }] },
+    { object: "list", data: [{ id: "bad model", object: "model", owned_by: "provider" }] },
+    { object: "list", data: [{ id: "x".repeat(301), object: "model", owned_by: "provider" }] },
+    [],
+    { models: [] },
+    { object: "model", data: [] },
+    { object: "list", data: {} },
+    { object: "list", data: ["model-a"] },
+  ];
+
+  for (const body of invalidBodies) {
+    const gateway = encryptedAdapter(async () => jsonResponse(body), { resolveSecret: async () => secret });
+    await assert.rejects(gateway.listModels({
+      connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+    }), { code: "INVALID_GATEWAY_RESPONSE" });
+  }
+});
+
+test("model discovery rejects prototype and proxied body payloads with one safe response error", async () => {
+  const prototypePayload = "{\"object\":\"list\",\"data\":[{\"id\":\"model-a\",\"object\":\"model\",\"owned_by\":\"provider\",\"__proto__\":{\"admin\":true}}]}";
+  const prototypeGateway = encryptedAdapter(async () => new Response(prototypePayload, {
+    status: 200, headers: { "content-type": "application/json" },
+  }), { resolveSecret: async () => secret });
+  await assert.rejects(prototypeGateway.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), { code: "INVALID_GATEWAY_RESPONSE" });
+
+  const leaked = "proxied-secret-must-not-leak";
+  const bytes = new TextEncoder().encode("{\"object\":\"list\",\"data\":[]}");
+  const proxied = new Proxy(bytes, {
+    get() { throw new Error(leaked); },
+  });
+  let delivered = false;
+  const proxiedGateway = encryptedAdapter(async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-type": "application/json" }),
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (delivered) return { done: true, value: undefined };
+            delivered = true;
+            return { done: false, value: proxied };
+          },
+          async cancel() {},
+          releaseLock() {},
+        };
+      },
+    },
+  }), { resolveSecret: async () => secret });
+  await assert.rejects(proxiedGateway.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), (error) => error?.code === "INVALID_GATEWAY_RESPONSE" && !String(error.message).includes(leaked));
+});
+
+test("model discovery keeps timeout and encrypted resolver failures stable and secret-free", async () => {
+  const timeout = encryptedAdapter(async (_url, { signal }) => new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }), { resolveSecret: async () => secret });
+  await assert.rejects(timeout.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 10,
+  }), (error) => error?.code === "GATEWAY_TIMEOUT" && error?.retryable === true);
+
+  const ciphertext = "opaque-ciphertext-must-not-leak";
+  const logs = [];
+  const failed = encryptedAdapter(async () => { throw new Error("must not fetch"); }, {
+    logs,
+    resolveSecret: async () => { throw new Error(ciphertext); },
+  });
+  await assert.rejects(failed.listModels({
+    connection, correlationId: "corr-models", requestKey: "request-models", timeoutMs: 500,
+  }), (error) => error?.code === "AI_GATEWAY_SECRET_MISSING"
+    && !String(error.message).includes(ciphertext));
+  assert.doesNotMatch(JSON.stringify(logs), /opaque-ciphertext|Authorization|Bearer/iu);
 });
 
 test("Responses structured text stays behind the stable port and logs never expose sensitive payloads", async () => {

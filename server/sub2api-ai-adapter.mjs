@@ -23,7 +23,13 @@ const MAX_REQUEST_BODY_BYTES = 48 * 1024 * 1024;
 const MAX_PROMPT_CHARACTERS = 100_000;
 const MAX_PROMPT_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
+const MAX_MODELS = 2_000;
+const ENCRYPTED_SECRET_REFERENCE = "SUB2API_ENCRYPTED_KEY";
+const SCOPE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/u;
+const OWNED_BY = /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,239}$/u;
 const DANGEROUS_ENV_NAMES = new Set(["__proto__", "prototype", "constructor"]);
+const DANGEROUS_JSON_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const CAPABILITY_SOURCE_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const FAILURE_EVENTS = new Set([
   "error",
@@ -94,6 +100,8 @@ function profileField(profile, camel, snake = "") {
 }
 
 function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
+  const rawConnectionId = profileField(profile, "connectionId", "connection_id");
+  const rawConnectionVersion = profileField(profile, "connectionVersion", "connection_version");
   const result = {
     id: clean(profileField(profile, "id")),
     accountId: clean(profileField(profile, "accountId", "account_id")),
@@ -105,13 +113,22 @@ function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
     textModel: clean(profileField(profile, "textModel", "text_model")),
     imageModel: clean(profileField(profile, "imageModel", "image_model")),
     enabled: profileField(profile, "enabled") === true,
+    connectionId: clean(rawConnectionId),
+    connectionVersion: rawConnectionVersion === undefined || rawConnectionVersion === null
+      ? null : Number(rawConnectionVersion),
   };
+  const encryptedReference = result.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE;
+  const connectionReferencePresent = rawConnectionId !== undefined || rawConnectionVersion !== undefined;
+  const validConnectionReference = typeof rawConnectionId === "string"
+    && rawConnectionId === result.connectionId && SCOPE_ID.test(rawConnectionId)
+    && Number.isSafeInteger(rawConnectionVersion) && rawConnectionVersion > 0;
   if (!result.id || !result.accountId || !Number.isInteger(result.configVersion) || result.configVersion < 1
     || !result.baseUrl || !result.apiKeyEnvName || !result.textModel || !result.imageModel
     || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(result.apiKeyEnvName)
     || DANGEROUS_ENV_NAMES.has(result.apiKeyEnvName.toLowerCase())
     || !SUB2API_TEXT_PROTOCOLS.includes(result.textProtocol)
-    || !SUB2API_IMAGE_PROTOCOLS.includes(result.imageProtocol)) {
+    || !SUB2API_IMAGE_PROTOCOLS.includes(result.imageProtocol)
+    || (encryptedReference ? !validConnectionReference : connectionReferencePresent)) {
     throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
   }
   try {
@@ -125,6 +142,48 @@ function normalizeProfile(profile, { allowLocalGateway = false } = {}) {
   result.boundary = Object.freeze({ origin: parsed.origin, path: parsed.pathname });
   result.base = parsed;
   return Object.freeze(result);
+}
+
+function normalizeCatalogRequest(input, { allowLocalGateway = false } = {}) {
+  const source = input?.connection;
+  const id = profileField(source, "id");
+  const accountId = profileField(source, "accountId", "account_id");
+  const version = profileField(source, "version");
+  const baseUrl = profileField(source, "baseUrl", "base_url");
+  const status = profileField(source, "status");
+  if (typeof id !== "string" || id !== id.trim() || !SCOPE_ID.test(id)
+    || typeof accountId !== "string" || accountId !== accountId.trim() || !SCOPE_ID.test(accountId)
+    || !Number.isSafeInteger(version) || version < 1
+    || typeof baseUrl !== "string" || baseUrl !== baseUrl.trim() || !baseUrl
+    || status !== "ACTIVE") {
+    throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
+  }
+  let normalizedBaseUrl;
+  try {
+    normalizedBaseUrl = normalizeSub2ApiGatewayBaseUrl(baseUrl, { allowLocalGateway });
+  } catch {
+    throw gatewayError("AI_GATEWAY_PROFILE_INVALID");
+  }
+  const base = new URL(normalizedBaseUrl);
+  const pathname = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+  base.pathname = pathname.replace(/\/+/g, "/");
+  const normalizedProfile = Object.freeze({
+    id,
+    accountId,
+    configVersion: version,
+    baseUrl: normalizedBaseUrl,
+    apiKeyEnvName: ENCRYPTED_SECRET_REFERENCE,
+    connectionId: id,
+    connectionVersion: version,
+    enabled: true,
+    boundary: Object.freeze({ origin: base.origin, path: base.pathname }),
+    base,
+  });
+  return {
+    normalizedProfile,
+    correlationId: validateIdentity(input?.correlationId),
+    requestKey: validateIdentity(input?.requestKey),
+  };
 }
 
 function validateIdentity(value, code = "AI_GATEWAY_REQUEST_INVALID") {
@@ -341,7 +400,9 @@ function classifyHttp(response) {
   return gatewayError("NON_RETRYABLE_GATEWAY", { status: response.status, requestId });
 }
 
-async function fetchWithBoundary({ fetchImpl, url, init, boundary, authorized, signal, verifyTarget }) {
+async function fetchWithBoundary({
+  fetchImpl, url, init, boundary, authorized, signal, verifyTarget, rejectRedirects = false,
+}) {
   let target = url;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     let response;
@@ -352,6 +413,7 @@ async function fetchWithBoundary({ fetchImpl, url, init, boundary, authorized, s
       throw error;
     }
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (rejectRedirects) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
     if (redirects === MAX_REDIRECTS) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
     const location = response.headers.get("location");
     if (!location) throw gatewayError("GATEWAY_REDIRECT_BLOCKED");
@@ -683,9 +745,72 @@ function normalizeRequest(input, operation, { allowDisabled = false, allowLocalG
   return { normalizedProfile, correlationId, requestKey, model };
 }
 
+function safeJsonTree(value) {
+  const stack = [value];
+  while (stack.length) {
+    const current = stack.pop();
+    if (current === null || ["string", "boolean", "number"].includes(typeof current)) continue;
+    if (Array.isArray(current)) {
+      stack.push(...current);
+      continue;
+    }
+    if (!current || typeof current !== "object"
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(current))) return false;
+    let descriptors;
+    try {
+      descriptors = Object.getOwnPropertyDescriptors(current);
+    } catch {
+      return false;
+    }
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (DANGEROUS_JSON_KEYS.has(key) || typeof descriptor.get === "function" || typeof descriptor.set === "function") {
+        return false;
+      }
+      stack.push(descriptor.value);
+    }
+  }
+  return true;
+}
+
+function safeCatalogRequestId(response) {
+  const requestId = safeRequestId(response);
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u.test(requestId) ? requestId : "";
+}
+
+function normalizeModelCatalog(payload, response) {
+  try {
+    if (!safeJsonTree(payload) || !payload || Array.isArray(payload)
+      || payload.object !== "list" || !Array.isArray(payload.data)
+      || payload.data.length > MAX_MODELS) {
+      throw gatewayError("INVALID_GATEWAY_RESPONSE");
+    }
+    const seen = new Set();
+    const models = payload.data.map((model) => {
+      if (!model || Array.isArray(model) || typeof model !== "object" || model.object !== "model") {
+        throw gatewayError("INVALID_GATEWAY_RESPONSE");
+      }
+      const id = typeof model.id === "string" ? model.id : "";
+      const ownedBy = model.owned_by === undefined ? "" : model.owned_by;
+      if (!MODEL_ID.test(id) || id.split("/").some((part) => !part || part === "." || part === "..")
+        || (ownedBy !== "" && (typeof ownedBy !== "string" || !OWNED_BY.test(ownedBy)))
+        || seen.has(id)) {
+        throw gatewayError("INVALID_GATEWAY_RESPONSE");
+      }
+      seen.add(id);
+      return { id, ownedBy, metadata: {} };
+    });
+    models.sort((left, right) => left.id < right.id ? -1 : (left.id > right.id ? 1 : 0));
+    return { requestId: safeCatalogRequestId(response), models };
+  } catch (error) {
+    if (error instanceof AiGatewayError) throw error;
+    throw gatewayError("INVALID_GATEWAY_RESPONSE", { requestId: safeCatalogRequestId(response) });
+  }
+}
+
 export function createSub2ApiAdapter({
   fetchImpl = globalThis.fetch,
   readSecret = (name) => process.env[name],
+  resolveSecret,
   logger = null,
   allowLocalGateway = false,
   resolveHostname,
@@ -699,6 +824,7 @@ export function createSub2ApiAdapter({
   allowedGatewayOrigins,
 } = {}) {
   if (typeof fetchImpl !== "function" || typeof readSecret !== "function"
+    || (resolveSecret !== undefined && typeof resolveSecret !== "function")
     || typeof allowLocalGateway !== "boolean"
     || (resolveHostname !== undefined && typeof resolveHostname !== "function")) {
     throw new TypeError("sub2api adapter requires fetch and secret reader");
@@ -716,10 +842,18 @@ export function createSub2ApiAdapter({
     allowedGatewayOrigins: allowedGatewayOrigins ?? [],
     allowLocalGateway,
   }) : null;
+  const encryptedGatewayPolicy = createSub2ApiGatewayPolicy({
+    allowedSecretEnvNames: [ENCRYPTED_SECRET_REFERENCE],
+    allowedGatewayBaseUrls: allowedGatewayBaseUrls ?? [],
+    allowedGatewayOrigins: allowedGatewayOrigins ?? [],
+    allowLocalGateway,
+  });
 
   async function verifyGatewayBoundary(normalizedProfile, abort) {
     try {
-      if (gatewayPolicy) requireSub2ApiGatewayPolicy(normalizedProfile, gatewayPolicy);
+      const policy = normalizedProfile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
+        ? encryptedGatewayPolicy : gatewayPolicy;
+      if (policy) requireSub2ApiGatewayPolicy(normalizedProfile, policy);
       await verifySub2ApiGatewayDnsBoundary({
         hostname: normalizedProfile.base.hostname,
         allowLocalGateway,
@@ -735,11 +869,20 @@ export function createSub2ApiAdapter({
     }
   }
 
-  async function executeAuthorized({ input, operation, protocol, endpoint, body, accept = "application/json", allowDisabled = false }) {
-    const { normalizedProfile, correlationId, requestKey } = normalizeRequest(input, operation, {
-      allowDisabled,
-      allowLocalGateway,
-    });
+  async function executeAuthorized({
+    input,
+    operation,
+    protocol,
+    endpoint,
+    body,
+    accept = "application/json",
+    allowDisabled = false,
+    normalizeInput,
+    rejectRedirects = false,
+  }) {
+    const { normalizedProfile, correlationId, requestKey } = normalizeInput
+      ? normalizeInput(input, { allowLocalGateway })
+      : normalizeRequest(input, operation, { allowDisabled, allowLocalGateway });
     let serializedBody;
     if (body !== undefined) {
       try {
@@ -760,7 +903,13 @@ export function createSub2ApiAdapter({
       }
       let secret;
       try {
-        const resolved = readSecret(normalizedProfile.apiKeyEnvName);
+        const resolved = normalizedProfile.apiKeyEnvName === ENCRYPTED_SECRET_REFERENCE
+          ? await resolveSecret?.({
+            accountId: normalizedProfile.accountId,
+            connectionId: normalizedProfile.connectionId,
+            connectionVersion: normalizedProfile.connectionVersion,
+          })
+          : readSecret(normalizedProfile.apiKeyEnvName);
         secret = typeof resolved === "string" ? resolved.trim() : "";
       } catch {
         throw gatewayError("AI_GATEWAY_SECRET_MISSING");
@@ -785,6 +934,7 @@ export function createSub2ApiAdapter({
         authorized: true,
         signal: abort.signal,
         verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
+        rejectRedirects,
       });
       if (!response.ok) throw classifyHttp(response);
       safeLog(logger, "info", "ai_gateway.request_succeeded", {
@@ -1030,6 +1180,24 @@ export function createSub2ApiAdapter({
     });
   }
 
+  async function listModels(input = {}) {
+    const execution = await executeAuthorized({
+      input,
+      operation: "models",
+      protocol: "SUB2API_MODELS",
+      endpoint: "models",
+      body: undefined,
+      normalizeInput: normalizeCatalogRequest,
+      rejectRedirects: true,
+    });
+    try {
+      const payload = await readJson(execution.response, execution.abort, maxJsonBytes);
+      return normalizeModelCatalog(payload, execution.response);
+    } finally {
+      execution.abort.cleanup();
+    }
+  }
+
   async function probeReachability(input, { allowDisabled = false } = {}) {
     const { normalizedProfile } = normalizeRequest(
       { ...input, model: input.profile.textModel || input.profile.text_model },
@@ -1112,5 +1280,5 @@ export function createSub2ApiAdapter({
     };
   }
 
-  return createAiGatewayPort({ createTextResponse, generateImage, inspectImage, testCapabilities });
+  return createAiGatewayPort({ createTextResponse, generateImage, inspectImage, listModels, testCapabilities });
 }
