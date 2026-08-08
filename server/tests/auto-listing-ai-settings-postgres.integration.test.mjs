@@ -5,6 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createAutoListingAiModelSyncService } from "../auto-listing-ai-model-sync-service.mjs";
+import {
+  createAutoListingAiModelSyncSchedulePostgres,
+  createAutoListingAiModelSyncWorker,
+} from "../auto-listing-ai-model-sync-worker.mjs";
 import { createAutoListingAiSettingsPostgres } from "../auto-listing-ai-settings-postgres.mjs";
 
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1"
@@ -627,6 +632,140 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     });
     assert.equal(profile.apiKeyEnvName, "SUB2API_ENCRYPTED_KEY");
     assert.equal(profile.connectionId, active.id);
+    await pool.query(
+      "UPDATE ai_gateway_profiles SET enabled=TRUE WHERE account_id=$1 AND id=$2 AND config_version=$3",
+      [accountA, profile.id, profile.configVersion],
+    );
+
+    const missingTask = await repository.enqueueModelSync({
+      accountId: accountA, actorId: accountA, connectionId: active.id,
+      connectionVersion: active.version, expectedConnectionStatusVersion: Number(active.status_version),
+      idempotencyKey: `sync-active-missing-${suffix}`,
+      correlationId: `corr-sync-active-missing-${suffix}`,
+      maxAttempts: 5, syncPurpose: "CATALOG_SYNC",
+    });
+    const missingLease = await repository.claimModelSync({
+      accountId: accountA, workerId: "worker-service-replay", leaseMs: 120_000,
+      syncPurpose: "CATALOG_SYNC",
+    });
+    assert.equal(missingLease.taskId, missingTask.id);
+    let completionResponseLost = true;
+    const responseLossRepository = {
+      loadConnectionForSecretResolution: repository.loadConnectionForSecretResolution,
+      loadSettingsOverview: repository.loadSettingsOverview,
+      failModelSync: repository.failModelSync,
+      async completeModelSync(input) {
+        const result = await repository.completeModelSync(input);
+        if (completionResponseLost) {
+          completionResponseLost = false;
+          const error = new Error("simulated response loss after committed catalog");
+          error.code = "AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED";
+          error.retryable = true;
+          throw error;
+        }
+        return result;
+      },
+    };
+    let paidCalls = 0;
+    const syncService = createAutoListingAiModelSyncService({
+      repository: responseLossRepository,
+      gateway: {
+        async listModels() {
+          return {
+            requestId: `models-missing-${suffix}`,
+            models: [{ id: "text-model", ownedBy: "provider", metadata: {} }],
+          };
+        },
+        async createTextResponse() { paidCalls += 1; throw new Error("paid call forbidden"); },
+        async generateImage() { paidCalls += 1; throw new Error("paid call forbidden"); },
+        async testCapabilities() { paidCalls += 1; throw new Error("paid call forbidden"); },
+      },
+      workerId: "worker-service-replay",
+      timeoutMs: 30_000,
+      clock: () => new Date("2026-08-08T12:00:00.000Z"),
+    });
+    const missingResult = await syncService.syncModelCatalog({
+      accountId: missingLease.accountId,
+      connectionId: missingLease.connectionId,
+      connectionVersion: missingLease.connectionVersion,
+      syncPurpose: missingLease.syncPurpose,
+      targetConnectionStatusVersion: missingLease.targetConnectionStatusVersion,
+      taskId: missingLease.taskId,
+      attemptCount: missingLease.attemptCount,
+      maxAttempts: missingLease.maxAttempts,
+      leaseVersion: missingLease.leaseVersion,
+      leaseToken: missingLease.leaseToken,
+      leaseExpiresAt: missingLease.leaseExpiresAt,
+      correlationId: `corr-sync-active-missing-complete-${suffix}`,
+    });
+    assert.equal(missingResult.status, "SUCCEEDED");
+    assert.equal(missingResult.activeSelectionState, "MISSING");
+    assert.equal(paidCalls, 0);
+    const missingCatalog = (await pool.query(
+      "SELECT catalog FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
+      [accountA, missingTask.id],
+    )).rows[0].catalog;
+    assert.equal(missingCatalog.activeSelectionState, "MISSING");
+    assert.equal(missingCatalog.connectionVersion, active.version);
+    assert.match(missingCatalog.requestIdHash, /^[a-f0-9]{64}$/u);
+    assert.equal(Object.hasOwn(missingCatalog, "requestId"), false);
+    assert.equal(missingCatalog.recommendation.verified, false);
+    assert.equal((await pool.query(
+      "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_model_catalogs WHERE account_id=$1 AND sync_task_id=$2",
+      [accountA, missingTask.id],
+    )).rows[0].count, 1);
+
+    const connectionB = await repository.createPendingConnection({
+      accountId: accountB, actorId: accountB,
+      idempotencyKey: `connection-daily-${suffix}`,
+      correlationId: `corr-connection-daily-${suffix}`,
+      displayName: "Daily sub2API",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      encryptedSecret: { ...encryptedSecret, fingerprint: "fp-daily-b" },
+    });
+    const activeB = await repository.markConnectionValidated({
+      accountId: accountB, actorId: accountB, connectionId: connectionB.id,
+      connectionVersion: connectionB.version, expectedStatusVersion: 1,
+      idempotencyKey: `activate-daily-${suffix}`,
+      correlationId: `corr-activate-daily-${suffix}`,
+      rollbackCapabilityEvidence: null,
+      validationResult: { outcome: "PASSED", checkedAt: new Date().toISOString(), endpoint: "models" },
+    });
+    const scheduler = createAutoListingAiModelSyncSchedulePostgres({ pool });
+    assert.deepEqual((await scheduler.listDueConnections({ afterAccountId: null, limit: 10 }))
+      .map((entry) => entry.accountId), [accountB]);
+    const dailyGateway = {
+      async listModels() { return { requestId: "daily-models", models: [] }; },
+    };
+    const workerConfig = (workerId) => ({
+      enabled: true,
+      repository,
+      scheduler,
+      syncService: createAutoListingAiModelSyncService({
+        repository, gateway: dailyGateway, workerId, timeoutMs: 30_000, clock: () => new Date(),
+      }),
+      workerId,
+      pollIntervalMs: 60_000,
+      accountPageSize: 10,
+      logger: { log() {} },
+      timers: { setTimeout() { return 1; }, clearTimeout() {} },
+    });
+    const [dailyA, dailyB] = await Promise.all([
+      createAutoListingAiModelSyncWorker(workerConfig("daily-worker-a")).runOnce(),
+      createAutoListingAiModelSyncWorker(workerConfig("daily-worker-b")).runOnce(),
+    ]);
+    assert.equal(dailyA.scheduled + dailyB.scheduled, 1);
+    assert.equal(dailyA.succeeded + dailyB.succeeded, 1);
+    const dailyTasks = (await pool.query(
+      `SELECT status,idempotency_key FROM ai_gateway_model_sync_tasks
+        WHERE account_id=$1 AND connection_id=$2 AND connection_version=$3
+          AND idempotency_key LIKE 'aigsyncdaily_%'`,
+      [accountB, activeB.id, activeB.version],
+    )).rows;
+    assert.equal(dailyTasks.length, 1);
+    assert.equal(dailyTasks[0].status, "SUCCEEDED");
+    assert.deepEqual(await scheduler.listDueConnections({ afterAccountId: null, limit: 10 }), []);
+
     await rejectsCode(() => pool.query(
       "UPDATE ai_gateway_profiles SET connection_id=$1 WHERE account_id=$2 AND id=$3",
       [second.id, accountA, profile.id],

@@ -528,11 +528,31 @@ function enqueueRequest(raw) {
 }
 
 function leaseRequest(raw) {
-  const input = exactKeys(raw, ["accountId", "leaseMs", "workerId"]);
+  if (!plainRecord(raw)) throw invalid();
+  const input = exactKeys(raw, Object.hasOwn(raw, "syncPurpose")
+    ? ["accountId", "leaseMs", "syncPurpose", "workerId"]
+    : ["accountId", "leaseMs", "workerId"]);
+  const syncPurpose = input.syncPurpose === undefined ? null : identifier(input.syncPurpose);
+  if (syncPurpose !== null && !["CATALOG_SYNC", "ROLLBACK_CAPABILITY"].includes(syncPurpose)) throw invalid();
   return {
     accountId: identifier(input.accountId),
     workerId: identifier(input.workerId),
     leaseMs: boundedInteger(input.leaseMs, 1, 3_600_000),
+    syncPurpose,
+  };
+}
+
+function runnableAccountsRequest(raw) {
+  if (!plainRecord(raw)) throw invalid();
+  const input = exactKeys(raw, Object.hasOwn(raw, "syncPurpose")
+    ? ["afterAccountId", "limit", "syncPurpose"]
+    : ["afterAccountId", "limit"]);
+  const syncPurpose = input.syncPurpose === undefined ? null : identifier(input.syncPurpose);
+  if (syncPurpose !== null && !["CATALOG_SYNC", "ROLLBACK_CAPABILITY"].includes(syncPurpose)) throw invalid();
+  return {
+    afterAccountId: input.afterAccountId === null ? "" : identifier(input.afterAccountId),
+    limit: boundedInteger(input.limit, 1, 1000),
+    syncPurpose,
   };
 }
 
@@ -968,20 +988,19 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
     },
 
     async listRunnableSyncAccountIds(rawInput = {}) {
-      const input = exactKeys(rawInput, ["afterAccountId", "limit"]);
-      const afterAccountId = input.afterAccountId === null ? "" : identifier(input.afterAccountId);
-      const limit = boundedInteger(input.limit, 1, 1000);
+      const input = runnableAccountsRequest(rawInput);
       const result = await query(pool,
         `SELECT account_id
           FROM ai_gateway_model_sync_tasks
           WHERE account_id > $1
+            AND ($3::TEXT IS NULL OR sync_purpose=$3)
             AND (((status IN ('PENDING','FAILED') AND available_at <= NOW())
                   AND attempt_count < max_attempts)
               OR (status='LEASED' AND lease_expires_at <= NOW()))
           GROUP BY account_id
           ORDER BY account_id
           LIMIT $2`,
-        [afterAccountId, limit]);
+        [input.afterAccountId, input.limit, input.syncPurpose]);
       return result.rows.map((row) => row.account_id);
     },
 
@@ -992,13 +1011,14 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         const selected = await query(client,
           `SELECT * FROM ai_gateway_model_sync_tasks
             WHERE account_id=$1
+              AND ($2::TEXT IS NULL OR sync_purpose=$2)
               AND (((status IN ('PENDING','FAILED') AND available_at <= NOW())
                     AND attempt_count < max_attempts)
                 OR (status='LEASED' AND lease_expires_at <= NOW()))
             ORDER BY available_at,created_at,id
             FOR UPDATE SKIP LOCKED
             LIMIT 1`,
-          [input.accountId]);
+          [input.accountId, input.syncPurpose]);
         const current = selected?.rows?.[0];
         if (!current) return null;
         const reclaimed = current.status === "LEASED";

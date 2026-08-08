@@ -82,6 +82,30 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
   });
 });
 
+test("runnable paging and claims optionally isolate catalog sync from rollback tasks", async () => {
+  const list = scriptedPool([{
+    rows: [{ account_id: "account-a" }, { account_id: "account-b" }],
+  }]);
+  assert.deepEqual(await createAutoListingAiSettingsPostgres({ pool: list.pool })
+    .listRunnableSyncAccountIds({ afterAccountId: null, limit: 20, syncPurpose: "CATALOG_SYNC" }),
+  ["account-a", "account-b"]);
+  assert.match(list.calls[0].sql, /sync_purpose=\$3/iu);
+  assert.deepEqual(list.calls[0].params, ["", 20, "CATALOG_SYNC"]);
+
+  const claim = scriptedPool([
+    { rows: [] },
+    { rowCount: 1, rows: [{ id: "account-a" }] },
+    { rows: [] },
+    { rows: [] },
+  ]);
+  assert.equal(await createAutoListingAiSettingsPostgres({ pool: claim.pool }).claimModelSync({
+    accountId: "account-a", workerId: "worker-a", leaseMs: 120_000, syncPurpose: "CATALOG_SYNC",
+  }), null);
+  const select = claim.calls.find(({ sql }) => /FROM ai_gateway_model_sync_tasks/iu.test(sql));
+  assert.match(select.sql, /sync_purpose=\$2/iu);
+  assert.deepEqual(select.params, ["account-a", "CATALOG_SYNC"]);
+});
+
 test("pending connection creation locks the account, stores only cipher payload, and returns a safe DTO", async () => {
   const { pool, calls, remaining } = scriptedPool([
     { rows: [] },
