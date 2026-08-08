@@ -185,12 +185,12 @@ git commit -m "feat(auto-listing): add isolated local sub2api runtime"
 
 **Interfaces:**
 - Consumes: either `AUTO_LISTING_CREDENTIAL_MASTER_KEY` as base64url-encoded 32 bytes or `AUTO_LISTING_CREDENTIAL_MASTER_KEY_FILE`; exactly one source is active.
-- Produces: `loadAutoListingCredentialKey({env, readFile, stat})` and `createAutoListingCredentialCipher({key, keyVersion})` with `encrypt(scope, plaintext)`, `decrypt(scope, payload)`, and `fingerprint(plaintext)`.
+- Produces: `loadAutoListingCredentialKey({env, open})` and `createAutoListingCredentialCipher({key, keyVersion})` with `encrypt(scope, plaintext)`, `decrypt(scope, payload)`, and `fingerprint(plaintext)`. `open` is the sole injectable descriptor-safe file port; it must return a descriptor with `stat`, `readFile`, and `close`. The loader opens with `O_NOFOLLOW`, validates the opened descriptor, and has no `readFile`/`stat` path fallback.
 
 - [ ] **Step 1: Write failing crypto and configuration tests**
 
 ```js
-test("cipher binds ciphertext to account, connection, and version", () => {
+test("cipher binds ciphertext to account, connection, connection version, and key version", () => {
   const cipher = createAutoListingCredentialCipher({ key: Buffer.alloc(32, 7), keyVersion: "local-v1" });
   const scope = { accountId: "account-a", connectionId: "connection-a", connectionVersion: 1 };
   const encrypted = cipher.encrypt(scope, "sk-gateway-secret");
@@ -219,6 +219,7 @@ const aad = Buffer.from(JSON.stringify({
   accountId: scope.accountId,
   connectionId: scope.connectionId,
   connectionVersion: scope.connectionVersion,
+  keyVersion: normalizedKeyVersion,
 }), "utf8");
 ```
 
