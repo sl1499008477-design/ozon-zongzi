@@ -9,7 +9,7 @@ function overview(overrides = {}) {
 test("presentation exposes actions only from the complete server action contract", () => {
   const view = aiSettingsPresentation(overview());
   assert.deepEqual(view.connections[0].actions, { canSync: true });
-  assert.deepEqual(view.profiles[0].actions, { canTest: true, canPublish: false, canRollback: false });
+  assert.deepEqual(view.profiles[0].actions, { canTest: true, canPublish: true, canRollback: false });
   assert.deepEqual(aiSettingsPresentation(overview({ actions: undefined })).profiles[0].actions, { canTest: false, canPublish: false, canRollback: false });
   assert.deepEqual(aiSettingsPresentation(overview({ actions: { ...overview().actions, extra: true } })).profiles[0].actions, { canTest: false, canPublish: false, canRollback: false });
 });
@@ -28,7 +28,7 @@ test("paid tests require an explicit warning and unconfirmed state", () => {
 test("MISSING FAILED and UNKNOWN stay explicit and never imply selection or publication", () => {
   for (const [outcome, label] of [["MISSING", "待刷新"], ["FAILED", "待刷新"], ["UNKNOWN", "待刷新"]]) {
     const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], capabilityResult: { outcome }, enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
-    assert.equal(view.profiles[0].verificationLabel, label); assert.equal(view.profiles[0].actions.canPublish, false); assert.equal(view.profiles[0].selected, false);
+    assert.equal(view.profiles[0].verificationLabel, label); assert.equal(view.profiles[0].actions.canPublish, true); assert.equal(view.profiles[0].selected, false);
   }
 });
 
@@ -50,5 +50,11 @@ test("a passed profile is only verified with its exact latest successful catalog
   const stale = aiSettingsPresentation(overview({ profiles: [{ ...profile, enabled: true }], catalogs: [catalog], syncTasks: [{ id: "task-a", status: "SUCCEEDED", syncPurpose: "CATALOG_SYNC", connectionId: "other", connectionVersion: 1 }] }));
   assert.equal(stale.profiles[0].verificationLabel, "待刷新");
   assert.equal(stale.profiles[0].selected, true);
-  assert.equal(stale.profiles[0].actions.canPublish, false);
+  assert.equal(stale.profiles[0].actions.canPublish, true);
+});
+
+test("publish remains the server action contract even when current enabled-health evidence is unavailable", () => {
+  const view = aiSettingsPresentation(overview({ actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
+  assert.equal(view.profiles[0].verificationLabel, "待刷新");
+  assert.equal(view.profiles[0].actions.canPublish, true);
 });

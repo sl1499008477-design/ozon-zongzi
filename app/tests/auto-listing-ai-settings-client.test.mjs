@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AI_SETTINGS_SAFE_ERROR_CODES,
   createAiSettingsIntentStore,
   createGatewayConnection,
   createModelProfile,
@@ -12,6 +13,7 @@ import {
   rollbackModelProfile,
   testModelProfile,
 } from "../src/auto-listing-ai-settings-client.js";
+import { AUTO_LISTING_AI_SETTINGS_SAFE_CODES } from "../../server/auto-listing-ai-settings-routes.mjs";
 
 function memoryStorage() {
   const values = new Map();
@@ -161,4 +163,16 @@ test("paid test has a default bounded timeout and poll cannot succeed after its 
   await testModelProfile({ profileId: "profile-a", configVersion: 1, correlationId: "corr-timeout", costConfirmed: true });
   assert.ok(observedSignal instanceof AbortSignal);
   await assert.rejects(pollAiSettingsUntil(() => true, { timeoutMs: 1 }), (error) => ["AI_SETTINGS_CLIENT_POLL_TIMEOUT", "REQUEST_TIMEOUT", "AI_SETTINGS_CLIENT_RESPONSE_INVALID"].includes(error.code));
+});
+
+test("frontend safe error contract stays in parity with Task 7 routes", () => {
+  for (const code of AUTO_LISTING_AI_SETTINGS_SAFE_CODES) assert.ok(AI_SETTINGS_SAFE_ERROR_CODES.includes(code), code);
+});
+
+test("paid-test command intent persists and reuses its correlation identity", async (t) => {
+  const storage = memoryStorage(); const intents = createAiSettingsIntentStore(storage);
+  const intent = intents.commandIntent({ operation: "test", targetId: "profile-a" });
+  installTransport(t, async () => response(capability()));
+  await testModelProfile({ profileId: "profile-a", configVersion: 1, costConfirmed: true }, intent);
+  assert.equal(storage.getItem("ozon-ai-settings:connection:test:profile-a"), null);
 });

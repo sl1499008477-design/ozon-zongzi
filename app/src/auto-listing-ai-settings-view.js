@@ -114,7 +114,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
       management: row.connectionId === null ? "legacy" : "managed", disabled: row.enabled !== true,
       connection: row.connectionId === null ? null : Object.freeze({ id: typeof row.connectionId === "string" ? row.connectionId : "", version: Number.isSafeInteger(row.connectionVersion) ? row.connectionVersion : 0 }),
       paidTest: Object.freeze({ costWarning: "能力测试可能产生费用，请确认后继续", requiresCostConfirmation: true, ready: confirmed }),
-      actions: Object.freeze({ canTest: Boolean(id) && testable.has(id), canPublish: Boolean(id) && state.passed && publishable.has(id),
+      actions: Object.freeze({ canTest: Boolean(id) && testable.has(id), canPublish: Boolean(id) && publishable.has(id),
         canRollback: Boolean(id) && rollback.has(id) }) });
   });
   return Object.freeze({ canCreateConnection: actions?.canCreateConnection === true, connections: Object.freeze(connections),

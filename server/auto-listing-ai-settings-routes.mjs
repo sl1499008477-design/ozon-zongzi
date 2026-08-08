@@ -6,7 +6,7 @@ const PROFILES = `${BASE}/profiles`;
 const CONNECTION_SYNC = /^\/admin\/auto-listing\/ai-settings\/connections\/([^/]+)\/sync$/u;
 const PROFILE_ACTION = /^\/admin\/auto-listing\/ai-settings\/profiles\/([^/]+)\/(test|publish|rollback)$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
-const SAFE_CODES = new Set([
+export const AUTO_LISTING_AI_SETTINGS_SAFE_CODES = Object.freeze([
   "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID", "AUTO_LISTING_AI_SETTINGS_BASE_URL_INVALID",
   "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND",
   "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_SYNCABLE", "AUTO_LISTING_AI_SETTINGS_CONNECTION_VERSION_CONFLICT",
@@ -26,6 +26,7 @@ const SAFE_CODES = new Set([
   "AI_GATEWAY_PROFILE_NOT_FOUND", "AI_GATEWAY_PROFILE_VERSION_CONFLICT", "AI_GATEWAY_CAPABILITY_IN_PROGRESS",
   "AI_GATEWAY_CAPABILITY_REQUEST_INVALID", "PERMISSION_FORBIDDEN",
 ]);
+const SAFE_CODES = new Set(AUTO_LISTING_AI_SETTINGS_SAFE_CODES);
 const SECRET_KEYS = new Set([
   "gatewayKey", "encryptedSecret", "ciphertext", "iv", "authTag", "auth_tag", "authorization",
   "leaseToken", "lease_token",
