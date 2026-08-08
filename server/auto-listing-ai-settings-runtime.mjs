@@ -156,9 +156,10 @@ export function createAutoListingAiSettingsRuntime({
           const catalogCredentialResolver = createCatalogCredentialResolver({ repository, cipher });
           const gateway = createGateway({
             readSecret,
+            prepareCapabilitySubcall: (execution) => capabilityCredentialResolver.prepareSubcall(execution),
             resolveCapabilityCredential: (execution) => capabilityCredentialResolver.resolveCredential(execution),
             markCapabilitySubcallSending: (execution) => capabilityCredentialResolver.markSending(execution),
-            completeCapabilitySubcall: (execution, outcome) => capabilityCredentialResolver.completeSubcall(execution, outcome),
+            completeCapabilitySubcall: (execution, outcome, reason) => capabilityCredentialResolver.completeSubcall(execution, outcome, reason),
             resolveCatalogSyncCredential: (lease) => catalogCredentialResolver.resolveCredential(lease),
             allowLocalGateway: config.allowLocalGateway,
             ...(resolveGatewayHostname ? { resolveHostname: resolveGatewayHostname } : {}),

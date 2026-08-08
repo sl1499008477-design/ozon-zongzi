@@ -555,6 +555,7 @@ if (!enabled) {
       }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
       await profiles.completeCapabilitySubcall({
         ...beforeFirstAttempt.capabilityExecution, probe: "REACHABILITY", outcome: "FAILED",
+        reason: "PRE_SEND_FAILED",
       });
       await profiles.publishProfile({
         accountId, actorId: accountId, profileId: beforeFirstProbe.profile.id, configVersion: 1,
@@ -592,9 +593,10 @@ if (!enabled) {
       });
       const adapter = createSub2ApiAdapter({
         readSecret() { throw new Error("generic secret path must not authorize paid work"); },
+        prepareCapabilitySubcall: (execution) => resolver.prepareSubcall(execution),
         resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
         markCapabilitySubcallSending: (execution) => resolver.markSending(execution),
-        completeCapabilitySubcall: (execution, outcome) => resolver.completeSubcall(execution, outcome),
+        completeCapabilitySubcall: (execution, outcome, reason) => resolver.completeSubcall(execution, outcome, reason),
         resolveHostname: async () => {
           if (gateDns) {
             gateDns = false;
@@ -660,14 +662,409 @@ if (!enabled) {
         correlationId: `publish-after-first-probe-corr-${suffix}`,
       });
 
+      const secretFailure = await createConnected("decrypt-failure");
+      let secretFailureFetches = 0;
+      const secretFailureResolver = createAutoListingAiCapabilityCredentialResolver({
+        repository: profiles,
+        cipher: { async decrypt() { throw new Error("forced decrypt failure"); } },
+        readSecret() { return undefined; },
+      });
+      const secretFailureGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize paid work"); },
+        prepareCapabilitySubcall: (execution) => secretFailureResolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => secretFailureResolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => secretFailureResolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) =>
+          secretFailureResolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async () => {
+          secretFailureFetches += 1;
+          throw new Error("decrypt failure must not reach transport");
+        },
+      });
+      const secretFailureService = createAiGatewayProfileService({
+        repository: profiles, gateway: secretFailureGateway,
+      });
+      const secretFailureCorrelation = `decrypt-failure-${suffix}`;
+      const secretFailureResult = await secretFailureService.testGatewayCapabilities({
+        actor: { id: accountId, role: "admin" }, profileId: secretFailure.profile.id,
+        configVersion: 1, correlationId: secretFailureCorrelation, costConfirmed: true,
+      });
+      assert.equal(secretFailureResult.outcome, "FAILED");
+      assert.equal(secretFailureFetches, 0);
+      const secretFailureReservation = await pool.query(
+        `SELECT reservation.status,terminal.metadata
+           FROM ai_gateway_capability_subcall_reservations reservation
+           JOIN ai_gateway_capability_attempts attempt
+             ON attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+           LEFT JOIN audit_events terminal
+             ON terminal.account_id=reservation.account_id
+            AND terminal.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED'
+            AND terminal.metadata->>'attemptId'=reservation.attempt_id
+            AND terminal.metadata->>'stage'=reservation.stage
+          WHERE reservation.account_id=$1 AND attempt.correlation_id=$2`,
+        [accountId, secretFailureCorrelation],
+      );
+      assert.equal(secretFailureReservation.rows.length, 1);
+      assert.equal(secretFailureReservation.rows[0].status, "FAILED");
+      assert.equal(secretFailureReservation.rows[0].metadata.reason, "PRE_SEND_FAILED");
+      assert.equal((await pool.query(
+        `SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_subcall_reservations
+          WHERE account_id=$1 AND status IN ('PREPARED','SENDING')`, [accountId],
+      )).rows[0].count, 0);
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: secretFailure.profile.id, configVersion: 1,
+        idempotencyKey: `publish-decrypt-failure-${suffix}`,
+        correlationId: `publish-decrypt-failure-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_PROFILE_CAPABILITY_REQUIRED", status: 409 });
+
+      const subcallWriteFailure = await createConnected("subcall-write-failure");
+      const subcallWriteCorrelation = `subcall-write-failure-${suffix}`;
+      const subcallTransports = [];
+      await pool.query(`CREATE OR REPLACE FUNCTION reject_subcall_terminal_${suffix}()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED'
+            AND NEW.correlation_id='${subcallWriteCorrelation}' THEN
+            RAISE EXCEPTION 'forced subcall terminal persistence failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$`);
+      await pool.query(`CREATE TRIGGER reject_subcall_terminal_${suffix}_trigger
+        BEFORE INSERT ON audit_events FOR EACH ROW
+        EXECUTE FUNCTION reject_subcall_terminal_${suffix}()`);
+      const subcallWriteGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize paid recovery"); },
+        prepareCapabilitySubcall: (execution) => resolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => resolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) => resolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async (url, init) => {
+          subcallTransports.push({ url: String(url), requestKey: init.headers["Idempotency-Key"],
+            correlationId: init.headers["X-Correlation-Id"] });
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({ object: "list", data: [] }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+          if (String(url).endsWith("/responses")) return new Response(JSON.stringify({
+            id: "text-subcall-recovery", output: [{ type: "message",
+              content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ id: "image-subcall-recovery", data: [{
+            b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          }] }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+      const subcallWriteService = createAiGatewayProfileService({
+        repository: profiles, gateway: subcallWriteGateway,
+      });
+      const subcallWriteInput = { actor: { id: accountId, role: "admin" },
+        profileId: subcallWriteFailure.profile.id, configVersion: 1,
+        correlationId: subcallWriteCorrelation, costConfirmed: true };
+      await assert.rejects(subcallWriteService.testGatewayCapabilities(subcallWriteInput), {
+        code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", status: 409,
+      });
+      assert.equal(subcallTransports.length, 1);
+      const ambiguousAttempt = await pool.query(
+        `SELECT attempt.id,attempt.status,reservation.status AS reservation_status,
+                reservation.provider_request_key,reservation.provider_correlation_id
+           FROM ai_gateway_capability_attempts attempt
+           JOIN ai_gateway_capability_subcall_reservations reservation
+             ON reservation.account_id=attempt.account_id AND reservation.attempt_id=attempt.id
+          WHERE attempt.account_id=$1 AND attempt.correlation_id=$2`,
+        [accountId, subcallWriteCorrelation],
+      );
+      assert.equal(ambiguousAttempt.rows[0].status, "RUNNING");
+      assert.equal(ambiguousAttempt.rows[0].reservation_status, "SENDING");
+      assert.equal(ambiguousAttempt.rows[0].provider_request_key, subcallTransports[0].requestKey);
+      assert.equal(ambiguousAttempt.rows[0].provider_correlation_id, subcallTransports[0].correlationId);
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: subcallWriteFailure.profile.id, configVersion: 1,
+        idempotencyKey: `publish-ambiguous-subcall-${suffix}`,
+        correlationId: `publish-ambiguous-subcall-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", status: 409 });
+      await assert.rejects(subcallWriteService.testGatewayCapabilities(subcallWriteInput), {
+        code: "AI_GATEWAY_CAPABILITY_IN_PROGRESS", status: 409,
+      });
+      assert.equal(subcallTransports.length, 1);
+      await pool.query(`DROP TRIGGER reject_subcall_terminal_${suffix}_trigger ON audit_events`);
+      await pool.query(`DROP FUNCTION reject_subcall_terminal_${suffix}()`);
+      const subcallFaultClient = await pool.connect();
+      try {
+        await subcallFaultClient.query("SET session_replication_role='replica'");
+        await subcallFaultClient.query(
+          "UPDATE ai_gateway_capability_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+          [accountId, ambiguousAttempt.rows[0].id],
+        );
+      } finally {
+        await subcallFaultClient.query("SET session_replication_role='origin'").catch(() => {});
+        subcallFaultClient.release();
+      }
+      const subcallRecovered = await subcallWriteService.testGatewayCapabilities(subcallWriteInput);
+      assert.equal(subcallRecovered.outcome, "PASSED");
+      assert.equal(subcallTransports.length, 4);
+      assert.equal(subcallTransports[0].requestKey, subcallTransports[1].requestKey);
+      assert.equal(subcallTransports[0].correlationId, subcallTransports[1].correlationId);
+      assert.equal(new Set(subcallTransports.map(({ requestKey }) => requestKey)).size, 3);
+      assert.equal(new Set(subcallTransports.map(({ correlationId }) => correlationId)).size, 3);
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: subcallWriteFailure.profile.id, configVersion: 1,
+        idempotencyKey: `publish-recovered-subcall-${suffix}`,
+        correlationId: `publish-recovered-subcall-corr-${suffix}`,
+      });
+
+      const commitResponseLoss = await createConnected("subcall-commit-response-loss");
+      let loseTerminalCommitResponse = true;
+      const responseLossPool = {
+        async connect() {
+          const client = await pool.connect();
+          let terminalCommitArmed = false;
+          return {
+            async query(sql, params = []) {
+              if (/UPDATE ai_gateway_capability_subcall_reservations[\s\S]*SET status=\$5/iu.test(sql)
+                && params[4] === "SUCCEEDED" && loseTerminalCommitResponse) terminalCommitArmed = true;
+              const result = await client.query(sql, params);
+              if (sql === "COMMIT" && terminalCommitArmed && loseTerminalCommitResponse) {
+                loseTerminalCommitResponse = false;
+                terminalCommitArmed = false;
+                throw new Error("forced committed response loss");
+              }
+              return result;
+            },
+            release() { client.release(); },
+          };
+        },
+        async query(sql, params = []) { return pool.query(sql, params); },
+      };
+      const responseLossProfiles = createAutoListingAiAdminPostgres({ pool: responseLossPool });
+      const responseLossResolver = createAutoListingAiCapabilityCredentialResolver({
+        repository: responseLossProfiles,
+        cipher: { async decrypt() { return "paid-test-secret"; } },
+        readSecret() { return undefined; },
+      });
+      const responseLossTransports = [];
+      const responseLossGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize paid response-loss work"); },
+        prepareCapabilitySubcall: (execution) => responseLossResolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => responseLossResolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => responseLossResolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) =>
+          responseLossResolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async (url, init) => {
+          responseLossTransports.push(init.headers["Idempotency-Key"]);
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({ object: "list", data: [] }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+          if (String(url).endsWith("/responses")) return new Response(JSON.stringify({
+            id: "text-commit-loss", output: [{ type: "message",
+              content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ id: "image-commit-loss", data: [{
+            b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          }] }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+      const responseLossService = createAiGatewayProfileService({
+        repository: responseLossProfiles, gateway: responseLossGateway,
+      });
+      const responseLossCorrelation = `subcall-commit-response-loss-${suffix}`;
+      const responseLossResult = await responseLossService.testGatewayCapabilities({
+        actor: { id: accountId, role: "admin" }, profileId: commitResponseLoss.profile.id,
+        configVersion: 1, correlationId: responseLossCorrelation, costConfirmed: true,
+      });
+      assert.equal(responseLossResult.outcome, "PASSED");
+      assert.equal(loseTerminalCommitResponse, false);
+      assert.equal(responseLossTransports.length, 3);
+      assert.equal(new Set(responseLossTransports).size, 3);
+      const responseLossTerminal = await pool.query(
+        `SELECT COUNT(*)::INTEGER AS count
+           FROM ai_gateway_capability_subcall_reservations reservation
+           JOIN ai_gateway_capability_attempts attempt
+             ON attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+           JOIN audit_events terminal
+             ON terminal.account_id=reservation.account_id
+            AND terminal.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED'
+            AND terminal.metadata->>'attemptId'=reservation.attempt_id
+            AND terminal.metadata->>'stage'=reservation.stage
+          WHERE reservation.account_id=$1 AND attempt.correlation_id=$2
+            AND reservation.status='SUCCEEDED'`,
+        [accountId, responseLossCorrelation],
+      );
+      assert.equal(responseLossTerminal.rows[0].count, 3);
+
+      const prepareCommitLoss = await createConnected("prepare-commit-loss");
+      let losePreparedCommitResponse = true;
+      const prepareLossPool = {
+        async connect() {
+          const client = await pool.connect();
+          let preparedCommitArmed = false;
+          return {
+            async query(sql, params = []) {
+              if (/INSERT INTO ai_gateway_capability_subcall_reservations/iu.test(sql)
+                && losePreparedCommitResponse) preparedCommitArmed = true;
+              const result = await client.query(sql, params);
+              if (sql === "COMMIT" && preparedCommitArmed && losePreparedCommitResponse) {
+                losePreparedCommitResponse = false;
+                preparedCommitArmed = false;
+                throw new Error("forced prepared commit response loss");
+              }
+              return result;
+            },
+            release() { client.release(); },
+          };
+        },
+        async query(sql, params = []) { return pool.query(sql, params); },
+      };
+      const prepareLossProfiles = createAutoListingAiAdminPostgres({ pool: prepareLossPool });
+      const prepareLossResolver = createAutoListingAiCapabilityCredentialResolver({
+        repository: prepareLossProfiles,
+        cipher: { async decrypt() { return "paid-test-secret"; } },
+        readSecret() { return undefined; },
+      });
+      const prepareLossTransports = [];
+      const prepareLossGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize prepared response-loss work"); },
+        prepareCapabilitySubcall: (execution) => prepareLossResolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => prepareLossResolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => prepareLossResolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) =>
+          prepareLossResolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async (url, init) => {
+          prepareLossTransports.push(init.headers["Idempotency-Key"]);
+          if (String(url).endsWith("/models")) return new Response(JSON.stringify({ object: "list", data: [] }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+          if (String(url).endsWith("/responses")) return new Response(JSON.stringify({
+            id: "text-prepare-loss", output: [{ type: "message",
+              content: [{ type: "output_text", text: "{\"ok\":true}" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ id: "image-prepare-loss", data: [{
+            b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          }] }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+      const prepareLossService = createAiGatewayProfileService({
+        repository: prepareLossProfiles, gateway: prepareLossGateway,
+      });
+      const prepareLossResult = await prepareLossService.testGatewayCapabilities({
+        actor: { id: accountId, role: "admin" }, profileId: prepareCommitLoss.profile.id,
+        configVersion: 1, correlationId: `prepare-commit-loss-${suffix}`, costConfirmed: true,
+      });
+      assert.equal(prepareLossResult.outcome, "PASSED");
+      assert.equal(losePreparedCommitResponse, false);
+      assert.equal(prepareLossTransports.length, 3);
+      assert.equal(new Set(prepareLossTransports).size, 3);
+
+      const callerAbort = await createConnected("caller-abort");
+      const callerAbortController = new AbortController();
+      let callerAbortFetches = 0;
+      const callerAbortGateway = createSub2ApiAdapter({
+        readSecret() { throw new Error("generic resolver must not authorize aborted paid work"); },
+        prepareCapabilitySubcall: (execution) => resolver.prepareSubcall(execution),
+        resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
+        markCapabilitySubcallSending: (execution) => resolver.markSending(execution),
+        completeCapabilitySubcall: (execution, outcome, reason) => resolver.completeSubcall(execution, outcome, reason),
+        resolveHostname: async () => {
+          callerAbortController.abort();
+          return [{ address: "203.0.113.10", family: 4 }];
+        },
+        allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
+        allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
+        fetchImpl: async () => { callerAbortFetches += 1; throw new Error("must not fetch"); },
+      });
+      const callerAbortService = createAiGatewayProfileService({ repository: profiles, gateway: callerAbortGateway });
+      const callerAbortCorrelation = `caller-abort-${suffix}`;
+      const callerAbortResult = await callerAbortService.testGatewayCapabilities({
+        actor: { id: accountId, role: "admin" }, profileId: callerAbort.profile.id,
+        configVersion: 1, correlationId: callerAbortCorrelation, costConfirmed: true,
+        signal: callerAbortController.signal,
+      });
+      assert.equal(callerAbortResult.outcome, "FAILED");
+      assert.equal(callerAbortFetches, 0);
+      const callerAbortStored = await pool.query(
+        `SELECT reservation.status,terminal.metadata->>'reason' AS reason
+           FROM ai_gateway_capability_attempts attempt
+           JOIN ai_gateway_capability_subcall_reservations reservation
+             ON reservation.account_id=attempt.account_id AND reservation.attempt_id=attempt.id
+           JOIN audit_events terminal
+             ON terminal.account_id=reservation.account_id
+            AND terminal.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED'
+            AND terminal.metadata->>'attemptId'=reservation.attempt_id
+            AND terminal.metadata->>'stage'=reservation.stage
+          WHERE attempt.account_id=$1 AND attempt.correlation_id=$2`,
+        [accountId, callerAbortCorrelation],
+      );
+      assert.deepEqual(callerAbortStored.rows, [{ status: "FAILED", reason: "PRE_SEND_ABORTED" }]);
+
+      const unattendedPrepared = await createConnected("unattended-prepared");
+      const unattendedAttemptId = `attempt-unattended-${suffix}`;
+      const unattendedAttempt = await profiles.beginCapabilityTest({
+        costConfirmed: true, accountId, actorId: accountId,
+        profileId: unattendedPrepared.profile.id, configVersion: 1,
+        correlationId: `unattended-${suffix}`, attemptId: unattendedAttemptId,
+        purpose: "PROFILE_CAPABILITY", requestKey: requestKeyFor(unattendedAttemptId),
+      });
+      await profiles.loadCapabilityExecutionForSecretResolution({
+        ...unattendedAttempt.capabilityExecution, probe: "REACHABILITY",
+      });
+      const unattendedClient = await pool.connect();
+      try {
+        await unattendedClient.query("SET session_replication_role='replica'");
+        await unattendedClient.query(
+          "UPDATE ai_gateway_capability_attempts SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE account_id=$1 AND id=$2",
+          [accountId, unattendedAttemptId],
+        );
+      } finally {
+        await unattendedClient.query("SET session_replication_role='origin'").catch(() => {});
+        unattendedClient.release();
+      }
+      const transitionAfterExpiry = await settings.markConnectionValidated({
+        accountId, actorId: accountId, connectionId: transitionCandidate.id, connectionVersion: 1,
+        expectedStatusVersion: 1, idempotencyKey: `validate-after-expired-prepared-${suffix}`,
+        correlationId: `validate-after-expired-prepared-corr-${suffix}`, rollbackCapabilityEvidence: null,
+        validationResult: { outcome: "PASSED", checkedAt: new Date().toISOString(), endpoint: "models" },
+      });
+      assert.equal(transitionAfterExpiry.status, "ACTIVE");
+      const unattendedStored = await pool.query(
+        `SELECT reservation.status,terminal.actor_type,terminal.actor_id,terminal.metadata->>'reason' AS reason
+           FROM ai_gateway_capability_subcall_reservations reservation
+           JOIN audit_events terminal
+             ON terminal.account_id=reservation.account_id
+            AND terminal.action='AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED'
+            AND terminal.metadata->>'attemptId'=reservation.attempt_id
+            AND terminal.metadata->>'stage'=reservation.stage
+          WHERE reservation.account_id=$1 AND reservation.attempt_id=$2`,
+        [accountId, unattendedAttemptId],
+      );
+      assert.deepEqual(unattendedStored.rows, [{ status: "FAILED", actor_type: "system",
+        actor_id: "expired-prepared-cleanup", reason: "PRE_SEND_LEASE_EXPIRED" }]);
+      await passCapability(unattendedPrepared, "PROFILE_CAPABILITY", "unattended-recovery");
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: unattendedPrepared.profile.id, configVersion: 1,
+        idempotencyKey: `publish-unattended-recovery-${suffix}`,
+        correlationId: `publish-unattended-recovery-corr-${suffix}`,
+      });
+
       const crashReplay = await createConnected("provider-response-loss");
       let providerCalls = 0;
       const chargedRequestKeys = new Set();
       const replayGateway = createSub2ApiAdapter({
         readSecret() { throw new Error("generic resolver must not authorize paid replay"); },
+        prepareCapabilitySubcall: (execution) => resolver.prepareSubcall(execution),
         resolveCapabilityCredential: (execution) => resolver.resolveCredential(execution),
         markCapabilitySubcallSending: (execution) => resolver.markSending(execution),
-        completeCapabilitySubcall: (execution, outcome) => resolver.completeSubcall(execution, outcome),
+        completeCapabilitySubcall: (execution, outcome, reason) => resolver.completeSubcall(execution, outcome, reason),
         resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
         allowedSecretEnvNames: ["SUB2API_ENCRYPTED_KEY"],
         allowedGatewayBaseUrls: ["https://gateway.example.test/v1"],
@@ -881,6 +1278,8 @@ if (!enabled) {
         $$`);
       await admin.query(await readFile(path.join(migrationsDir,
         "055_auto_listing_ai_capability_subcall_reservations.sql"), "utf8"));
+      await admin.query(await readFile(path.join(migrationsDir,
+        "056_auto_listing_ai_prepared_capability_recovery.sql"), "utf8"));
 
       const quarantined = await admin.query(
         `SELECT status,authorization_schema_version,response->>'errorCode' AS error_code

@@ -97,6 +97,7 @@ function gatewayError(code, options = {}) {
     AI_GATEWAY_SECRET_MISSING: "AI 网关密钥未配置",
     AI_GATEWAY_PROTOCOL_UNSUPPORTED: "AI 网关协议不受支持",
     AI_GATEWAY_MODEL_MISMATCH: "AI 网关模型与配置不一致",
+    AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN: "AI 网关能力调用结果待恢复",
     AI_GATEWAY_INPUT_UNSUPPORTED: "AI 网关不支持该输入",
     GATEWAY_REDIRECT_BLOCKED: "AI 网关重定向被安全策略阻止",
     GATEWAY_TIMEOUT: "AI 网关请求超时",
@@ -659,7 +660,7 @@ async function abortableResult(promise, signal, abandonLateValue = null) {
 }
 
 async function fetchWithBoundary({
-  fetchImpl, url, init, boundary, authorized, signal, verifyTarget, rejectRedirects = false,
+  fetchImpl, url, init, boundary, authorized, signal, verifyTarget, beforeSend, rejectRedirects = false,
 }) {
   let target = url;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
@@ -667,6 +668,9 @@ async function fetchWithBoundary({
     try {
       const verification = await verifyTarget?.(target);
       const lookup = pinnedLookup(target, verification?.addresses);
+      if (signal?.aborted) throw signal.reason || new DOMException("aborted", "AbortError");
+      await beforeSend?.();
+      if (signal?.aborted) throw signal.reason || new DOMException("aborted", "AbortError");
       const pending = Promise.resolve().then(() => fetchImpl(target, {
         ...init, redirect: "manual", signal, lookup,
       }));
@@ -1124,6 +1128,7 @@ export function createSub2ApiAdapter({
   readSecret = (name) => process.env[name],
   resolveSecret,
   resolveCatalogSyncCredential,
+  prepareCapabilitySubcall,
   resolveCapabilityCredential,
   markCapabilitySubcallSending,
   completeCapabilitySubcall,
@@ -1142,6 +1147,7 @@ export function createSub2ApiAdapter({
   if (typeof fetchImpl !== "function" || typeof readSecret !== "function"
     || (resolveSecret !== undefined && typeof resolveSecret !== "function")
     || (resolveCatalogSyncCredential !== undefined && typeof resolveCatalogSyncCredential !== "function")
+    || (prepareCapabilitySubcall !== undefined && typeof prepareCapabilitySubcall !== "function")
     || (resolveCapabilityCredential !== undefined && typeof resolveCapabilityCredential !== "function")
     || (markCapabilitySubcallSending !== undefined && typeof markCapabilitySubcallSending !== "function")
     || (completeCapabilitySubcall !== undefined && typeof completeCapabilitySubcall !== "function")
@@ -1227,20 +1233,32 @@ export function createSub2ApiAdapter({
     }
     const abort = abortContext(input.signal, input.timeoutMs);
     const url = endpointUrl(normalizedProfile, endpoint);
-    let capabilityReserved = false;
+    let capabilityPrepared = false;
+    let capabilitySending = false;
     let capabilitySettled = false;
     try {
       let capabilityCredential = null;
       if (capabilityExecution !== null) {
-        if (!allowDisabled || typeof resolveCapabilityCredential !== "function"
+        if (!allowDisabled || typeof prepareCapabilitySubcall !== "function"
+          || typeof resolveCapabilityCredential !== "function"
           || typeof markCapabilitySubcallSending !== "function"
           || typeof completeCapabilitySubcall !== "function") {
           throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
         }
         try {
+          const prepared = await abortableResult(Promise.resolve()
+            .then(() => prepareCapabilitySubcall(capabilityExecution)), abort.signal, () => {
+              fireAndForget(() => completeCapabilitySubcall(
+                capabilityExecution, "FAILED", "PRE_SEND_ABORTED",
+              ));
+            });
+          capabilityPrepared = true;
+          if (prepared?.providerRequestKey !== requestKey
+            || prepared?.providerCorrelationId !== correlationId) {
+            throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+          }
           const credential = await abortableResult(Promise.resolve()
             .then(() => resolveCapabilityCredential(capabilityExecution)), abort.signal);
-          capabilityReserved = true;
           capabilityCredential = normalizeCapabilityCredential(credential, normalizedProfile);
           if (capabilityCredential.providerRequestKey !== requestKey
             || capabilityCredential.providerCorrelationId !== correlationId) {
@@ -1251,6 +1269,9 @@ export function createSub2ApiAdapter({
           const code = externalCode(error);
           if (["AI_GATEWAY_PROFILE_VERSION_CONFLICT", "AI_GATEWAY_CAPABILITY_IN_PROGRESS"].includes(code)) {
             throw gatewayError(code, { retryable: code === "AI_GATEWAY_CAPABILITY_IN_PROGRESS" });
+          }
+          if (code === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN") {
+            throw gatewayError(code, { retryable: true, status: 409 });
           }
           if (error instanceof AiGatewayError) throw error;
           throw gatewayError("AI_GATEWAY_SECRET_MISSING");
@@ -1275,14 +1296,6 @@ export function createSub2ApiAdapter({
         throw gatewayError("AI_GATEWAY_SECRET_MISSING");
       }
       if (!secret) throw gatewayError("AI_GATEWAY_SECRET_MISSING");
-      if (capabilityExecution !== null) {
-        const sendingIdentity = await abortableResult(Promise.resolve()
-          .then(() => markCapabilitySubcallSending(capabilityExecution)), abort.signal);
-        if (sendingIdentity?.providerRequestKey !== requestKey
-          || sendingIdentity?.providerCorrelationId !== correlationId) {
-          throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
-        }
-      }
       safeLog(logger, "info", "ai_gateway.request_started", {
         profileId: normalizedProfile.id,
         profileVersion: normalizedProfile.configVersion,
@@ -1290,9 +1303,7 @@ export function createSub2ApiAdapter({
         operation,
         correlationId,
       });
-      let response;
-      try {
-        response = await fetchWithBoundary({
+      const response = await fetchWithBoundary({
         fetchImpl,
         url,
         init: {
@@ -1304,8 +1315,18 @@ export function createSub2ApiAdapter({
         authorized: true,
         signal: abort.signal,
         verifyTarget: () => verifyGatewayBoundary(normalizedProfile, abort),
+        beforeSend: capabilityExecution === null ? undefined : async () => {
+          if (capabilitySending) return;
+          const sendingIdentity = await Promise.resolve()
+            .then(() => markCapabilitySubcallSending(capabilityExecution));
+          if (sendingIdentity?.providerRequestKey !== requestKey
+            || sendingIdentity?.providerCorrelationId !== correlationId) {
+            throw gatewayError("AI_GATEWAY_REQUEST_INVALID");
+          }
+          capabilitySending = true;
+        },
         rejectRedirects,
-        });
+      });
       let responseOk;
       try { responseOk = response?.ok === true; } catch {
         abandonResponse(response);
@@ -1314,11 +1335,23 @@ export function createSub2ApiAdapter({
       if (!responseOk) {
         const failure = classifyHttp(response);
         abandonResponse(response);
+        if (capabilityExecution !== null) {
+          await Promise.resolve(completeCapabilitySubcall(
+            capabilityExecution, "FAILED", "PROVIDER_REJECTED",
+          ));
+          capabilitySettled = true;
+        }
         throw failure;
       }
       if (capabilityExecution !== null) {
-        await abortableResult(Promise.resolve()
-          .then(() => completeCapabilitySubcall(capabilityExecution, "SUCCEEDED")), abort.signal);
+        try {
+          await Promise.resolve(completeCapabilitySubcall(
+            capabilityExecution, "SUCCEEDED", "PROVIDER_ACCEPTED",
+          ));
+        } catch {
+          abandonResponse(response);
+          throw gatewayError("AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", { retryable: true, status: 409 });
+        }
         capabilitySettled = true;
       }
       safeLog(logger, "info", "ai_gateway.request_succeeded", {
@@ -1331,29 +1364,23 @@ export function createSub2ApiAdapter({
         status: response.status,
       });
       return { response, normalizedProfile, abort };
-      } catch (error) {
-        if (capabilityExecution !== null && !capabilitySettled) {
-          try {
-            await Promise.resolve(completeCapabilitySubcall(capabilityExecution, "FAILED"));
-            capabilitySettled = true;
-          } catch (settlementError) {
-            if (response) abandonResponse(response);
-            throw settlementError;
-          }
-        }
-        throw error;
-      }
     } catch (error) {
       let failure = error;
-      if (capabilityExecution !== null && capabilityReserved && !capabilitySettled) {
+      let capabilitySettlementUnknown = false;
+      if (capabilityExecution !== null && capabilityPrepared && !capabilitySending && !capabilitySettled) {
         try {
-          await Promise.resolve(completeCapabilitySubcall(capabilityExecution, "FAILED"));
+          await Promise.resolve(completeCapabilitySubcall(capabilityExecution, "FAILED",
+            abort.state().callerCancelled || abort.state().timedOut ? "PRE_SEND_ABORTED" : "PRE_SEND_FAILED"));
           capabilitySettled = true;
         } catch (settlementError) {
           failure = settlementError;
+          capabilitySettlementUnknown = true;
         }
       }
-      const safe = classifyFetchFailure(failure, abort.state());
+      const safe = capabilityExecution !== null
+        && (capabilitySettlementUnknown || (capabilitySending && !capabilitySettled))
+        ? gatewayError("AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", { retryable: true, status: 409 })
+        : classifyFetchFailure(failure, abort.state());
       safeLog(logger, "warn", "ai_gateway.request_failed", {
         profileId: normalizedProfile.id,
         profileVersion: normalizedProfile.configVersion,
@@ -1730,7 +1757,8 @@ export function createSub2ApiAdapter({
   }
 
   async function testCapabilities(input = {}) {
-    if (input.capabilityExecution === undefined || typeof resolveCapabilityCredential !== "function"
+    if (input.capabilityExecution === undefined || typeof prepareCapabilitySubcall !== "function"
+      || typeof resolveCapabilityCredential !== "function"
       || typeof markCapabilitySubcallSending !== "function" || typeof completeCapabilitySubcall !== "function"
       || input.correlationId !== undefined || input.requestKey !== undefined) {
       throw gatewayError("AI_GATEWAY_REQUEST_INVALID");

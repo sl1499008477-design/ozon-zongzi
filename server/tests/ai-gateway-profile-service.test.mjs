@@ -329,6 +329,18 @@ test("failed capability test disables the exact profile version and returns a st
   assert.doesNotMatch(JSON.stringify(saved), /secret upstream body/);
 });
 
+test("ambiguous provider acceptance leaves the paid attempt reclaimable", async () => {
+  const ambiguity = Object.assign(new Error("provider result is unknown"), {
+    code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", status: 409, retryable: true,
+  });
+  const { service, calls } = fixture({ gatewayError: ambiguity });
+  await assert.rejects(service.testGatewayCapabilities({ costConfirmed: true,
+    actor: admin, profileId: "profile-a", configVersion: 4,
+    correlationId: "corr-provider-unknown",
+  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", status: 409, retryable: true });
+  assert.deepEqual(calls.map(([name]) => name), ["begin", "gateway"]);
+});
+
 test("attempt fence prevents a slow old capability test from mutating newer evidence", async () => {
   const { service, calls } = fixture({ completion: { applied: false, stale: true, duplicate: false } });
   await assert.rejects(

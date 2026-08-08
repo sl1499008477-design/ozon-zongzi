@@ -39,12 +39,25 @@ function authorizedAttempt(overrides = {}) {
   };
 }
 
+function capabilitySubcallExecution(overrides = {}) {
+  return {
+    accountId: "account-a", profileId: "profile-a", configVersion: 1,
+    attemptId: "attempt-authorized", correlationId: "corr-authorized", fence: 12,
+    leaseVersion: 1, leaseToken: "caplease_authorized", purpose: "PROFILE_CAPABILITY",
+    authorizationHash: capabilityAuthorizationHash, requestKey: capabilityRequestKey,
+    connectionId: "connection-a", connectionVersion: 1,
+    expectedConnectionStatus: "VALIDATED", expectedConnectionStatusVersion: 2,
+    probe: "TEXT", ...overrides,
+  };
+}
+
 function scriptedPool(steps) {
   const calls = [];
   const client = {
     async query(sql, params = []) {
       if (/UPDATE ai_gateway_capability_attempts[\s\S]*AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED/iu.test(sql)
         || /response->>'errorCode'='AUTO_LISTING_AI_LEGACY_CAPABILITY_QUARANTINED'/iu.test(sql)
+        || /auto_listing_cleanup_expired_prepared_capability_subcalls/iu.test(sql)
         || /SELECT id FROM ai_gateway_capability_subcall_reservations[\s\S]*status IN \('PREPARED','SENDING'\)/iu.test(sql)
         || /UPDATE ai_gateway_capability_subcall_reservations[\s\S]*reservation_version=reservation_version\+1/iu.test(sql)) {
         return { rowCount: 0, rows: [] };
@@ -287,14 +300,7 @@ test("capability begin durably authorizes purpose cost identity and connection f
 });
 
 test("paid credential loading atomically binds authorization audit lease latest attempt and connection status fence", async () => {
-  const execution = {
-    accountId: "account-a", profileId: "profile-a", configVersion: 1,
-    attemptId: "attempt-authorized", correlationId: "corr-authorized", fence: 12, leaseVersion: 1,
-    leaseToken: "caplease_authorized", purpose: "PROFILE_CAPABILITY",
-    authorizationHash: "a".repeat(64), requestKey: "b".repeat(64),
-    connectionId: "connection-a", connectionVersion: 1,
-    expectedConnectionStatus: "VALIDATED", expectedConnectionStatusVersion: 2, probe: "TEXT",
-  };
+  const execution = capabilitySubcallExecution();
   const { pool, calls } = scriptedPool([
     { rows: [] }, { rows: [{ id: "account-a" }] },
     { rows: [{
@@ -325,6 +331,150 @@ test("paid credential loading atomically binds authorization audit lease latest 
   assert.match(calls[2].sql, /newer\.fence/iu);
   assert.match(calls[2].sql, /c\.status=\$\d+/iu);
   assert.match(calls[2].sql, /c\.status_version=\$\d+/iu);
+});
+
+test("paid credential preparation recovers exact ownership after its COMMIT response is lost", async () => {
+  let providerRequestKey;
+  let providerCorrelationId;
+  const loaded = {
+    id: "attempt-authorized", status: "RUNNING", account_id: "account-a", profile_id: "profile-a",
+    config_version: 1, api_key_env_name: "SUB2API_ENCRYPTED_KEY", connection_id: "connection-a",
+    connection_version: 1, connection_status: "VALIDATED", connection_status_version: 2,
+    ciphertext: "cipher", iv: "iv", auth_tag: "tag", algorithm: "aes-256-gcm",
+    key_version: "local-v1", fingerprint: "fp",
+  };
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [loaded] }, { rows: [] },
+    (_sql, params) => {
+      providerRequestKey = params[8];
+      providerCorrelationId = params[9];
+      return { rowCount: 1, rows: [{ id: "reservation-a", status: "PREPARED", lease_version: 1,
+        reservation_version: 1, provider_request_key: providerRequestKey,
+        provider_correlation_id: providerCorrelationId }] };
+    },
+    { rows: [] }, { rowCount: 1, rows: [{ event_id: "reservation-audit" }] },
+    () => { throw new Error("commit response lost"); }, { rows: [] },
+    (sql, params) => {
+      assert.match(sql, /prepared_audit_matches/iu);
+      assert.equal(params.includes("AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED"), true);
+      return { rows: [{ ...loaded, reservation_status: "PREPARED", reservation_version: 1,
+        provider_request_key: providerRequestKey, provider_correlation_id: providerCorrelationId,
+        prepared_audit_matches: true }] };
+    },
+  ]);
+
+  const result = await createAutoListingAiAdminPostgres({ pool })
+    .loadCapabilityExecutionForSecretResolution(capabilitySubcallExecution());
+
+  assert.equal(result.connection.encryptedSecret.ciphertext, "cipher");
+  assert.equal(result.providerRequestKey, providerRequestKey);
+  assert.equal(result.providerCorrelationId, providerCorrelationId);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(remaining.length, 0);
+});
+
+test("paid credential preparation retries the same operation when failed COMMIT left no reservation", async () => {
+  const loaded = {
+    id: "attempt-authorized", status: "RUNNING", account_id: "account-a", profile_id: "profile-a",
+    config_version: 1, api_key_env_name: "SUB2API_ENCRYPTED_KEY", connection_id: "connection-a",
+    connection_version: 1, connection_status: "VALIDATED", connection_status_version: 2,
+    ciphertext: "cipher", iv: "iv", auth_tag: "tag", algorithm: "aes-256-gcm",
+    key_version: "local-v1", fingerprint: "fp",
+  };
+  const reservation = (_sql, params) => ({ rowCount: 1, rows: [{ id: "reservation-a",
+    status: "PREPARED", lease_version: 1, reservation_version: 1,
+    provider_request_key: params[8], provider_correlation_id: params[9] }] });
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [loaded] }, { rows: [] },
+    reservation, { rows: [] }, { rowCount: 1, rows: [{ event_id: "reservation-audit-rolled-back" }] },
+    () => { throw new Error("commit rejected before persistence"); }, { rows: [] },
+    { rows: [] },
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [loaded] }, { rows: [] },
+    reservation, { rows: [] }, { rowCount: 1, rows: [{ event_id: "reservation-audit-retried" }] },
+    { rows: [] },
+  ]);
+
+  const result = await createAutoListingAiAdminPostgres({ pool })
+    .loadCapabilityExecutionForSecretResolution(capabilitySubcallExecution());
+
+  assert.equal(result.connection.status, "VALIDATED");
+  assert.match(result.providerRequestKey, /^[a-f0-9]{64}$/u);
+  assert.equal(calls.filter(({ sql }) => sql === "BEGIN").length, 2);
+  assert.equal(remaining.length, 0);
+});
+
+test("capability subcall completion records exact terminal evidence before releasing the account fence", async () => {
+  let providerRequestKey;
+  let providerCorrelationId;
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] },
+    { rowCount: 1, rows: [{ id: "account-a" }] },
+    (_sql, params) => {
+      providerRequestKey = params[11];
+      providerCorrelationId = params[12];
+      return { rowCount: 1, rows: [{ status: "SUCCEEDED", provider_request_key: providerRequestKey,
+        provider_correlation_id: providerCorrelationId, reservation_version: 1 }] };
+    },
+    { rowCount: 0, rows: [] },
+    (sql, params) => {
+      assert.match(sql, /INSERT INTO audit_events/iu);
+      const metadata = JSON.parse(params.find((value) => typeof value === "string" && value.startsWith("{")));
+      assert.equal(metadata.outcome, "SUCCEEDED");
+      assert.equal(metadata.reason, "PROVIDER_ACCEPTED");
+      assert.equal(metadata.attemptId, "attempt-authorized");
+      assert.equal(metadata.stage, "TEXT");
+      assert.equal(metadata.providerRequestKey, providerRequestKey);
+      assert.match(metadata.providerRequestKeyHash, /^[a-f0-9]{64}$/u);
+      assert.equal(metadata.providerCorrelationId, providerCorrelationId);
+      assert.equal(metadata.reservationVersion, 1);
+      return { rowCount: 1, rows: [{ event_id: params[0] }] };
+    },
+    { rows: [] },
+  ]);
+
+  const result = await createAutoListingAiAdminPostgres({ pool }).completeCapabilitySubcall({
+    ...capabilitySubcallExecution(), outcome: "SUCCEEDED", reason: "PROVIDER_ACCEPTED",
+  });
+
+  assert.deepEqual(result, { terminal: true, duplicate: false, reconciled: false });
+  assert.equal(calls[0].sql, "BEGIN");
+  assert.equal(calls.at(-2).sql, "COMMIT");
+  assert.equal(remaining.length, 0);
+});
+
+test("capability subcall completion reconciles an exact committed success after COMMIT response loss", async () => {
+  let providerRequestKey;
+  let providerCorrelationId;
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] },
+    { rowCount: 1, rows: [{ id: "account-a" }] },
+    (_sql, params) => {
+      providerRequestKey = params[11];
+      providerCorrelationId = params[12];
+      return { rowCount: 1, rows: [{ status: "SUCCEEDED", provider_request_key: providerRequestKey,
+        provider_correlation_id: providerCorrelationId, reservation_version: 1 }] };
+    },
+    { rowCount: 0, rows: [] },
+    { rowCount: 1, rows: [{ event_id: "terminal-audit" }] },
+    () => { throw new Error("commit response lost"); },
+    { rows: [] },
+    (sql, params) => {
+      assert.match(sql, /ai_gateway_capability_subcall_reservations/iu);
+      assert.match(sql, /audit_events/iu);
+      assert.deepEqual(params.slice(0, 4), ["account-a", "attempt-authorized", "TEXT", 1]);
+      return { rowCount: 1, rows: [{ status: "SUCCEEDED", provider_request_key: providerRequestKey,
+        provider_correlation_id: providerCorrelationId, reservation_version: 1,
+        terminal_audit_matches: true }] };
+    },
+  ]);
+
+  const result = await createAutoListingAiAdminPostgres({ pool }).completeCapabilitySubcall({
+    ...capabilitySubcallExecution(), outcome: "SUCCEEDED", reason: "PROVIDER_ACCEPTED",
+  });
+
+  assert.deepEqual(result, { terminal: true, duplicate: true, reconciled: true });
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(remaining.length, 0);
 });
 
 test("capability completion applies its fence and audit in one transaction", async () => {

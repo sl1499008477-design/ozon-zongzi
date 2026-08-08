@@ -1806,6 +1806,7 @@ test("inspectImage uses structured Responses internally without exposing source 
 test("explicit capability test performs reachability, structured text, and one decoded image probe", async () => {
   const providerIdentities = capabilityProviderIdentities;
   const calls = [];
+  const prepared = [];
   const credentialResolutions = [];
   const sending = [];
   const completed = [];
@@ -1824,6 +1825,10 @@ test("explicit capability test performs reachability, structured text, and one d
     return jsonResponse({ id: "image-id", data: [{ b64_json: PNG_1X1 }] });
   }, {
     resolveSecret() { throw new Error("generic resolver must not authorize paid work"); },
+    async prepareCapabilitySubcall(execution) {
+      prepared.push(structuredClone(execution));
+      return providerIdentities[execution.probe];
+    },
     async resolveCapabilityCredential(execution) {
       credentialResolutions.push(structuredClone(execution));
       return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
@@ -1834,8 +1839,8 @@ test("explicit capability test performs reachability, structured text, and one d
       sending.push(structuredClone(execution));
       return providerIdentities[execution.probe];
     },
-    async completeCapabilitySubcall(execution, outcome) {
-      completed.push([structuredClone(execution), outcome]);
+    async completeCapabilitySubcall(execution, outcome, reason) {
+      completed.push([structuredClone(execution), outcome, reason]);
       return { terminal: true };
     },
   });
@@ -1873,19 +1878,24 @@ test("explicit capability test performs reachability, structured text, and one d
     orchestratorModel: "",
   });
   assert.equal(reachabilityCancelled, true);
+  assert.deepEqual(prepared.map(({ probe }) => probe), ["REACHABILITY", "TEXT", "IMAGE"]);
   assert.deepEqual(credentialResolutions.map(({ probe }) => probe), ["REACHABILITY", "TEXT", "IMAGE"]);
   assert.equal(credentialResolutions.every(({ probe, ...execution }) =>
     JSON.stringify(execution) === JSON.stringify(capabilityExecution)), true);
   assert.deepEqual(sending.map(({ probe }) => probe), ["REACHABILITY", "TEXT", "IMAGE"]);
-  assert.deepEqual(completed.map(([{ probe }, outcome]) => [probe, outcome]), [
-    ["REACHABILITY", "SUCCEEDED"], ["TEXT", "SUCCEEDED"], ["IMAGE", "SUCCEEDED"],
+  assert.deepEqual(completed.map(([{ probe }, outcome, reason]) => [probe, outcome, reason]), [
+    ["REACHABILITY", "SUCCEEDED", "PROVIDER_ACCEPTED"],
+    ["TEXT", "SUCCEEDED", "PROVIDER_ACCEPTED"],
+    ["IMAGE", "SUCCEEDED", "PROVIDER_ACCEPTED"],
   ]);
 });
 
 test("capability test rejects independent request identity before DNS or network", async () => {
+  let preparations = 0;
   let resolutions = 0;
   let fetches = 0;
   const gateway = encryptedAdapter(async () => { fetches += 1; throw new Error("must not fetch"); }, {
+    async prepareCapabilitySubcall() { preparations += 1; throw new Error("must not prepare"); },
     async resolveCapabilityCredential() { resolutions += 1; throw new Error("must not resolve"); },
     async markCapabilitySubcallSending() { throw new Error("must not mark"); },
     async completeCapabilitySubcall() { throw new Error("must not complete"); },
@@ -1895,7 +1905,7 @@ test("capability test rejects independent request identity before DNS or network
     correlationId: "caller-controlled-correlation", requestKey: "caller-controlled-key",
     timeoutMs: 500, capabilityExecution,
   }), { code: "AI_GATEWAY_REQUEST_INVALID" });
-  assert.deepEqual({ resolutions, fetches }, { resolutions: 0, fetches: 0 });
+  assert.deepEqual({ preparations, resolutions, fetches }, { preparations: 0, resolutions: 0, fetches: 0 });
 });
 
 test("capability reservation becomes terminal when DNS rejects after PREPARED", async () => {
@@ -1907,6 +1917,9 @@ test("capability reservation becomes terminal when DNS rejects after PREPARED", 
     throw new Error("must not fetch");
   }, {
     resolveHostname: async () => [{ address: "127.0.0.1", family: 4 }],
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
     async resolveCapabilityCredential(execution) {
       return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
         connectionId: "connection-a", connectionVersion: 3,
@@ -1916,8 +1929,8 @@ test("capability reservation becomes terminal when DNS rejects after PREPARED", 
       sending += 1;
       throw new Error("must not mark SENDING after DNS rejection");
     },
-    async completeCapabilitySubcall(execution, outcome) {
-      completed.push([execution.probe, outcome]);
+    async completeCapabilitySubcall(execution, outcome, reason) {
+      completed.push([execution.probe, outcome, reason]);
       return { terminal: true };
     },
   });
@@ -1928,7 +1941,180 @@ test("capability reservation becomes terminal when DNS rejects after PREPARED", 
     capabilityExecution,
   }), { code: "AI_GATEWAY_PROFILE_INVALID" });
   assert.deepEqual({ fetches, sending }, { fetches: 0, sending: 0 });
-  assert.deepEqual(completed, [["REACHABILITY", "FAILED"]]);
+  assert.deepEqual(completed, [["REACHABILITY", "FAILED", "PRE_SEND_FAILED"]]);
+});
+
+test("prepared capability ownership settles secret failure before any DNS or transport", async () => {
+  const prepared = [];
+  const completed = [];
+  let dnsReads = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    throw new Error("must not fetch");
+  }, {
+    resolveHostname: async () => { dnsReads += 1; return publicDns(); },
+    async prepareCapabilitySubcall(execution) {
+      prepared.push(execution.probe);
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential() {
+      throw Object.assign(new Error("decrypt failed"), { code: "AI_GATEWAY_SECRET_MISSING" });
+    },
+    async markCapabilitySubcallSending() { throw new Error("must not mark"); },
+    async completeCapabilitySubcall(execution, outcome, reason) {
+      completed.push([execution.probe, outcome, reason]);
+      return { terminal: true };
+    },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution,
+  }), { code: "AI_GATEWAY_SECRET_MISSING" });
+  assert.deepEqual({ prepared, completed, dnsReads, fetches }, {
+    prepared: ["REACHABILITY"],
+    completed: [["REACHABILITY", "FAILED", "PRE_SEND_FAILED"]],
+    dnsReads: 0,
+    fetches: 0,
+  });
+});
+
+test("an uncertain PREPARED commit response never terminals the attempt as a credential failure", async () => {
+  let completions = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    throw new Error("must not fetch");
+  }, {
+    async prepareCapabilitySubcall() {
+      throw Object.assign(new Error("prepared commit response unknown"), {
+        code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true,
+      });
+    },
+    async resolveCapabilityCredential() { throw new Error("must not resolve"); },
+    async markCapabilitySubcallSending() { throw new Error("must not mark"); },
+    async completeCapabilitySubcall() { completions += 1; },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution,
+  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  assert.deepEqual({ completions, fetches }, { completions: 0, fetches: 0 });
+});
+
+test("abort before SENDING terminals PREPARED while abort after SENDING stays reclaimable", async () => {
+  for (const abortPoint of ["before-sending", "after-sending"]) {
+    const controller = new AbortController();
+    const completed = [];
+    let marks = 0;
+    let fetches = 0;
+    const gateway = encryptedAdapter(async () => {
+      fetches += 1;
+      throw new Error("transport must not start after abort");
+    }, {
+      resolveHostname: async () => {
+        if (abortPoint === "before-sending") controller.abort();
+        return publicDns();
+      },
+      async prepareCapabilitySubcall(execution) {
+        return capabilityProviderIdentities[execution.probe];
+      },
+      async resolveCapabilityCredential(execution) {
+        return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+          connectionId: "connection-a", connectionVersion: 3,
+          ...capabilityProviderIdentities[execution.probe], secret };
+      },
+      async markCapabilitySubcallSending(execution) {
+        marks += 1;
+        if (abortPoint === "after-sending") controller.abort();
+        return capabilityProviderIdentities[execution.probe];
+      },
+      async completeCapabilitySubcall(execution, outcome, reason) {
+        completed.push([execution.probe, outcome, reason]);
+        return { terminal: true };
+      },
+    });
+    const expectedCode = abortPoint === "before-sending"
+      ? "GATEWAY_CANCELLED" : "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN";
+    await assert.rejects(gateway.testCapabilities({
+      profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+      timeoutMs: 500, signal: controller.signal, capabilityExecution,
+    }), { code: expectedCode });
+    assert.equal(fetches, 0);
+    if (abortPoint === "before-sending") {
+      assert.deepEqual({ marks, completed }, {
+        marks: 0, completed: [["REACHABILITY", "FAILED", "PRE_SEND_ABORTED"]],
+      });
+    } else {
+      assert.deepEqual({ marks, completed }, { marks: 1, completed: [] });
+    }
+  }
+});
+
+test("a PREPARED terminal-write failure stays unknown and reclaimable instead of failing the paid attempt", async () => {
+  let terminalWrites = 0;
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    throw new Error("must not fetch");
+  }, {
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential() {
+      throw Object.assign(new Error("decrypt failed"), { code: "AI_GATEWAY_SECRET_MISSING" });
+    },
+    async markCapabilitySubcallSending() { throw new Error("must not mark"); },
+    async completeCapabilitySubcall(_execution, outcome, reason) {
+      terminalWrites += 1;
+      assert.deepEqual([outcome, reason], ["FAILED", "PRE_SEND_FAILED"]);
+      throw Object.assign(new Error("terminal write result unknown"), {
+        code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED",
+      });
+    },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution,
+  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  assert.deepEqual({ terminalWrites, fetches }, { terminalWrites: 1, fetches: 0 });
+});
+
+test("provider 2xx plus completion persistence ambiguity never rewrites the stage FAILED", async () => {
+  const settlements = [];
+  let fetches = 0;
+  const gateway = encryptedAdapter(async () => {
+    fetches += 1;
+    return jsonResponse({ object: "list", data: [] });
+  }, {
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async resolveCapabilityCredential(execution) {
+      return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
+        connectionId: "connection-a", connectionVersion: 3,
+        ...capabilityProviderIdentities[execution.probe], secret };
+    },
+    async markCapabilitySubcallSending(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
+    async completeCapabilitySubcall(execution, outcome, reason) {
+      settlements.push([execution.probe, outcome, reason]);
+      throw Object.assign(new Error("completion result unknown"), {
+        code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED",
+      });
+    },
+  });
+
+  await assert.rejects(gateway.testCapabilities({
+    profile: { ...encryptedProfile, enabled: false, imageProtocol: "SUB2API_OPENAI_IMAGES" },
+    timeoutMs: 500, capabilityExecution,
+  }), { code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true });
+  assert.equal(fetches, 1);
+  assert.deepEqual(settlements, [["REACHABILITY", "SUCCEEDED", "PROVIDER_ACCEPTED"]]);
 });
 
 test("capability test has no generic secret or network fallback without persisted execution authority", async () => {
@@ -1952,6 +2138,9 @@ test("capability execution fence changes stop every later paid probe before netw
     return jsonResponse({ object: "list", data: [] });
   }, {
     resolveSecret() { throw new Error("generic resolver must not authorize paid work"); },
+    async prepareCapabilitySubcall(execution) {
+      return capabilityProviderIdentities[execution.probe];
+    },
     async resolveCapabilityCredential(execution) {
       resolutions += 1;
       if (resolutions > 1) {
@@ -1986,7 +2175,9 @@ test("capability test rejects image bytes that only mimic a supported header but
     if (call === 1) return jsonResponse({ data: [] });
     if (call === 2) return jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "{\"ok\":true}" }] }] });
     return jsonResponse({ data: [{ b64_json: fakePngHeader.toString("base64") }] });
-  }, { async resolveCapabilityCredential(execution) {
+  }, { async prepareCapabilitySubcall(execution) {
+    return capabilityProviderIdentities[execution.probe];
+  }, async resolveCapabilityCredential(execution) {
     return { accountId: "account-a", profileId: "profile-1", configVersion: 7,
       connectionId: null, connectionVersion: null,
       ...capabilityProviderIdentities[execution.probe], secret };

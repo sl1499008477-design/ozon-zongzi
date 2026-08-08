@@ -6,6 +6,7 @@ const DECODE_FEATURES = new Set(["IMAGE_DECODE_PNG", "IMAGE_DECODE_JPEG", "IMAGE
 const ALLOWED_FEATURES = new Set([...REQUIRED_FEATURES, ...DECODE_FEATURES]);
 const SAFE_GATEWAY_ERROR_CODES = new Set([
   "AI_GATEWAY_CAPABILITY_FAILED",
+  "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN",
   "AI_GATEWAY_PROFILE_INVALID",
   "AI_GATEWAY_PROFILE_DISABLED",
   "AI_GATEWAY_REQUEST_INVALID",
@@ -223,13 +224,17 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
           errorCode: null,
         };
       } catch (error) {
+        const errorCode = safeErrorCode(error);
+        if (errorCode === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN") {
+          throw serviceError(errorCode, 409, true);
+        }
         capabilityResult = {
           outcome: "FAILED",
           features: [],
           latencyMs: null,
           models: { text: profile.textModel, image: profile.imageModel },
           checkedAt,
-          errorCode: safeErrorCode(error),
+          errorCode,
         };
       }
 

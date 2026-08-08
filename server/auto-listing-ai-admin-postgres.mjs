@@ -5,6 +5,13 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CAPABILITY_AUTHORIZATION_SCHEMA = "AI_GATEWAY_CAPABILITY_AUTHORIZATION_V1";
 const CAPABILITY_AUTHORIZATION_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_AUTHORIZED";
+const CAPABILITY_SUBCALL_TERMINAL_ACTION = "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED";
+const CAPABILITY_SUBCALL_COMPLETION_REASONS = new Map([
+  ["PRE_SEND_ABORTED", "FAILED"],
+  ["PRE_SEND_FAILED", "FAILED"],
+  ["PROVIDER_REJECTED", "FAILED"],
+  ["PROVIDER_ACCEPTED", "SUCCEEDED"],
+]);
 const CAPABILITY_EXECUTION_KEYS = new Set([
   "accountId", "profileId", "configVersion", "attemptId", "correlationId", "fence", "leaseVersion", "leaseToken",
   "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
@@ -539,12 +546,137 @@ function capabilitySubcallProviderIdentity(execution) {
 function capabilitySubcallCompleteRequest(rawInput) {
   const input = canonical(rawInput);
   const outcome = input?.outcome;
-  if (!input || !["SUCCEEDED", "FAILED"].includes(outcome)) throw invalid();
-  const { outcome: _outcome, ...executionInput } = input;
-  return { ...capabilityExecutionRequest(executionInput), outcome };
+  const reason = input?.reason;
+  if (!input || !["SUCCEEDED", "FAILED"].includes(outcome)
+    || CAPABILITY_SUBCALL_COMPLETION_REASONS.get(reason) !== outcome) throw invalid();
+  const { outcome: _outcome, reason: _reason, ...executionInput } = input;
+  return { ...capabilityExecutionRequest(executionInput), outcome, reason };
+}
+
+async function loadCapabilitySubcallTerminalEvidence(target, input, identity, { forUpdate = false } = {}) {
+  const result = await query(target,
+    `SELECT reservation.status,reservation.provider_request_key,reservation.provider_correlation_id,
+            reservation.reservation_version,
+            EXISTS (
+              SELECT 1 FROM audit_events terminal_event
+               WHERE terminal_event.account_id=reservation.account_id
+                 AND terminal_event.action=$7 AND terminal_event.status='SUCCESS'
+                 AND terminal_event.entity_type='ai_gateway_profile'
+                 AND terminal_event.entity_id=$8
+                 AND terminal_event.correlation_id=$9
+                 AND terminal_event.metadata->>'attemptId'=reservation.attempt_id
+                 AND terminal_event.metadata->>'stage'=reservation.stage
+                 AND terminal_event.metadata->>'outcome'=$10
+                 AND terminal_event.metadata->>'reason'=$11
+                 AND terminal_event.metadata->>'providerRequestKey'=reservation.provider_request_key
+                 AND terminal_event.metadata->>'providerRequestKeyHash'=$12
+                 AND terminal_event.metadata->>'providerCorrelationId'=reservation.provider_correlation_id
+                 AND (terminal_event.metadata->>'reservationVersion')::INTEGER=reservation.reservation_version
+            ) AS terminal_audit_matches
+       FROM ai_gateway_capability_subcall_reservations reservation
+      WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
+        AND reservation.lease_version=$4 AND reservation.provider_request_key=$5
+        AND reservation.provider_correlation_id=$6
+      ${forUpdate ? "FOR UPDATE OF reservation" : ""}`,
+    [input.accountId, input.attemptId, input.probe, input.leaseVersion,
+      identity.providerRequestKey, identity.providerCorrelationId,
+      CAPABILITY_SUBCALL_TERMINAL_ACTION, input.profileId, input.correlationId,
+      input.outcome, input.reason, hash(identity.providerRequestKey)]);
+  const row = result.rows[0];
+  return row?.status === input.outcome
+    && row.provider_request_key === identity.providerRequestKey
+    && row.provider_correlation_id === identity.providerCorrelationId
+    && row.terminal_audit_matches === true
+    ? row : null;
+}
+
+async function loadCapabilitySubcallPreparedEvidence(target, input, identity) {
+  const result = await query(target,
+    `SELECT attempt.id,attempt.status,attempt.account_id,attempt.profile_id,attempt.config_version,
+            profile.api_key_env_name,attempt.target_connection_id AS connection_id,
+            attempt.target_connection_version AS connection_version,
+            connection.status AS connection_status,connection.status_version AS connection_status_version,
+            connection.ciphertext,connection.iv,connection.auth_tag,connection.algorithm,
+            connection.key_version,connection.fingerprint,
+            reservation.status AS reservation_status,reservation.reservation_version,
+            reservation.provider_request_key,reservation.provider_correlation_id,
+            EXISTS (
+              SELECT 1 FROM audit_events prepared_event
+               WHERE prepared_event.account_id=reservation.account_id
+                 AND prepared_event.action=$7 AND prepared_event.status='SUCCESS'
+                 AND prepared_event.entity_type='ai_gateway_profile' AND prepared_event.entity_id=$8
+                 AND prepared_event.correlation_id=$9
+                 AND prepared_event.metadata->>'attemptId'=reservation.attempt_id
+                 AND prepared_event.metadata->>'stage'=reservation.stage
+                 AND prepared_event.metadata->>'providerRequestKey'=reservation.provider_request_key
+                 AND prepared_event.metadata->>'providerRequestKeyHash'=$10
+                 AND prepared_event.metadata->>'providerCorrelationId'=reservation.provider_correlation_id
+                 AND (prepared_event.metadata->>'leaseVersion')::INTEGER=reservation.lease_version
+                 AND (prepared_event.metadata->>'reservationVersion')::INTEGER=reservation.reservation_version
+            ) AS prepared_audit_matches
+       FROM ai_gateway_capability_subcall_reservations reservation
+       JOIN ai_gateway_capability_attempts attempt
+         ON attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+       JOIN ai_gateway_profiles profile
+         ON profile.account_id=attempt.account_id AND profile.id=attempt.profile_id
+        AND profile.config_version=attempt.config_version
+       LEFT JOIN ai_gateway_connection_versions connection
+         ON connection.account_id=attempt.account_id AND connection.id=attempt.target_connection_id
+        AND connection.version=attempt.target_connection_version
+      WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
+        AND reservation.lease_version=$4 AND reservation.status='PREPARED'
+        AND reservation.provider_request_key=$5 AND reservation.provider_correlation_id=$6
+        AND attempt.profile_id=$8 AND attempt.correlation_id=$9 AND attempt.config_version=$11
+        AND attempt.fence=$12 AND attempt.lease_version=$4 AND attempt.lease_token=$13
+        AND attempt.status='RUNNING' AND attempt.authorization_schema_version=$14
+        AND attempt.purpose=$15 AND attempt.cost_confirmed IS TRUE
+        AND attempt.authorization_hash=$16 AND attempt.request_key=$17
+        AND attempt.target_connection_id IS NOT DISTINCT FROM $18
+        AND attempt.target_connection_version IS NOT DISTINCT FROM $19
+        AND attempt.target_connection_status=$20 AND attempt.target_connection_status_version=$21
+        AND profile.connection_id IS NOT DISTINCT FROM attempt.target_connection_id
+        AND profile.connection_version IS NOT DISTINCT FROM attempt.target_connection_version
+        AND EXISTS (
+          SELECT 1 FROM audit_events authorization_event
+           WHERE authorization_event.account_id=attempt.account_id
+             AND authorization_event.action=$23 AND authorization_event.status='SUCCESS'
+             AND authorization_event.entity_type='ai_gateway_profile'
+             AND authorization_event.entity_id=attempt.profile_id
+             AND authorization_event.correlation_id=attempt.correlation_id
+             AND authorization_event.metadata->>'schemaVersion'=$14
+             AND authorization_event.metadata->>'attemptId'=attempt.id
+             AND (authorization_event.metadata->>'fence')::BIGINT=attempt.fence
+             AND (authorization_event.metadata->>'leaseVersion')::INTEGER=attempt.lease_version
+             AND authorization_event.metadata->>'leaseTokenHash'=$22
+             AND authorization_event.metadata->>'authorizationHash'=attempt.authorization_hash
+             AND authorization_event.metadata->>'requestKey'=attempt.request_key
+             AND authorization_event.metadata->>'purpose'=attempt.purpose
+             AND authorization_event.metadata->'costConfirmed'='true'::JSONB
+        )
+        AND (($20='LEGACY' AND attempt.target_connection_id IS NULL AND connection.id IS NULL)
+          OR ($20 IN ('VALIDATED','RETIRED') AND connection.status=$20
+            AND connection.status_version=$21))`,
+    [input.accountId, input.attemptId, input.probe, input.leaseVersion,
+      identity.providerRequestKey, identity.providerCorrelationId,
+      "AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_RESERVED", input.profileId,
+      input.correlationId, hash(identity.providerRequestKey), input.configVersion, input.fence,
+      input.leaseToken, CAPABILITY_AUTHORIZATION_SCHEMA, input.purpose,
+      input.authorizationHash, input.requestKey, input.connectionId, input.connectionVersion,
+      input.expectedConnectionStatus, input.expectedConnectionStatusVersion, hash(input.leaseToken),
+      CAPABILITY_AUTHORIZATION_ACTION]);
+  const row = result.rows[0];
+  const secret = capabilityExecutionSecretRow(row);
+  return secret && row.reservation_status === "PREPARED"
+    && row.provider_request_key === identity.providerRequestKey
+    && row.provider_correlation_id === identity.providerCorrelationId
+    && row.prepared_audit_matches === true
+    ? { ...secret, ...identity } : null;
 }
 
 async function assertNoActivePaidReservation(client, accountId) {
+  await query(client,
+    "SELECT auto_listing_cleanup_expired_prepared_capability_subcalls($1) AS cleaned_count",
+    [accountId]);
   const active = await query(client,
     `SELECT id FROM ai_gateway_capability_subcall_reservations
       WHERE account_id=$1 AND status IN ('PREPARED','SENDING')
@@ -775,7 +907,8 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
 
     async loadCapabilityExecutionForSecretResolution(rawInput = {}) {
       const input = capabilityExecutionRequest(rawInput);
-      return transaction(pool, async (client) => {
+      const identity = capabilitySubcallProviderIdentity(input);
+      const operation = () => transaction(pool, async (client) => {
         await lockAccount(client, input.accountId);
         const loaded = await query(client,
           `SELECT a.id,a.status,a.account_id,a.profile_id,a.config_version,
@@ -896,6 +1029,19 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
         }
         return result;
       });
+      try {
+        return await operation();
+      } catch (error) {
+        if (error?.code !== "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED") throw error;
+        try {
+          const prepared = await loadCapabilitySubcallPreparedEvidence(pool, input, identity);
+          if (prepared) return prepared;
+          return await operation();
+        } catch (recoveryError) {
+          if (recoveryError?.code !== "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED") throw recoveryError;
+          throw error;
+        }
+      }
     },
 
     async markCapabilitySubcallSending(rawInput = {}) {
@@ -950,33 +1096,69 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
 
     async completeCapabilitySubcall(rawInput = {}) {
       const input = capabilitySubcallCompleteRequest(rawInput);
-      return transaction(pool, async (client) => {
-        await lockAccount(client, input.accountId);
-        const completed = await query(client,
-          `UPDATE ai_gateway_capability_subcall_reservations reservation
-              SET status=$5,completed_at=NOW()
-             FROM ai_gateway_capability_attempts attempt
-            WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
-              AND reservation.lease_version=$4 AND reservation.status IN ('PREPARED','SENDING')
-              AND attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
-              AND attempt.status='RUNNING' AND attempt.fence=$6 AND attempt.lease_version=$4
-              AND attempt.lease_token=$7 AND attempt.authorization_hash=$8
-              AND attempt.request_key=$9 AND attempt.purpose=$10 AND attempt.correlation_id=$11
-            RETURNING reservation.status,reservation.provider_request_key,
-                      reservation.provider_correlation_id,reservation.reservation_version`,
-          [input.accountId, input.attemptId, input.probe, input.leaseVersion, input.outcome,
-            input.fence, input.leaseToken, input.authorizationHash, input.requestKey,
-            input.purpose, input.correlationId]);
-        if (!completed.rows[0]) {
-          const replay = await query(client,
-            `SELECT status FROM ai_gateway_capability_subcall_reservations
-              WHERE account_id=$1 AND attempt_id=$2 AND stage=$3 AND lease_version=$4 FOR UPDATE`,
-            [input.accountId, input.attemptId, input.probe, input.leaseVersion]);
-          if (replay.rows[0]?.status === input.outcome) return { terminal: true, duplicate: true };
-          throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+      const identity = capabilitySubcallProviderIdentity(input);
+      try {
+        return await transaction(pool, async (client) => {
+          await lockAccount(client, input.accountId);
+          const completed = await query(client,
+            `UPDATE ai_gateway_capability_subcall_reservations reservation
+                SET status=$5,completed_at=NOW()
+               FROM ai_gateway_capability_attempts attempt
+              WHERE reservation.account_id=$1 AND reservation.attempt_id=$2 AND reservation.stage=$3
+                AND reservation.lease_version=$4 AND reservation.status IN ('PREPARED','SENDING')
+                AND reservation.provider_request_key=$12 AND reservation.provider_correlation_id=$13
+                AND attempt.account_id=reservation.account_id AND attempt.id=reservation.attempt_id
+                AND attempt.status='RUNNING' AND attempt.fence=$6 AND attempt.lease_version=$4
+                AND attempt.lease_token=$7 AND attempt.authorization_hash=$8
+                AND attempt.request_key=$9 AND attempt.purpose=$10 AND attempt.correlation_id=$11
+              RETURNING reservation.status,reservation.provider_request_key,
+                        reservation.provider_correlation_id,reservation.reservation_version`,
+            [input.accountId, input.attemptId, input.probe, input.leaseVersion, input.outcome,
+              input.fence, input.leaseToken, input.authorizationHash, input.requestKey,
+              input.purpose, input.correlationId, identity.providerRequestKey,
+              identity.providerCorrelationId]);
+          const row = completed.rows[0];
+          if (!row) {
+            const replay = await loadCapabilitySubcallTerminalEvidence(client, input, identity,
+              { forUpdate: true });
+            if (replay) return { terminal: true, duplicate: true, reconciled: false };
+            throw repositoryError("AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", 409, true);
+          }
+          const requestHash = hash({ action: CAPABILITY_SUBCALL_TERMINAL_ACTION,
+            attemptId: input.attemptId, stage: input.probe, outcome: input.outcome,
+            reason: input.reason, providerRequestKey: identity.providerRequestKey,
+            reservationVersion: Number(row.reservation_version) });
+          const audit = await loadAudit(client, {
+            action: CAPABILITY_SUBCALL_TERMINAL_ACTION, accountId: input.accountId,
+            idempotencyKey: `${input.attemptId}:${input.probe}:${row.reservation_version}`, requestHash,
+          });
+          if (!audit.metadata) {
+            await insertAudit(client, {
+              ...audit, action: CAPABILITY_SUBCALL_TERMINAL_ACTION,
+              accountId: input.accountId, actorId: input.accountId,
+              correlationId: input.correlationId, entityType: "ai_gateway_profile",
+              entityId: input.profileId, metadata: {
+                requestHash, attemptId: input.attemptId, stage: input.probe,
+                outcome: input.outcome, reason: input.reason,
+                providerRequestKey: identity.providerRequestKey,
+                providerRequestKeyHash: hash(identity.providerRequestKey),
+                providerCorrelationId: identity.providerCorrelationId,
+                leaseVersion: input.leaseVersion,
+                reservationVersion: Number(row.reservation_version),
+              },
+            });
+          }
+          return { terminal: true, duplicate: false, reconciled: false };
+        });
+      } catch (error) {
+        try {
+          const replay = await loadCapabilitySubcallTerminalEvidence(pool, input, identity);
+          if (replay) return { terminal: true, duplicate: true, reconciled: true };
+        } catch {
+          // Preserve the original failure when exact terminal evidence cannot be proven.
         }
-        return { terminal: true, duplicate: false };
-      });
+        throw error;
+      }
     },
 
     async createProfile(rawInput = {}) {

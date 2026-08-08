@@ -328,8 +328,11 @@ test("paid capability resolver binds decryption to the exact persisted attempt e
     readSecret() { throw new Error("encrypted capability must not read env"); },
   });
 
+  assert.deepEqual(await resolver.prepareSubcall(capabilityExecution), {
+    providerRequestKey: "c".repeat(64), providerCorrelationId: "capcorr-text-a",
+  });
   const credential = await resolver.resolveCredential(capabilityExecution);
-  assert.deepEqual(reads, [capabilityExecution]);
+  assert.deepEqual(reads, [capabilityExecution, capabilityExecution]);
   assert.deepEqual(credential, {
     accountId: "account-a",
     profileId: "profile-a",
@@ -343,10 +346,12 @@ test("paid capability resolver binds decryption to the exact persisted attempt e
   assert.deepEqual(await resolver.markSending(capabilityExecution), {
     providerRequestKey: "c".repeat(64), providerCorrelationId: "capcorr-text-a",
   });
-  assert.deepEqual(await resolver.completeSubcall(capabilityExecution, "SUCCEEDED"), { terminal: true });
+  assert.deepEqual(await resolver.completeSubcall(
+    capabilityExecution, "SUCCEEDED", "PROVIDER_ACCEPTED",
+  ), { terminal: true });
   assert.deepEqual(transitions, [
     ["SENDING", capabilityExecution],
-    ["SUCCEEDED", { ...capabilityExecution, outcome: "SUCCEEDED" }],
+    ["SUCCEEDED", { ...capabilityExecution, outcome: "SUCCEEDED", reason: "PROVIDER_ACCEPTED" }],
   ]);
   assert.doesNotMatch(JSON.stringify(credential), /cipher|fingerprint|authTag|keyVersion/iu);
 });
@@ -414,4 +419,24 @@ test("paid capability resolver preserves execution fence failures without decryp
     assert.equal(decryptions, 0);
     assert.equal(secretReads, 0);
   }
+});
+
+test("paid capability prepare keeps an uncertain persisted reservation reclaimable", async () => {
+  const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
+    repository: {
+      async loadCapabilityExecutionForSecretResolution() {
+        throw Object.assign(new Error("database response unknown"), {
+          code: "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED",
+        });
+      },
+      async markCapabilitySubcallSending() { throw new Error("must not run"); },
+      async completeCapabilitySubcall() { throw new Error("must not run"); },
+    },
+    cipher: { async decrypt() { throw new Error("must not decrypt"); } },
+    readSecret() { throw new Error("must not read env"); },
+  });
+
+  await assert.rejects(resolver.prepareSubcall(capabilityExecution), {
+    code: "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", retryable: true,
+  });
 });

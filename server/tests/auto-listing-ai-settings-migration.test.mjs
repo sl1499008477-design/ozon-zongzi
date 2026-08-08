@@ -14,6 +14,10 @@ const reservationUpgradeUrl = new URL(
   "../db/migrations/055_auto_listing_ai_capability_subcall_reservations.sql",
   import.meta.url,
 );
+const preparedRecoveryUpgradeUrl = new URL(
+  "../db/migrations/056_auto_listing_ai_prepared_capability_recovery.sql",
+  import.meta.url,
+);
 
 async function migrationSql() {
   return readFile(migrationUrl, "utf8");
@@ -25,6 +29,10 @@ async function authorizationUpgradeSql() {
 
 async function reservationUpgradeSql() {
   return readFile(reservationUpgradeUrl, "utf8");
+}
+
+async function preparedRecoveryUpgradeSql() {
+  return readFile(preparedRecoveryUpgradeUrl, "utf8");
 }
 
 function functionBlock(sql, name) {
@@ -157,6 +165,19 @@ test("055 persists immutable paid subcall reservations and protects state transi
   assert.match(sql, /account_id TEXT NOT NULL REFERENCES accounts\(id\) ON DELETE CASCADE/iu);
   assert.match(sql, /TG_OP='DELETE'[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id=OLD\.account_id\)[\s\S]*RETURN OLD/iu);
   assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_reject_terminal_gateway_capability_attempt_mutation\(\)[\s\S]*TG_OP = 'DELETE'[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id = OLD\.account_id\)/iu);
+});
+
+test("056 safely terminals only expired PREPARED work before account state transitions", async () => {
+  const sql = await preparedRecoveryUpgradeSql();
+  assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_cleanup_expired_prepared_capability_subcalls/iu);
+  assert.match(sql, /reservation\.status='PREPARED'/iu);
+  assert.match(sql, /attempt\.lease_expires_at<=NOW\(\)/iu);
+  assert.match(sql, /SET status='FAILED',completed_at=NOW\(\)/iu);
+  assert.match(sql, /PRE_SEND_LEASE_EXPIRED/iu);
+  assert.match(sql, /AUTO_LISTING_AI_PROFILE_CAPABILITY_SUBCALL_TERMINATED/iu);
+  assert.match(sql, /'system','expired-prepared-cleanup'/iu);
+  assert.match(sql, /PERFORM auto_listing_cleanup_expired_prepared_capability_subcalls\(OLD\.account_id\)/iu);
+  assert.doesNotMatch(sql, /reservation\.status='SENDING'[\s\S]*SET status='FAILED'/iu);
 });
 
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {

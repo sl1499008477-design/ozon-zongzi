@@ -26,9 +26,12 @@ function harness(env = enabledEnv()) {
   const profileRepository = Object.freeze({ marker: "profile-repository" });
   const cipher = Object.freeze({ encrypt() {}, decrypt() {}, fingerprint() {} });
   const capabilityResolver = Object.freeze({
+    async prepareSubcall(execution) { return { preparedAttemptId: execution.attemptId }; },
     async resolveCredential(execution) { return { resolvedAttemptId: execution.attemptId }; },
     async markSending(execution) { return { sendingAttemptId: execution.attemptId }; },
-    async completeSubcall(execution, outcome) { return { completedAttemptId: execution.attemptId, outcome }; },
+    async completeSubcall(execution, outcome, reason) {
+      return { completedAttemptId: execution.attemptId, outcome, reason };
+    },
   });
   const catalogResolver = Object.freeze({ async resolveCredential(lease) { return { lease }; } });
   const gateway = Object.freeze({ marker: "gateway" });
@@ -60,6 +63,7 @@ function harness(env = enabledEnv()) {
         allowedGatewayBaseUrls: input.allowedGatewayBaseUrls,
         legacySecret: input.readSecret("SUB2API_API_KEY"),
         hiddenSecret: input.readSecret("POSTGRES_PASSWORD"),
+        prepareCapabilitySubcall: input.prepareCapabilitySubcall,
         resolveCapabilityCredential: input.resolveCapabilityCredential,
         markCapabilitySubcallSending: input.markCapabilitySubcallSending,
         completeCapabilitySubcall: input.completeCapabilitySubcall,
@@ -120,14 +124,19 @@ test("settings runtime composes every Task 2-6 security port once and uses one w
   assert.deepEqual(gatewayInput.allowedGatewayBaseUrls, ["http://127.0.0.1:8080/v1"]);
   assert.equal(gatewayInput.legacySecret, "legacy-secret");
   assert.equal(gatewayInput.hiddenSecret, undefined);
+  assert.deepEqual(await gatewayInput.prepareCapabilitySubcall({ attemptId: "attempt-a" }), {
+    preparedAttemptId: "attempt-a",
+  });
   assert.deepEqual(await gatewayInput.resolveCapabilityCredential({ attemptId: "attempt-a" }), {
     resolvedAttemptId: "attempt-a",
   });
   assert.deepEqual(await gatewayInput.markCapabilitySubcallSending({ attemptId: "attempt-a" }), {
     sendingAttemptId: "attempt-a",
   });
-  assert.deepEqual(await gatewayInput.completeCapabilitySubcall({ attemptId: "attempt-a" }, "SUCCEEDED"), {
-    completedAttemptId: "attempt-a", outcome: "SUCCEEDED",
+  assert.deepEqual(await gatewayInput.completeCapabilitySubcall(
+    { attemptId: "attempt-a" }, "SUCCEEDED", "PROVIDER_ACCEPTED",
+  ), {
+    completedAttemptId: "attempt-a", outcome: "SUCCEEDED", reason: "PROVIDER_ACCEPTED",
   });
   assert.deepEqual(await gatewayInput.resolveCatalogSyncCredential({ taskId: "task-a" }), {
     lease: { taskId: "task-a" },

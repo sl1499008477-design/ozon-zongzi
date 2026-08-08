@@ -7,14 +7,19 @@ const CAPABILITY_EXECUTION_KEYS = new Set([
   "purpose", "authorizationHash", "requestKey", "connectionId", "connectionVersion",
   "expectedConnectionStatus", "expectedConnectionStatusVersion", "probe",
 ]);
+const CAPABILITY_TERMINAL_REASONS = new Set([
+  "PRE_SEND_ABORTED", "PRE_SEND_FAILED", "PROVIDER_REJECTED", "PROVIDER_ACCEPTED",
+]);
 const HASH = /^[a-f0-9]{64}$/u;
 
-function resolverError(code) {
+function resolverError(code, retryable = false) {
   const error = new Error(code === "AI_GATEWAY_REQUEST_INVALID"
     ? "AI 网关密钥范围无效"
-    : "AI 网关密钥未配置");
+    : code === "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN"
+      ? "AI 网关能力调用状态待恢复"
+      : "AI 网关密钥未配置");
   error.code = code;
-  error.retryable = false;
+  error.retryable = retryable;
   return error;
 }
 
@@ -277,20 +282,33 @@ export function createAutoListingAiCapabilityCredentialResolver({ repository, ci
     throw new TypeError("capability credential repository, cipher, and legacy secret reader are required");
   }
 
+  async function loadPreparedExecution(execution, { preserveDatabaseUnknown = false } = {}) {
+    let loaded;
+    try {
+      loaded = await repository.loadCapabilityExecutionForSecretResolution(execution);
+    } catch (error) {
+      if (preserveDatabaseUnknown && errorCode(error) === "AUTO_LISTING_AI_ADMIN_DATABASE_FAILED") {
+        throw resolverError("AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", true);
+      }
+      mapCapabilityRepositoryError(error);
+    }
+    const fields = dataFields(loaded);
+    if (!fields || fields.accountId !== execution.accountId || fields.profileId !== execution.profileId
+      || fields.configVersion !== execution.configVersion) {
+      throw resolverError("AI_GATEWAY_SECRET_MISSING");
+    }
+    return fields;
+  }
+
   return Object.freeze({
+    async prepareSubcall(rawExecution = {}) {
+      const execution = normalizedCapabilityExecution(rawExecution);
+      return capabilityProviderIdentity(await loadPreparedExecution(execution,
+        { preserveDatabaseUnknown: true }));
+    },
     async resolveCredential(rawExecution = {}) {
       const execution = normalizedCapabilityExecution(rawExecution);
-      let loaded;
-      try {
-        loaded = await repository.loadCapabilityExecutionForSecretResolution(execution);
-      } catch (error) {
-        mapCapabilityRepositoryError(error);
-      }
-      const fields = dataFields(loaded);
-      if (!fields || fields.accountId !== execution.accountId || fields.profileId !== execution.profileId
-        || fields.configVersion !== execution.configVersion) {
-        throw resolverError("AI_GATEWAY_SECRET_MISSING");
-      }
+      const fields = await loadPreparedExecution(execution);
       const apiKeyEnvName = fields.apiKeyEnvName;
       const providerIdentity = capabilityProviderIdentity(fields);
       if (execution.expectedConnectionStatus === "LEGACY") {
@@ -340,11 +358,14 @@ export function createAutoListingAiCapabilityCredentialResolver({ repository, ci
         mapCapabilityRepositoryError(error);
       }
     },
-    async completeSubcall(rawExecution = {}, outcome) {
+    async completeSubcall(rawExecution = {}, outcome, reason) {
       const execution = normalizedCapabilityExecution(rawExecution);
-      if (!['SUCCEEDED', 'FAILED'].includes(outcome)) throw resolverError("AI_GATEWAY_REQUEST_INVALID");
+      if (!['SUCCEEDED', 'FAILED'].includes(outcome) || !CAPABILITY_TERMINAL_REASONS.has(reason)
+        || (outcome === "SUCCEEDED") !== (reason === "PROVIDER_ACCEPTED")) {
+        throw resolverError("AI_GATEWAY_REQUEST_INVALID");
+      }
       try {
-        return await repository.completeCapabilitySubcall({ ...execution, outcome });
+        return await repository.completeCapabilitySubcall({ ...execution, outcome, reason });
       } catch (error) {
         mapCapabilityRepositoryError(error);
       }
