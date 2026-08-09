@@ -697,7 +697,7 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
       textModel,
       imageModel,
       textProtocol: "SUB2API_RESPONSES",
-      imageProtocol: "SUB2API_OPENAI_IMAGES",
+      imageProtocol: "SUB2API_RESPONSES_IMAGE_TOOL",
     }, withSignal(intent, signal));
     setSelectedProfileId(profile.id);
     setDraftDirty(false);

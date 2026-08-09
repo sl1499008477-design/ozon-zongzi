@@ -69,6 +69,11 @@ test("saving a successor profile is enabled only by the server-owned catalog act
   assert.match(page, /disabled=\{busy \|\| !canSaveSelection\}/);
 });
 
+test("new sub2API profiles use the Responses image tool instead of the incompatible Images bridge", () => {
+  assert.match(page, /imageProtocol:\s*"SUB2API_RESPONSES_IMAGE_TOOL"/);
+  assert.doesNotMatch(page, /imageProtocol:\s*"SUB2API_OPENAI_IMAGES"/);
+});
+
 test("an unloaded catalog renders safely and a loaded catalog preserves its closed envelope", () => {
   assert.match(page, /aiSettingsCatalogForSummary\(catalogDetail, currentCatalogSummary\)/);
   assert.match(page, /currentCatalog\.catalog\.models\.length/);
