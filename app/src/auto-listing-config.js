@@ -110,7 +110,6 @@ export function deriveAutoListingConfig(input = {}, {
       roles,
       total,
     }),
-    reasonCodes: hasReliableProductDimensions === true ? [] : ["PRODUCT_DIMENSIONS_UNAVAILABLE"],
   });
 }
 

@@ -10,6 +10,7 @@ import {
   previewAutoListingPrice,
   readExcelFileAsBase64,
 } from "../src/auto-listing-config.js";
+import { normalizeAutoListingConfig } from "../../server/auto-listing-contract.mjs";
 
 test("Excel JSON transport allowance follows the backend workbook byte limit including base64 overhead", () => {
   assert.equal(autoListingExcelSerializedBodyLimit(4_194_304), Math.ceil(4_194_304 / 3) * 4 + 256 * 1024);
@@ -53,7 +54,7 @@ test("removes the product-size image when reliable product dimensions are unavai
 
   assert.equal(config.image.roles.specification, 0);
   assert.equal(config.image.total, 7);
-  assert.deepEqual(config.reasonCodes, ["PRODUCT_DIMENSIONS_UNAVAILABLE"]);
+  assert.deepEqual(normalizeAutoListingConfig(config), config);
 });
 
 test("accepts only the approved image ranges and a total from 6 through 13", () => {
