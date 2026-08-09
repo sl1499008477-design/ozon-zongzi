@@ -2,7 +2,7 @@ name: sonli-sub2api-local
 
 services:
   sub2api:
-    image: ghcr.io/wei-shaw/sub2api:0.1.132
+    image: ghcr.io/wei-shaw/sub2api:0.1.173
     restart: unless-stopped
     ports:
       - "127.0.0.1:${SUB2API_PORT:-8080}:8080"

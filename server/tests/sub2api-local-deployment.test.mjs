@@ -14,7 +14,7 @@ import {
 
 test("local sub2api compose is pinned, isolated, loopback-only, and persistent", async () => {
   const compose = await readFile(new URL("../../deploy/sub2api-local/docker-compose.yml", import.meta.url), "utf8");
-  assert.match(compose, /ghcr\.io\/wei-shaw\/sub2api:0\.1\.132/);
+  assert.match(compose, /ghcr\.io\/wei-shaw\/sub2api:0\.1\.173/);
   assert.doesNotMatch(compose, /:latest\b/);
   assert.match(compose, /127\.0\.0\.1:\$\{SUB2API_PORT:-8080\}:8080/);
   assert.match(compose, /sonli_sub2api_postgres_data/);
@@ -223,7 +223,7 @@ test("normal lifecycle commands do not pull, while upgrade alone pulls the pinne
     "/workspace/sonli/server-data/sub2api-local/.env", "-f",
     "/workspace/sonli/deploy/sub2api-local/docker-compose.yml", "up", "-d", "--pull", "never",
   ]]);
-  assert.equal(SUB2API_IMAGE, "ghcr.io/wei-shaw/sub2api:0.1.132");
+  assert.equal(SUB2API_IMAGE, "ghcr.io/wei-shaw/sub2api:0.1.173");
 });
 
 test("upgrade stops after a failed pull instead of starting an unverified image", async () => {

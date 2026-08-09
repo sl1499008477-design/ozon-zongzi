@@ -5,7 +5,7 @@ import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const SUB2API_IMAGE = "ghcr.io/wei-shaw/sub2api:0.1.132";
+export const SUB2API_IMAGE = "ghcr.io/wei-shaw/sub2api:0.1.173";
 
 const PROJECT_NAME = "sonli-sub2api-local";
 const DASHBOARD_URL = "http://127.0.0.1:8080/";

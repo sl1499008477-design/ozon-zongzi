@@ -33,7 +33,7 @@ pnpm sub2api:bootstrap
 
 初始化只接受普通文件。根目录 `.env`、sub2API `.env` 或 `credential-master.key` 如果是符号链接、目录、管道、设备等非普通文件，命令会停止，不会读取链接目标、替换目标或修改目标权限。已有普通文件通过禁止跟随符号链接的文件句柄读取和改权。
 
-旧开发版本曾把 sub2API TOTP 密钥写成 32 字节 Base64URL。固定镜像 `0.1.132` 要求同一密钥使用 64 位十六进制表示；再次执行 `bootstrap` 会先生成权限为 `0600` 的栈环境备份，再做等价转码。该兼容迁移不改变原始 32 字节密钥，也不轮换 PostgreSQL、Redis、管理员或 JWT 密码；重复执行不会再次改写。
+旧开发版本曾把 sub2API TOTP 密钥写成 32 字节 Base64URL。当前固定镜像 `0.1.173` 要求同一密钥使用 64 位十六进制表示；再次执行 `bootstrap` 会先生成权限为 `0600` 的栈环境备份，再做等价转码。该兼容迁移不改变原始 32 字节密钥，也不轮换 PostgreSQL、Redis、管理员或 JWT 密码；重复执行不会再次改写。
 
 查看本地 sub2API 管理员账号：
 
@@ -155,7 +155,7 @@ docker volume ls --filter label=com.docker.compose.project=sonli-sub2api-local
 pnpm sub2api:upgrade
 ```
 
-当前命令拉取 Compose 中固定的 sub2API `0.1.132`、PostgreSQL `16.8-alpine` 和 Redis `7.4.2-alpine`，然后重建服务。修改任一固定版本前必须：
+当前命令拉取 Compose 中固定的 sub2API `0.1.173`、PostgreSQL `16.8-alpine` 和 Redis `7.4.2-alpine`，然后重建服务。修改任一固定版本前必须：
 
 1. 完成第 6 节的完整恢复集：业务 PostgreSQL 与主密钥成对备份，并备份 sub2API 秘密文件和三个数据卷。
 2. 阅读目标版本迁移说明，并在非生产副本验证数据库兼容性。
