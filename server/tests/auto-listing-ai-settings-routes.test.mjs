@@ -116,6 +116,32 @@ test("ACTIVE manual catalog sync preserves the exact client fence when delegated
   });
 });
 
+test("profile test route preserves the backend refusal for an already-enabled target", async () => {
+  const error = Object.assign(new Error("already enabled"), {
+    code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT",
+    status: 409,
+  });
+  const h = harness({
+    readResult: { configVersion: 1, correlationId: "corr-enabled", costConfirmed: true },
+    service: {
+      ...harness().service,
+      async testProfile(input) {
+        h.calls.push(["test", input]);
+        throw error;
+      },
+    },
+  });
+
+  const { response } = await h.request(
+    "POST",
+    "/admin/auto-listing/ai-settings/profiles/profile-enabled/test",
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal(response.payload.code, "AI_GATEWAY_PROFILE_VERSION_CONFLICT");
+  assert.equal(h.calls.filter(([name]) => name === "test").length, 1);
+});
+
 test("authentication and backend permission are checked before service or body access", async () => {
   for (const actor of [
     Object.assign(new Error("not logged in"), { status: 401 }),

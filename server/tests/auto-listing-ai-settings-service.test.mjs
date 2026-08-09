@@ -104,7 +104,9 @@ function harness({ currentOverview = overview(), allowLocalGateway = true } = {}
     },
     async rollbackProfile(input) {
       calls.push(["rollback", input]);
-      const row = await this.publishProfile(input);
+      const row = { ...await this.publishProfile(input), activation: {
+        kind: "ROLLBACK", occurredAt: "2026-08-09T03:04:05.000Z", actorId: input.accountId,
+      } };
       rollbackResults.set(input.idempotencyKey, row);
       return row;
     },
@@ -287,6 +289,7 @@ test("rollback reserves idempotency before paid work and replays across changed 
   const replay = await service.rollbackProfile({ actor: admin, profileId: "profile-a", configVersion: 1,
     idempotencyKey: "rollback-stable-a", correlationId: "corr-response-loss", costConfirmed: true });
   assert.deepEqual(replay, first);
+  assert.deepEqual(replay.activation, first.activation);
   assert.equal(calls.filter(([name]) => name === "capability").length, 1);
 
   await assert.rejects(service.rollbackProfile({ actor: admin, profileId: "different-profile",
@@ -331,6 +334,8 @@ test("overview preserves only the repository activation evidence for the exact a
   assert.deepEqual(result.profiles[0].activation, activation);
   assert.equal(result.profiles[0].createdAt, undefined,
     "the service must not invent an activation from a configuration creation timestamp");
+  assert.deepEqual(result.actions.testableProfileIds, []);
+  assert.deepEqual(result.actions.publishableProfileIds, []);
 });
 
 test("ACTIVE directory drift exposes only the closed successor workflow while the current profile stays enabled", async () => {

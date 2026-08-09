@@ -220,8 +220,10 @@ function explicitActions(overview) {
   for (const profile of profiles) {
     if (typeof profile?.id !== "string") continue;
     if (profile.connectionId === null || profile.connectionId === undefined) {
-      testable.push(profile.id);
-      if (profile.capabilityResult?.outcome === "PASSED") publishable.push(profile.id);
+      if (profile.enabled !== true) {
+        testable.push(profile.id);
+        if (profile.capabilityResult?.outcome === "PASSED") publishable.push(profile.id);
+      }
       continue;
     }
     const key = `${profile.connectionId}\0${profile.connectionVersion}`;
