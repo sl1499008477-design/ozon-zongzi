@@ -97,6 +97,34 @@ function catalogEnvelope(overrides = {}) {
     activeSelection: null, models, recommendation: recommendAutoListingModels({ models }), ...overrides };
 }
 
+function legacyV1CatalogEnvelope() {
+  const models = [
+    { id: "image-a", ownedBy: "", metadata: {} },
+    { id: "text-a", ownedBy: "", metadata: {} },
+  ];
+  return catalogEnvelope({
+    models,
+    recommendation: {
+      ruleVersion: "AUTO_LISTING_MODEL_RECOMMENDATION_V1",
+      verified: false,
+      warnings: ["RECOMMENDATIONS_UNVERIFIED"],
+      textCandidates: [{ modelId: "text-a", score: 10, confidence: "LOW", verified: false,
+        reasonCodes: ["MODEL_ID_TEXT_HINT"] }],
+      imageCandidates: [{ modelId: "image-a", score: 10, confidence: "LOW", verified: false,
+        reasonCodes: ["MODEL_ID_IMAGE_HINT"] }],
+    },
+  });
+}
+
+function oauthV2CatalogEnvelope() {
+  const models = [
+    { id: "gpt-5.4", ownedBy: "openai", metadata: {} },
+    { id: "gpt-5.5", ownedBy: "openai", metadata: {} },
+    { id: "gpt-image-2", ownedBy: "openai", metadata: {} },
+  ];
+  return catalogEnvelope({ models, recommendation: recommendAutoListingModels({ models }) });
+}
+
 function catalog(overrides = {}) {
   return { id: "catalog-a", accountId: "account-a", connectionId: "connection-a", connectionVersion: 1,
     syncTaskId: "sync-a", catalog: catalogEnvelope(), catalogHash: CATALOG_HASH,
@@ -445,6 +473,51 @@ test("client accepts the exact Task 7 repository and service overview DTO varian
   assert.deepEqual(loaded.profiles.map((row) => row.capabilityResult.outcome ?? "EMPTY"),
     ["NOT_TESTED", "PASSED", "FAILED", "EMPTY"]);
   assert.equal(loaded.syncTasks[0].availableAt, CHECKED_AT);
+});
+
+test("catalog client accepts immutable V1 history and the exact V2 OAuth image recommendation", async (t) => {
+  let envelope = legacyV1CatalogEnvelope();
+  installTransport(t, async () => response({
+    accountId: "account-a",
+    catalog: catalog({ catalog: envelope }),
+    actions: { canCreateProfile: true },
+  }));
+
+  assert.equal((await loadAiSettingsCatalog("catalog-a")).catalog.catalog.recommendation.ruleVersion,
+    "AUTO_LISTING_MODEL_RECOMMENDATION_V1");
+
+  envelope = oauthV2CatalogEnvelope();
+  const loaded = await loadAiSettingsCatalog("catalog-a");
+  assert.equal(loaded.catalog.catalog.recommendation.ruleVersion, "AUTO_LISTING_MODEL_RECOMMENDATION_V2");
+  assert.equal(loaded.catalog.catalog.recommendation.textCandidates[0].modelId, "gpt-5.4");
+});
+
+test("catalog client rejects noncanonical OAuth image compatibility recommendations", async (t) => {
+  const baseline = oauthV2CatalogEnvelope();
+  let envelope = baseline;
+  installTransport(t, async () => response({
+    accountId: "account-a",
+    catalog: catalog({ catalog: envelope }),
+    actions: { canCreateProfile: true },
+  }));
+  for (const [label, mutate] of [
+    ["unknown rule version", (value) => { value.recommendation.ruleVersion = "AUTO_LISTING_MODEL_RECOMMENDATION_V3"; }],
+    ["forged compatibility score", (value) => { value.recommendation.textCandidates[0].score += 1; }],
+    ["wrong compatibility reason order", (value) => { value.recommendation.textCandidates[0].reasonCodes.reverse(); }],
+    ["compatibility reason without image model", (value) => {
+      value.models = value.models.filter((model) => model.id !== "gpt-image-2");
+      value.recommendation.imageCandidates = [];
+      value.recommendation.warnings.push("NO_IMAGE_MODEL_CANDIDATE");
+    }],
+  ]) {
+    await t.test(label, async () => {
+      envelope = structuredClone(baseline);
+      mutate(envelope);
+      await assert.rejects(loadAiSettingsCatalog("catalog-a"), {
+        code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID",
+      });
+    });
+  }
 });
 
 test("paid test response accepts only Task 7 PASSED and FAILED outcome-specific DTOs", async (t) => {

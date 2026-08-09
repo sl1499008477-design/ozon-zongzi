@@ -103,6 +103,24 @@ test("recommendations retain independent text and image roles with all Task 5 re
     image: [{ modelId: "same", reasons: ["支持图片生成", "支持参考图", "支持目标分辨率", "模型名称推测"] }] });
 });
 
+test("OAuth image-orchestrator recommendations remain visibly unverified", () => {
+  const view = aiSettingsPresentation(overview({ catalogs: [{ catalog: { recommendation: {
+    ruleVersion: "AUTO_LISTING_MODEL_RECOMMENDATION_V2",
+    verified: false,
+    warnings: ["RECOMMENDATIONS_UNVERIFIED"],
+    textCandidates: [{ modelId: "gpt-5.4", reasonCodes: [
+      "MODEL_ID_TEXT_HINT", "SUB2API_OAUTH_IMAGE_ORCHESTRATOR_HINT",
+    ] }],
+    imageCandidates: [{ modelId: "gpt-image-2", reasonCodes: ["MODEL_ID_IMAGE_HINT"] }],
+  } } }] }));
+
+  assert.deepEqual(view.recommendations.text, [{
+    modelId: "gpt-5.4",
+    reasons: ["模型名称推测", "OAuth 图片编排兼容提示（待验证）"],
+  }]);
+  assert.equal(view.recommendations.verified, false);
+});
+
 test("a passed profile is only verified with its exact latest successful catalog evidence", () => {
   const profile = overview().profiles[0];
   const catalog = { id: "catalog-a", connectionId: "connection-a", connectionVersion: 1, syncTaskId: "task-a", createdAt: CHECKED_AT, catalog: {

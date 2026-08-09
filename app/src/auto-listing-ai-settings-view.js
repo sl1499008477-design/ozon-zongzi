@@ -6,6 +6,7 @@ const REASONS = Object.freeze({
   DECLARED_TARGET_RESOLUTION: "支持目标分辨率",
   MODEL_ID_TEXT_HINT: "模型名称推测",
   MODEL_ID_IMAGE_HINT: "模型名称推测",
+  SUB2API_OAUTH_IMAGE_ORCHESTRATOR_HINT: "OAuth 图片编排兼容提示（待验证）",
 });
 const WARNINGS = Object.freeze({ RECOMMENDATIONS_UNVERIFIED: "推荐结果尚未验证", NO_TEXT_MODEL_CANDIDATE: "未找到文本模型候选", NO_IMAGE_MODEL_CANDIDATE: "未找到图片模型候选" });
 const VERIFICATION = Object.freeze({

@@ -41,17 +41,22 @@ const PAID_ERROR_CODES = new Set([
 const RECOMMENDATION_WARNINGS = new Set([
   "RECOMMENDATIONS_UNVERIFIED", "NO_TEXT_MODEL_CANDIDATE", "NO_IMAGE_MODEL_CANDIDATE",
 ]);
-const TEXT_REASONS = Object.freeze({
+const TEXT_REASONS_V1 = Object.freeze({
   DECLARED_STRUCTURED_TEXT: 100, DECLARED_RESPONSES_PROTOCOL: 60, MODEL_ID_TEXT_HINT: 10,
+});
+const TEXT_REASONS_V2 = Object.freeze({
+  ...TEXT_REASONS_V1, SUB2API_OAUTH_IMAGE_ORCHESTRATOR_HINT: 30,
 });
 const IMAGE_REASONS = Object.freeze({
   DECLARED_IMAGE_GENERATION: 100, DECLARED_REFERENCE_IMAGE: 40,
   DECLARED_TARGET_RESOLUTION: 20, MODEL_ID_IMAGE_HINT: 10,
 });
-const TEXT_RECOMMENDATION = Object.freeze({ reasons: TEXT_REASONS,
+const TEXT_RECOMMENDATION_V1 = Object.freeze({ reasons: TEXT_REASONS_V1,
   declarations: Object.freeze([["structured_text", "DECLARED_STRUCTURED_TEXT"], ["responses_protocol", "DECLARED_RESPONSES_PROTOCOL"]]),
   hint: /(?:^|[-_.\/])(chat|claude|gpt|instruct|llama|mistral|qwen|text)(?:$|[-_.\/])/iu, hintReason: "MODEL_ID_TEXT_HINT",
   missingWarning: "NO_TEXT_MODEL_CANDIDATE" });
+const TEXT_RECOMMENDATION_V2 = Object.freeze({ ...TEXT_RECOMMENDATION_V1, reasons: TEXT_REASONS_V2,
+  oauthImageOrchestratorHint: true });
 const IMAGE_RECOMMENDATION = Object.freeze({ reasons: IMAGE_REASONS,
   declarations: Object.freeze([["image_generation", "DECLARED_IMAGE_GENERATION"], ["image_edit", "DECLARED_REFERENCE_IMAGE"],
     ["target_resolution", "DECLARED_TARGET_RESOLUTION"]]),
@@ -267,16 +272,13 @@ function recommendationCandidate(value, expected, reasons) {
     || new Set(value.reasonCodes).size !== value.reasonCodes.length
     || value.reasonCodes.some((reason) => !Object.hasOwn(reasons, reason))) return false;
   const expectedScore = value.reasonCodes.reduce((sum, reason) => sum + reasons[reason], 0);
-  const hint = Object.keys(reasons).find((reason) => reason.startsWith("MODEL_ID_"));
-  return value.score === expectedScore && (value.confidence === "LOW"
-    ? value.reasonCodes.length === 1 && value.reasonCodes[0] === hint
-    : value.reasonCodes.every((reason) => reason.startsWith("DECLARED_")))
-    && Boolean(expected) && value.modelId === expected.modelId && value.score === expected.score
+  return value.score === expectedScore && Boolean(expected)
+    && value.modelId === expected.modelId && value.score === expected.score
     && value.confidence === expected.confidence && value.reasonCodes.length === expected.reasonCodes.length
     && value.reasonCodes.every((reason, index) => reason === expected.reasonCodes[index]);
 }
 
-function expectedRecommendationCandidate(model, specification) {
+function expectedRecommendationCandidate(model, specification, { hasOpenAiImageCandidate = false } = {}) {
   const capabilities = Array.isArray(model.metadata.capabilities)
     ? new Set(model.metadata.capabilities.filter((value) => typeof value === "string")) : new Set();
   const incompatible = Array.isArray(model.metadata.incompatibleCapabilities)
@@ -288,29 +290,37 @@ function expectedRecommendationCandidate(model, specification) {
     reasonCodes.push(specification.hintReason);
   }
   if (reasonCodes.length === 0) return null;
+  if (specification.oauthImageOrchestratorHint && hasOpenAiImageCandidate && model.id === "gpt-5.4") {
+    reasonCodes.push("SUB2API_OAUTH_IMAGE_ORCHESTRATOR_HINT");
+  }
   return { modelId: model.id, score: reasonCodes.reduce((sum, reason) => sum + specification.reasons[reason], 0),
     confidence: reasonCodes[0].startsWith("DECLARED_") ? "DECLARED" : "LOW", reasonCodes };
 }
 
-function expectedCandidates(models, specification) {
-  return models.map((model) => expectedRecommendationCandidate(model, specification)).filter(Boolean)
+function expectedCandidates(models, specification, context) {
+  return models.map((model) => expectedRecommendationCandidate(model, specification, context)).filter(Boolean)
     .sort((left, right) => right.score - left.score
       || (left.modelId < right.modelId ? -1 : left.modelId > right.modelId ? 1 : 0)).slice(0, 50);
 }
 
 function recommendationResult(value, models) {
   if (!exactRecord(value, ["ruleVersion", "verified", "warnings", "textCandidates", "imageCandidates"])
-    || value.ruleVersion !== "AUTO_LISTING_MODEL_RECOMMENDATION_V1" || value.verified !== false
+    || !["AUTO_LISTING_MODEL_RECOMMENDATION_V1", "AUTO_LISTING_MODEL_RECOMMENDATION_V2"].includes(value.ruleVersion)
+    || value.verified !== false
     || !Array.isArray(value.warnings) || value.warnings[0] !== "RECOMMENDATIONS_UNVERIFIED"
     || new Set(value.warnings).size !== value.warnings.length
     || value.warnings.some((warning) => !RECOMMENDATION_WARNINGS.has(warning))) return false;
+  const hasOpenAiImageCandidate = models.some((model) => /^gpt-image(?:-|$)/u.test(model.id)
+    && expectedRecommendationCandidate(model, IMAGE_RECOMMENDATION) !== null);
+  const textRecommendation = value.ruleVersion === "AUTO_LISTING_MODEL_RECOMMENDATION_V2"
+    ? TEXT_RECOMMENDATION_V2 : TEXT_RECOMMENDATION_V1;
   const expectedWarnings = ["RECOMMENDATIONS_UNVERIFIED"];
   for (const [key, specification] of [
-    ["textCandidates", TEXT_RECOMMENDATION],
+    ["textCandidates", textRecommendation],
     ["imageCandidates", IMAGE_RECOMMENDATION],
   ]) {
     const candidates = value[key];
-    const expected = expectedCandidates(models, specification);
+    const expected = expectedCandidates(models, specification, { hasOpenAiImageCandidate });
     if (!Array.isArray(candidates) || candidates.length > 50 || !uniqueIds(candidates, "modelId")
       || candidates.length !== expected.length
       || candidates.some((candidate, index) => !recommendationCandidate(candidate, expected[index], specification.reasons))) return false;
