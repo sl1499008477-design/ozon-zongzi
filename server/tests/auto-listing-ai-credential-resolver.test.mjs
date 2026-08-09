@@ -356,6 +356,39 @@ test("paid capability resolver binds decryption to the exact persisted attempt e
   assert.doesNotMatch(JSON.stringify(credential), /cipher|fingerprint|authTag|keyVersion/iu);
 });
 
+test("paid capability resolver accepts an exact ACTIVE successor execution without rewriting its fence", async () => {
+  const activeExecution = { ...capabilityExecution,
+    expectedConnectionStatus: "ACTIVE", expectedConnectionStatusVersion: 3 };
+  const { cipher, connection } = encryptedConnection("active-successor-secret");
+  const received = [];
+  const repository = {
+    async loadCapabilityExecutionForSecretResolution(input) {
+      received.push(structuredClone(input));
+      return {
+        accountId: "account-a", profileId: "profile-a", configVersion: 1,
+        apiKeyEnvName: "SUB2API_ENCRYPTED_KEY",
+        connection: { ...connection, status: "ACTIVE", statusVersion: 3 },
+        providerRequestKey: "e".repeat(64), providerCorrelationId: "capcorr-active-text",
+      };
+    },
+    async markCapabilitySubcallSending(input) {
+      received.push(structuredClone(input));
+      return { providerRequestKey: "e".repeat(64), providerCorrelationId: "capcorr-active-text" };
+    },
+    async completeCapabilitySubcall() { return { terminal: true }; },
+  };
+  const resolver = credentialResolvers.createAutoListingAiCapabilityCredentialResolver({
+    repository, cipher, readSecret() { throw new Error("ACTIVE successor must use encrypted secret"); },
+  });
+
+  assert.deepEqual(await resolver.prepareSubcall(activeExecution), {
+    providerRequestKey: "e".repeat(64), providerCorrelationId: "capcorr-active-text",
+  });
+  assert.equal((await resolver.resolveCredential(activeExecution)).secret, "active-successor-secret");
+  await resolver.markSending(activeExecution);
+  assert.deepEqual(received, [activeExecution, activeExecution, activeExecution]);
+});
+
 test("paid capability resolver keeps legacy profiles attempt-bound and maps secret-reader failures safely", async () => {
   const legacyExecution = { ...capabilityExecution, connectionId: null, connectionVersion: null,
     expectedConnectionStatus: "LEGACY", expectedConnectionStatusVersion: 0 };

@@ -206,13 +206,12 @@ test("encrypted profile capability calls preserve the immutable connection refer
   assert.equal(gatewayProfile.connectionVersion, 3);
 });
 
-test("successful capability retest preserves an already published profile", async () => {
+test("published profile capability retest is rejected before any gateway call or completion", async () => {
   const { service, calls } = fixture({ loadedProfile: { ...profile, enabled: true } });
-  const result = await service.testGatewayCapabilities({ costConfirmed: true,
+  await assert.rejects(service.testGatewayCapabilities({ costConfirmed: true,
     actor: admin, profileId: "profile-a", configVersion: 4, correlationId: "corr-published-retest",
-  });
-  assert.equal(result.outcome, "PASSED");
-  assert.equal(result.enabled, true);
+  }), { code: "AI_GATEWAY_PROFILE_VERSION_CONFLICT", status: 409 });
+  assert.deepEqual(calls.map(([name]) => name), ["begin"]);
 });
 
 test("capability request identity binds the correlation while remaining stable for the same attempt", async () => {

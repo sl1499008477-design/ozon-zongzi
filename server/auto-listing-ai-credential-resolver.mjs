@@ -100,7 +100,7 @@ function normalizedCapabilityExecution(value) {
   try {
     const fields = dataFields(value);
     const keys = fields ? Object.keys(fields) : [];
-    const connectionBacked = ["VALIDATED", "RETIRED"].includes(fields?.expectedConnectionStatus);
+    const connectionBacked = ["VALIDATED", "ACTIVE", "RETIRED"].includes(fields?.expectedConnectionStatus);
     if (!fields || keys.length !== CAPABILITY_EXECUTION_KEYS.size
       || keys.some((key) => !CAPABILITY_EXECUTION_KEYS.has(key))
       || ![fields.accountId, fields.profileId, fields.attemptId, fields.correlationId, fields.leaseToken]
@@ -116,7 +116,8 @@ function normalizedCapabilityExecution(value) {
         || !Number.isSafeInteger(fields.connectionVersion) || fields.connectionVersion < 1
         || !Number.isSafeInteger(fields.expectedConnectionStatusVersion)
         || fields.expectedConnectionStatusVersion < 1
-        || (fields.purpose === "PROFILE_CAPABILITY" && fields.expectedConnectionStatus !== "VALIDATED")
+        || (fields.purpose === "PROFILE_CAPABILITY"
+          && !["VALIDATED", "ACTIVE"].includes(fields.expectedConnectionStatus))
         || (fields.purpose === "ROLLBACK_CAPABILITY" && fields.expectedConnectionStatus !== "RETIRED")
       ))
       || (!connectionBacked && (fields.expectedConnectionStatus !== "LEGACY"

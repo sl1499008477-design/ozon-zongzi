@@ -200,6 +200,14 @@ test("connection-backed capability begin locks an ACTIVE successor to the exact 
     { rowCount: 0, rows: [] },
     { rowCount: 1, rows: [{ id: "connection-a", version: 1,
       status: "ACTIVE", status_version: 3, catalog_id: "catalog-a" }] },
+    (sql, params) => {
+      assert.match(sql, /ai_gateway_profile_binding_events/iu);
+      assert.match(sql, /enabled IS TRUE/iu);
+      assert.match(sql, /enabled IS FALSE/iu);
+      assert.match(sql, /ai_gateway_model_catalogs/iu);
+      assert.deepEqual(params, ["account-a", "profile-a", 1, "connection-a", 1]);
+      return { rowCount: 1, rows: [{ active_profile_id: "profile-current", catalog_id: "catalog-a" }] };
+    },
     { rowCount: 1, rows: [authorizedAttempt({
       target_connection_id: "connection-a", target_connection_version: 1,
       target_connection_status: "ACTIVE", target_connection_status_version: 3,
@@ -218,6 +226,24 @@ test("connection-backed capability begin locks an ACTIVE successor to the exact 
   assert.match(calls[4].sql, /c\.status IN \('VALIDATED','ACTIVE'\)/iu);
   assert.match(calls[4].sql, /ai_gateway_model_catalogs/iu);
   assert.match(calls[4].sql, /catalog->'models'/iu);
+});
+
+test("ACTIVE capability begin rejects the current enabled profile before creating a paid attempt", async () => {
+  const current = { ...profileRow, enabled: true, api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    connection_id: "connection-a", connection_version: 1 };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [current] }, { rows: [] },
+    { rows: [{ id: "connection-a", version: 1, status: "ACTIVE", status_version: 3,
+      catalog_id: "catalog-a" }] },
+    { rows: [] }, { rows: [] },
+  ]);
+
+  await assert.rejects(createAutoListingAiAdminPostgres({ pool }).beginCapabilityTest({
+    costConfirmed: true, accountId: "account-a", actorId: "account-a",
+    profileId: "profile-a", configVersion: 1, correlationId: "corr-current",
+    attemptId: "attempt-current", purpose: "PROFILE_CAPABILITY", requestKey: capabilityRequestKey,
+  }), { code: "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", status: 409 });
+  assert.equal(calls.some(({ sql }) => /INSERT INTO ai_gateway_capability_attempts/iu.test(sql)), false);
 });
 
 test("capability begin creates one fenced account-scoped attempt in a transaction", async () => {
@@ -313,6 +339,7 @@ test("paid credential loading atomically binds authorization audit lease latest 
       ciphertext: "cipher", iv: "iv", auth_tag: "tag", algorithm: "aes-256-gcm",
       key_version: "local-v1", fingerprint: "fp",
     }] },
+    { rows: [{ active_profile_id: "profile-current", catalog_id: "catalog-a" }] },
     { rowCount: 0, rows: [] },
     (sql, params) => ({ rowCount: 1, rows: [{ id: params[0], status: "PREPARED",
       lease_version: 1, reservation_version: 1,
@@ -347,6 +374,7 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
   const { pool, calls, remaining } = scriptedPool([
     { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] }, { rows: [passed] },
     { rows: [{ id: "catalog-active", status: "ACTIVE", version: 1, status_version: 3 }] },
+    { rows: [{ active_profile_id: "profile-current", catalog_id: "catalog-active" }] },
     { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
     { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
     { rows: [{ ...passed, enabled: true }] },
@@ -546,6 +574,29 @@ test("capability completion applies its fence and audit in one transaction", asy
   assert.equal(calls.at(-2).sql, "COMMIT");
 });
 
+test("a legacy running failure cannot disable a profile that is already the formal enabled version", async () => {
+  const enabledProfile = { ...profileRow, enabled: true };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [enabledProfile] },
+    { rows: [authorizedAttempt({ fence: "9", lease_live: true })] },
+    { rows: [{ id: "attempt-a", fence: "9" }] },
+    { rowCount: 1, rows: [{ id: "attempt-a" }] }, { rows: [] },
+    { rowCount: 1, rows: [{ event_id: "stale-audit" }] }, { rows: [] },
+  ]);
+  const result = await createAutoListingAiAdminPostgres({ pool }).completeCapabilityTest({
+    costConfirmed: true, accountId: "account-a", actorId: "account-a", profileId: "profile-a",
+    configVersion: 1, correlationId: "corr-a", attemptId: "attempt-a", fence: 9,
+    leaseVersion: 1, leaseToken: "caplease_initial", requestKey: capabilityRequestKey,
+    capabilityResult: { outcome: "FAILED", features: [], latencyMs: null,
+      models: { text: "text-model-a", image: "image-model-a" },
+      checkedAt: "2026-08-04T10:01:00.000Z", errorCode: "GATEWAY_TIMEOUT" },
+  });
+  assert.equal(result.applied, false);
+  assert.equal(result.stale, true);
+  assert.equal(result.response.enabled, true);
+  assert.equal(calls.some(({ sql }) => /UPDATE ai_gateway_profiles/iu.test(sql)), false);
+});
+
 test("capability begin reclaims only an expired running lease and advances its lease fence", async () => {
   const expired = authorizedAttempt({ fence: "9", lease_token: "caplease_old",
     lease_expires_at: "2026-08-04T09:00:00.000Z" });
@@ -632,7 +683,44 @@ test("profile publish requires exact passed text+image evidence and switches one
   assert.match(calls[5].sql, /enabled IS TRUE[\s\S]*FOR UPDATE/iu);
   assert.doesNotMatch(calls[5].sql, /ORDER BY|LIMIT|latest/iu);
   assert.match(calls[6].sql, /SET enabled=FALSE/iu);
+  assert.match(calls[6].sql, /capability_result='\{\}'::JSONB/iu);
+  assert.match(calls[6].sql, /capability_checked_at=NULL/iu);
   assert.match(calls[8].sql, /SET enabled=TRUE/iu);
+});
+
+test("a new publish intent rejects an already enabled target without writing a false activation", async () => {
+  const passedEnabled = { ...profileRow, enabled: true,
+    capability_result: { outcome: "PASSED",
+      features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      models: { text: "text-model-a", image: "image-model-a" }, checkedAt: "2026-08-04T10:01:00.000Z" },
+    capability_checked_at: "2026-08-04T10:01:00.000Z" };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] }, { rows: [passedEnabled] }, { rows: [] },
+  ]);
+  await assert.rejects(createAutoListingAiAdminPostgres({ pool }).publishProfile({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
+    idempotencyKey: "publish-current-new-intent", correlationId: "corr-current-new-intent",
+  }), { code: "AUTO_LISTING_AI_PROFILE_VERSION_CONFLICT", status: 409 });
+  assert.equal(calls.some(({ sql }) => /INSERT INTO audit_events|SET enabled=/iu.test(sql)), false);
+});
+
+test("completed rollback preparation replays the exact stored activation after response loss", async () => {
+  const occurredAt = new Date("2026-08-09T03:04:05.000Z");
+  const { pool } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] },
+    (_sql, params) => ({ rows: [{
+      metadata: { requestHash: params[2], entityId: "profile-a", configVersion: 1 },
+      action: "AUTO_LISTING_AI_PROFILE_ROLLBACK", actor_id: "account-a", occurred_at: occurredAt,
+    }] }),
+    { rows: [{ ...profileRow, enabled: true }] }, { rows: [] },
+  ]);
+  const replay = await createAutoListingAiAdminPostgres({ pool }).prepareProfileRollback({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
+    idempotencyKey: "rollback-response-loss", correlationId: "corr-response-loss",
+  });
+  assert.deepEqual(replay.profile.activation, {
+    kind: "ROLLBACK", occurredAt: occurredAt.toISOString(), actorId: "account-a",
+  });
 });
 
 test("profile publish rejects missing image capability without changing any enabled profile", async () => {

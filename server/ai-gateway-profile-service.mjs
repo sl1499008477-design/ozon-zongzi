@@ -194,6 +194,9 @@ export function createAiGatewayProfileService({ repository, gateway, now = () =>
       if (profile.accountId !== accountId || profile.id !== profileId || profile.configVersion !== configVersion) {
         throw serviceError("AI_GATEWAY_PROFILE_NOT_FOUND", 404);
       }
+      if (purpose === "PROFILE_CAPABILITY" && profile.enabled === true) {
+        throw serviceError("AI_GATEWAY_PROFILE_VERSION_CONFLICT", 409, false);
+      }
       const validAttemptIdentity = begun.attemptId === capabilityAttemptId
         && Number.isSafeInteger(Number(begun.fence)) && Number(begun.fence) >= 1;
       if (!validAttemptIdentity) throw serviceError("AI_GATEWAY_CAPABILITY_IN_PROGRESS", 409, true);

@@ -548,14 +548,29 @@ if (!enabled) {
       )).rows[0];
       assert.equal(sameConnectionAfterSuccessor.status, "ACTIVE");
       assert.equal(Number(sameConnectionAfterSuccessor.status_version), Number(activeBeforeSuccessor.status_version));
-      assert.deepEqual(Object.fromEntries((await pool.query(
-        `SELECT id,enabled FROM ai_gateway_profiles
+      const successorStates = await pool.query(
+        `SELECT id,enabled,capability_result,capability_checked_at FROM ai_gateway_profiles
           WHERE account_id=$1 AND id IN ($2,$3) ORDER BY id`,
         [accountId, first.profile.id, successor.profile.id],
-      )).rows.map((row) => [row.id, row.enabled])), {
+      );
+      assert.deepEqual(Object.fromEntries(successorStates.rows.map((row) => [row.id, row.enabled])), {
         [first.profile.id]: false,
         [successor.profile.id]: true,
       });
+      const retiredProfileRow = successorStates.rows.find((row) => row.id === first.profile.id);
+      assert.deepEqual(retiredProfileRow.capability_result, {});
+      assert.equal(retiredProfileRow.capability_checked_at, null);
+      assert.equal((await pool.query(
+        `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_CAPABILITY_TEST'
+            AND entity_id=$2 AND status='SUCCESS'`,
+        [accountId, first.profile.id],
+      )).rows[0].count, 1, "historical capability audit remains append-only after row evidence is invalidated");
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        idempotencyKey: `republish-old-without-retest-${suffix}`,
+        correlationId: `republish-old-without-retest-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_PROFILE_CAPABILITY_REQUIRED", status: 409 });
       const second = await createConnected("second");
       await passCapability(second, "PROFILE_CAPABILITY", "second");
       await profiles.publishProfile({
@@ -589,6 +604,7 @@ if (!enabled) {
         correlationId: `rollback-response-loss-${suffix}` });
       assert.equal(preparedReplay.completed, true);
       assert.equal(preparedReplay.profile.enabled, true);
+      assert.deepEqual(preparedReplay.profile.activation, rolledBack.activation);
       const states = await pool.query(
         `SELECT id,status FROM ai_gateway_connection_versions
           WHERE account_id=$1 ORDER BY id`,
