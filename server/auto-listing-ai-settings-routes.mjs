@@ -5,7 +5,10 @@ const CONNECTIONS = `${BASE}/connections`;
 const PROFILES = `${BASE}/profiles`;
 const CONNECTION_SYNC = /^\/admin\/auto-listing\/ai-settings\/connections\/([^/]+)\/sync$/u;
 const PROFILE_ACTION = /^\/admin\/auto-listing\/ai-settings\/profiles\/([^/]+)\/(test|publish|rollback)$/u;
+const CATALOG = /^\/admin\/auto-listing\/ai-settings\/catalogs\/([^/]+)$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const OVERVIEW_RESPONSE_BYTES = 64 * 1024;
+const CATALOG_RESPONSE_BYTES = 1536 * 1024;
 export const AUTO_LISTING_AI_SETTINGS_SAFE_CODES = Object.freeze([
   "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID", "AUTO_LISTING_AI_SETTINGS_BASE_URL_INVALID",
   "AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND",
@@ -25,6 +28,7 @@ export const AUTO_LISTING_AI_SETTINGS_SAFE_CODES = Object.freeze([
   "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT",
   "AI_GATEWAY_PROFILE_NOT_FOUND", "AI_GATEWAY_PROFILE_VERSION_CONFLICT", "AI_GATEWAY_CAPABILITY_IN_PROGRESS",
   "AI_GATEWAY_CAPABILITY_REQUEST_INVALID", "PERMISSION_FORBIDDEN",
+  "AUTO_LISTING_AI_SETTINGS_RESPONSE_TOO_LARGE",
 ]);
 const SAFE_CODES = new Set(AUTO_LISTING_AI_SETTINGS_SAFE_CODES);
 const SECRET_KEYS = new Set([
@@ -58,8 +62,28 @@ function classify(url) {
   if (sync) return { kind: "sync", id: decodeId(sync[1]) };
   const action = PROFILE_ACTION.exec(url.pathname);
   if (action) return { kind: action[2], id: decodeId(action[1]) };
+  const catalog = CATALOG.exec(url.pathname);
+  if (catalog) return { kind: "catalog", id: decodeId(catalog[1]) };
   if (url.pathname.startsWith(`${BASE}/`) || url.pathname === BASE) return { kind: "invalid" };
   return null;
+}
+
+function overviewQuery(url) {
+  const allowed = new Set(["connectionCursor", "profileCursor"]);
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1) {
+      throw routeError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+    }
+  }
+  const read = (key) => {
+    const value = url.searchParams.get(key);
+    if (value === null) return null;
+    if (!value || value.length > 1024 || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+      throw routeError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+    }
+    return value;
+  };
+  return { connectionCursor: read("connectionCursor"), profileCursor: read("profileCursor") };
 }
 
 function body(value, keys) {
@@ -124,8 +148,18 @@ function errorResponse(error) {
     message: status >= 500 ? "AI 模型设置请求处理失败" : "AI 模型设置请求无效" } };
 }
 
+function boundedSuccess(data, maximumBytes) {
+  const payload = { ok: true, data: safeOutput(data) };
+  let serialized;
+  try { serialized = JSON.stringify(payload); } catch { throw routeError("AUTO_LISTING_AI_SETTINGS_INTERNAL_ERROR", 500); }
+  if (Buffer.byteLength(serialized, "utf8") > maximumBytes) {
+    throw routeError("AUTO_LISTING_AI_SETTINGS_RESPONSE_TOO_LARGE", 500);
+  }
+  return payload;
+}
+
 function allowed(route, method) {
-  return route.kind === "overview" ? method === "GET"
+  return ["overview", "catalog"].includes(route.kind) ? method === "GET"
     : ["connection", "selection", "sync", "test", "publish", "rollback"].includes(route.kind)
       ? method === "POST" : false;
 }
@@ -140,7 +174,9 @@ export function createAutoListingAiSettingsHttpHandler({ authenticate, getServic
     try {
       route = classify(url);
       if (!route) return false;
-      if (url.search !== "" || route.kind === "invalid") throw routeError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+      if (route.kind === "invalid" || (route.kind !== "overview" && url.search !== "")) {
+        throw routeError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+      }
       if (!allowed(route, req.method)) {
         sendJson(res, 405, { ok: false, code: "AUTO_LISTING_AI_SETTINGS_METHOD_NOT_ALLOWED",
           message: "不支持的 AI 模型设置请求方法" });
@@ -151,7 +187,8 @@ export function createAutoListingAiSettingsHttpHandler({ authenticate, getServic
       const service = await getService();
       let data;
       let status = 200;
-      if (route.kind === "overview") data = await service.getOverview({ actor });
+      if (route.kind === "overview") data = await service.getOverview({ actor, ...overviewQuery(url) });
+      else if (route.kind === "catalog") data = await service.getCatalog({ actor, catalogId: route.id });
       else {
         let raw;
         try { raw = await readJson(req, { maxBytes: 64 * 1024, requireBody: true }); }
@@ -180,7 +217,8 @@ export function createAutoListingAiSettingsHttpHandler({ authenticate, getServic
             ...body(raw, ["configVersion", "idempotencyKey", "correlationId", "costConfirmed"]) });
         }
       }
-      sendJson(res, status, { ok: true, data: safeOutput(data) });
+      sendJson(res, status, boundedSuccess(data,
+        route.kind === "catalog" ? CATALOG_RESPONSE_BYTES : OVERVIEW_RESPONSE_BYTES));
     } catch (error) {
       const response = errorResponse(error);
       sendJson(res, response.status, response.payload);

@@ -24,15 +24,17 @@ import {
 } from "@ant-design/icons";
 import {
   createAiSettingsIntentStore,
+  createLatestAiSettingsLoader,
   createGatewayConnection,
   createModelProfile,
   loadAiSettings,
+  loadAiSettingsCatalog,
   publishModelProfile,
   requestModelSync,
   rollbackModelProfile,
   testModelProfile,
 } from "./auto-listing-ai-settings-client.js";
-import { aiSettingsPresentation } from "./auto-listing-ai-settings-view.js";
+import { aiSettingsModelOptions, aiSettingsPresentation } from "./auto-listing-ai-settings-view.js";
 import "./auto-listing-ai-settings.css";
 
 const DEFAULT_CONNECTION = Object.freeze({
@@ -67,12 +69,16 @@ function settingsIdentity(overview) {
     overview.accountId,
     overview.activeConnection?.id || "",
     overview.activeConnection?.statusVersion || 0,
+    overview.activeProfile?.id || "",
+    overview.activeProfile?.configVersion || 0,
     ...(overview.connections || []).flatMap((row) => [row.id, row.version, row.statusVersion, row.status]),
     ...(overview.catalogs || []).flatMap((row) => [row.id, row.createdAt]),
     ...(overview.syncTasks || []).flatMap((row) => [row.id, row.statusVersion, row.status]),
     ...(overview.profiles || []).flatMap((row) => [row.id, row.configVersion, row.enabled,
       row.capabilityCheckedAt || "", row.activation?.kind || "", row.activation?.occurredAt || "",
       row.activation?.actorId || ""]),
+    overview.pagination?.connections?.nextCursor || "",
+    overview.pagination?.profiles?.nextCursor || "",
   ].join("|");
 }
 
@@ -114,6 +120,11 @@ function latestSuccessfulSyncFor(overview, connection) {
       && task.connectionVersion === connection.version && task.syncPurpose === "CATALOG_SYNC"
       && task.status === "SUCCEEDED")
     .sort((left, right) => String(right.completedAt).localeCompare(String(left.completedAt)))[0] || null;
+}
+
+function withActive(items, active) {
+  const rows = Array.isArray(items) ? items : [];
+  return active && !rows.some((row) => row.id === active.id) ? [active, ...rows] : rows;
 }
 
 function capabilityItems(profile) {
@@ -182,10 +193,12 @@ function GatewayConnectionSection({
 }
 
 function ModelSelectionSection({
-  activeRequest, busy, connectionView, currentCatalog, imageCandidates, imageModel,
+  activeRequest, busy, catalogError, catalogLoading, connectionView, currentCatalog,
+  imageModel, imageOptions,
   latestSuccessfulSync, latestSync, onConnectionChange, onImageModelChange,
-  onProfileNameChange, onSaveSelection, onSync, onTextModelChange, overview,
-  canSaveSelection, profileName, selectedConnectionId, selectionPresentation, textCandidates, textModel,
+  onConnectionPageNext, onConnectionPagePrevious, onProfileNameChange, onSaveSelection,
+  onSync, onTextModelChange, overview, canSaveSelection, canShowPreviousConnectionPage,
+  profileName, selectedConnectionId, selectionPresentation, textModel, textOptions,
 }) {
   const syncStatus = SYNC_STATUS[latestSync?.status] || ["尚未同步", "default"];
   return <Card title={<Space><CloudSyncOutlined />模型同步与选择</Space>}>
@@ -196,6 +209,13 @@ function ModelSelectionSection({
           label: `${row.displayName} · v${row.version} · ${CONNECTION_STATUS[row.status]?.[0] || row.status}`,
         }))} /></label>
     </div>
+    <Space wrap className="ai-model-settings-pagination">
+      <Button size="small" disabled={busy || !canShowPreviousConnectionPage}
+        onClick={onConnectionPagePrevious}>上一页连接</Button>
+      <Button size="small" disabled={busy || !overview?.pagination?.connections?.hasMore}
+        onClick={onConnectionPageNext}>下一页连接</Button>
+      <span>每页最多 {overview?.pagination?.connections?.pageSize || 10} 个连接</span>
+    </Space>
     <Descriptions size="small" column={1} className="ai-model-settings-summary" items={[
       { key: "sync", label: "同步状态", children: <Tag color={syncStatus[1]}>{syncStatus[0]}</Tag> },
       { key: "time", label: "最近成功同步", children: formatTime(latestSuccessfulSync?.completedAt) },
@@ -203,20 +223,27 @@ function ModelSelectionSection({
     ]} />
     <Button icon={<CloudSyncOutlined />} disabled={busy || !connectionView?.actions?.canSync}
       loading={activeRequest === "立即同步"} onClick={onSync}>立即同步</Button>
+    {catalogLoading ? <Alert type="info" showIcon title="正在读取完整模型目录" /> : null}
+    {catalogError ? <Alert type="error" showIcon title={catalogError} /> : null}
+    {currentCatalog ? <p className="ai-model-settings-hint">
+      当前目录共有 {currentCatalog.catalog.models.length} 个模型；推荐项排在前面，其他模型仍可搜索选择。
+    </p> : null}
     {selectionPresentation.recommendations.warnings.length ? <Alert type="warning" showIcon
       title={selectionPresentation.recommendations.warnings.join("；")}
       description="系统推荐只依据模型目录元数据，发布前仍必须完成真实能力测试。" /> : null}
     <div className="ai-model-settings-fields ai-model-settings-fields--selection">
       <label>配置名称<Input value={profileName} disabled={busy} onChange={(event) => onProfileNameChange(event.target.value)} /></label>
-      <label>文字模型<Select value={textModel || undefined} disabled={busy || !textCandidates.length}
-        placeholder="同步后选择文字模型" onChange={onTextModelChange} options={textCandidates.map((row, index) => ({
-          value: row.modelId,
-          label: `${index === 0 ? "系统推荐 · " : ""}${row.modelId} · 待验证 · ${row.reasons.join("、")}`,
+      <label>文字模型<Select showSearch optionFilterProp="label" value={textModel || undefined}
+        disabled={busy || catalogLoading || !textOptions.length}
+        placeholder="同步后选择文字模型" onChange={onTextModelChange} options={textOptions.map((row) => ({
+          value: row.value,
+          label: `${row.recommended ? "系统推荐 · " : ""}${row.value}${row.reasons.length ? ` · 待验证 · ${row.reasons.join("、")}` : ""}`,
         }))} /></label>
-      <label>图片模型<Select value={imageModel || undefined} disabled={busy || !imageCandidates.length}
-        placeholder="同步后选择图片模型" onChange={onImageModelChange} options={imageCandidates.map((row, index) => ({
-          value: row.modelId,
-          label: `${index === 0 ? "系统推荐 · " : ""}${row.modelId} · 待验证 · ${row.reasons.join("、")}`,
+      <label>图片模型<Select showSearch optionFilterProp="label" value={imageModel || undefined}
+        disabled={busy || catalogLoading || !imageOptions.length}
+        placeholder="同步后选择图片模型" onChange={onImageModelChange} options={imageOptions.map((row) => ({
+          value: row.value,
+          label: `${row.recommended ? "系统推荐 · " : ""}${row.value}${row.reasons.length ? ` · 待验证 · ${row.reasons.join("、")}` : ""}`,
         }))} /></label>
     </div>
     <Button type="primary" disabled={busy || !canSaveSelection}
@@ -263,10 +290,11 @@ function CapabilityPublishSection({
 }
 
 function ConfigurationHistorySection({
-  activeRequest, busy, onRollback, onRollbackConfirmationChange, overview,
+  activeRequest, busy, canShowPreviousProfilePage, onProfilePageNext,
+  onProfilePagePrevious, onRollback, onRollbackConfirmationChange, overview,
   presentation, rollbackConfirmedProfileIds,
 }) {
-  const active = overview?.profiles?.find((row) => row.enabled) || null;
+  const active = overview?.activeProfile || overview?.profiles?.find((row) => row.enabled) || null;
   const profilePresentation = (profileId) => presentation.profiles.find((item) => item.id === profileId);
   const activeActivation = active ? profilePresentation(active.id)?.activation : null;
   const columns = [
@@ -303,6 +331,13 @@ function ConfigurationHistorySection({
     ]} /> : <Alert type="info" showIcon title="尚未发布正式配置" description="请依次完成连接、同步、选择和真实能力测试。" />}
     <Table className="ai-model-settings-history" rowKey="id" size="small" pagination={false}
       scroll={{ x: 960 }} dataSource={overview?.profiles || []} columns={columns} locale={{ emptyText: "暂无历史版本" }} />
+    <Space wrap className="ai-model-settings-pagination">
+      <Button size="small" disabled={busy || !canShowPreviousProfilePage}
+        onClick={onProfilePagePrevious}>上一页历史</Button>
+      <Button size="small" disabled={busy || !overview?.pagination?.profiles?.hasMore}
+        onClick={onProfilePageNext}>下一页历史</Button>
+      <span>每页最多 {overview?.pagination?.profiles?.pageSize || 10} 个配置版本</span>
+    </Space>
   </Card>;
 }
 
@@ -323,21 +358,43 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [costConfirmedProfileIds, setCostConfirmedProfileIds] = useState([]);
   const [rollbackConfirmedProfileIds, setRollbackConfirmedProfileIds] = useState([]);
+  const [catalogDetail, setCatalogDetail] = useState(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [connectionCursor, setConnectionCursor] = useState(null);
+  const [profileCursor, setProfileCursor] = useState(null);
+  const [connectionCursorStack, setConnectionCursorStack] = useState([]);
+  const [profileCursorStack, setProfileCursorStack] = useState([]);
   const hydratedSettingsVersionRef = useRef("");
   const requestVersionRef = useRef(0);
   const actionInFlightRef = useRef(false);
+  const paginationInFlightRef = useRef(false);
   const activeActionControllerRef = useRef(null);
+  const catalogControllerRef = useRef(null);
+  const catalogLoaderRef = useRef(null);
+  if (catalogLoaderRef.current === null) {
+    catalogLoaderRef.current = createLatestAiSettingsLoader((catalogId, options) => (
+      loadAiSettingsCatalog(catalogId, options)
+    ));
+  }
   const accountId = String(account?.id || "").trim();
   const intentStore = useMemo(() => createAiSettingsIntentStore(
     accountScopedSessionStorage(accountId),
   ), [accountId]);
   const busy = Boolean(activeRequest);
 
-  const refreshOverview = useCallback(async ({ silent = false } = {}) => {
+  const refreshOverview = useCallback(async ({
+    silent = false,
+    connectionCursor: nextConnectionCursor = connectionCursor,
+    profileCursor: nextProfileCursor = profileCursor,
+  } = {}) => {
     const requestVersion = ++requestVersionRef.current;
     if (!silent) setLoading(true);
     try {
-      const result = await loadAiSettings();
+      const result = await loadAiSettings({
+        connectionCursor: nextConnectionCursor,
+        profileCursor: nextProfileCursor,
+      });
       if (requestVersion !== requestVersionRef.current) return null;
       setOverview(result);
       return result;
@@ -349,12 +406,16 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     } finally {
       if (!silent && requestVersion === requestVersionRef.current) setLoading(false);
     }
-  }, []);
+  }, [connectionCursor, profileCursor]);
 
   useEffect(() => {
     activeActionControllerRef.current?.abort();
     activeActionControllerRef.current = null;
+    catalogControllerRef.current?.abort();
+    catalogControllerRef.current = null;
+    catalogLoaderRef.current.invalidate();
     actionInFlightRef.current = false;
+    paginationInFlightRef.current = false;
     hydratedSettingsVersionRef.current = "";
     setOverview(null);
     setActiveRequest("");
@@ -371,6 +432,13 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     setSelectedProfileId("");
     setCostConfirmedProfileIds([]);
     setRollbackConfirmedProfileIds([]);
+    setCatalogDetail(null);
+    setCatalogLoading(false);
+    setCatalogError("");
+    setConnectionCursor(null);
+    setProfileCursor(null);
+    setConnectionCursorStack([]);
+    setProfileCursorStack([]);
     if (account?.role !== "admin") {
       setLoading(false);
       return undefined;
@@ -378,7 +446,7 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     const controller = new AbortController();
     const requestVersion = ++requestVersionRef.current;
     setLoading(true);
-    loadAiSettings({ signal: controller.signal })
+    loadAiSettings({ signal: controller.signal, connectionCursor: null, profileCursor: null })
       .then((result) => {
         if (requestVersion === requestVersionRef.current) setOverview(result);
       })
@@ -397,11 +465,19 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     requestVersionRef.current += 1;
     activeActionControllerRef.current?.abort();
     activeActionControllerRef.current = null;
+    catalogControllerRef.current?.abort();
+    catalogControllerRef.current = null;
+    catalogLoaderRef.current.invalidate();
   }, []);
 
-  const presentation = useMemo(() => aiSettingsPresentation(overview || {}, {
+  const effectiveOverview = useMemo(() => overview ? {
+    ...overview,
+    connections: withActive(overview.connections, overview.activeConnection),
+    profiles: withActive(overview.profiles, overview.activeProfile),
+  } : null, [overview]);
+  const presentation = useMemo(() => aiSettingsPresentation(effectiveOverview || {}, {
     costConfirmedProfileIds,
-  }), [overview, costConfirmedProfileIds]);
+  }), [effectiveOverview, costConfirmedProfileIds]);
   const settingsVersion = useMemo(() => settingsIdentity(overview), [overview]);
 
   useEffect(() => {
@@ -413,39 +489,139 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
     setBaseUrl(preferredConnection?.baseUrl || DEFAULT_CONNECTION.baseUrl);
     setSelectedConnectionId(preferredConnection?.id || "");
     setSelectedProfileId((current) => overview.profiles?.some((row) => row.id === current)
-      ? current : overview.profiles?.find((row) => row.enabled)?.id || overview.profiles?.[0]?.id || "");
+      ? current : overview.activeProfile?.id === current ? current
+        : overview.activeProfile?.id || overview.profiles?.find((row) => row.enabled)?.id
+          || overview.profiles?.[0]?.id || "");
     hydratedSettingsVersionRef.current = settingsVersion;
   }, [overview, settingsVersion, draftDirty, selectedConnectionId]);
 
-  const selectedConnection = useMemo(() => (overview?.connections || [])
-    .find((row) => row.id === selectedConnectionId) || null, [overview, selectedConnectionId]);
+  const selectedConnection = useMemo(() => (effectiveOverview?.connections || [])
+    .find((row) => row.id === selectedConnectionId) || null, [effectiveOverview, selectedConnectionId]);
   const connectionView = useMemo(() => presentation.connections
     .find((row) => row.id === selectedConnectionId) || null, [presentation, selectedConnectionId]);
-  const currentCatalog = useMemo(() => latestCatalogFor(overview, selectedConnection), [overview, selectedConnection]);
-  const canSaveSelection = Boolean(currentCatalog?.id)
-    && presentation.profileCreatableCatalogIds.includes(currentCatalog?.id)
-    && Boolean(textModel && imageModel);
+  const currentCatalogSummary = useMemo(() => latestCatalogFor(overview, selectedConnection), [overview, selectedConnection]);
+  const currentCatalog = catalogDetail?.catalog?.id === currentCatalogSummary?.id
+    ? catalogDetail.catalog : null;
   const latestSync = useMemo(() => latestSyncFor(overview, selectedConnection), [overview, selectedConnection]);
   const latestSuccessfulSync = useMemo(() => latestSuccessfulSyncFor(overview, selectedConnection), [overview, selectedConnection]);
   const selectionPresentation = useMemo(() => aiSettingsPresentation({
-    ...(overview || {}),
+    ...(effectiveOverview || {}),
     catalogs: currentCatalog ? [currentCatalog] : [],
-  }), [overview, currentCatalog]);
+  }), [effectiveOverview, currentCatalog]);
   const textCandidates = selectionPresentation.recommendations.text;
   const imageCandidates = selectionPresentation.recommendations.image;
+  const textOptions = useMemo(() => aiSettingsModelOptions(currentCatalog, textCandidates),
+    [currentCatalog, textCandidates]);
+  const imageOptions = useMemo(() => aiSettingsModelOptions(currentCatalog, imageCandidates),
+    [currentCatalog, imageCandidates]);
+  const canSaveSelection = Boolean(currentCatalog?.id)
+    && currentCatalog.id === currentCatalogSummary?.id
+    && presentation.profileCreatableCatalogIds.includes(currentCatalog?.id)
+    && catalogDetail?.actions?.canCreateProfile === true
+    && textOptions.some((row) => row.value === textModel)
+    && imageOptions.some((row) => row.value === imageModel);
+
+  useEffect(() => {
+    catalogControllerRef.current?.abort();
+    catalogControllerRef.current = null;
+    catalogLoaderRef.current.invalidate();
+    setCatalogDetail(null);
+    setCatalogError("");
+    if (!currentCatalogSummary?.id) {
+      setCatalogLoading(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    catalogControllerRef.current = controller;
+    setCatalogLoading(true);
+    catalogLoaderRef.current.run(currentCatalogSummary.id, { signal: controller.signal })
+      .then((result) => {
+        if (result.accepted && catalogControllerRef.current === controller) {
+          setCatalogDetail(result.value);
+        }
+      })
+      .catch((caught) => {
+        if (catalogControllerRef.current === controller && caught?.code !== "REQUEST_ABORTED") {
+          setCatalogError(actionError(caught, "完整模型目录读取失败"));
+        }
+      })
+      .finally(() => {
+        if (catalogControllerRef.current === controller) {
+          catalogControllerRef.current = null;
+          setCatalogLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [currentCatalogSummary?.id]);
 
   useEffect(() => {
     if (draftDirty) return;
-    setTextModel((current) => textCandidates.some((row) => row.modelId === current)
-      ? current : textCandidates[0]?.modelId || "");
-    setImageModel((current) => imageCandidates.some((row) => row.modelId === current)
-      ? current : imageCandidates[0]?.modelId || "");
-  }, [draftDirty, currentCatalog?.id, textCandidates, imageCandidates]);
+    setTextModel((current) => textOptions.some((row) => row.value === current)
+      ? current : textOptions[0]?.value || "");
+    setImageModel((current) => imageOptions.some((row) => row.value === current)
+      ? current : imageOptions[0]?.value || "");
+  }, [draftDirty, currentCatalog?.id, textOptions, imageOptions]);
 
-  const selectedProfile = useMemo(() => (overview?.profiles || [])
-    .find((row) => row.id === selectedProfileId) || null, [overview, selectedProfileId]);
+  const selectedProfile = useMemo(() => (effectiveOverview?.profiles || [])
+    .find((row) => row.id === selectedProfileId) || null, [effectiveOverview, selectedProfileId]);
   const profileView = useMemo(() => presentation.profiles
     .find((row) => row.id === selectedProfileId) || null, [presentation, selectedProfileId]);
+
+  const showNextConnectionPage = async () => {
+    const nextCursor = overview?.pagination?.connections?.nextCursor || null;
+    if (!nextCursor || loading || busy || draftDirty || paginationInFlightRef.current) return;
+    paginationInFlightRef.current = true;
+    try {
+      const result = await refreshOverview({ connectionCursor: nextCursor, profileCursor });
+      if (!result) return;
+      setConnectionCursorStack((current) => [...current, connectionCursor]);
+      setConnectionCursor(nextCursor);
+    } finally {
+      paginationInFlightRef.current = false;
+    }
+  };
+
+  const showPreviousConnectionPage = async () => {
+    if (!connectionCursorStack.length || loading || busy || draftDirty || paginationInFlightRef.current) return;
+    const previousCursor = connectionCursorStack.at(-1) ?? null;
+    paginationInFlightRef.current = true;
+    try {
+      const result = await refreshOverview({ connectionCursor: previousCursor, profileCursor });
+      if (!result) return;
+      setConnectionCursorStack((current) => current.slice(0, -1));
+      setConnectionCursor(previousCursor);
+    } finally {
+      paginationInFlightRef.current = false;
+    }
+  };
+
+  const showNextProfilePage = async () => {
+    const nextCursor = overview?.pagination?.profiles?.nextCursor || null;
+    if (!nextCursor || loading || busy || paginationInFlightRef.current) return;
+    paginationInFlightRef.current = true;
+    try {
+      const result = await refreshOverview({ connectionCursor, profileCursor: nextCursor });
+      if (!result) return;
+      setProfileCursorStack((current) => [...current, profileCursor]);
+      setProfileCursor(nextCursor);
+    } finally {
+      paginationInFlightRef.current = false;
+    }
+  };
+
+  const showPreviousProfilePage = async () => {
+    if (!profileCursorStack.length || loading || busy || paginationInFlightRef.current) return;
+    const previousCursor = profileCursorStack.at(-1) ?? null;
+    paginationInFlightRef.current = true;
+    try {
+      const result = await refreshOverview({ connectionCursor, profileCursor: previousCursor });
+      if (!result) return;
+      setProfileCursorStack((current) => current.slice(0, -1));
+      setProfileCursor(previousCursor);
+    } finally {
+      paginationInFlightRef.current = false;
+    }
+  };
 
   const runAction = async (name, operation, successMessage) => {
     if (actionInFlightRef.current) return;
@@ -597,31 +773,37 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
           onDisplayNameChange={(value) => { setDisplayName(value); setDraftDirty(true); }}
           onGatewayKeyChange={(value) => { setGatewayKey(value); setDraftDirty(true); }}
           onOpenDashboard={openDashboard} onSaveAndTest={saveAndTestConnection} selectedConnection={selectedConnection} />
-        <ModelSelectionSection activeRequest={activeRequest} busy={busy} canSaveSelection={canSaveSelection}
-          connectionView={connectionView}
-          currentCatalog={currentCatalog} imageCandidates={imageCandidates} imageModel={imageModel}
-          latestSuccessfulSync={latestSuccessfulSync} latestSync={latestSync} overview={overview}
+        <ModelSelectionSection activeRequest={activeRequest} busy={busy || loading}
+          canSaveSelection={canSaveSelection} canShowPreviousConnectionPage={connectionCursorStack.length > 0}
+          catalogError={catalogError} catalogLoading={catalogLoading} connectionView={connectionView}
+          currentCatalog={currentCatalog} imageModel={imageModel} imageOptions={imageOptions}
+          latestSuccessfulSync={latestSuccessfulSync} latestSync={latestSync} overview={effectiveOverview}
           onConnectionChange={(value) => {
-            const connection = overview?.connections?.find((row) => row.id === value);
+            const connection = effectiveOverview?.connections?.find((row) => row.id === value);
             setGatewayKey("");
             setSelectedConnectionId(value);
             setDisplayName(connection?.displayName || DEFAULT_CONNECTION.displayName);
             setBaseUrl(connection?.baseUrl || DEFAULT_CONNECTION.baseUrl);
             setDraftDirty(false);
           }}
+          onConnectionPageNext={showNextConnectionPage}
+          onConnectionPagePrevious={showPreviousConnectionPage}
           onImageModelChange={(value) => { setImageModel(value); setDraftDirty(true); }}
           onProfileNameChange={(value) => { setProfileName(value); setDraftDirty(true); }}
           onSaveSelection={saveSelection} onSync={syncModels}
           onTextModelChange={(value) => { setTextModel(value); setDraftDirty(true); }}
           profileName={profileName} selectedConnectionId={selectedConnectionId}
-          selectionPresentation={selectionPresentation} textCandidates={textCandidates} textModel={textModel} />
+          selectionPresentation={selectionPresentation} textModel={textModel} textOptions={textOptions} />
         <CapabilityPublishSection activeRequest={activeRequest} busy={busy}
           onCostConfirmationChange={(checked) => setCostConfirmedProfileIds((current) => (
             checked ? [...new Set([...current, selectedProfile.id])] : current.filter((id) => id !== selectedProfile.id)
           ))}
           onProfileChange={setSelectedProfileId} onPublish={publishProfile} onTest={testProfile}
-          overview={overview} profileView={profileView} selectedProfile={selectedProfile} selectedProfileId={selectedProfileId} />
-        <ConfigurationHistorySection activeRequest={activeRequest} busy={busy} onRollback={rollbackProfile}
+          overview={effectiveOverview} profileView={profileView} selectedProfile={selectedProfile} selectedProfileId={selectedProfileId} />
+        <ConfigurationHistorySection activeRequest={activeRequest} busy={busy || loading}
+          canShowPreviousProfilePage={profileCursorStack.length > 0}
+          onProfilePageNext={showNextProfilePage} onProfilePagePrevious={showPreviousProfilePage}
+          onRollback={rollbackProfile}
           onRollbackConfirmationChange={(profileId, checked) => setRollbackConfirmedProfileIds((current) => (
             checked ? [...new Set([...current, profileId])] : current.filter((id) => id !== profileId)
           ))}

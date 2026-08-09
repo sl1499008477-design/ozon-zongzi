@@ -2,6 +2,7 @@ import { apiRequest } from "./client-transport.js";
 
 const BASE = "/admin/auto-listing/ai-settings";
 const MAX_BYTES = 64 * 1024;
+const MAX_CATALOG_BYTES = 1536 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const SECRET_KEYS = new Set([
   "gatewayKey", "apiKey", "api_key", "secret", "encryptedSecret", "ciphertext", "iv", "authTag",
@@ -20,6 +21,9 @@ const CATALOG_KEYS = ["id", "accountId", "connectionId", "connectionVersion", "s
 const CAPABILITY_KEYS = ["profileId", "configVersion", "outcome", "features", "latencyMs", "models", "checkedAt", "errorCode", "enabled"];
 const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "profileCreatableCatalogIds",
   "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
+const PAGINATION_KEYS = ["pageSize", "hasMore", "nextCursor"];
+const CATALOG_SUMMARY_KEYS = ["schemaVersion", "connectionVersion", "syncedAt", "requestIdHash",
+  "activeSelectionState", "activeSelection", "modelCount"];
 const CONNECTION_STATUS = new Set(["PENDING", "VALIDATED", "ACTIVE", "RETIRED"]);
 const TASK_STATUS = new Set(["PENDING", "LEASED", "SUCCEEDED", "FAILED", "DEAD"]);
 const SHA256 = /^[a-f0-9]{64}$/u;
@@ -67,10 +71,12 @@ export const AI_SETTINGS_SAFE_ERROR_CODES = Object.freeze(["AUTO_LISTING_AI_SETT
   "AUTO_LISTING_AI_ADMIN_CAPABILITY_SUBCALL_CONFLICT", "AUTO_LISTING_AI_ADMIN_LEGACY_CAPABILITY_QUARANTINED",
   "AUTO_LISTING_AI_SETTINGS_CAPABILITY_SUBCALL_CONFLICT", "AI_GATEWAY_PROFILE_NOT_FOUND", "AI_GATEWAY_PROFILE_VERSION_CONFLICT",
   "AI_GATEWAY_CAPABILITY_IN_PROGRESS", "AI_GATEWAY_CAPABILITY_REQUEST_INVALID", "AI_GATEWAY_CAPABILITY_RESULT_UNKNOWN", "PERMISSION_FORBIDDEN",
-  "REQUEST_ABORTED", "REQUEST_TIMEOUT", "RESPONSE_TOO_LARGE", "AI_SETTINGS_CLIENT_RESPONSE_INVALID", "AI_SETTINGS_CLIENT_REQUEST_INVALID"]);
+  "AUTO_LISTING_AI_SETTINGS_RESPONSE_TOO_LARGE", "REQUEST_ABORTED", "REQUEST_TIMEOUT", "RESPONSE_TOO_LARGE",
+  "AI_SETTINGS_CLIENT_RESPONSE_INVALID", "AI_SETTINGS_CLIENT_REQUEST_INVALID"]);
 const SAFE_ERROR_CODES = new Set(AI_SETTINGS_SAFE_ERROR_CODES);
 const SAFE_ERROR_LABELS = Object.freeze({ AUTO_LISTING_AI_SETTINGS_DATABASE_FAILED: "AI 模型设置暂时不可用",
   REQUEST_ABORTED: "请求已取消", REQUEST_TIMEOUT: "请求超时，请稍后重试", RESPONSE_TOO_LARGE: "服务响应过大，已拒绝处理",
+  AUTO_LISTING_AI_SETTINGS_RESPONSE_TOO_LARGE: "模型设置数据超出安全读取范围，请联系管理员排查",
   PERMISSION_FORBIDDEN: "没有 AI 配置管理权限" });
 
 function invalid(kind) {
@@ -176,19 +182,19 @@ function safeJson(value, seen = new WeakSet()) {
   }
 }
 
-function responseSize(value) {
+function responseSize(value, maximum = MAX_BYTES) {
   let serialized;
   try { serialized = JSON.stringify(value); } catch { throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID"); }
-  if (new TextEncoder().encode(serialized).byteLength > MAX_BYTES) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+  if (new TextEncoder().encode(serialized).byteLength > maximum) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
   return value;
 }
 
-function exactResponse(raw, keys) {
+function exactResponse(raw, keys, maximum = MAX_BYTES) {
   const value = safeJson(raw);
   if (!plainRecord(value) || Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) {
     throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
   }
-  return deepFreeze(responseSize(value));
+  return deepFreeze(responseSize(value, maximum));
 }
 
 function nullableText(value) {
@@ -346,10 +352,50 @@ function rollbackCatalogEnvelope(value) {
   return exactRecord(value, ["models"]) && Array.isArray(value.models) && value.models.length === 0;
 }
 
+function catalogSummaryEnvelope(value) {
+  if (!exactRecord(value, CATALOG_SUMMARY_KEYS)
+    || value.schemaVersion !== "AUTO_LISTING_AI_MODEL_CATALOG_V1"
+    || !Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1
+    || !isoTimestamp(value.syncedAt) || !SHA256.test(value.requestIdHash)
+    || !["AVAILABLE", "MISSING", "NOT_SELECTED"].includes(value.activeSelectionState)
+    || !Number.isSafeInteger(value.modelCount) || value.modelCount < 0 || value.modelCount > 2_000) return false;
+  if (value.activeSelectionState === "NOT_SELECTED") return value.activeSelection === null;
+  const selection = value.activeSelection;
+  return exactRecord(selection, ["profileId", "configVersion", "textModel", "imageModel"])
+    && Boolean(id(selection.profileId)) && Number.isSafeInteger(selection.configVersion) && selection.configVersion > 0
+    && Boolean(modelId(selection.textModel)) && Boolean(modelId(selection.imageModel));
+}
+
 function uniqueIds(values, field = "id") {
   if (!Array.isArray(values)) return false;
   const seen = new Set();
   return values.every((value) => typeof value?.[field] === "string" && !seen.has(value[field]) && (seen.add(value[field]), true));
+}
+
+function cursor(value, nullable = false) {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length < 1 || value.length > 1024
+    || !/^[A-Za-z0-9_-]+$/u.test(value)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  return value;
+}
+
+function validatePage(raw) {
+  return responseValidation(() => {
+    const value = exactResponse(raw, PAGINATION_KEYS);
+    if (!Number.isSafeInteger(value.pageSize) || value.pageSize < 1 || value.pageSize > 10
+      || typeof value.hasMore !== "boolean" || (value.hasMore !== (value.nextCursor !== null))
+      || (value.nextCursor !== null && cursor(value.nextCursor) !== value.nextCursor)) {
+      throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    }
+    return value;
+  });
+}
+
+function validatePagination(raw) {
+  return responseValidation(() => {
+    const value = exactResponse(raw, ["connections", "profiles"]);
+    return Object.freeze({ connections: validatePage(value.connections), profiles: validatePage(value.profiles) });
+  });
 }
 
 function responseValidation(validate) {
@@ -435,9 +481,9 @@ function validateActions(raw) {
   });
 }
 
-function validateCatalog(raw) {
+function validateCatalog(raw, maximum = MAX_BYTES) {
   return responseValidation(() => {
-    const value = exactResponse(raw, CATALOG_KEYS);
+    const value = exactResponse(raw, CATALOG_KEYS, maximum);
     const catalogSyncEvidence = catalogEnvelope(value.catalog)
       && value.catalog.connectionVersion === value.connectionVersion
       && catalogCapabilityResult(value.capabilityResult)
@@ -456,8 +502,25 @@ function validateCatalog(raw) {
   });
 }
 
-function unwrap(raw, validator) {
-  const envelope = exactResponse(raw, ["ok", "data"]);
+function validateCatalogSummary(raw) {
+  return responseValidation(() => {
+    const value = exactResponse(raw, CATALOG_KEYS);
+    if (!id(value.id) || !id(value.accountId) || !id(value.connectionId) || version(value.connectionVersion) < 1
+      || !id(value.syncTaskId) || !catalogSummaryEnvelope(value.catalog)
+      || value.catalog.connectionVersion !== value.connectionVersion
+      || !catalogCapabilityResult(value.capabilityResult)
+      || value.catalog.syncedAt !== value.capabilityResult.checkedAt
+      || !SHA256.test(value.catalogHash) || !SHA256.test(value.capabilityHash)
+      || value.rollbackEvidenceIdentity !== null || value.testedAt !== value.capabilityResult.checkedAt
+      || !isoTimestamp(value.testedAt) || !isoTimestamp(value.createdAt)) {
+      throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+    }
+    return Object.freeze(value);
+  });
+}
+
+function unwrap(raw, validator, maximum = MAX_BYTES) {
+  const envelope = exactResponse(raw, ["ok", "data"], maximum);
   if (envelope.ok !== true) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
   return validator(envelope.data);
 }
@@ -542,18 +605,73 @@ function settleIntent(rawIntent, error = null) {
 }
 
 export async function loadAiSettings(rawOptions = {}) {
-  const options = closed(rawOptions, [], { optional: ["signal", "timeoutMs"] });
+  const options = closed(rawOptions, [], { optional: ["signal", "timeoutMs", "connectionCursor", "profileCursor"] });
   if (options.signal !== undefined && (!globalThis.AbortSignal || !(options.signal instanceof globalThis.AbortSignal))) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
   if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  const connectionCursor = options.connectionCursor === undefined || options.connectionCursor === null
+    ? null : cursor(options.connectionCursor);
+  const profileCursor = options.profileCursor === undefined || options.profileCursor === null
+    ? null : cursor(options.profileCursor);
   if (options.signal?.aborted) throw invalid("REQUEST_ABORTED");
-  try { const raw = await apiRequest(BASE, { signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxResponseBytes: MAX_BYTES }); return unwrap(raw, (data) => {
-    const value = exactResponse(data, ["accountId", "activeConnection", "connections", "catalogs", "syncTasks", "profiles", "actions"]);
+  const query = new URLSearchParams();
+  if (connectionCursor !== null) query.set("connectionCursor", connectionCursor);
+  if (profileCursor !== null) query.set("profileCursor", profileCursor);
+  const path = query.size ? `${BASE}?${query.toString()}` : BASE;
+  try { const raw = await apiRequest(path, { signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxResponseBytes: MAX_BYTES }); return unwrap(raw, (data) => {
+    const value = exactResponse(data, ["accountId", "activeConnection", "activeProfile", "connections", "catalogs", "syncTasks", "profiles", "pagination", "actions"]);
     if (!id(value.accountId) || (value.activeConnection !== null && !validateConnection(value.activeConnection))
+      || (value.activeProfile !== null && !validateProfile(value.activeProfile))
       || !Array.isArray(value.connections) || !Array.isArray(value.catalogs) || !Array.isArray(value.syncTasks)
       || !Array.isArray(value.profiles) || !uniqueIds(value.connections) || !uniqueIds(value.catalogs) || !uniqueIds(value.syncTasks) || !uniqueIds(value.profiles)) throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
-    return deepFreeze({ ...value, connections: value.connections.map(validateConnection), catalogs: value.catalogs.map(validateCatalog),
-      syncTasks: value.syncTasks.map(validateTask), profiles: value.profiles.map(validateProfile), actions: validateActions(value.actions) });
+    return deepFreeze({ ...value, connections: value.connections.map(validateConnection), catalogs: value.catalogs.map(validateCatalogSummary),
+      syncTasks: value.syncTasks.map(validateTask), profiles: value.profiles.map(validateProfile),
+      pagination: validatePagination(value.pagination), actions: validateActions(value.actions) });
   }); } catch (error) { throw safeRemoteError(error); }
+}
+
+export async function loadAiSettingsCatalog(rawCatalogId, rawOptions = {}) {
+  const catalogId = id(rawCatalogId);
+  const options = closed(rawOptions, [], { optional: ["signal", "timeoutMs"] });
+  if (options.signal !== undefined && (!globalThis.AbortSignal || !(options.signal instanceof globalThis.AbortSignal))) {
+    throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  }
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs)
+    || options.timeoutMs < 1 || options.timeoutMs > 120_000)) throw invalid("AI_SETTINGS_CLIENT_REQUEST_INVALID");
+  if (options.signal?.aborted) throw invalid("REQUEST_ABORTED");
+  try {
+    const raw = await apiRequest(`${BASE}/catalogs/${encodeURIComponent(catalogId)}`, {
+      signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      maxResponseBytes: MAX_CATALOG_BYTES,
+    });
+    return unwrap(raw, (data) => {
+      const value = exactResponse(data, ["accountId", "catalog", "actions"], MAX_CATALOG_BYTES);
+      const catalog = validateCatalog(value.catalog, MAX_CATALOG_BYTES);
+      if (!id(value.accountId) || catalog.accountId !== value.accountId
+        || !exactRecord(value.actions, ["canCreateProfile"])
+        || typeof value.actions.canCreateProfile !== "boolean") {
+        throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+      }
+      return deepFreeze({ accountId: value.accountId, catalog, actions: value.actions });
+    }, MAX_CATALOG_BYTES);
+  } catch (error) { throw safeRemoteError(error); }
+}
+
+export function createLatestAiSettingsLoader(operation) {
+  if (typeof operation !== "function") throw new TypeError("AI settings latest loader operation is required");
+  let generation = 0;
+  return Object.freeze({
+    async run(...args) {
+      const current = ++generation;
+      try {
+        const value = await operation(...args);
+        return current === generation ? { accepted: true, value } : { accepted: false, value: null };
+      } catch (error) {
+        if (current !== generation) return { accepted: false, value: null };
+        throw error;
+      }
+    },
+    invalidate() { generation += 1; },
+  });
 }
 
 export async function createGatewayConnection(raw, rawIntent) {

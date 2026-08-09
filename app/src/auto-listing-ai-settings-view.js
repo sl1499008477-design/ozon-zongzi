@@ -146,6 +146,29 @@ function recommendations(catalogs) {
   return empty;
 }
 
+export function aiSettingsModelOptions(rawCatalog, rawRecommendations = []) {
+  const catalog = record(rawCatalog);
+  const envelope = record(catalog?.catalog);
+  const models = Array.isArray(envelope?.models) ? envelope.models.map(record).filter(Boolean) : [];
+  const available = new Set(models.map((model) => model.id).filter(safeModelId));
+  const output = [];
+  const added = new Set();
+  for (const raw of Array.isArray(rawRecommendations) ? rawRecommendations : []) {
+    const recommendation = record(raw);
+    const modelId = recommendation?.modelId;
+    if (!safeModelId(modelId) || !available.has(modelId) || added.has(modelId)) continue;
+    const reasons = [...new Set(strings(recommendation.reasons))];
+    output.push(Object.freeze({ value: modelId, recommended: true, reasons: Object.freeze(reasons) }));
+    added.add(modelId);
+  }
+  for (const model of models) {
+    if (!safeModelId(model.id) || added.has(model.id)) continue;
+    output.push(Object.freeze({ value: model.id, recommended: false, reasons: Object.freeze([]) }));
+    added.add(model.id);
+  }
+  return Object.freeze(output);
+}
+
 /**
  * Pure safe projection of the server-owned settings contract.  It deliberately never derives
  * permission from status, catalog membership, or an optimistic local selection.

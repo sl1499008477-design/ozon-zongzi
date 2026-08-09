@@ -10,10 +10,15 @@ function overview(overrides = {}) {
   return {
     accountId: "account-a",
     activeConnection: null,
+    activeProfile: null,
     connections: [],
     catalogs: [],
     syncTasks: [],
     profiles: [],
+    pageInfo: {
+      connections: { pageSize: 10, next: null },
+      profiles: { pageSize: 10, next: null },
+    },
     ...overrides,
   };
 }
@@ -27,9 +32,20 @@ function harness({ currentOverview = overview(), allowLocalGateway = true } = {}
       calls.push(["connection-id", input]);
       return "aigconn-account-a-intent-a";
     },
-    async loadSettingsOverview(input) {
+    async loadSettingsOverviewPage(input) {
       calls.push(["overview", input]);
       return currentOverview;
+    },
+    async loadSettingsCatalog(input) {
+      calls.push(["catalog", input]);
+      const catalog = currentOverview.catalogs.find((row) => row.id === input.catalogId) || null;
+      return catalog ? { catalog, canCreateProfile: true } : null;
+    },
+    async loadSettingsConnection(input) {
+      calls.push(["connection", input]);
+      return currentOverview.connections.find((row) => row.accountId === input.accountId
+        && row.id === input.connectionId
+        && row.version === input.connectionVersion) || null;
     },
     async createPendingConnection(input) {
       calls.push(["create-connection", input]);

@@ -934,6 +934,37 @@ test("053 and the settings repository preserve legacy profiles and enforce tenan
     assert.equal(overview.profiles.some((candidate) => candidate.id === profile.id), true);
     assert.doesNotMatch(JSON.stringify(overview), /Y2lwaGVy|dGFn|ciphertext|authTag/iu);
 
+    const firstOverviewPage = await repository.loadSettingsOverviewPage({
+      accountId: accountA, connectionCursor: null, profileCursor: null, pageSize: 2,
+    });
+    assert.ok(firstOverviewPage.connections.length <= 2);
+    assert.ok(firstOverviewPage.profiles.length <= 2);
+    assert.equal(firstOverviewPage.activeConnection.id, active.id);
+    assert.equal(firstOverviewPage.activeProfile.id, profile.id);
+    assert.doesNotMatch(JSON.stringify(firstOverviewPage), /Y2lwaGVy|dGFn|ciphertext|authTag/iu);
+    assert.ok(firstOverviewPage.pageInfo.connections.next);
+    const secondOverviewPage = await repository.loadSettingsOverviewPage({
+      accountId: accountA,
+      connectionCursor: firstOverviewPage.pageInfo.connections.next,
+      profileCursor: null,
+      pageSize: 2,
+    });
+    const firstConnectionIds = new Set(firstOverviewPage.connections.map((row) => row.id));
+    assert.equal(secondOverviewPage.connections.some((row) => firstConnectionIds.has(row.id)), false);
+    assert.equal((await repository.loadSettingsConnection({
+      accountId: accountA, connectionId: active.id, connectionVersion: Number(active.version),
+    })).id, active.id);
+    const latestVisibleCatalog = firstOverviewPage.catalogs.find((row) => row.connectionId === active.id);
+    assert.ok(latestVisibleCatalog);
+    const latestCatalog = await repository.loadSettingsCatalog({
+      accountId: accountA, catalogId: latestVisibleCatalog.id,
+    });
+    assert.equal(latestCatalog.catalog.id, latestVisibleCatalog.id);
+    assert.equal(latestCatalog.canCreateProfile, true);
+    await assert.rejects(repository.loadSettingsCatalog({
+      accountId: accountB, catalogId: latestVisibleCatalog.id,
+    }), { code: "AUTO_LISTING_AI_SETTINGS_CATALOG_NOT_FOUND", status: 404 });
+
     const retryTask = await repository.enqueueModelSync({
       accountId: accountA,
       actorId: accountA,

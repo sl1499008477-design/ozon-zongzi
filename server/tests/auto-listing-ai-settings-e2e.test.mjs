@@ -162,6 +162,37 @@ function createControlledPersistence() {
       return overview(accountId);
     },
 
+    async loadSettingsOverviewPage({ accountId, connectionCursor, profileCursor, pageSize }) {
+      assert.equal(connectionCursor, null);
+      assert.equal(profileCursor, null);
+      assert.equal(pageSize, 10);
+      const loaded = overview(accountId);
+      return { ...loaded,
+        activeProfile: loaded.profiles.find((row) => row.enabled) || null,
+        connections: loaded.connections.slice(0, pageSize),
+        profiles: loaded.profiles.slice(0, pageSize),
+        pageInfo: {
+          connections: { pageSize, next: null },
+          profiles: { pageSize, next: null },
+        } };
+    },
+
+    async loadSettingsCatalog({ accountId, catalogId }) {
+      const row = state.catalogs.find((candidate) => candidate.accountId === accountId
+        && candidate.id === catalogId) || null;
+      if (!row) throw Object.assign(new Error("catalog not found"), {
+        code: "AUTO_LISTING_AI_SETTINGS_CATALOG_NOT_FOUND", status: 404,
+      });
+      const owner = connection(accountId, row.connectionId, row.connectionVersion);
+      return { catalog: structuredClone(row),
+        canCreateProfile: ["VALIDATED", "ACTIVE"].includes(owner?.status) };
+    },
+
+    async loadSettingsConnection({ accountId, connectionId, connectionVersion }) {
+      const row = connection(accountId, connectionId, connectionVersion);
+      return row ? safeConnection(row) : null;
+    },
+
     async createPendingConnection(input) {
       const existing = connection(input.accountId, input.connectionId, 1);
       if (existing) return { ...safeConnection(existing), duplicate: true };

@@ -122,6 +122,11 @@
   overflow-wrap: anywhere;
 }
 
+.ai-model-settings-page .ai-model-settings-pagination {
+  color: #7a8699;
+  font-size: 12px;
+}
+
 @media (max-width: 1100px) {
   .ai-model-settings-page .ai-model-settings-page__grid {
     grid-template-columns: 1fr;

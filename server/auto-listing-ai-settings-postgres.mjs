@@ -66,6 +66,23 @@ function boundedInteger(value, minimum, maximum) {
   return value;
 }
 
+function overviewPageSize(value) {
+  return boundedInteger(value, 1, 10);
+}
+
+function overviewCursor(value, kind) {
+  if (value === null) return null;
+  const keys = kind === "connections" ? ["createdAt", "fence", "id"] : ["createdAt", "id"];
+  const input = exactKeys(value, keys);
+  const result = { createdAt: isoTimestamp(input.createdAt), id: identifier(input.id) };
+  if (kind === "connections") {
+    const fence = typeof input.fence === "string" ? input.fence : "";
+    if (!/^[1-9][0-9]{0,18}$/u.test(fence)) throw invalid();
+    result.fence = fence;
+  }
+  return result;
+}
+
 function nonEmpty(value, maximum = 4096) {
   const result = typeof value === "string" ? value.trim() : "";
   if (!result || Buffer.byteLength(result, "utf8") > maximum) throw invalid();
@@ -271,6 +288,18 @@ function profileDto(row, duplicate = false) {
     createdAt: dtoTimestamp(row.created_at),
     duplicate,
   };
+}
+
+function connectionPageCursor(row) {
+  if (!row) return null;
+  const fence = String(row.fence ?? "");
+  if (!/^[1-9][0-9]{0,18}$/u.test(fence)) throw invalid();
+  return { createdAt: dtoTimestamp(row.created_at), fence, id: identifier(row.id) };
+}
+
+function profilePageCursor(row) {
+  if (!row) return null;
+  return { createdAt: dtoTimestamp(row.created_at), id: identifier(row.id) };
 }
 
 async function query(target, sql, params = []) {
@@ -1033,6 +1062,207 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
           profiles: profiles.rows.map((row) => profileDto(row)),
         };
       }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    },
+
+    async loadSettingsOverviewPage(rawInput = {}) {
+      const input = exactKeys(rawInput, ["accountId", "connectionCursor", "profileCursor", "pageSize"]);
+      const accountId = identifier(input.accountId);
+      const connectionCursor = overviewCursor(input.connectionCursor, "connections");
+      const profileCursor = overviewCursor(input.profileCursor, "profiles");
+      const pageSize = overviewPageSize(input.pageSize);
+      return transaction(pool, async (client) => {
+        const connectionParams = connectionCursor
+          ? [accountId, connectionCursor.createdAt, connectionCursor.fence, connectionCursor.id, pageSize + 1]
+          : [accountId, pageSize + 1];
+        const connectionRows = (await query(client,
+          `SELECT * FROM ai_gateway_connection_versions
+            WHERE account_id=$1
+              ${connectionCursor ? "AND (created_at,fence,id) < ($2::TIMESTAMPTZ,$3::BIGINT,$4)" : ""}
+            ORDER BY created_at DESC,fence DESC,id DESC
+            LIMIT $${connectionParams.length}`,
+          connectionParams)).rows;
+        const activeConnectionRow = (await query(client,
+          `SELECT * FROM ai_gateway_connection_versions
+            WHERE account_id=$1 AND status='ACTIVE'
+            ORDER BY activated_at DESC NULLS LAST,created_at DESC,fence DESC,id DESC
+            LIMIT 1`, [accountId])).rows[0] ?? null;
+
+        const profileParams = profileCursor
+          ? [accountId, profileCursor.createdAt, profileCursor.id, pageSize + 1]
+          : [accountId, pageSize + 1];
+        const profileRows = (await query(client,
+          `SELECT p.*,
+                  latest_activation.action AS activation_action,
+                  latest_activation.occurred_at AS activation_occurred_at,
+                  latest_activation.actor_id AS activation_actor_id
+             FROM ai_gateway_profiles p
+             LEFT JOIN LATERAL (
+               SELECT activation.action,activation.occurred_at,activation.actor_id
+                 FROM audit_events activation
+                WHERE activation.account_id=p.account_id
+                  AND activation.entity_type='ai_gateway_profile'
+                  AND activation.entity_id=p.id
+                  AND activation.metadata->>'entityId'=p.id
+                  AND activation.metadata->>'configVersion'=p.config_version::TEXT
+                  AND activation.status='SUCCESS'
+                  AND activation.actor_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$'
+                  AND activation.action IN (
+                    'AUTO_LISTING_AI_PROFILE_PUBLISH','AUTO_LISTING_AI_PROFILE_ROLLBACK'
+                  )
+                ORDER BY activation.occurred_at DESC,activation.event_id DESC NULLS LAST,activation.id DESC
+                LIMIT 1
+             ) latest_activation ON TRUE
+            WHERE p.account_id=$1
+              ${profileCursor ? "AND (p.created_at,p.id) < ($2::TIMESTAMPTZ,$3)" : ""}
+            ORDER BY p.created_at DESC,p.id DESC
+            LIMIT $${profileParams.length}`,
+          profileParams)).rows;
+        const activeProfileRow = (await query(client,
+          `SELECT p.*,
+                  latest_activation.action AS activation_action,
+                  latest_activation.occurred_at AS activation_occurred_at,
+                  latest_activation.actor_id AS activation_actor_id
+             FROM ai_gateway_profiles p
+             LEFT JOIN LATERAL (
+               SELECT activation.action,activation.occurred_at,activation.actor_id
+                 FROM audit_events activation
+                WHERE activation.account_id=p.account_id
+                  AND activation.entity_type='ai_gateway_profile'
+                  AND activation.entity_id=p.id
+                  AND activation.metadata->>'entityId'=p.id
+                  AND activation.metadata->>'configVersion'=p.config_version::TEXT
+                  AND activation.status='SUCCESS'
+                  AND activation.actor_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$'
+                  AND activation.action IN (
+                    'AUTO_LISTING_AI_PROFILE_PUBLISH','AUTO_LISTING_AI_PROFILE_ROLLBACK'
+                  )
+                ORDER BY activation.occurred_at DESC,activation.event_id DESC NULLS LAST,activation.id DESC
+                LIMIT 1
+             ) latest_activation ON TRUE
+            WHERE p.account_id=$1 AND p.enabled=TRUE
+            ORDER BY p.created_at DESC,p.id DESC
+            LIMIT 1`, [accountId])).rows[0] ?? null;
+
+        const visibleConnections = connectionRows.slice(0, pageSize);
+        const visibleProfiles = profileRows.slice(0, pageSize);
+        const references = new Map();
+        for (const row of [...visibleConnections, activeConnectionRow,
+          ...visibleProfiles, activeProfileRow].filter(Boolean)) {
+          const id = row.connection_id ?? row.id;
+          const version = row.connection_version ?? row.version;
+          if (typeof id === "string" && Number.isSafeInteger(Number(version)) && Number(version) > 0) {
+            references.set(`${id}\0${version}`, { id, version: Number(version) });
+          }
+        }
+        const refs = [...references.values()];
+        let catalogs = [];
+        let tasks = [];
+        if (refs.length > 0) {
+          const ids = refs.map((row) => row.id);
+          const versions = refs.map((row) => row.version);
+          catalogs = (await query(client,
+            `WITH refs(connection_id,connection_version) AS (
+               SELECT * FROM UNNEST($2::TEXT[],$3::INTEGER[])
+             )
+             SELECT DISTINCT ON (c.connection_id,c.connection_version) c.*
+               FROM refs r
+               JOIN ai_gateway_model_catalogs c
+                 ON c.account_id=$1 AND c.connection_id=r.connection_id
+                AND c.connection_version=r.connection_version
+               JOIN ai_gateway_model_sync_tasks t
+                 ON t.account_id=c.account_id AND t.id=c.sync_task_id
+                AND t.connection_id=c.connection_id AND t.connection_version=c.connection_version
+              WHERE t.sync_purpose='CATALOG_SYNC' AND t.status='SUCCEEDED'
+              ORDER BY c.connection_id,c.connection_version,c.created_at DESC,c.id DESC`,
+            [accountId, ids, versions])).rows;
+          const catalogIds = catalogs.map((row) => row.id);
+          tasks = (await query(client,
+            `WITH refs(connection_id,connection_version) AS (
+               SELECT * FROM UNNEST($2::TEXT[],$3::INTEGER[])
+             ), latest AS (
+               SELECT latest_task.*
+                 FROM refs r
+                 CROSS JOIN LATERAL (
+                   SELECT t.* FROM ai_gateway_model_sync_tasks t
+                    WHERE t.account_id=$1 AND t.connection_id=r.connection_id
+                      AND t.connection_version=r.connection_version AND t.sync_purpose='CATALOG_SYNC'
+                    ORDER BY t.created_at DESC,t.id DESC LIMIT 1
+                 ) latest_task
+             ), evidence AS (
+               SELECT t.* FROM ai_gateway_model_sync_tasks t
+                JOIN ai_gateway_model_catalogs c
+                  ON c.account_id=t.account_id AND c.sync_task_id=t.id
+               WHERE t.account_id=$1 AND c.id=ANY($4::TEXT[])
+             )
+             SELECT DISTINCT ON (bounded.id) bounded.*
+               FROM (SELECT * FROM latest UNION ALL SELECT * FROM evidence) bounded
+              ORDER BY bounded.id,bounded.created_at DESC`,
+            [accountId, ids, versions, catalogIds])).rows;
+        }
+        return {
+          accountId,
+          activeConnection: connectionDto(activeConnectionRow),
+          activeProfile: profileDto(activeProfileRow),
+          connections: visibleConnections.map((row) => connectionDto(row)),
+          catalogs: catalogs.map(catalogDto),
+          syncTasks: tasks.map((row) => taskDto(row)),
+          profiles: visibleProfiles.map((row) => profileDto(row)),
+          pageInfo: {
+            connections: {
+              pageSize,
+              next: connectionRows.length > pageSize
+                ? connectionPageCursor(visibleConnections.at(-1)) : null,
+            },
+            profiles: {
+              pageSize,
+              next: profileRows.length > pageSize ? profilePageCursor(visibleProfiles.at(-1)) : null,
+            },
+          },
+        };
+      }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    },
+
+    async loadSettingsCatalog(rawInput = {}) {
+      const input = exactKeys(rawInput, ["accountId", "catalogId"]);
+      const accountId = identifier(input.accountId);
+      const catalogId = identifier(input.catalogId);
+      const result = await query(pool,
+        `SELECT c.*,connection.status AS connection_status
+           FROM ai_gateway_model_catalogs c
+           JOIN ai_gateway_model_sync_tasks task
+             ON task.account_id=c.account_id AND task.id=c.sync_task_id
+            AND task.connection_id=c.connection_id AND task.connection_version=c.connection_version
+           JOIN ai_gateway_connection_versions connection
+             ON connection.account_id=c.account_id AND connection.id=c.connection_id
+            AND connection.version=c.connection_version
+          WHERE c.account_id=$1 AND c.id=$2
+            AND task.sync_purpose='CATALOG_SYNC' AND task.status='SUCCEEDED'
+            AND NOT EXISTS (
+              SELECT 1 FROM ai_gateway_model_catalogs newer
+              JOIN ai_gateway_model_sync_tasks newer_task
+                ON newer_task.account_id=newer.account_id AND newer_task.id=newer.sync_task_id
+             WHERE newer.account_id=c.account_id AND newer.connection_id=c.connection_id
+               AND newer.connection_version=c.connection_version
+               AND newer_task.sync_purpose='CATALOG_SYNC' AND newer_task.status='SUCCEEDED'
+               AND (newer.created_at,newer.id) > (c.created_at,c.id)
+            )
+          LIMIT 1`, [accountId, catalogId]);
+      const row = result.rows[0] ?? null;
+      if (!row) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CATALOG_NOT_FOUND", 404);
+      return {
+        catalog: catalogDto(row),
+        canCreateProfile: ["VALIDATED", "ACTIVE"].includes(row.connection_status),
+      };
+    },
+
+    async loadSettingsConnection(rawInput = {}) {
+      const input = exactKeys(rawInput, ["accountId", "connectionId", "connectionVersion"]);
+      const result = await query(pool,
+        `SELECT * FROM ai_gateway_connection_versions
+          WHERE account_id=$1 AND id=$2 AND version=$3
+          LIMIT 1`, [identifier(input.accountId), identifier(input.connectionId),
+          positiveInteger(input.connectionVersion)]);
+      return connectionDto(result.rows[0] ?? null);
     },
 
     async enqueueModelSync(rawInput = {}) {

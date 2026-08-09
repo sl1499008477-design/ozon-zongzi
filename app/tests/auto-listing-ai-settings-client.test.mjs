@@ -7,6 +7,7 @@ import {
   createGatewayConnection,
   createModelProfile,
   loadAiSettings,
+  loadAiSettingsCatalog,
   pollAiSettingsUntil,
   publishModelProfile,
   requestModelSync,
@@ -104,7 +105,10 @@ function catalog(overrides = {}) {
 }
 
 function overview(overrides = {}) {
-  return { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], syncTasks: [], profiles: [],
+  return { accountId: "account-a", activeConnection: null, activeProfile: null,
+    connections: [], catalogs: [], syncTasks: [], profiles: [],
+    pagination: { connections: { pageSize: 10, hasMore: false, nextCursor: null },
+      profiles: { pageSize: 10, hasMore: false, nextCursor: null } },
     actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] },
     ...overrides };
 }
@@ -230,7 +234,25 @@ async function task7ProducerOverview() {
   const pool = { async connect() { return client; }, async query() { return { rows: [] }; } };
   const producer = createAutoListingAiSettingsPostgres({ pool });
   const repository = { ...producer, connectionIdForIntent() { return "unused"; }, async createPendingConnection() {},
-    async enqueueModelSync() {}, async createProfileFromSelection() {} };
+    async enqueueModelSync() {}, async createProfileFromSelection() {},
+    async loadSettingsOverviewPage(input) {
+      const loaded = await producer.loadSettingsOverview({ accountId: input.accountId });
+      const catalogSyncIds = new Set(loaded.syncTasks.filter((task) => task.syncPurpose === "CATALOG_SYNC"
+        && task.status === "SUCCEEDED").map((task) => task.id));
+      return { ...loaded, activeProfile: loaded.profiles.find((row) => row.enabled) || null,
+        catalogs: loaded.catalogs.filter((row) => catalogSyncIds.has(row.syncTaskId)),
+        pageInfo: { connections: { pageSize: 10, next: null }, profiles: { pageSize: 10, next: null } } };
+    },
+    async loadSettingsCatalog(input) {
+      const loaded = await producer.loadSettingsOverview({ accountId: input.accountId });
+      const row = loaded.catalogs.find((candidate) => candidate.id === input.catalogId) || null;
+      return row ? { catalog: row, canCreateProfile: true } : null;
+    },
+    async loadSettingsConnection(input) {
+      const loaded = await producer.loadSettingsOverview({ accountId: input.accountId });
+      return loaded.connections.find((row) => row.id === input.connectionId
+        && row.version === input.connectionVersion) || null;
+    } };
   const service = createAutoListingAiSettingsService({ repository,
     profileRepository: { async publishProfile() {}, async prepareProfileRollback() {}, async rollbackProfile() {} },
     cipher: { encrypt() {}, fingerprint() {} }, capabilityService: { async testGatewayCapabilities() {} }, allowLocalGateway: true });
@@ -316,7 +338,7 @@ test("abort, 64 KiB body limits, accessors, proxies, secret or oversized respons
 });
 
 test("overview and polling only accept known terminal states and never promote unknown work", async (t) => {
-  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  const base = overview();
   let reads = 0;
   installTransport(t, async () => { reads += 1; return response({ ...base, syncTasks: [syncTask({ status: reads === 1 ? "LEASED" : "SUCCEEDED" })] }); });
   assert.equal((await loadAiSettings()).syncTasks[0].status, "LEASED");
@@ -326,7 +348,7 @@ test("overview and polling only accept known terminal states and never promote u
 });
 
 test("Task 7 sync status is closed to PENDING LEASED SUCCEEDED FAILED DEAD", async (t) => {
-  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  const base = overview();
   installTransport(t, async () => response({ ...base, syncTasks: [syncTask({ status: "LEASED" })] }));
   assert.equal((await loadAiSettings()).syncTasks[0].status, "LEASED");
   globalThis.fetch = async () => response({ ...base, syncTasks: [syncTask({ status: "RUNNING" })] });
@@ -379,7 +401,7 @@ test("Task 7 entity IDs reject whitespace and traversal while model IDs stay ind
 });
 
 test("overview rejects duplicate entity IDs and malformed nested validation evidence", async (t) => {
-  const base = { accountId: "account-a", activeConnection: null, catalogs: [], syncTasks: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  const base = overview();
   installTransport(t, async () => response({ ...base, connections: [connection(), connection()] }));
   await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
 });
@@ -419,7 +441,7 @@ test("client accepts the exact Task 7 repository and service overview DTO varian
   assert.deepEqual(loaded.connections[1].validationResult, rollbackCapability());
   assert.deepEqual(loaded.connections[2].validationResult, paidCapability());
   assert.deepEqual(loaded.catalogs[0].capabilityResult, catalogCapability());
-  assert.deepEqual(loaded.catalogs[1].capabilityResult, rollbackCapability());
+  assert.equal(loaded.catalogs[0].catalog.modelCount, 2);
   assert.deepEqual(loaded.profiles.map((row) => row.capabilityResult.outcome ?? "EMPTY"),
     ["NOT_TESTED", "PASSED", "FAILED", "EMPTY"]);
   assert.equal(loaded.syncTasks[0].availableAt, CHECKED_AT);
@@ -475,32 +497,9 @@ test("overview rejects every open or contradictory Task 7 nested DTO", async (t)
     ["connection profile rollback paid combination", (value) => { value.connections[2].validationResult.features = ["STRUCTURED_TEXT", "IMAGE_GENERATION"]; }],
     ["catalog capability open", (value) => { value.catalogs[0].capabilityResult.extra = true; }],
     ["catalog capability combination", (value) => { value.catalogs[0].capabilityResult.text = true; }],
-    ["rollback catalog capability open", (value) => { value.catalogs[1].capabilityResult.extra = true; }],
-    ["rollback catalog capability identity", (value) => { value.catalogs[1].capabilityResult.connectionVersion = 2; }],
-    ["rollback catalog capability combination", (value) => { value.catalogs[1].capabilityResult.checks.authentication = false; }],
-    ["rollback catalog envelope open", (value) => { value.catalogs[1].catalog.extra = true; }],
-    ["rollback catalog missing identity", (value) => { value.catalogs[1].rollbackEvidenceIdentity = null; }],
     ["catalog sync unexpected rollback identity", (value) => { value.catalogs[0].rollbackEvidenceIdentity = "f".repeat(64); }],
     ["active selection open", (value) => { value.catalogs[0].catalog.activeSelection = { profileId: "profile-paid", configVersion: 2, textModel: "text-a", imageModel: "image-a", extra: true }; value.catalogs[0].catalog.activeSelectionState = "AVAILABLE"; }],
     ["active selection state mismatch", (value) => { value.catalogs[0].catalog.activeSelectionState = "AVAILABLE"; }],
-    ["active selection missing contradiction", (value) => { value.catalogs[0].catalog.activeSelection = { profileId: "profile-paid", configVersion: 2, textModel: "text-a", imageModel: "image-a" }; value.catalogs[0].catalog.activeSelectionState = "MISSING"; }],
-    ["recommendation open", (value) => { value.catalogs[0].catalog.recommendation.extra = true; }],
-    ["candidate open", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].extra = true; }],
-    ["candidate score", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].score += 1; }],
-    ["candidate confidence", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].confidence = "DECLARED"; }],
-    ["candidate declaration without metadata", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0] = {
-      modelId: "text-a", score: 160, confidence: "DECLARED", verified: false,
-      reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_RESPONSES_PROTOCOL"] }; }],
-    ["candidate duplicate model ID", (value) => { value.catalogs[0].catalog.recommendation.textCandidates.push(structuredClone(value.catalogs[0].catalog.recommendation.textCandidates[0])); }],
-    ["candidate unknown reason", (value) => { value.catalogs[0].catalog.recommendation.textCandidates[0].reasonCodes = ["INTERNAL_HINT"]; }],
-    ["warning duplicate", (value) => { value.catalogs[0].catalog.recommendation.warnings.push("RECOMMENDATIONS_UNVERIFIED"); }],
-    ["warning combination", (value) => { value.catalogs[0].catalog.recommendation.warnings.push("NO_TEXT_MODEL_CANDIDATE"); }],
-    ["warning order", (value) => { value.catalogs[0].catalog.recommendation.textCandidates = [];
-      value.catalogs[0].catalog.recommendation.imageCandidates = [];
-      value.catalogs[0].catalog.recommendation.warnings = ["RECOMMENDATIONS_UNVERIFIED", "NO_IMAGE_MODEL_CANDIDATE", "NO_TEXT_MODEL_CANDIDATE"]; }],
-    ["model duplicate ID", (value) => { value.catalogs[0].catalog.models.push(structuredClone(value.catalogs[0].catalog.models[0])); }],
-    ["model noncanonical order", (value) => { value.catalogs[0].catalog.models.reverse(); }],
-    ["model traversal segment", (value) => { value.catalogs[0].catalog.models[0].id = "provider/../image-a"; }],
     ["request hash", (value) => { value.catalogs[0].catalog.requestIdHash = "not-a-hash"; }],
     ["catalog hash", (value) => { value.catalogs[0].catalogHash = "not-a-hash"; }],
     ["nullable testedAt", (value) => { value.catalogs[0].testedAt = null; }],
@@ -516,6 +515,65 @@ test("overview rejects every open or contradictory Task 7 nested DTO", async (t)
       current = structuredClone(baseline);
       mutate(current);
       await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+    });
+  }
+});
+
+test("explicit catalog endpoint rejects every open or contradictory full model directory DTO", async (t) => {
+  const baseline = { accountId: "account-a", catalog: catalog(), actions: { canCreateProfile: true } };
+  let current = baseline;
+  installTransport(t, async () => response(current));
+  assert.equal((await loadAiSettingsCatalog("catalog-a")).catalog.catalog.models.length, 2);
+  const cases = [
+    ["active selection missing contradiction", (value) => {
+      value.catalog.catalog.activeSelection = { profileId: "profile-paid", configVersion: 2,
+        textModel: "text-a", imageModel: "image-a" };
+      value.catalog.catalog.activeSelectionState = "MISSING";
+    }],
+    ["recommendation open", (value) => { value.catalog.catalog.recommendation.extra = true; }],
+    ["candidate open", (value) => { value.catalog.catalog.recommendation.textCandidates[0].extra = true; }],
+    ["candidate score", (value) => { value.catalog.catalog.recommendation.textCandidates[0].score += 1; }],
+    ["candidate confidence", (value) => { value.catalog.catalog.recommendation.textCandidates[0].confidence = "DECLARED"; }],
+    ["candidate declaration without metadata", (value) => {
+      value.catalog.catalog.recommendation.textCandidates[0] = {
+        modelId: "text-a", score: 160, confidence: "DECLARED", verified: false,
+        reasonCodes: ["DECLARED_STRUCTURED_TEXT", "DECLARED_RESPONSES_PROTOCOL"],
+      };
+    }],
+    ["candidate duplicate model ID", (value) => {
+      value.catalog.catalog.recommendation.textCandidates.push(
+        structuredClone(value.catalog.catalog.recommendation.textCandidates[0]),
+      );
+    }],
+    ["candidate unknown reason", (value) => {
+      value.catalog.catalog.recommendation.textCandidates[0].reasonCodes = ["INTERNAL_HINT"];
+    }],
+    ["warning duplicate", (value) => {
+      value.catalog.catalog.recommendation.warnings.push("RECOMMENDATIONS_UNVERIFIED");
+    }],
+    ["warning combination", (value) => {
+      value.catalog.catalog.recommendation.warnings.push("NO_TEXT_MODEL_CANDIDATE");
+    }],
+    ["warning order", (value) => {
+      value.catalog.catalog.recommendation.textCandidates = [];
+      value.catalog.catalog.recommendation.imageCandidates = [];
+      value.catalog.catalog.recommendation.warnings = [
+        "RECOMMENDATIONS_UNVERIFIED", "NO_IMAGE_MODEL_CANDIDATE", "NO_TEXT_MODEL_CANDIDATE",
+      ];
+    }],
+    ["model duplicate ID", (value) => {
+      value.catalog.catalog.models.push(structuredClone(value.catalog.catalog.models[0]));
+    }],
+    ["model noncanonical order", (value) => { value.catalog.catalog.models.reverse(); }],
+    ["model traversal segment", (value) => { value.catalog.catalog.models[0].id = "provider/../image-a"; }],
+  ];
+  for (const [label, mutate] of cases) {
+    await t.test(label, async () => {
+      current = structuredClone(baseline);
+      mutate(current);
+      await assert.rejects(loadAiSettingsCatalog("catalog-a"), {
+        code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID",
+      });
     });
   }
 });

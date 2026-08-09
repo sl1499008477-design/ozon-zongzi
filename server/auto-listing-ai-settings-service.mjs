@@ -27,13 +27,15 @@ function plainRecord(value) {
   }
 }
 
-function closed(value, keys, code = "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID") {
+function closed(value, keys, code = "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID", optional = new Set()) {
   try {
     if (!plainRecord(value)) throw settingsError(code);
     const ownKeys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (ownKeys.length !== keys.size || ownKeys.some((key) => typeof key !== "string" || !keys.has(key)
-      || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) {
+    if (ownKeys.length < keys.size || ownKeys.some((key) => typeof key !== "string"
+      || (!keys.has(key) && !optional.has(key))
+      || descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))
+      || [...keys].some((key) => !Object.hasOwn(descriptors, key))) {
       throw settingsError(code);
     }
     return Object.fromEntries(ownKeys.map((key) => [key, descriptors[key].value]));
@@ -41,6 +43,58 @@ function closed(value, keys, code = "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID") 
     if (error?.code === code) throw error;
     throw settingsError(code);
   }
+}
+
+function externalCursor(value, kind, accountId) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.length > 1024 || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+  }
+  let parsed;
+  try {
+    const decoded = Buffer.from(value, "base64url");
+    if (decoded.toString("base64url") !== value) throw new Error("non-canonical cursor");
+    parsed = JSON.parse(decoded.toString("utf8"));
+  } catch {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+  }
+  const keys = kind === "connections"
+    ? new Set(["v", "kind", "accountId", "createdAt", "fence", "id"])
+    : new Set(["v", "kind", "accountId", "createdAt", "id"]);
+  const cursor = closed(parsed, keys);
+  if (cursor.v !== 1 || cursor.kind !== kind || cursor.accountId !== accountId
+    || typeof cursor.createdAt !== "string" || Number.isNaN(Date.parse(cursor.createdAt))
+    || new Date(cursor.createdAt).toISOString() !== cursor.createdAt) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+  }
+  const result = { createdAt: cursor.createdAt, id: text(cursor.id) };
+  if (kind === "connections") {
+    if (typeof cursor.fence !== "string" || !/^[1-9][0-9]{0,18}$/u.test(cursor.fence)) {
+      throw settingsError("AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID");
+    }
+    result.fence = cursor.fence;
+  }
+  return result;
+}
+
+function encodeCursor(value, kind, accountId) {
+  if (value === null) return null;
+  const keys = kind === "connections"
+    ? new Set(["createdAt", "fence", "id"]) : new Set(["createdAt", "id"]);
+  const source = closed(value, keys, "AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY");
+  if (typeof source.createdAt !== "string" || Number.isNaN(Date.parse(source.createdAt))
+    || new Date(source.createdAt).toISOString() !== source.createdAt
+    || typeof source.id !== "string" || !SAFE_ID.test(source.id)) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+  }
+  if (kind === "connections"
+    && (typeof source.fence !== "string" || !/^[1-9][0-9]{0,18}$/u.test(source.fence))) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+  }
+  const cursor = kind === "connections"
+    ? { v: 1, kind, accountId, createdAt: source.createdAt, fence: source.fence, id: source.id }
+    : { v: 1, kind, accountId, createdAt: source.createdAt, id: source.id };
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
 function text(value, { maximum = 240, pattern = SAFE_ID } = {}) {
@@ -116,6 +170,36 @@ function latestCatalogs(overview) {
   return result;
 }
 
+function catalogSummary(row) {
+  const catalog = plainRecord(row?.catalog) ? row.catalog : null;
+  const models = Array.isArray(catalog?.models) ? catalog.models : null;
+  if (!catalog || !models || models.length > 2_000) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_INVALID", 500);
+  }
+  return {
+    id: row.id,
+    accountId: row.accountId,
+    connectionId: row.connectionId,
+    connectionVersion: row.connectionVersion,
+    syncTaskId: row.syncTaskId,
+    catalog: {
+      schemaVersion: catalog.schemaVersion,
+      connectionVersion: catalog.connectionVersion,
+      syncedAt: catalog.syncedAt,
+      requestIdHash: catalog.requestIdHash,
+      activeSelectionState: catalog.activeSelectionState,
+      activeSelection: catalog.activeSelection,
+      modelCount: models.length,
+    },
+    catalogHash: row.catalogHash,
+    capabilityResult: row.capabilityResult,
+    capabilityHash: row.capabilityHash,
+    rollbackEvidenceIdentity: row.rollbackEvidenceIdentity,
+    testedAt: row.testedAt,
+    createdAt: row.createdAt,
+  };
+}
+
 function explicitActions(overview) {
   const connections = Array.isArray(overview.connections) ? overview.connections : [];
   const profiles = Array.isArray(overview.profiles) ? overview.profiles : [];
@@ -162,8 +246,8 @@ function explicitActions(overview) {
 }
 
 function requireDependencies(repository, profileRepository, cipher, capabilityService) {
-  const repositoryMethods = ["connectionIdForIntent", "loadSettingsOverview", "createPendingConnection",
-    "enqueueModelSync", "createProfileFromSelection"];
+  const repositoryMethods = ["connectionIdForIntent", "loadSettingsOverviewPage", "loadSettingsCatalog",
+    "loadSettingsConnection", "createPendingConnection", "enqueueModelSync", "createProfileFromSelection"];
   const profileMethods = ["publishProfile", "prepareProfileRollback", "rollbackProfile"];
   if (!repository || repositoryMethods.some((method) => typeof repository[method] !== "function")
     || !profileRepository || profileMethods.some((method) => typeof profileRepository[method] !== "function")
@@ -183,14 +267,67 @@ export function createAutoListingAiSettingsService({
 
   return Object.freeze({
     async getOverview(raw = {}) {
-      const input = closed(raw, new Set(["actor"]));
+      const input = closed(raw, new Set(["actor"]), "AUTO_LISTING_AI_SETTINGS_REQUEST_INVALID",
+        new Set(["connectionCursor", "profileCursor"]));
       const accountId = actorScope(input.actor);
-      const loaded = await repository.loadSettingsOverview({ accountId });
+      const loaded = await repository.loadSettingsOverviewPage({
+        accountId,
+        connectionCursor: externalCursor(input.connectionCursor, "connections", accountId),
+        profileCursor: externalCursor(input.profileCursor, "profiles", accountId),
+        pageSize: 10,
+      });
       const safe = safeValue(loaded, accountId);
-      if (!plainRecord(safe) || safe.accountId !== accountId) {
+      if (!plainRecord(safe) || safe.accountId !== accountId || !plainRecord(safe.pageInfo)
+        || !plainRecord(safe.pageInfo.connections) || !plainRecord(safe.pageInfo.profiles)) {
         throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
       }
-      return Object.freeze({ ...safe, actions: explicitActions(safe) });
+      const actionSource = {
+        ...safe,
+        profiles: [...(Array.isArray(safe.profiles) ? safe.profiles : []),
+          ...(safe.activeProfile && !(safe.profiles || []).some((row) => row?.id === safe.activeProfile.id)
+            ? [safe.activeProfile] : [])],
+      };
+      const pagination = {
+        connections: {
+          pageSize: safe.pageInfo.connections.pageSize,
+          hasMore: safe.pageInfo.connections.next !== null,
+          nextCursor: encodeCursor(safe.pageInfo.connections.next, "connections", accountId),
+        },
+        profiles: {
+          pageSize: safe.pageInfo.profiles.pageSize,
+          hasMore: safe.pageInfo.profiles.next !== null,
+          nextCursor: encodeCursor(safe.pageInfo.profiles.next, "profiles", accountId),
+        },
+      };
+      return Object.freeze({
+        accountId,
+        activeConnection: safe.activeConnection ?? null,
+        activeProfile: safe.activeProfile ?? null,
+        connections: Array.isArray(safe.connections) ? safe.connections : [],
+        catalogs: (Array.isArray(safe.catalogs) ? safe.catalogs : []).map(catalogSummary),
+        syncTasks: Array.isArray(safe.syncTasks) ? safe.syncTasks : [],
+        profiles: Array.isArray(safe.profiles) ? safe.profiles : [],
+        pagination,
+        actions: explicitActions(actionSource),
+      });
+    },
+
+    async getCatalog(raw = {}) {
+      const input = closed(raw, new Set(["actor", "catalogId"]));
+      const accountId = actorScope(input.actor);
+      const loaded = await repository.loadSettingsCatalog({
+        accountId, catalogId: text(input.catalogId),
+      });
+      const safe = safeValue(loaded, accountId);
+      if (!plainRecord(safe) || !plainRecord(safe.catalog)
+        || safe.catalog.accountId !== accountId || typeof safe.canCreateProfile !== "boolean") {
+        throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+      }
+      return Object.freeze({
+        accountId,
+        catalog: safe.catalog,
+        actions: Object.freeze({ canCreateProfile: safe.canCreateProfile }),
+      });
     },
 
     async createConnection(raw = {}) {
@@ -230,10 +367,12 @@ export function createAutoListingAiSettingsService({
       const accountId = actorScope(input.actor);
       const connectionId = text(input.connectionId);
       const connectionVersion = version(input.connectionVersion);
-      const loaded = await repository.loadSettingsOverview({ accountId });
-      const connection = Array.isArray(loaded?.connections) ? loaded.connections.find((candidate) =>
-        candidate?.accountId === accountId && candidate?.id === connectionId
-        && candidate?.version === connectionVersion) : null;
+      const connection = await repository.loadSettingsConnection({
+        accountId, connectionId, connectionVersion,
+      });
+      if (connection && connection.accountId !== accountId) {
+        throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+      }
       if (!connection) throw settingsError("AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", 404);
       if (!["PENDING", "VALIDATED", "ACTIVE"].includes(connection.status)
         || !Number.isSafeInteger(connection.statusVersion)) {

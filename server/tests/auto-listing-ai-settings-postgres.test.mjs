@@ -73,7 +73,10 @@ test("settings PostgreSQL repository factory is closed and exposes the exact sta
     "loadCatalogSyncConnectionForSecretResolution",
     "loadConnectionForSecretResolution",
     "loadRollbackConnectionForSecretResolution",
+    "loadSettingsCatalog",
+    "loadSettingsConnection",
     "loadSettingsOverview",
+    "loadSettingsOverviewPage",
     "markConnectionValidated",
   ]);
   assert.throws(() => createAutoListingAiSettingsPostgres({ pool, secret: "raw" }), {

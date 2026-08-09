@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aiSettingsPresentation } from "../src/auto-listing-ai-settings-view.js";
+import { aiSettingsModelOptions, aiSettingsPresentation } from "../src/auto-listing-ai-settings-view.js";
 
 const CHECKED_AT = "2026-08-08T00:00:00.000Z";
+
+test("model selection keeps every catalog model reachable while ranking recommendations first", () => {
+  const models = Array.from({ length: 2_000 }, (_unused, index) => ({
+    id: `model-${String(index).padStart(4, "0")}`, ownedBy: "provider", metadata: {},
+  }));
+  const options = aiSettingsModelOptions({ catalog: { models } }, [
+    { modelId: "model-1999", reasons: ["支持图片生成"] },
+  ]);
+  assert.equal(options.length, 2_000);
+  assert.deepEqual(options[0], {
+    value: "model-1999", recommended: true, reasons: ["支持图片生成"],
+  });
+  assert.equal(options.at(-1).value, "model-1998");
+});
 
 function paidCapability(overrides = {}) {
   return { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],

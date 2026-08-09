@@ -9,6 +9,8 @@ function harness({ actor = admin, service = null, readResult = {} } = {}) {
   const calls = [];
   const activeService = service ?? Object.freeze({
     async getOverview(input) { calls.push(["overview", input]); return { accountId: "account-a", actions: {} }; },
+    async getCatalog(input) { calls.push(["catalog", input]); return { accountId: "account-a",
+      catalog: { id: input.catalogId }, actions: { canCreateProfile: true } }; },
     async createConnection(input) { calls.push(["connection", input]); return { id: "connection-a", status: "PENDING" }; },
     async requestModelSync(input) { calls.push(["sync", input]); return { id: "sync-a", status: "PENDING" }; },
     async createProfileSelection(input) { calls.push(["selection", input]); return { id: "profile-a", enabled: false }; },
@@ -34,6 +36,7 @@ function harness({ actor = admin, service = null, readResult = {} } = {}) {
 test("settings routes expose only the stable path and method allowlist", async () => {
   const cases = [
     ["GET", "/admin/auto-listing/ai-settings", "overview"],
+    ["GET", "/admin/auto-listing/ai-settings/catalogs/catalog-a", "catalog"],
     ["POST", "/admin/auto-listing/ai-settings/connections", "connection"],
     ["POST", "/admin/auto-listing/ai-settings/connections/connection-a/sync", "sync"],
     ["POST", "/admin/auto-listing/ai-settings/profiles", "selection"],
