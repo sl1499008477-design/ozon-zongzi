@@ -60,6 +60,27 @@ function applicationEnvUpdate(current) {
   return { changed: true, content: `${prefix}${additions.join(newline)}${newline}` };
 }
 
+function stackEnvironmentUpdate(current) {
+  const values = envLineValues(current, "SUB2API_TOTP_ENCRYPTION_KEY");
+  if (values.length !== 1 || /^[0-9a-f]{64}$/u.test(values[0])) {
+    return { changed: false, content: current };
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(values[0])) {
+    return { changed: false, content: current };
+  }
+  const decoded = Buffer.from(values[0], "base64url");
+  if (decoded.length !== 32 || decoded.toString("base64url") !== values[0]) {
+    return { changed: false, content: current };
+  }
+  return {
+    changed: true,
+    content: current.replace(
+      /^(?:export\s+)?SUB2API_TOTP_ENCRYPTION_KEY=.*$/mu,
+      `SUB2API_TOTP_ENCRYPTION_KEY=${decoded.toString("hex")}`,
+    ),
+  };
+}
+
 async function createTimestampedBackup(filePath, content) {
   const directory = path.dirname(filePath);
   const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
@@ -92,6 +113,10 @@ function secret() {
   return randomBytes(32).toString("base64url");
 }
 
+function hexSecret() {
+  return randomBytes(32).toString("hex");
+}
+
 function newStackEnvironment() {
   return [
     "SUB2API_PORT=8080",
@@ -102,7 +127,7 @@ function newStackEnvironment() {
     `SUB2API_REDIS_PASSWORD=${secret()}`,
     `SUB2API_ADMIN_PASSWORD=${secret()}`,
     `SUB2API_JWT_SECRET=${secret()}`,
-    `SUB2API_TOTP_ENCRYPTION_KEY=${secret()}`,
+    `SUB2API_TOTP_ENCRYPTION_KEY=${hexSecret()}`,
     "",
   ].join("\n");
 }
@@ -130,7 +155,7 @@ export function commandInvocations(command, rootDir) {
     down: [["down"]],
     status: [["ps"]],
     logs: [["logs", "-f", "sub2api"]],
-    upgrade: [["pull", "sub2api"], ["up", "-d", "--pull", "never"]],
+    upgrade: [["pull"], ["up", "-d", "--pull", "never"]],
   };
   const actions = lifecycleActions[command];
   if (!actions) throw new Error(`Unsupported local sub2api command: ${command}`);
@@ -147,8 +172,18 @@ export async function bootstrapLocalSub2Api({ rootDir }) {
 
   await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
   await chmod(dataDirectory, 0o700);
-  await createPrivateFileIfMissing(stackEnvPath, newStackEnvironment());
+  const stackEnvCreated = await createPrivateFileIfMissing(stackEnvPath, newStackEnvironment());
   await createPrivateFileIfMissing(masterKeyPath, `${secret()}\n`);
+
+  let stackEnvBackupPath;
+  if (!stackEnvCreated) {
+    const existingStackEnv = await readTextIfPresent(stackEnvPath);
+    const stackUpdate = stackEnvironmentUpdate(existingStackEnv.content);
+    if (stackUpdate.changed) {
+      stackEnvBackupPath = await createTimestampedBackup(stackEnvPath, existingStackEnv.content);
+      await atomicWritePrivateFile(stackEnvPath, stackUpdate.content);
+    }
+  }
 
   let applicationEnvBackupPath;
   if (applicationUpdate.changed) {
@@ -163,6 +198,7 @@ export async function bootstrapLocalSub2Api({ rootDir }) {
   return {
     dashboardUrl: DASHBOARD_URL,
     stackEnvPath,
+    stackEnvBackupPath,
     masterKeyPath,
     applicationEnvBackupPath,
   };
@@ -185,6 +221,7 @@ export async function runSub2ApiLocalCommand(command, {
     const result = await bootstrapLocalSub2Api({ rootDir });
     write(`Local sub2API data: ${path.dirname(result.stackEnvPath)}\n`);
     if (result.applicationEnvBackupPath) write(`Application .env backup: ${result.applicationEnvBackupPath}\n`);
+    if (result.stackEnvBackupPath) write(`Local sub2API env backup: ${result.stackEnvBackupPath}\n`);
     write(`Dashboard: ${result.dashboardUrl}\n`);
     return result;
   }

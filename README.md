@@ -104,6 +104,27 @@ This starts:
 
 The dashboard binding form saves Ozon `Client ID` and `API Key` to the local API. `全部同步` starts the copied browser extension sync when the extension is installed; if the extension is not detected, it falls back to the local API's read-only Ozon Seller API sync for products, postings, and warehouses.
 
+### Local sub2API for automatic listing
+
+The AI model gateway is an isolated local Compose project. Bootstrap and start it from the workspace root:
+
+```bash
+pnpm sub2api:bootstrap
+pnpm sub2api:upgrade # first install: explicitly pull the entire pinned stack and start it
+pnpm sub2api:status
+```
+
+After the images have been installed, normal restarts use `pnpm sub2api:up`; that command never pulls or upgrades images implicitly.
+
+- sub2API dashboard: `http://127.0.0.1:8080/`
+- `ozon 粽子` AI model settings: `http://127.0.0.1:3000/ozon/tools/auto-listing/ai-settings`
+- show the local sub2API administrator once in the current terminal: `pnpm sub2api:credentials`
+- stop only the isolated project while retaining data: `pnpm sub2api:down`
+
+Configure the upstream AI account in the sub2API dashboard, create a dedicated gateway Key, then enter that Key on the Web settings page. Model synchronization reads only `/v1/models` and does not generate text or images. The explicit capability test performs one structured-text probe and one minimum-cost image probe, so it must be run only after acknowledging the cost warning. The full Key is encrypted and cannot be read back.
+
+Detailed start/stop, backup, upgrade, production replacement, safe errors, and rollback instructions are in [`docs/architecture/local-sub2api-operations.md`](docs/architecture/local-sub2api-operations.md).
+
 ## Desktop Collector
 
 The cross-platform collector lives in `desktop/`. It uses the Sonli account/session, account-owned operating store and verified Seller data store. Tasks, runs, leases, events, item results, Seller Analytics snapshots, 63-column Excel exports and collect-box ingestion are persisted through the Sonli API.

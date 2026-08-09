@@ -9,6 +9,8 @@ function enabledEnv(overrides = {}) {
     AUTO_LISTING_AI_ENABLED: "1",
     AUTO_LISTING_AI_ALLOWED_SECRET_ENV_NAMES: "SUB2API_API_KEY",
     AUTO_LISTING_AI_ALLOWED_GATEWAY_BASE_URLS: "https://gateway.invalid/v1",
+    AUTO_LISTING_CREDENTIAL_MASTER_KEY: Buffer.alloc(32, 7).toString("base64url"),
+    AUTO_LISTING_CREDENTIAL_KEY_VERSION: "runtime-v1",
     SUB2API_API_KEY: "test-only-key",
     ...overrides,
   };

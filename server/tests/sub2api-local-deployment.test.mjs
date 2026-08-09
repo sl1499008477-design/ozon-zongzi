@@ -46,6 +46,7 @@ test("bootstrap creates private local secrets, preserves unrelated application s
   assert.match(appEnv, /^AUTO_LISTING_CREDENTIAL_KEY_VERSION=local-v1$/m);
   assert.match(stackEnv, /^SUB2API_ADMIN_EMAIL=admin@sub2api\.local$/m);
   assert.match(stackEnv, /^SUB2API_ADMIN_PASSWORD=.+$/m);
+  assert.match(stackEnv, /^SUB2API_TOTP_ENCRYPTION_KEY=[0-9a-f]{64}$/m);
   assert.equal(appEnvMode, 0o600);
   assert.equal(stackEnvMode, 0o600);
   assert.equal(masterKeyMode, 0o600);
@@ -99,7 +100,39 @@ test("bootstrap preserves existing local stack secrets instead of regenerating t
   assert.equal(await readFile(masterKeyPath, "utf8"), masterKey);
 });
 
-test("normal lifecycle commands do not pull, while upgrade alone pulls the pinned sub2api service", () => {
+test("bootstrap migrates the legacy TOTP representation without rotating stack credentials", async (t) => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "sonli-sub2api-local-legacy-totp-"));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  const dataDirectory = path.join(rootDir, "server-data/sub2api-local");
+  const stackEnvPath = path.join(dataDirectory, ".env");
+  const legacyKey = Buffer.alloc(32, 0xab).toString("base64url");
+  const stackEnv = [
+    "SUB2API_POSTGRES_PASSWORD=keep-postgres",
+    "SUB2API_REDIS_PASSWORD=keep-redis",
+    "SUB2API_ADMIN_PASSWORD=keep-admin",
+    "SUB2API_JWT_SECRET=keep-jwt",
+    `SUB2API_TOTP_ENCRYPTION_KEY=${legacyKey}`,
+    "",
+  ].join("\n");
+  await mkdir(dataDirectory, { recursive: true });
+  await writeFile(stackEnvPath, stackEnv, { mode: 0o600 });
+
+  const migrated = await bootstrapLocalSub2Api({ rootDir });
+  const updated = await readFile(stackEnvPath, "utf8");
+  assert.match(updated, /^SUB2API_POSTGRES_PASSWORD=keep-postgres$/m);
+  assert.match(updated, /^SUB2API_REDIS_PASSWORD=keep-redis$/m);
+  assert.match(updated, /^SUB2API_ADMIN_PASSWORD=keep-admin$/m);
+  assert.match(updated, /^SUB2API_JWT_SECRET=keep-jwt$/m);
+  assert.match(updated, new RegExp(`^SUB2API_TOTP_ENCRYPTION_KEY=${"ab".repeat(32)}$`, "m"));
+  assert.equal(await readFile(migrated.stackEnvBackupPath, "utf8"), stackEnv);
+  assert.equal((await stat(migrated.stackEnvBackupPath)).mode & 0o777, 0o600);
+
+  const repeated = await bootstrapLocalSub2Api({ rootDir });
+  assert.equal(repeated.stackEnvBackupPath, undefined);
+  assert.equal(await readFile(stackEnvPath, "utf8"), updated);
+});
+
+test("normal lifecycle commands do not pull, while upgrade alone pulls the pinned stack", () => {
   const rootDir = "/workspace/sonli";
   assert.deepEqual(composeInvocation(["up", "-d", "--pull", "never"], rootDir), [
     "compose",
@@ -121,7 +154,7 @@ test("normal lifecycle commands do not pull, while upgrade alone pulls the pinne
   assert.deepEqual(commandInvocations("upgrade", rootDir), [[
     "compose", "--project-name", "sonli-sub2api-local", "--env-file",
     "/workspace/sonli/server-data/sub2api-local/.env", "-f",
-    "/workspace/sonli/deploy/sub2api-local/docker-compose.yml", "pull", "sub2api",
+    "/workspace/sonli/deploy/sub2api-local/docker-compose.yml", "pull",
   ], [
     "compose", "--project-name", "sonli-sub2api-local", "--env-file",
     "/workspace/sonli/server-data/sub2api-local/.env", "-f",
@@ -142,5 +175,5 @@ test("upgrade stops after a failed pull instead of starting an unverified image"
     }),
     (error) => error?.code === "SUB2API_LOCAL_DOCKER_FAILED" && error?.exitCode === 17,
   );
-  assert.deepEqual(spawnedActions.map((arguments_) => arguments_.at(-2)), ["pull"]);
+  assert.deepEqual(spawnedActions.map((arguments_) => arguments_.at(-1)), ["pull"]);
 });

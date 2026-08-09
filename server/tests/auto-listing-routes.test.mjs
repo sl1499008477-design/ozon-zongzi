@@ -429,6 +429,7 @@ test("runtime initializes once concurrently and retries after failure", async ()
   let repositories = 0;
   let services = 0;
   const runtime = createAutoListingRuntime({
+    env: {},
     getPostgresPool: async () => { pools += 1; if (pools === 1) throw new Error("temporary"); return { id: "pool" }; },
     createRepository: ({ pool }) => { repositories += 1; return { pool }; },
     createService: ({ repository }) => { services += 1; return { repository }; },
