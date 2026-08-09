@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -132,6 +132,69 @@ test("bootstrap migrates the legacy TOTP representation without rotating stack c
   assert.equal(await readFile(stackEnvPath, "utf8"), updated);
 });
 
+test("bootstrap rejects symlinked secret and env targets without reading, replacing, or chmodding their victims", async (t) => {
+  for (const relativePath of [
+    ".env",
+    "server-data/sub2api-local/.env",
+    "server-data/sub2api-local/credential-master.key",
+  ]) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "sonli-sub2api-local-symlink-"));
+    t.after(() => rm(rootDir, { recursive: true, force: true }));
+    const victimPath = path.join(rootDir, "victim");
+    const targetPath = path.join(rootDir, relativePath);
+    await writeFile(victimPath, "victim-must-not-change\n", { mode: 0o640 });
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await symlink(victimPath, targetPath);
+
+    await assert.rejects(
+      bootstrapLocalSub2Api({ rootDir }),
+      (error) => error?.code === "SUB2API_LOCAL_UNSAFE_FILE" && error?.path === targetPath,
+      relativePath,
+    );
+    assert.equal(await readFile(victimPath, "utf8"), "victim-must-not-change\n", relativePath);
+    assert.equal((await stat(victimPath)).mode & 0o777, 0o640, relativePath);
+  }
+});
+
+test("bootstrap rejects non-regular secret and env targets", async (t) => {
+  for (const relativePath of [
+    ".env",
+    "server-data/sub2api-local/.env",
+    "server-data/sub2api-local/credential-master.key",
+  ]) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "sonli-sub2api-local-nonregular-"));
+    t.after(() => rm(rootDir, { recursive: true, force: true }));
+    const targetPath = path.join(rootDir, relativePath);
+    await mkdir(targetPath, { recursive: true });
+
+    await assert.rejects(
+      bootstrapLocalSub2Api({ rootDir }),
+      (error) => error?.code === "SUB2API_LOCAL_UNSAFE_FILE" && error?.path === targetPath,
+      relativePath,
+    );
+  }
+});
+
+test("bootstrap rejects symlinked local secret directories instead of creating files through them", async (t) => {
+  for (const relativeDirectory of ["server-data", "server-data/sub2api-local"]) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "sonli-sub2api-local-directory-symlink-"));
+    t.after(() => rm(rootDir, { recursive: true, force: true }));
+    const victimDirectory = path.join(rootDir, "victim-directory");
+    const targetDirectory = path.join(rootDir, relativeDirectory);
+    await mkdir(victimDirectory);
+    await mkdir(path.dirname(targetDirectory), { recursive: true });
+    await symlink(victimDirectory, targetDirectory);
+
+    await assert.rejects(
+      bootstrapLocalSub2Api({ rootDir }),
+      (error) => error?.code === "SUB2API_LOCAL_UNSAFE_DIRECTORY" && error?.path === targetDirectory,
+      relativeDirectory,
+    );
+    await assert.rejects(readFile(path.join(victimDirectory, ".env")), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(victimDirectory, "credential-master.key")), { code: "ENOENT" });
+  }
+});
+
 test("normal lifecycle commands do not pull, while upgrade alone pulls the pinned stack", () => {
   const rootDir = "/workspace/sonli";
   assert.deepEqual(composeInvocation(["up", "-d", "--pull", "never"], rootDir), [
@@ -176,4 +239,48 @@ test("upgrade stops after a failed pull instead of starting an unverified image"
     (error) => error?.code === "SUB2API_LOCAL_DOCKER_FAILED" && error?.exitCode === 17,
   );
   assert.deepEqual(spawnedActions.map((arguments_) => arguments_.at(-1)), ["pull"]);
+});
+
+test("ordinary logs command emits only a whitelisted service summary and never relays vendor log text", async () => {
+  const writes = [];
+  const calls = [];
+  await runSub2ApiLocalCommand("logs", {
+    rootDir: "/workspace/sonli",
+    write: (message) => writes.push(message),
+    spawn: (_command, arguments_, options) => {
+      calls.push({ arguments_, options });
+      return {
+        status: 0,
+        stdout: [
+          JSON.stringify({ Service: "sub2api", State: "running", Health: "healthy", Labels: "Bearer vendor-secret" }),
+          JSON.stringify({ Service: "postgres", State: "running", Health: "healthy", Error: "raw upstream response" }),
+        ].join("\n"),
+        stderr: "Authorization: vendor-secret",
+      };
+    },
+  });
+
+  const output = writes.join("");
+  assert.deepEqual(calls[0].arguments_.slice(-3), ["ps", "--format", "json"]);
+  assert.equal(calls[0].options.stdio, undefined);
+  assert.match(output, /sub2api: state=running, health=healthy/u);
+  assert.match(output, /postgres: state=running, health=healthy/u);
+  assert.doesNotMatch(output, /vendor-secret|Authorization|Bearer|raw upstream response/u);
+});
+
+test("raw vendor logs require the explicit high-risk command and print a warning before terminal passthrough", async () => {
+  const events = [];
+  await runSub2ApiLocalCommand("raw-logs", {
+    rootDir: "/workspace/sonli",
+    write: (message) => events.push({ type: "write", message }),
+    spawn: (_command, arguments_, options) => {
+      events.push({ type: "spawn", arguments_, options });
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(events[0].type, "write");
+  assert.match(events[0].message, /高风险|原始|不要.*重定向/u);
+  assert.deepEqual(events[1].arguments_.slice(-3), ["logs", "-f", "sub2api"]);
+  assert.equal(events[1].options.stdio, "inherit");
 });

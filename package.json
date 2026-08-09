@@ -13,6 +13,7 @@
     "sub2api:down": "node scripts/sub2api-local.mjs down",
     "sub2api:status": "node scripts/sub2api-local.mjs status",
     "sub2api:logs": "node scripts/sub2api-local.mjs logs",
+    "sub2api:logs:raw": "node scripts/sub2api-local.mjs raw-logs",
     "sub2api:credentials": "node scripts/sub2api-local.mjs credentials",
     "sub2api:upgrade": "node scripts/sub2api-local.mjs upgrade",
     "test:pipeline": "node server/tests/listing-pipeline-v3.integration.mjs",

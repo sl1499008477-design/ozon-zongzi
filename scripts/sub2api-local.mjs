@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,12 +34,92 @@ function envLineValue(source, key) {
   return envLineValues(source, key).at(-1);
 }
 
-async function readTextIfPresent(filePath) {
+function unsafeFileError(filePath) {
+  const error = new Error(`Refusing unsafe local secret or env path: ${filePath}`);
+  error.code = "SUB2API_LOCAL_UNSAFE_FILE";
+  error.path = filePath;
+  return error;
+}
+
+function unsafeDirectoryError(directoryPath) {
+  const error = new Error(`Refusing unsafe local secret directory: ${directoryPath}`);
+  error.code = "SUB2API_LOCAL_UNSAFE_DIRECTORY";
+  error.path = directoryPath;
+  return error;
+}
+
+async function ensureDirectoryNoFollow(directoryPath, { privateMode = false } = {}) {
   try {
-    return { exists: true, content: await readFile(filePath, "utf8") };
+    await mkdir(directoryPath, { mode: privateMode ? 0o700 : 0o755 });
   } catch (error) {
-    if (error?.code === "ENOENT") return { exists: false, content: "" };
+    if (error?.code !== "EEXIST") throw error;
+  }
+  let status;
+  try {
+    status = await lstat(directoryPath);
+  } catch (error) {
+    if (["ELOOP", "EMLINK"].includes(error?.code)) throw unsafeDirectoryError(directoryPath);
     throw error;
+  }
+  if (status.isSymbolicLink() || !status.isDirectory()) throw unsafeDirectoryError(directoryPath);
+
+  let handle;
+  try {
+    handle = await open(directoryPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const openedStatus = await handle.stat();
+    if (!openedStatus.isDirectory()) throw unsafeDirectoryError(directoryPath);
+    if (privateMode) await handle.chmod(0o700);
+  } catch (error) {
+    if (["ELOOP", "EMLINK"].includes(error?.code)) throw unsafeDirectoryError(directoryPath);
+    throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function regularFileStatus(filePath) {
+  try {
+    const status = await lstat(filePath);
+    if (status.isSymbolicLink() || !status.isFile()) throw unsafeFileError(filePath);
+    return status;
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function openRegularFileNoFollow(filePath, flags = constants.O_RDONLY) {
+  await regularFileStatus(filePath);
+  let handle;
+  try {
+    handle = await open(filePath, flags | constants.O_NOFOLLOW);
+    const status = await handle.stat();
+    if (!status.isFile()) throw unsafeFileError(filePath);
+    return handle;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    if (["ELOOP", "EMLINK"].includes(error?.code)) throw unsafeFileError(filePath);
+    throw error;
+  }
+}
+
+async function readTextIfPresent(filePath) {
+  const status = await regularFileStatus(filePath);
+  if (!status) return { exists: false, content: "" };
+  const handle = await openRegularFileNoFollow(filePath);
+  try {
+    return { exists: true, content: await handle.readFile("utf8") };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function chmodPrivateRegularFile(filePath) {
+  const handle = await openRegularFileNoFollow(filePath);
+  try {
+    await handle.chmod(0o600);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -86,11 +167,20 @@ async function createTimestampedBackup(filePath, content) {
   const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const backupPath = path.join(directory, `.env.sub2api-local-${timestamp}-${randomUUID()}.bak`);
+    let handle;
     try {
-      await writeFile(backupPath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      handle = await open(
+        backupPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+      await handle.writeFile(content, "utf8");
+      await handle.chmod(0o600);
       return backupPath;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
+    } finally {
+      await handle?.close();
     }
   }
   throw new Error("Unable to create an .env backup without replacing an existing file.");
@@ -98,13 +188,22 @@ async function createTimestampedBackup(filePath, content) {
 
 async function atomicWritePrivateFile(filePath, content) {
   const temporaryPath = path.join(path.dirname(filePath), `.env.sub2api-local-${randomUUID()}.tmp`);
+  let handle;
   let renamed = false;
   try {
-    await writeFile(temporaryPath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    handle = await open(
+      temporaryPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    await handle.writeFile(content, "utf8");
+    await handle.chmod(0o600);
+    await handle.close();
+    handle = undefined;
     await rename(temporaryPath, filePath);
     renamed = true;
-    await chmod(filePath, 0o600);
   } finally {
+    await handle?.close().catch(() => {});
     if (!renamed) await unlink(temporaryPath).catch(() => {});
   }
 }
@@ -133,13 +232,27 @@ function newStackEnvironment() {
 }
 
 async function createPrivateFileIfMissing(filePath, contents) {
+  let handle;
   try {
-    await writeFile(filePath, contents, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    handle = await open(
+      filePath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    await handle.writeFile(contents, "utf8");
+    await handle.chmod(0o600);
     return true;
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    await chmod(filePath, 0o600);
+    const existingHandle = await openRegularFileNoFollow(filePath);
+    try {
+      await existingHandle.chmod(0o600);
+    } finally {
+      await existingHandle.close();
+    }
     return false;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -154,7 +267,8 @@ export function commandInvocations(command, rootDir) {
     up: [["up", "-d", "--pull", "never"]],
     down: [["down"]],
     status: [["ps"]],
-    logs: [["logs", "-f", "sub2api"]],
+    logs: [["ps", "--format", "json"]],
+    "raw-logs": [["logs", "-f", "sub2api"]],
     upgrade: [["pull"], ["up", "-d", "--pull", "never"]],
   };
   const actions = lifecycleActions[command];
@@ -162,16 +276,54 @@ export function commandInvocations(command, rootDir) {
   return actions.map((action) => composeInvocation(action, rootDir));
 }
 
+const SAFE_SERVICE_NAMES = new Set(["sub2api", "postgres", "redis"]);
+const SAFE_SERVICE_STATES = new Set(["created", "running", "restarting", "exited", "paused", "dead", "removing"]);
+const SAFE_SERVICE_HEALTH = new Set(["healthy", "unhealthy", "starting", "none"]);
+
+function composeRows(stdout) {
+  const source = String(stdout || "").trim();
+  if (!source) return [];
+  try {
+    const value = JSON.parse(source);
+    return Array.isArray(value) ? value : [value];
+  } catch {
+    return source.split(/\r?\n/gu).flatMap((line) => {
+      try {
+        const value = JSON.parse(line);
+        return Array.isArray(value) ? value : [value];
+      } catch {
+        return [];
+      }
+    });
+  }
+}
+
+function writeSafeDiagnosticSummary(stdout, write) {
+  const rows = composeRows(stdout).filter((row) => SAFE_SERVICE_NAMES.has(row?.Service));
+  write("Local sub2API safe diagnostic summary (vendor log text is not included):\n");
+  if (rows.length === 0) {
+    write("No recognized local sub2API services were reported. Run sub2api:status for container state.\n");
+  } else {
+    for (const row of rows) {
+      const state = SAFE_SERVICE_STATES.has(row.State) ? row.State : "unknown";
+      const health = SAFE_SERVICE_HEALTH.has(row.Health) ? row.Health : "unknown";
+      write(`${row.Service}: state=${state}, health=${health}\n`);
+    }
+  }
+  write("Raw vendor logs require the explicit high-risk command: pnpm sub2api:logs:raw\n");
+}
+
 export async function bootstrapLocalSub2Api({ rootDir }) {
   const applicationEnvPath = path.join(rootDir, ".env");
   const existingApplicationEnv = await readTextIfPresent(applicationEnvPath);
   const applicationUpdate = applicationEnvUpdate(existingApplicationEnv.content);
+  const serverDataDirectory = path.join(rootDir, "server-data");
   const dataDirectory = localDataDirectory(rootDir);
   const stackEnvPath = path.join(rootDir, STACK_ENV_RELATIVE_PATH);
   const masterKeyPath = path.join(rootDir, MASTER_KEY_RELATIVE_PATH);
 
-  await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
-  await chmod(dataDirectory, 0o700);
+  await ensureDirectoryNoFollow(serverDataDirectory);
+  await ensureDirectoryNoFollow(dataDirectory, { privateMode: true });
   const stackEnvCreated = await createPrivateFileIfMissing(stackEnvPath, newStackEnvironment());
   await createPrivateFileIfMissing(masterKeyPath, `${secret()}\n`);
 
@@ -192,7 +344,7 @@ export async function bootstrapLocalSub2Api({ rootDir }) {
     }
     await atomicWritePrivateFile(applicationEnvPath, applicationUpdate.content);
   } else if (existingApplicationEnv.exists) {
-    await chmod(applicationEnvPath, 0o600);
+    await chmodPrivateRegularFile(applicationEnvPath);
   }
 
   return {
@@ -231,9 +383,14 @@ export async function runSub2ApiLocalCommand(command, {
     write(`Local sub2API admin password: ${credentials.password}\n`);
     return credentials;
   }
+  if (command === "raw-logs") {
+    write("高风险：以下为第三方原始日志，可能包含密钥、提示词或上游响应；不要截屏、复制或重定向到文件。\n");
+  }
   const invocations = commandInvocations(command, rootDir);
   for (const invocation of invocations) {
-    const result = spawn("docker", invocation, { cwd: rootDir, stdio: "inherit" });
+    const result = command === "logs"
+      ? spawn("docker", invocation, { cwd: rootDir, encoding: "utf8", maxBuffer: 1024 * 1024 })
+      : spawn("docker", invocation, { cwd: rootDir, stdio: "inherit" });
     if (result.error) throw result.error;
     if (result.status !== 0) {
       const error = new Error("Local sub2API Docker command failed.");
@@ -241,6 +398,7 @@ export async function runSub2ApiLocalCommand(command, {
       error.exitCode = result.status ?? 1;
       throw error;
     }
+    if (command === "logs") writeSafeDiagnosticSummary(result.stdout, write);
   }
   return invocations;
 }

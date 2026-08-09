@@ -119,11 +119,13 @@ After the images have been installed, normal restarts use `pnpm sub2api:up`; tha
 - sub2API dashboard: `http://127.0.0.1:8080/`
 - `ozon 粽子` AI model settings: `http://127.0.0.1:3000/ozon/tools/auto-listing/ai-settings`
 - show the local sub2API administrator once in the current terminal: `pnpm sub2api:credentials`
+- show only a whitelisted container state/health summary (no vendor log text): `pnpm sub2api:logs`
+- stream untrusted vendor logs only after accepting the terminal warning: `pnpm sub2api:logs:raw`
 - stop only the isolated project while retaining data: `pnpm sub2api:down`
 
 Configure the upstream AI account in the sub2API dashboard, create a dedicated gateway Key, then enter that Key on the Web settings page. Model synchronization reads only `/v1/models` and does not generate text or images. The explicit capability test performs one structured-text probe and one minimum-cost image probe, so it must be run only after acknowledging the cost warning. The full Key is encrypted and cannot be read back.
 
-Detailed start/stop, backup, upgrade, production replacement, safe errors, and rollback instructions are in [`docs/architecture/local-sub2api-operations.md`](docs/architecture/local-sub2api-operations.md).
+The ordinary diagnostic command never forwards third-party free-text logs. Raw logs can contain secrets, prompts, or upstream responses; the explicit raw command must not be redirected to a file, pasted into a ticket, or treated as sanitized output. Detailed start/stop, paired business-database/master-key backup and restore, upgrade, production replacement, safe errors, and rollback instructions are in [`docs/architecture/local-sub2api-operations.md`](docs/architecture/local-sub2api-operations.md).
 
 ## Desktop Collector
 

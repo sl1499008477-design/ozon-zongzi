@@ -31,6 +31,8 @@ pnpm sub2api:bootstrap
 
 `server-data/`、`.env` 和自动备份文件都已被 Git 忽略。初始化不会旋转已有秘密；如根目录 `.env` 中同名配置与本地安全值冲突，命令会停止并要求人工处理。首次修改已有 `.env` 前会生成 `.env.sub2api-local-*.bak` 备份。
 
+初始化只接受普通文件。根目录 `.env`、sub2API `.env` 或 `credential-master.key` 如果是符号链接、目录、管道、设备等非普通文件，命令会停止，不会读取链接目标、替换目标或修改目标权限。已有普通文件通过禁止跟随符号链接的文件句柄读取和改权。
+
 旧开发版本曾把 sub2API TOTP 密钥写成 32 字节 Base64URL。固定镜像 `0.1.132` 要求同一密钥使用 64 位十六进制表示；再次执行 `bootstrap` 会先生成权限为 `0600` 的栈环境备份，再做等价转码。该兼容迁移不改变原始 32 字节密钥，也不轮换 PostgreSQL、Redis、管理员或 JWT 密码；重复执行不会再次改写。
 
 查看本地 sub2API 管理员账号：
@@ -61,10 +63,16 @@ pnpm sub2api:down
 - `upgrade` 只拉取 Compose 中固定的 sub2API、PostgreSQL 和 Redis 版本；任一拉取失败就停止，不会用半套未验证镜像启动。
 - `up` 只启动已经安装的固定镜像，普通启动不会拉取 `latest` 或隐式升级。
 - `status` 只查看 `sonli-sub2api-local` 项目。
-- `logs` 只跟随 sub2API 容器日志。日志中不应出现网关 Key、授权头、主密钥、原始提示词或上游原始响应体。
+- `logs` 不读取第三方原始日志，只根据 Compose 状态输出 `sub2api`、`postgres`、`redis` 的服务名、运行状态和健康状态白名单摘要。未知字段与自由文本一律丢弃，因此这个普通命令可以用于日常排查。
 - `down` 只停止并移除 `sonli-sub2api-local` 的容器和网络，不加 `--volumes`，因此保留数据库和 Redis 数据。
 
-如需停止日志跟随，按 `Ctrl+C`；这不会停止容器。
+供应商自由文本无法可靠自动脱敏。只有必须调查供应商内部错误时，才显式执行：
+
+```bash
+pnpm sub2api:logs:raw
+```
+
+该高风险命令会先警告，再把 sub2API 原始日志直接送到当前终端；它不会默认写文件，但 shell 重定向仍可能落盘。原始日志可能包含网关 Key、授权头、主密钥、提示词或上游响应，不能截屏、复制、重定向、粘贴到聊天/问题单，也不能声称“已脱敏”。按 `Ctrl+C` 只停止跟随，不停止容器。
 
 ## 4. sub2API 后台与 Web 配置顺序
 
@@ -105,32 +113,39 @@ pnpm sub2api:down
 
 ## 6. 备份和恢复
 
-### 6.1 备份范围
+### 6.1 完整恢复集
 
-停写后备份以下三类内容：
+完整恢复不是只备份 sub2API。停写后必须把以下内容作为同一个有编号、有时间点的恢复集：
 
-1. `server-data/sub2api-local/.env`
-2. `server-data/sub2api-local/credential-master.key`
-3. Compose 项目 `sonli-sub2api-local` 的三个命名卷：sub2API 数据、PostgreSQL 数据、Redis 数据
+1. `server-data/sub2api-local/.env`：sub2API 自有 PostgreSQL、Redis、管理员、JWT、TOTP 秘密。
+2. Compose 项目 `sonli-sub2api-local` 的三个命名卷：sub2API 应用数据、sub2API PostgreSQL、sub2API Redis。
+3. `ozon 粽子` **业务 PostgreSQL** 的一致性备份。它包含 `ai_gateway_connection_versions.ciphertext`、连接/目录/推荐、能力尝试与付费子调用证据、正式 profile、审计事件、冻结到任务的版本引用等业务事实。
+4. 与第 3 项业务数据库密文匹配的 `server-data/sub2api-local/credential-master.key`，以及选择该密钥版本和业务数据库连接的应用配置。业务 PostgreSQL 与这个主密钥必须成对备份、成对恢复。
 
-先停止本地栈，避免数据库备份处于不一致状态：
+先停止新外部工作和所有业务写入，再停止本地栈：
 
 ```bash
+# 先将 AUTO_LISTING_AI_ENABLED=false、AUTO_LISTING_ENABLED=false 并重启应用，
+# 再停止 API、listing worker 与 auto-listing AI worker。
 pnpm sub2api:down
 docker volume ls --filter label=com.docker.compose.project=sonli-sub2api-local
 ```
 
-将两个秘密文件复制到受访问控制、加密的备份位置，并保持仅备份管理员可读。命名卷应使用组织批准的 Docker volume 备份工具逐卷导出；备份文件不得进入项目目录、Git、聊天或普通网盘。
+业务 PostgreSQL 必须使用组织批准的事务一致逻辑备份或停库物理快照；不能只导出密文表而漏掉审计、目录、profile、任务版本引用及数据库约束。将秘密文件复制到受访问控制、加密的备份位置，并保持仅备份管理员可读。命名卷使用组织批准的 Docker volume 备份工具逐卷导出。为恢复集记录时间、应用提交、迁移版本、业务 PostgreSQL 备份标识、sub2API 固定镜像版本和主密钥版本，但不能记录秘密值。备份不得进入项目目录、Git、聊天或普通网盘。
 
 ### 6.2 恢复顺序
 
-1. 保持本地栈停止。
-2. 恢复原 `server-data/sub2api-local/.env` 和 `credential-master.key`，并把目录权限设为 `0700`、文件权限设为 `0600`。
-3. 将三个数据卷恢复到同名 `sonli-sub2api-local` 项目卷。
-4. 执行 `pnpm sub2api:up` 和 `pnpm sub2api:status`。
-5. 登录后台确认上游账号仍存在，再在 Web 测试连接；不要仅凭容器健康状态发布模型。
+1. 保持 API、两个 worker 和本地 sub2API 栈停止，禁止恢复期间创建新任务或外部调用。
+2. 恢复同一恢复集中的应用配置、原 `credential-master.key` 和**业务 PostgreSQL**；目录权限设为 `0700`、秘密文件权限设为 `0600`。不要把其他日期的主密钥与该业务数据库拼接。
+3. 恢复原 `server-data/sub2api-local/.env`，再把三个 sub2API 数据卷恢复到同名 `sonli-sub2api-local` 项目卷。
+4. 执行 `pnpm sub2api:up` 和 `pnpm sub2api:status`；先只启动业务 API 的只读检查路径，不启动 worker 或 DIRECT 上传。
+5. 确认迁移版本、正式 profile、连接版本、目录、能力尝试、审计与冻结任务引用都存在；使用匹配主密钥验证已有连接能解密。任一项不一致就保持失败关闭，不删除证据、不发布模型。
+6. 登录 sub2API 后台确认上游账号仍存在，再在 Web 执行免费模型同步；需要付费的能力测试仍须管理员重新明确确认。不要仅凭容器健康状态发布模型。
+7. 先启用 REVIEW 并验证一条新任务，再逐步恢复 worker；DIRECT 不属于本地恢复验收。
 
-主密钥与业务数据库中的密文必须成对恢复。丢失或替换 `credential-master.key` 后，旧网关 Key 无法解密，正确恢复方式是创建并验证一个新连接，而不是把密文改成明文。
+只恢复 sub2API 数据卷不能恢复 `ozon 粽子` 的连接、审计和任务证据；只恢复业务 PostgreSQL而没有匹配主密钥，也无法解密旧网关 Key。主密钥丢失时，应保留原密文与审计，创建并验证一个新连接供新任务使用，不能把旧密文改成明文或伪造旧连接成功。
+
+本说明定义了恢复合同，但本次本地验收**没有执行生产业务 PostgreSQL + 主密钥 + sub2API 三卷的完整灾备恢复演练**；正式发布前必须在可销毁的非生产副本执行并记录恢复点、解密检查和证据完整性结果。
 
 ## 7. 升级
 
@@ -142,7 +157,7 @@ pnpm sub2api:upgrade
 
 当前命令拉取 Compose 中固定的 sub2API `0.1.132`、PostgreSQL `16.8-alpine` 和 Redis `7.4.2-alpine`，然后重建服务。修改任一固定版本前必须：
 
-1. 完成秘密文件和三个数据卷备份。
+1. 完成第 6 节的完整恢复集：业务 PostgreSQL 与主密钥成对备份，并备份 sub2API 秘密文件和三个数据卷。
 2. 阅读目标版本迁移说明，并在非生产副本验证数据库兼容性。
 3. 更新固定镜像版本及部署合同测试，禁止改为 `latest`。
 4. 运行完整测试、健康检查和“同步不收费”验证。
@@ -165,7 +180,7 @@ pnpm sub2api:upgrade
 
 1. 设置 `AUTO_LISTING_AI_ENABLED=false` 和 `AUTO_LISTING_ENABLED=false`，重启应用，使 AI 配置运行时和自动上架运行时停止创建新外部工作。
 2. 执行 `pnpm sub2api:down`，只停止 `sonli-sub2api-local` 项目，不删除卷。
-3. 保留追加式数据库迁移、连接版本、能力尝试、任务事件和审计；不要删除或改写不可变证据行。
+3. 对业务 PostgreSQL 与匹配主密钥制作同一恢复点备份；保留追加式数据库迁移、连接版本、能力尝试、任务事件和审计，不要删除或改写不可变证据行。
 4. 如上一正式配置的凭据仍有效，先重新同步并运行明确确认费用的能力测试，再通过安全回退流程重新启用。
 5. 必要时回退应用提交，但保留新增表和历史数据，后续通过兼容迁移继续处理；不要执行破坏性数据库回滚。
 
