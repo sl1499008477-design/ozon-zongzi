@@ -1574,7 +1574,7 @@ export function createSub2ApiAdapter({
         ...(clean(input.quality) ? { quality: clean(input.quality).toLowerCase() } : {}),
         ...(clean(input.outputFormat) ? { output_format: clean(input.outputFormat).toLowerCase() } : {}),
       }],
-      tool_choice: { type: "image_generation" },
+      tool_choice: "auto",
       stream: true,
       store: false,
     };

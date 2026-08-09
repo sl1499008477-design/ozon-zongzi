@@ -916,7 +916,8 @@ test("Responses image-tool protocol accepts a documented final streamed output-i
   assert.equal(calls[0].url, "https://gateway.example.test/tenant/v1/responses");
   assert.equal(calls[0].body.model, "gpt-text");
   assert.deepEqual(calls[0].body.tools, [{ type: "image_generation", model: "gpt-image", action: "generate", size: "1024x1024", quality: "medium", output_format: "png" }]);
-  assert.deepEqual(calls[0].body.tool_choice, { type: "image_generation" });
+  assert.equal(calls[0].body.tool_choice, "auto");
+  assert.notDeepEqual(calls[0].body.tool_choice, { type: "image_generation" });
   assert.equal(calls[0].body.stream, true);
   assert.equal(result.contentType, "image/png");
   assert.equal(result.width, 1);
