@@ -169,6 +169,15 @@ export function aiSettingsModelOptions(rawCatalog, rawRecommendations = []) {
   return Object.freeze(output);
 }
 
+export function aiSettingsCatalogForSummary(rawDetail, rawSummary) {
+  const detail = record(rawDetail);
+  const summary = record(rawSummary);
+  const catalog = record(detail?.catalog);
+  if (!catalog || !summary || !safeEntityId(catalog.id) || !safeEntityId(summary.id)
+    || catalog.id !== summary.id) return null;
+  return detail.catalog;
+}
+
 /**
  * Pure safe projection of the server-owned settings contract.  It deliberately never derives
  * permission from status, catalog membership, or an optimistic local selection.

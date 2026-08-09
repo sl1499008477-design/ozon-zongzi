@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aiSettingsModelOptions, aiSettingsPresentation } from "../src/auto-listing-ai-settings-view.js";
+import {
+  aiSettingsCatalogForSummary,
+  aiSettingsModelOptions,
+  aiSettingsPresentation,
+} from "../src/auto-listing-ai-settings-view.js";
 
 const CHECKED_AT = "2026-08-08T00:00:00.000Z";
+
+test("catalog detail is unavailable until both detail and its matching summary exist", () => {
+  const catalog = { id: "catalog-a", catalog: { models: [] } };
+  const detail = { catalog };
+  assert.equal(aiSettingsCatalogForSummary(null, null), null);
+  assert.equal(aiSettingsCatalogForSummary(detail, null), null);
+  assert.equal(aiSettingsCatalogForSummary(null, { id: "catalog-a" }), null);
+  assert.equal(aiSettingsCatalogForSummary(detail, { id: "catalog-b" }), null);
+  assert.equal(aiSettingsCatalogForSummary(detail, { id: "catalog-a" }), catalog);
+});
 
 test("model selection keeps every catalog model reachable while ranking recommendations first", () => {
   const models = Array.from({ length: 2_000 }, (_unused, index) => ({

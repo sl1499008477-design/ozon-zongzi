@@ -34,7 +34,11 @@ import {
   rollbackModelProfile,
   testModelProfile,
 } from "./auto-listing-ai-settings-client.js";
-import { aiSettingsModelOptions, aiSettingsPresentation } from "./auto-listing-ai-settings-view.js";
+import {
+  aiSettingsCatalogForSummary,
+  aiSettingsModelOptions,
+  aiSettingsPresentation,
+} from "./auto-listing-ai-settings-view.js";
 import "./auto-listing-ai-settings.css";
 
 const DEFAULT_CONNECTION = Object.freeze({
@@ -500,8 +504,7 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
   const connectionView = useMemo(() => presentation.connections
     .find((row) => row.id === selectedConnectionId) || null, [presentation, selectedConnectionId]);
   const currentCatalogSummary = useMemo(() => latestCatalogFor(overview, selectedConnection), [overview, selectedConnection]);
-  const currentCatalog = catalogDetail?.catalog?.id === currentCatalogSummary?.id
-    ? catalogDetail.catalog : null;
+  const currentCatalog = aiSettingsCatalogForSummary(catalogDetail, currentCatalogSummary);
   const latestSync = useMemo(() => latestSyncFor(overview, selectedConnection), [overview, selectedConnection]);
   const latestSuccessfulSync = useMemo(() => latestSuccessfulSyncFor(overview, selectedConnection), [overview, selectedConnection]);
   const selectionPresentation = useMemo(() => aiSettingsPresentation({

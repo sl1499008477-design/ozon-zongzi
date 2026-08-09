@@ -69,6 +69,12 @@ test("saving a successor profile is enabled only by the server-owned catalog act
   assert.match(page, /disabled=\{busy \|\| !canSaveSelection\}/);
 });
 
+test("an unloaded catalog renders safely and a loaded catalog preserves its closed envelope", () => {
+  assert.match(page, /aiSettingsCatalogForSummary\(catalogDetail, currentCatalogSummary\)/);
+  assert.match(page, /currentCatalog\.catalog\.models\.length/);
+  assert.doesNotMatch(page, /catalogDetail\?\.catalog\?\.id === currentCatalogSummary\?\.id/);
+});
+
 test("a successful paid action consumes its explicit fee confirmation", () => {
   assert.match(page, /await testModelProfile\([\s\S]*?setCostConfirmedProfileIds\(\(current\) => current\.filter\(\(id\) => id !== selectedProfile\.id\)\)/);
   assert.match(page, /await rollbackModelProfile\([\s\S]*?setRollbackConfirmedProfileIds\(\(current\) => current\.filter\(\(id\) => id !== profile\.id\)\)/);
