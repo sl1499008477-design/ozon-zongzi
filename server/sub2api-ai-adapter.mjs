@@ -42,6 +42,8 @@ const CAPABILITY_EXECUTION_BASE_KEYS = new Set([
 ]);
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/u;
 const OWNED_BY = /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,239}$/u;
+const SUB2API_MODEL_DISPLAY_NAME = /^[^\u0000-\u001f\u007f]{1,240}$/u;
+const SUB2API_MODEL_CREATED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u;
 const DANGEROUS_ENV_NAMES = new Set(["__proto__", "prototype", "constructor"]);
 const DANGEROUS_JSON_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const CAPABILITY_SOURCE_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
@@ -1093,6 +1095,17 @@ function safeCatalogRequestId(response) {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u.test(requestId) ? requestId : "";
 }
 
+function currentSub2ApiCatalogModel(model) {
+  return model.object === undefined
+    && model.type === "model"
+    && typeof model.display_name === "string"
+    && model.display_name === model.display_name.trim()
+    && SUB2API_MODEL_DISPLAY_NAME.test(model.display_name)
+    && typeof model.created_at === "string"
+    && SUB2API_MODEL_CREATED_AT.test(model.created_at)
+    && Number.isFinite(Date.parse(model.created_at));
+}
+
 function normalizeModelCatalog(payload, response) {
   try {
     if (!safeJsonTree(payload) || !payload || Array.isArray(payload)
@@ -1102,7 +1115,8 @@ function normalizeModelCatalog(payload, response) {
     }
     const seen = new Set();
     const models = payload.data.map((model) => {
-      if (!model || Array.isArray(model) || typeof model !== "object" || model.object !== "model") {
+      if (!model || Array.isArray(model) || typeof model !== "object"
+        || (model.object !== "model" && !currentSub2ApiCatalogModel(model))) {
         throw gatewayError("INVALID_GATEWAY_RESPONSE");
       }
       const id = typeof model.id === "string" ? model.id : "";

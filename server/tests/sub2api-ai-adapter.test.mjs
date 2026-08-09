@@ -336,6 +336,28 @@ test("model discovery performs only an authorized GET on the exact normalized mo
   assert.doesNotMatch(JSON.stringify(result), /must-not-escape|permission|upstream_nested|created/iu);
 });
 
+test("model discovery accepts the current sub2API catalog item contract", async () => {
+  const gateway = encryptedAdapter(async () => jsonResponse({
+    object: "list",
+    data: [{
+      id: "provider/text-model:1",
+      type: "model",
+      display_name: "Provider Text Model",
+      created_at: "2026-08-09T07:00:00Z",
+    }],
+  }), { resolveSecret: async () => secret });
+
+  assert.deepEqual(await gateway.listModels({
+    connection,
+    correlationId: "corr-sub2api-models",
+    requestKey: "request-sub2api-models",
+    timeoutMs: 500,
+  }), {
+    requestId: "",
+    models: [{ id: "provider/text-model:1", ownedBy: "", metadata: {} }],
+  });
+});
+
 test("catalog sync model discovery consumes one lease-bound in-memory credential and never calls the generic resolver", async () => {
   const credentialReads = [];
   const credentialStatuses = ["PENDING", "VALIDATED", "ACTIVE"];
