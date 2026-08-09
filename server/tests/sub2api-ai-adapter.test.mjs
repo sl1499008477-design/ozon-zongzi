@@ -1247,6 +1247,49 @@ test("OpenAI Images uses the official edits endpoint and images[].image_url when
   assert.equal(result.model, "gpt-image");
 });
 
+test("Responses image-tool does not classify the completed orchestrator model as image-model evidence", async () => {
+  const gateway = adapter(async () => new Response([
+    `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","model":"gpt-5.4","result":"${PNG_1X1}"}}`,
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.4\"}}",
+    "data: [DONE]", "",
+  ].join("\n\n"), { headers: { "content-type": "text/event-stream" } }));
+
+  const result = await gateway.generateImage(imageInput({
+    profile: { ...profile, textModel: "gpt-5.4", imageModel: "gpt-image-2" },
+    model: "gpt-image-2",
+  }));
+
+  assert.equal(result.orchestratorModel, "gpt-5.4");
+  assert.deepEqual(result.modelEvidence, {
+    requestedImageModel: "gpt-image-2",
+    gatewayReportedImageModel: "",
+    gatewayReportedImageModelPresent: false,
+    orchestratorModel: "gpt-5.4",
+  });
+});
+
+test("Responses image-tool applies the orchestrator evidence rule to a completed JSON response", async () => {
+  const gateway = adapter(async () => jsonResponse({
+    id: "resp-image-json",
+    model: "gpt-5.4",
+    output: [{
+      type: "image_generation_call",
+      status: "completed",
+      model: "gpt-5.4",
+      result: PNG_1X1,
+    }],
+  }));
+
+  const result = await gateway.generateImage(imageInput({
+    profile: { ...profile, textModel: "gpt-5.4", imageModel: "gpt-image-2" },
+    model: "gpt-image-2",
+  }));
+
+  assert.equal(result.orchestratorModel, "gpt-5.4");
+  assert.equal(result.modelEvidence.gatewayReportedImageModel, "");
+  assert.equal(result.modelEvidence.gatewayReportedImageModelPresent, false);
+});
+
 test("image model evidence rejects every explicit mismatch and accepts matching or absent evidence", async () => {
   for (const completedResponse of [
     { status: "completed", model: "gpt-text" },
@@ -1269,6 +1312,29 @@ test("image model evidence rejects every explicit mismatch and accepts matching 
   const responsesResult = await responsesMatch.generateImage(imageInput());
   assert.equal(responsesResult.modelEvidence.gatewayReportedImageModel, "gpt-image");
   assert.equal(responsesResult.modelEvidence.gatewayReportedImageModelPresent, true);
+
+  for (const completedResponse of [
+    { status: "completed", model: "gpt-5.4", image_model: "gpt-image-1" },
+    {
+      status: "completed",
+      model: "gpt-5.4",
+      image_model: "gpt-image-2",
+      tools: [{ type: "image_generation", model: "gpt-image-1" }],
+    },
+  ]) {
+    const gateway = adapter(async () => new Response([
+      `event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: completedResponse })}`,
+      "data: [DONE]", "",
+    ].join("\n\n"), { headers: { "content-type": "text/event-stream" } }));
+    await assert.rejects(
+      gateway.generateImage(imageInput({
+        profile: { ...profile, textModel: "gpt-5.4", imageModel: "gpt-image-2" },
+        model: "gpt-image-2",
+      })),
+      (error) => error?.code === "AI_GATEWAY_MODEL_MISMATCH" && error?.retryable === false,
+    );
+  }
 
   for (const payload of [
     { model: "wrong-image", data: [{ b64_json: PNG_1X1 }] },
