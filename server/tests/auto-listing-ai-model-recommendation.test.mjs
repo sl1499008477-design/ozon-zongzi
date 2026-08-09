@@ -14,7 +14,7 @@ test("declared capabilities outrank name hints and remain unverified", () => {
   assert.equal(result.textCandidates[0].modelId, "generic-a");
   assert.equal(result.imageCandidates[0].modelId, "generic-b");
   assert.equal(result.verified, false);
-  assert.equal(result.ruleVersion, "AUTO_LISTING_MODEL_RECOMMENDATION_V1");
+  assert.equal(result.ruleVersion, "AUTO_LISTING_MODEL_RECOMMENDATION_V2");
   assert.deepEqual(result.imageCandidates[0].reasonCodes,
     ["DECLARED_IMAGE_GENERATION", "DECLARED_REFERENCE_IMAGE"]);
   assert.equal(result.imageCandidates[0].confidence, "DECLARED");
@@ -74,6 +74,56 @@ test("name hints are low-confidence candidates and never verify a capability", (
     reasonCodes: ["MODEL_ID_IMAGE_HINT"],
   }]);
   assert.equal(result.verified, false);
+});
+
+test("gpt-5.4 gains an unverified OAuth image-orchestrator hint only beside an OpenAI image model", () => {
+  const result = recommendAutoListingModels({ models: [
+    { id: "gpt-5.5", ownedBy: "openai", metadata: {} },
+    { id: "gpt-5.4", ownedBy: "openai", metadata: {} },
+    { id: "gpt-image-2", ownedBy: "openai", metadata: {} },
+  ] });
+
+  assert.equal(result.ruleVersion, "AUTO_LISTING_MODEL_RECOMMENDATION_V2");
+  assert.deepEqual(result.textCandidates[0], {
+    modelId: "gpt-5.4",
+    score: 40,
+    confidence: "LOW",
+    verified: false,
+    reasonCodes: ["MODEL_ID_TEXT_HINT", "SUB2API_OAUTH_IMAGE_ORCHESTRATOR_HINT"],
+  });
+  assert.equal(result.textCandidates[1].modelId, "gpt-5.5");
+  assert.equal(result.verified, false);
+});
+
+test("the OAuth image-orchestrator hint also ranks declared gpt-5.4 without changing its confidence", () => {
+  const result = recommendAutoListingModels({ models: [
+    { id: "gpt-5.5", ownedBy: "openai", metadata: { capabilities: ["structured_text"] } },
+    { id: "gpt-5.4", ownedBy: "openai", metadata: { capabilities: ["structured_text"] } },
+    { id: "gpt-image-1", ownedBy: "openai", metadata: { capabilities: ["image_generation"] } },
+  ] });
+
+  assert.deepEqual(result.textCandidates[0], {
+    modelId: "gpt-5.4",
+    score: 130,
+    confidence: "DECLARED",
+    verified: false,
+    reasonCodes: ["DECLARED_STRUCTURED_TEXT", "SUB2API_OAUTH_IMAGE_ORCHESTRATOR_HINT"],
+  });
+});
+
+test("gpt-5.4 receives no OAuth image-orchestrator hint without an OpenAI image model", () => {
+  const result = recommendAutoListingModels({ models: [
+    { id: "gpt-5.4", ownedBy: "openai", metadata: {} },
+    { id: "flux-image", ownedBy: "other", metadata: {} },
+  ] });
+
+  assert.deepEqual(result.textCandidates[0], {
+    modelId: "gpt-5.4",
+    score: 10,
+    confidence: "LOW",
+    verified: false,
+    reasonCodes: ["MODEL_ID_TEXT_HINT"],
+  });
 });
 
 test("declared scoring uses the fixed protocol and target-resolution weights", () => {
