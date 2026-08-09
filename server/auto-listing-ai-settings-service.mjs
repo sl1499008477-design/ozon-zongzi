@@ -202,6 +202,8 @@ function catalogSummary(row) {
 
 function explicitActions(overview) {
   const connections = Array.isArray(overview.connections) ? overview.connections : [];
+  const syncableConnections = Array.isArray(overview.syncableConnections)
+    ? overview.syncableConnections : connections;
   const profiles = Array.isArray(overview.profiles) ? overview.profiles : [];
   const byConnection = new Map(connections.map((connection) => [
     `${connection?.id}\0${connection?.version}`, connection,
@@ -238,12 +240,72 @@ function explicitActions(overview) {
   }
   return {
     canCreateConnection: true,
-    syncableConnectionIds: connections.filter((connection) => ["PENDING", "VALIDATED", "ACTIVE"].includes(connection?.status))
-      .map((connection) => connection.id),
+    syncableConnectionIds: [...new Set(syncableConnections
+      .filter((connection) => ["PENDING", "VALIDATED", "ACTIVE"].includes(connection?.status))
+      .map((connection) => connection.id))],
     profileCreatableCatalogIds,
     testableProfileIds: testable,
     publishableProfileIds: publishable,
     rollbackProfileIds: rollback,
+  };
+}
+
+function actionConnection(row, accountId, expected = null) {
+  if (!plainRecord(row) || row.accountId !== accountId || typeof row.id !== "string"
+    || !SAFE_ID.test(row.id) || !Number.isSafeInteger(row.version) || row.version < 1
+    || !["PENDING", "VALIDATED", "ACTIVE", "RETIRED"].includes(row.status)
+    || (expected && (row.id !== expected.connectionId || row.version !== expected.connectionVersion))) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+  }
+  return Object.freeze({ id: row.id, accountId, version: row.version, status: row.status });
+}
+
+function connectionReference(row, { nullable = false } = {}) {
+  const connectionId = row?.connectionId;
+  const connectionVersion = row?.connectionVersion;
+  if (nullable && connectionId == null && connectionVersion == null) return null;
+  if (typeof connectionId !== "string" || !SAFE_ID.test(connectionId)
+    || !Number.isSafeInteger(connectionVersion) || connectionVersion < 1) {
+    throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
+  }
+  return Object.freeze({ connectionId, connectionVersion });
+}
+
+async function actionOverview({ safe, repository, accountId }) {
+  const visibleProfiles = Array.isArray(safe.profiles) ? safe.profiles : [];
+  const profiles = [...visibleProfiles,
+    ...(safe.activeProfile && !visibleProfiles.some((row) => row?.id === safe.activeProfile.id)
+      ? [safe.activeProfile] : [])];
+  const visibleConnections = (Array.isArray(safe.connections) ? safe.connections : [])
+    .map((row) => actionConnection(row, accountId));
+  const activeConnection = safe.activeConnection === null || safe.activeConnection === undefined
+    ? null : actionConnection(safe.activeConnection, accountId);
+  const publicActionConnections = [...visibleConnections, ...(activeConnection ? [activeConnection] : [])];
+  const byKey = new Map(publicActionConnections.map((row) => [`${row.id}\0${row.version}`, row]));
+  const references = new Map();
+  for (const catalog of Array.isArray(safe.catalogs) ? safe.catalogs : []) {
+    const reference = connectionReference(catalog);
+    references.set(`${reference.connectionId}\0${reference.connectionVersion}`, reference);
+  }
+  for (const profile of profiles) {
+    const reference = connectionReference(profile, { nullable: true });
+    if (reference) references.set(`${reference.connectionId}\0${reference.connectionVersion}`, reference);
+  }
+  const missingReferences = [...references].filter(([key]) => !byKey.has(key));
+  const loadedConnections = await Promise.all(missingReferences.map(async ([key, reference]) => {
+    const loaded = await repository.loadSettingsConnection({ accountId, ...reference });
+    if (loaded === null || loaded === undefined) return [key, null];
+    const safeLoaded = safeValue(loaded, accountId);
+    return [key, actionConnection(safeLoaded, accountId, reference)];
+  }));
+  for (const [key, connection] of loadedConnections) {
+    if (connection) byKey.set(key, connection);
+  }
+  return {
+    ...safe,
+    profiles,
+    connections: [...byKey.values()],
+    syncableConnections: publicActionConnections,
   };
 }
 
@@ -283,12 +345,7 @@ export function createAutoListingAiSettingsService({
         || !plainRecord(safe.pageInfo.connections) || !plainRecord(safe.pageInfo.profiles)) {
         throw settingsError("AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", 500);
       }
-      const actionSource = {
-        ...safe,
-        profiles: [...(Array.isArray(safe.profiles) ? safe.profiles : []),
-          ...(safe.activeProfile && !(safe.profiles || []).some((row) => row?.id === safe.activeProfile.id)
-            ? [safe.activeProfile] : [])],
-      };
+      const actionSource = await actionOverview({ safe, repository, accountId });
       const pagination = {
         connections: {
           pageSize: safe.pageInfo.connections.pageSize,

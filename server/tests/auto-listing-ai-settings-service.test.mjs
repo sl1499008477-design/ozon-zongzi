@@ -23,7 +23,8 @@ function overview(overrides = {}) {
   };
 }
 
-function harness({ currentOverview = overview(), allowLocalGateway = true } = {}) {
+function harness({ currentOverview = overview(), referencedConnections = [], connectionLoader = null,
+  allowLocalGateway = true } = {}) {
   const calls = [];
   const rollbackIntents = new Map();
   const rollbackResults = new Map();
@@ -43,7 +44,8 @@ function harness({ currentOverview = overview(), allowLocalGateway = true } = {}
     },
     async loadSettingsConnection(input) {
       calls.push(["connection", input]);
-      return currentOverview.connections.find((row) => row.accountId === input.accountId
+      if (connectionLoader) return connectionLoader(input);
+      return [...currentOverview.connections, ...referencedConnections].find((row) => row.accountId === input.accountId
         && row.id === input.connectionId
         && row.version === input.connectionVersion) || null;
     },
@@ -427,4 +429,127 @@ test("overview action gates use only the latest successful catalog sync evidence
   const result = await service.getOverview({ actor: admin });
   assert.deepEqual(result.actions.testableProfileIds, ["profile-a"]);
   assert.deepEqual(result.actions.publishableProfileIds, ["profile-a"]);
+});
+
+test("overview actions include the independent ACTIVE connection without adding it to the paged connection DTO", async () => {
+  const currentOverview = overview({
+    activeConnection: { id: "connection-active", accountId: "account-a", version: 2,
+      status: "ACTIVE", statusVersion: 7 },
+    connections: [],
+    catalogs: [{ id: "catalog-active", accountId: "account-a", connectionId: "connection-active",
+      connectionVersion: 2, syncTaskId: "task-active",
+      catalog: { models: [{ id: "text-active" }, { id: "image-active" }] } }],
+    syncTasks: [{ id: "task-active", accountId: "account-a", connectionId: "connection-active",
+      connectionVersion: 2, syncPurpose: "CATALOG_SYNC", status: "SUCCEEDED" }],
+    profiles: [{ id: "profile-successor", accountId: "account-a", connectionId: "connection-active",
+      connectionVersion: 2, textModel: "text-active", imageModel: "image-active", enabled: false,
+      capabilityResult: { outcome: "PASSED" } }],
+  });
+  const { service } = harness({ currentOverview });
+
+  const result = await service.getOverview({ actor: admin });
+
+  assert.deepEqual(result.connections, []);
+  assert.equal(result.activeConnection.id, "connection-active");
+  assert.deepEqual(result.actions, {
+    canCreateConnection: true,
+    syncableConnectionIds: ["connection-active"],
+    profileCreatableCatalogIds: ["catalog-active"],
+    testableProfileIds: ["profile-successor"],
+    publishableProfileIds: ["profile-successor"],
+    rollbackProfileIds: [],
+  });
+});
+
+test("overview resolves only exact off-page connection references for profile actions", async () => {
+  const currentOverview = overview({
+    connections: [{ id: "connection-visible", accountId: "account-a", version: 1,
+      status: "PENDING", statusVersion: 1 }],
+    catalogs: [
+      { id: "catalog-validated", accountId: "account-a", connectionId: "connection-validated",
+        connectionVersion: 3, syncTaskId: "task-validated",
+        catalog: { models: [{ id: "text-v" }, { id: "image-v" }] } },
+      { id: "catalog-retired", accountId: "account-a", connectionId: "connection-retired",
+        connectionVersion: 4, syncTaskId: "task-retired",
+        catalog: { models: [{ id: "text-r" }, { id: "image-r" }] } },
+    ],
+    syncTasks: [
+      { id: "task-validated", accountId: "account-a", connectionId: "connection-validated",
+        connectionVersion: 3, syncPurpose: "CATALOG_SYNC", status: "SUCCEEDED" },
+      { id: "task-retired", accountId: "account-a", connectionId: "connection-retired",
+        connectionVersion: 4, syncPurpose: "CATALOG_SYNC", status: "SUCCEEDED" },
+    ],
+    profiles: [
+      { id: "profile-validated", accountId: "account-a", connectionId: "connection-validated",
+        connectionVersion: 3, textModel: "text-v", imageModel: "image-v", enabled: false,
+        capabilityResult: { outcome: "PASSED" } },
+      { id: "profile-retired", accountId: "account-a", connectionId: "connection-retired",
+        connectionVersion: 4, textModel: "text-r", imageModel: "image-r", enabled: false,
+        capabilityResult: { outcome: "PASSED" } },
+    ],
+  });
+  const referencedConnections = [
+    { id: "connection-validated", accountId: "account-a", version: 3,
+      status: "VALIDATED", statusVersion: 2 },
+    { id: "connection-retired", accountId: "account-a", version: 4,
+      status: "RETIRED", statusVersion: 9 },
+    { id: "connection-unrelated", accountId: "account-a", version: 1,
+      status: "ACTIVE", statusVersion: 3 },
+  ];
+  const { service, calls } = harness({ currentOverview, referencedConnections });
+
+  const result = await service.getOverview({ actor: admin });
+
+  assert.deepEqual(result.connections.map((row) => row.id), ["connection-visible"]);
+  assert.deepEqual(result.actions.syncableConnectionIds, ["connection-visible"],
+    "off-page references must not leak into the public sync action allowlist");
+  assert.deepEqual(result.actions.profileCreatableCatalogIds, ["catalog-validated"]);
+  assert.deepEqual(result.actions.testableProfileIds, ["profile-validated"]);
+  assert.deepEqual(result.actions.publishableProfileIds, ["profile-validated"]);
+  assert.deepEqual(result.actions.rollbackProfileIds, ["profile-retired"]);
+  assert.deepEqual(calls.filter(([name]) => name === "connection").map(([, input]) => input), [
+    { accountId: "account-a", connectionId: "connection-validated", connectionVersion: 3 },
+    { accountId: "account-a", connectionId: "connection-retired", connectionVersion: 4 },
+  ]);
+  assert.equal(JSON.stringify(result).includes("connection-unrelated"), false);
+});
+
+test("overview action reference resolution fails closed for missing, malformed, mismatched, and foreign evidence", async () => {
+  const missingOverview = overview({
+    profiles: [{ id: "profile-missing", accountId: "account-a", connectionId: "connection-missing",
+      connectionVersion: 1, textModel: "text-a", imageModel: "image-a", enabled: false,
+      capabilityResult: { outcome: "PASSED" } }],
+  });
+  const missing = harness({ currentOverview: missingOverview });
+  assert.deepEqual((await missing.service.getOverview({ actor: admin })).actions, {
+    canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [],
+    testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [],
+  });
+
+  const malformed = harness({ currentOverview: overview({
+    profiles: [{ id: "profile-malformed", accountId: "account-a", connectionId: "../foreign",
+      connectionVersion: 1, textModel: "text-a", imageModel: "image-a", enabled: false,
+      capabilityResult: { outcome: "PASSED" } }],
+  }) });
+  await assert.rejects(malformed.service.getOverview({ actor: admin }), {
+    code: "AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", status: 500,
+  });
+  assert.equal(malformed.calls.some(([name]) => name === "connection"), false);
+
+  for (const maliciousConnection of [
+    { id: "different-connection", accountId: "account-a", version: 1,
+      status: "VALIDATED", statusVersion: 2 },
+    { id: "connection-missing", accountId: "account-b", version: 1,
+      status: "VALIDATED", statusVersion: 2 },
+  ]) {
+    const currentOverview = overview({
+      profiles: [{ id: "profile-mismatch", accountId: "account-a", connectionId: "connection-missing",
+        connectionVersion: 1, textModel: "text-a", imageModel: "image-a", enabled: false,
+        capabilityResult: { outcome: "PASSED" } }],
+    });
+    const checked = harness({ currentOverview, connectionLoader: () => maliciousConnection });
+    await assert.rejects(checked.service.getOverview({ actor: admin }), {
+      code: "AUTO_LISTING_AI_SETTINGS_DATA_BOUNDARY", status: 500,
+    });
+  }
 });

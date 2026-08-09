@@ -113,6 +113,15 @@ TDD 记录：测试最初因受控持久化夹具的映射、provider identity�
 
 每次测试结束后对应容器均已删除。其后的 `061cbe2` 只补服务端动作/路由回归合同，没有修改迁移或 PostgreSQL 查询。当前最终代码仍未在生产数据库或完整 `23` 项 PostgreSQL 专项集合中运行，因此这些聚焦证据不能替代上线前的完整非生产验收。
 
+最终动作分页复审整改不再沿用旧提交的 PostgreSQL 结果作为当前代码证据。服务层先用测试复现：独立 `activeConnection` 落在连接分页外、profile 与 connection 分页错位时，动作白名单会漏掉同步、创建、测试、发布或回退。整改后只按当前页 profile/catalog 的精确引用读取分页外连接的最小状态投影；这些隐藏连接不进入公开 `connections`，也不进入同步 ID 白名单。服务层聚焦结果为 `17/17` 通过；与 routes、overview bounds、PostgreSQL query contract 组合为 `52` 项、`51` 通过、`0` 失败、`1` 项因未启用专用 PostgreSQL 而跳过。最终扩大到 AI admin/settings/runtime/E2E/Web runtime 的回归为 `150` 项、`149` 通过、`0` 失败、`1` 项专用 PostgreSQL 按配置跳过；前端生产构建再次通过，`4842` modules transformed。
+
+随后在同一最终代码上启动全新 `postgres:16-alpine` 一次性容器：只绑定随机 loopback 端口，不挂载任何卷，不连接本机业务 PostgreSQL 或 sub2API 数据卷。管理员 PostgreSQL 集成 `4/4` 通过、`0` 失败、`0` skip，并直接断言：
+
+- 对当前 enabled 正式 profile 发起新的 `PROFILE_CAPABILITY` 会在创建 capability attempt、provider subcall reservation 和调用 provider 之前以 `409` 拒绝，profile 始终保持 enabled。
+- 对当前 enabled 目标使用全新 idempotency intent 再次发布会以 `409` 拒绝，不新增 `AUTO_LISTING_AI_PROFILE_PUBLISH` activation audit，profile 始终保持 enabled。
+
+该一次性容器测试后已强制删除；因未挂载卷，没有遗留测试数据卷。以上只证明当前代码的这组管理员事务边界通过真实 PostgreSQL，不代表生产数据库、真实 AI 上游或完整 `23` 项 PostgreSQL 专项集合通过。
+
 ### 5.2 真实上游 AI
 
 未验证真实模型列表、真实结构化文字、真实图片生成、真实费用和供应商限流，因为用户尚未在 sub2API 配置上游账号/Key。不得把 fake E2E 记为真实供应商通过。

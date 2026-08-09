@@ -492,6 +492,63 @@ if (!enabled) {
         accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
         idempotencyKey: `publish-first-${suffix}`, correlationId: `publish-first-corr-${suffix}`,
       });
+      const activeAttemptCountBefore = (await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_attempts WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count;
+      const activeReservationCountBefore = (await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_subcall_reservations WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count;
+      let activeProfileProviderCalls = 0;
+      const activeProfileCapabilityService = createAiGatewayProfileService({
+        repository: profiles,
+        gateway: { async testCapabilities() { activeProfileProviderCalls += 1; throw new Error("must not run"); } },
+      });
+      await assert.rejects(activeProfileCapabilityService.testGatewayCapabilities({
+        actor: { id: accountId, role: "admin" }, profileId: first.profile.id, configVersion: 1,
+        correlationId: `active-profile-capability-${suffix}`, costConfirmed: true,
+        purpose: "PROFILE_CAPABILITY",
+      }), { code: "AUTO_LISTING_AI_PROFILE_CONNECTION_NOT_VALIDATED", status: 409 });
+      assert.equal(activeProfileProviderCalls, 0,
+        "the current published profile must be rejected before any provider invocation");
+      assert.equal((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_attempts WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count, activeAttemptCountBefore,
+      "the rejected current-profile test must not create a capability attempt");
+      assert.equal((await pool.query(
+        "SELECT COUNT(*)::INTEGER AS count FROM ai_gateway_capability_subcall_reservations WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count, activeReservationCountBefore,
+      "the rejected current-profile test must not reserve any provider subcall");
+      assert.equal((await pool.query(
+        "SELECT enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=1",
+        [accountId, first.profile.id],
+      )).rows[0].enabled, true);
+
+      const activationAuditCountBefore = (await pool.query(
+        `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_PUBLISH'
+            AND entity_id=$2 AND status='SUCCESS'`,
+        [accountId, first.profile.id],
+      )).rows[0].count;
+      await assert.rejects(profiles.publishProfile({
+        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        idempotencyKey: `publish-first-new-intent-${suffix}`,
+        correlationId: `publish-first-new-intent-corr-${suffix}`,
+      }), { code: "AUTO_LISTING_AI_PROFILE_VERSION_CONFLICT", status: 409 });
+      assert.equal((await pool.query(
+        `SELECT COUNT(*)::INTEGER AS count FROM audit_events
+          WHERE account_id=$1 AND action='AUTO_LISTING_AI_PROFILE_PUBLISH'
+            AND entity_id=$2 AND status='SUCCESS'`,
+        [accountId, first.profile.id],
+      )).rows[0].count, activationAuditCountBefore,
+      "a new no-op publish intent for the current target must not append activation evidence");
+      assert.equal((await pool.query(
+        "SELECT enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=1",
+        [accountId, first.profile.id],
+      )).rows[0].enabled, true);
       const activeBeforeSuccessor = (await pool.query(
         `SELECT status,status_version FROM ai_gateway_connection_versions
           WHERE account_id=$1 AND id=$2 AND version=1`,
