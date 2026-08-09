@@ -126,6 +126,13 @@ function explicitActions(overview) {
   const testable = [];
   const publishable = [];
   const rollback = [];
+  const profileCreatableCatalogIds = [];
+  for (const [key, catalog] of catalogs) {
+    const connection = byConnection.get(key);
+    if (["VALIDATED", "ACTIVE"].includes(connection?.status) && typeof catalog?.id === "string") {
+      profileCreatableCatalogIds.push(catalog.id);
+    }
+  }
   for (const profile of profiles) {
     if (typeof profile?.id !== "string") continue;
     if (profile.connectionId === null || profile.connectionId === undefined) {
@@ -137,7 +144,7 @@ function explicitActions(overview) {
     const connection = byConnection.get(key);
     const catalogModels = models(catalogs.get(key));
     const exactModels = catalogModels.has(profile.textModel) && catalogModels.has(profile.imageModel);
-    if (connection?.status === "VALIDATED" && exactModels) {
+    if (["VALIDATED", "ACTIVE"].includes(connection?.status) && profile.enabled !== true && exactModels) {
       testable.push(profile.id);
       if (profile.capabilityResult?.outcome === "PASSED") publishable.push(profile.id);
     }
@@ -145,8 +152,9 @@ function explicitActions(overview) {
   }
   return {
     canCreateConnection: true,
-    syncableConnectionIds: connections.filter((connection) => ["PENDING", "VALIDATED"].includes(connection?.status))
+    syncableConnectionIds: connections.filter((connection) => ["PENDING", "VALIDATED", "ACTIVE"].includes(connection?.status))
       .map((connection) => connection.id),
+    profileCreatableCatalogIds,
     testableProfileIds: testable,
     publishableProfileIds: publishable,
     rollbackProfileIds: rollback,
@@ -227,7 +235,8 @@ export function createAutoListingAiSettingsService({
         candidate?.accountId === accountId && candidate?.id === connectionId
         && candidate?.version === connectionVersion) : null;
       if (!connection) throw settingsError("AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_FOUND", 404);
-      if (!["PENDING", "VALIDATED"].includes(connection.status) || !Number.isSafeInteger(connection.statusVersion)) {
+      if (!["PENDING", "VALIDATED", "ACTIVE"].includes(connection.status)
+        || !Number.isSafeInteger(connection.statusVersion)) {
         throw settingsError("AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_SYNCABLE", 409);
       }
       const row = await repository.enqueueModelSync({

@@ -63,6 +63,12 @@ test("server actions own command availability and one active request disables co
   assert.match(page, /if \(actionInFlightRef\.current\) return/);
 });
 
+test("saving a successor profile is enabled only by the server-owned catalog action", () => {
+  assert.match(page, /presentation\.profileCreatableCatalogIds\.includes\(currentCatalog\?\.id\)/);
+  assert.match(page, /const canSaveSelection = Boolean\(/);
+  assert.match(page, /disabled=\{busy \|\| !canSaveSelection\}/);
+});
+
 test("a successful paid action consumes its explicit fee confirmation", () => {
   assert.match(page, /await testModelProfile\([\s\S]*?setCostConfirmedProfileIds\(\(current\) => current\.filter\(\(id\) => id !== selectedProfile\.id\)\)/);
   assert.match(page, /await rollbackModelProfile\([\s\S]*?setRollbackConfirmedProfileIds\(\(current\) => current\.filter\(\(id\) => id !== profile\.id\)\)/);

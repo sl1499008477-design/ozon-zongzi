@@ -183,7 +183,7 @@ function ModelSelectionSection({
   activeRequest, busy, connectionView, currentCatalog, imageCandidates, imageModel,
   latestSuccessfulSync, latestSync, onConnectionChange, onImageModelChange,
   onProfileNameChange, onSaveSelection, onSync, onTextModelChange, overview,
-  profileName, selectedConnectionId, selectionPresentation, textCandidates, textModel,
+  canSaveSelection, profileName, selectedConnectionId, selectionPresentation, textCandidates, textModel,
 }) {
   const syncStatus = SYNC_STATUS[latestSync?.status] || ["尚未同步", "default"];
   return <Card title={<Space><CloudSyncOutlined />模型同步与选择</Space>}>
@@ -217,7 +217,7 @@ function ModelSelectionSection({
           label: `${index === 0 ? "系统推荐 · " : ""}${row.modelId} · 待验证 · ${row.reasons.join("、")}`,
         }))} /></label>
     </div>
-    <Button type="primary" disabled={busy || !currentCatalog || !textModel || !imageModel}
+    <Button type="primary" disabled={busy || !canSaveSelection}
       loading={activeRequest === "保存模型选择"} onClick={onSaveSelection}>保存模型选择</Button>
   </Card>;
 }
@@ -416,6 +416,9 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
   const connectionView = useMemo(() => presentation.connections
     .find((row) => row.id === selectedConnectionId) || null, [presentation, selectedConnectionId]);
   const currentCatalog = useMemo(() => latestCatalogFor(overview, selectedConnection), [overview, selectedConnection]);
+  const canSaveSelection = Boolean(currentCatalog?.id)
+    && presentation.profileCreatableCatalogIds.includes(currentCatalog?.id)
+    && Boolean(textModel && imageModel);
   const latestSync = useMemo(() => latestSyncFor(overview, selectedConnection), [overview, selectedConnection]);
   const latestSuccessfulSync = useMemo(() => latestSuccessfulSyncFor(overview, selectedConnection), [overview, selectedConnection]);
   const selectionPresentation = useMemo(() => aiSettingsPresentation({
@@ -588,7 +591,8 @@ export default function AiModelSettingsPage({ account = null, navigate = () => {
           onDisplayNameChange={(value) => { setDisplayName(value); setDraftDirty(true); }}
           onGatewayKeyChange={(value) => { setGatewayKey(value); setDraftDirty(true); }}
           onOpenDashboard={openDashboard} onSaveAndTest={saveAndTestConnection} selectedConnection={selectedConnection} />
-        <ModelSelectionSection activeRequest={activeRequest} busy={busy} connectionView={connectionView}
+        <ModelSelectionSection activeRequest={activeRequest} busy={busy} canSaveSelection={canSaveSelection}
+          connectionView={connectionView}
           currentCatalog={currentCatalog} imageCandidates={imageCandidates} imageModel={imageModel}
           latestSuccessfulSync={latestSuccessfulSync} latestSync={latestSync} overview={overview}
           onConnectionChange={(value) => {

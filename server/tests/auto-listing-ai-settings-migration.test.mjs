@@ -22,6 +22,10 @@ const sentReservationRecoveryUpgradeUrl = new URL(
   "../db/migrations/057_auto_listing_ai_sent_reservation_recovery.sql",
   import.meta.url,
 );
+const activeSuccessorUpgradeUrl = new URL(
+  "../db/migrations/058_auto_listing_ai_active_successor_recovery.sql",
+  import.meta.url,
+);
 
 async function migrationSql() {
   return readFile(migrationUrl, "utf8");
@@ -41,6 +45,10 @@ async function preparedRecoveryUpgradeSql() {
 
 async function sentReservationRecoveryUpgradeSql() {
   return readFile(sentReservationRecoveryUpgradeUrl, "utf8");
+}
+
+async function activeSuccessorUpgradeSql() {
+  return readFile(activeSuccessorUpgradeUrl, "utf8");
 }
 
 function functionBlock(sql, name) {
@@ -212,6 +220,16 @@ test("057 makes provider-send evidence irreversible and excludes it from PREPARE
   assert.match(sql, /CREATE OR REPLACE FUNCTION auto_listing_cleanup_expired_prepared_capability_subcalls/iu);
 });
 
+test("058 allows paid successor validation on an exact ACTIVE fence without weakening rollback or legacy authorization", async () => {
+  const sql = await activeSuccessorUpgradeSql();
+  assert.match(sql, /DROP CONSTRAINT IF EXISTS ai_gateway_capability_attempts_authorization_shape_check/iu);
+  assert.match(sql, /purpose = 'PROFILE_CAPABILITY'[\s\S]*target_connection_status IN \('VALIDATED','ACTIVE'\)/iu);
+  assert.match(sql, /purpose = 'ROLLBACK_CAPABILITY'[\s\S]*target_connection_status = 'RETIRED'/iu);
+  assert.match(sql, /target_connection_status = 'LEGACY'[\s\S]*purpose = 'PROFILE_CAPABILITY'/iu);
+  assert.match(sql, /VALIDATE CONSTRAINT ai_gateway_capability_attempts_authorization_shape_check/iu);
+  assert.doesNotMatch(sql, /UPDATE\s+ai_gateway_(?:profiles|connection_versions|model_sync_tasks)/iu);
+});
+
 test("053 stores bounded model catalogs and fenced sync tasks under composite tenant boundaries", async () => {
   const sql = await migrationSql();
   const catalogTable = sql.match(/CREATE TABLE IF NOT EXISTS ai_gateway_model_catalogs[\s\S]*?\n\);/iu)?.[0] ?? "";
@@ -243,7 +261,7 @@ test("053 stores bounded model catalogs and fenced sync tasks under composite te
   assert.match(sql, /status = 'SUCCEEDED'/iu);
 });
 
-test("053 permits manual catalog sync only on exact PENDING or VALIDATED fences while daily scheduling stays ACTIVE", async () => {
+test("053 permits catalog sync on exact PENDING VALIDATED or ACTIVE fences without changing rollback scope", async () => {
   const sql = await migrationSql();
   const insertGuard = functionBlock(sql, "auto_listing_require_pending_ai_gateway_model_sync_task");
   assert.match(insertGuard, /NEW\.sync_purpose = 'CATALOG_SYNC'/iu);

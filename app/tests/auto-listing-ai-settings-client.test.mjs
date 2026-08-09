@@ -104,7 +104,7 @@ function catalog(overrides = {}) {
 
 function overview(overrides = {}) {
   return { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], syncTasks: [], profiles: [],
-    actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] },
+    actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] },
     ...overrides };
 }
 
@@ -315,7 +315,7 @@ test("abort, 64 KiB body limits, accessors, proxies, secret or oversized respons
 });
 
 test("overview and polling only accept known terminal states and never promote unknown work", async (t) => {
-  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
   let reads = 0;
   installTransport(t, async () => { reads += 1; return response({ ...base, syncTasks: [syncTask({ status: reads === 1 ? "LEASED" : "SUCCEEDED" })] }); });
   assert.equal((await loadAiSettings()).syncTasks[0].status, "LEASED");
@@ -325,7 +325,7 @@ test("overview and polling only accept known terminal states and never promote u
 });
 
 test("Task 7 sync status is closed to PENDING LEASED SUCCEEDED FAILED DEAD", async (t) => {
-  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  const base = { accountId: "account-a", activeConnection: null, connections: [], catalogs: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
   installTransport(t, async () => response({ ...base, syncTasks: [syncTask({ status: "LEASED" })] }));
   assert.equal((await loadAiSettings()).syncTasks[0].status, "LEASED");
   globalThis.fetch = async () => response({ ...base, syncTasks: [syncTask({ status: "RUNNING" })] });
@@ -378,7 +378,7 @@ test("Task 7 entity IDs reject whitespace and traversal while model IDs stay ind
 });
 
 test("overview rejects duplicate entity IDs and malformed nested validation evidence", async (t) => {
-  const base = { accountId: "account-a", activeConnection: null, catalogs: [], syncTasks: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
+  const base = { accountId: "account-a", activeConnection: null, catalogs: [], syncTasks: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
   installTransport(t, async () => response({ ...base, connections: [connection(), connection()] }));
   await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
 });
@@ -500,10 +500,11 @@ test("overview rejects duplicate IDs inside each server action array", async (t)
   let current = baseline;
   installTransport(t, async () => response(current));
   await loadAiSettings();
-  for (const key of ["syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"]) {
+  for (const key of ["syncableConnectionIds", "profileCreatableCatalogIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"]) {
     await t.test(key, async () => {
       current = structuredClone(baseline);
-      const id = key === "syncableConnectionIds" ? "connection-a" : "profile-paid";
+      const id = key === "syncableConnectionIds" ? "connection-a"
+        : key === "profileCreatableCatalogIds" ? "catalog-paid" : "profile-paid";
       current.actions[key] = [id, id];
       await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
     });

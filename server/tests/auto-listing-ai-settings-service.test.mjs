@@ -174,10 +174,11 @@ test("connection creation rejects unsafe gateway base URLs at the service bounda
     "http://127.0.0.1:8080/v1");
 });
 
-test("manual model synchronization uses the exact PENDING or VALIDATED fence and never invokes paid capability work", async () => {
+test("manual model synchronization uses the exact PENDING VALIDATED or ACTIVE fence and never invokes paid capability work", async () => {
   for (const connection of [
     { id: "connection-a", accountId: "account-a", version: 1, status: "PENDING", statusVersion: 1 },
     { id: "connection-a", accountId: "account-a", version: 1, status: "VALIDATED", statusVersion: 2 },
+    { id: "connection-a", accountId: "account-a", version: 1, status: "ACTIVE", statusVersion: 3 },
   ]) {
     const { service, calls } = harness({ currentOverview: overview({ connections: [connection] }) });
     const result = await service.requestModelSync({ actor: admin, connectionId: "connection-a",
@@ -191,9 +192,8 @@ test("manual model synchronization uses the exact PENDING or VALIDATED fence and
   }
 });
 
-test("manual synchronization rejects ACTIVE, RETIRED, stale, or cross-account connection evidence before enqueue", async () => {
+test("manual synchronization rejects RETIRED, stale, or cross-account connection evidence before enqueue", async () => {
   for (const connection of [
-    { id: "connection-a", accountId: "account-a", version: 1, status: "ACTIVE", statusVersion: 3 },
     { id: "connection-a", accountId: "account-a", version: 1, status: "RETIRED", statusVersion: 4 },
     { id: "connection-a", accountId: "account-b", version: 1, status: "PENDING", statusVersion: 1 },
   ]) {
@@ -293,11 +293,77 @@ test("overview returns an account-scoped closed DTO with explicit server action 
   assert.deepEqual(result.actions, {
     canCreateConnection: true,
     syncableConnectionIds: ["connection-a"],
+    profileCreatableCatalogIds: [],
     testableProfileIds: [],
     publishableProfileIds: [],
     rollbackProfileIds: [],
   });
   assert.equal(JSON.stringify(result).includes("ciphertext"), false);
+});
+
+test("ACTIVE directory drift exposes only the closed successor workflow while the current profile stays enabled", async () => {
+  const currentOverview = overview({
+    activeConnection: { id: "connection-a", accountId: "account-a", version: 1,
+      status: "ACTIVE", statusVersion: 3 },
+    connections: [{ id: "connection-a", accountId: "account-a", version: 1,
+      status: "ACTIVE", statusVersion: 3 }],
+    catalogs: [{ id: "catalog-latest", accountId: "account-a", connectionId: "connection-a",
+      connectionVersion: 1, syncTaskId: "catalog-task", catalog: {
+        models: [{ id: "text-new" }, { id: "image-new" }],
+      } }],
+    syncTasks: [{ id: "catalog-task", accountId: "account-a", connectionId: "connection-a",
+      connectionVersion: 1, syncPurpose: "CATALOG_SYNC", status: "SUCCEEDED" }],
+    profiles: [
+      { id: "profile-current", accountId: "account-a", connectionId: "connection-a",
+        connectionVersion: 1, textModel: "text-old", imageModel: "image-old", enabled: true,
+        capabilityResult: { outcome: "PASSED" } },
+      { id: "profile-successor", accountId: "account-a", connectionId: "connection-a",
+        connectionVersion: 1, textModel: "text-new", imageModel: "image-new", enabled: false,
+        capabilityResult: { outcome: "PASSED" } },
+    ],
+  });
+  const { service } = harness({ currentOverview });
+  const result = await service.getOverview({ actor: admin });
+
+  assert.deepEqual(result.actions, {
+    canCreateConnection: true,
+    syncableConnectionIds: ["connection-a"],
+    profileCreatableCatalogIds: ["catalog-latest"],
+    testableProfileIds: ["profile-successor"],
+    publishableProfileIds: ["profile-successor"],
+    rollbackProfileIds: [],
+  });
+  assert.equal(currentOverview.profiles[0].enabled, true);
+});
+
+test("an unverified ACTIVE successor can be tested but cannot replace the current profile", async () => {
+  for (const capabilityResult of [
+    { outcome: "NOT_TESTED" },
+    { outcome: "FAILED" },
+  ]) {
+    const currentOverview = overview({
+      connections: [{ id: "connection-a", accountId: "account-a", version: 1,
+        status: "ACTIVE", statusVersion: 3 }],
+      catalogs: [{ id: "catalog-latest", accountId: "account-a", connectionId: "connection-a",
+        connectionVersion: 1, syncTaskId: "catalog-task",
+        catalog: { models: [{ id: "text-new" }, { id: "image-new" }] } }],
+      syncTasks: [{ id: "catalog-task", accountId: "account-a", connectionId: "connection-a",
+        connectionVersion: 1, syncPurpose: "CATALOG_SYNC", status: "SUCCEEDED" }],
+      profiles: [
+        { id: "profile-current", accountId: "account-a", connectionId: "connection-a",
+          connectionVersion: 1, textModel: "text-old", imageModel: "image-old", enabled: true,
+          capabilityResult: { outcome: "PASSED" } },
+        { id: "profile-successor", accountId: "account-a", connectionId: "connection-a",
+          connectionVersion: 1, textModel: "text-new", imageModel: "image-new", enabled: false,
+          capabilityResult },
+      ],
+    });
+    const { service } = harness({ currentOverview });
+    const actions = (await service.getOverview({ actor: admin })).actions;
+    assert.deepEqual(actions.testableProfileIds, ["profile-successor"]);
+    assert.deepEqual(actions.publishableProfileIds, []);
+    assert.equal(currentOverview.profiles[0].enabled, true);
+  }
 });
 
 test("overview action gates use only the latest successful catalog sync evidence", async () => {

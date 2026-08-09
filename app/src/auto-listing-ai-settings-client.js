@@ -18,7 +18,8 @@ const PROFILE_KEYS = ["id", "accountId", "displayName", "configVersion", "baseUr
 const CATALOG_KEYS = ["id", "accountId", "connectionId", "connectionVersion", "syncTaskId", "catalog", "catalogHash",
   "capabilityResult", "capabilityHash", "rollbackEvidenceIdentity", "testedAt", "createdAt"];
 const CAPABILITY_KEYS = ["profileId", "configVersion", "outcome", "features", "latencyMs", "models", "checkedAt", "errorCode", "enabled"];
-const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
+const ACTION_KEYS = ["canCreateConnection", "syncableConnectionIds", "profileCreatableCatalogIds",
+  "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
 const CONNECTION_STATUS = new Set(["PENDING", "VALIDATED", "ACTIVE", "RETIRED"]);
 const TASK_STATUS = new Set(["PENDING", "LEASED", "SUCCEEDED", "FAILED", "DEAD"]);
 const SHA256 = /^[a-f0-9]{64}$/u;

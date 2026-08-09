@@ -11,15 +11,24 @@ function paidCapability(overrides = {}) {
 }
 
 function overview(overrides = {}) {
-  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: paidCapability(), capabilityCheckedAt: CHECKED_AT, connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
+  return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: paidCapability(), capabilityCheckedAt: CHECKED_AT, connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], profileCreatableCatalogIds: [], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
 }
 
 test("presentation exposes actions only from the complete server action contract", () => {
   const view = aiSettingsPresentation(overview());
   assert.deepEqual(view.connections[0].actions, { canSync: true });
+  assert.deepEqual(view.profileCreatableCatalogIds, []);
   assert.deepEqual(view.profiles[0].actions, { canTest: true, canPublish: true, canRollback: false });
   assert.deepEqual(aiSettingsPresentation(overview({ actions: undefined })).profiles[0].actions, { canTest: false, canPublish: false, canRollback: false });
   assert.deepEqual(aiSettingsPresentation(overview({ actions: { ...overview().actions, extra: true } })).profiles[0].actions, { canTest: false, canPublish: false, canRollback: false });
+});
+
+test("presentation exposes profile creation only from the exact server catalog action", () => {
+  const allowed = aiSettingsPresentation(overview({ actions: {
+    ...overview().actions, profileCreatableCatalogIds: ["catalog-a"],
+  } }));
+  assert.deepEqual(allowed.profileCreatableCatalogIds, ["catalog-a"]);
+  assert.deepEqual(aiSettingsPresentation(overview({ actions: undefined })).profileCreatableCatalogIds, []);
 });
 
 test("presentation renders only safe recommendation reasons and candidates stay unverified", () => {
@@ -37,7 +46,7 @@ test("MISSING FAILED and UNKNOWN stay explicit and never imply selection or publ
   for (const [outcome, label] of [["MISSING", "模型不可用"], ["FAILED", "验证失败"], ["UNKNOWN", "验证结果未知"]]) {
     const capabilityResult = outcome === "FAILED"
       ? paidCapability({ outcome: "FAILED", features: [], latencyMs: null, errorCode: "GATEWAY_TIMEOUT" }) : { outcome };
-    const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], capabilityResult, enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
+    const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], capabilityResult, enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
     assert.equal(view.profiles[0].verificationLabel, label); assert.equal(view.profiles[0].actions.canPublish, true); assert.equal(view.profiles[0].selected, false);
   }
 });
@@ -64,21 +73,22 @@ test("a passed profile is only verified with its exact latest successful catalog
 });
 
 test("publish remains the server action contract even when current enabled-health evidence is unavailable", () => {
-  const view = aiSettingsPresentation(overview({ actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
+  const view = aiSettingsPresentation(overview({ actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
   assert.equal(view.profiles[0].verificationLabel, "已验证");
   assert.equal(view.profiles[0].actions.canPublish, true);
 });
 
 test("disabled publish candidate uses its own current paid capability rather than active-selection evidence", () => {
-  const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
+  const view = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0], enabled: false }], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] } }));
   assert.equal(view.profiles[0].verificationLabel, "已验证");
   assert.equal(view.profiles[0].actions.canPublish, true);
 });
 
 test("duplicate action IDs make the pure presentation fail closed even without the client", () => {
-  for (const key of ["syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"]) {
+  for (const key of ["syncableConnectionIds", "profileCreatableCatalogIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"]) {
     const actions = structuredClone(overview().actions);
-    const id = key === "syncableConnectionIds" ? "connection-a" : "profile-a";
+    const id = key === "syncableConnectionIds" ? "connection-a"
+      : key === "profileCreatableCatalogIds" ? "catalog-a" : "profile-a";
     actions[key] = [id, id];
     const view = aiSettingsPresentation(overview({ actions }));
     assert.equal(view.canCreateConnection, false, key);

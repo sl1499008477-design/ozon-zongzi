@@ -476,7 +476,7 @@ if (!enabled) {
         const checkedAt = new Date(Math.max(Date.now(), retiredAt ? retiredAt.getTime() + 1 : 0)).toISOString();
         const capabilityResult = {
           outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
-          latencyMs: 5, models: { text: "text-model", image: "image-model" },
+          latencyMs: 5, models: { text: target.profile.textModel, image: target.profile.imageModel },
           checkedAt, errorCode: null,
         };
         await profiles.completeCapabilityTest({ costConfirmed: true,
@@ -492,6 +492,70 @@ if (!enabled) {
         accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
         idempotencyKey: `publish-first-${suffix}`, correlationId: `publish-first-corr-${suffix}`,
       });
+      const activeBeforeSuccessor = (await pool.query(
+        `SELECT status,status_version FROM ai_gateway_connection_versions
+          WHERE account_id=$1 AND id=$2 AND version=1`,
+        [accountId, first.connection.id],
+      )).rows[0];
+      assert.equal(activeBeforeSuccessor.status, "ACTIVE");
+      const successorSync = await settings.enqueueModelSync({
+        accountId, actorId: accountId, connectionId: first.connection.id, connectionVersion: 1,
+        expectedConnectionStatusVersion: Number(activeBeforeSuccessor.status_version),
+        syncPurpose: "CATALOG_SYNC", maxAttempts: 5,
+        idempotencyKey: `catalog-successor-${suffix}`,
+        correlationId: `catalog-successor-corr-${suffix}`,
+      });
+      const successorWorkerId = `worker-successor-${suffix}`;
+      const successorLease = await settings.claimModelSync({ accountId, workerId: successorWorkerId,
+        leaseMs: 30_000, syncPurpose: "CATALOG_SYNC" });
+      assert.equal(successorLease.taskId, successorSync.id);
+      const successorCheckedAt = new Date().toISOString();
+      const successorCatalog = await settings.completeModelSync({
+        accountId, workerId: successorWorkerId, taskId: successorSync.id,
+        leaseVersion: successorLease.leaseVersion, leaseToken: successorLease.leaseToken,
+        correlationId: `complete-successor-${suffix}`,
+        catalog: { models: [{ id: "image-model-new" }, { id: "text-model-new" }] },
+        capabilityResult: { outcome: "NOT_TESTED", checkedAt: successorCheckedAt, text: false, image: false },
+      });
+      const successorProfile = await settings.createProfileFromSelection({
+        accountId, actorId: accountId, connectionId: first.connection.id, connectionVersion: 1,
+        catalogId: successorCatalog.catalog.id, displayName: "Profile successor",
+        textModel: "text-model-new", imageModel: "image-model-new",
+        textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES",
+        idempotencyKey: `profile-successor-${suffix}`,
+        correlationId: `profile-successor-corr-${suffix}`,
+      });
+      const successor = { connection: first.connection, profile: successorProfile };
+      assert.equal(successor.profile.enabled, false);
+      assert.equal((await pool.query(
+        "SELECT enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=1",
+        [accountId, first.profile.id],
+      )).rows[0].enabled, true);
+      await passCapability(successor, "PROFILE_CAPABILITY", "successor");
+      assert.equal((await pool.query(
+        "SELECT enabled FROM ai_gateway_profiles WHERE account_id=$1 AND id=$2 AND config_version=1",
+        [accountId, first.profile.id],
+      )).rows[0].enabled, true);
+      await profiles.publishProfile({
+        accountId, actorId: accountId, profileId: successor.profile.id, configVersion: 1,
+        idempotencyKey: `publish-successor-${suffix}`,
+        correlationId: `publish-successor-corr-${suffix}`,
+      });
+      const sameConnectionAfterSuccessor = (await pool.query(
+        `SELECT status,status_version FROM ai_gateway_connection_versions
+          WHERE account_id=$1 AND id=$2 AND version=1`,
+        [accountId, first.connection.id],
+      )).rows[0];
+      assert.equal(sameConnectionAfterSuccessor.status, "ACTIVE");
+      assert.equal(Number(sameConnectionAfterSuccessor.status_version), Number(activeBeforeSuccessor.status_version));
+      assert.deepEqual(Object.fromEntries((await pool.query(
+        `SELECT id,enabled FROM ai_gateway_profiles
+          WHERE account_id=$1 AND id IN ($2,$3) ORDER BY id`,
+        [accountId, first.profile.id, successor.profile.id],
+      )).rows.map((row) => [row.id, row.enabled])), {
+        [first.profile.id]: false,
+        [successor.profile.id]: true,
+      });
       const second = await createConnected("second");
       await passCapability(second, "PROFILE_CAPABILITY", "second");
       await profiles.publishProfile({
@@ -499,7 +563,7 @@ if (!enabled) {
         idempotencyKey: `publish-second-${suffix}`, correlationId: `publish-second-corr-${suffix}`,
       });
       const rollbackInput = {
-        accountId, actorId: accountId, profileId: first.profile.id, configVersion: 1,
+        accountId, actorId: accountId, profileId: successor.profile.id, configVersion: 1,
         idempotencyKey: `rollback-first-${suffix}`, correlationId: `rollback-first-corr-${suffix}`,
       };
       assert.deepEqual(await profiles.prepareProfileRollback(rollbackInput), {
@@ -509,7 +573,7 @@ if (!enabled) {
         profileId: second.profile.id, correlationId: `rollback-conflict-${suffix}` }), {
         code: "AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", status: 409,
       });
-      await passCapability(first, "ROLLBACK_CAPABILITY", "first");
+      await passCapability(successor, "ROLLBACK_CAPABILITY", "first");
       const rolledBack = await profiles.rollbackProfile(rollbackInput);
       assert.equal(rolledBack.enabled, true);
       assert.equal((await profiles.rollbackProfile(rollbackInput)).duplicate, true);

@@ -72,6 +72,47 @@ test("settings routes expose only the stable path and method allowlist", async (
   assert.equal(h.calls.some(([name]) => name === "authenticate"), false);
 });
 
+test("overview forwards the server-owned ACTIVE successor actions without route-side guessing", async () => {
+  const actions = {
+    canCreateConnection: true,
+    syncableConnectionIds: ["connection-active"],
+    profileCreatableCatalogIds: ["catalog-latest"],
+    testableProfileIds: ["profile-successor"],
+    publishableProfileIds: [],
+    rollbackProfileIds: [],
+  };
+  const h = harness({ service: {
+    ...harness().service,
+    async getOverview(input) {
+      h.calls.push(["overview", input]);
+      return { accountId: "account-a", actions };
+    },
+  } });
+  const { response } = await h.request("GET", "/admin/auto-listing/ai-settings");
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.payload.data.actions, actions);
+});
+
+test("ACTIVE manual catalog sync preserves the exact client fence when delegated", async () => {
+  const h = harness({ readResult: {
+    connectionVersion: 1,
+    idempotencyKey: "sync-active",
+    correlationId: "corr-active",
+  } });
+  const { response } = await h.request(
+    "POST",
+    "/admin/auto-listing/ai-settings/connections/connection-active/sync",
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(h.calls.find(([name]) => name === "sync")?.[1], {
+    actor: admin,
+    connectionId: "connection-active",
+    connectionVersion: 1,
+    idempotencyKey: "sync-active",
+    correlationId: "corr-active",
+  });
+});
+
 test("authentication and backend permission are checked before service or body access", async () => {
   for (const actor of [
     Object.assign(new Error("not logged in"), { status: 401 }),

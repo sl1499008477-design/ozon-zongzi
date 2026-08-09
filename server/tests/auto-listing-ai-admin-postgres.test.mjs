@@ -173,7 +173,7 @@ test("profile list is exact account-scoped", async () => {
   assert.match(calls[0].sql, /WHERE account_id=\$1/iu);
 });
 
-test("capability secret resolution exposes encrypted data only for exact VALIDATED or RETIRED connection scope", async () => {
+test("capability secret resolution exposes encrypted data only for exact VALIDATED ACTIVE or RETIRED connection scope", async () => {
   const encryptedConnection = {
     id: "connection-a", account_id: "account-a", version: 1, display_name: "Gateway",
     base_url: "https://gateway.example/v1", status: "VALIDATED", ciphertext: "cipher",
@@ -186,11 +186,11 @@ test("capability secret resolution exposes encrypted data only for exact VALIDAT
   });
   assert.equal(result.status, "VALIDATED");
   assert.equal(result.encryptedSecret.ciphertext, "cipher");
-  assert.match(calls[0].sql, /status IN \('VALIDATED','RETIRED'\)/iu);
+  assert.match(calls[0].sql, /status IN \('VALIDATED','ACTIVE','RETIRED'\)/iu);
   assert.deepEqual(calls[0].params, ["account-a", "connection-a", 1]);
 });
 
-test("connection-backed capability begin locks the exact status and latest successful catalog before attempt creation", async () => {
+test("connection-backed capability begin locks an ACTIVE successor to the exact status and latest successful catalog before paid work", async () => {
   const connected = { ...profileRow, api_key_env_name: "SUB2API_ENCRYPTED_KEY",
     connection_id: "connection-a", connection_version: 1 };
   const { pool, calls } = scriptedPool([
@@ -199,10 +199,10 @@ test("connection-backed capability begin locks the exact status and latest succe
     { rowCount: 1, rows: [connected] },
     { rowCount: 0, rows: [] },
     { rowCount: 1, rows: [{ id: "connection-a", version: 1,
-      status: "VALIDATED", status_version: 2, catalog_id: "catalog-a" }] },
+      status: "ACTIVE", status_version: 3, catalog_id: "catalog-a" }] },
     { rowCount: 1, rows: [authorizedAttempt({
       target_connection_id: "connection-a", target_connection_version: 1,
-      target_connection_status: "VALIDATED", target_connection_status_version: 2,
+      target_connection_status: "ACTIVE", target_connection_status_version: 3,
     })] },
     { rowCount: 1, rows: [{ event_id: "authorization-audit" }] },
     { rows: [] },
@@ -213,7 +213,9 @@ test("connection-backed capability begin locks the exact status and latest succe
     requestKey: capabilityRequestKey,
   });
   assert.equal(result.profile.connectionId, "connection-a");
-  assert.match(calls[4].sql, /c\.status='VALIDATED'/iu);
+  assert.equal(result.capabilityExecution.expectedConnectionStatus, "ACTIVE");
+  assert.equal(result.capabilityExecution.expectedConnectionStatusVersion, 3);
+  assert.match(calls[4].sql, /c\.status IN \('VALIDATED','ACTIVE'\)/iu);
   assert.match(calls[4].sql, /ai_gateway_model_catalogs/iu);
   assert.match(calls[4].sql, /catalog->'models'/iu);
 });
@@ -300,13 +302,14 @@ test("capability begin durably authorizes purpose cost identity and connection f
 });
 
 test("paid credential loading atomically binds authorization audit lease latest attempt and connection status fence", async () => {
-  const execution = capabilitySubcallExecution();
+  const execution = capabilitySubcallExecution({ expectedConnectionStatus: "ACTIVE",
+    expectedConnectionStatusVersion: 3 });
   const { pool, calls } = scriptedPool([
     { rows: [] }, { rows: [{ id: "account-a" }] },
     { rows: [{
       id: "attempt-authorized", status: "RUNNING", account_id: "account-a", profile_id: "profile-a",
       config_version: 1, api_key_env_name: "SUB2API_ENCRYPTED_KEY", connection_id: "connection-a",
-      connection_version: 1, connection_status: "VALIDATED", connection_status_version: 2,
+      connection_version: 1, connection_status: "ACTIVE", connection_status_version: 3,
       ciphertext: "cipher", iv: "iv", auth_tag: "tag", algorithm: "aes-256-gcm",
       key_version: "local-v1", fingerprint: "fp",
     }] },
@@ -320,8 +323,8 @@ test("paid credential loading atomically binds authorization audit lease latest 
   ]);
   const loaded = await createAutoListingAiAdminPostgres({ pool })
     .loadCapabilityExecutionForSecretResolution(execution);
-  assert.equal(loaded.connection.status, "VALIDATED");
-  assert.equal(loaded.connection.statusVersion, 2);
+  assert.equal(loaded.connection.status, "ACTIVE");
+  assert.equal(loaded.connection.statusVersion, 3);
   assert.equal(loaded.connection.encryptedSecret.ciphertext, "cipher");
   assert.match(loaded.providerRequestKey, /^[a-f0-9]{64}$/u);
   assert.match(loaded.providerCorrelationId, /^cap_[a-f0-9]{40}$/u);
@@ -331,6 +334,36 @@ test("paid credential loading atomically binds authorization audit lease latest 
   assert.match(calls[2].sql, /newer\.fence/iu);
   assert.match(calls[2].sql, /c\.status=\$\d+/iu);
   assert.match(calls[2].sql, /c\.status_version=\$\d+/iu);
+});
+
+test("publishing a tested successor on its already ACTIVE connection atomically swaps profiles without rotating the connection", async () => {
+  const passed = {
+    ...profileRow,
+    api_key_env_name: "SUB2API_ENCRYPTED_KEY", connection_id: "connection-active", connection_version: 1,
+    capability_result: { outcome: "PASSED", features: ["STRUCTURED_TEXT", "IMAGE_GENERATION", "IMAGE_DECODE_PNG"],
+      models: { text: "text-model-a", image: "image-model-a" }, checkedAt: "2026-08-04T10:01:00.000Z" },
+    capability_checked_at: "2026-08-04T10:01:00.000Z",
+  };
+  const { pool, calls, remaining } = scriptedPool([
+    { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] }, { rows: [passed] },
+    { rows: [{ id: "catalog-active", status: "ACTIVE", version: 1, status_version: 3 }] },
+    { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
+    { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
+    { rows: [{ ...passed, enabled: true }] },
+    { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
+  ]);
+
+  const result = await createAutoListingAiAdminPostgres({ pool }).publishProfile({
+    accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
+    idempotencyKey: "publish-active-successor", correlationId: "corr-active-successor",
+  });
+
+  assert.equal(result.enabled, true);
+  assert.equal(calls.some(({ sql }) => /SET status='RETIRED'|SET status='ACTIVE'/iu.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /SET enabled=FALSE/iu.test(sql)), true);
+  assert.equal(calls.some(({ sql }) => /SET enabled=TRUE/iu.test(sql)), true);
+  assert.equal(calls.at(-2).sql, "COMMIT");
+  assert.equal(remaining.length, 0);
 });
 
 test("paid credential preparation recovers exact ownership after its COMMIT response is lost", async () => {

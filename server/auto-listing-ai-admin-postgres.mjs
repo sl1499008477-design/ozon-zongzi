@@ -379,7 +379,6 @@ async function requireConnectionCapabilityFence(client, profile, purpose) {
     }
     return { id: null, version: null, status: "LEGACY", status_version: 0, retired_at: null };
   }
-  const requiredStatus = purpose === "ROLLBACK_CAPABILITY" ? "RETIRED" : "VALIDATED";
   const result = await query(client,
     `SELECT c.id,c.version,c.status,c.status_version,c.retired_at,latest.id AS catalog_id
        FROM ai_gateway_connection_versions c
@@ -397,14 +396,15 @@ async function requireConnectionCapabilityFence(client, profile, purpose) {
           LIMIT 1
        ) latest ON TRUE
       WHERE c.account_id=$1 AND c.id=$2 AND c.version=$3
-        AND c.status='${requiredStatus}'
+        AND (($6='ROLLBACK_CAPABILITY' AND c.status='RETIRED')
+          OR ($6='PROFILE_CAPABILITY' AND c.status IN ('VALIDATED','ACTIVE')))
         AND EXISTS (SELECT 1 FROM jsonb_array_elements(latest.catalog->'models') model
                     WHERE model->>'id'=$4)
         AND EXISTS (SELECT 1 FROM jsonb_array_elements(latest.catalog->'models') model
                     WHERE model->>'id'=$5)
       FOR UPDATE OF c`,
     [profile.accountId, profile.connectionId, profile.connectionVersion,
-      profile.textModel, profile.imageModel]);
+      profile.textModel, profile.imageModel, purpose]);
   if (!result?.rows?.[0]) {
     throw repositoryError(purpose === "ROLLBACK_CAPABILITY"
       ? "AUTO_LISTING_AI_PROFILE_ROLLBACK_NOT_READY"
@@ -499,11 +499,12 @@ function capabilityExecutionRequest(rawInput) {
   if (id(input.profileId) !== input.profileId || id(input.attemptId) !== input.attemptId
     || id(input.correlationId) !== input.correlationId
     || id(input.leaseToken) !== input.leaseToken) throw invalid();
-  const connectionBacked = ["VALIDATED", "RETIRED"].includes(input.expectedConnectionStatus);
+  const connectionBacked = ["VALIDATED", "ACTIVE", "RETIRED"].includes(input.expectedConnectionStatus);
   const purpose = id(input.purpose);
   if (!["PROFILE_CAPABILITY", "ROLLBACK_CAPABILITY"].includes(purpose)
     || !["REACHABILITY", "TEXT", "IMAGE"].includes(input.probe)
-    || (purpose === "PROFILE_CAPABILITY" && !["VALIDATED", "LEGACY"].includes(input.expectedConnectionStatus))
+    || (purpose === "PROFILE_CAPABILITY"
+      && !["VALIDATED", "ACTIVE", "LEGACY"].includes(input.expectedConnectionStatus))
     || (purpose === "ROLLBACK_CAPABILITY" && input.expectedConnectionStatus !== "RETIRED")) throw invalid();
   const result = {
     accountId,
@@ -655,7 +656,7 @@ async function loadCapabilitySubcallPreparedEvidence(target, input, identity) {
              AND authorization_event.metadata->'costConfirmed'='true'::JSONB
         )
         AND (($20='LEGACY' AND attempt.target_connection_id IS NULL AND connection.id IS NULL)
-          OR ($20 IN ('VALIDATED','RETIRED') AND connection.status=$20
+          OR ($20 IN ('VALIDATED','ACTIVE','RETIRED') AND connection.status=$20
             AND connection.status_version=$21))`,
     [input.accountId, input.attemptId, input.probe, input.leaseVersion,
       identity.providerRequestKey, identity.providerCorrelationId,
@@ -795,6 +796,9 @@ async function activatePublishedConnection(client, { input, profile, requestHash
   if (currentResult.rows.length > 1) {
     throw repositoryError("AUTO_LISTING_AI_PROFILE_AMBIGUOUS", 409);
   }
+  const targetAlreadyActive = profile.connectionId !== null && currentResult.rows.some((current) => (
+    current.id === profile.connectionId && Number(current.version) === profile.connectionVersion
+  ));
   for (const current of currentResult.rows) {
     if (current.id === profile.connectionId && Number(current.version) === profile.connectionVersion) continue;
     const retired = (await query(client,
@@ -823,7 +827,7 @@ async function activatePublishedConnection(client, { input, profile, requestHash
         : { supersededById: profile.connectionId, supersededByVersion: profile.connectionVersion },
     });
   }
-  if (profile.connectionId === null) return;
+  if (profile.connectionId === null || targetAlreadyActive) return;
   const activated = (await query(client,
     `UPDATE ai_gateway_connection_versions
         SET status='ACTIVE',status_version=status_version+1,
@@ -905,7 +909,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
       const result = await query(pool,
         `SELECT * FROM ai_gateway_connection_versions
           WHERE account_id=$1 AND id=$2 AND version=$3
-            AND status IN ('VALIDATED','RETIRED')`,
+            AND status IN ('VALIDATED','ACTIVE','RETIRED')`,
         [accountId, connectionId, connectionVersion]);
       return capabilitySecretRow(result?.rows?.[0]);
     },
@@ -962,7 +966,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
               )
               AND (($14='LEGACY' AND a.purpose='PROFILE_CAPABILITY'
                     AND a.target_connection_id IS NULL AND c.id IS NULL)
-                OR ($14 IN ('VALIDATED','RETIRED') AND c.status=$14 AND c.status_version=$15))
+                OR ($14 IN ('VALIDATED','ACTIVE','RETIRED') AND c.status=$14 AND c.status_version=$15))
             FOR UPDATE OF a,p`,
           [input.accountId, input.profileId, input.configVersion, input.attemptId, input.fence,
             input.leaseVersion, input.leaseToken, CAPABILITY_AUTHORIZATION_SCHEMA, input.purpose,

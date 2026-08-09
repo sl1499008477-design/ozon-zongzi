@@ -57,7 +57,8 @@ function safeModelId(value) {
 
 function actionContract(value) {
   const input = record(value);
-  const keys = ["canCreateConnection", "syncableConnectionIds", "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
+  const keys = ["canCreateConnection", "syncableConnectionIds", "profileCreatableCatalogIds",
+    "testableProfileIds", "publishableProfileIds", "rollbackProfileIds"];
   if (!input || Object.keys(input).length !== keys.length || keys.some((key) => !Object.hasOwn(input, key))
     || typeof input.canCreateConnection !== "boolean" || keys.slice(1).some((key) => !Array.isArray(input[key])
       || new Set(input[key]).size !== input[key].length || input[key].some((id) => !safeEntityId(id)))) return null;
@@ -142,6 +143,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
   const confirmedProfiles = new Set(strings(viewState.costConfirmedProfileIds));
   const actions = actionContract(source.actions);
   const syncable = new Set(actions?.syncableConnectionIds || []);
+  const profileCreatableCatalogIds = Object.freeze([...(actions?.profileCreatableCatalogIds || [])]);
   const testable = new Set(actions?.testableProfileIds || []);
   const publishable = new Set(actions?.publishableProfileIds || []);
   const rollback = new Set(actions?.rollbackProfileIds || []);
@@ -172,6 +174,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
       actions: Object.freeze({ canTest: Boolean(id) && testable.has(id), canPublish: Boolean(id) && publishable.has(id),
         canRollback: Boolean(id) && rollback.has(id) }) });
   });
-  return Object.freeze({ canCreateConnection: actions?.canCreateConnection === true, connections: Object.freeze(connections),
+  return Object.freeze({ canCreateConnection: actions?.canCreateConnection === true,
+    profileCreatableCatalogIds, connections: Object.freeze(connections),
     profiles: Object.freeze(profiles), recommendations: recommendations(source.catalogs) });
 }

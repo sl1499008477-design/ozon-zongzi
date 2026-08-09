@@ -403,7 +403,7 @@ test("active paid reservation maps the database state guard to one stable 409", 
   });
 });
 
-test("profile binding accepts exact model IDs from the latest normalized successful catalog without invented modality metadata", async () => {
+test("profile binding accepts an ACTIVE connection latest catalog as a disabled successor without invented modality metadata", async () => {
   const profile = {
     id: "profile-a", account_id: "account-a", display_name: "Profile A", config_version: 1,
     base_url: connectionRow.base_url, api_key_env_name: "SUB2API_ENCRYPTED_KEY",
@@ -414,7 +414,7 @@ test("profile binding accepts exact model IDs from the latest normalized success
   };
   const { pool, calls } = scriptedPool([
     { rows: [] }, { rows: [{ id: "account-a" }] }, { rows: [] },
-    { rows: [{ ...connectionRow, status: "VALIDATED", status_version: 2 }] },
+    { rows: [{ ...connectionRow, status: "ACTIVE", status_version: 3 }] },
     { rows: [{ id: "catalog-a", catalog: { models: [{ id: "image-model-a" }, { id: "text-model-a" }] },
       catalog_hash: "a".repeat(64), capability_result: {}, tested_at: null }] },
     { rows: [profile] }, { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-a" }] }, { rows: [] },
@@ -426,7 +426,8 @@ test("profile binding accepts exact model IDs from the latest normalized success
     idempotencyKey: "bind-profile-a", correlationId: "corr-bind-profile-a",
   });
   assert.equal(result.id, "profile-a");
-  assert.match(calls[3].sql, /status='VALIDATED'/u);
+  assert.equal(result.enabled, false);
+  assert.match(calls[3].sql, /status IN \('VALIDATED','ACTIVE'\)/u);
   assert.match(calls[4].sql, /NOT EXISTS[\s\S]*newer\.created_at,newer\.id/iu);
   assert.equal(calls.some(({ sql }) => /capabilities|capability_result->>'outcome'/iu.test(sql)), false);
 });

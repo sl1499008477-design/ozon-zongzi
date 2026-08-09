@@ -1511,7 +1511,7 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         }
         const connection = (await query(client,
           `SELECT * FROM ai_gateway_connection_versions
-            WHERE account_id=$1 AND id=$2 AND version=$3 AND status='VALIDATED'
+            WHERE account_id=$1 AND id=$2 AND version=$3 AND status IN ('VALIDATED','ACTIVE')
             FOR UPDATE`,
           [input.accountId, input.connectionId, input.connectionVersion])).rows[0];
         if (!connection) throw repositoryError("AUTO_LISTING_AI_SETTINGS_CONNECTION_NOT_ACTIVE", 409);
