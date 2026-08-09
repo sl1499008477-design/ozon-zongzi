@@ -70,7 +70,9 @@ function settingsIdentity(overview) {
     ...(overview.connections || []).flatMap((row) => [row.id, row.version, row.statusVersion, row.status]),
     ...(overview.catalogs || []).flatMap((row) => [row.id, row.createdAt]),
     ...(overview.syncTasks || []).flatMap((row) => [row.id, row.statusVersion, row.status]),
-    ...(overview.profiles || []).flatMap((row) => [row.id, row.configVersion, row.enabled, row.capabilityCheckedAt || ""]),
+    ...(overview.profiles || []).flatMap((row) => [row.id, row.configVersion, row.enabled,
+      row.capabilityCheckedAt || "", row.activation?.kind || "", row.activation?.occurredAt || "",
+      row.activation?.actorId || ""]),
   ].join("|");
 }
 
@@ -265,13 +267,16 @@ function ConfigurationHistorySection({
   presentation, rollbackConfirmedProfileIds,
 }) {
   const active = overview?.profiles?.find((row) => row.enabled) || null;
+  const profilePresentation = (profileId) => presentation.profiles.find((item) => item.id === profileId);
+  const activeActivation = active ? profilePresentation(active.id)?.activation : null;
   const columns = [
     { title: "版本", dataIndex: "configVersion", render: (value, row) => <Space><strong>v{value}</strong>{row.enabled ? <Tag color="success">当前正式版本</Tag> : null}</Space> },
     { title: "文字模型", dataIndex: "textModel", ellipsis: true },
     { title: "图片模型", dataIndex: "imageModel", ellipsis: true },
-    { title: "验证状态", key: "capability", render: (_value, row) => presentation.profiles.find((item) => item.id === row.id)?.verificationLabel || "待刷新" },
-    { title: "配置创建时间", dataIndex: "createdAt", render: formatTime },
-    { title: "操作管理员", key: "operator", render: () => "当前接口未提供；请查审计日志" },
+    { title: "验证状态", key: "capability", render: (_value, row) => profilePresentation(row.id)?.verificationLabel || "待刷新" },
+    { title: "启用方式", key: "activation-kind", render: (_value, row) => profilePresentation(row.id)?.activation?.kindLabel || "—" },
+    { title: "启用时间", key: "activation-time", render: (_value, row) => formatTime(profilePresentation(row.id)?.activation?.occurredAt) },
+    { title: "操作管理员", key: "operator", render: (_value, row) => profilePresentation(row.id)?.activation?.actorId || "—" },
     { title: "操作", key: "action", render: (_value, row) => {
       const view = presentation.profiles.find((item) => item.id === row.id);
       if (!view?.actions?.canRollback) return "—";
@@ -292,8 +297,9 @@ function ConfigurationHistorySection({
       { key: "gateway", label: "网关地址", children: active.baseUrl },
       { key: "text", label: "文字模型", children: active.textModel },
       { key: "image", label: "图片模型", children: active.imageModel },
-      { key: "time", label: "配置创建时间", children: formatTime(active.createdAt) },
-      { key: "operator", label: "操作管理员", children: "当前接口未提供；请查审计日志" },
+      { key: "kind", label: "启用方式", children: activeActivation?.kindLabel || "—" },
+      { key: "time", label: "启用时间", children: formatTime(activeActivation?.occurredAt) },
+      { key: "operator", label: "操作管理员", children: activeActivation?.actorId || "—" },
     ]} /> : <Alert type="info" showIcon title="尚未发布正式配置" description="请依次完成连接、同步、选择和真实能力测试。" />}
     <Table className="ai-model-settings-history" rowKey="id" size="small" pagination={false}
       scroll={{ x: 960 }} dataSource={overview?.profiles || []} columns={columns} locale={{ emptyText: "暂无历史版本" }} />

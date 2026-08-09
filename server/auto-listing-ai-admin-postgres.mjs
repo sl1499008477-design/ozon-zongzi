@@ -103,6 +103,22 @@ function deterministicId(prefix, ...values) {
   return `${prefix}_${crypto.createHash("sha256").update(values.join("\0"), "utf8").digest("hex").slice(0, 40)}`;
 }
 
+function activationFromAuditRow(row) {
+  const action = row?.activation_action ?? row?.action ?? null;
+  const rawOccurredAt = row?.activation_occurred_at ?? row?.occurred_at ?? null;
+  const actorId = row?.activation_actor_id ?? row?.actor_id ?? null;
+  if (action === null && rawOccurredAt === null && actorId === null) return null;
+  if (!["AUTO_LISTING_AI_PROFILE_PUBLISH", "AUTO_LISTING_AI_PROFILE_ROLLBACK"].includes(action)) return null;
+  const occurredAt = rawOccurredAt instanceof Date ? rawOccurredAt.toISOString() : rawOccurredAt;
+  if (typeof occurredAt !== "string" || Number.isNaN(Date.parse(occurredAt))
+    || typeof actorId !== "string" || !SAFE_ID.test(actorId)) throw invalid();
+  return {
+    kind: action === "AUTO_LISTING_AI_PROFILE_PUBLISH" ? "PUBLISH" : "ROLLBACK",
+    occurredAt: new Date(occurredAt).toISOString(),
+    actorId,
+  };
+}
+
 function profileRow(row) {
   if (!row) return null;
   return {
@@ -122,6 +138,7 @@ function profileRow(row) {
       ? row.capability_checked_at.toISOString() : row.capability_checked_at ?? null,
     connectionId: row.connection_id ?? null,
     connectionVersion: row.connection_version == null ? null : Number(row.connection_version),
+    activation: activationFromAuditRow(row),
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at ?? null,
   };
 }
@@ -214,15 +231,15 @@ function auditIdentity(action, accountId, idempotencyKey) {
 async function loadAudit(client, { action, accountId, idempotencyKey, requestHash }) {
   const eventId = auditIdentity(action, accountId, idempotencyKey);
   const result = await query(client,
-    `SELECT metadata,$3::TEXT AS expected_request_hash
+    `SELECT metadata,occurred_at,actor_id,action,$3::TEXT AS expected_request_hash
        FROM audit_events
       WHERE event_id=$1 AND account_id=$2 AND action=$4
       FOR UPDATE`,
     [eventId, accountId, requestHash, action]);
   const metadata = result?.rows?.[0]?.metadata;
-  if (!metadata) return { eventId, metadata: null };
+  if (!metadata) return { eventId, metadata: null, activation: null };
   if (metadata.requestHash !== requestHash) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
-  return { eventId, metadata };
+  return { eventId, metadata, activation: activationFromAuditRow(result.rows[0]) };
 }
 
 async function insertAudit(client, {
@@ -236,10 +253,11 @@ async function insertAudit(client, {
        entity_type,entity_id,correlation_id,metadata,occurred_at,created_at
      ) VALUES ($1,$2,NULL,$3,$9,$10,$4,'','auto-listing-ai-admin',$5,$6,$7,$8::JSONB,NOW(),NOW())
      ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING
-     RETURNING event_id`,
+     RETURNING event_id,action,actor_id,occurred_at`,
     [eventId, accountId, action, actorId, entityType, entityId, correlationId,
       JSON.stringify(metadata), status, actorType]);
   if (result?.rowCount !== 1) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
+  return result.rows[0];
 }
 
 async function insertConnectionEvent(client, {
@@ -1504,7 +1522,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             [input.accountId, audit.metadata.entityId, audit.metadata.configVersion]);
           const row = profileRow(replay.rows[0]);
           if (!row || row.accountId !== input.accountId) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
-          return { ...row, duplicate: true };
+          return { ...row, activation: audit.activation, duplicate: true };
         }
         await assertNoActivePaidReservation(client, input.accountId);
         const target = await query(client,
@@ -1552,11 +1570,11 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.configVersion]);
         const row = profileRow(published.rows[0]);
         if (!row || !row.enabled || row.accountId !== input.accountId) throw databaseFailed();
-        await insertAudit(client, {
+        const activation = activationFromAuditRow(await insertAudit(client, {
           ...input, ...audit, action, entityType: "ai_gateway_profile", entityId: row.id,
           metadata: { requestHash, entityId: row.id, configVersion: row.configVersion },
-        });
-        return { ...row, duplicate: false };
+        }));
+        return { ...row, activation, duplicate: false };
       });
     },
 
@@ -1619,7 +1637,7 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
             [input.accountId, audit.metadata.entityId, audit.metadata.configVersion]);
           const replayRow = profileRow(replay.rows[0]);
           if (!replayRow) throw repositoryError("AUTO_LISTING_AI_ADMIN_IDEMPOTENCY_CONFLICT", 409);
-          return { ...replayRow, duplicate: true };
+          return { ...replayRow, activation: audit.activation, duplicate: true };
         }
         await assertNoActivePaidReservation(client, input.accountId);
         const target = await query(client,
@@ -1721,12 +1739,12 @@ export function createAutoListingAiAdminPostgres(rawOptions = {}) {
           [input.accountId, input.profileId, input.configVersion]);
         const row = profileRow(published.rows[0]);
         if (!row || !row.enabled || row.accountId !== input.accountId) throw databaseFailed();
-        await insertAudit(client, {
+        const activation = activationFromAuditRow(await insertAudit(client, {
           ...input, ...audit, action, entityType: "ai_gateway_profile", entityId: row.id,
           metadata: { requestHash, entityId: row.id, configVersion: row.configVersion,
             purpose: "ROLLBACK_CAPABILITY", attemptId: attempt.id },
-        });
-        return { ...row, duplicate: false };
+        }));
+        return { ...row, activation, duplicate: false };
       });
     },
 

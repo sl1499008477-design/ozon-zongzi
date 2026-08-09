@@ -14,7 +14,7 @@ const TASK_KEYS = ["id", "accountId", "connectionId", "connectionVersion", "sync
   "lastErrorCode", "lastErrorSafe", "createdAt", "duplicate"];
 const PROFILE_KEYS = ["id", "accountId", "displayName", "configVersion", "baseUrl", "textProtocol", "imageProtocol",
   "textModel", "imageModel", "enabled", "capabilityResult", "capabilityCheckedAt", "connectionId", "connectionVersion",
-  "createdAt", "duplicate"];
+  "activation", "createdAt", "duplicate"];
 const CATALOG_KEYS = ["id", "accountId", "connectionId", "connectionVersion", "syncTaskId", "catalog", "catalogHash",
   "capabilityResult", "capabilityHash", "rollbackEvidenceIdentity", "testedAt", "createdAt"];
 const CAPABILITY_KEYS = ["profileId", "configVersion", "outcome", "features", "latencyMs", "models", "checkedAt", "errorCode", "enabled"];
@@ -384,6 +384,13 @@ function validateTask(raw) {
   });
 }
 
+function profileActivation(value) {
+  if (value === null) return true;
+  return exactRecord(value, ["kind", "occurredAt", "actorId"])
+    && ["PUBLISH", "ROLLBACK"].includes(value.kind)
+    && isoTimestamp(value.occurredAt) && Boolean(id(value.actorId));
+}
+
 function validateProfile(raw) {
   return responseValidation(() => {
     const value = exactResponse(raw, PROFILE_KEYS);
@@ -397,7 +404,8 @@ function validateProfile(raw) {
     || (value.capabilityResult.outcome === "FAILED" && value.enabled !== false)
     || (value.connectionId !== null && !id(value.connectionId)) || (value.connectionVersion !== null && (!Number.isSafeInteger(value.connectionVersion) || value.connectionVersion < 1))
     || ((value.connectionId === null) !== (value.connectionVersion === null))
-      || !isoTimestamp(value.createdAt) || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
+      || !profileActivation(value.activation) || !isoTimestamp(value.createdAt)
+      || typeof value.duplicate !== "boolean") throw invalid("AI_SETTINGS_CLIENT_RESPONSE_INVALID");
     return Object.freeze(value);
   });
 }

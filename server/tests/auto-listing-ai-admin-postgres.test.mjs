@@ -350,7 +350,8 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
     { rows: [{ id: "profile-current", config_version: 1 }] }, { rows: [] },
     { rows: [{ id: "connection-active", version: 1, status_version: 3 }] },
     { rows: [{ ...passed, enabled: true }] },
-    { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
+    { rowCount: 1, rows: [{ event_id: "audit-profile", action: "AUTO_LISTING_AI_PROFILE_PUBLISH",
+      actor_id: "account-a", occurred_at: new Date("2026-08-09T02:03:04.000Z") }] }, { rows: [] },
   ]);
 
   const result = await createAutoListingAiAdminPostgres({ pool }).publishProfile({
@@ -359,6 +360,9 @@ test("publishing a tested successor on its already ACTIVE connection atomically 
   });
 
   assert.equal(result.enabled, true);
+  assert.deepEqual(result.activation, {
+    kind: "PUBLISH", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-a",
+  });
   assert.equal(calls.some(({ sql }) => /SET status='RETIRED'|SET status='ACTIVE'/iu.test(sql)), false);
   assert.equal(calls.some(({ sql }) => /SET enabled=FALSE/iu.test(sql)), true);
   assert.equal(calls.some(({ sql }) => /SET enabled=TRUE/iu.test(sql)), true);
@@ -660,6 +664,8 @@ test("profile publish replay never re-enables a profile superseded by a later pu
     { rowCount: 1, rows: [{ id: "account-a" }] },
     (_sql, params) => ({ rowCount: 1, rows: [{
       metadata: { requestHash: params[2], entityId: "profile-a", configVersion: 1 },
+      action: "AUTO_LISTING_AI_PROFILE_PUBLISH", actor_id: "account-a",
+      occurred_at: new Date("2026-08-09T02:03:04.000Z"),
     }] }),
     { rowCount: 1, rows: [{ ...profileRow, enabled: false }] },
     { rows: [] },
@@ -671,6 +677,9 @@ test("profile publish replay never re-enables a profile superseded by a later pu
   });
   assert.equal(replay.duplicate, true);
   assert.equal(replay.enabled, false);
+  assert.deepEqual(replay.activation, {
+    kind: "PUBLISH", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-a",
+  });
   assert.equal(calls.some(({ sql }) => /SET enabled=/iu.test(sql)), false);
 });
 
@@ -774,13 +783,17 @@ test("rollback requires a fresh audited rollback capability and republishes the 
     { rows: [{ id: "connection-old", version: 1, status_version: 6 }] },
     { rows: [] }, { rowCount: 1, rows: [{ event_id: "audit-active" }] },
     { rows: [{ ...passed, enabled: true }] },
-    { rowCount: 1, rows: [{ event_id: "audit-profile" }] }, { rows: [] },
+    { rowCount: 1, rows: [{ event_id: "audit-profile", action: "AUTO_LISTING_AI_PROFILE_ROLLBACK",
+      actor_id: "account-a", occurred_at: new Date("2026-08-09T03:04:05.000Z") }] }, { rows: [] },
   ]);
   const result = await createAutoListingAiAdminPostgres({ pool }).rollbackProfile({
     accountId: "account-a", actorId: "account-a", profileId: "profile-a", configVersion: 1,
     idempotencyKey: "rollback-connected-a", correlationId: "corr-rollback-connected-a",
   });
   assert.equal(result.enabled, true);
+  assert.deepEqual(result.activation, {
+    kind: "ROLLBACK", occurredAt: "2026-08-09T03:04:05.000Z", actorId: "account-a",
+  });
   assert.match(calls[4].sql, /c\.status='RETIRED'/iu);
   assert.match(calls[5].sql, /metadata->>'purpose'='ROLLBACK_CAPABILITY'/iu);
   assert.match(calls[6].sql, /status='VALIDATED'/iu);

@@ -106,8 +106,11 @@ test("page styling is scoped and remains usable on narrow screens", () => {
   for (const selector of topLevelSelectors) assert.match(selector, /^\.ai-model-settings-page(?:\s|$)/u);
 });
 
-test("history labels do not claim unavailable creation timestamps are publish audit evidence", () => {
-  assert.match(page, /配置创建时间/);
-  assert.match(page, /当前接口未提供；请查审计日志/);
-  assert.doesNotMatch(page, /label: "启用时间"|title: "操作时间"/);
+test("history renders real activation audit time and actor without falling back to configuration creation time", () => {
+  assert.match(page, /启用时间/);
+  assert.match(page, /操作管理员/);
+  assert.match(page, /activation\?\.occurredAt/);
+  assert.match(page, /activation\?\.actorId/);
+  assert.doesNotMatch(page, /当前接口未提供；请查审计日志/);
+  assert.doesNotMatch(page, /启用时间[^\n]*createdAt|操作管理员[^\n]*createdAt/);
 });

@@ -234,6 +234,21 @@ function catalogDto(row) {
   };
 }
 
+function profileActivationDto(row) {
+  const action = row?.activation_action ?? null;
+  const occurredAt = dtoTimestamp(row?.activation_occurred_at);
+  const actorId = row?.activation_actor_id ?? null;
+  if (action === null && occurredAt === null && actorId === null) return null;
+  if (!["AUTO_LISTING_AI_PROFILE_PUBLISH", "AUTO_LISTING_AI_PROFILE_ROLLBACK"].includes(action)
+    || typeof occurredAt !== "string" || Number.isNaN(Date.parse(occurredAt))
+    || typeof actorId !== "string" || !SAFE_ID.test(actorId)) throw invalid();
+  return {
+    kind: action === "AUTO_LISTING_AI_PROFILE_PUBLISH" ? "PUBLISH" : "ROLLBACK",
+    occurredAt,
+    actorId,
+  };
+}
+
 function profileDto(row, duplicate = false) {
   if (!row) return null;
   return {
@@ -252,6 +267,7 @@ function profileDto(row, duplicate = false) {
     capabilityCheckedAt: dtoTimestamp(row.capability_checked_at),
     connectionId: row.connection_id,
     connectionVersion: row.connection_version == null ? null : Number(row.connection_version),
+    activation: profileActivationDto(row),
     createdAt: dtoTimestamp(row.created_at),
     duplicate,
   };
@@ -983,7 +999,30 @@ export function createAutoListingAiSettingsPostgres(rawOptions = {}) {
         const connections = await query(client, `SELECT * FROM ai_gateway_connection_versions WHERE account_id=$1 ORDER BY created_at DESC,fence DESC`, [accountId]);
         const catalogs = await query(client, `SELECT * FROM ai_gateway_model_catalogs WHERE account_id=$1 ORDER BY created_at DESC,id DESC`, [accountId]);
         const tasks = await query(client, `SELECT * FROM ai_gateway_model_sync_tasks WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
-        const profiles = await query(client, `SELECT * FROM ai_gateway_profiles WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
+        const profiles = await query(client,
+          `SELECT p.*,
+                  latest_activation.action AS activation_action,
+                  latest_activation.occurred_at AS activation_occurred_at,
+                  latest_activation.actor_id AS activation_actor_id
+             FROM ai_gateway_profiles p
+             LEFT JOIN LATERAL (
+               SELECT activation.action,activation.occurred_at,activation.actor_id
+                 FROM audit_events activation
+                WHERE activation.account_id=p.account_id
+                  AND activation.entity_type='ai_gateway_profile'
+                  AND activation.entity_id=p.id
+                  AND activation.metadata->>'entityId'=p.id
+                  AND activation.metadata->>'configVersion'=p.config_version::TEXT
+                  AND activation.status='SUCCESS'
+                  AND activation.actor_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$'
+                  AND activation.action IN (
+                    'AUTO_LISTING_AI_PROFILE_PUBLISH','AUTO_LISTING_AI_PROFILE_ROLLBACK'
+                  )
+                ORDER BY activation.occurred_at DESC,activation.event_id DESC NULLS LAST,activation.id DESC
+                LIMIT 1
+             ) latest_activation ON TRUE
+            WHERE p.account_id=$1
+            ORDER BY p.created_at DESC,p.id DESC`, [accountId]);
         const safeConnections = connections.rows.map((row) => connectionDto(row));
         return {
           accountId,

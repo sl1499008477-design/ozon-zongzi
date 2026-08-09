@@ -301,6 +301,22 @@ test("overview returns an account-scoped closed DTO with explicit server action 
   assert.equal(JSON.stringify(result).includes("ciphertext"), false);
 });
 
+test("overview preserves only the repository activation evidence for the exact account profile version", async () => {
+  const activation = { kind: "PUBLISH", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-a" };
+  const currentOverview = overview({
+    profiles: [{ id: "profile-a", accountId: "account-a", configVersion: 1,
+      connectionId: null, connectionVersion: null, textModel: "text-a", imageModel: "image-a",
+      enabled: true, capabilityResult: {}, activation }],
+  });
+  const { service } = harness({ currentOverview });
+
+  const result = await service.getOverview({ actor: admin });
+
+  assert.deepEqual(result.profiles[0].activation, activation);
+  assert.equal(result.profiles[0].createdAt, undefined,
+    "the service must not invent an activation from a configuration creation timestamp");
+});
+
 test("ACTIVE directory drift exposes only the closed successor workflow while the current profile stays enabled", async () => {
   const currentOverview = overview({
     activeConnection: { id: "connection-a", accountId: "account-a", version: 1,

@@ -576,7 +576,15 @@ if (!enabled) {
       await passCapability(successor, "ROLLBACK_CAPABILITY", "first");
       const rolledBack = await profiles.rollbackProfile(rollbackInput);
       assert.equal(rolledBack.enabled, true);
+      assert.equal(rolledBack.activation.kind, "ROLLBACK");
+      assert.equal(rolledBack.activation.actorId, accountId);
+      assert.equal(new Date(rolledBack.activation.occurredAt).toISOString(), rolledBack.activation.occurredAt);
       assert.equal((await profiles.rollbackProfile(rollbackInput)).duplicate, true);
+      const activationOverview = await settings.loadSettingsOverview({ accountId });
+      assert.deepEqual(
+        activationOverview.profiles.find((candidate) => candidate.id === successor.profile.id)?.activation,
+        rolledBack.activation,
+      );
       const preparedReplay = await profiles.prepareProfileRollback({ ...rollbackInput,
         correlationId: `rollback-response-loss-${suffix}` });
       assert.equal(preparedReplay.completed, true);

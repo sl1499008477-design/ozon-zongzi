@@ -14,6 +14,21 @@ function overview(overrides = {}) {
   return { connections: [{ id: "connection-a", displayName: "本地 sub2API", baseUrl: "https://gateway.example/v1", version: 1, status: "VALIDATED", validationResult: { outcome: "PASSED" } }], catalogs: [], syncTasks: [], profiles: [{ id: "profile-a", displayName: "商品模型", configVersion: 1, textModel: "text-a", imageModel: "image-a", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES", enabled: false, capabilityResult: paidCapability(), capabilityCheckedAt: CHECKED_AT, connectionId: "connection-a", connectionVersion: 1 }], actions: { canCreateConnection: true, syncableConnectionIds: ["connection-a"], profileCreatableCatalogIds: [], testableProfileIds: ["profile-a"], publishableProfileIds: ["profile-a"], rollbackProfileIds: [] }, ...overrides };
 }
 
+test("presentation exposes only closed audit-backed activation evidence and never falls back to createdAt", () => {
+  const activated = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0],
+    createdAt: "2026-08-01T00:00:00.000Z",
+    activation: { kind: "PUBLISH", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-admin-a" },
+  }] }));
+  assert.deepEqual(activated.profiles[0].activation, {
+    kind: "PUBLISH", kindLabel: "发布启用", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-admin-a",
+  });
+
+  const legacy = aiSettingsPresentation(overview({ profiles: [{ ...overview().profiles[0],
+    createdAt: "2026-08-01T00:00:00.000Z", activation: null,
+  }] }));
+  assert.equal(legacy.profiles[0].activation, null);
+});
+
 test("presentation exposes actions only from the complete server action contract", () => {
   const view = aiSettingsPresentation(overview());
   assert.deepEqual(view.connections[0].actions, { canSync: true });

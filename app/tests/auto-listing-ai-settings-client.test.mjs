@@ -59,7 +59,8 @@ function profile(overrides = {}) {
   return { id: "profile-a", accountId: "account-a", displayName: "商品图模型", configVersion: 1,
     baseUrl: "http://127.0.0.1:8080/v1", textProtocol: "SUB2API_RESPONSES", imageProtocol: "SUB2API_OPENAI_IMAGES",
     textModel: "text-a", imageModel: "image-a", enabled: false, capabilityResult: {}, capabilityCheckedAt: null,
-    connectionId: "connection-a", connectionVersion: 1, createdAt: "2026-08-08T00:00:00.000Z", duplicate: false, ...overrides };
+    connectionId: "connection-a", connectionVersion: 1, activation: null,
+    createdAt: "2026-08-08T00:00:00.000Z", duplicate: false, ...overrides };
 }
 
 function capability(overrides = {}) {
@@ -223,7 +224,7 @@ async function task7ProducerOverview() {
     if (/FROM ai_gateway_connection_versions WHERE/u.test(sql)) return { rows: rows.connections };
     if (/FROM ai_gateway_model_catalogs WHERE/u.test(sql)) return { rows: rows.catalogs };
     if (/FROM ai_gateway_model_sync_tasks WHERE/u.test(sql)) return { rows: rows.tasks };
-    if (/FROM ai_gateway_profiles WHERE/u.test(sql)) return { rows: rows.profiles };
+    if (/FROM ai_gateway_profiles(?:\s+p)?/u.test(sql)) return { rows: rows.profiles };
     return { rows: [] };
   }, release() {} };
   const pool = { async connect() { return client; }, async query() { return { rows: [] }; } };
@@ -381,6 +382,31 @@ test("overview rejects duplicate entity IDs and malformed nested validation evid
   const base = { accountId: "account-a", activeConnection: null, catalogs: [], syncTasks: [], profiles: [], actions: { canCreateConnection: true, syncableConnectionIds: [], profileCreatableCatalogIds: [], testableProfileIds: [], publishableProfileIds: [], rollbackProfileIds: [] } };
   installTransport(t, async () => response({ ...base, connections: [connection(), connection()] }));
   await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+});
+
+test("overview accepts a closed audit-backed profile activation and rejects malformed or partial evidence", async (t) => {
+  let current = overview({ profiles: [profile({ activation: {
+    kind: "ROLLBACK", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-admin-a",
+  } })] });
+  installTransport(t, async () => response(current));
+
+  const loaded = await loadAiSettings();
+  assert.deepEqual(loaded.profiles[0].activation, {
+    kind: "ROLLBACK", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-admin-a",
+  });
+
+  for (const [label, activation] of [
+    ["open evidence", { kind: "PUBLISH", occurredAt: CHECKED_AT, actorId: "account-a", extra: true }],
+    ["unknown kind", { kind: "CREATE", occurredAt: CHECKED_AT, actorId: "account-a" }],
+    ["noncanonical timestamp", { kind: "PUBLISH", occurredAt: "2026-08-08T00:00:00Z", actorId: "account-a" }],
+    ["unsafe actor", { kind: "PUBLISH", occurredAt: CHECKED_AT, actorId: " account-a" }],
+    ["partial evidence", { kind: "PUBLISH", occurredAt: CHECKED_AT }],
+  ]) {
+    await t.test(label, async () => {
+      current = overview({ profiles: [profile({ activation })] });
+      await assert.rejects(loadAiSettings(), { code: "AI_SETTINGS_CLIENT_RESPONSE_INVALID" });
+    });
+  }
 });
 
 test("client accepts the exact Task 7 repository and service overview DTO variants", async (t) => {

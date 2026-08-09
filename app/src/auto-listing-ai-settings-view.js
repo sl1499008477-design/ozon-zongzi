@@ -97,6 +97,19 @@ function currentPaidEvidence(profile) {
     && !(result.outcome === "FAILED" && profile.enabled === true);
 }
 
+function activationEvidence(raw) {
+  if (raw === null || raw === undefined) return null;
+  const value = exactRecord(raw, ["kind", "occurredAt", "actorId"]);
+  if (!value || !["PUBLISH", "ROLLBACK"].includes(value.kind)
+    || !iso(value.occurredAt) || !safeEntityId(value.actorId)) return null;
+  return Object.freeze({
+    kind: value.kind,
+    kindLabel: value.kind === "PUBLISH" ? "发布启用" : "安全回退",
+    occurredAt: value.occurredAt,
+    actorId: value.actorId,
+  });
+}
+
 function catalogSelection(catalogs, syncTasks, profile) {
   const evidenceRows = [];
   for (const raw of Array.isArray(catalogs) ? catalogs : []) {
@@ -167,6 +180,7 @@ export function aiSettingsPresentation(overview = {}, rawViewState = {}) {
     return Object.freeze({ id, displayName: typeof row.displayName === "string" ? row.displayName : "",
       textModel: typeof row.textModel === "string" ? row.textModel : "", imageModel: typeof row.imageModel === "string" ? row.imageModel : "",
       status: state.outcome, statusLabel: state.label, verificationLabel: state.label,
+      activation: activationEvidence(row.activation),
       selected: row.enabled === true,
       management: row.connectionId === null ? "legacy" : "managed", disabled: row.enabled !== true,
       connection: row.connectionId === null ? null : Object.freeze({ id: typeof row.connectionId === "string" ? row.connectionId : "", version: Number.isSafeInteger(row.connectionVersion) ? row.connectionVersion : 0 }),

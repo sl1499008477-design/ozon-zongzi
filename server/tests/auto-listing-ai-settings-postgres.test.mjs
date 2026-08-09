@@ -326,6 +326,41 @@ test("settings overview preserves a legacy profile null connection reference", a
   });
   assert.equal(overview.profiles[0].connectionId, null);
   assert.equal(overview.profiles[0].connectionVersion, null);
+  assert.equal(overview.profiles[0].activation, null);
+});
+
+test("settings overview projects the latest exact tenant profile activation audit instead of configuration creation time", async () => {
+  const occurredAt = new Date("2026-08-09T02:03:04.000Z");
+  const profile = {
+    id: "profile-a", account_id: "account-a", display_name: "Profile A", config_version: 2,
+    base_url: "https://gateway.example/v1", api_key_env_name: "SUB2API_ENCRYPTED_KEY",
+    text_protocol: "SUB2API_RESPONSES", image_protocol: "SUB2API_OPENAI_IMAGES",
+    text_model: "text-a", image_model: "image-a", enabled: true,
+    capability_result: {}, capability_checked_at: null, connection_id: null, connection_version: null,
+    created_at: "2026-08-08T00:00:00.000Z", activation_action: "AUTO_LISTING_AI_PROFILE_ROLLBACK",
+    activation_occurred_at: occurredAt, activation_actor_id: "account-admin-a",
+  };
+  const { pool, calls } = scriptedPool([
+    { rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }, { rows: [profile] }, { rows: [] },
+  ]);
+
+  const result = await createAutoListingAiSettingsPostgres({ pool }).loadSettingsOverview({ accountId: "account-a" });
+
+  assert.deepEqual(result.profiles[0].activation, {
+    kind: "ROLLBACK", occurredAt: "2026-08-09T02:03:04.000Z", actorId: "account-admin-a",
+  });
+  const profileQuery = calls.find(({ sql }) => /FROM ai_gateway_profiles/iu.test(sql));
+  assert.match(profileQuery.sql, /activation\.account_id=p\.account_id/iu);
+  assert.match(profileQuery.sql, /activation\.entity_id=p\.id/iu);
+  assert.match(profileQuery.sql, /activation\.metadata->>'entityId'=p\.id/iu);
+  assert.match(profileQuery.sql, /activation\.metadata->>'configVersion'=p\.config_version::TEXT/iu);
+  assert.match(profileQuery.sql, /activation\.status='SUCCESS'/iu);
+  assert.match(profileQuery.sql, /activation\.actor_id\s*~\s*'\^\[A-Za-z0-9\]/u,
+    "legacy audits without a safe actor ID must be ignored as unavailable evidence");
+  assert.match(profileQuery.sql, /AUTO_LISTING_AI_PROFILE_PUBLISH/iu);
+  assert.match(profileQuery.sql, /AUTO_LISTING_AI_PROFILE_ROLLBACK/iu);
+  assert.match(profileQuery.sql, /ORDER BY activation\.occurred_at DESC,activation\.event_id DESC NULLS LAST,activation\.id DESC/iu);
+  assert.deepEqual(profileQuery.params, ["account-a"]);
 });
 
 test("settings overview producer keeps task and profile duplicate flags boolean across multiple rows", async () => {
