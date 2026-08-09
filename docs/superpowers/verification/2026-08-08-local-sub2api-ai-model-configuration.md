@@ -27,7 +27,9 @@
 
 TDD 记录：测试最初因受控持久化夹具的映射、provider identity、SQL 参数位置和过宽秘密字段断言而 RED；逐一对齐稳定 contract 后最终 `1/1` 通过。测试没有伪造真实上游成功。
 
-聚焦 AI 设置、凭据、同步、推荐、网关、运行时和页面回归结果：`329` 项，`328` 通过、`0` 失败、`1` 项 PostgreSQL 专项按配置跳过。
+聚焦 AI 设置、凭据、同步、推荐、网关、运行时和页面回归结果：`329` 项，`328` 通过、`0` 失败、`1` 项 PostgreSQL 专项按配置跳过。该项随后已在当前可执行代码提交对应的一次性 PostgreSQL 16 上补跑并通过，证据见 5.1；它不再只是未映射到当前代码的历史结果。
+
+运维日志边界也完成 TDD：普通 `pnpm sub2api:logs` 不再读取或透传第三方日志，而是只输出 Compose `service/state/health` 白名单摘要。含 `Authorization`、Bearer 值和任意供应商错误文本的夹具均无法进入普通命令输出。只有显式 `pnpm sub2api:logs:raw` 才在高风险警告后把原始日志送到当前终端；原始日志从未被声称可安全自动脱敏。
 
 ## 3. Docker 本地 smoke
 
@@ -44,7 +46,8 @@ TDD 记录：测试最初因受控持久化夹具的映射、provider identity�
 
 - RED：部署测试要求新 TOTP 为 64 位 hex，原输出不符合。
 - GREEN：新秘密直接生成 32 字节 hex；旧脚本生成的规范 32-byte Base64URL 会在 `bootstrap` 时等价转码，并先生成 `0600` 备份。
-- 兼容性：PostgreSQL、Redis、管理员和 JWT 密码保持不变；重复 bootstrap 不改写；部署合同 `8/8` 通过。
+- 兼容性：PostgreSQL、Redis、管理员和 JWT 密码保持不变；重复 bootstrap 不改写；部署合同扩展后 `13/13` 通过。
+- 既有根 `.env`、sub2API `.env`、凭据主密钥及其本地目录若为符号链接或非普通目标，bootstrap 会失败关闭。测试证明不会读取、替换或修改链接目标权限；普通文件通过禁止跟随链接的文件句柄处理。
 
 首次无镜像缓存还证明 `upgrade` 必须拉取整个固定栈。部署合同先 RED，再将显式 `upgrade` 调整为拉取三个固定版本服务；普通 `up` 仍使用 `--pull never`。
 
@@ -90,9 +93,16 @@ TDD 记录：测试最初因受控持久化夹具的映射、provider identity�
 
 ### 5.1 PostgreSQL 专项集成
 
-完整门禁的 `23` 项 skip 全部与专用 PostgreSQL 集成数据库有关。当前未设置 `AUTO_LISTING_POSTGRES_TESTS=1` 和/或 `SONLI_MIGRATION_TEST_DATABASE_URL`，因此没有对未知本机数据库执行迁移、并发写入或清理。
+完整门禁运行时的 `23` 项 skip 全部与专用 PostgreSQL 集成数据库有关；门禁没有设置 `AUTO_LISTING_POSTGRES_TESTS=1` 和 `SONLI_MIGRATION_TEST_DATABASE_URL`，因此没有对未知本机数据库执行迁移、并发写入或清理。
 
-这不影响本次 Docker sub2API 自有 PostgreSQL 持久化 smoke；两者不是同一个数据库。正式发布前应在可销毁的非生产 PostgreSQL 测试库重新运行这些专项测试。
+为消除聚焦结果中那 `1` 项设置库 skip 与当前代码之间的证据缺口，随后在干净 detached worktree 对提交 `d84492d481cb650c92531864a358cd6440aeb010` 启动 `postgres:16-alpine` 一次性容器。容器只绑定随机 loopback 端口，不挂载命名卷，测试结束后容器自动删除；没有连接本机业务 PostgreSQL，也没有接触 `sonli-sub2api-local` 的数据卷。结果：
+
+- 设置迁移、租约、租户隔离和不可变证据合同：`1/1` 通过、`0` skip。
+- 管理发布、连接密文、付费回滚、旧证据隔离和跨账号完整性：`4/4` 通过、`0` skip。
+- 阶段上下文、DEAD 恢复、受控重试、Outbox 迁移和并发精确重放：`5/5` 通过、`0` skip。
+- 合计：`10/10` 通过、`0` 失败、`0` skip。
+
+该证据覆盖当前功能的关键业务 PostgreSQL 合同，并明确补上聚焦的 `1` 项 skip；它不代表完整门禁其余所有 PostgreSQL 专项都已在真实数据库补跑，也不代表生产数据库通过。正式发布前仍须在可销毁的非生产 PostgreSQL 测试库运行完整 `23` 项专项集合。
 
 ### 5.2 真实上游 AI
 
@@ -104,14 +114,19 @@ TDD 记录：测试最初因受控持久化夹具的映射、provider identity�
 
 没有调用真实 Ozon API，也没有上传、修改或删除商品。首次真实业务验收必须保持 REVIEW 模式，由用户审核一条结果；DIRECT 自动上传不属于本次本地模型配置验收。
 
+### 5.4 生产灾备恢复
+
+没有执行生产业务 PostgreSQL、匹配 `credential-master.key`、应用配置以及 sub2API 三个数据卷的完整同恢复点备份/恢复演练。文档已补齐这组一致性恢复合同，但不能把文档审查或本地 PostgreSQL 测试当作生产灾备通过。正式发布前必须在可销毁的非生产副本验证：旧连接可解密、profile/目录/能力与审计证据完整、冻结任务引用不变，并从 REVIEW 模式逐步恢复。
+
 ## 6. 回滚与恢复证据
 
 功能异常时：
 
 1. 设置 `AUTO_LISTING_AI_ENABLED=false` 和 `AUTO_LISTING_ENABLED=false`，停止创建新的 AI/自动上架外部工作。
 2. 执行 `pnpm sub2api:down`；该命令只操作 `sonli-sub2api-local` 且保留命名卷。
-3. 保留加法迁移、连接版本、目录、能力尝试、任务事件和审计，禁止删证据伪造成功。
-4. 如需回退应用提交，保留数据库兼容结构；恢复时先在 REVIEW 模式验证上一正式 profile 与凭据，再逐步启用。
-5. 密钥文件和数据库密文必须成对恢复；主密钥丢失时创建并验证新连接，不把密文改成明文。
+3. 将业务 PostgreSQL 的连接密文、目录、profile、能力/任务/审计证据与匹配 `credential-master.key` 作为同一恢复点成对备份；sub2API 自有 `.env` 与三个卷属于同一完整恢复集。
+4. 保留加法迁移、连接版本、目录、能力尝试、任务事件和审计，禁止删证据伪造成功。
+5. 如需回退应用提交，保留数据库兼容结构；恢复时先在 REVIEW 模式验证上一正式 profile 与凭据，再逐步启用。
+6. 主密钥丢失时保留旧密文和证据，创建并验证新连接供新任务使用；不把密文改成明文，也不伪造旧连接成功。
 
 详细操作、备份、升级和生产替换规则见 `docs/architecture/local-sub2api-operations.md`。
