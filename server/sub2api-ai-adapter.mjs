@@ -906,15 +906,6 @@ function parseSse(raw) {
   return events;
 }
 
-function imageModelsByProvenance(orchestratorModel, explicitModels, outputItemModels) {
-  const orchestrator = clean(orchestratorModel);
-  return [
-    ...explicitModels.map((value) => clean(value)).filter(Boolean),
-    ...outputItemModels.map((value) => clean(value))
-      .filter((value) => value && value !== orchestrator),
-  ];
-}
-
 function finalImageFromEvents(events, maxImageBytes) {
   let finalEncoded = "";
   let partialEncoded = "";
@@ -922,8 +913,6 @@ function finalImageFromEvents(events, maxImageBytes) {
   let usage = null;
   let responseId = "";
   let orchestratorModel = "";
-  const explicitImageModels = [];
-  const outputItemModels = [];
   let completed = false;
   for (const event of events) {
     if (FAILURE_EVENTS.has(event?.type)) throw terminalFailure(event);
@@ -938,7 +927,6 @@ function finalImageFromEvents(events, maxImageBytes) {
     }
     if (event?.type === "response.output_item.done" && event?.item?.type === "image_generation_call") {
       finalEncoded = typeof event.item.result === "string" ? event.item.result.trim() : "";
-      if (clean(event.item.model)) outputItemModels.push(event.item.model);
     }
     if (event?.type === "response.completed") {
       const response = event.response || {};
@@ -947,26 +935,16 @@ function finalImageFromEvents(events, maxImageBytes) {
       responseId = clean(response.id);
       orchestratorModel = clean(response.model);
       usage = response.usage || usage;
-      if (clean(response.image_model)) explicitImageModels.push(response.image_model);
-      for (const tool of Array.isArray(response.tools) ? response.tools : []) {
-        if (tool?.type === "image_generation" && clean(tool.model)) explicitImageModels.push(tool.model);
-      }
       for (const item of Array.isArray(response.output) ? response.output : []) {
         if (item?.type === "image_generation_call" && typeof item.result === "string" && item.result.trim()) {
           finalEncoded = item.result.trim();
-          if (clean(item.model)) outputItemModels.push(item.model);
         }
       }
     }
   }
   const encoded = finalEncoded || partialEncoded;
   if (!completed || !encoded) throw gatewayError("INVALID_GATEWAY_RESPONSE");
-  const gatewayReportedImageModels = imageModelsByProvenance(
-    orchestratorModel,
-    explicitImageModels,
-    outputItemModels,
-  );
-  return { bytes: strictBase64(encoded, maxImageBytes), usage, responseId, orchestratorModel, gatewayReportedImageModels };
+  return { bytes: strictBase64(encoded, maxImageBytes), usage, responseId, orchestratorModel };
 }
 
 function positiveByteLimit(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
@@ -1624,15 +1602,11 @@ export function createSub2ApiAdapter({
           throw classifyFetchFailure(error, execution.abort.state());
         }
         const final = finalImageFromEvents(parseSse(raw), maxImageBytes);
-        const imageModelEvidence = verifiedReportedModel(
-          normalizedProfile.imageModel,
-          final.gatewayReportedImageModels,
-        );
         return normalizedImage(final.bytes, {
           protocol: normalizedProfile.imageProtocol,
           requestedImageModel: normalizedProfile.imageModel,
-          gatewayReportedImageModel: imageModelEvidence.reportedModel,
-          gatewayReportedImageModelPresent: imageModelEvidence.evidencePresent,
+          gatewayReportedImageModel: "",
+          gatewayReportedImageModelPresent: false,
           orchestratorModel: final.orchestratorModel,
           requestId: safeRequestId(execution.response) || final.responseId,
           usage: final.usage,
@@ -1640,29 +1614,17 @@ export function createSub2ApiAdapter({
       }
       const payload = await readJson(execution.response, execution.abort, maxSseBytes);
       let encoded = "";
-      const explicitImageModels = [payload?.image_model];
-      const outputItemModels = [];
-      for (const tool of Array.isArray(payload?.tools) ? payload.tools : []) {
-        if (tool?.type === "image_generation") explicitImageModels.push(tool.model);
-      }
       for (const item of Array.isArray(payload?.output) ? payload.output : []) {
         if (item?.type === "image_generation_call" && typeof item.result === "string" && item.result.trim()) {
           encoded = item.result.trim();
-          outputItemModels.push(item.model);
         }
       }
       if (!encoded) throw gatewayError("INVALID_GATEWAY_RESPONSE");
-      const gatewayReportedImageModels = imageModelsByProvenance(
-        payload?.model,
-        explicitImageModels,
-        outputItemModels,
-      );
-      const imageModelEvidence = verifiedReportedModel(normalizedProfile.imageModel, gatewayReportedImageModels);
       return normalizedImage(strictBase64(encoded, maxImageBytes), {
         protocol: normalizedProfile.imageProtocol,
         requestedImageModel: normalizedProfile.imageModel,
-        gatewayReportedImageModel: imageModelEvidence.reportedModel,
-        gatewayReportedImageModelPresent: imageModelEvidence.evidencePresent,
+        gatewayReportedImageModel: "",
+        gatewayReportedImageModelPresent: false,
         orchestratorModel: clean(payload.model),
         requestId: safeRequestId(execution.response) || clean(payload.id),
         usage: payload.usage,
