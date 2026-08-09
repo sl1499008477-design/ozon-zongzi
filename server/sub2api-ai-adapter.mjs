@@ -907,7 +907,9 @@ function parseSse(raw) {
 }
 
 function finalImageFromEvents(events, maxImageBytes) {
-  let encoded = "";
+  let finalEncoded = "";
+  let partialEncoded = "";
+  let lastPartialIndex = -1;
   let usage = null;
   let responseId = "";
   let orchestratorModel = "";
@@ -915,8 +917,17 @@ function finalImageFromEvents(events, maxImageBytes) {
   let completed = false;
   for (const event of events) {
     if (FAILURE_EVENTS.has(event?.type)) throw terminalFailure(event);
+    if (event?.type === "response.image_generation_call.partial_image") {
+      const index = event.partial_image_index;
+      const value = typeof event.partial_image_b64 === "string" ? event.partial_image_b64.trim() : "";
+      if (!Number.isSafeInteger(index) || index < 0 || index <= lastPartialIndex || !value) {
+        throw gatewayError("INVALID_GATEWAY_RESPONSE");
+      }
+      lastPartialIndex = index;
+      partialEncoded = value;
+    }
     if (event?.type === "response.output_item.done" && event?.item?.type === "image_generation_call") {
-      encoded = typeof event.item.result === "string" ? event.item.result.trim() : "";
+      finalEncoded = typeof event.item.result === "string" ? event.item.result.trim() : "";
       if (clean(event.item.model)) gatewayReportedImageModels.push(event.item.model);
     }
     if (event?.type === "response.completed") {
@@ -932,12 +943,13 @@ function finalImageFromEvents(events, maxImageBytes) {
       }
       for (const item of Array.isArray(response.output) ? response.output : []) {
         if (item?.type === "image_generation_call" && typeof item.result === "string" && item.result.trim()) {
-          encoded = item.result.trim();
+          finalEncoded = item.result.trim();
           if (clean(item.model)) gatewayReportedImageModels.push(item.model);
         }
       }
     }
   }
+  const encoded = finalEncoded || partialEncoded;
   if (!completed || !encoded) throw gatewayError("INVALID_GATEWAY_RESPONSE");
   return { bytes: strictBase64(encoded, maxImageBytes), usage, responseId, orchestratorModel, gatewayReportedImageModels };
 }

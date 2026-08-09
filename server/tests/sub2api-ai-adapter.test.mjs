@@ -935,13 +935,137 @@ test("Responses image-tool protocol accepts a documented final streamed output-i
   assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
 });
 
-test("Responses image-tool protocol never treats a partial-image event as an accepted final image", async () => {
-  const sse = `event: response.image_generation_call.partial_image\ndata: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":0,"output_format":"png"}\n\ndata: [DONE]\n\n`;
+test("Responses image-tool accepts the last documented partial image after successful completion", async () => {
+  const sse = [
+    "event: response.image_generation_call.partial_image",
+    `data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":0,"output_format":"png"}`,
+    "",
+    "event: response.completed",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-image\",\"status\":\"completed\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
   const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
-  await assert.rejects(
-    gateway.generateImage(imageInput()),
-    (error) => error?.code === "INVALID_GATEWAY_RESPONSE" && error?.retryable === false,
-  );
+
+  const result = await gateway.generateImage(imageInput());
+
+  assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+  assert.equal(result.orchestratorModel, "gpt-5.4");
+});
+
+test("Responses image-tool selects the highest strictly increasing partial image index", async () => {
+  const sse = [
+    "event: response.image_generation_call.partial_image",
+    "data: {\"type\":\"response.image_generation_call.partial_image\",\"partial_image_b64\":\"not-base64\",\"partial_image_index\":0}",
+    "",
+    "event: response.image_generation_call.partial_image",
+    `data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":1}`,
+    "",
+    "event: response.completed",
+    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+
+  const result = await gateway.generateImage(imageInput());
+
+  assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+});
+
+test("Responses image-tool rejects malformed duplicate or descending partial image indices", async (t) => {
+  const cases = [
+    ["empty image", [{ partial_image_b64: "", partial_image_index: 0 }]],
+    ["negative index", [{ partial_image_b64: PNG_1X1, partial_image_index: -1 }]],
+    ["fractional index", [{ partial_image_b64: PNG_1X1, partial_image_index: 1.5 }]],
+    ["duplicate index", [
+      { partial_image_b64: PNG_1X1, partial_image_index: 0 },
+      { partial_image_b64: PNG_1X1, partial_image_index: 0 },
+    ]],
+    ["descending index", [
+      { partial_image_b64: PNG_1X1, partial_image_index: 1 },
+      { partial_image_b64: PNG_1X1, partial_image_index: 0 },
+    ]],
+  ];
+  for (const [name, partials] of cases) {
+    await t.test(name, async () => {
+      const blocks = partials.flatMap((partial) => [
+        "event: response.image_generation_call.partial_image",
+        `data: ${JSON.stringify({ type: "response.image_generation_call.partial_image", ...partial })}`,
+        "",
+      ]);
+      const sse = [...blocks,
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+      await assert.rejects(gateway.generateImage(imageInput()), {
+        code: "INVALID_GATEWAY_RESPONSE",
+      });
+    });
+  }
+});
+
+test("Responses image-tool prefers a formal final result over an earlier partial snapshot", async () => {
+  const sse = [
+    "event: response.image_generation_call.partial_image",
+    "data: {\"type\":\"response.image_generation_call.partial_image\",\"partial_image_b64\":\"not-base64\",\"partial_image_index\":0}",
+    "",
+    "event: response.output_item.done",
+    `data: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"completed","result":"${PNG_1X1}"}}`,
+    "",
+    "event: response.completed",
+    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
+
+  const result = await gateway.generateImage(imageInput());
+
+  assert.deepEqual(Buffer.from(result.bytes), Buffer.from(PNG_1X1, "base64"));
+});
+
+test("Responses image-tool never accepts a partial image without successful completion", async (t) => {
+  const partial = `event: response.image_generation_call.partial_image\ndata: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":0}`;
+  for (const [name, terminal] of [
+    ["DONE only", "data: [DONE]"],
+    ["failed", "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}"],
+  ]) {
+    await t.test(name, async () => {
+      const gateway = adapter(async () => new Response(`${partial}\n\n${terminal}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      }));
+      await assert.rejects(gateway.generateImage(imageInput()), (error) =>
+        ["INVALID_GATEWAY_RESPONSE", "NON_RETRYABLE_GATEWAY"].includes(error?.code));
+    });
+  }
+});
+
+test("Responses image-tool applies the decoded image byte limit to a completed partial image", async () => {
+  const sse = [
+    "event: response.image_generation_call.partial_image",
+    `data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"${PNG_1X1}","partial_image_index":0}`,
+    "",
+    "event: response.completed",
+    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const gateway = adapter(async () => new Response(sse, { headers: { "content-type": "text/event-stream" } }), {
+    maxImageBytes: 16,
+  });
+
+  await assert.rejects(gateway.generateImage(imageInput()), {
+    code: "INVALID_GATEWAY_RESPONSE",
+  });
 });
 
 test("Responses image-tool rejects failed termination even after a complete output item appeared", async () => {
