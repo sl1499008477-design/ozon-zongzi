@@ -329,7 +329,7 @@ for (const [code, status, message] of [
   ["RFBS_WAREHOUSE_CHANGED", 409, "RFBS 仓库信息已变化"],
   ["RFBS_WAREHOUSE_EVIDENCE_EXPIRED", 409, "RFBS 仓库验证证据已过期"],
   ["RFBS_VALIDATION_REQUIRED", 503, "RFBS 仓库需要重新验证"],
-  ["AUTO_LISTING_RFBS_VALIDATION_FAILED", 503, "RFBS 仓库验证失败"],
+  ["AUTO_LISTING_RFBS_VALIDATION_FAILED", 500, "RFBS 仓库验证失败"],
 ]) {
   test(`RFBS service failure ${code} has a fixed safe HTTP contract`, async () => {
     const local = harness({ runtime: { getService: async () => ({
