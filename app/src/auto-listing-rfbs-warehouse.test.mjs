@@ -12,7 +12,7 @@ const page = await readFile(new URL("./AutoListingPage.jsx", import.meta.url), "
 test("pending RFBS produces the exact safe option contract and keeps a hydrated preference", () => {
   const result = autoListingWarehouseOptions({
     targetStoreId: "store-a",
-    selectedWarehouseId: "1001",
+    selectedWarehouseId: "warehouse-a",
     warehouses: [{
       id: "warehouse-a",
       storeId: "store-a",
@@ -28,19 +28,20 @@ test("pending RFBS produces the exact safe option contract and keeps a hydrated 
   });
 
   assert.deepEqual(result.options[0], {
-    value: "1001",
+    value: "warehouse-a",
     label: "CEL-测试（RFBS · 创建任务时验证）",
     fulfillmentType: "RFBS",
     evidenceRequired: true,
     statusLabel: "创建任务时验证",
   });
-  assert.equal(result.selectedWarehouseId, "1001");
+  assert.equal(result.selectedWarehouseId, "warehouse-a");
 });
 
 test("verified RFBS remains visibly distinct from a warehouse pending creation-time validation", () => {
   const result = autoListingWarehouseOptions({
     targetStoreId: "store-a",
     warehouses: [{
+      id: "warehouse-b",
       storeId: "store-a",
       warehouse_id: "1002",
       name: "CEL-已验证",
@@ -53,7 +54,7 @@ test("verified RFBS remains visibly distinct from a warehouse pending creation-t
   });
 
   assert.deepEqual(result.options[0], {
-    value: "1002",
+    value: "warehouse-b",
     label: "CEL-已验证（RFBS · 已验证）",
     fulfillmentType: "RFBS",
     evidenceRequired: true,
@@ -64,9 +65,9 @@ test("verified RFBS remains visibly distinct from a warehouse pending creation-t
 test("changing stores clears the old pending RFBS preference", () => {
   const result = autoListingWarehouseOptions({
     targetStoreId: "store-b",
-    selectedWarehouseId: "1001",
+    selectedWarehouseId: "warehouse-a",
     warehouses: [{
-      storeId: "store-a", warehouse_id: "1001", name: "CEL-测试",
+      id: "warehouse-a", storeId: "store-a", warehouse_id: "1001", name: "CEL-测试",
       listingEligibility: {
         eligible: false, code: "RFBS_VALIDATION_REQUIRED", fulfillmentType: "RFBS", evidenceRequired: true,
       },

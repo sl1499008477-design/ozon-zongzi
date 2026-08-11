@@ -190,17 +190,20 @@ export function autoListingWarehouseOptions({
       const fulfillmentType = firstText(eligibility.fulfillmentType).toUpperCase();
       const pending = eligibility.eligible === false;
       const statusLabel = pending ? "创建任务时验证" : "已验证";
-      const name = firstText(warehouse.name, warehouse.label, warehouse.warehouse_name, warehouse.warehouse_id);
+      const localWarehouseId = firstText(warehouse.id);
+      const platformWarehouseId = firstText(warehouse.warehouse_id, warehouse.warehouseId);
+      if (!localWarehouseId || !platformWarehouseId) return null;
+      const name = firstText(warehouse.name, warehouse.label, warehouse.warehouse_name, platformWarehouseId);
       const visibleStatus = pending || fulfillmentType === "RFBS" ? ` · ${statusLabel}` : "";
       return Object.freeze({
-        value: firstText(warehouse.warehouse_id, warehouse.warehouseId),
+        value: localWarehouseId,
         label: `${name}（${fulfillmentType}${visibleStatus}）`,
         fulfillmentType,
         evidenceRequired: eligibility.evidenceRequired === true,
         statusLabel,
       });
     })
-    .filter((entry) => entry.value && entry.label);
+    .filter((entry) => entry?.value && entry.label);
   const selected = firstText(selectedWarehouseId);
   return Object.freeze({
     options: Object.freeze(options),

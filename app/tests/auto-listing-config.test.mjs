@@ -143,11 +143,11 @@ test("warehouse choices trust only the exact backend FBS or pending RFBS contrac
 
   assert.deepEqual(result.options, [
     {
-      value: "101", label: "Active（FBS）", fulfillmentType: "FBS", evidenceRequired: false,
+      value: "local-1", label: "Active（FBS）", fulfillmentType: "FBS", evidenceRequired: false,
       statusLabel: "已验证",
     },
     {
-      value: "1001", label: "CEL-测试（RFBS · 创建任务时验证）", fulfillmentType: "RFBS", evidenceRequired: true,
+      value: "local-rfbs", label: "CEL-测试（RFBS · 创建任务时验证）", fulfillmentType: "RFBS", evidenceRequired: true,
       statusLabel: "创建任务时验证",
     },
   ]);
@@ -160,19 +160,21 @@ test("warehouse choices reject RFBS lookalikes, unsupported types, and malformed
   };
   const result = autoListingWarehouseOptions({
     targetStoreId: "store-a",
-    selectedWarehouseId: "1001",
+    selectedWarehouseId: "local-valid",
     warehouses: [
-      { warehouse_id: "1001", storeId: "store-a", name: "Valid", listingEligibility: pending },
-      { warehouse_id: "1002", storeId: "store-a", name: "Wrong code", listingEligibility: { ...pending, code: "NO_ACTIVE_PRODUCT_ASSOCIATION" } },
-      { warehouse_id: "1003", storeId: "store-a", name: "Wrong type", listingEligibility: { ...pending, fulfillmentType: "FBO" } },
-      { warehouse_id: "1004", storeId: "store-a", name: "Wrong evidence", listingEligibility: { ...pending, evidenceRequired: false } },
-      { warehouse_id: "1005", storeId: "store-a", name: "Pretends by local field", warehouse_type: "RFBS", listingEligibility: { eligible: false } },
-      { warehouse_id: "1006", storeId: "store-b", name: "Other store", listingEligibility: pending },
-      { warehouse_id: "1007", storeId: "store-a", name: "FBO", listingEligibility: { eligible: false, code: "UNSUPPORTED_FULFILLMENT_TYPE", fulfillmentType: "FBO", evidenceRequired: false } },
+      { id: "local-valid", warehouse_id: "1001", storeId: "store-a", name: "Valid", listingEligibility: pending },
+      { id: "local-wrong-code", warehouse_id: "1002", storeId: "store-a", name: "Wrong code", listingEligibility: { ...pending, code: "NO_ACTIVE_PRODUCT_ASSOCIATION" } },
+      { id: "local-wrong-type", warehouse_id: "1003", storeId: "store-a", name: "Wrong type", listingEligibility: { ...pending, fulfillmentType: "FBO" } },
+      { id: "local-wrong-evidence", warehouse_id: "1004", storeId: "store-a", name: "Wrong evidence", listingEligibility: { ...pending, evidenceRequired: false } },
+      { id: "local-lookalike", warehouse_id: "1005", storeId: "store-a", name: "Pretends by local field", warehouse_type: "RFBS", listingEligibility: { eligible: false } },
+      { id: "local-other-store", warehouse_id: "1006", storeId: "store-b", name: "Other store", listingEligibility: pending },
+      { id: "local-fbo", warehouse_id: "1007", storeId: "store-a", name: "FBO", listingEligibility: { eligible: false, code: "UNSUPPORTED_FULFILLMENT_TYPE", fulfillmentType: "FBO", evidenceRequired: false } },
+      { warehouse_id: "1008", storeId: "store-a", name: "Missing local identity", listingEligibility: pending },
+      { id: "local-missing-platform", storeId: "store-a", name: "Missing platform identity", listingEligibility: pending },
     ],
   });
-  assert.deepEqual(result.options.map(({ value }) => value), ["1001"]);
-  assert.equal(result.selectedWarehouseId, "1001");
+  assert.deepEqual(result.options.map(({ value }) => value), ["local-valid"]);
+  assert.equal(result.selectedWarehouseId, "local-valid");
 });
 
 test("reads a bounded workbook once and returns only request-safe metadata", async () => {
