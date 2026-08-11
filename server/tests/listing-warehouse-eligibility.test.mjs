@@ -131,6 +131,37 @@ test("RFBS accepts only current evidence bound to its account, store, and wareho
     evidenceRequired: true,
   });
 
+  const { id: _warehouseRecordId, ...warehouseWithoutRecordId } = input.warehouse;
+  for (const invalidInput of [
+    {
+      ...input,
+      accountId: "",
+      warehouse: { ...input.warehouse, accountId: "" },
+      validationEvidence: { ...evidence, accountId: "" },
+    },
+    {
+      ...input,
+      warehouse: { ...input.warehouse, accountId: "" },
+      validationEvidence: evidence,
+    },
+    {
+      ...input,
+      warehouse: warehouseWithoutRecordId,
+      validationEvidence: { ...evidence, warehouseRecordId: "" },
+    },
+    { ...input, validationEvidence: { ...evidence, accountId: "" } },
+    { ...input, validationEvidence: { ...evidence, warehouseRecordId: "" } },
+    { ...input, validationEvidence: { ...evidence, storeId: "" } },
+    { ...input, validationEvidence: { ...evidence, platformWarehouseId: "" } },
+  ]) {
+    assert.deepEqual(evaluate(invalidInput), {
+      eligible: false,
+      code: "RFBS_VALIDATION_REQUIRED",
+      fulfillmentType: "RFBS",
+      evidenceRequired: true,
+    });
+  }
+
   for (const validationEvidence of [
     { ...evidence, accountId: "account-b" },
     { ...evidence, storeId: "store-b" },

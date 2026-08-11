@@ -159,13 +159,22 @@ const warehouseRecordId = (warehouse = {}) => firstText(
 
 const validRfbsEvidence = ({ evidence, warehouse, accountId, targetStoreId, now } = {}) => {
   if (!evidence || typeof evidence !== "object") return false;
+  const warehouseAccount = warehouseAccountId(warehouse);
+  const recordId = warehouseRecordId(warehouse);
+  const platformId = platformWarehouseId(warehouse);
+  const evidenceAccount = clean(evidence.accountId);
+  const evidenceStore = clean(evidence.storeId);
+  const evidenceRecordId = clean(evidence.warehouseRecordId);
+  const evidencePlatformId = clean(evidence.platformWarehouseId);
   const expiresAt = Date.parse(evidence.expiresAt);
   const evaluatedAt = Date.parse(now ?? new Date().toISOString());
-  return evidence.outcome === "PASSED"
-    && clean(evidence.accountId) === accountId
-    && clean(evidence.storeId) === targetStoreId
-    && clean(evidence.warehouseRecordId) === warehouseRecordId(warehouse)
-    && clean(evidence.platformWarehouseId) === platformWarehouseId(warehouse)
+  return accountId && targetStoreId && warehouseAccount && recordId && platformId
+    && evidenceAccount && evidenceStore && evidenceRecordId && evidencePlatformId
+    && evidence.outcome === "PASSED"
+    && evidenceAccount === accountId
+    && evidenceStore === targetStoreId
+    && evidenceRecordId === recordId
+    && evidencePlatformId === platformId
     && upper(evidence.fulfillmentType) === "RFBS"
     && Number.isFinite(expiresAt)
     && Number.isFinite(evaluatedAt)
