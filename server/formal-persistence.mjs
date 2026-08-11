@@ -1576,11 +1576,11 @@ function hydratedProductRow(row = {}) {
   };
 }
 
-function hydratedWarehouseRow(row = {}) {
+export function formalWarehouseCacheRow(row = {}) {
   const raw = row.raw && typeof row.raw === "object" ? row.raw : {};
   return {
     ...raw,
-    id: raw.id || raw.warehouse_id || row.warehouse_id || row.id,
+    id: row.id || "",
     storeId: row.store_id || raw.storeId || raw.store_id || "",
     store_id: row.store_id || raw.store_id || raw.storeId || "",
     warehouse_id: row.warehouse_id || raw.warehouse_id || raw.id || "",
@@ -1612,7 +1612,7 @@ export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) 
   ]);
   state.caches = state.caches && typeof state.caches === "object" ? state.caches : {};
   state.caches.products = products.rows.map(hydratedProductRow);
-  state.caches.warehouses = warehouses.rows.map(hydratedWarehouseRow);
+  state.caches.warehouses = warehouses.rows.map(formalWarehouseCacheRow);
   return state;
 }
 

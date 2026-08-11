@@ -6,6 +6,7 @@ delete process.env.DATABASE_URL;
 delete process.env.POSTGRES_HOST;
 
 const {
+  formalWarehouseCacheRow,
   mirrorStateToRelationalTables,
   normalizeFormalAccountMirrorRecord,
 } = await import("../formal-persistence.mjs");
@@ -29,6 +30,36 @@ test("formal account mirroring rejects an ID-only placeholder before SQL persist
     id: "admin-a",
     username: "admin",
     displayName: "管理员",
+  });
+});
+
+test("formal warehouse hydration preserves the local record ID separately from the Ozon platform ID", () => {
+  assert.deepEqual(formalWarehouseCacheRow({
+    id: "wh_local_1",
+    store_id: "store-a",
+    warehouse_id: "1020005025660920",
+    name: "CEL-测试",
+    warehouse_type: "RFBS",
+    status: "ACTIVE",
+    is_active: true,
+    is_archived: false,
+    synced_at: "2026-08-11T00:00:00.000Z",
+    raw: {
+      id: "1020005025660920",
+      warehouse_id: "1020005025660920",
+      storeId: "store-a",
+    },
+  }), {
+    id: "wh_local_1",
+    storeId: "store-a",
+    store_id: "store-a",
+    warehouse_id: "1020005025660920",
+    name: "CEL-测试",
+    warehouse_type: "RFBS",
+    status: "ACTIVE",
+    is_active: true,
+    is_archived: false,
+    syncedAt: "2026-08-11T00:00:00.000Z",
   });
 });
 
