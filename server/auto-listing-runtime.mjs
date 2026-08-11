@@ -133,7 +133,7 @@ export function createAutoListingRuntime({
 
   let servicePromise = null;
   let aiWorkerPromise = null;
-  const serviceExplicitlyDisabled = Object.hasOwn(env, "AUTO_LISTING_ENABLED") && !autoListingEnabled(env);
+  const serviceDisabled = !autoListingEnabled(env);
   const aiEnabled = autoListingEnabled(env) && autoListingAiEnabled(env);
   const resolveAiWorkerDependencies = createAiWorkerDependencies || (async ({ env: runtimeEnv, resolvePool: runtimePool }) => {
     const { createDefaultAutoListingAiProductionDependencies } = await import("./auto-listing-ai-runtime-composition.mjs");
@@ -171,7 +171,7 @@ export function createAutoListingRuntime({
   });
   const disabledAiWorker = Object.freeze({ async start() { return false; }, async stop() {} });
   function getService() {
-    if (serviceExplicitlyDisabled) {
+    if (serviceDisabled) {
       return Promise.reject(runtimeError("AUTO_LISTING_DISABLED", "自动上架功能暂未启用"));
     }
     if (!servicePromise) {
