@@ -698,7 +698,7 @@ function createJobPersistence(settingsState) {
         });
         return { rows: [] };
       }
-      if (/SELECT id,account_id,source_type,status,strategy_version_id,correlation_id/iu.test(sql)) {
+      if (/SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,/iu.test(sql)) {
         const job = jobs.get(params[0]);
         return { rows: job ? [job] : [] };
       }

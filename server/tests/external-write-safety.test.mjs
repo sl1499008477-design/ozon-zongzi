@@ -9,8 +9,26 @@ const token = "safe-write-token";
 const storeId = "safe-write-store";
 
 const serverDir = new URL("../", import.meta.url);
+const rfbsReadOnlyRuntimeFiles = new Set([
+  "auto-listing-runtime.mjs",
+  "auto-listing-upload-runtime.mjs",
+]);
 for (const file of (await readdir(serverDir)).filter((name) => name.startsWith("auto-listing") && name.endsWith(".mjs"))) {
   const source = await readFile(new URL(file, serverDir), "utf8");
+  if (file === "auto-listing-rfbs-warehouse-verifier.mjs") {
+    assert.match(source, /callOzonSellerApi\(\s*credential,\s*"\/v2\/warehouse\/list",\s*\{\}/u,
+      "the RFBS verifier may call only the fixed read-only warehouse-list endpoint");
+    assert.doesNotMatch(source, /\/v3\/product\/import|\/v2\/products\/stocks/u,
+      "the RFBS verifier must never call an Ozon write endpoint");
+    continue;
+  }
+  if (rfbsReadOnlyRuntimeFiles.has(file)) {
+    assert.match(source, /createRfbsWarehouseVerifier\(\{[\s\S]*?callOzonSellerApi,\s*\}\)/u,
+      `${file} may pass the Ozon transport only into the closed RFBS verifier`);
+    assert.doesNotMatch(source, /\/v3\/product\/import|\/v2\/products\/stocks/u,
+      `${file} must never call an Ozon write endpoint`);
+    continue;
+  }
   assert.doesNotMatch(source, /callOzonSellerApi|from\s+["']\.\/ozon-client\.mjs["']/u,
     `${file} must delegate external writes to the durable listing pipeline`);
 }
