@@ -1,3 +1,4 @@
+import { types as utilTypes } from "node:util";
 import {
   normalizeAndHashAutoListingConfig,
   verifyAutoListingFrozenConfig,
@@ -230,14 +231,15 @@ function requireRepository(repository) {
 
 function requireRfbsWarehouseVerifier(value) {
   try {
-    if (!value || typeof value !== "object" || Array.isArray(value)
+    if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError();
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (keys.length !== 1 || keys[0] !== "verifyRfbsWarehouse"
       || descriptors.verifyRfbsWarehouse?.enumerable !== true
       || !Object.hasOwn(descriptors.verifyRfbsWarehouse, "value")
-      || typeof descriptors.verifyRfbsWarehouse.value !== "function") throw new TypeError();
+      || typeof descriptors.verifyRfbsWarehouse.value !== "function"
+      || utilTypes.isProxy(descriptors.verifyRfbsWarehouse.value)) throw new TypeError();
     return Object.freeze({ verifyRfbsWarehouse: descriptors.verifyRfbsWarehouse.value });
   } catch {
     throw new TypeError("Auto listing RFBS warehouse verifier dependency is required");

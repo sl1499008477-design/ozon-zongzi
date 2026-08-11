@@ -370,6 +370,62 @@ test("runtime composes the RFBS verifier from tenant-scoped warehouse and creden
   assert.deepEqual(credentialCalls, [{ storeId: "store-a", accountId: "account-a" }]);
 });
 
+for (const [label, verifierFactory] of [
+  ["transparent object Proxy", () => new Proxy({ async verifyRfbsWarehouse() {} }, {})],
+  ["callable method Proxy", () => ({ verifyRfbsWarehouse: new Proxy(async () => {}, {}) })],
+  ["revoked object Proxy", () => {
+    const value = Proxy.revocable({ async verifyRfbsWarehouse() {} }, {});
+    value.revoke();
+    return value.proxy;
+  }],
+]) {
+  test(`runtime rejects ${label} before service, credential, or network calls`, async () => {
+    const calls = { services: 0, credentials: 0, network: 0 };
+    const runtime = createAutoListingRuntime({
+      env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
+      getPostgresPool: async () => ({ name: "pool-a" }),
+      createRepository: () => ({ async loadTargetWarehouse() { return { warehouse: null, products: [] }; } }),
+      createListingBasePreparer: async () => async () => ({}),
+      createRfbsWarehouseVerifier: verifierFactory,
+      readStoreCredential: async () => { calls.credentials += 1; return null; },
+      callOzonSellerApi: async () => { calls.network += 1; return { result: [] }; },
+      createService: () => { calls.services += 1; return { name: "must-not-compose" }; },
+    });
+
+    await assert.rejects(runtime.getService(), {
+      code: "AUTO_LISTING_RFBS_RUNTIME_INITIALIZATION_FAILED",
+      message: "RFBS 仓库验证运行时初始化失败",
+    });
+    assert.deepEqual(calls, { services: 0, credentials: 0, network: 0 });
+  });
+}
+
+test("runtime captures one ordinary verifier method against late factory-result mutation", async () => {
+  let originalCalls = 0;
+  let replacementCalls = 0;
+  const factoryResult = {
+    async verifyRfbsWarehouse() { originalCalls += 1; },
+  };
+  let captured;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
+    getPostgresPool: async () => ({ name: "pool-a" }),
+    createRepository: () => ({ async loadTargetWarehouse() { return { warehouse: null, products: [] }; } }),
+    createListingBasePreparer: async () => async () => ({}),
+    createRfbsWarehouseVerifier: () => factoryResult,
+    createService(input) { captured = input.rfbsWarehouseVerifier; return { name: "service-a" }; },
+  });
+
+  await runtime.getService();
+  factoryResult.verifyRfbsWarehouse = async () => { replacementCalls += 1; };
+  factoryResult.writeWarehouse = async () => { replacementCalls += 1; };
+  await captured.verifyRfbsWarehouse();
+
+  assert.equal(Object.isFrozen(captured), true);
+  assert.deepEqual(Object.keys(captured), ["verifyRfbsWarehouse"]);
+  assert.deepEqual({ originalCalls, replacementCalls }, { originalCalls: 1, replacementCalls: 0 });
+});
+
 test("disabled auto-listing getService performs zero composition, credential, decrypt, and network calls", async () => {
   for (const env of [
     {},

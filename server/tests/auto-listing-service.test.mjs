@@ -187,6 +187,63 @@ test("service requires an exact closed RFBS verifier dependency", () => {
   }
 });
 
+for (const [label, verifierFactory] of [
+  ["transparent object Proxy", () => new Proxy({ async verifyRfbsWarehouse() {} }, {})],
+  ["callable method Proxy", () => ({
+    verifyRfbsWarehouse: new Proxy(async () => {}, {}),
+  })],
+  ["revoked object Proxy", () => {
+    const value = Proxy.revocable({ async verifyRfbsWarehouse() {} }, {});
+    value.revoke();
+    return value.proxy;
+  }],
+]) {
+  test(`service rejects ${label} before any dependency call`, () => {
+    const repository = fakeRepository();
+    let prepareCalls = 0;
+    assert.throws(
+      () => createProductionAutoListingService({
+        repository,
+        prepareListingBase: async () => { prepareCalls += 1; },
+        rfbsWarehouseVerifier: verifierFactory(),
+      }),
+      { name: "TypeError", message: "Auto listing RFBS warehouse verifier dependency is required" },
+    );
+    assert.deepEqual(repository.calls, []);
+    assert.equal(prepareCalls, 0);
+  });
+}
+
+test("service captures one ordinary verifier method against late dependency mutation", async () => {
+  const repository = fakeRepository();
+  repository.loadTargetWarehouse = async (input) => {
+    repository.calls.push(["loadTargetWarehouse", input]);
+    return rfbsWarehouseEvidence();
+  };
+  let originalCalls = 0;
+  let replacementCalls = 0;
+  const dependency = {
+    async verifyRfbsWarehouse() {
+      originalCalls += 1;
+      return rfbsValidation();
+    },
+  };
+  const service = createProductionAutoListingService({
+    repository, prepareListingBase, rfbsWarehouseVerifier: dependency,
+  });
+  dependency.verifyRfbsWarehouse = async () => {
+    replacementCalls += 1;
+    throw new Error("late replacement must not run");
+  };
+  dependency.writeWarehouse = async () => { replacementCalls += 1; };
+
+  await service.createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "late-mutation", correlationId: "corr-rfbs", config,
+  });
+
+  assert.deepEqual({ originalCalls, replacementCalls }, { originalCalls: 1, replacementCalls: 0 });
+});
+
 test("RFBS zero-product job verifies once immediately before graph persistence and hands off evidence", async () => {
   const repository = fakeRepository();
   repository.loadTargetWarehouse = async (input) => {

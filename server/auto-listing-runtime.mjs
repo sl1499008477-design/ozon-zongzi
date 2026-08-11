@@ -1,3 +1,4 @@
+import { types as utilTypes } from "node:util";
 import { createAutoListingRepository } from "./auto-listing-repository.mjs";
 import { createAutoListingService } from "./auto-listing-service.mjs";
 import { createAutoListingAiWorker } from "./auto-listing-ai-worker.mjs";
@@ -47,14 +48,15 @@ function validLifecycle(value) {
 
 function closeRfbsWarehouseVerifier(value) {
   try {
-    if (!value || typeof value !== "object" || Array.isArray(value)
+    if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (!(keys.length === 1 && keys[0] === "verifyRfbsWarehouse"
       && descriptors.verifyRfbsWarehouse?.enumerable === true
       && Object.hasOwn(descriptors.verifyRfbsWarehouse, "value")
-      && typeof descriptors.verifyRfbsWarehouse.value === "function")) return null;
+      && typeof descriptors.verifyRfbsWarehouse.value === "function"
+      && !utilTypes.isProxy(descriptors.verifyRfbsWarehouse.value))) return null;
     return Object.freeze({ verifyRfbsWarehouse: descriptors.verifyRfbsWarehouse.value });
   } catch {
     return null;

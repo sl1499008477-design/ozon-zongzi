@@ -19,6 +19,13 @@ const PUBLIC_ERRORS = Object.freeze({
   TARGET_STORE_DISABLED: 409,
   TARGET_STORE_CREDENTIALS_REQUIRED: 409,
   LISTING_WAREHOUSE_NOT_ELIGIBLE: 422,
+  RFBS_WAREHOUSE_NOT_FOUND: 404,
+  RFBS_WAREHOUSE_DISABLED: 409,
+  RFBS_WAREHOUSE_SCOPE_MISMATCH: 422,
+  RFBS_WAREHOUSE_CHANGED: 409,
+  RFBS_WAREHOUSE_EVIDENCE_EXPIRED: 409,
+  RFBS_VALIDATION_REQUIRED: 503,
+  AUTO_LISTING_RFBS_VALIDATION_FAILED: 503,
   PERMISSION_FORBIDDEN: 403,
 });
 const ERROR_ITEM_LIMIT = 100;
@@ -192,6 +199,13 @@ function messageFor(code) {
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
   if (code === "PERMISSION_FORBIDDEN") return "没有该操作权限";
   if (code === "AUTO_LISTING_REQUEST_INVALID") return "自动上架请求无效";
+  if (code === "RFBS_WAREHOUSE_NOT_FOUND") return "未找到目标 RFBS 仓库";
+  if (code === "RFBS_WAREHOUSE_DISABLED") return "目标 RFBS 仓库不可用";
+  if (code === "RFBS_WAREHOUSE_SCOPE_MISMATCH") return "RFBS 仓库不属于当前账号或店铺";
+  if (code === "RFBS_WAREHOUSE_CHANGED") return "RFBS 仓库信息已变化";
+  if (code === "RFBS_WAREHOUSE_EVIDENCE_EXPIRED") return "RFBS 仓库验证证据已过期";
+  if (code === "RFBS_VALIDATION_REQUIRED") return "RFBS 仓库需要重新验证";
+  if (code === "AUTO_LISTING_RFBS_VALIDATION_FAILED") return "RFBS 仓库验证失败";
   return "自动上架请求处理失败";
 }
 

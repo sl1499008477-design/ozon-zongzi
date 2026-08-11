@@ -322,6 +322,41 @@ test("known service failures preserve only safe codes and messages", async () =>
   });
 });
 
+for (const [code, status, message] of [
+  ["RFBS_WAREHOUSE_NOT_FOUND", 404, "未找到目标 RFBS 仓库"],
+  ["RFBS_WAREHOUSE_DISABLED", 409, "目标 RFBS 仓库不可用"],
+  ["RFBS_WAREHOUSE_SCOPE_MISMATCH", 422, "RFBS 仓库不属于当前账号或店铺"],
+  ["RFBS_WAREHOUSE_CHANGED", 409, "RFBS 仓库信息已变化"],
+  ["RFBS_WAREHOUSE_EVIDENCE_EXPIRED", 409, "RFBS 仓库验证证据已过期"],
+  ["RFBS_VALIDATION_REQUIRED", 503, "RFBS 仓库需要重新验证"],
+  ["AUTO_LISTING_RFBS_VALIDATION_FAILED", 503, "RFBS 仓库验证失败"],
+]) {
+  test(`RFBS service failure ${code} has a fixed safe HTTP contract`, async () => {
+    const local = harness({ runtime: { getService: async () => ({
+      createAutoListingJob: async () => {
+        throw Object.assign(new Error("apiKey=prod-secret rawResponse account_b"), {
+          code,
+          status: 418,
+          credential: { apiKey: "prod-secret" },
+          rawResponse: { accountId: "account_b", token: "secret-token" },
+        });
+      },
+    }) } });
+
+    await local.handler(
+      request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }),
+      {},
+      new URL("http://local/auto-listing/jobs/from-collect-box"),
+    );
+
+    assert.deepEqual(local.replies[0], {
+      status,
+      payload: { ok: false, code, message, correlationId: "corr_1" },
+    });
+    assert.doesNotMatch(JSON.stringify(local.replies[0]), /prod-secret|rawResponse|account_b|secret-token|credential/iu);
+  });
+}
+
 test("known service and authentication failures keep safe status, code, and bounded item details", async () => {
   const cases = [
     [404, "TARGET_STORE_NOT_FOUND"],
