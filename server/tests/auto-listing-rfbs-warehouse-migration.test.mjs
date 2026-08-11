@@ -20,10 +20,14 @@ test("059 adds tenant-bound append-only RFBS evidence and nullable consumer bind
   assert.match(sql, /BEFORE INSERT ON auto_listing_rfbs_warehouse_evidence[\s\S]*STATEMENT_TIMESTAMP\(\)/iu);
   assert.match(sql, /BEFORE UPDATE OR DELETE ON auto_listing_rfbs_warehouse_evidence/iu);
   assert.match(sql, /NOT EXISTS \(SELECT 1 FROM accounts WHERE id = OLD\.account_id\)/iu);
+  assert.match(sql, /NOT EXISTS \([\s\S]*FROM stores[\s\S]*owner_account_id=OLD\.account_id[\s\S]*id=OLD\.store_id/iu);
 
   for (const table of ["auto_listing_jobs", "auto_listing_submission_links", "auto_listing_upload_attempts"]) {
     assert.match(sql, new RegExp(`ALTER TABLE ${table}\\s+[\\s\\S]*ADD COLUMN IF NOT EXISTS warehouse_validation_evidence_id TEXT`, "iu"));
     assert.match(sql, new RegExp(`ALTER TABLE ${table}[\\s\\S]*FOREIGN KEY \\(account_id,warehouse_validation_evidence_id\\)[\\s\\S]*REFERENCES auto_listing_rfbs_warehouse_evidence\\(account_id,id\\)`, "iu"));
+  }
+  for (const table of ["auto_listing_submission_links", "auto_listing_upload_attempts"]) {
+    assert.match(sql, new RegExp(`ALTER TABLE ${table}[\\s\\S]*auto_listing_rfbs_warehouse_evidence\\(account_id,id\\) ON DELETE RESTRICT`, "iu"));
   }
 });
 
@@ -32,4 +36,12 @@ test("059 protects immutable RFBS bindings on jobs and existing upload evidence"
   assert.match(sql, /auto_listing_jobs[\s\S]*warehouse_validation_evidence_id IS DISTINCT FROM OLD\.warehouse_validation_evidence_id/iu);
   assert.match(sql, /auto_listing_submission_links[\s\S]*warehouse_validation_evidence_id IS DISTINCT FROM OLD\.warehouse_validation_evidence_id/iu);
   assert.match(sql, /auto_listing_upload_attempts[\s\S]*warehouse_validation_evidence_id IS DISTINCT FROM OLD\.warehouse_validation_evidence_id/iu);
+});
+
+test("059 permits only parent-driven audit scope anonymization during controlled privacy cleanup", async () => {
+  const sql = await readFile(migrationPath, "utf8");
+  assert.match(sql, /NEW\.account_id IS NULL[\s\S]*NOT EXISTS \(SELECT 1 FROM accounts WHERE id=OLD\.account_id\)/iu);
+  assert.match(sql, /NEW\.store_id IS NULL[\s\S]*NOT EXISTS \([\s\S]*FROM stores[\s\S]*id=OLD\.store_id/iu);
+  assert.match(sql, /TO_JSONB\(NEW\)-'account_id'-'store_id'[\s\S]*TO_JSONB\(OLD\)-'account_id'-'store_id'/iu);
+  assert.match(sql, /NEW\.account_id IS DISTINCT FROM OLD\.account_id[\s\S]*NEW\.store_id IS DISTINCT FROM OLD\.store_id/iu);
 });

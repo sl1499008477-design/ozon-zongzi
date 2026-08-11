@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
-import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
+import { deleteRemovedAccountScopes } from "../formal-persistence.mjs";
+import {
+  buildAutoListingBlockedSourceEvidence,
+  buildAutoListingSourceSnapshot,
+} from "../auto-listing-source-snapshot.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL;
 const enabled = process.env.AUTO_LISTING_POSTGRES_TESTS === "1" && Boolean(databaseUrl);
@@ -87,6 +91,48 @@ function graph(accountId, storeId, warehouseId, idempotencyKey, sourceSuffix, wa
   };
 }
 
+function blockedGraph(accountId, storeId, warehouseId, idempotencyKey, sourceSuffix, warehouseValidation) {
+  const sourceRecordId = `collect-${sourceSuffix}`;
+  const { config, configHash } = normalizeAndHashAutoListingConfig({
+    targetStoreId: storeId, targetWarehouseId: warehouseId, stock: 1, priceAdjustmentKopecks: "0",
+  });
+  const captured = buildAutoListingBlockedSourceEvidence({
+    accountId, sourceType: "COLLECT_BOX", sourceRecordId, sourceVersion: "1",
+    rawCollectedAt: new Date().toISOString(), rawResponseRef: `raw-${sourceSuffix}`,
+    rawResponseHash: `raw-hash-${sourceSuffix}`, failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+  });
+  return {
+    accountId, actorAccountId: accountId, sourceType: "COLLECT_BOX", idempotencyKey,
+    correlationId: warehouseValidation.correlationId, configSnapshot: config, configHash,
+    strategyVersionId: `strategy-${accountId}`, uploadPolicyVersionId: `policy-${accountId}`,
+    warehouseValidation,
+    items: [{
+      sourceType: "COLLECT_BOX", sourceRecordId, sourceVersion: "1",
+      blockedEvidence: captured.blockedEvidence, snapshotHash: captured.snapshotHash,
+      rawResponseRef: captured.rawResponseRef, targetStoreId: storeId,
+      targetWarehouseId: warehouseId, sourceOrder: 0, status: "BLOCKED",
+      failureCode: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+    }],
+  };
+}
+
+function cleanupState(accountId, storeId) {
+  const state = {};
+  Object.defineProperty(state, "__deletedAccountScopes", {
+    value: [{
+      accountId,
+      storeIds: [storeId],
+      legacyDataStorePurgePolicy: {
+        actor: { type: "account", id: accountId },
+        reason: "ACCOUNT_DELETION_PRIVACY_ERASURE",
+        occurredAt: new Date().toISOString(),
+      },
+    }],
+    configurable: true,
+  });
+  return state;
+}
+
 async function rejectedCode(operation) {
   try { await operation(); return null; } catch (error) { return error?.code || null; }
 }
@@ -105,13 +151,17 @@ if (!enabled) {
     const schemaSql = quoteIdentifier(schema);
     const accountA = `account-a-${suffix}`;
     const accountB = `account-b-${suffix}`;
-    const accountCleanup = `account-cleanup-${suffix}`;
+    const accountStoreFirst = `account-store-first-${suffix}`;
+    const accountDirect = `account-direct-${suffix}`;
     const storeA = `store-a-${suffix}`;
     const storeB = `store-b-${suffix}`;
-    const storeCleanup = `store-cleanup-${suffix}`;
+    const storeStoreFirst = `store-store-first-${suffix}`;
+    const storeDirect = `store-direct-${suffix}`;
     const warehouseA = `warehouse-a-${suffix}`;
     const warehouseB = `warehouse-b-${suffix}`;
-    const warehouseCleanup = `warehouse-cleanup-${suffix}`;
+    const warehouseStoreFirst = `warehouse-store-first-${suffix}`;
+    const warehouseDirect = `warehouse-direct-${suffix}`;
+    const regression = {};
     try {
       await client.query(`CREATE SCHEMA ${schemaSql}`);
       await client.query(`SET search_path TO ${schemaSql}, public`);
@@ -121,44 +171,120 @@ if (!enabled) {
       for (const [accountId, storeId, warehouseId, platformId] of [
         [accountA, storeA, warehouseA, `platform-a-${suffix}`],
         [accountB, storeB, warehouseB, `platform-b-${suffix}`],
-        [accountCleanup, storeCleanup, warehouseCleanup, `platform-cleanup-${suffix}`],
+        [accountStoreFirst, storeStoreFirst, warehouseStoreFirst, `platform-store-first-${suffix}`],
+        [accountDirect, storeDirect, warehouseDirect, `platform-direct-${suffix}`],
       ]) {
         await client.query("INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')", [accountId, `user-${accountId}`]);
         await client.query("INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)", [storeId, storeId, `client-${storeId}`, accountId]);
         await client.query("INSERT INTO store_credentials (store_id,client_id,encrypted_api_key,iv,auth_tag) VALUES ($1,$2,'cipher','iv','tag')", [storeId, `client-${storeId}`]);
         await client.query("INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived) VALUES ($1,$2,$3,'RFBS','active',TRUE,FALSE)", [warehouseId, storeId, platformId]);
       }
-      await client.query("INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,'hash')", [`strategy-${accountA}`, accountA, `strategy-key-${accountA}`]);
-      await client.query(`INSERT INTO auto_listing_upload_policy_versions
-        (id,account_id,mode,enabled,version,publication_reason,created_by,published_by,published_at,
-         publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash)
-        VALUES ($1,$2,'REVIEW',TRUE,1,'test',$2,$2,NOW(),'https://cdn.test','https://cdn.test/','media','V1',$3)`,
-      [`policy-${accountA}`, accountA, "a".repeat(64)]);
+      for (const accountId of [accountA, accountStoreFirst]) {
+        await client.query("INSERT INTO ai_content_strategy_versions (id,account_id,strategy_key,version,status,content,content_hash) VALUES ($1,$2,$3,1,'PUBLISHED','{}'::jsonb,'hash')", [`strategy-${accountId}`, accountId, `strategy-key-${accountId}`]);
+        await client.query(`INSERT INTO auto_listing_upload_policy_versions
+          (id,account_id,mode,enabled,version,publication_reason,created_by,published_by,published_at,
+           publication_origin,publication_base_url,publication_prefix,publication_version,publication_policy_hash)
+          VALUES ($1,$2,'REVIEW',TRUE,1,'test',$2,$2,NOW(),'https://cdn.test','https://cdn.test/','media','V1',$3)`,
+        [`policy-${accountId}`, accountId, "a".repeat(64)]);
+      }
+      const scopedPool = {
+        async connect() { const connection = await pool.connect(); await connection.query(`SET search_path TO ${schemaSql}, public`); return connection; },
+        query: (sql, params) => client.query(sql, params),
+      };
+      const repository = createAutoListingRepository({ pool: scopedPool });
 
       await client.query(`INSERT INTO auto_listing_jobs
         (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,created_by,correlation_id)
         VALUES ($1,$2,'COLLECT_BOX','CREATED','historical-fbs','{}'::jsonb,'legacy',$2,'legacy')`, [`historical-fbs-${suffix}`, accountA]);
       assert.equal((await client.query("SELECT warehouse_validation_evidence_id FROM auto_listing_jobs WHERE id=$1", [`historical-fbs-${suffix}`])).rows[0].warehouse_validation_evidence_id, null);
 
-      const cleanupEvidence = validation(accountCleanup, storeCleanup, warehouseCleanup, `platform-cleanup-${suffix}`, `cleanup-${suffix}`);
+      const storeFirstValidation = validation(accountStoreFirst, storeStoreFirst, warehouseStoreFirst,
+        `platform-store-first-${suffix}`, `store-first-${suffix}`);
+      const storeFirstInput = blockedGraph(accountStoreFirst, storeStoreFirst, warehouseStoreFirst,
+        `store-first-${suffix}`, `store-first-${suffix}`, storeFirstValidation);
+      await client.query("INSERT INTO collect_items (id,account_id,source,identity_key,source_sku,summary) VALUES ($1,$2,'test',$3,$4,'{}'::jsonb)",
+        [storeFirstInput.items[0].sourceRecordId, accountStoreFirst, `identity-store-first-${suffix}`, `sku-store-first-${suffix}`]);
+      const storeFirstJob = await repository.createJobGraph(storeFirstInput);
+      const storeFirstAuditId = `AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED:${storeFirstJob.warehouseValidationEvidenceId}`;
+      assert.deepEqual((await client.query(
+        "SELECT account_id,store_id FROM audit_events WHERE event_id=$1",
+        [storeFirstAuditId],
+      )).rows[0], { account_id: accountStoreFirst, store_id: storeStoreFirst });
+      assert.equal(await rejectedCode(() => client.query(
+        "DELETE FROM auto_listing_rfbs_warehouse_evidence WHERE id=$1",
+        [storeFirstJob.warehouseValidationEvidenceId],
+      )), "23514");
+      assert.equal(await rejectedCode(() => client.query(
+        "UPDATE auto_listing_rfbs_warehouse_evidence SET correlation_id='changed' WHERE id=$1",
+        [storeFirstJob.warehouseValidationEvidenceId],
+      )), "23514");
+      assert.equal(await rejectedCode(() => client.query(
+        "UPDATE audit_events SET metadata=jsonb_build_object('attack',TRUE) WHERE event_id=$1",
+        [storeFirstAuditId],
+      )), "23514");
+      assert.equal(await rejectedCode(() => client.query(
+        "DELETE FROM audit_events WHERE event_id=$1",
+        [storeFirstAuditId],
+      )), "23514");
+
+      await client.query("SET session_replication_role='replica'");
+      try {
+        await client.query("DELETE FROM auto_listing_events WHERE job_id=$1", [storeFirstJob.id]);
+        await client.query("DELETE FROM auto_listing_job_items WHERE job_id=$1", [storeFirstJob.id]);
+        await client.query("DELETE FROM auto_listing_jobs WHERE id=$1", [storeFirstJob.id]);
+        await client.query("DELETE FROM auto_listing_upload_policy_versions WHERE account_id=$1", [accountStoreFirst]);
+        await client.query("DELETE FROM ai_content_strategy_versions WHERE account_id=$1", [accountStoreFirst]);
+      } finally {
+        await client.query("SET session_replication_role='origin'");
+      }
+      let cleanupResult;
+      try {
+        await client.query("BEGIN");
+        cleanupResult = await deleteRemovedAccountScopes(client, cleanupState(accountStoreFirst, storeStoreFirst));
+        await client.query("COMMIT");
+        regression.storeFirstCleanupCode = null;
+      } catch (error) {
+        regression.storeFirstCleanupCode = error?.code || null;
+        regression.storeFirstCleanupConstraint = error?.constraint || null;
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      if (regression.storeFirstCleanupCode === null) {
+        cleanupResult.afterCommit();
+        assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM accounts WHERE id=$1", [accountStoreFirst])).rows[0].count), 0);
+        assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM stores WHERE id=$1", [storeStoreFirst])).rows[0].count), 0);
+        assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_rfbs_warehouse_evidence WHERE id=$1", [storeFirstJob.warehouseValidationEvidenceId])).rows[0].count), 0);
+        assert.deepEqual((await client.query(
+          "SELECT account_id,store_id FROM audit_events WHERE event_id=$1",
+          [storeFirstAuditId],
+        )).rows[0], { account_id: null, store_id: null });
+      }
+
+      const directEvidence = validation(accountDirect, storeDirect, warehouseDirect,
+        `platform-direct-${suffix}`, `direct-${suffix}`);
       await client.query(`INSERT INTO auto_listing_rfbs_warehouse_evidence
         (id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,fulfillment_type,status,
          outcome,observed_at,expires_at,evidence_hash,correlation_id,actor_account_id)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [`cleanup-evidence-${suffix}`, accountCleanup, storeCleanup, warehouseCleanup, cleanupEvidence.platformWarehouseId,
-        cleanupEvidence.schemaVersion, cleanupEvidence.fulfillmentType, cleanupEvidence.status, cleanupEvidence.outcome,
-        cleanupEvidence.observedAt, cleanupEvidence.expiresAt, cleanupEvidence.evidenceHash,
-        cleanupEvidence.correlationId, cleanupEvidence.actorAccountId]);
-      assert.equal(await rejectedCode(() => client.query("DELETE FROM auto_listing_rfbs_warehouse_evidence WHERE id=$1", [`cleanup-evidence-${suffix}`])), "23514");
-      assert.equal(await rejectedCode(() => client.query("UPDATE auto_listing_rfbs_warehouse_evidence SET correlation_id='changed' WHERE id=$1", [`cleanup-evidence-${suffix}`])), "23514");
-      await client.query(`INSERT INTO auto_listing_jobs
-        (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,created_by,correlation_id,
-         warehouse_validation_evidence_id)
-        VALUES ($1,$2,'COLLECT_BOX','CREATED','cleanup-bound','{}'::jsonb,'cleanup',$2,'cleanup',$3)`,
-      [`cleanup-job-${suffix}`, accountCleanup, `cleanup-evidence-${suffix}`]);
-      await client.query("DELETE FROM accounts WHERE id=$1", [accountCleanup]);
-      assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_rfbs_warehouse_evidence WHERE account_id=$1", [accountCleanup])).rows[0].count), 0);
-      assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_jobs WHERE account_id=$1", [accountCleanup])).rows[0].count), 0);
+      [`direct-evidence-${suffix}`, accountDirect, storeDirect, warehouseDirect, directEvidence.platformWarehouseId,
+        directEvidence.schemaVersion, directEvidence.fulfillmentType, directEvidence.status, directEvidence.outcome,
+        directEvidence.observedAt, directEvidence.expiresAt, directEvidence.evidenceHash,
+        directEvidence.correlationId, directEvidence.actorAccountId]);
+      const directAuditId = `direct-audit-${suffix}`;
+      await client.query(`INSERT INTO audit_events
+        (event_id,account_id,store_id,action,entity_type,entity_id,correlation_id,metadata,status,actor_type,
+         actor_id,source,occurred_at)
+        VALUES ($1,$2,$3,'AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED','auto_listing_rfbs_warehouse_evidence',$4,
+          $5,'{}'::jsonb,'SUCCESS','account',$2,'test',STATEMENT_TIMESTAMP())`,
+      [directAuditId, accountDirect, storeDirect, `direct-evidence-${suffix}`, directEvidence.correlationId]);
+      regression.directAccountCleanupCode = await rejectedCode(() => client.query(
+        "DELETE FROM accounts WHERE id=$1", [accountDirect],
+      ));
+      if (regression.directAccountCleanupCode === null) {
+        assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_rfbs_warehouse_evidence WHERE id=$1", [`direct-evidence-${suffix}`])).rows[0].count), 0);
+        assert.deepEqual((await client.query(
+          "SELECT account_id,store_id FROM audit_events WHERE event_id=$1", [directAuditId],
+        )).rows[0], { account_id: null, store_id: null });
+      }
 
       const expired = validation(accountA, storeA, warehouseA, `platform-a-${suffix}`, `expired-${suffix}`, {
         observedAt: new Date(Date.now() - 60_000).toISOString(), expiresAt: new Date(Date.now() - 30_000).toISOString(),
@@ -183,11 +309,6 @@ if (!enabled) {
       await client.query(`INSERT INTO product_drafts (id,collect_item_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version)
         VALUES ($1,$2,1,$3,'{}'::jsonb,'v3','v1','live')`, [`draft-rfbs-${suffix}`, input.items[0].sourceRecordId, "1".repeat(64)]);
       await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2", [`draft-rfbs-${suffix}`, input.items[0].sourceRecordId]);
-      const scopedPool = {
-        async connect() { const connection = await pool.connect(); await connection.query(`SET search_path TO ${schemaSql}, public`); return connection; },
-        query: (sql, params) => client.query(sql, params),
-      };
-      const repository = createAutoListingRepository({ pool: scopedPool });
       const [first, second] = await Promise.all([repository.createJobGraph(structuredClone(input)), repository.createJobGraph(structuredClone(input))]);
       assert.equal(first.id, second.id);
       assert.equal([first.duplicate, second.duplicate].filter(Boolean).length, 1);
@@ -201,6 +322,76 @@ if (!enabled) {
       assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_rfbs_warehouse_evidence WHERE account_id=$1", [accountA])).rows[0].count), 1);
       assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM audit_events WHERE account_id=$1 AND action='AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED'", [accountA])).rows[0].count), 1);
       assert.equal(await rejectedCode(() => client.query("INSERT INTO auto_listing_jobs (id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,created_by,correlation_id,warehouse_validation_evidence_id) VALUES ('cross-job',$1,'COLLECT_BOX','CREATED','cross-job','{}'::jsonb,'x',$1,'cross',$2)", [accountB, first.warehouseValidationEvidenceId])), "23503");
+
+      const consumerEvidenceId = `consumer-evidence-${suffix}`;
+      const consumerValidation = validation(accountA, storeA, warehouseA,
+        `platform-a-${suffix}`, `consumer-${suffix}`);
+      await client.query(`INSERT INTO auto_listing_rfbs_warehouse_evidence
+        (id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,fulfillment_type,status,
+         outcome,observed_at,expires_at,evidence_hash,correlation_id,actor_account_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      [consumerEvidenceId, accountA, storeA, warehouseA, consumerValidation.platformWarehouseId,
+        consumerValidation.schemaVersion, consumerValidation.fulfillmentType, consumerValidation.status,
+        consumerValidation.outcome, consumerValidation.observedAt, consumerValidation.expiresAt,
+        consumerValidation.evidenceHash, consumerValidation.correlationId, consumerValidation.actorAccountId]);
+      const itemBinding = (await client.query(`SELECT item.id AS item_id,item.snapshot_id,
+          base.id AS listing_base_id,base.product_draft_data_hash
+        FROM auto_listing_job_items item
+        JOIN auto_listing_listing_bases base
+          ON base.account_id=item.account_id AND base.job_id=item.job_id AND base.item_id=item.id
+        WHERE item.account_id=$1 AND item.job_id=$2`, [accountA, first.id])).rows[0];
+      const profileId = `profile-${suffix}`;
+      const planId = `plan-${suffix}`;
+      const linkId = `link-${suffix}`;
+      const attemptId = `attempt-${suffix}`;
+      const hex = "c".repeat(64);
+      await client.query(`INSERT INTO ai_gateway_profiles
+        (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,text_model,
+         image_model,config_version,enabled,created_by)
+        VALUES ($1,$2,'Consumer fixture','https://gateway.invalid','TEST_AI_KEY','SUB2API_RESPONSES',
+          'SUB2API_OPENAI_IMAGES','text','image',1,FALSE,$2)`, [profileId, accountA]);
+      await client.query(`INSERT INTO ai_content_plans
+        (id,account_id,job_id,item_id,source_snapshot_id,strategy_version_id,profile_id,strategy_hash,
+         config_hash,source_hash,input_hash,planner_model,profile_version,prompt_template_version,plan,plan_hash)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$8,$8,'text',1,'V1','{}'::jsonb,$8)`,
+      [planId, accountA, first.id, itemBinding.item_id, itemBinding.snapshot_id,
+        `strategy-${accountA}`, profileId, hex]);
+      await client.query(`INSERT INTO auto_listing_submission_links
+        (id,account_id,job_id,auto_listing_item_id,listing_base_id,active_plan_id,target_store_id,
+         source_hash,config_hash,request_hash,result_hash,upload_policy_version_id,idempotency_key,status,
+         warehouse_validation_evidence_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$8,$8,$9,$10,'FAILED',$11)`,
+      [linkId, accountA, first.id, itemBinding.item_id, itemBinding.listing_base_id, planId, storeA,
+        hex, `policy-${accountA}`, `link-idempotency-${suffix}`, consumerEvidenceId]);
+      await client.query(`INSERT INTO auto_listing_upload_attempts
+        (id,account_id,job_id,auto_listing_item_id,submission_link_id,actor_account_id,action,
+         expected_item_version,target_store_id,target_warehouse_id,product_draft_hash,request_hash,result_hash,
+         outcome,error_code,error_safe,correlation_id,warehouse_validation_evidence_id)
+        VALUES ($1,$2,$3,$4,$5,$2,'REVIEW_APPROVE',1,$6,$7,$8,$9,$9,'FAILED','TEST_FAILURE',
+          'consumer fixture',$10,$11)`,
+      [attemptId, accountA, first.id, itemBinding.item_id, linkId, storeA, warehouseA,
+        itemBinding.product_draft_data_hash, hex, `consumer-attempt-${suffix}`, consumerEvidenceId]);
+      regression.consumerDeleteTypes = (await client.query(`SELECT conname,confdeltype
+        FROM pg_constraint
+        WHERE conname IN (
+          'auto_listing_submission_links_rfbs_warehouse_evidence_fkey',
+          'auto_listing_upload_attempts_rfbs_warehouse_evidence_fkey'
+        ) AND connamespace=current_schema()::regnamespace ORDER BY conname`)).rows;
+      await client.query("ALTER TABLE auto_listing_rfbs_warehouse_evidence DISABLE TRIGGER auto_listing_rfbs_warehouse_evidence_append_only");
+      try {
+        regression.boundConsumerDeleteCode = await rejectedCode(() => client.query(
+          "DELETE FROM auto_listing_rfbs_warehouse_evidence WHERE id=$1", [consumerEvidenceId],
+        ));
+      } finally {
+        await client.query("ALTER TABLE auto_listing_rfbs_warehouse_evidence ENABLE TRIGGER auto_listing_rfbs_warehouse_evidence_append_only");
+      }
+      assert.deepEqual((await client.query(`SELECT
+          (SELECT warehouse_validation_evidence_id FROM auto_listing_submission_links WHERE id=$1) AS link_evidence_id,
+          (SELECT warehouse_validation_evidence_id FROM auto_listing_upload_attempts WHERE id=$2) AS attempt_evidence_id`,
+      [linkId, attemptId])).rows[0], {
+        link_evidence_id: consumerEvidenceId,
+        attempt_evidence_id: consumerEvidenceId,
+      });
 
       const mismatch = structuredClone(input);
       mismatch.warehouseValidation = validation(accountA, storeA, warehouseA, `platform-a-${suffix}`, `different-${suffix}`);
@@ -221,6 +412,16 @@ if (!enabled) {
       await assert.rejects(repository.createJobGraph(rollbackInput));
       assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2", [accountA, rollbackInput.idempotencyKey])).rows[0].count), 0);
       assert.equal(Number((await client.query("SELECT COUNT(*)::INTEGER AS count FROM auto_listing_rfbs_warehouse_evidence WHERE account_id=$1 AND correlation_id=$2", [accountA, rollbackValidation.correlationId])).rows[0].count), 0);
+
+      assert.deepEqual(regression, {
+        storeFirstCleanupCode: null,
+        directAccountCleanupCode: null,
+        consumerDeleteTypes: [
+          { conname: "auto_listing_submission_links_rfbs_warehouse_evidence_fkey", confdeltype: "r" },
+          { conname: "auto_listing_upload_attempts_rfbs_warehouse_evidence_fkey", confdeltype: "r" },
+        ],
+        boundConsumerDeleteCode: "23503",
+      });
 
     } finally {
       await client.query("RESET search_path").catch(() => {});

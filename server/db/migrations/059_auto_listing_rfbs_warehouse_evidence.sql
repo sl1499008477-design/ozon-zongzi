@@ -92,7 +92,13 @@ CREATE OR REPLACE FUNCTION auto_listing_reject_rfbs_warehouse_evidence_mutation(
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP='DELETE'
-    AND NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id)
+    AND (
+      NOT EXISTS (SELECT 1 FROM accounts WHERE id = OLD.account_id)
+      OR NOT EXISTS (
+        SELECT 1 FROM stores
+         WHERE owner_account_id=OLD.account_id AND id=OLD.store_id
+      )
+    )
   THEN
     RETURN OLD;
   END IF;
@@ -119,12 +125,12 @@ ALTER TABLE auto_listing_jobs
 ALTER TABLE auto_listing_submission_links
   ADD CONSTRAINT auto_listing_submission_links_rfbs_warehouse_evidence_fkey
   FOREIGN KEY (account_id,warehouse_validation_evidence_id)
-  REFERENCES auto_listing_rfbs_warehouse_evidence(account_id,id) ON DELETE CASCADE
+  REFERENCES auto_listing_rfbs_warehouse_evidence(account_id,id) ON DELETE RESTRICT
   NOT VALID;
 ALTER TABLE auto_listing_upload_attempts
   ADD CONSTRAINT auto_listing_upload_attempts_rfbs_warehouse_evidence_fkey
   FOREIGN KEY (account_id,warehouse_validation_evidence_id)
-  REFERENCES auto_listing_rfbs_warehouse_evidence(account_id,id) ON DELETE CASCADE
+  REFERENCES auto_listing_rfbs_warehouse_evidence(account_id,id) ON DELETE RESTRICT
   NOT VALID;
 
 ALTER TABLE auto_listing_jobs
@@ -218,9 +224,30 @@ BEGIN
     OR (TG_OP='UPDATE' AND NEW.action='AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED')
   THEN
     IF TG_OP='UPDATE'
-      AND OLD.account_id IS NOT NULL AND NEW.account_id IS NULL
-      AND (TO_JSONB(NEW)-'account_id') IS NOT DISTINCT FROM (TO_JSONB(OLD)-'account_id')
-      AND NOT EXISTS (SELECT 1 FROM accounts WHERE id=OLD.account_id)
+      AND (
+        NEW.account_id IS DISTINCT FROM OLD.account_id
+        OR NEW.store_id IS DISTINCT FROM OLD.store_id
+      )
+      AND (TO_JSONB(NEW)-'account_id'-'store_id')
+        IS NOT DISTINCT FROM (TO_JSONB(OLD)-'account_id'-'store_id')
+      AND (
+        NEW.account_id IS NOT DISTINCT FROM OLD.account_id
+        OR (
+          OLD.account_id IS NOT NULL AND NEW.account_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM accounts WHERE id=OLD.account_id)
+        )
+      )
+      AND (
+        NEW.store_id IS NOT DISTINCT FROM OLD.store_id
+        OR (
+          OLD.store_id IS NOT NULL AND NEW.store_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM stores
+             WHERE id=OLD.store_id
+               AND (OLD.account_id IS NULL OR owner_account_id=OLD.account_id)
+          )
+        )
+      )
     THEN
       RETURN NEW;
     END IF;
