@@ -75,6 +75,19 @@ test("preference save sends the backend version and idempotency contract and kee
   assert.doesNotMatch(page, /String\(Number\(preference\.priceAdjustmentKopecks\) \/ 100\)/);
 });
 
+test("store currency drives the adjustment label, preview symbol, and cross-currency reset", () => {
+  assert.match(page, /priceAdjustmentAmount/);
+  assert.match(page, /currencyPresentation\.name/);
+  assert.match(page, /currencyPresentation\.symbol/);
+  assert.match(page, /shouldResetAutoListingAdjustment/);
+  assert.match(page, /切换了店铺币种，售价加减已重置为 0/);
+  assert.match(page, /priceAdjustmentKopecks:\s*amountToMinorUnits\(values\.priceAdjustmentAmount\)/);
+  assert.doesNotMatch(page, /priceAdjustmentRubles/);
+  assert.doesNotMatch(page, /售价加减（卢布）/);
+  assert.doesNotMatch(page, /finalPriceKopecks\)} ₽/);
+  assert.match(page, /storeLabels\.get\(String\(value \|\| ""\)\)/);
+});
+
 test("item commands carry the owning job and exact status version instead of trusting stale UI state", () => {
   assert.match(page, /jobId:\s*row\.jobId/);
   assert.match(page, /expectedStatusVersion:\s*row\.statusVersion/);

@@ -26,12 +26,15 @@ import {
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
+  amountToMinorUnits,
+  autoListingCurrencyPresentation,
   autoListingTaskErrorMessage,
   autoListingWarehouseOptions,
   autoListingExcelSerializedBodyLimit,
   deriveAutoListingConfig,
   kopecksToRubles,
   readExcelFileAsBase64,
+  shouldResetAutoListingAdjustment,
 } from "./auto-listing-config.js";
 import {
   autoListingImportProgress,
@@ -54,7 +57,7 @@ const DEFAULT_FORM = Object.freeze({
   targetStoreId: "",
   targetWarehouseId: "",
   stock: 5,
-  priceAdjustmentRubles: "0",
+  priceAdjustmentAmount: "0",
   ratio: "3:4",
   resolution: "1K",
   quality: "Medium",
@@ -74,11 +77,12 @@ function requestId(prefix) {
   return `${prefix}-${random}`;
 }
 
-function rublesToKopecks(value) {
-  const match = /^([+-]?)(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? "").trim());
-  if (!match) throw Object.assign(new Error("请输入正确的售价加减金额"), { code: "AUTO_LISTING_PRICE_ADJUSTMENT_INVALID" });
-  const amount = (BigInt(match[2]) * 100n) + BigInt((match[3] || "").padEnd(2, "0") || "0");
-  return String(match[1] === "-" ? -amount : amount);
+function storeCurrency(store) {
+  return store?.currencyCode || store?.currency_code || store?.currency || store?.companyCurrency || "";
+}
+
+function safeCurrencyPresentation(value) {
+  try { return autoListingCurrencyPresentation(value); } catch { return null; }
 }
 
 function collectIdsFromLocation() {
@@ -125,6 +129,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const reviewRequestRef = useRef(0);
   const importDetailRequestRef = useRef(0);
   const hydratedAccountRef = useRef("");
+  const selectedCurrencyRef = useRef(null);
   const createIntentRef = useRef(null);
   const createInFlightRef = useRef(false);
 
@@ -136,6 +141,17 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
   const selectedWarehouseId = Form.useWatch("targetWarehouseId", form) || "";
   const roles = Form.useWatch("roles", form) || DEFAULT_FORM.roles;
   const imageTotal = Object.values(roles).reduce((sum, count) => sum + (Number(count) || 0), 0);
+  const selectedStore = useMemo(
+    () => stores.find((store) => String(store?.id || "") === selectedStoreId) || null,
+    [selectedStoreId, stores],
+  );
+  const currencyPresentation = useMemo(
+    () => safeCurrencyPresentation(storeCurrency(selectedStore)),
+    [selectedStore],
+  );
+  const storeLabels = useMemo(() => new Map(stores.map((store) => [
+    String(store?.id || ""), store?.label || store?.companyName || store?.id,
+  ])), [stores]);
   const warehouseChoice = useMemo(() => autoListingWarehouseOptions({
     warehouses,
     targetStoreId: selectedStoreId,
@@ -147,6 +163,19 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       form.setFieldValue("targetWarehouseId", "");
     }
   }, [form, selectedWarehouseId, warehouseChoice.selectedWarehouseId]);
+
+  useEffect(() => { selectedCurrencyRef.current = null; }, [accountId]);
+  useEffect(() => {
+    if (!selectedStoreId || !currencyPresentation) return;
+    const previous = selectedCurrencyRef.current;
+    if (previous?.accountId === accountId
+      && shouldResetAutoListingAdjustment(previous.currency, currencyPresentation.currency)) {
+      form.setFieldValue("priceAdjustmentAmount", "0");
+      setNotice("切换了店铺币种，售价加减已重置为 0");
+      createIntentRef.current = null;
+    }
+    selectedCurrencyRef.current = { accountId, currency: currencyPresentation.currency };
+  }, [accountId, currencyPresentation, form, selectedStoreId]);
 
   const loadData = useCallback(async () => {
     const requestVersion = ++loadRequestRef.current;
@@ -166,7 +195,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
           targetStoreId: preference.targetStoreId || defaultStoreId,
           targetWarehouseId: preference.targetWarehouseId || "",
           stock: preference.stock || DEFAULT_FORM.stock,
-          priceAdjustmentRubles: kopecksToRubles(preference.priceAdjustmentKopecks || "0"),
+          priceAdjustmentAmount: kopecksToRubles(preference.priceAdjustmentKopecks || "0"),
           ratio: preference.image?.ratio || DEFAULT_FORM.ratio,
           resolution: preference.image?.resolution || DEFAULT_FORM.resolution,
           quality: preference.image?.quality || DEFAULT_FORM.quality,
@@ -204,7 +233,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     targetStoreId: values.targetStoreId,
     targetWarehouseId: values.targetWarehouseId,
     stock: values.stock,
-    priceAdjustmentKopecks: rublesToKopecks(values.priceAdjustmentRubles),
+    priceAdjustmentKopecks: amountToMinorUnits(values.priceAdjustmentAmount),
     image: {
       ratio: values.ratio,
       resolution: values.resolution,
@@ -222,6 +251,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
     setSubmitting(true);
     try {
       const values = await form.validateFields();
+      if (!currencyPresentation) throw new Error("当前店铺币种不支持自动上架，请检查店铺设置");
       const config = normalizedConfig(values);
       if (source === "collect" && !collectIds.length) throw new Error("请先从采集箱选择商品");
       if (source === "excel" && !workbook) throw new Error("请选择包含商品 SKU 的 Excel 文件");
@@ -404,13 +434,17 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       if (!evidence?.target || !evidence?.price || !Array.isArray(evidence.images)) {
         throw new Error("审核摘要读取失败，请刷新后重试");
       }
+      const reviewCurrency = autoListingCurrencyPresentation(evidence.price.currency);
+      const reviewAmount = kopecksToRubles(evidence.price.finalPriceKopecks);
+      const reviewPriceText = reviewCurrency.currency === "CNY"
+        ? `${reviewCurrency.symbol}${reviewAmount}` : `${reviewAmount} ${reviewCurrency.symbol}`;
       Modal.confirm({
         title: "确认上传到 Ozon",
         content: <Space direction="vertical" size={4}>
           <span>店铺：{evidence.target.storeLabel || evidence.target.storeId}</span>
           <span>仓库：{evidence.target.warehouseLabel || evidence.target.warehouseId}</span>
           <span>库存：{evidence.target.stock}</span>
-          <span>上架价格：{kopecksToRubles(evidence.price.finalPriceKopecks)} ₽</span>
+          <span>上架价格：{reviewPriceText}</span>
           <span>商品变体：{evidence.target.variantCount} 个</span>
           <span>新图片：{evidence.images.length} 张</span>
           <span>确认后只替换商品图片和富文本，并使用以上冻结配置提交。</span>
@@ -433,7 +467,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       const item = autoListingItemPresentation(row);
       return <Space direction="vertical" size={2}><Tag>{item.statusLabel}</Tag>{item.failureLabel ? <span>{item.failureLabel}</span> : null}</Space>;
     } },
-    { title: "上架店铺", dataIndex: "targetStoreId" },
+    { title: "上架店铺", dataIndex: "targetStoreId", render: (value) => storeLabels.get(String(value || "")) || value || "—" },
     { title: "操作", key: "actions", render: (_value, row) => {
       const item = autoListingItemPresentation(row);
       return <Space wrap>
@@ -477,16 +511,29 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
         <Form form={form} layout="vertical" initialValues={DEFAULT_FORM}>
           <div className="auto-listing-grid auto-listing-grid--four">
             <Form.Item name="targetStoreId" label="上架店铺" rules={[{ required: true, message: "请选择上架店铺" }]}>
-              <Select options={stores.map((store) => ({ value: store.id, label: store.label || store.companyName || store.id }))} />
+              <Select options={stores.map((store) => {
+                const presentation = safeCurrencyPresentation(storeCurrency(store));
+                const label = store.label || store.companyName || store.id;
+                return {
+                  value: store.id,
+                  label: presentation ? `${label}（${presentation.name} ${presentation.currency}）` : `${label}（币种不支持）`,
+                  disabled: !presentation,
+                };
+              })} />
             </Form.Item>
             <Form.Item name="targetWarehouseId" label="活跃 FBS / RFBS 仓库" rules={[{ required: true, message: "请选择活跃 FBS / RFBS 仓库" }]}>
               <Select options={warehouseChoice.options} placeholder="只显示后端确认可用或创建时可验证的仓库" />
             </Form.Item>
             <Form.Item name="stock" label="上架库存" rules={[{ required: true }]}><InputNumber min={1} precision={0} /></Form.Item>
-            <Form.Item name="priceAdjustmentRubles" label="售价加减（卢布）" rules={[{ required: true }]}><Input /></Form.Item>
+            <Form.Item name="priceAdjustmentAmount"
+              label={`售价加减（${currencyPresentation ? `${currencyPresentation.name} ${currencyPresentation.symbol}` : "请选择支持的店铺币种"}）`}
+              rules={[{ required: true }]}><Input /></Form.Item>
           </div>
+          {selectedStoreId && !currencyPresentation
+            ? <Alert type="error" showIcon title="当前店铺币种不支持自动上架，请检查店铺设置。" /> : null}
           <Alert type="info" showIcon title="RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。" />
-          <Alert type="info" showIcon title="售价计算规则" description="黑标价大于等于 80：真实售价＝（黑标价－绿标价）×2.25＋黑标价；低于 80：真实售价＝黑标价÷1.0715。最后再加上或减去上面的金额。" />
+          <Alert type="info" showIcon title="售价计算规则"
+            description={`所有金额均按店铺原币计算。黑标价大于等于 80 ${currencyPresentation?.symbol || ""}：真实售价＝（黑标价－绿标价）×2.25＋黑标价；低于 80 ${currencyPresentation?.symbol || ""}：真实售价＝黑标价÷1.0715。最后再加上或减去上面的金额。`} />
 
           <div className="auto-listing-section-title">图片生成配置</div>
           <div className="auto-listing-grid auto-listing-grid--four">

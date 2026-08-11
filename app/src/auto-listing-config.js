@@ -29,6 +29,11 @@ export const AUTO_LISTING_IMAGE_DEFAULTS = Object.freeze({
   total: 8,
 });
 
+const CURRENCY_PRESENTATIONS = Object.freeze({
+  RUB: Object.freeze({ currency: "RUB", name: "卢布", symbol: "₽" }),
+  CNY: Object.freeze({ currency: "CNY", name: "人民币", symbol: "¥" }),
+});
+
 function configError(code = "AUTO_LISTING_CONFIG_INVALID") {
   const error = new Error(code);
   error.code = code;
@@ -64,6 +69,26 @@ export function kopecksToRubles(value = "0") {
   const fraction = absolute % 100n;
   const decimals = fraction === 0n ? "" : `.${String(fraction).padStart(2, "0")}`;
   return `${negative ? "-" : ""}${whole}${decimals}`;
+}
+
+export function amountToMinorUnits(value = "0") {
+  const match = /^([+-]?)(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? "").trim());
+  if (!match) throw configError("AUTO_LISTING_PRICE_ADJUSTMENT_INVALID");
+  const amount = (BigInt(match[2]) * 100n) + BigInt((match[3] || "").padEnd(2, "0") || "0");
+  return String(match[1] === "-" ? -amount : amount);
+}
+
+export function autoListingCurrencyPresentation(value) {
+  const currency = typeof value === "string" ? value.trim().toUpperCase() : "";
+  const presentation = CURRENCY_PRESENTATIONS[currency];
+  if (!presentation) throw configError("PRICE_CURRENCY_UNSUPPORTED");
+  return presentation;
+}
+
+export function shouldResetAutoListingAdjustment(previousCurrency, nextCurrency) {
+  const next = autoListingCurrencyPresentation(nextCurrency).currency;
+  if (previousCurrency === null || previousCurrency === undefined || previousCurrency === "") return false;
+  return autoListingCurrencyPresentation(previousCurrency).currency !== next;
 }
 
 function option(value, fallback, allowed) {
@@ -124,14 +149,17 @@ function roundHalfUp(numerator, denominator) {
   return (numerator + (denominator / 2n)) / denominator;
 }
 
-function rubleText(kopecks) {
-  const whole = kopecks / 100n;
-  const fraction = String(kopecks % 100n).padStart(2, "0");
-  return `${whole}.${fraction} ₽`;
+function currencyText(currency, minorUnits) {
+  const presentation = autoListingCurrencyPresentation(currency);
+  const whole = minorUnits / 100n;
+  const fraction = String(minorUnits % 100n).padStart(2, "0");
+  const amount = `${whole}.${fraction}`;
+  return presentation.currency === "CNY" ? `${presentation.symbol}${amount}` : `${amount} ${presentation.symbol}`;
 }
 
 export function previewAutoListingPrice(input = {}) {
-  if (!plain(input) || input.currency !== "RUB") throw configError("PRICE_CURRENCY_NOT_RUB");
+  if (!plain(input)) throw configError("PRICE_CURRENCY_UNSUPPORTED");
+  const currency = autoListingCurrencyPresentation(input.currency).currency;
   const black = parseKopecks(input.blackKopecks, { positive: true });
   const adjustment = parseKopecks(input.adjustmentKopecks ?? "0");
   let branch;
@@ -148,12 +176,12 @@ export function previewAutoListingPrice(input = {}) {
   const finalPrice = real + adjustment;
   if (finalPrice <= 0n) throw configError("PRICE_FINAL_NOT_POSITIVE");
   return Object.freeze({
-    currency: "RUB",
+    currency,
     branch,
     realPriceKopecks: String(real),
     adjustmentKopecks: String(adjustment),
     finalPriceKopecks: String(finalPrice),
-    finalPriceText: rubleText(finalPrice),
+    finalPriceText: currencyText(currency, finalPrice),
   });
 }
 

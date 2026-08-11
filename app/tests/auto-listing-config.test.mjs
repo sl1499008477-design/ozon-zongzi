@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   AUTO_LISTING_IMAGE_DEFAULTS,
+  amountToMinorUnits,
+  autoListingCurrencyPresentation,
   autoListingExcelSerializedBodyLimit,
   autoListingTaskErrorMessage,
   autoListingWarehouseOptions,
@@ -10,6 +12,7 @@ import {
   kopecksToRubles,
   previewAutoListingPrice,
   readExcelFileAsBase64,
+  shouldResetAutoListingAdjustment,
 } from "../src/auto-listing-config.js";
 import { normalizeAutoListingConfig } from "../../server/auto-listing-contract.mjs";
 
@@ -24,6 +27,25 @@ test("formats signed kopecks for the preference form without floating-point conv
   assert.equal(kopecksToRubles("-105"), "-1.05");
   assert.equal(kopecksToRubles("900719925474099301"), "9007199254740993.01");
   assert.throws(() => kopecksToRubles("1.5"), { code: "AUTO_LISTING_CONFIG_INVALID" });
+  assert.equal(amountToMinorUnits("1.05"), "105");
+  assert.equal(amountToMinorUnits("-2.5"), "-250");
+  assert.equal(amountToMinorUnits("9007199254740993.01"), "900719925474099301");
+  assert.throws(() => amountToMinorUnits("1.005"), { code: "AUTO_LISTING_PRICE_ADJUSTMENT_INVALID" });
+});
+
+test("presents only supported target-store currencies and resets adjustments only across currencies", () => {
+  assert.deepEqual(autoListingCurrencyPresentation("CNY"), {
+    currency: "CNY", name: "人民币", symbol: "¥",
+  });
+  assert.deepEqual(autoListingCurrencyPresentation("RUB"), {
+    currency: "RUB", name: "卢布", symbol: "₽",
+  });
+  assert.throws(() => autoListingCurrencyPresentation("USD"), {
+    code: "PRICE_CURRENCY_UNSUPPORTED",
+  });
+  assert.equal(shouldResetAutoListingAdjustment("RUB", "CNY"), true);
+  assert.equal(shouldResetAutoListingAdjustment("CNY", "CNY"), false);
+  assert.equal(shouldResetAutoListingAdjustment(null, "CNY"), false);
 });
 
 test("uses the approved ordinary-user defaults and derives total image count", () => {
@@ -120,6 +142,12 @@ test("price preview mirrors the approved two-branch formula with integer roundin
   assert.throws(() => previewAutoListingPrice({
     currency: "RUB", blackKopecks: "100", adjustmentKopecks: "-100",
   }), { code: "PRICE_FINAL_NOT_POSITIVE" });
+  assert.equal(previewAutoListingPrice({
+    currency: "CNY", blackKopecks: "10000", greenKopecks: "8000", adjustmentKopecks: "0",
+  }).finalPriceText, "¥145.00");
+  assert.throws(() => previewAutoListingPrice({
+    currency: "USD", blackKopecks: "10000", greenKopecks: "8000", adjustmentKopecks: "0",
+  }), { code: "PRICE_CURRENCY_UNSUPPORTED" });
 });
 
 test("warehouse choices trust only the exact backend FBS or pending RFBS contract and clear stale store selections", () => {
