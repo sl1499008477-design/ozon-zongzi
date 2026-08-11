@@ -69,6 +69,35 @@ test("Stores settings derives only operating-store state even if an old response
   }
 });
 
+test("Stores settings counts warehouses for each exact operating store instead of using the account total", () => {
+  const warehouses = [
+    ...Array.from({ length: 33 }, (_, index) => ({
+      id: `warehouse-a-${index + 1}`,
+      storeId: "store-a",
+    })),
+    { id: "warehouse-b-1", store_id: "store-b" },
+    { id: "warehouse-without-store" },
+  ];
+
+  const model = operatingStoreSettingsModel({
+    localData: {
+      currentStoreId: "store-a",
+      stores: [
+        { id: "store-a", label: "A" },
+        { id: "store-b", label: "B" },
+      ],
+      caches: { warehouses },
+    },
+    binding: { id: "store-a" },
+  });
+
+  assert.deepEqual(model.warehouseCountsByStoreId, {
+    "store-a": 33,
+    "store-b": 1,
+  });
+  assert.equal(model.currentWarehouseCount, 33);
+});
+
 test("listing form submission remains account collection plus explicit operating-store target", () => {
   assert.deepEqual(buildPrepareListingBody({
     collectItemId: "collect-account-owned",

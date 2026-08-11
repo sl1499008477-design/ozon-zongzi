@@ -10,6 +10,7 @@ import {
 } from "antd";
 import { apiRequest } from "./client-transport.js";
 import { createStoreDeletionController } from "./store-deletion-controller.js";
+import { storeSwitchActionState } from "./store-switch-gate.js";
 import { operatingStoreSettingsModel } from "./stores-settings-model.js";
 import SourceTable from "./SourceTable.jsx";
 import { displayApiKeyDeadline } from "./store-date.js";
@@ -18,7 +19,7 @@ import {
   renderSourceTextCell,
 } from "./table-text.jsx";
 
-export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted }) {
+export default function StoresSettingsPage({ hasStore, binding, localData, onBind, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted }) {
   const { message } = AntApp.useApp();
   const [refreshingStores, setRefreshingStores] = useState(false);
   const [syncingWarehouses, setSyncingWarehouses] = useState(false);
@@ -26,11 +27,14 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
     stores,
     currentStoreId: activeStoreId,
     warehouses,
+    warehouseCountsByStoreId,
+    currentWarehouseCount,
     summary,
   } = operatingStoreSettingsModel({ localData, binding });
   const visibleStores = stores.filter((store) => !["disabled", "stopped", "inactive"].includes(String(store.status || "").toLowerCase()));
   const storeRows = visibleStores.map((store) => {
     const isActive = String(store.id || "") === String(activeStoreId || "");
+    const switchState = storeSwitchActionState({ storeId: store.id, switchingStoreId });
     const statusLabel = store.status
       ? (["disabled", "stopped", "inactive"].includes(String(store.status).toLowerCase()) ? "已停用" : "已启用")
       : "已保存";
@@ -41,10 +45,11 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
       "货币": store.currency || store.currencyCode || "—",
       "Premium": store.isPremium === true ? "已开通" : "未开通",
       "状态": statusLabel,
-      "本地仓库": isActive ? warehouses.length : "—",
+      "本地仓库": warehouseCountsByStoreId[String(store.id || "")] || 0,
       "API Key 期限": displayApiKeyDeadline(store),
       "操作": isActive ? "当前门店" : "已保存",
       isActive,
+      switchState,
       rawStore: store,
     };
   });
@@ -141,7 +146,7 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
         </div>
         <div className="store-current-line">
           <span>当前选择门店： {binding?.storeName || binding?.id || "—"}</span>
-          <em>商品 {summary.products || 0} · 订单 {summary.postingsTotal || summary.postings || 0} · 仓库 {warehouses.length}</em>
+          <em>商品 {summary.products || 0} · 订单 {summary.postingsTotal || summary.postings || 0} · 仓库 {currentWarehouseCount}</em>
           <Space>
             <Button danger disabled={!hasStore} onClick={onClear}>清除当前门店</Button>
             <Button onClick={syncAllStores}>同步本帐号所有门店</Button>
@@ -192,7 +197,16 @@ export default function StoresSettingsPage({ hasStore, binding, localData, onBin
               render: (value, record) => (
                 <Space size={6}>
                   <Button size="small" onClick={() => onBind?.(record.rawStore || record)}>修改</Button>
-                  {record.isActive ? null : <Button size="small" onClick={() => onSwitchStore?.(record.rawStore?.id || record.id)}>切换</Button>}
+                  {record.isActive ? null : (
+                    <Button
+                      size="small"
+                      disabled={record.switchState.disabled}
+                      loading={record.switchState.loading}
+                      onClick={() => onSwitchStore?.(record.rawStore?.id || record.id)}
+                    >
+                      {record.switchState.label}
+                    </Button>
+                  )}
                   <Button danger size="small" onClick={() => deleteStore(record)}>删除</Button>
                 </Space>
               ),

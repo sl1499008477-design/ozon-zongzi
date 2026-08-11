@@ -91,6 +91,7 @@ import AutoListingPage from "./AutoListingPage.jsx";
 import AiModelSettingsPage from "./AiModelSettingsPage.jsx";
 import { buildAutoListingCollectPush } from "./auto-listing-collect-push.js";
 import { createStoreDeletionCleanup } from "./store-deletion-cleanup.js";
+import { createStoreSwitchGate } from "./store-switch-gate.js";
 import ProfitTrendPage from "./ProfitTrendPage.jsx";
 import SourceTable, {
   SourceMetricStrip,
@@ -626,6 +627,7 @@ export function AppShell({ initialState = null }) {
   );
   const [localData, setLocalData] = useState(emptyLocalData);
   const [syncing, setSyncing] = useState(false);
+  const [switchingStoreId, setSwitchingStoreId] = useState("");
   const [storeSyncStates, setStoreSyncStates] = useState([]);
   const [bindOpen, setBindOpen] = useState(false);
   const [editingBindingStore, setEditingBindingStore] = useState(null);
@@ -639,7 +641,9 @@ export function AppShell({ initialState = null }) {
   const applyLocalStateRef = useRef(null);
   const localStateRefreshRef = useRef(null);
   const collectorAuthGenerationRef = useRef(null);
+  const storeSwitchGateRef = useRef(null);
   const messageRef = useRef(message);
+  if (!storeSwitchGateRef.current) storeSwitchGateRef.current = createStoreSwitchGate();
   messageRef.current = message;
   if (!collectorAuthGenerationRef.current) {
     collectorAuthGenerationRef.current = createCollectorAuthGenerationController();
@@ -1010,10 +1014,19 @@ export function AppShell({ initialState = null }) {
       message.info("已是当前门店");
       return;
     }
+    const targetStoreId = String(target.id || target.storeId || "");
+    if (!storeSwitchGateRef.current.begin(targetStoreId)) return;
+    setSwitchingStoreId(targetStoreId);
+    const targetStoreName = visibleStoreName(target.label || target.companyName, target.clientId);
     try {
+      message.loading({
+        content: `正在切换到 ${targetStoreName}，并同步门店资料…`,
+        key: "store-switch",
+        duration: 0,
+      });
       const response = await apiRequest("/local/current-store", {
         method: "POST",
-        body: { storeId: target.id || target.storeId },
+        body: { storeId: targetStoreId },
       });
       const store = response.store || target;
       const nextBinding = {
@@ -1032,9 +1045,12 @@ export function AppShell({ initialState = null }) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(nextBinding));
       localStorage.setItem("currentOzonStoreId", nextBinding.id);
       await refreshLocalState({ source: "store-switch" });
-      message.success(`已切换到 ${nextBinding.storeName}`);
+      message.success({ content: `已切换到 ${nextBinding.storeName}`, key: "store-switch" });
     } catch (error) {
-      message.error(`切换失败: ${error.message}`);
+      message.error({ content: `切换失败: ${error.message}`, key: "store-switch", duration: 6 });
+    } finally {
+      storeSwitchGateRef.current.finish(targetStoreId);
+      setSwitchingStoreId("");
     }
   };
 
@@ -1278,6 +1294,7 @@ export function AppShell({ initialState = null }) {
                 onSync={handleSync}
                 onClear={clearBinding}
                 onSwitchStore={switchCurrentStore}
+                switchingStoreId={switchingStoreId}
                 onRefresh={refreshLocalState}
                 onStoreDeleted={handleStoreDeleted}
                 account={account}
@@ -1670,7 +1687,7 @@ function MetricCard({ metric, compact = false }) {
   );
 }
 
-function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted, navigate, account, accounts }) {
+function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts }) {
   if (route === "/extension") {
     return (
       <Card className="panel-card">
@@ -1679,7 +1696,7 @@ function GenericPage({ route, binding, hasStore, localData, onBind, onPlugin, on
     );
   }
 
-  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, onRefresh, onStoreDeleted, navigate, account, accounts };
+  const pageProps = { route, binding, hasStore, localData, onBind, onPlugin, onSync, onClear, onSwitchStore, switchingStoreId, onRefresh, onStoreDeleted, navigate, account, accounts };
   if (route === "/ozon/products/list") return <ProductListPage {...pageProps} />;
   if (route.startsWith("/ozon/products/collect/edit")) return <CollectEditPage {...pageProps} />;
   if (route === "/ozon/products/collect") return <CollectPage {...pageProps} />;
