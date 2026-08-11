@@ -68,7 +68,6 @@ BEGIN
          AND store.currency_code = evidence_currency
     )
     OR jsonb_typeof(NEW.ozon_ready_variants) <> 'array'
-    OR jsonb_array_length(NEW.ozon_ready_variants) < 1
     OR EXISTS (
       SELECT 1
         FROM jsonb_array_elements(NEW.ozon_ready_variants) AS variant

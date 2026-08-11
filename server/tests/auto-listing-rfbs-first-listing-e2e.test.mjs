@@ -32,12 +32,12 @@ const publicationPolicy = Object.freeze({
   publicationVersion: "LISTING_MEDIA_V1",
 });
 
-function listingVariant(offerId) {
+function listingVariant(offerId, currency = "RUB") {
   return {
     offer_id: offerId,
     name: `RFBS ${offerId}`,
     price: "100.00",
-    currency_code: "RUB",
+    currency_code: currency,
     description_category_id: 17028702,
     type_id: 92576,
     weight: 500,
@@ -68,7 +68,7 @@ function listingDraftFor(scenario) {
     sku: scenario.offer,
     offerId: scenario.offer,
     title: `RFBS ${scenario.name}`,
-    currency: "RUB",
+    ...(scenario.sourceCurrency ? { currency: scenario.sourceCurrency } : {}),
     blackKopecks: "10000",
     greenKopecks: "8000",
     sourceCategory: { descriptionCategoryId: 17028702, typeIdCandidate: 92576 },
@@ -88,7 +88,7 @@ function prepareListingBase({ source, pricingEvidence }) {
     pricingEvidence: { ...pricingEvidence, evidenceHash: digest(pricingEvidence) },
     richContentAttributeSupported: true,
     variants: [{ sourceVariantId: `variant-${source.id}`, sourceSku: source.collectItem.listingDraft.sku,
-      item: listingVariant(source.collectItem.listingDraft.offerId) }],
+      item: listingVariant(source.collectItem.listingDraft.offerId, pricingEvidence.currency) }],
     versions: { normalizerVersion: source.productDraft.normalizerVersion,
       categoryRuleVersion: source.productDraft.categoryRuleVersion,
       dictionaryVersion: source.productDraft.dictionaryVersion },
@@ -149,7 +149,7 @@ if (!enabled) {
       const clientId = String(request.headers["client-id"] || "");
       const pathName = String(request.url || "");
       const offerId = String(body?.items?.[0]?.offer_id || body?.stocks?.[0]?.offer_id || "");
-      calls.push({ path: pathName, clientId, offerId });
+      calls.push({ path: pathName, clientId, offerId, body: structuredClone(body) });
       response.setHeader("content-type", "application/json");
       if (pathName === "/v2/warehouse/list") {
         const warehouseRead = Number(warehouseReadsByClientId.get(clientId) || 0) + 1;
@@ -203,8 +203,10 @@ if (!enabled) {
       await admin.query(`CREATE SCHEMA ${quote(schema)}`);
       await admin.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-      assert.equal(migrations.at(-1)?.startsWith("061_"), true,
+      assert.equal(migrations.some((file) => file.startsWith("061_")), true,
         "E2E must include immutable RFBS standard-submission handoff migration 061");
+      assert.equal(migrations.at(-1)?.startsWith("062_"), true,
+        "E2E must include native target-store currency migration 062");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       await admin.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
       for (const migration of migrations) {
@@ -234,11 +236,13 @@ if (!enabled) {
       const uploadRepository = createPostgresAutoListingUploadRepository({ pool: scopedPool });
       const publicationRepository = createPostgresListingAssetPublicationRepository({ pool: scopedPool });
 
-      async function seedScenario(name) {
+      async function seedScenario(name, { currency = "RUB", sourceCurrency = currency } = {}) {
         const scenario = Object.fromEntries([
           "account", "store", "warehouse", "collect", "draft", "strategy", "policy", "profile", "plan",
         ].map((key) => [key, `${name}-${key}-${suffix}`]));
         scenario.name = name;
+        scenario.currency = currency;
+        scenario.sourceCurrency = sourceCurrency;
         scenario.clientId = `${name}-client-${suffix}`;
         scenario.platformWarehouseId = `${name}-platform-${suffix}`;
         scenario.offer = `offer-${name}-${suffix}`;
@@ -246,8 +250,8 @@ if (!enabled) {
         scenario.raw = `raw-${name}-${suffix}`;
         await admin.query("INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
           [scenario.account, `${name}-${suffix}`]);
-        await admin.query("INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,$2,$2,$3,'active',$4)",
-          [scenario.store, name, scenario.clientId, scenario.account]);
+        await admin.query("INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,currency_code) VALUES ($1,$2,$2,$3,'active',$4,$5)",
+          [scenario.store, name, scenario.clientId, scenario.account, currency]);
         await admin.query(`INSERT INTO store_credentials
           (store_id,client_id,encrypted_api_key,iv,auth_tag,algorithm,key_version)
           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -314,23 +318,28 @@ if (!enabled) {
         });
       }
 
-      async function createScenarioJob(scenario, {
+      async function invokeScenarioJob(scenario, {
         targetScenario = scenario,
         verifierOptions = {},
+        prepareListingBaseImpl = prepareListingBase,
       } = {}) {
         const correlationId = `create-${scenario.name}-${suffix}`;
         const service = createAutoListingService({
           repository: creationRepository,
-          prepareListingBase,
+          prepareListingBase: prepareListingBaseImpl,
           rfbsWarehouseVerifier: verifierFor(targetScenario, verifierOptions),
         });
-        const created = await service.createAutoListingJob({
+        return service.createAutoListingJob({
           actor: { id: scenario.account, role: "admin" },
           collectItemIds: [scenario.collect],
           idempotencyKey: `job-${scenario.name}`,
           correlationId,
           config: configFor(targetScenario),
         });
+      }
+
+      async function createScenarioJob(scenario, options = {}) {
+        const created = await invokeScenarioJob(scenario, options);
         scenario.job = created.jobId;
         scenario.item = created.items[0].itemId;
         scenario.creationEvidenceId = (await pool.query(`SELECT warehouse_validation_evidence_id
@@ -709,6 +718,75 @@ if (!enabled) {
         handoff.business_idempotency_key]), (error) => ["23503", "23514"].includes(error?.code));
       assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
         FROM submission_rfbs_handoffs WHERE account_id=$1`, [attacker.account])).rows[0].count), 0);
+
+      // A CNY store with no explicit source currency keeps CNY through create, upload, and Ozon import.
+      const cnyCallsStart = calls.length;
+      const cny = await createScenarioJob(await seedScenario("cny-success", {
+        currency: "CNY", sourceCurrency: null,
+      }));
+      const cnyBase = (await pool.query(`SELECT listing_base_version,pricing_evidence,ozon_ready_variants
+        FROM auto_listing_listing_bases WHERE account_id=$1 AND job_id=$2 AND item_id=$3`,
+      [cny.account, cny.job, cny.item])).rows[0];
+      assert.equal(cnyBase.listing_base_version, "AUTO_LISTING_LISTING_BASE_V2");
+      assert.equal(cnyBase.pricing_evidence.currency, "CNY");
+      assert.equal(cnyBase.pricing_evidence.currencySource, "TARGET_STORE");
+      assert.equal(cnyBase.ozon_ready_variants[0].item.currency_code, "CNY");
+      const cnySubmission = await reserveAndCreateSubmission(cny);
+      await processListingQueueMessage({ submissionJobId: cnySubmission.submissionJobId, action: "submit" });
+      await processListingQueueMessage({ submissionJobId: cnySubmission.submissionJobId, action: "check" });
+      const cnyImportCalls = calls.slice(cnyCallsStart)
+        .filter(({ path: value, offerId }) => value === "/v3/product/import" && offerId === cny.offer);
+      assert.equal(cnyImportCalls.length, 1);
+      assert.equal(cnyImportCalls[0].body.items[0].currency_code, "CNY");
+      assert.equal(cnyImportCalls[0].body.items[0].price, "145.00");
+      assert.equal(calls.slice(cnyCallsStart)
+        .filter(({ path: value }) => value === "/v2/products/stocks").length, 1);
+
+      // An explicit RUB source in a CNY store creates one auditable blocked item and no AI or Ozon write.
+      const mismatch = await seedScenario("cny-rub-source", { currency: "CNY", sourceCurrency: "RUB" });
+      const mismatchCallsStart = calls.length;
+      const mismatchJob = await invokeScenarioJob(mismatch);
+      assert.equal(mismatchJob.items[0].status, "BLOCKED");
+      assert.equal(mismatchJob.items[0].failureCode, "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH");
+      assert.equal(calls.slice(mismatchCallsStart).some(({ path: value }) => [
+        "/v3/product/import", "/v2/products/stocks",
+      ].includes(value)), false);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1",
+        [mismatch.account])).rows[0].count), 1);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_listing_bases WHERE account_id=$1",
+        [mismatch.account])).rows[0].count), 0);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_ai_outbox WHERE account_id=$1",
+        [mismatch.account])).rows[0].count), 0);
+
+      // Unsupported target currency fails before any job, AI outbox, or Ozon write.
+      const unsupported = await seedScenario("unsupported-usd", { currency: "USD", sourceCurrency: null });
+      const unsupportedCallsStart = calls.length;
+      await assert.rejects(invokeScenarioJob(unsupported), {
+        code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED",
+      });
+      assert.equal(calls.slice(unsupportedCallsStart).some(({ path: value }) => [
+          "/v3/product/import", "/v2/products/stocks",
+      ].includes(value)), false);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1",
+        [unsupported.account])).rows[0].count), 0);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_ai_outbox WHERE account_id=$1",
+        [unsupported.account])).rows[0].count), 0);
+      const forged = await seedScenario("forged-cny-variant", { currency: "CNY", sourceCurrency: null });
+      const forgedCallsStart = calls.length;
+      await assert.rejects(createScenarioJob(forged, {
+        prepareListingBaseImpl(input) {
+          const base = prepareListingBase(input);
+          base.variants[0].item.currency_code = "RUB";
+          return base;
+        },
+      }));
+      assert.equal(calls.slice(forgedCallsStart).some(({ path: value }) => [
+        "/v3/product/import", "/v2/products/stocks",
+      ].includes(value)), false);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1",
+        [forged.account])).rows[0].count), 0);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_ai_outbox WHERE account_id=$1",
+        [forged.account])).rows[0].count), 0);
 
       // A definitely-not-submitted first delivery gets a fresh attempt evidence and creates one handoff on retry.
       const safeRetryCallsStart = calls.length;

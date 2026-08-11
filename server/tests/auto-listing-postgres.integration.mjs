@@ -44,6 +44,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     rawResponseRef: `raw-${suffix}`,
     rawResponseHash: `raw-hash-${suffix}`,
     productDraft: { id: productDraftId, version: 1 },
+    targetStoreCurrency: "RUB",
     collectItem: {
       id: sourceRecordId,
       accountId,
@@ -91,8 +92,8 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
       listingBaseTemplate: {
         productDraft: { id: productDraftId, version: 1, dataHash: "1".repeat(64) },
         pricingEvidence: {
-          currency: "RUB", blackKopecks: "10000", greenKopecks: "8000",
-          evidenceHash: "767a5b396ef1e82c9ebf280694cb5cb97ea39d654af13a0f78e021cad0db36c2",
+          currency: "RUB", currencySource: "SOURCE", blackKopecks: "10000", greenKopecks: "8000",
+          evidenceHash: "4c6f549e1668186515248caffeb08fe2f9ba91ca1dab9edbdd8d159aa2b11bf8",
         },
         richContentAttributeSupported: true,
         variants: [{
