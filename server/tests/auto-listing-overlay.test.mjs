@@ -209,6 +209,39 @@ test("freezes a complete normalized single-variant base and overlays only genera
   assert.deepEqual(base.variants[0].item.images, rawBefore.variants[0].item.images);
 });
 
+test("freezes a V2 CNY base and submits native CNY without conversion", () => {
+  const price = {
+    currency: "CNY", currencySource: "TARGET_STORE",
+    blackKopecks: "10000", greenKopecks: "8000",
+  };
+  const base = freezeAutoListingListingBase({
+    ...freezeInput([{ ...wrapper("blue"), item: { ...item("blue"), currency_code: "CNY" } }]),
+    pricingEvidence: { ...price, evidenceHash: digest(price) },
+  });
+  assert.equal(base.version, "AUTO_LISTING_LISTING_BASE_V2");
+  const assets = groupAssets("group-a");
+  const draft = buildAutoListingSubmissionDraft(submissionInput(base, [
+    groupContract("group-a", ["variant-blue"], assets),
+  ], assets));
+  assert.equal(draft.items[0].currency_code, "CNY");
+  assert.equal(draft.items[0].price, "145.00");
+  assert.equal(draft.priceCalculation.currency, "CNY");
+});
+
+test("rejects invalid V1/V2 currency evidence and forged variant currency", () => {
+  const cny = {
+    currency: "CNY", currencySource: "SOURCE", blackKopecks: "10000", greenKopecks: "8000",
+  };
+  const invalid = [
+    { ...freezeInput(), pricingEvidence: { ...cny, currency: "USD", evidenceHash: digest({ ...cny, currency: "USD" }) } },
+    { ...freezeInput(), pricingEvidence: { currency: "CNY", blackKopecks: "10000", greenKopecks: "8000", evidenceHash: digest({ currency: "CNY", blackKopecks: "10000", greenKopecks: "8000" }) } },
+    { ...freezeInput([{ ...wrapper("blue"), item: { ...item("blue"), currency_code: "RUB" } }]), pricingEvidence: { ...cny, evidenceHash: digest(cny) } },
+  ];
+  for (const value of invalid) {
+    assert.throws(() => freezeAutoListingListingBase(value), { code: "AUTO_LISTING_LISTING_BASE_INVALID" });
+  }
+});
+
 test("keeps every multi-variant fact byte-identical while sharing size-only groups and separating visual groups", () => {
   const base = freezeAutoListingListingBase(freezeInput([
     wrapper("blue"), wrapper("blue-xl"), wrapper("red"),

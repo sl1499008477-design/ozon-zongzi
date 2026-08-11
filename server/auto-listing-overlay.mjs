@@ -2,12 +2,14 @@ import crypto from "node:crypto";
 
 import { verifyAutoListingFrozenConfig } from "./auto-listing-contract.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 import {
   AUTO_LISTING_OZON_RICH_CONTENT_VERSION,
   convertAutoListingRichContentToOzon,
 } from "./auto-listing-ozon-rich-content.mjs";
 
-const BASE_VERSION = "AUTO_LISTING_LISTING_BASE_V1";
+const BASE_VERSION_V1 = "AUTO_LISTING_LISTING_BASE_V1";
+const BASE_VERSION_V2 = "AUTO_LISTING_LISTING_BASE_V2";
 const DRAFT_VERSION = "AUTO_LISTING_SUBMISSION_DRAFT_V1";
 const HASH = /^[a-f0-9]{64}$/u;
 const MAX_BASE_BYTES = 10 * 1024 * 1024;
@@ -17,7 +19,8 @@ const BASE_INPUT_KEYS = new Set([
 ]);
 const BASE_KEYS = new Set([...BASE_INPUT_KEYS, "version", "canonicalHash"]);
 const PRODUCT_DRAFT_KEYS = new Set(["id", "version", "dataHash"]);
-const PRICING_EVIDENCE_KEYS = new Set(["currency", "blackKopecks", "greenKopecks", "evidenceHash"]);
+const PRICING_EVIDENCE_V1_KEYS = new Set(["currency", "blackKopecks", "greenKopecks", "evidenceHash"]);
+const PRICING_EVIDENCE_V2_KEYS = new Set([...PRICING_EVIDENCE_V1_KEYS, "currencySource"]);
 const VERSIONS_KEYS = new Set(["normalizerVersion", "categoryRuleVersion", "dictionaryVersion"]);
 const VARIANT_KEYS = new Set(["sourceVariantId", "sourceSku", "item"]);
 const OVERLAY_INPUT_KEYS = new Set([
@@ -116,10 +119,10 @@ function validSourceUrl(value) {
   } catch { return false; }
 }
 
-function validateNormalizedItem(item) {
+function validateNormalizedItem(item, expectedCurrency) {
   if (!plainObject(item) || !text(item.offer_id, 1_000) || !text(item.name, 1_000)
     || typeof item.price !== "string" || !/^\d+(?:\.\d{1,2})?$/u.test(item.price)
-    || item.currency_code !== "RUB"
+    || item.currency_code !== expectedCurrency
     || !Number.isSafeInteger(item.description_category_id) || item.description_category_id < 1
     || !Number.isSafeInteger(item.type_id) || item.type_id < 1
     || !Number.isSafeInteger(item.weight) || item.weight < 1 || item.weight_unit !== "g"
@@ -141,7 +144,11 @@ function validateNormalizedItem(item) {
 }
 
 function normalizePricingEvidence(value) {
-  if (!exactObject(value, PRICING_EVIDENCE_KEYS) || value.currency !== "RUB"
+  const isV1 = exactObject(value, PRICING_EVIDENCE_V1_KEYS);
+  const isV2 = exactObject(value, PRICING_EVIDENCE_V2_KEYS);
+  const currency = normalizeAutoListingCurrency(value?.currency);
+  if ((!isV1 && !isV2) || !currency || (isV1 && currency !== "RUB")
+    || (isV2 && !["SOURCE", "TARGET_STORE"].includes(value.currencySource))
     || typeof value.blackKopecks !== "string" || !/^\d{1,30}$/u.test(value.blackKopecks)
     || !(value.greenKopecks === null || (typeof value.greenKopecks === "string" && /^\d{1,30}$/u.test(value.greenKopecks)))
     || !HASH.test(value.evidenceHash || "")) throw baseInvalid();
@@ -150,12 +157,13 @@ function normalizePricingEvidence(value) {
   if (black < 1n || (black >= 8_000n && (green === null || green < 1n || green > black))
     || (black < 8_000n && green !== null)) throw baseInvalid();
   const evidence = {
-    currency: "RUB",
+    currency,
+    ...(isV2 ? { currencySource: value.currencySource } : {}),
     blackKopecks: String(black),
     greenKopecks: green === null ? null : String(green),
   };
   if (hash(evidence) !== value.evidenceHash) throw baseInvalid();
-  return { ...evidence, evidenceHash: value.evidenceHash };
+  return { evidence: { ...evidence, evidenceHash: value.evidenceHash }, version: isV2 ? BASE_VERSION_V2 : BASE_VERSION_V1 };
 }
 
 function normalizeBaseInput(input) {
@@ -178,7 +186,8 @@ function normalizeBaseInput(input) {
     categoryRuleVersion: text(input.versions.categoryRuleVersion),
     dictionaryVersion: text(input.versions.dictionaryVersion),
   };
-  const pricingEvidence = normalizePricingEvidence(input.pricingEvidence);
+  const normalizedPricing = normalizePricingEvidence(input.pricingEvidence);
+  const pricingEvidence = normalizedPricing.evidence;
   if (typeof input.richContentAttributeSupported !== "boolean") throw baseInvalid();
   const variantIds = new Set();
   const sourceSkus = new Set();
@@ -187,7 +196,7 @@ function normalizeBaseInput(input) {
     if (!exactObject(variant, VARIANT_KEYS)) throw baseInvalid();
     const sourceVariantId = text(variant.sourceVariantId);
     const sourceSku = text(variant.sourceSku, 1_000);
-    validateNormalizedItem(variant.item);
+    validateNormalizedItem(variant.item, pricingEvidence.currency);
     if (variantIds.has(sourceVariantId) || sourceSkus.has(sourceSku) || offerIds.has(variant.item.offer_id)) throw baseInvalid();
     variantIds.add(sourceVariantId);
     sourceSkus.add(sourceSku);
@@ -195,7 +204,7 @@ function normalizeBaseInput(input) {
     return { sourceVariantId, sourceSku, item: clone(variant.item, baseInvalid) };
   });
   const payload = {
-    version: BASE_VERSION, ...scope, productDraft, pricingEvidence,
+    version: normalizedPricing.version, ...scope, productDraft, pricingEvidence,
     richContentAttributeSupported: input.richContentAttributeSupported, variants, versions,
   };
   assertJsonSafe(payload, baseInvalid);
@@ -210,7 +219,8 @@ export function freezeAutoListingListingBase(input = {}) {
 }
 
 function verifyListingBase(value) {
-  if (!exactObject(value, BASE_KEYS) || value.version !== BASE_VERSION || !HASH.test(value.canonicalHash || "")) throw baseInvalid();
+  if (!exactObject(value, BASE_KEYS) || ![BASE_VERSION_V1, BASE_VERSION_V2].includes(value.version)
+    || !HASH.test(value.canonicalHash || "")) throw baseInvalid();
   const rebuilt = normalizeBaseInput({
     accountId: value.accountId,
     jobId: value.jobId,
@@ -224,7 +234,8 @@ function verifyListingBase(value) {
     variants: value.variants,
     versions: value.versions,
   });
-  if (hash(rebuilt) !== value.canonicalHash || canonicalText({ ...rebuilt, canonicalHash: value.canonicalHash }) !== canonicalText(value)) throw baseInvalid();
+  if (rebuilt.version !== value.version || hash(rebuilt) !== value.canonicalHash
+    || canonicalText({ ...rebuilt, canonicalHash: value.canonicalHash }) !== canonicalText(value)) throw baseInvalid();
   return rebuilt;
 }
 
@@ -245,7 +256,7 @@ function derivePrice(pricingEvidence, adjustmentKopecks) {
   } catch { throw overlayInvalid(); }
   if (!/^\d{1,30}$/u.test(calculated.finalPriceKopecks)) throw overlayInvalid();
   const kopecks = BigInt(calculated.finalPriceKopecks);
-  return { calculated, rubles: `${kopecks / 100n}.${String(kopecks % 100n).padStart(2, "0")}` };
+  return { calculated, amount: `${kopecks / 100n}.${String(kopecks % 100n).padStart(2, "0")}` };
 }
 
 function verifyRichResult(value, scope, visualGroupKey) {
@@ -386,7 +397,8 @@ export function buildAutoListingSubmissionDraft(input = {}) {
     const mainIndex = groupAssets.findIndex((asset) => asset.role === "MAIN");
     if (mainIndex < 0) throw overlayInvalid();
     item.primary_image = images[mainIndex];
-    item.price = price.rubles;
+    item.price = price.amount;
+    item.currency_code = base.pricingEvidence.currency;
     const convertedRich = convertedByGroup.get(visualGroupKey);
     item.attributes = replaceRichContent(item.attributes, convertedRich.value);
     if (Object.hasOwn(item, "richContent")) item.richContent = convertedRich.value;

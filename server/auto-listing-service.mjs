@@ -323,6 +323,7 @@ export function createAutoListingService({
         targetStore,
         pricingEvidence: {
           currency: item.snapshot.priceEvidence.currency,
+          currencySource: item.snapshot.priceEvidence.currencySource,
           blackKopecks: item.snapshot.priceEvidence.blackKopecks,
           greenKopecks: item.snapshot.priceEvidence.greenKopecks || null,
         },

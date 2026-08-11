@@ -60,7 +60,7 @@ function dependencies(overrides = {}) {
       calls.push(["access", input]);
       return {
         id: "store-a", ownerAccountId: "account-a", clientId: "client-a",
-        apiKey: "must-never-be-persisted",
+        apiKey: "must-never-be-persisted", currencyCode: "RUB",
       };
     },
     categoryService: {
@@ -111,6 +111,58 @@ test("freezes a complete target-store-normalized template before AI work", async
   });
   assert.doesNotMatch(JSON.stringify(result), /must-never-be-persisted|client-a|apiKey/);
   assert.deepEqual(deps.calls[0], ["access", { accountId: "account-a", targetStoreId: "store-a" }]);
+});
+
+test("builds CNY normalized variants and V2 price evidence from the target store", async () => {
+  const deps = dependencies({
+    loadStoreAccess: async () => ({
+      id: "store-a", ownerAccountId: "account-a", clientId: "client-a",
+      apiKey: "secret", currencyCode: "CNY",
+    }),
+    normalizeItems: async (items, context) => {
+      await context.getCategoryAttributes(17031664, 971001);
+      return {
+        items: items.map((_, index) => ({
+        ...normalizedItem(index === 0 ? "blue" : "red"), currency_code: "CNY",
+        })),
+        warnings: [],
+      };
+    },
+  });
+  const price = {
+    currency: "CNY", currencySource: "TARGET_STORE",
+    blackKopecks: "10000", greenKopecks: "8000",
+  };
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(),
+    targetStore: { id: "store-a", ownerAccountId: "account-a", currencyCode: "CNY" },
+    pricingEvidence: price,
+  });
+  assert.deepEqual(result.pricingEvidence, { ...price, evidenceHash: digest(price) });
+  assert.deepEqual(result.variants.map(({ item }) => item.currency_code), ["CNY", "CNY"]);
+});
+
+test("rejects store-access or normalized-item currency mismatches", async () => {
+  const price = {
+    currency: "CNY", currencySource: "SOURCE", blackKopecks: "10000", greenKopecks: "8000",
+  };
+  for (const deps of [
+    dependencies({ loadStoreAccess: async () => ({
+      id: "store-a", ownerAccountId: "account-a", clientId: "client-a", apiKey: "secret", currencyCode: "RUB",
+    }) }),
+    dependencies({
+      loadStoreAccess: async () => ({
+        id: "store-a", ownerAccountId: "account-a", clientId: "client-a", apiKey: "secret", currencyCode: "CNY",
+      }),
+      normalizeItems: async () => ({ items: [normalizedItem("blue"), normalizedItem("red")], warnings: [] }),
+    }),
+  ]) {
+    await assert.rejects(createAutoListingListingBasePreparer(deps)({
+      accountId: "account-a", source: source(),
+      targetStore: { id: "store-a", ownerAccountId: "account-a", currencyCode: "CNY" },
+      pricingEvidence: price,
+    }), { code: "AUTO_LISTING_PRICE_EVIDENCE_INVALID" });
+  }
 });
 
 test("rejects normalization that drops any source variant", async () => {

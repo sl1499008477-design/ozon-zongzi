@@ -13,7 +13,7 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 
 function listingBaseTemplate(sourceRecordId, sourceOrder) {
-  const price = { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" };
+  const price = { currency: "RUB", currencySource: "SOURCE", blackKopecks: "10000", greenKopecks: "8000" };
   const image = `https://source.example.test/${sourceOrder}.jpg`;
   return {
     productDraft: { id: `draft-${sourceRecordId}`, version: 1, dataHash: "1".repeat(64) },
@@ -257,6 +257,8 @@ function warehouseGraph({ itemCount = 1 } = {}) {
       sourceType: "COLLECT_BOX",
       sourceRecordId,
       sourceVersion: "1",
+      targetStoreId: "store-a",
+      targetStoreCurrency: "RUB",
       rawResponseRef: `raw-lock-${sourceOrder}`,
       rawResponseHash: `hash-lock-${sourceOrder}`,
       productDraft: { id: `draft-${sourceRecordId}`, version: 1 },
@@ -349,6 +351,7 @@ function excelWarehouseGraph() {
   const sourceRecordId = "row-lock-0";
   const captured = buildAutoListingSourceSnapshot({
     accountId: "account-a", sourceType: "EXCEL_SKU", sourceRecordId, collectItemId,
+    targetStoreId: "store-a", targetStoreCurrency: "RUB",
     sourceVersion: "1", rawResponseRef: "raw-lock-0", rawResponseHash: "hash-lock-0",
     productDraft: { id: "draft-collect-lock-0", version: 1 },
     collectItem: {

@@ -1,4 +1,5 @@
-const SUPPORTED_CURRENCIES = new Set(["RUB", "CNY"]);
+export const AUTO_LISTING_SUPPORTED_CURRENCIES = Object.freeze(["RUB", "CNY"]);
+const SUPPORTED_CURRENCIES = new Set(AUTO_LISTING_SUPPORTED_CURRENCIES);
 
 const currencyError = (code) => {
   const error = new Error(code);
@@ -8,7 +9,7 @@ const currencyError = (code) => {
 
 export function normalizeAutoListingCurrency(value) {
   if (typeof value !== "string") return null;
-  const currency = value.trim();
+  const currency = value.trim().toUpperCase();
   return SUPPORTED_CURRENCIES.has(currency) ? currency : null;
 }
 

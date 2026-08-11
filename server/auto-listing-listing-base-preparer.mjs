@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 
 const HASH = /^[a-f0-9]{64}$/u;
 const RICH_CONTENT_ATTRIBUTE_ID = 11254;
@@ -44,20 +45,25 @@ function productDraftEvidence(source, fallbackVersions) {
 }
 
 function priceEvidence(value) {
-  if (!plainObject(value) || value.currency !== "RUB"
+  const currency = normalizeAutoListingCurrency(value?.currency);
+  const currencySource = value?.currencySource;
+  const legacy = currencySource === undefined && currency === "RUB";
+  if (!plainObject(value) || !currency
+    || (!legacy && !["SOURCE", "TARGET_STORE"].includes(currencySource))
     || typeof value.blackKopecks !== "string" || !/^\d{1,30}$/u.test(value.blackKopecks)
     || !(value.greenKopecks === null || (typeof value.greenKopecks === "string" && /^\d{1,30}$/u.test(value.greenKopecks)))) {
     throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
   }
   const evidence = {
-    currency: "RUB",
+    currency,
+    ...(legacy ? {} : { currencySource }),
     blackKopecks: value.blackKopecks,
     greenKopecks: value.greenKopecks,
   };
   return { ...evidence, evidenceHash: digest(evidence) };
 }
 
-function defaultRawItems(source) {
+function defaultRawItems(source, { currencyCode } = {}) {
   const collectItem = plainObject(source?.collectItem) ? source.collectItem : {};
   const draft = plainObject(collectItem.listingDraft) ? collectItem.listingDraft : {};
   const records = Array.isArray(draft.variants) && draft.variants.length ? draft.variants : [draft];
@@ -70,8 +76,8 @@ function defaultRawItems(source) {
       sku,
       scraped_sku: sku,
       offer_id: record.offer_id || record.offerId || sku,
-      currency_code: "RUB",
-      currencyCode: "RUB",
+      currency_code: currencyCode,
+      currencyCode,
     };
     delete merged.variants;
     return merged;
@@ -129,13 +135,17 @@ export function createAutoListingListingBasePreparer({
     const { productDraft, versions: frozenVersions } = productDraftEvidence(source, fallbackVersions);
     const frozenPriceEvidence = priceEvidence(pricingEvidence);
     const storeAccess = await loadStoreAccess({ accountId: scope, targetStoreId });
+    const storeCurrency = normalizeAutoListingCurrency(storeAccess?.currencyCode || storeAccess?.currency_code || storeAccess?.currency);
     if (!plainObject(storeAccess) || text(storeAccess.id) !== targetStoreId
       || text(storeAccess.ownerAccountId || storeAccess.accountId) !== scope
       || !text(storeAccess.clientId) || !text(storeAccess.apiKey)) {
       throw failure("AUTO_LISTING_TARGET_STORE_CREDENTIALS_UNAVAILABLE", 409);
     }
+    if (!storeCurrency || storeCurrency !== frozenPriceEvidence.currency) {
+      throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
+    }
 
-    const rawItems = buildRawItems(source);
+    const rawItems = buildRawItems(source, { currencyCode: storeCurrency });
     if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 1_000) {
       throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
     }
@@ -170,6 +180,9 @@ export function createAutoListingListingBasePreparer({
     if (!Array.isArray(normalized?.items) || normalized.items.length !== rawItems.length
       || normalized.items.some((item) => !plainObject(item))) {
       throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
+    }
+    if (normalized.items.some((item) => item.currency_code !== storeCurrency)) {
+      throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
     }
     const supported = normalized.items.every((item) =>
       categoryCapabilities.get(categoryKey(item.description_category_id, item.type_id)) === true);

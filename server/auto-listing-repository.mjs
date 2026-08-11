@@ -622,6 +622,7 @@ function verifiedListingBaseTemplate({ accountId, collectItemId, targetStoreId, 
   if (frozen.productDraft.id !== item.snapshot.source.productDraftId
     || frozen.productDraft.version !== item.snapshot.source.productDraftVersion
     || frozen.pricingEvidence.currency !== item.snapshot.priceEvidence.currency
+    || frozen.pricingEvidence.currencySource !== item.snapshot.priceEvidence.currencySource
     || frozen.pricingEvidence.blackKopecks !== item.snapshot.priceEvidence.blackKopecks
     || frozen.pricingEvidence.greenKopecks !== (item.snapshot.priceEvidence.greenKopecks || null)) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
