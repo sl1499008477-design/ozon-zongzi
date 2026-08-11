@@ -132,6 +132,42 @@ test("accepts the Ozon RFBS boolean only when it agrees with any explicit type",
   await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), "RFBS_WAREHOUSE_CHANGED");
 });
 
+test("accepts an exact Ozon RFBS warehouse in created status without inferred active flags", async () => {
+  const { verifier } = harness({
+    response: {
+      result: [{
+        warehouse_id: "1001",
+        warehouse_type: "RFBS",
+        status: "created",
+      }],
+    },
+  });
+
+  const evidence = await verifier.verifyRfbsWarehouse(validInput());
+
+  assert.equal(evidence.status, "ACTIVE");
+  assert.equal(evidence.outcome, "PASSED");
+  assert.equal(evidence.warehouseRecordId, "warehouse-a");
+  assert.equal(evidence.platformWarehouseId, "1001");
+});
+
+test("matches a safe integer Ozon warehouse ID to the canonical local string ID", async () => {
+  const { verifier } = harness({
+    response: {
+      warehouses: [{
+        warehouse_id: 1001,
+        warehouse_type: "RFBS",
+        status: "active",
+      }],
+    },
+  });
+
+  const evidence = await verifier.verifyRfbsWarehouse(validInput());
+
+  assert.equal(evidence.outcome, "PASSED");
+  assert.equal(evidence.platformWarehouseId, "1001");
+});
+
 test("rejects open, missing, accessor, and proxy inputs before touching any port", async () => {
   for (const input of [
     {},
@@ -279,7 +315,9 @@ test("treats malformed, oversized, accessor, and proxy responses as retryable va
   const responses = [
     null,
     { result: { warehouses: "not-an-array" } },
-    { result: { warehouses: [remoteWarehouse({ warehouse_id: 1001 })] } },
+    { result: { warehouses: [remoteWarehouse({ warehouse_id: 1001.5 })] } },
+    { result: { warehouses: [remoteWarehouse({ warehouse_id: -1001 })] } },
+    { result: { warehouses: [remoteWarehouse({ warehouse_id: Number.MAX_SAFE_INTEGER + 1 })] } },
     { result: { warehouses: [remoteWarehouse({ padding: "x".repeat(2 * 1024 * 1024) })] } },
     accessor,
     proxy,

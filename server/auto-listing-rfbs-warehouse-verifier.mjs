@@ -9,7 +9,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_DEPTH = 32;
 const MAX_RESPONSE_NODES = 100_000;
 const DISABLED_STATUSES = new Set(["DISABLED", "INACTIVE", "ARCHIVED", "DELETED", "BLOCKED"]);
-const ACTIVE_STATUSES = new Set(["ACTIVE", "ENABLED", "WORKING"]);
+const ACTIVE_STATUSES = new Set(["ACTIVE", "ENABLED", "WORKING", "CREATED"]);
 const trustedErrors = new WeakSet();
 
 const ERROR_MESSAGES = Object.freeze({
@@ -98,6 +98,31 @@ function aliasBoolean(record, keys) {
   return unique.length <= 1
     ? { valid: true, present: unique.length === 1, value: unique[0] === true }
     : { valid: false, present: true, value: false };
+}
+
+function aliasPlatformWarehouseId(record, keys) {
+  const values = [];
+  for (const key of keys) {
+    const candidate = record[key];
+    if (candidate === undefined || candidate === null || candidate === "") continue;
+    if (typeof candidate === "string") {
+      const value = candidate.trim();
+      if (!value || value.length > 240 || /[\u0000-\u001f\u007f]/u.test(value)) {
+        return { valid: false, value: "" };
+      }
+      values.push(value);
+      continue;
+    }
+    if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate > 0) {
+      values.push(String(candidate));
+      continue;
+    }
+    return { valid: false, value: "" };
+  }
+  const unique = [...new Set(values)];
+  return unique.length <= 1
+    ? { valid: true, value: unique[0] || "" }
+    : { valid: false, value: "" };
 }
 
 function validPlatformWarehouseId(value) {
@@ -254,7 +279,7 @@ function warehouseRows(response) {
   return candidates[0].map((row) => {
     const record = plainDataRecord(row);
     if (!record) throw new Error("malformed warehouse row");
-    const platformId = aliasText(record, ["warehouse_id", "warehouseId", "id"]);
+    const platformId = aliasPlatformWarehouseId(record, ["warehouse_id", "warehouseId", "id"]);
     if (!platformId.valid || !validPlatformWarehouseId(platformId.value)) {
       throw new Error("malformed warehouse id");
     }
