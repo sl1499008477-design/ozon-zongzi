@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AUTO_LISTING_IMAGE_DEFAULTS,
   autoListingExcelSerializedBodyLimit,
+  autoListingTaskErrorMessage,
   autoListingWarehouseOptions,
   deriveAutoListingConfig,
   kopecksToRubles,
@@ -175,6 +176,13 @@ test("warehouse choices reject RFBS lookalikes, unsupported types, and malformed
   });
   assert.deepEqual(result.options.map(({ value }) => value), ["local-valid"]);
   assert.equal(result.selectedWarehouseId, "local-valid");
+});
+
+test("task creation explains missing published strategy and REVIEW upload policy", () => {
+  assert.equal(autoListingTaskErrorMessage({ code: "AUTO_LISTING_STRATEGY_NOT_PUBLISHED" }),
+    "尚未发布自动上架内容策略，请先由管理员发布策略");
+  assert.equal(autoListingTaskErrorMessage({ code: "AUTO_LISTING_UPLOAD_POLICY_NOT_PUBLISHED" }),
+    "尚未发布自动上架 REVIEW 上传策略，请先由管理员发布策略");
 });
 
 test("reads a bounded workbook once and returns only request-safe metadata", async () => {

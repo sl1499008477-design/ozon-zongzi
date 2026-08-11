@@ -220,6 +220,8 @@ const AUTO_LISTING_RFBS_ERROR_MESSAGES = Object.freeze({
   RFBS_VALIDATION_REQUIRED: "Ozon 仓库验证暂时不可用，请稍后重试",
   AUTO_LISTING_RFBS_VALIDATION_FAILED: "RFBS 仓库验证失败，请稍后重试或联系管理员",
   UNSUPPORTED_FULFILLMENT_TYPE: "该仓库类型暂不支持自动上架，请选择 FBS 或 RFBS 仓库",
+  AUTO_LISTING_STRATEGY_NOT_PUBLISHED: "尚未发布自动上架内容策略，请先由管理员发布策略",
+  AUTO_LISTING_UPLOAD_POLICY_NOT_PUBLISHED: "尚未发布自动上架 REVIEW 上传策略，请先由管理员发布策略",
 });
 
 export function autoListingTaskErrorMessage(error) {
