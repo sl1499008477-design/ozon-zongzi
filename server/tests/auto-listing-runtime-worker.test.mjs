@@ -201,7 +201,6 @@ test("a worker configuration failure leaves durable queued work untouched and ca
 test("runtime injects the AI workflow into job creation only when both feature flags are enabled", async () => {
   for (const [env, expectedWorkflowFactories] of [
     [enabledEnv(), 1],
-    [enabledEnv({ AUTO_LISTING_ENABLED: "0" }), 0],
     [enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }), 0],
   ]) {
     const pool = { name: "pool-a" };
@@ -357,32 +356,49 @@ test("runtime composes the RFBS verifier from tenant-scoped warehouse and creden
   assert.deepEqual(credentialCalls, [{ storeId: "store-a", accountId: "account-a" }]);
 });
 
-test("disabled auto-listing service composition performs zero credential, decrypt, and network calls", async () => {
-  let credentialCalls = 0;
-  let networkCalls = 0;
-  const service = { name: "disabled-service" };
+test("explicitly disabled auto-listing getService performs zero composition, credential, decrypt, and network calls", async () => {
+  const calls = {
+    pools: 0,
+    repositories: 0,
+    preparers: 0,
+    verifiers: 0,
+    credentials: 0,
+    network: 0,
+    services: 0,
+  };
   const runtime = createAutoListingRuntime({
     env: enabledEnv({ AUTO_LISTING_ENABLED: "0", AUTO_LISTING_AI_ENABLED: "0" }),
-    getPostgresPool: async () => ({ name: "pool-a" }),
-    createRepository: () => ({
-      async loadTargetWarehouse() { throw new Error("target must remain unread"); },
-    }),
-    createListingBasePreparer: async () => async () => {},
+    getPostgresPool: async () => { calls.pools += 1; throw new Error("pool must remain dormant"); },
+    createRepository: () => { calls.repositories += 1; throw new Error("repository must remain dormant"); },
+    createListingBasePreparer: async () => { calls.preparers += 1; throw new Error("preparer must remain dormant"); },
+    createRfbsWarehouseVerifier: () => { calls.verifiers += 1; throw new Error("verifier must remain dormant"); },
     readStoreCredential: async () => {
-      credentialCalls += 1;
+      calls.credentials += 1;
       throw new Error("credential must remain encrypted");
     },
     callOzonSellerApi: async () => {
-      networkCalls += 1;
+      calls.network += 1;
       throw new Error("network must remain dormant");
     },
-    createService(input) {
-      assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
-      return service;
-    },
+    createService: () => { calls.services += 1; throw new Error("service must remain dormant"); },
   });
 
-  assert.equal(await runtime.getService(), service);
-  assert.equal(await runtime.getService(), service);
-  assert.deepEqual({ credentialCalls, networkCalls }, { credentialCalls: 0, networkCalls: 0 });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(runtime.getService(), {
+      code: "AUTO_LISTING_DISABLED",
+      message: "自动上架功能暂未启用",
+      retryable: false,
+    });
+  }
+  assert.equal(await runtime.startAiWorker(), false);
+  await runtime.stopAiWorker();
+  assert.deepEqual(calls, {
+    pools: 0,
+    repositories: 0,
+    preparers: 0,
+    verifiers: 0,
+    credentials: 0,
+    network: 0,
+    services: 0,
+  });
 });

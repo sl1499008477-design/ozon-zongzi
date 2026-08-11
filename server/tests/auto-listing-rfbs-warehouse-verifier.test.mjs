@@ -61,8 +61,8 @@ function harness({
       calls.push({ port: "readCredential", input });
       return credential;
     }),
-    callOzonSellerApi: callOzonSellerApi || (async (receivedCredential, path, body, timeoutMs) => {
-      calls.push({ port: "callOzonSellerApi", credential: receivedCredential, path, body, timeoutMs });
+    callOzonSellerApi: callOzonSellerApi || (async (receivedCredential, path, body, timeoutMs, options) => {
+      calls.push({ port: "callOzonSellerApi", credential: receivedCredential, path, body, timeoutMs, options });
       return response;
     }),
     now,
@@ -94,6 +94,7 @@ test("returns closed normalized evidence after exactly one read-only warehouse-l
   assert.equal(calls[2].path, "/v2/warehouse/list");
   assert.deepEqual(calls[2].body, {});
   assert.equal(calls[2].timeoutMs, 15_000);
+  assert.deepEqual(calls[2].options, { maxResponseBytes: 2 * 1024 * 1024 });
   assert.deepEqual(Object.keys(evidence), [
     "schemaVersion", "accountId", "storeId", "warehouseRecordId", "platformWarehouseId",
     "fulfillmentType", "status", "outcome", "observedAt", "expiresAt", "evidenceHash",
@@ -136,12 +137,27 @@ test("rejects open, missing, accessor, and proxy inputs before touching any port
     {},
     validInput({ extra: "open" }),
     { ...validInput(), actorAccountId: "account-b" },
+    new Proxy(validInput(), {}),
     Object.defineProperty({ ...validInput() }, "accountId", { enumerable: true, get() { throw new Error("api-key-secret"); } }),
     new Proxy(validInput(), { ownKeys() { throw new Error("password=raw-production-secret"); } }),
   ]) {
     const { verifier, calls } = harness();
     await rejectsSafely(() => verifier.verifyRfbsWarehouse(input), "RFBS_WAREHOUSE_SCOPE_MISMATCH");
     assert.equal(calls.length, 0);
+  }
+});
+
+test("rejects transparent target and credential proxies before any later sensitive port", async () => {
+  {
+    const { verifier, calls } = harness({ target: new Proxy(localTarget(), {}) });
+    await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), "AUTO_LISTING_RFBS_VALIDATION_FAILED");
+    assert.deepEqual(calls.map(({ port }) => port), ["loadTarget"]);
+  }
+  {
+    const credential = new Proxy({ id: "store-a", clientId: "client-a", apiKey: "api-key-secret" }, {});
+    const { verifier, calls } = harness({ credential });
+    await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), "RFBS_VALIDATION_REQUIRED", true);
+    assert.deepEqual(calls.map(({ port }) => port), ["loadTarget", "readCredential"]);
   }
 });
 
@@ -172,6 +188,20 @@ test("rejects a locally disabled or no-longer-RFBS target without credential or 
     await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), code);
     assert.deepEqual(calls.map(({ port }) => port), ["loadTarget"]);
   }
+});
+
+test("rejects internal placeholder platform IDs locally before credentials and in remote evidence", async () => {
+  for (const warehouseId of ["wh_internal", "WH_placeholder"]) {
+    const { verifier, calls } = harness({ target: localTarget({ warehouse_id: warehouseId }) });
+    await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), "RFBS_WAREHOUSE_CHANGED");
+    assert.deepEqual(calls.map(({ port }) => port), ["loadTarget"]);
+  }
+
+  const { verifier, calls } = harness({
+    response: { result: { warehouses: [remoteWarehouse({ warehouse_id: "wh_internal" })] } },
+  });
+  await rejectsSafely(() => verifier.verifyRfbsWarehouse(validInput()), "RFBS_VALIDATION_REQUIRED", true);
+  assert.equal(calls.filter(({ port }) => port === "callOzonSellerApi").length, 1);
 });
 
 test("fails closed on missing, wrong-store, or malformed credentials without calling Ozon", async () => {
@@ -243,6 +273,9 @@ test("treats malformed, oversized, accessor, and proxy responses as retryable va
   const proxy = new Proxy({ result: [] }, {
     getOwnPropertyDescriptor() { throw new Error("password=raw-production-secret"); },
   });
+  const transparentRootProxy = new Proxy({ result: { warehouses: [remoteWarehouse()] } }, {});
+  const transparentArrayProxy = { result: { warehouses: new Proxy([remoteWarehouse()], {}) } };
+  const transparentRowProxy = { result: { warehouses: [new Proxy(remoteWarehouse(), {})] } };
   const responses = [
     null,
     { result: { warehouses: "not-an-array" } },
@@ -250,6 +283,9 @@ test("treats malformed, oversized, accessor, and proxy responses as retryable va
     { result: { warehouses: [remoteWarehouse({ padding: "x".repeat(2 * 1024 * 1024) })] } },
     accessor,
     proxy,
+    transparentRootProxy,
+    transparentArrayProxy,
+    transparentRowProxy,
   ];
   for (const response of responses) {
     const { verifier, calls } = harness({ response });

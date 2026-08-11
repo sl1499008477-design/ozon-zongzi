@@ -60,10 +60,59 @@ function credentialsError(apiPath) {
   return error;
 }
 
+function responseReadFailure(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+async function cancelResponseBody(response, controller, reason) {
+  controller.abort();
+  try { await response?.body?.cancel?.(reason); } catch {}
+}
+
+async function readBoundedResponseText(response, controller, maxResponseBytes) {
+  const contentLengthText = response?.headers?.get?.("content-length") ?? "";
+  if (/^\d+$/u.test(contentLengthText) && Number(contentLengthText) > maxResponseBytes) {
+    const failure = responseReadFailure("OZON_RESPONSE_TOO_LARGE", "Ozon 响应超过安全大小限制");
+    await cancelResponseBody(response, controller, failure);
+    throw failure;
+  }
+  if (!response?.body || typeof response.body.getReader !== "function") {
+    throw responseReadFailure("OZON_RESPONSE_READ_FAILED", "Ozon 响应不支持受限读取");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw responseReadFailure("OZON_RESPONSE_READ_FAILED", "Ozon 响应分块无效");
+      }
+      bytesRead += value.byteLength;
+      if (bytesRead > maxResponseBytes) {
+        const failure = responseReadFailure("OZON_RESPONSE_TOO_LARGE", "Ozon 响应超过安全大小限制");
+        controller.abort();
+        try { await reader.cancel(failure); } catch {}
+        throw failure;
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join("");
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
 async function requestOzonSellerApi(store, apiPath, {
   method,
   body,
   timeoutMs = 60000,
+  maxResponseBytes = 0,
 }) {
   if (!store?.clientId || !store?.apiKey) {
     throw credentialsError(apiPath);
@@ -89,7 +138,9 @@ async function requestOzonSellerApi(store, apiPath, {
     }
     let responseText = "";
     try {
-      responseText = await response.text();
+      responseText = maxResponseBytes > 0
+        ? await readBoundedResponseText(response, controller, maxResponseBytes)
+        : await response.text();
     } catch (error) {
       throw networkError(store, apiPath, error, timeoutMs, "读取响应");
     }
@@ -129,8 +180,14 @@ async function requestOzonSellerApi(store, apiPath, {
   }
 }
 
-export function callOzonSellerApi(store, apiPath, body, timeoutMs = 60000) {
-  return requestOzonSellerApi(store, apiPath, { method: "POST", body: body || {}, timeoutMs });
+export function callOzonSellerApi(store, apiPath, body, timeoutMs = 60000, options = {}) {
+  const maxResponseBytes = Number(options?.maxResponseBytes || 0);
+  return requestOzonSellerApi(store, apiPath, {
+    method: "POST",
+    body: body || {},
+    timeoutMs,
+    maxResponseBytes: Number.isSafeInteger(maxResponseBytes) && maxResponseBytes > 0 ? maxResponseBytes : 0,
+  });
 }
 
 export function getOzonSellerApi(store, apiPath, timeoutMs = 60000) {

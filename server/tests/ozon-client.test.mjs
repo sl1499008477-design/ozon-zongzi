@@ -193,6 +193,91 @@ try {
     (error) => error.status === 502 && error.body.phase === "读取响应",
   );
 
+  {
+    let cancelled = 0;
+    let signal;
+    globalThis.fetch = async (_url, options) => {
+      signal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-length": "9" }),
+        body: { async cancel() { cancelled += 1; } },
+        text: async () => { throw new Error("bounded reader must reject before text"); },
+      };
+    };
+    await assert.rejects(
+      () => callOzonSellerApi(store, "/v2/bounded-content-length", {}, 1_000, { maxResponseBytes: 8 }),
+      (error) => error.status === 502 && error.code === "OZON_RESPONSE_TOO_LARGE"
+        && error.body.phase === "读取响应",
+    );
+    assert.equal(cancelled, 1);
+    assert.equal(signal.aborted, true);
+  }
+
+  {
+    const encoder = new TextEncoder();
+    const chunks = [encoder.encode('{"a":'), encoder.encode('"123456789"}'), encoder.encode("never-read")];
+    let pulls = 0;
+    let cancelled = 0;
+    let signal;
+    const body = new ReadableStream({
+      pull(controller) {
+        const chunk = chunks[pulls];
+        pulls += 1;
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+      cancel() { cancelled += 1; },
+    }, { highWaterMark: 0 });
+    globalThis.fetch = async (_url, options) => {
+      signal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body,
+        text: async () => { throw new Error("bounded reader must stream"); },
+      };
+    };
+    await assert.rejects(
+      () => callOzonSellerApi(store, "/v2/bounded-stream", {}, 1_000, { maxResponseBytes: 8 }),
+      (error) => error.status === 502 && error.code === "OZON_RESPONSE_TOO_LARGE"
+        && error.body.phase === "读取响应",
+    );
+    assert.equal(pulls, 2);
+    assert.equal(cancelled, 1);
+    assert.equal(signal.aborted, true);
+  }
+
+  {
+    let reads = 0;
+    let released = 0;
+    globalThis.fetch = async (_url, { signal }) => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: {
+        getReader() {
+          return {
+            read() {
+              reads += 1;
+              return new Promise((_resolve, reject) => {
+                signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+              });
+            },
+            releaseLock() { released += 1; },
+          };
+        },
+      },
+    });
+    await assert.rejects(
+      () => callOzonSellerApi(store, "/v2/bounded-body-timeout", {}, 5, { maxResponseBytes: 8 }),
+      (error) => error.status === 504 && error.code === "OZON_TIMEOUT",
+    );
+    assert.deepEqual({ reads, released }, { reads: 1, released: 1 });
+  }
+
   console.log("ozon client tests passed");
 } finally {
   globalThis.fetch = originalFetch;

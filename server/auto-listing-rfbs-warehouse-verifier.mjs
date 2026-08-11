@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types as utilTypes } from "node:util";
 
 const INPUT_KEYS = Object.freeze([
   "accountId", "actorAccountId", "targetStoreId", "targetWarehouseId", "correlationId",
@@ -34,8 +35,10 @@ function throwVerifierError(code, retryable = false) {
 }
 
 function plainDataRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!value || typeof value !== "object") return null;
   try {
+    if (utilTypes.isProxy(value)) return null;
+    if (Array.isArray(value)) return null;
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return null;
     const keys = Reflect.ownKeys(value);
@@ -97,6 +100,10 @@ function aliasBoolean(record, keys) {
     : { valid: false, present: true, value: false };
 }
 
+function validPlatformWarehouseId(value) {
+  return typeof value === "string" && value.length > 0 && !/^wh_/iu.test(value);
+}
+
 function normalizedType(record) {
   const explicit = aliasText(record, [
     "warehouse_type", "warehouseType", "fulfillment_type", "fulfillmentType", "type",
@@ -134,7 +141,9 @@ function validateLocalTarget(value, input) {
   if (!accountId.valid || !storeId.valid || !recordId.valid
     || accountId.value !== input.accountId || storeId.value !== input.targetStoreId
     || recordId.value !== input.targetWarehouseId) throwVerifierError("RFBS_WAREHOUSE_SCOPE_MISMATCH");
-  if (!platformId.valid || !platformId.value) throwVerifierError("RFBS_WAREHOUSE_CHANGED");
+  if (!platformId.valid || !validPlatformWarehouseId(platformId.value)) {
+    throwVerifierError("RFBS_WAREHOUSE_CHANGED");
+  }
   const status = normalizedStatus(target);
   if (status === "DISABLED") throwVerifierError("RFBS_WAREHOUSE_DISABLED");
   if (normalizedType(target) !== "RFBS" || status !== "ACTIVE") throwVerifierError("RFBS_WAREHOUSE_CHANGED");
@@ -182,6 +191,7 @@ function safeJsonSnapshot(value) {
       return current;
     }
     if (!current || typeof current !== "object") throw new Error("unsupported response value");
+    if (utilTypes.isProxy(current)) throw new Error("proxy response value");
     if (active.has(current)) throw new Error("cyclic response");
     active.add(current);
     try {
@@ -245,7 +255,9 @@ function warehouseRows(response) {
     const record = plainDataRecord(row);
     if (!record) throw new Error("malformed warehouse row");
     const platformId = aliasText(record, ["warehouse_id", "warehouseId", "id"]);
-    if (!platformId.valid || !platformId.value) throw new Error("malformed warehouse id");
+    if (!platformId.valid || !validPlatformWarehouseId(platformId.value)) {
+      throw new Error("malformed warehouse id");
+    }
     return { record, platformWarehouseId: platformId.value };
   });
 }
@@ -323,7 +335,13 @@ export function createAutoListingRfbsWarehouseVerifier({
 
       let response;
       try {
-        response = await callOzonSellerApi(credential, "/v2/warehouse/list", {}, REQUEST_TIMEOUT_MS);
+        response = await callOzonSellerApi(
+          credential,
+          "/v2/warehouse/list",
+          {},
+          REQUEST_TIMEOUT_MS,
+          { maxResponseBytes: RESPONSE_LIMIT_BYTES },
+        );
       } catch (error) {
         throw mapOzonFailure(error);
       }
