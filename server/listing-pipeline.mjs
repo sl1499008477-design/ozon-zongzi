@@ -117,6 +117,45 @@ function assertFrozenAutoListingDraft(currentItem, frozen) {
   return frozen;
 }
 
+const RFBS_HANDOFF_KEYS = Object.freeze([
+  "accountId", "storeId", "localWarehouseId", "platformWarehouseId", "fulfillmentType",
+  "linkIdentityEvidenceId", "attemptAuthorizationEvidenceId", "reservedAttemptId",
+  "submissionLinkId", "businessIdempotencyKey",
+]);
+
+function assertRfbsSubmissionHandoff(value, {
+  accountId, storeId, businessIdempotencyKey, warehouseValidationEvidenceId,
+  warehouseFulfillmentType,
+} = {}) {
+  const type = clean(warehouseFulfillmentType, 16).toUpperCase();
+  if (type !== "RFBS") {
+    if (value != null) throw Object.assign(new Error("RFBS handoff is not allowed for this submission"), {
+      status: 422, code: "LISTING_RFBS_HANDOFF_INVALID", definitelyNotSubmitted: true,
+    });
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Reflect.ownKeys(value).length !== RFBS_HANDOFF_KEYS.length
+    || !RFBS_HANDOFF_KEYS.every((key) => Object.hasOwn(value, key))) {
+    throw Object.assign(new Error("RFBS handoff is incomplete"), {
+      status: 422, code: "LISTING_RFBS_HANDOFF_INVALID", definitelyNotSubmitted: true,
+    });
+  }
+  const result = Object.fromEntries(RFBS_HANDOFF_KEYS.map((key) => [key, clean(value[key],
+    key === "businessIdempotencyKey" ? 512 : 240)]));
+  if (RFBS_HANDOFF_KEYS.some((key) => !result[key] || result[key] !== value[key])
+    || result.accountId !== accountId || result.storeId !== storeId
+    || result.fulfillmentType !== "RFBS"
+    || result.attemptAuthorizationEvidenceId !== clean(warehouseValidationEvidenceId, 240)
+    || result.businessIdempotencyKey !== businessIdempotencyKey
+    || /^wh_/iu.test(result.platformWarehouseId)) {
+    throw Object.assign(new Error("RFBS handoff does not match the submission"), {
+      status: 422, code: "LISTING_RFBS_HANDOFF_INVALID", definitelyNotSubmitted: true,
+    });
+  }
+  return Object.freeze(result);
+}
+
 function explicitSourceCategoryForListing(collectItem = {}, index = 0) {
   const draft = collectItem?.listingDraft && typeof collectItem.listingDraft === "object"
     && !Array.isArray(collectItem.listingDraft)
@@ -1312,6 +1351,7 @@ export async function createSubmissionV3({
   frozenProductDraft = null,
   warehouseValidationEvidenceId = null,
   warehouseFulfillmentType = null,
+  rfbsHandoff = null,
 }) {
   if (!listingPipelineEnabled()) return null;
   accountId = clean(accountId, 240);
@@ -1329,6 +1369,13 @@ export async function createSubmissionV3({
         idempotencyKey,
       })
     : null;
+  const frozenRfbsHandoff = assertRfbsSubmissionHandoff(rfbsHandoff, {
+    accountId,
+    storeId: preparation?.targetStoreId || clean(storeId, 240),
+    businessIdempotencyKey: preparation?.idempotencyKey || clean(idempotencyKey, 512),
+    warehouseValidationEvidenceId,
+    warehouseFulfillmentType,
+  });
   const isCollectedListing = Boolean(preparation) || type === "COLLECT_BOX_DRAFT";
   if (preparation) storeId = preparation.targetStoreId;
   return transaction(async (client) => {
@@ -1452,6 +1499,21 @@ export async function createSubmissionV3({
        ) VALUES ($1,$2,$3,$4,$5,$6,'QUEUE_PENDING',$7,$8)`,
       [jobId, snapshotId, collectItem.id, accountId || null, frozenStoreId, type, items.length, correlationId],
     );
+    if (frozenRfbsHandoff) {
+      await client.query(
+        `INSERT INTO submission_rfbs_handoffs (
+           id,account_id,submission_job_id,submission_snapshot_id,store_id,local_warehouse_id,
+           platform_warehouse_id,fulfillment_type,link_identity_evidence_id,
+           attempt_authorization_evidence_id,reserved_attempt_id,submission_link_id,business_idempotency_key
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'RFBS',$8,$9,$10,$11,$12)`,
+        [`rfbs-handoff-${crypto.randomUUID()}`, frozenRfbsHandoff.accountId, jobId, snapshotId,
+          frozenRfbsHandoff.storeId, frozenRfbsHandoff.localWarehouseId,
+          frozenRfbsHandoff.platformWarehouseId, frozenRfbsHandoff.linkIdentityEvidenceId,
+          frozenRfbsHandoff.attemptAuthorizationEvidenceId,
+          frozenRfbsHandoff.reservedAttemptId, frozenRfbsHandoff.submissionLinkId,
+          frozenRfbsHandoff.businessIdempotencyKey],
+      );
+    }
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index] || {};
       const variantKey = clean(item.sku || item.offer_id || `${index + 1}`, 240);
@@ -1663,14 +1725,280 @@ export async function loadSubmissionWorkV3(jobId) {
   const pool = await poolReady();
   const result = await pool.query(
     `SELECT j.*, s.items, s.stocks, s.snapshot_hash, s.idempotency_key,
-            c.source_sku, c.source_url
+            c.source_sku, c.source_url,
+            handoff.id AS rfbs_handoff_id,
+            COALESCE(handoff.account_id,historical.account_id) AS rfbs_account_id,
+            COALESCE(handoff.store_id,historical.store_id) AS rfbs_store_id,
+            COALESCE(handoff.local_warehouse_id,historical.local_warehouse_id) AS rfbs_local_warehouse_id,
+            COALESCE(handoff.platform_warehouse_id,historical.platform_warehouse_id) AS rfbs_platform_warehouse_id,
+            COALESCE(handoff.fulfillment_type,historical.fulfillment_type) AS rfbs_fulfillment_type,
+            COALESCE(handoff.link_identity_evidence_id,historical.link_identity_evidence_id)
+              AS rfbs_link_identity_evidence_id,
+            COALESCE(handoff.attempt_authorization_evidence_id,historical.attempt_authorization_evidence_id)
+              AS rfbs_attempt_authorization_evidence_id,
+            COALESCE(handoff.reserved_attempt_id,historical.reserved_attempt_id) AS rfbs_reserved_attempt_id,
+            COALESCE(handoff.submission_link_id,historical.submission_link_id) AS rfbs_submission_link_id,
+            COALESCE(handoff.business_idempotency_key,historical.business_idempotency_key)
+              AS rfbs_business_idempotency_key,
+            (handoff.id IS NULL AND historical.submission_link_id IS NOT NULL)
+              AS rfbs_handoff_materialization_required,
+            CASE WHEN j.type='AUTO_LISTING' THEN (
+              handoff.id IS NOT NULL OR historical.submission_link_id IS NOT NULL OR EXISTS (
+                SELECT 1 FROM jsonb_array_elements(s.stocks) AS stock
+                JOIN warehouses AS stock_warehouse
+                  ON stock_warehouse.store_id=j.store_id
+                 AND stock_warehouse.warehouse_id=stock->>'warehouse_id'
+                WHERE UPPER(BTRIM(stock_warehouse.warehouse_type))<>'FBS'
+              ) OR (
+                NOT EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(s.stocks) AS stock
+                  JOIN warehouses AS stock_warehouse
+                    ON stock_warehouse.store_id=j.store_id
+                   AND stock_warehouse.warehouse_id=stock->>'warehouse_id'
+                   AND UPPER(BTRIM(stock_warehouse.warehouse_type))='FBS'
+                )
+                AND j.created_at >= COALESCE((
+                  SELECT migration.applied_at FROM schema_migrations AS migration
+                   WHERE migration.version='061_auto_listing_rfbs_submission_handoff'
+                   LIMIT 1
+                ),'infinity'::timestamptz)
+              )
+            ) ELSE FALSE END AS rfbs_authorization_required,
+            warehouse.warehouse_type AS rfbs_current_warehouse_type,
+            warehouse.status AS rfbs_current_warehouse_status,
+            warehouse.is_active AS rfbs_current_warehouse_active,
+            warehouse.is_archived AS rfbs_current_warehouse_archived
      FROM submission_jobs j
      JOIN submission_snapshots s ON s.id=j.snapshot_id
      LEFT JOIN collect_items c ON c.id=j.collect_item_id
+     LEFT JOIN submission_rfbs_handoffs AS handoff
+       ON handoff.account_id=j.account_id AND handoff.submission_job_id=j.id
+      AND handoff.submission_snapshot_id=j.snapshot_id AND handoff.store_id=j.store_id
+     LEFT JOIN LATERAL (
+       SELECT link.account_id,link.target_store_id AS store_id,
+              attempt.target_warehouse_id AS local_warehouse_id,
+              attempt_evidence.platform_warehouse_id,'RFBS'::text AS fulfillment_type,
+              link.warehouse_validation_evidence_id AS link_identity_evidence_id,
+              attempt.warehouse_validation_evidence_id AS attempt_authorization_evidence_id,
+              attempt.id AS reserved_attempt_id,link.id AS submission_link_id,
+              link.idempotency_key AS business_idempotency_key
+         FROM auto_listing_submission_links AS link
+         JOIN LATERAL (
+           SELECT candidate.* FROM auto_listing_upload_attempts AS candidate
+            WHERE candidate.account_id=link.account_id
+              AND candidate.submission_link_id=link.id
+              AND candidate.job_id=link.job_id
+              AND candidate.auto_listing_item_id=link.auto_listing_item_id
+              AND candidate.target_store_id=link.target_store_id
+              AND candidate.outcome='RESERVED'
+              AND candidate.listing_pipeline_response_summary->>'submissionIdempotencyKey'=link.idempotency_key
+            ORDER BY candidate.created_at DESC,candidate.id DESC LIMIT 1
+         ) AS attempt ON TRUE
+         JOIN auto_listing_rfbs_warehouse_evidence AS identity_evidence
+           ON identity_evidence.account_id=link.account_id
+          AND identity_evidence.id=link.warehouse_validation_evidence_id
+          AND identity_evidence.store_id=link.target_store_id
+          AND identity_evidence.fulfillment_type='RFBS' AND identity_evidence.outcome='PASSED'
+         JOIN auto_listing_rfbs_warehouse_evidence AS attempt_evidence
+           ON attempt_evidence.account_id=link.account_id
+          AND attempt_evidence.id=attempt.warehouse_validation_evidence_id
+          AND attempt_evidence.store_id=link.target_store_id
+          AND attempt_evidence.warehouse_record_id=attempt.target_warehouse_id
+          AND attempt_evidence.platform_warehouse_id=identity_evidence.platform_warehouse_id
+          AND attempt_evidence.fulfillment_type='RFBS' AND attempt_evidence.outcome='PASSED'
+        WHERE link.account_id=j.account_id AND link.target_store_id=j.store_id
+          AND link.warehouse_validation_evidence_id IS NOT NULL
+          AND link.submission_job_id=j.id AND link.submission_snapshot_id=j.snapshot_id
+        ORDER BY attempt.created_at DESC,attempt.id DESC LIMIT 1
+     ) AS historical ON TRUE
+     LEFT JOIN warehouses AS warehouse
+       ON warehouse.store_id=COALESCE(handoff.store_id,historical.store_id)
+      AND warehouse.id=COALESCE(handoff.local_warehouse_id,historical.local_warehouse_id)
+      AND warehouse.warehouse_id=COALESCE(handoff.platform_warehouse_id,historical.platform_warehouse_id)
      WHERE j.id=$1`,
     [jobId],
   );
   return result.rows[0] || null;
+}
+
+function rfbsPhaseError(code = "LISTING_RFBS_PHASE_AUTHORIZATION_FAILED", retryable = true) {
+  const error = new Error("RFBS 仓库写入授权暂时不可用");
+  error.code = code;
+  error.status = 409;
+  error.retryable = retryable === true;
+  return error;
+}
+
+function exactRfbsPhaseValidation(value) {
+  const keys = ["schemaVersion", "accountId", "storeId", "warehouseRecordId", "platformWarehouseId",
+    "fulfillmentType", "status", "outcome", "observedAt", "expiresAt", "evidenceHash",
+    "correlationId", "actorAccountId"];
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Reflect.ownKeys(value).length !== keys.length || !keys.every((key) => Object.hasOwn(value, key))) {
+    throw rfbsPhaseError("LISTING_RFBS_PHASE_VALIDATION_INVALID", false);
+  }
+  const result = Object.fromEntries(keys.map((key) => [key, clean(value[key], key === "evidenceHash" ? 64 : 500)]));
+  if (keys.some((key) => !result[key] || result[key] !== value[key])
+    || result.schemaVersion !== "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1"
+    || result.fulfillmentType !== "RFBS" || result.status !== "ACTIVE" || result.outcome !== "PASSED"
+    || result.actorAccountId !== result.accountId || !/^[a-f0-9]{64}$/u.test(result.evidenceHash)
+    || /^wh_/iu.test(result.platformWarehouseId)) {
+    throw rfbsPhaseError("LISTING_RFBS_PHASE_VALIDATION_INVALID", false);
+  }
+  const normalized = {
+    schemaVersion: result.schemaVersion, accountId: result.accountId, storeId: result.storeId,
+    warehouseRecordId: result.warehouseRecordId, platformWarehouseId: result.platformWarehouseId,
+    fulfillmentType: result.fulfillmentType, status: result.status, outcome: result.outcome,
+    observedAt: result.observedAt, expiresAt: result.expiresAt, correlationId: result.correlationId,
+    actorAccountId: result.actorAccountId,
+  };
+  if (hash(JSON.stringify(normalized)) !== result.evidenceHash
+    || !Number.isFinite(Date.parse(result.observedAt)) || !Number.isFinite(Date.parse(result.expiresAt))
+    || Date.parse(result.expiresAt) <= Date.parse(result.observedAt)) {
+    throw rfbsPhaseError("LISTING_RFBS_PHASE_VALIDATION_INVALID", false);
+  }
+  return result;
+}
+
+export async function authorizeSubmissionRfbsWriteV3(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Reflect.ownKeys(input).length !== 3
+    || !["submissionJobId", "phase", "warehouseValidation"].every((key) => Object.hasOwn(input, key))) {
+    throw rfbsPhaseError("LISTING_RFBS_PHASE_SCOPE_INVALID", false);
+  }
+  const submissionJobId = clean(input.submissionJobId, 240);
+  const phase = clean(input.phase, 20);
+  const validation = exactRfbsPhaseValidation(input.warehouseValidation);
+  if (!submissionJobId || !["PRE_IMPORT", "PRE_STOCK"].includes(phase)) {
+    throw rfbsPhaseError("LISTING_RFBS_PHASE_SCOPE_INVALID", false);
+  }
+  const pool = await poolReady();
+  try {
+    const authorizationId = `rfbs-write-authorization-${crypto.randomUUID()}`;
+    const evidenceId = `rfbs-write-evidence-${crypto.randomUUID()}`;
+    const lazyHandoffId = `rfbs-handoff-lazy-${crypto.randomUUID()}`;
+    const result = await pool.query(
+      `WITH candidate AS MATERIALIZED (
+         SELECT job.account_id,job.id AS submission_job_id,job.snapshot_id AS submission_snapshot_id,
+                job.store_id,attempt.target_warehouse_id AS local_warehouse_id,
+                attempt_evidence.platform_warehouse_id,'RFBS'::text AS fulfillment_type,
+                link.warehouse_validation_evidence_id AS link_identity_evidence_id,
+                attempt.warehouse_validation_evidence_id AS attempt_authorization_evidence_id,
+                attempt.id AS reserved_attempt_id,link.id AS submission_link_id,
+                link.idempotency_key AS business_idempotency_key,handoff.id AS existing_handoff_id
+           FROM submission_jobs AS job
+           JOIN submission_snapshots AS snapshot
+             ON snapshot.account_id=job.account_id AND snapshot.id=job.snapshot_id
+            AND snapshot.store_id=job.store_id
+           LEFT JOIN submission_rfbs_handoffs AS handoff
+             ON handoff.account_id=job.account_id AND handoff.submission_job_id=job.id
+            AND handoff.submission_snapshot_id=job.snapshot_id AND handoff.store_id=job.store_id
+           JOIN auto_listing_submission_links AS link
+             ON link.account_id=job.account_id AND link.target_store_id=job.store_id
+            AND link.submission_job_id=job.id AND link.submission_snapshot_id=job.snapshot_id
+            AND link.status IN ('SUBMITTED','RECONCILING','SUCCEEDED')
+            AND (handoff.id IS NULL OR (link.id=handoff.submission_link_id
+              AND link.idempotency_key=handoff.business_idempotency_key
+              AND link.warehouse_validation_evidence_id=handoff.link_identity_evidence_id))
+           JOIN LATERAL (
+             SELECT reserved.* FROM auto_listing_upload_attempts AS reserved
+              WHERE reserved.account_id=link.account_id AND reserved.submission_link_id=link.id
+                AND reserved.job_id=link.job_id
+                AND reserved.auto_listing_item_id=link.auto_listing_item_id
+                AND reserved.target_store_id=link.target_store_id AND reserved.outcome='RESERVED'
+                AND reserved.listing_pipeline_response_summary->>'submissionIdempotencyKey'=link.idempotency_key
+                AND (handoff.id IS NULL OR reserved.id=handoff.reserved_attempt_id)
+              ORDER BY reserved.created_at DESC,reserved.id DESC LIMIT 1
+           ) AS attempt ON TRUE
+           JOIN auto_listing_rfbs_warehouse_evidence AS identity_evidence
+             ON identity_evidence.account_id=link.account_id
+            AND identity_evidence.id=link.warehouse_validation_evidence_id
+            AND identity_evidence.store_id=link.target_store_id
+            AND identity_evidence.fulfillment_type='RFBS' AND identity_evidence.outcome='PASSED'
+           JOIN auto_listing_rfbs_warehouse_evidence AS attempt_evidence
+             ON attempt_evidence.account_id=link.account_id
+            AND attempt_evidence.id=attempt.warehouse_validation_evidence_id
+            AND attempt_evidence.store_id=link.target_store_id
+            AND attempt_evidence.warehouse_record_id=attempt.target_warehouse_id
+            AND attempt_evidence.platform_warehouse_id=identity_evidence.platform_warehouse_id
+            AND attempt_evidence.fulfillment_type='RFBS' AND attempt_evidence.outcome='PASSED'
+           JOIN warehouses AS warehouse
+             ON warehouse.store_id=job.store_id AND warehouse.id=attempt.target_warehouse_id
+            AND warehouse.warehouse_id=attempt_evidence.platform_warehouse_id
+          WHERE job.id=$1 AND job.account_id=$2 AND job.store_id=$3 AND job.type='AUTO_LISTING'
+            AND attempt.target_warehouse_id=$4 AND attempt_evidence.platform_warehouse_id=$5
+            AND (handoff.id IS NULL OR (handoff.local_warehouse_id=attempt.target_warehouse_id
+              AND handoff.platform_warehouse_id=attempt_evidence.platform_warehouse_id
+              AND handoff.attempt_authorization_evidence_id=attempt.warehouse_validation_evidence_id
+              AND handoff.fulfillment_type='RFBS'))
+            AND UPPER(BTRIM(warehouse.warehouse_type))='RFBS'
+            AND LOWER(BTRIM(warehouse.status)) NOT IN
+              ('disabled','inactive','archived','deleted','blocked')
+            AND warehouse.is_active IS TRUE AND warehouse.is_archived IS FALSE
+            AND (($6='PRE_IMPORT' AND job.status='VALIDATING')
+              OR ($6='PRE_STOCK' AND job.status IN ('CHECKING','RECONCILING','OZON_ACCEPTED')))
+          FOR SHARE OF job,snapshot,link,warehouse
+       ), inserted_handoff AS (
+         INSERT INTO submission_rfbs_handoffs (
+           id,account_id,submission_job_id,submission_snapshot_id,store_id,local_warehouse_id,
+           platform_warehouse_id,fulfillment_type,link_identity_evidence_id,
+           attempt_authorization_evidence_id,reserved_attempt_id,submission_link_id,business_idempotency_key
+         ) SELECT $14,account_id,submission_job_id,submission_snapshot_id,store_id,local_warehouse_id,
+                  platform_warehouse_id,'RFBS',link_identity_evidence_id,attempt_authorization_evidence_id,
+                  reserved_attempt_id,submission_link_id,business_idempotency_key
+             FROM candidate WHERE existing_handoff_id IS NULL
+         ON CONFLICT DO NOTHING
+         RETURNING *
+       ), resolved_handoff AS MATERIALIZED (
+         SELECT * FROM inserted_handoff
+         UNION ALL
+         SELECT handoff.* FROM submission_rfbs_handoffs AS handoff
+         JOIN candidate ON candidate.existing_handoff_id=handoff.id
+         WHERE NOT EXISTS (SELECT 1 FROM inserted_handoff)
+       ), locked AS MATERIALIZED (
+         SELECT handoff.* FROM resolved_handoff AS handoff
+         JOIN candidate
+           ON candidate.account_id=handoff.account_id
+          AND candidate.submission_job_id=handoff.submission_job_id
+          AND candidate.submission_snapshot_id=handoff.submission_snapshot_id
+          AND candidate.store_id=handoff.store_id
+          AND candidate.local_warehouse_id=handoff.local_warehouse_id
+          AND candidate.platform_warehouse_id=handoff.platform_warehouse_id
+          AND candidate.link_identity_evidence_id=handoff.link_identity_evidence_id
+          AND candidate.attempt_authorization_evidence_id=handoff.attempt_authorization_evidence_id
+          AND candidate.reserved_attempt_id=handoff.reserved_attempt_id
+          AND candidate.submission_link_id=handoff.submission_link_id
+          AND candidate.business_idempotency_key=handoff.business_idempotency_key
+       ), inserted_evidence AS (
+         INSERT INTO auto_listing_rfbs_warehouse_evidence (
+           id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,
+           fulfillment_type,status,outcome,observed_at,expires_at,evidence_hash,correlation_id,
+           actor_account_id,raw_response_ref
+         ) SELECT $7,account_id,store_id,local_warehouse_id,platform_warehouse_id,$8,'RFBS','ACTIVE','PASSED',
+                  $9::timestamptz,$10::timestamptz,$11,$12,account_id,NULL
+             FROM locked WHERE $10::timestamptz>STATEMENT_TIMESTAMP()
+         RETURNING id
+       ), inserted_authorization AS (
+         INSERT INTO submission_rfbs_write_authorizations (
+           id,handoff_id,account_id,submission_job_id,submission_snapshot_id,store_id,
+           local_warehouse_id,platform_warehouse_id,phase,warehouse_validation_evidence_id,correlation_id
+         ) SELECT $13,locked.id,locked.account_id,locked.submission_job_id,
+                  locked.submission_snapshot_id,locked.store_id,locked.local_warehouse_id,
+                  locked.platform_warehouse_id,$6,inserted_evidence.id,$12
+             FROM locked CROSS JOIN inserted_evidence
+         RETURNING id,phase
+       ) SELECT id,phase FROM inserted_authorization`,
+      [submissionJobId, validation.accountId, validation.storeId, validation.warehouseRecordId,
+        validation.platformWarehouseId, phase, evidenceId, validation.schemaVersion,
+        validation.observedAt, validation.expiresAt, validation.evidenceHash,
+        validation.correlationId, authorizationId, lazyHandoffId],
+    );
+    if (result.rowCount !== 1) throw rfbsPhaseError();
+    return Object.freeze({ required: true, authorizationId: result.rows[0].id, phase: result.rows[0].phase });
+  } catch (error) {
+    if (/^LISTING_RFBS_PHASE_/u.test(String(error?.code || ""))) throw error;
+    throw rfbsPhaseError();
+  }
 }
 
 export async function readStoreCredentialV3(storeId, accountId = "") {

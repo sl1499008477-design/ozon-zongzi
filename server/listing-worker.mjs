@@ -6,6 +6,7 @@ import path from "node:path";
 import { callOzonSellerApi } from "./ozon-client.mjs";
 import { deriveOzonImportStatus } from "./ozon-import-status.mjs";
 import { resolveSubmissionFailureDisposition } from "./listing-submission-policy.mjs";
+import { authorizeListingRfbsWritePhase } from "./listing-rfbs-write-authorization-runtime.mjs";
 import { dispatchListingOutboxOnce, getListingBoss, stopListingBoss } from "./listing-queue.mjs";
 import {
   LISTING_QUEUE,
@@ -89,6 +90,7 @@ async function processSubmit(jobId) {
     });
     const items = Array.isArray(work.items) ? work.items : [];
     if (!items.length) throw Object.assign(new Error("不可变上架快照没有商品变体"), { status: 400, code: "SNAPSHOT_EMPTY" });
+    await authorizeListingRfbsWritePhase(work, "PRE_IMPORT");
     const credential = await readStoreCredentialV3(work.store_id, work.account_id);
     if (!credential?.apiKey) throw Object.assign(new Error("经营店铺的 Ozon API 凭证不可用"), { status: 400, code: "STORE_CREDENTIAL_MISSING" });
     await transitionSubmissionJobV3(jobId, "SUBMITTING", {}, {
@@ -121,7 +123,15 @@ async function processSubmit(jobId) {
     const disposition = latest?.status === "SUBMITTING"
       ? resolveSubmissionFailureDisposition(error)
       : "FAILED";
-    if (disposition === "RECONCILING") {
+    if (/^LISTING_RFBS_PHASE_/u.test(String(error?.code || "")) && latest?.status === "VALIDATING"
+      && Number(latest?.attempt_count || 0) < 3) {
+      await transitionSubmissionJobV3(jobId, "RETRY_PENDING", {
+        errorCode: error.code,
+        errorMessage: error.message,
+        statusMessage: "RFBS 仓库写入前验证暂时失败，任务将安全重试",
+      }, { type: "submission.rfbs_phase_retry_scheduled", message: error.message, actorId: workerId });
+      await enqueueSubmissionActionV3(jobId, "submit", Math.max(5, Number(latest?.attempt_count || 1) * 15));
+    } else if (disposition === "RECONCILING") {
       await failSubmission(latest || work, error, "RECONCILING");
     } else if (disposition === "RETRY_PENDING" && Number(latest?.attempt_count || 0) < 3) {
       await transitionSubmissionJobV3(jobId, "RETRY_PENDING", {
@@ -145,6 +155,7 @@ async function finishSuccessfulImport(work, statusInfo) {
   const stocks = Array.isArray(work.stocks) ? work.stocks : [];
   if (finalStatus === "SUCCEEDED" && stocks.length) {
     try {
+      await authorizeListingRfbsWritePhase(work, "PRE_STOCK");
       const credential = await readStoreCredentialV3(work.store_id, work.account_id);
       await callOzonSellerApi(credential, "/v2/products/stocks", { stocks }, 60000);
       statusMessage = `商品已上架，${stocks.length} 条库存已同步`;

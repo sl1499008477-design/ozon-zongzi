@@ -123,7 +123,9 @@ function harness(overrides = {}) {
         uploadPolicyVersionId: input.uploadPolicyVersionId,
         publicationPolicyHash: input.publicationPolicyHash, mediaEvidenceHash: input.mediaEvidenceHash,
         claimToken: "claim-1", claimOwned: true,
-        warehouseValidationEvidenceId: input.warehouseValidation ? "rfbs-upload-evidence-1" : null };
+        warehouseValidationEvidenceId: input.warehouseValidation ? "rfbs-upload-evidence-1" : null,
+        linkIdentityEvidenceId: input.warehouseValidation ? "rfbs-link-identity-evidence-1" : null,
+        reservedAttemptId: input.warehouseValidation ? "rfbs-reserved-attempt-1" : null };
       return structuredClone(state.link);
     },
     async bindSubmission(input) {
@@ -240,6 +242,8 @@ test("RFBS revalidates before publication and binds the reserved fresh evidence 
   const createInput = state.calls.find(([name]) => name === "submit")[1];
   assert.equal(createInput.warehouseValidationEvidenceId, "rfbs-upload-evidence-1");
   assert.equal(createInput.warehouseFulfillmentType, "RFBS");
+  assert.equal(createInput.rfbsHandoff.linkIdentityEvidenceId, "rfbs-link-identity-evidence-1");
+  assert.equal(createInput.rfbsHandoff.attemptAuthorizationEvidenceId, "rfbs-upload-evidence-1");
   assert.equal(state.attempts[0].warehouseValidationEvidenceId, "rfbs-upload-evidence-1");
 });
 
@@ -504,6 +508,14 @@ test("same result link or uncertain standard-pipeline success is rebound and nev
   assert.equal(state.calls.filter(([kind]) => kind === "verify").length, 1);
   assert.equal(state.calls.filter(([kind]) => kind === "publish").length,
     state.context.acceptedAssets.length);
+  assert.equal(state.calls.filter(([kind]) => kind === "reserve").length, 1);
+  state.context.item.status = "SUCCEEDED";
+  state.context.item.statusVersion = 99;
+  const reconciledReplay = await service.submitAutoListingItem(request());
+  assert.equal(reconciledReplay.submissionJobId, "submission-job-recovered");
+  assert.equal(reconciledReplay.duplicate, true);
+  assert.equal(createCalls, 1);
+  assert.equal(state.calls.filter(([kind]) => kind === "verify").length, 1);
   assert.equal(state.calls.filter(([kind]) => kind === "reserve").length, 1);
   state.link.resultHash = "0".repeat(64);
   await assert.rejects(service.submitAutoListingItem(request()), { code: "AUTO_LISTING_UPLOAD_CONFLICT" });

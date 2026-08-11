@@ -404,7 +404,8 @@ async function insertAttempt(database, randomUUID, input = {}) {
                       AND reservation.warehouse_validation_evidence_id=evidence.id
                       AND reservation.outcome='RESERVED'
                   )))
-            )))`,
+            )))
+        RETURNING id`,
     [`upload-attempt-${randomUUID()}`, id(input.accountId), id(input.jobId), id(input.itemId),
       id(input.submissionLinkId), id(input.actorAccountId), input.action, input.expectedStatusVersion,
       id(input.targetStoreId), id(input.targetWarehouseId), hash(input.productDraftHash), hash(input.requestHash),
@@ -412,6 +413,7 @@ async function insertAttempt(database, randomUUID, input = {}) {
       input.errorCode || null, input.errorSafe || null, JSON.stringify(input.responseSummary || {}), id(input.correlationId)],
   );
   if (inserted.rowCount !== 1) throw repositoryError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+  return inserted.rows[0].id;
 }
 
 export function createPostgresAutoListingUploadRepository({ pool, randomUUID = crypto.randomUUID } = {}) {
@@ -683,8 +685,9 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
               values.correlationId, JSON.stringify({ submissionLinkId: existing.rows[0].id })],
           );
         }
+        let reservedAttemptId = null;
         if (claimOwned && currentWarehouseValidationEvidenceId) {
-          await insertAttempt(client, randomUUID, {
+          reservedAttemptId = await insertAttempt(client, randomUUID, {
             accountId: values.accountId, jobId: values.jobId, itemId: values.itemId,
             submissionLinkId: existing.rows[0].id, actorAccountId: values.accountId,
             action: input.action, expectedStatusVersion: input.expectedStatusVersion,
@@ -700,7 +703,8 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         await client.query("COMMIT"); started = false;
         const link = mapLink({ ...existing.rows[0], claim_owned: claimOwned });
         return currentWarehouseValidationEvidenceId
-          ? { ...link, warehouseValidationEvidenceId: currentWarehouseValidationEvidenceId }
+          ? { ...link, warehouseValidationEvidenceId: currentWarehouseValidationEvidenceId,
+            linkIdentityEvidenceId: link.warehouseValidationEvidenceId, reservedAttemptId }
           : link;
       } catch (error) {
         if (started) await client.query("ROLLBACK").catch(() => {});

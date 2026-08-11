@@ -258,6 +258,7 @@ test("PostgreSQL claims one local warehouse item, safely retries the same link, 
     assert.equal(reservation.claimOwned, true);
     assert.equal(reservation.directHealthEvidenceId, ids.healthInitial);
     assert.equal(reservation.warehouseValidationEvidenceId, null);
+    assert.equal(reservation.reservedAttemptId ?? null, null);
     assert.ok(reservation.claimToken);
     assert.deepEqual((await pool.query(
       "SELECT status,status_version FROM auto_listing_job_items WHERE account_id=$1 AND id=$2",
@@ -571,6 +572,8 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
     const reservation = await repository.reserveSubmission(reserveInput);
     assert.equal(reservation.claimOwned, true);
     assert.match(reservation.warehouseValidationEvidenceId, /^auto-listing-rfbs-upload-evidence-/);
+    assert.equal(reservation.linkIdentityEvidenceId, reservation.warehouseValidationEvidenceId);
+    assert.match(reservation.reservedAttemptId, /^upload-attempt-/);
     assert.equal(await countEvidence(), 2);
     const reservedAttempts = await pool.query(
       `SELECT id,outcome,warehouse_validation_evidence_id FROM auto_listing_upload_attempts
@@ -578,6 +581,7 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
       [ids.account, reservation.id],
     );
     assert.equal(reservedAttempts.rowCount, 1);
+    assert.equal(reservedAttempts.rows[0].id, reservation.reservedAttemptId);
     assert.equal(reservedAttempts.rows[0].warehouse_validation_evidence_id,
       reservation.warehouseValidationEvidenceId);
     await assert.rejects(pool.query("UPDATE auto_listing_upload_attempts SET outcome='FAILED' WHERE id=$1",
@@ -621,6 +625,7 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
         expiresAt: new Date(Date.now() + 600_000).toISOString() }) });
     assert.equal(retryReservation.claimOwned, true);
     assert.notEqual(retryReservation.warehouseValidationEvidenceId, reservation.warehouseValidationEvidenceId);
+    assert.equal(retryReservation.linkIdentityEvidenceId, reservation.warehouseValidationEvidenceId);
     assert.equal(await countEvidence(), 3);
     assert.equal(Number((await pool.query(
       `SELECT COUNT(*)::int AS count FROM auto_listing_upload_attempts
@@ -683,10 +688,21 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
     [ids.submissionSnapshot, ids.collect, ids.draft, ids.account, ids.store,
       `rfbs-snapshot-${suffix}`, H("0"), JSON.stringify([listingVariant()]),
       JSON.stringify([{ offer_id: "offer-a", warehouse_id: platformWarehouseId, stock: 5 }])]);
+    await admin.query("BEGIN");
     await admin.query(`INSERT INTO submission_jobs
       (id,snapshot_id,collect_item_id,account_id,store_id,type,status,correlation_id,item_count)
       VALUES ($1,$2,$3,$4,$5,'AUTO_LISTING','QUEUE_PENDING',$6,1)`,
     [ids.submissionJob, ids.submissionSnapshot, ids.collect, ids.account, ids.store, `rfbs-submit-${suffix}`]);
+    await admin.query(`INSERT INTO submission_rfbs_handoffs (
+      id,account_id,submission_job_id,submission_snapshot_id,store_id,local_warehouse_id,
+      platform_warehouse_id,fulfillment_type,link_identity_evidence_id,
+      attempt_authorization_evidence_id,reserved_attempt_id,submission_link_id,business_idempotency_key
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,'RFBS',$8,$9,$10,$11,$12)`,
+    [`rfbs-repository-handoff-${suffix}`, ids.account, ids.submissionJob, ids.submissionSnapshot,
+      ids.store, ids.warehouse, platformWarehouseId, retryReservation.linkIdentityEvidenceId,
+      retryReservation.warehouseValidationEvidenceId, retryReservation.reservedAttemptId,
+      reservation.id, reserveInput.idempotencyKey]);
+    await admin.query("COMMIT");
     const successAttempt = { accountId: ids.account, jobId: ids.job, itemId: ids.item,
       submissionLinkId: reservation.id, actorAccountId: ids.account, action: "REVIEW_APPROVE",
       expectedStatusVersion: 9, targetStoreId: ids.store, targetWarehouseId: ids.warehouse,

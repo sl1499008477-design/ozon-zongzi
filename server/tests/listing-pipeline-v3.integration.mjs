@@ -13,6 +13,7 @@ import {
   assertUsableOperatingStore,
   createSubmissionV3,
   listCollectItemsV3,
+  loadSubmissionWorkV3,
   mirrorCollectItemV3,
   prepareCollectItemForListing,
   softDeleteCollectItemsForAccountV4,
@@ -297,6 +298,16 @@ try {
     },
   });
   assert.equal(autoSubmission.duplicate, false);
+  const autoFbsWork = await loadSubmissionWorkV3(autoSubmission.job.id);
+  assert.equal(autoFbsWork.rfbs_authorization_required, false);
+  for (const field of ["rfbs_handoff_id", "rfbs_account_id", "rfbs_store_id",
+    "rfbs_local_warehouse_id", "rfbs_platform_warehouse_id", "rfbs_fulfillment_type",
+    "rfbs_link_identity_evidence_id", "rfbs_attempt_authorization_evidence_id",
+    "rfbs_reserved_attempt_id", "rfbs_submission_link_id",
+    "rfbs_business_idempotency_key"]) assert.equal(autoFbsWork[field], null);
+  assert.equal(autoFbsWork.rfbs_handoff_materialization_required, false);
+  assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count FROM submission_rfbs_handoffs
+    WHERE submission_job_id=$1`, [autoSubmission.job.id])).rows[0].count), 0);
   const frozenAfterSubmission = await pool.query(
     `SELECT d.version,d.data_hash,d.data,s.items
        FROM product_drafts d

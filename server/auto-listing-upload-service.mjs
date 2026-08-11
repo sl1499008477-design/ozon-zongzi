@@ -60,6 +60,12 @@ function actionFor(context, expectedStatusVersion) {
   throw uploadError("AUTO_LISTING_UPLOAD_POLICY_BLOCKED", 409);
 }
 
+function policyAction(context) {
+  if (context?.uploadPolicy?.mode === "REVIEW") return "REVIEW_APPROVE";
+  if (context?.uploadPolicy?.mode === "DIRECT") return "DIRECT_UPLOAD";
+  throw uploadError("AUTO_LISTING_UPLOAD_POLICY_BLOCKED", 409);
+}
+
 function assertFrozenEvidence(context, accountId, itemId, action) {
   const { item, listingBase, frozenConfig, uploadPolicy, store, productDraft } = context || {};
   if (item?.accountId !== accountId || item?.id !== itemId || !SAFE_ID.test(item.jobId || "")
@@ -227,12 +233,8 @@ export function createAutoListingUploadService({
 
       const context = await repository.loadUploadEvidence({ accountId, itemId });
       if (!context) throw uploadError("AUTO_LISTING_UPLOAD_NOT_FOUND", 404);
-      const action = actionFor(context, expectedStatusVersion);
-      if (action === "DIRECT_UPLOAD" && directUploadAllowed !== true) {
-        throw uploadError("AUTO_LISTING_DIRECT_UPLOAD_BLOCKED", 503);
-      }
-      assertFrozenEvidence(context, accountId, itemId, action);
-      const warehouseCreation = creationWarehouseValidation(context, accountId);
+      const frozenAction = policyAction(context);
+      assertFrozenEvidence(context, accountId, itemId, frozenAction);
       const configuredPublication = publicationConfig(publicationPolicy);
       const frozenPublication = publicationConfig(context.uploadPolicy.publicationPolicy);
       if (digest(configuredPublication) !== context.uploadPolicy.publicationPolicyHash
@@ -252,7 +254,7 @@ export function createAutoListingUploadService({
         } catch {
           throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
         }
-        const terminalRequestHash = digest({ accountId, itemId, action,
+        const terminalRequestHash = digest({ accountId, itemId, action: frozenAction,
           listingBaseHash: terminalDraft.listingBaseHash, planId: terminalDraft.planId,
           resultHash: terminalDraft.resultHash });
         const terminalMediaHash = mediaEvidenceHash({ visualGroups: context.visualGroups,
@@ -272,6 +274,12 @@ export function createAutoListingUploadService({
         }
         return safeResult(itemId, terminal, true);
       }
+      const action = actionFor(context, expectedStatusVersion);
+      if (action !== frozenAction) throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+      if (action === "DIRECT_UPLOAD" && directUploadAllowed !== true) {
+        throw uploadError("AUTO_LISTING_DIRECT_UPLOAD_BLOCKED", 503);
+      }
+      const warehouseCreation = creationWarehouseValidation(context, accountId);
       let directHealthEvidenceId = null;
       if (action === "DIRECT_UPLOAD") {
         let systemReadiness;
@@ -407,6 +415,12 @@ export function createAutoListingUploadService({
       if ((warehouseCreation.type === "RFBS") !== Boolean(warehouseValidationEvidenceId)) {
         throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
       }
+      if (warehouseCreation.type === "RFBS" && !SAFE_ID.test(reservation.reservedAttemptId || "")) {
+        throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+      }
+      if (warehouseCreation.type === "RFBS" && !SAFE_ID.test(reservation.linkIdentityEvidenceId || "")) {
+        throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+      }
 
       let listing = await findSubmission({ accountId, idempotencyKey, collectItemId: context.collectItem.id,
         targetStoreId: context.item.targetStoreId });
@@ -424,6 +438,18 @@ export function createAutoListingUploadService({
             frozenProductDraft: context.productDraft,
             warehouseValidationEvidenceId,
             warehouseFulfillmentType: warehouseCreation.type,
+            rfbsHandoff: warehouseCreation.type === "RFBS" ? {
+              accountId,
+              storeId: context.item.targetStoreId,
+              localWarehouseId: context.item.targetWarehouseId,
+              platformWarehouseId: context.targetWarehousePlatformId,
+              fulfillmentType: "RFBS",
+              linkIdentityEvidenceId: reservation.linkIdentityEvidenceId,
+              attemptAuthorizationEvidenceId: warehouseValidationEvidenceId,
+              reservedAttemptId: reservation.reservedAttemptId,
+              submissionLinkId: reservation.id,
+              businessIdempotencyKey: idempotencyKey,
+            } : null,
             versions: {
               categoryRuleVersion: draft.versions.categoryRuleVersion,
               dictionaryVersion: draft.versions.dictionaryVersion,

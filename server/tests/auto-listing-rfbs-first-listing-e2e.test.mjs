@@ -141,6 +141,7 @@ if (!enabled) {
     const schema = `rfbs_first_listing_${suffix}`;
     const calls = [];
     const remoteByClientId = new Map();
+    const warehouseReadsByClientId = new Map();
     const taskById = new Map();
     let taskSequence = 700_000;
     const fakeOzon = http.createServer(async (request, response) => {
@@ -151,6 +152,12 @@ if (!enabled) {
       calls.push({ path: pathName, clientId, offerId });
       response.setHeader("content-type", "application/json");
       if (pathName === "/v2/warehouse/list") {
+        const warehouseRead = Number(warehouseReadsByClientId.get(clientId) || 0) + 1;
+        warehouseReadsByClientId.set(clientId, warehouseRead);
+        if (clientId.includes("phase-response-loss") && warehouseRead === 3) {
+          request.socket.destroy();
+          return;
+        }
         const remote = remoteByClientId.get(clientId);
         response.end(JSON.stringify({ result: { warehouses: remote ? [remote] : [] } }));
         return;
@@ -196,7 +203,8 @@ if (!enabled) {
       await admin.query(`CREATE SCHEMA ${quote(schema)}`);
       await admin.query(`SET search_path TO ${quote(schema)}, public`);
       const migrations = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-      assert.equal(migrations.at(-1)?.startsWith("060_"), true, "E2E must include RESERVED authorization migration 060");
+      assert.equal(migrations.at(-1)?.startsWith("061_"), true,
+        "E2E must include immutable RFBS standard-submission handoff migration 061");
       for (const migration of migrations) await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
       await admin.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
       for (const migration of migrations) {
@@ -396,7 +404,11 @@ if (!enabled) {
         return scenario;
       }
 
-      async function reserveAndCreateSubmission(scenario, { mutateAfterRead = null } = {}) {
+      async function reserveAndCreateSubmission(scenario, {
+        mutateAfterRead = null,
+        createSubmissionImpl = createSubmissionV3,
+        expectedStatusVersion = 7,
+      } = {}) {
         const correlationId = `upload-${scenario.name}-${suffix}`;
         const service = createAutoListingUploadService({
           repository: uploadRepository,
@@ -416,7 +428,7 @@ if (!enabled) {
               publishedByAccountId: scenario.account,
             });
           },
-          createSubmission: createSubmissionV3,
+          createSubmission: createSubmissionImpl,
           findSubmission: findListingPreparationReplayV3,
           assertDirectSystemReady: async () => ({ ready: false }),
           assertDirectReady: async () => ({ ready: false }),
@@ -431,23 +443,151 @@ if (!enabled) {
         const result = await service.submitAutoListingItem({
           actor: { id: scenario.account, role: "admin" },
           itemId: scenario.item,
-          expectedStatusVersion: 7,
+          expectedStatusVersion,
           correlationId,
         });
-        const reservation = (await pool.query(`SELECT id,warehouse_validation_evidence_id
-          FROM auto_listing_submission_links WHERE account_id=$1 AND auto_listing_item_id=$2`,
+        const reservation = (await pool.query(`SELECT link.id,link.warehouse_validation_evidence_id,
+            attempt.id AS reserved_attempt_id
+          FROM auto_listing_submission_links AS link
+          LEFT JOIN auto_listing_upload_attempts AS attempt
+            ON attempt.account_id=link.account_id AND attempt.submission_link_id=link.id
+           AND attempt.outcome='RESERVED'
+          WHERE link.account_id=$1 AND link.auto_listing_item_id=$2`,
         [scenario.account, scenario.item])).rows[0];
         return {
           reservation: { id: reservation.id,
-            warehouseValidationEvidenceId: reservation.warehouse_validation_evidence_id },
+            warehouseValidationEvidenceId: reservation.warehouse_validation_evidence_id,
+            reservedAttemptId: reservation.reserved_attempt_id },
           submissionJobId: result.submissionJobId,
           submissionSnapshotId: result.submissionSnapshotId,
         };
       }
 
-      ({ createSubmissionV3, findListingPreparationReplayV3 } = await import("../listing-pipeline.mjs"));
+      ({ createSubmissionV3, findListingPreparationReplayV3, loadSubmissionWorkV3 }
+        = await import("../listing-pipeline.mjs"));
       ({ processListingQueueMessage } = await import(`../listing-worker.mjs?rfbs-e2e=${suffix}`));
       ({ closePostgresPool } = await import("../db/connection.mjs"));
+
+      // Re-apply the actual 061 migration over a pre-existing bound RFBS job and prove backfill is gated.
+      const backfillCallsStart = calls.length;
+      const backfill = await createScenarioJob(await seedScenario("migration-backfill"));
+      const backfillSubmission = await reserveAndCreateSubmission(backfill);
+      await pool.query("DROP TRIGGER submission_jobs_rfbs_handoff_commit_gate ON submission_jobs");
+      await pool.query("DROP TABLE submission_rfbs_write_authorizations");
+      await pool.query("DROP TABLE submission_rfbs_handoffs CASCADE");
+      const ambiguousSnapshotId = `ambiguous-pre061-snapshot-${suffix}`;
+      const ambiguousJobId = `ambiguous-pre061-job-${suffix}`;
+      await pool.query(`INSERT INTO submission_snapshots
+        (id,collect_item_id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+        VALUES ($1,$2,$3,$4,$5,$6,1,$7::jsonb,$8::jsonb)`,
+      [ambiguousSnapshotId, backfill.collect, backfill.account, backfill.store,
+        `ambiguous-pre061-${suffix}`, H("3"), JSON.stringify([listingVariant(`ambiguous-${backfill.offer}`)]),
+        JSON.stringify([{ offer_id: `ambiguous-${backfill.offer}`,
+          warehouse_id: backfill.platformWarehouseId, stock: 5 }])]);
+      await pool.query(`INSERT INTO submission_jobs
+        (id,snapshot_id,collect_item_id,account_id,store_id,type,status,correlation_id,item_count)
+        VALUES ($1,$2,$3,$4,$5,'AUTO_LISTING','QUEUE_PENDING',$6,1)`,
+      [ambiguousJobId, ambiguousSnapshotId, backfill.collect, backfill.account, backfill.store,
+        `ambiguous-pre061-${suffix}`]);
+      const migrationSql = await readFile(path.join(migrationsDir,
+        "061_auto_listing_rfbs_submission_handoff.sql"), "utf8");
+      const migrationClient = await pool.connect();
+      try {
+        await migrationClient.query("BEGIN");
+        await assert.rejects(migrationClient.query(migrationSql), (error) => error?.code === "23514");
+        await migrationClient.query("ROLLBACK");
+      } finally { migrationClient.release(); }
+      await pool.query("DELETE FROM submission_jobs WHERE id=$1", [ambiguousJobId]);
+      await pool.query("DELETE FROM submission_snapshots WHERE id=$1", [ambiguousSnapshotId]);
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query(`UPDATE auto_listing_submission_links
+          SET status='RESERVED',submission_job_id=NULL,submission_snapshot_id=NULL
+          WHERE id=$1`, [backfillSubmission.reservation.id]);
+        await pool.query("UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+          [backfill.warehouse, backfill.store]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      const unboundMigrationClient = await pool.connect();
+      try {
+        await unboundMigrationClient.query("BEGIN");
+        await assert.rejects(unboundMigrationClient.query(migrationSql),
+          (error) => error?.code === "23514");
+        await unboundMigrationClient.query("ROLLBACK");
+      } finally { unboundMigrationClient.release(); }
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query(`UPDATE auto_listing_submission_links
+          SET status='SUBMITTED',submission_job_id=$2,submission_snapshot_id=$3
+          WHERE id=$1`, [backfillSubmission.reservation.id, backfillSubmission.submissionJobId,
+          backfillSubmission.submissionSnapshotId]);
+        await pool.query("UPDATE warehouses SET warehouse_type='RFBS' WHERE id=$1 AND store_id=$2",
+          [backfill.warehouse, backfill.store]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      await pool.query(migrationSql);
+      const backfilledHandoff = (await pool.query(`SELECT * FROM submission_rfbs_handoffs
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [backfill.account, backfillSubmission.submissionJobId])).rows[0];
+      assert.equal(backfilledHandoff.submission_link_id, backfillSubmission.reservation.id);
+      assert.equal(backfilledHandoff.link_identity_evidence_id,
+        backfillSubmission.reservation.warehouseValidationEvidenceId);
+      assert.equal(backfilledHandoff.reserved_attempt_id, backfillSubmission.reservation.reservedAttemptId);
+      await pool.query("UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+        [backfill.warehouse, backfill.store]);
+      await processListingQueueMessage({ submissionJobId: backfillSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(backfillCallsStart)
+        .filter(({ path: value }) => value === "/v3/product/import").length, 0);
+      await pool.query("UPDATE warehouses SET warehouse_type='RFBS' WHERE id=$1 AND store_id=$2",
+        [backfill.warehouse, backfill.store]);
+
+      // A post-061 old application cannot commit a new RFBS standard job without a handoff.
+      const oldAppSnapshotId = `old-app-rfbs-snapshot-${suffix}`;
+      await pool.query(`INSERT INTO submission_snapshots
+        (id,collect_item_id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+        VALUES ($1,$2,$3,$4,$5,$6,1,$7::jsonb,$8::jsonb)`,
+      [oldAppSnapshotId, backfill.collect, backfill.account, backfill.store,
+        `old-app-rfbs-${suffix}`, H("2"), JSON.stringify([listingVariant(`old-app-${backfill.offer}`)]),
+        JSON.stringify([{ offer_id: `old-app-${backfill.offer}`,
+          warehouse_id: backfill.platformWarehouseId, stock: 5 }])]);
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query(`UPDATE auto_listing_submission_links
+          SET status='RESERVED',submission_job_id=NULL,submission_snapshot_id=NULL WHERE id=$1`,
+        [backfillSubmission.reservation.id]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      const oldAppClient = await pool.connect();
+      try {
+        await oldAppClient.query("BEGIN");
+        await oldAppClient.query(`INSERT INTO submission_jobs
+          (id,snapshot_id,collect_item_id,account_id,store_id,type,status,correlation_id,item_count)
+          VALUES ($1,$2,$3,$4,$5,'AUTO_LISTING','QUEUE_PENDING',$6,1)`,
+        [`old-app-rfbs-job-${suffix}`, oldAppSnapshotId, backfill.collect, backfill.account, backfill.store,
+          `old-app-rfbs-${suffix}`]);
+        await oldAppClient.query(`INSERT INTO outbox_events
+          (id,aggregate_type,aggregate_id,event_type,payload,dedupe_key)
+          VALUES ($1,'submission_job',$2,'listing.submit.requested',$3::jsonb,$4)`,
+        [`old-app-rfbs-outbox-${suffix}`, `old-app-rfbs-job-${suffix}`,
+          JSON.stringify({ submissionJobId: `old-app-rfbs-job-${suffix}`, action: "submit" }),
+          `old-app-rfbs-job-${suffix}:submit:0`]);
+        await pool.query("UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+          [backfill.warehouse, backfill.store]);
+        await assert.rejects(oldAppClient.query("COMMIT"), (error) => error?.code === "23514");
+        await oldAppClient.query("ROLLBACK").catch(() => {});
+      } finally {
+        oldAppClient.release();
+        await pool.query("SET session_replication_role='replica'");
+        try {
+          await pool.query(`UPDATE auto_listing_submission_links
+            SET status='SUBMITTED',submission_job_id=$2,submission_snapshot_id=$3 WHERE id=$1`,
+          [backfillSubmission.reservation.id, backfillSubmission.submissionJobId,
+            backfillSubmission.submissionSnapshotId]);
+          await pool.query("UPDATE warehouses SET warehouse_type='RFBS' WHERE id=$1 AND store_id=$2",
+            [backfill.warehouse, backfill.store]);
+        } finally { await pool.query("SET session_replication_role='origin'"); }
+      }
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM submission_jobs WHERE id=$1",
+        [`old-app-rfbs-job-${suffix}`])).rows[0].count), 0);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM outbox_events WHERE id=$1",
+        [`old-app-rfbs-outbox-${suffix}`])).rows[0].count), 0);
 
       // Fail-closed creation checks: no job/evidence and no product/stock write.
       const closed = await seedScenario("closed");
@@ -495,20 +635,31 @@ if (!enabled) {
       await processListingQueueMessage({ submissionJobId: successSubmission.submissionJobId, action: "submit" });
       await processListingQueueMessage({ submissionJobId: successSubmission.submissionJobId, action: "check" });
       assert.deepEqual(calls.slice(successCallsStart).map(({ path: value }) => value), [
-        "/v2/warehouse/list", "/v2/warehouse/list", "/v3/product/import",
-        "/v1/product/import/info", "/v2/products/stocks",
+        "/v2/warehouse/list", "/v2/warehouse/list", "/v2/warehouse/list", "/v3/product/import",
+        "/v1/product/import/info", "/v2/warehouse/list", "/v2/products/stocks",
       ]);
       assert.deepEqual(calls.slice(successCallsStart, successUploadStart).map(({ path: value }) => value), [
         "/v2/warehouse/list",
       ]);
       assert.deepEqual(calls.slice(successUploadStart).map(({ path: value }) => value), [
-        "/v2/warehouse/list", "/v3/product/import", "/v1/product/import/info", "/v2/products/stocks",
+        "/v2/warehouse/list", "/v2/warehouse/list", "/v3/product/import",
+        "/v1/product/import/info", "/v2/warehouse/list", "/v2/products/stocks",
       ]);
       assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
         [successSubmission.submissionJobId])).rows[0].status, "SUCCEEDED");
       assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1", [success.account])).rows[0].count), 1);
       assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM products WHERE store_id=$1", [success.store])).rows[0].count), 0);
-      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_rfbs_warehouse_evidence WHERE account_id=$1", [success.account])).rows[0].count), 2);
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_rfbs_warehouse_evidence WHERE account_id=$1", [success.account])).rows[0].count), 4);
+      const successPhaseAuthorizations = (await pool.query(`SELECT id,phase FROM submission_rfbs_write_authorizations
+        WHERE account_id=$1 AND submission_job_id=$2 ORDER BY created_at`,
+      [success.account, successSubmission.submissionJobId])).rows;
+      assert.deepEqual(successPhaseAuthorizations.map(({ phase }) => phase),
+      ["PRE_IMPORT", "PRE_STOCK"]);
+      await assert.rejects(pool.query(`UPDATE submission_rfbs_write_authorizations
+        SET correlation_id='forged-correlation' WHERE id=$1`, [successPhaseAuthorizations[0].id]),
+      (error) => error?.code === "23514");
+      await assert.rejects(pool.query("DELETE FROM submission_rfbs_write_authorizations WHERE id=$1",
+        [successPhaseAuthorizations[0].id]), (error) => error?.code === "23514");
       assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS count FROM auto_listing_submission_links WHERE account_id=$1", [success.account])).rows[0].count), 1);
       assert.notEqual(success.creationEvidenceId, successSubmission.reservation.warehouseValidationEvidenceId);
       assert.equal((await pool.query(`SELECT warehouse_validation_evidence_id FROM auto_listing_jobs
@@ -524,6 +675,261 @@ if (!enabled) {
         FROM auto_listing_upload_attempts WHERE account_id=$1 AND outcome='RESERVED'`, [success.account]))
         .rows[0].warehouse_validation_evidence_id,
       successSubmission.reservation.warehouseValidationEvidenceId);
+      const handoff = (await pool.query(`SELECT * FROM submission_rfbs_handoffs
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [success.account, successSubmission.submissionJobId])).rows[0];
+      assert.equal(handoff.store_id, success.store);
+      assert.equal(handoff.local_warehouse_id, success.warehouse);
+      assert.equal(handoff.platform_warehouse_id, success.platformWarehouseId);
+      assert.equal(handoff.fulfillment_type, "RFBS");
+      assert.equal(handoff.link_identity_evidence_id,
+        successSubmission.reservation.warehouseValidationEvidenceId);
+      assert.equal(handoff.attempt_authorization_evidence_id,
+        successSubmission.reservation.warehouseValidationEvidenceId);
+      assert.equal(handoff.reserved_attempt_id, successSubmission.reservation.reservedAttemptId);
+      assert.equal(handoff.submission_link_id, successSubmission.reservation.id);
+      assert.equal(handoff.business_idempotency_key,
+        `auto-listing:${success.item}:${(await pool.query("SELECT result_hash FROM auto_listing_submission_links WHERE id=$1",
+          [successSubmission.reservation.id])).rows[0].result_hash}`);
+      await assert.rejects(pool.query(`UPDATE submission_rfbs_handoffs
+        SET platform_warehouse_id='forged-platform' WHERE id=$1`, [handoff.id]),
+      (error) => error?.code === "23514");
+      await assert.rejects(pool.query("DELETE FROM submission_rfbs_handoffs WHERE id=$1", [handoff.id]),
+        (error) => error?.code === "23514");
+      await assert.rejects(pool.query(`INSERT INTO submission_rfbs_handoffs (
+          id,account_id,submission_job_id,submission_snapshot_id,store_id,local_warehouse_id,
+          platform_warehouse_id,fulfillment_type,link_identity_evidence_id,
+          attempt_authorization_evidence_id,reserved_attempt_id,submission_link_id,business_idempotency_key
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,'RFBS',$8,$9,$10,$11,$12)`,
+      [`forged-cross-tenant-${suffix}`, attacker.account, successSubmission.submissionJobId,
+        successSubmission.submissionSnapshotId, success.store, success.warehouse,
+        success.platformWarehouseId, successSubmission.reservation.warehouseValidationEvidenceId,
+        successSubmission.reservation.warehouseValidationEvidenceId,
+        successSubmission.reservation.reservedAttemptId, successSubmission.reservation.id,
+        handoff.business_idempotency_key]), (error) => ["23503", "23514"].includes(error?.code));
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_rfbs_handoffs WHERE account_id=$1`, [attacker.account])).rows[0].count), 0);
+
+      // A definitely-not-submitted first delivery gets a fresh attempt evidence and creates one handoff on retry.
+      const safeRetryCallsStart = calls.length;
+      const safeRetry = await createScenarioJob(await seedScenario("safe-retry-handoff"));
+      await assert.rejects(reserveAndCreateSubmission(safeRetry, {
+        async createSubmissionImpl() {
+          throw Object.assign(new Error("controlled definitely-not-submitted fixture"), {
+            code: "CONTROLLED_NOT_SUBMITTED", definitelyNotSubmitted: true,
+          });
+        },
+      }), { code: "AUTO_LISTING_UPLOAD_RETRYABLE", retryable: true });
+      const firstReservation = (await pool.query(`SELECT id,warehouse_validation_evidence_id
+        FROM auto_listing_submission_links WHERE account_id=$1 AND auto_listing_item_id=$2`,
+      [safeRetry.account, safeRetry.item])).rows[0];
+      const firstReservedAttempt = (await pool.query(`SELECT id,warehouse_validation_evidence_id
+        FROM auto_listing_upload_attempts WHERE account_id=$1 AND submission_link_id=$2 AND outcome='RESERVED'
+        ORDER BY created_at,id LIMIT 1`, [safeRetry.account, firstReservation.id])).rows[0];
+      const fbsWarehouseId = `safe-retry-fbs-warehouse-${suffix}`;
+      const fbsPlatformWarehouseId = `safe-retry-fbs-platform-${suffix}`;
+      const fbsSnapshotId = `safe-retry-fbs-snapshot-${suffix}`;
+      const fbsSubmissionJobId = `safe-retry-fbs-job-${suffix}`;
+      await pool.query(`INSERT INTO warehouses
+        (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
+        VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)`,
+      [fbsWarehouseId, safeRetry.store, fbsPlatformWarehouseId]);
+      await pool.query(`INSERT INTO submission_snapshots
+        (id,collect_item_id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+        VALUES ($1,$2,$3,$4,$5,$6,1,$7::jsonb,$8::jsonb)`,
+      [fbsSnapshotId, safeRetry.collect, safeRetry.account, safeRetry.store,
+        `side-by-side-fbs-${suffix}`, H("4"), JSON.stringify([listingVariant(`fbs-${safeRetry.offer}`)]),
+        JSON.stringify([{ offer_id: `fbs-${safeRetry.offer}`, warehouse_id: fbsPlatformWarehouseId, stock: 5 }])]);
+      await pool.query(`INSERT INTO submission_jobs
+        (id,snapshot_id,collect_item_id,account_id,store_id,type,status,correlation_id,item_count)
+        VALUES ($1,$2,$3,$4,$5,'AUTO_LISTING','QUEUE_PENDING',$6,1)`,
+      [fbsSubmissionJobId, fbsSnapshotId, safeRetry.collect, safeRetry.account, safeRetry.store,
+        `side-by-side-fbs-${suffix}`]);
+      const sideBySideFbsWork = await loadSubmissionWorkV3(fbsSubmissionJobId);
+      assert.equal(sideBySideFbsWork.rfbs_authorization_required, false);
+      assert.equal(sideBySideFbsWork.rfbs_handoff_materialization_required, false);
+      assert.equal(sideBySideFbsWork.rfbs_submission_link_id, null);
+      const retryStatusVersion = Number((await pool.query(`SELECT status_version
+        FROM auto_listing_job_items WHERE account_id=$1 AND id=$2`,
+      [safeRetry.account, safeRetry.item])).rows[0].status_version);
+      const safeRetrySubmission = await reserveAndCreateSubmission(safeRetry, {
+        expectedStatusVersion: retryStatusVersion,
+      });
+      const retryHandoff = (await pool.query(`SELECT * FROM submission_rfbs_handoffs
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [safeRetry.account, safeRetrySubmission.submissionJobId])).rows[0];
+      assert.equal(retryHandoff.submission_link_id, firstReservation.id);
+      assert.equal(retryHandoff.link_identity_evidence_id, firstReservation.warehouse_validation_evidence_id);
+      assert.notEqual(retryHandoff.attempt_authorization_evidence_id,
+        firstReservation.warehouse_validation_evidence_id);
+      assert.notEqual(retryHandoff.reserved_attempt_id, firstReservedAttempt.id);
+      await processListingQueueMessage({ submissionJobId: safeRetrySubmission.submissionJobId, action: "submit" });
+      await processListingQueueMessage({ submissionJobId: safeRetrySubmission.submissionJobId, action: "check" });
+      assert.equal(calls.slice(safeRetryCallsStart)
+        .filter(({ path: value }) => value === "/v3/product/import").length, 1);
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query("DELETE FROM submission_rfbs_write_authorizations WHERE submission_job_id=$1",
+          [safeRetrySubmission.submissionJobId]);
+        await pool.query("DELETE FROM submission_rfbs_handoffs WHERE submission_job_id=$1",
+          [safeRetrySubmission.submissionJobId]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      const insertForgedRetryHandoff = (id, linkIdentityEvidenceId, reservedAttemptId) => pool.query(
+        `INSERT INTO submission_rfbs_handoffs (
+          id,account_id,submission_job_id,submission_snapshot_id,store_id,local_warehouse_id,
+          platform_warehouse_id,fulfillment_type,link_identity_evidence_id,
+          attempt_authorization_evidence_id,reserved_attempt_id,submission_link_id,business_idempotency_key
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,'RFBS',$8,$9,$10,$11,$12)`,
+        [id,retryHandoff.account_id,retryHandoff.submission_job_id,retryHandoff.submission_snapshot_id,
+          retryHandoff.store_id,retryHandoff.local_warehouse_id,retryHandoff.platform_warehouse_id,
+          linkIdentityEvidenceId,retryHandoff.attempt_authorization_evidence_id,reservedAttemptId,
+          retryHandoff.submission_link_id,retryHandoff.business_idempotency_key]);
+      await assert.rejects(insertForgedRetryHandoff(`forged-old-attempt-${suffix}`,
+        retryHandoff.link_identity_evidence_id, firstReservedAttempt.id),
+      (error) => error?.code === "23514");
+      await assert.rejects(insertForgedRetryHandoff(`forged-link-evidence-${suffix}`,
+        retryHandoff.attempt_authorization_evidence_id, retryHandoff.reserved_attempt_id),
+      (error) => error?.code === "23514");
+
+      const removeHandoffToSimulateRollingUpgrade = async (submissionJobId) => {
+        await pool.query("SET session_replication_role='replica'");
+        try {
+          await pool.query("DELETE FROM submission_rfbs_handoffs WHERE submission_job_id=$1", [submissionJobId]);
+        } finally { await pool.query("SET session_replication_role='origin'"); }
+      };
+
+      // A pre-061 bound RFBS submission remains RFBS after the local row changes type.
+      const historicalTypeCallsStart = calls.length;
+      const historicalType = await createScenarioJob(await seedScenario("historical-rfbs-type-drift"));
+      const historicalTypeSubmission = await reserveAndCreateSubmission(historicalType);
+      await removeHandoffToSimulateRollingUpgrade(historicalTypeSubmission.submissionJobId);
+      await pool.query("UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+        [historicalType.warehouse, historicalType.store]);
+      await processListingQueueMessage({ submissionJobId: historicalTypeSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(historicalTypeCallsStart)
+        .filter(({ path: value }) => value === "/v3/product/import").length, 0);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_rfbs_write_authorizations WHERE submission_job_id=$1`,
+      [historicalTypeSubmission.submissionJobId])).rows[0].count), 0);
+      await pool.query("UPDATE warehouses SET warehouse_type='RFBS' WHERE id=$1 AND store_id=$2",
+        [historicalType.warehouse, historicalType.store]);
+      await processListingQueueMessage({ submissionJobId: historicalTypeSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(historicalTypeCallsStart)
+        .filter(({ path: value }) => value === "/v3/product/import").length, 1);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count FROM submission_rfbs_handoffs
+        WHERE account_id=$1 AND submission_job_id=$2`,
+      [historicalType.account, historicalTypeSubmission.submissionJobId])).rows[0].count), 1);
+
+      // The same historical RFBS identity fails closed if its local warehouse row is missing.
+      const historicalMissingCallsStart = calls.length;
+      const historicalMissing = await createScenarioJob(await seedScenario("historical-rfbs-missing"));
+      const historicalMissingSubmission = await reserveAndCreateSubmission(historicalMissing);
+      await removeHandoffToSimulateRollingUpgrade(historicalMissingSubmission.submissionJobId);
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query("DELETE FROM warehouses WHERE id=$1 AND store_id=$2",
+          [historicalMissing.warehouse, historicalMissing.store]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      await processListingQueueMessage({ submissionJobId: historicalMissingSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(historicalMissingCallsStart)
+        .filter(({ path: value }) => value === "/v3/product/import").length, 0);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_rfbs_write_authorizations WHERE submission_job_id=$1`,
+      [historicalMissingSubmission.submissionJobId])).rows[0].count), 0);
+
+      // Queue-time status drift is zero-write and recovers only after a fresh read-only verification.
+      const queueCallsStart = calls.length;
+      const queued = await createScenarioJob(await seedScenario("queued-status-drift"));
+      const queuedSubmission = await reserveAndCreateSubmission(queued);
+      await pool.query("UPDATE warehouses SET status='disabled',is_active=FALSE WHERE id=$1 AND store_id=$2",
+        [queued.warehouse, queued.store]);
+      await processListingQueueMessage({ submissionJobId: queuedSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(queueCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 0);
+      assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
+        [queuedSubmission.submissionJobId])).rows[0].status, "RETRY_PENDING");
+      await pool.query("UPDATE warehouses SET status='active',is_active=TRUE WHERE id=$1 AND store_id=$2",
+        [queued.warehouse, queued.store]);
+      await processListingQueueMessage({ submissionJobId: queuedSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(queueCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
+
+      // Queue-time type drift is also zero-write and requires a new matching RFBS read before retry.
+      const queuedTypeCallsStart = calls.length;
+      const queuedType = await createScenarioJob(await seedScenario("queued-type-drift"));
+      const queuedTypeSubmission = await reserveAndCreateSubmission(queuedType);
+      await pool.query("UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+        [queuedType.warehouse, queuedType.store]);
+      await processListingQueueMessage({ submissionJobId: queuedTypeSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(queuedTypeCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 0);
+      assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
+        [queuedTypeSubmission.submissionJobId])).rows[0].status, "RETRY_PENDING");
+      await pool.query("UPDATE warehouses SET warehouse_type='RFBS' WHERE id=$1 AND store_id=$2",
+        [queuedType.warehouse, queuedType.store]);
+      await processListingQueueMessage({ submissionJobId: queuedTypeSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(queuedTypeCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
+
+      // A lost PRE_IMPORT verifier response is safely retried and product import still occurs exactly once.
+      const responseLossCallsStart = calls.length;
+      const responseLoss = await createScenarioJob(await seedScenario("phase-response-loss"));
+      const responseLossSubmission = await reserveAndCreateSubmission(responseLoss);
+      await processListingQueueMessage({ submissionJobId: responseLossSubmission.submissionJobId, action: "submit" });
+      assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
+        [responseLossSubmission.submissionJobId])).rows[0].status, "RETRY_PENDING");
+      assert.equal(calls.slice(responseLossCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 0);
+      await processListingQueueMessage({ submissionJobId: responseLossSubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(responseLossCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
+
+      // An expired immutable upload evidence is renewed for PRE_IMPORT instead of retrying forever.
+      const queueExpiryCallsStart = calls.length;
+      const queueExpiry = await createScenarioJob(await seedScenario("queued-expiry-drift"));
+      const queueExpirySubmission = await reserveAndCreateSubmission(queueExpiry);
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query(`UPDATE auto_listing_rfbs_warehouse_evidence
+          SET observed_at=NOW()-INTERVAL '20 minutes',expires_at=NOW()-INTERVAL '10 minutes'
+          WHERE account_id=$1 AND id=$2`,
+        [queueExpiry.account, queueExpirySubmission.reservation.warehouseValidationEvidenceId]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      await processListingQueueMessage({ submissionJobId: queueExpirySubmission.submissionJobId, action: "submit" });
+      assert.equal(calls.slice(queueExpiryCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_rfbs_write_authorizations WHERE account_id=$1 AND submission_job_id=$2 AND phase='PRE_IMPORT'`,
+      [queueExpiry.account, queueExpirySubmission.submissionJobId])).rows[0].count), 1);
+
+      // Product acceptance followed by a type drift never writes stock or re-imports.
+      const postImportCallsStart = calls.length;
+      const drifted = await createScenarioJob(await seedScenario("post-import-type-drift"));
+      const driftedSubmission = await reserveAndCreateSubmission(drifted);
+      await processListingQueueMessage({ submissionJobId: driftedSubmission.submissionJobId, action: "submit" });
+      await pool.query("UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+        [drifted.warehouse, drifted.store]);
+      await processListingQueueMessage({ submissionJobId: driftedSubmission.submissionJobId, action: "check" });
+      assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
+        [driftedSubmission.submissionJobId])).rows[0].status, "PARTIAL_SUCCESS");
+      await processListingQueueMessage({ submissionJobId: driftedSubmission.submissionJobId, action: "submit" });
+      await processListingQueueMessage({ submissionJobId: driftedSubmission.submissionJobId, action: "check" });
+      assert.equal(calls.slice(postImportCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
+      assert.equal(calls.slice(postImportCallsStart).filter(({ path: value }) => value === "/v2/products/stocks").length, 0);
+
+      // Expired upload evidence is independently renewed for PRE_STOCK and stock completes once.
+      const postExpiryCallsStart = calls.length;
+      const postExpiry = await createScenarioJob(await seedScenario("post-import-expiry-drift"));
+      const postExpirySubmission = await reserveAndCreateSubmission(postExpiry);
+      await processListingQueueMessage({ submissionJobId: postExpirySubmission.submissionJobId, action: "submit" });
+      await pool.query("SET session_replication_role='replica'");
+      try {
+        await pool.query(`UPDATE auto_listing_rfbs_warehouse_evidence
+          SET observed_at=NOW()-INTERVAL '20 minutes',expires_at=NOW()-INTERVAL '10 minutes'
+          WHERE account_id=$1 AND id=$2`,
+        [postExpiry.account, postExpirySubmission.reservation.warehouseValidationEvidenceId]);
+      } finally { await pool.query("SET session_replication_role='origin'"); }
+      await processListingQueueMessage({ submissionJobId: postExpirySubmission.submissionJobId, action: "check" });
+      assert.equal((await pool.query("SELECT status FROM submission_jobs WHERE id=$1",
+        [postExpirySubmission.submissionJobId])).rows[0].status, "SUCCEEDED");
+      assert.equal(calls.slice(postExpiryCallsStart).filter(({ path: value }) => value === "/v3/product/import").length, 1);
+      assert.equal(calls.slice(postExpiryCallsStart).filter(({ path: value }) => value === "/v2/products/stocks").length, 1);
+      assert.equal(Number((await pool.query(`SELECT COUNT(*)::int AS count
+        FROM submission_rfbs_write_authorizations WHERE account_id=$1 AND submission_job_id=$2 AND phase='PRE_STOCK'`,
+      [postExpiry.account, postExpirySubmission.submissionJobId])).rows[0].count), 1);
 
       // Ambiguous product response is reconciled and never re-imported.
       const ambiguousCallsStart = calls.length;
@@ -569,4 +975,5 @@ if (!enabled) {
 
 let createSubmissionV3;
 let findListingPreparationReplayV3;
+let loadSubmissionWorkV3;
 let processListingQueueMessage;

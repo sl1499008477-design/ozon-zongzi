@@ -145,7 +145,7 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
   const admin = await adminPool.connect();
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = `auto_listing_partial_success_${suffix}`;
-  const ids = Object.fromEntries(["account", "store", "snapshot", "submissionJob"]
+  const ids = Object.fromEntries(["account", "store", "warehouse", "snapshot", "submissionJob"]
     .map((key) => [key, `${key}-${suffix}`]));
   const calls = [];
   const server = http.createServer((request, response) => {
@@ -201,6 +201,10 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
       [ids.account, `partial-${suffix}`]);
     await admin.query("INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,'Partial','Partial',$2,'active',$3)",
       [ids.store, `client-${suffix}`, ids.account]);
+    await admin.query(`INSERT INTO warehouses
+      (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
+      VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)`,
+      [ids.warehouse, ids.store, `platform-${suffix}`]);
     await admin.query(`INSERT INTO store_credentials
       (store_id,client_id,encrypted_api_key,iv,auth_tag,algorithm,key_version)
       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
