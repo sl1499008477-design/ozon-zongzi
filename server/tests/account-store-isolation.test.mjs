@@ -139,14 +139,20 @@ assert.deepEqual(payloadB.caches.warehouses.map((item) => item.id), [
 assert.deepEqual(payloadB.caches.warehouses[0].listingEligibility, {
   eligible: true,
   code: "ELIGIBLE_ACTIVE_FBS",
+  fulfillmentType: "FBS",
+  evidenceRequired: false,
 });
 assert.deepEqual(payloadB.caches.warehouses[1].listingEligibility, {
   eligible: false,
-  code: "TYPE_NOT_FBS",
+  code: "UNSUPPORTED_FULFILLMENT_TYPE",
+  fulfillmentType: "FBO",
+  evidenceRequired: false,
 });
 assert.deepEqual(payloadB.caches.warehouses[2].listingEligibility, {
   eligible: false,
   code: "NO_ACTIVE_PRODUCT_ASSOCIATION",
+  fulfillmentType: "FBS",
+  evidenceRequired: false,
 });
 assert.equal(payloadB.caches.warehouses.some((item) => item.warehouse_id === "fbs-a"), false);
 assert.deepEqual(payloadB.caches.favorites.map((item) => item.id), ["favorite_b"]);

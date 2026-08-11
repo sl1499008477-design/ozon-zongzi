@@ -442,7 +442,7 @@ try {
   assert.equal(publicManual.targetTypeId, 91670);
 
   const ineligibleWarehouseCases = [
-    { warehouseId: fboWarehouseId, reason: "TYPE_NOT_FBS" },
+    { warehouseId: fboWarehouseId, reason: "UNSUPPORTED_FULFILLMENT_TYPE" },
     { warehouseId: archivedOnlyWarehouseId, reason: "NO_ACTIVE_PRODUCT_ASSOCIATION" },
     { warehouseId: foreignWarehouseId, reason: "STORE_SCOPE_MISMATCH" },
     { warehouseId: "wh_placeholder", reason: "STORE_SCOPE_MISMATCH" },

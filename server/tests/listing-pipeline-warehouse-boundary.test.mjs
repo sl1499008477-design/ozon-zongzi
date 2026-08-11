@@ -47,7 +47,7 @@ test("PostgreSQL boundary accepts an associated active FBS warehouse even at zer
 
 test("PostgreSQL boundary returns the shared eligibility reasons", async () => {
   const cases = [
-    { row: warehouseRecord({ warehouse_type: "fbo" }), reason: "TYPE_NOT_FBS" },
+    { row: warehouseRecord({ warehouse_type: "fbo" }), reason: "UNSUPPORTED_FULFILLMENT_TYPE" },
     { row: warehouseRecord({ is_active: false }), reason: "WAREHOUSE_DISABLED" },
     {
       row: warehouseRecord({ has_active_product_association: false }),
@@ -62,6 +62,15 @@ test("PostgreSQL boundary returns the shared eligibility reasons", async () => {
         && error?.body?.reason === reason,
     );
   }
+});
+
+test("PostgreSQL boundary rejects RFBS stock selections without validation evidence", async () => {
+  await assert.rejects(
+    validate(clientReturning([warehouseRecord({ warehouse_type: "rFBS" })])),
+    (error) => error?.status === 422
+      && error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE"
+      && error?.body?.reason === "RFBS_VALIDATION_REQUIRED",
+  );
 });
 
 test("unknown, cross-store, and internal warehouse IDs share a non-disclosing scope error", async () => {

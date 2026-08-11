@@ -1,10 +1,12 @@
 export const LISTING_WAREHOUSE_ELIGIBILITY_CODES = Object.freeze({
   eligible: "ELIGIBLE_ACTIVE_FBS",
+  eligibleRfbs: "ELIGIBLE_ACTIVE_RFBS",
   storeMismatch: "STORE_SCOPE_MISMATCH",
-  typeMismatch: "TYPE_NOT_FBS",
+  unsupportedFulfillmentType: "UNSUPPORTED_FULFILLMENT_TYPE",
   missingWarehouseId: "WAREHOUSE_ID_MISSING",
   disabled: "WAREHOUSE_DISABLED",
   noActiveProductAssociation: "NO_ACTIVE_PRODUCT_ASSOCIATION",
+  rfbsValidationRequired: "RFBS_VALIDATION_REQUIRED",
 });
 
 const DISABLED_STATUSES = new Set([
@@ -18,6 +20,7 @@ const DISABLED_STATUSES = new Set([
 
 const clean = (value) => String(value ?? "").trim();
 const lower = (value) => clean(value).toLowerCase();
+const upper = (value) => clean(value).toUpperCase();
 
 const firstText = (...values) => {
   for (const value of values) {
@@ -139,7 +142,35 @@ const productProvesAssociation = ({
     stockWarehouseId(row) === warehouseId && stockSource(row, fallbackSource) === "fbs");
 };
 
-const result = (eligible, code) => ({ eligible, code });
+const fulfillmentType = (warehouse = {}) => warehouseType(warehouse).toUpperCase() || "UNKNOWN";
+
+const result = (eligible, code, type, evidenceRequired) => ({
+  eligible,
+  code,
+  fulfillmentType: type,
+  evidenceRequired,
+});
+
+const warehouseRecordId = (warehouse = {}) => firstText(
+  warehouse.id,
+  warehouse.warehouseRecordId,
+  warehouse.warehouse_record_id,
+);
+
+const validRfbsEvidence = ({ evidence, warehouse, accountId, targetStoreId, now } = {}) => {
+  if (!evidence || typeof evidence !== "object") return false;
+  const expiresAt = Date.parse(evidence.expiresAt);
+  const evaluatedAt = Date.parse(now ?? new Date().toISOString());
+  return evidence.outcome === "PASSED"
+    && clean(evidence.accountId) === accountId
+    && clean(evidence.storeId) === targetStoreId
+    && clean(evidence.warehouseRecordId) === warehouseRecordId(warehouse)
+    && clean(evidence.platformWarehouseId) === platformWarehouseId(warehouse)
+    && upper(evidence.fulfillmentType) === "RFBS"
+    && Number.isFinite(expiresAt)
+    && Number.isFinite(evaluatedAt)
+    && expiresAt > evaluatedAt;
+};
 
 export function listingWarehouseEligibility({
   warehouse,
@@ -147,26 +178,40 @@ export function listingWarehouseEligibility({
   targetStoreId,
   accountId,
   hasActiveProductAssociation,
+  validationEvidence,
+  now,
 } = {}) {
   const scopedTargetStoreId = clean(targetStoreId);
   const scopedAccountId = clean(accountId);
   const record = warehouse && typeof warehouse === "object" ? warehouse : null;
   if (!record || !scopedTargetStoreId || warehouseStoreId(record) !== scopedTargetStoreId) {
-    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.storeMismatch);
+    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.storeMismatch, "UNKNOWN", false);
   }
   const recordAccountId = warehouseAccountId(record);
   if (scopedAccountId && recordAccountId && recordAccountId !== scopedAccountId) {
-    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.storeMismatch);
+    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.storeMismatch, "UNKNOWN", false);
   }
-  if (warehouseType(record) !== "fbs") {
-    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.typeMismatch);
-  }
+  const type = fulfillmentType(record);
   const warehouseId = platformWarehouseId(record);
   if (!warehouseId || lower(warehouseId).startsWith("wh_")) {
-    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.missingWarehouseId);
+    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.missingWarehouseId, type, type === "RFBS");
   }
   if (warehouseDisabled(record)) {
-    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.disabled);
+    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.disabled, type, type === "RFBS");
+  }
+  if (type !== "FBS" && type !== "RFBS") {
+    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.unsupportedFulfillmentType, type, false);
+  }
+  if (type === "RFBS") {
+    return validRfbsEvidence({
+      evidence: validationEvidence,
+      warehouse: record,
+      accountId: scopedAccountId,
+      targetStoreId: scopedTargetStoreId,
+      now,
+    })
+      ? result(true, LISTING_WAREHOUSE_ELIGIBILITY_CODES.eligibleRfbs, "RFBS", true)
+      : result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.rfbsValidationRequired, "RFBS", true);
   }
   const associated = typeof hasActiveProductAssociation === "boolean"
     ? hasActiveProductAssociation
@@ -177,9 +222,9 @@ export function listingWarehouseEligibility({
         warehouseId,
       }));
   if (!associated) {
-    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.noActiveProductAssociation);
+    return result(false, LISTING_WAREHOUSE_ELIGIBILITY_CODES.noActiveProductAssociation, "FBS", false);
   }
-  return result(true, LISTING_WAREHOUSE_ELIGIBILITY_CODES.eligible);
+  return result(true, LISTING_WAREHOUSE_ELIGIBILITY_CODES.eligible, "FBS", false);
 }
 
 export function assertListingWarehouseEligible(input = {}) {
