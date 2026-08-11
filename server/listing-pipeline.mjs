@@ -550,6 +550,9 @@ export async function assertListingStocksBelongToTarget({
   accountId,
   storeId,
   stocks = [],
+  warehouseValidationEvidenceId = null,
+  warehouseFulfillmentType = null,
+  submissionIdempotencyKey = null,
   client = null,
 } = {}) {
   const warehouseIds = [...new Set(
@@ -558,10 +561,17 @@ export async function assertListingStocksBelongToTarget({
       .filter(Boolean),
   )];
   if (!warehouseIds.length) return true;
+  const expectedFulfillmentType = clean(warehouseFulfillmentType, 16).toUpperCase();
+  if (expectedFulfillmentType && !["FBS", "RFBS"].includes(expectedFulfillmentType)) {
+    throw Object.assign(new Error("请选择当前店铺的活跃 FBS 仓库"), { status: 422,
+      code: "LISTING_WAREHOUSE_NOT_ELIGIBLE", body: { reason: "UNSUPPORTED_FULFILLMENT_TYPE" } });
+  }
   const database = client || await poolReady();
   const result = await database.query(
     `SELECT DISTINCT
        requested.id AS requested_id,
+       w.id,
+       s.owner_account_id AS account_id,
        w.store_id,
        w.warehouse_id,
        w.warehouse_type,
@@ -577,13 +587,38 @@ export async function assertListingStocksBelongToTarget({
            AND p.store_id=w.store_id
            AND p.is_archived=FALSE
            AND LOWER(ps.source)='fbs'
-       ) AS has_active_product_association
+       ) AS has_active_product_association,
+       evidence.id AS evidence_id,evidence.account_id AS evidence_account_id,
+       evidence.store_id AS evidence_store_id,evidence.warehouse_record_id AS evidence_warehouse_record_id,
+       evidence.platform_warehouse_id AS evidence_platform_warehouse_id,
+       evidence.fulfillment_type AS evidence_fulfillment_type,evidence.outcome AS evidence_outcome,
+       evidence.expires_at AS evidence_expires_at,link.id AS evidence_link_id,
+       upload_auth.id AS evidence_attempt_id,
+       link.idempotency_key AS evidence_link_idempotency_key
      FROM unnest($3::text[]) AS requested(id)
      JOIN warehouses w ON w.warehouse_id=requested.id
      JOIN stores s ON s.id=w.store_id
+     LEFT JOIN auto_listing_rfbs_warehouse_evidence AS evidence
+       ON evidence.account_id=s.owner_account_id AND evidence.id=$4
+      AND evidence.store_id=w.store_id AND evidence.warehouse_record_id=w.id
+      AND evidence.platform_warehouse_id=w.warehouse_id
+      AND evidence.fulfillment_type='RFBS' AND evidence.outcome='PASSED'
+      AND evidence.expires_at>STATEMENT_TIMESTAMP()
+     LEFT JOIN auto_listing_submission_links AS link
+       ON link.account_id=evidence.account_id AND link.target_store_id=w.store_id
+      AND link.idempotency_key=$5
+      AND link.status IN ('RESERVED','SUBMITTED','RECONCILING','SUCCEEDED')
+     LEFT JOIN auto_listing_upload_attempts AS upload_auth
+       ON upload_auth.account_id=link.account_id AND upload_auth.submission_link_id=link.id
+      AND upload_auth.auto_listing_item_id=link.auto_listing_item_id
+      AND upload_auth.job_id=link.job_id AND upload_auth.target_store_id=link.target_store_id
+      AND upload_auth.target_warehouse_id=w.id
+      AND upload_auth.warehouse_validation_evidence_id=evidence.id
+      AND upload_auth.outcome='RESERVED'
      WHERE s.owner_account_id=$1
        AND w.store_id=$2`,
-    [clean(accountId, 240), clean(storeId, 240), warehouseIds],
+    [clean(accountId, 240), clean(storeId, 240), warehouseIds,
+      clean(warehouseValidationEvidenceId, 240) || null, clean(submissionIdempotencyKey, 512) || null],
   );
   const recordsByRequestedId = new Map(
     (Array.isArray(result.rows) ? result.rows : [])
@@ -591,6 +626,13 @@ export async function assertListingStocksBelongToTarget({
   );
   for (const warehouseId of warehouseIds) {
     const warehouse = recordsByRequestedId.get(warehouseId) || null;
+    const currentFulfillmentType = clean(warehouse?.warehouse_type, 16).toUpperCase();
+    if (expectedFulfillmentType && currentFulfillmentType !== expectedFulfillmentType) {
+      throw Object.assign(new Error("请选择当前店铺的活跃 FBS 仓库"), { status: 422,
+        code: "LISTING_WAREHOUSE_NOT_ELIGIBLE",
+        body: { reason: expectedFulfillmentType === "RFBS"
+          ? "RFBS_VALIDATION_REQUIRED" : "UNSUPPORTED_FULFILLMENT_TYPE" } });
+    }
     assertListingWarehouseEligible({
       warehouse,
       targetStoreId: clean(storeId, 240),
@@ -598,6 +640,17 @@ export async function assertListingStocksBelongToTarget({
       hasActiveProductAssociation: warehouse
         ? warehouse.has_active_product_association === true
         : false,
+      validationEvidence: warehouse?.evidence_id && warehouse?.evidence_link_id && warehouse?.evidence_attempt_id
+        && warehouse.evidence_link_idempotency_key === clean(submissionIdempotencyKey, 512) ? {
+        accountId: warehouse.evidence_account_id,
+        storeId: warehouse.evidence_store_id,
+        warehouseRecordId: warehouse.evidence_warehouse_record_id,
+        platformWarehouseId: warehouse.evidence_platform_warehouse_id,
+        fulfillmentType: warehouse.evidence_fulfillment_type,
+        outcome: warehouse.evidence_outcome,
+        expiresAt: warehouse.evidence_expires_at instanceof Date
+          ? warehouse.evidence_expires_at.toISOString() : warehouse.evidence_expires_at,
+      } : null,
     });
   }
   return true;
@@ -1257,6 +1310,8 @@ export async function createSubmissionV3({
   versions = {},
   retryFailed = false,
   frozenProductDraft = null,
+  warehouseValidationEvidenceId = null,
+  warehouseFulfillmentType = null,
 }) {
   if (!listingPipelineEnabled()) return null;
   accountId = clean(accountId, 240);
@@ -1291,6 +1346,15 @@ export async function createSubmissionV3({
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [baseIdempotencyKey]);
       const replay = await readListingPreparationReplay(client, preparation, baseIdempotencyKey);
       if (replay) {
+        await assertListingStocksBelongToTarget({
+          accountId: preparation.accountId,
+          storeId: preparation.targetStoreId,
+          stocks: Array.isArray(stocks) ? stocks : [],
+          warehouseValidationEvidenceId,
+          warehouseFulfillmentType,
+          submissionIdempotencyKey: preparation.idempotencyKey,
+          client,
+        });
         try {
           assertCollectItemListingPayloadsReady(type === "AUTO_LISTING" ? currentCollectItem : collectItem, normalizedItems);
         } catch (error) {
@@ -1354,6 +1418,9 @@ export async function createSubmissionV3({
         accountId: preparation.accountId,
         storeId: frozenStoreId,
         stocks: safeStocks,
+        warehouseValidationEvidenceId,
+        warehouseFulfillmentType,
+        submissionIdempotencyKey: preparation.idempotencyKey,
         client,
       });
     }

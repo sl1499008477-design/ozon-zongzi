@@ -178,7 +178,7 @@ try {
     stocks: [{ warehouse_id: 1, stock: 0 }],
   }), true);
   for (const { warehouseId, reason } of [
-    { warehouseId: 3, reason: "TYPE_NOT_FBS" },
+    { warehouseId: 3, reason: "UNSUPPORTED_FULFILLMENT_TYPE" },
     { warehouseId: 4, reason: "NO_ACTIVE_PRODUCT_ASSOCIATION" },
     { warehouseId: 2, reason: "STORE_SCOPE_MISMATCH" },
     { warehouseId: warehouseAId, reason: "STORE_SCOPE_MISMATCH" },

@@ -4,6 +4,9 @@ import { enqueueAutoListingUploadTask } from "./auto-listing-upload-task-postgre
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
+const WAREHOUSE_EVIDENCE_KEYS = Object.freeze(["schemaVersion", "accountId", "storeId",
+  "warehouseRecordId", "platformWarehouseId", "fulfillmentType", "status", "outcome",
+  "observedAt", "expiresAt", "evidenceHash", "correlationId", "actorAccountId"]);
 
 function repositoryError(code = "AUTO_LISTING_UPLOAD_REPOSITORY_INVALID", status = 422, retryable = false) {
   const error = new Error(code);
@@ -12,6 +15,8 @@ function repositoryError(code = "AUTO_LISTING_UPLOAD_REPOSITORY_INVALID", status
   error.retryable = retryable;
   return error;
 }
+
+const isRepositoryError = (error) => /^(?:AUTO_LISTING_|RFBS_)/u.test(String(error?.code || ""));
 
 function id(value) {
   const result = typeof value === "string" ? value.trim() : "";
@@ -34,6 +39,40 @@ function hash(value) {
   return value;
 }
 
+function exactWarehouseValidation(value, scope) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Reflect.ownKeys(value).length !== WAREHOUSE_EVIDENCE_KEYS.length
+    || !Reflect.ownKeys(value).every((name) => typeof name === "string" && WAREHOUSE_EVIDENCE_KEYS.includes(name))) {
+    throw repositoryError();
+  }
+  const result = {};
+  for (const name of WAREHOUSE_EVIDENCE_KEYS) {
+    const candidate = value[name];
+    if (typeof candidate !== "string" || !candidate || candidate !== candidate.trim()
+      || candidate.length > 500 || /[\u0000-\u001f\u007f]/u.test(candidate)) throw repositoryError();
+    result[name] = candidate;
+  }
+  if (result.schemaVersion !== "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1"
+    || result.accountId !== scope.accountId || result.actorAccountId !== scope.accountId
+    || result.storeId !== scope.targetStoreId || result.warehouseRecordId !== scope.targetWarehouseId
+    || result.platformWarehouseId !== scope.targetWarehousePlatformId || result.fulfillmentType !== "RFBS"
+    || result.status !== "ACTIVE" || result.outcome !== "PASSED" || result.correlationId !== scope.correlationId
+    || !HASH.test(result.evidenceHash) || /^wh_/iu.test(result.platformWarehouseId)) throw repositoryError();
+  const observed = new Date(result.observedAt); const expires = new Date(result.expiresAt);
+  if (!Number.isFinite(observed.getTime()) || !Number.isFinite(expires.getTime())
+    || observed.toISOString() !== result.observedAt || expires.toISOString() !== result.expiresAt
+    || expires <= observed) throw repositoryError();
+  const normalized = { schemaVersion: result.schemaVersion, accountId: result.accountId,
+    storeId: result.storeId, warehouseRecordId: result.warehouseRecordId,
+    platformWarehouseId: result.platformWarehouseId, fulfillmentType: result.fulfillmentType,
+    status: result.status, outcome: result.outcome, observedAt: result.observedAt,
+    expiresAt: result.expiresAt, correlationId: result.correlationId, actorAccountId: result.actorAccountId };
+  if (result.evidenceHash !== crypto.createHash("sha256").update(JSON.stringify(normalized), "utf8").digest("hex")) {
+    throw repositoryError();
+  }
+  return Object.freeze(result);
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (!value || typeof value !== "object") return value;
@@ -51,6 +90,7 @@ function mapLink(row) {
     uploadPolicyVersionId: row.upload_policy_version_id,
     publicationPolicyHash: row.publication_policy_hash, mediaEvidenceHash: row.media_evidence_hash,
     directHealthEvidenceId: row.direct_health_evidence_id || null,
+    warehouseValidationEvidenceId: row.warehouse_validation_evidence_id || null,
     claimToken: row.claim_token || null,
     claimOwned: row.claim_owned === true, claimExpiresAt: row.claim_expires_at || null,
     attemptGeneration: Number(row.attempt_generation || 1),
@@ -103,7 +143,7 @@ function richGroupKey(row) {
 const CONTEXT_SQL = `
   SELECT item.id,item.account_id,item.job_id,item.snapshot_id,item.status,item.status_version,
     item.target_store_id,item.target_warehouse_id,item.active_content_plan_id,
-    job.config_snapshot,job.config_hash,job.upload_policy_version_id,
+    job.config_snapshot,job.config_hash,job.upload_policy_version_id,job.warehouse_validation_evidence_id,
     source.snapshot_hash,
     base.id AS listing_base_id,base.source_snapshot_id,base.collect_item_id,base.product_draft_id,
     base.product_draft_version,base.product_draft_data_hash,base.ozon_ready_variants,
@@ -119,7 +159,29 @@ const CONTEXT_SQL = `
       AND credential.iv<>'' AND credential.auth_tag<>'') AS credentials_usable,
     collect.id AS current_collect_item_id,to_jsonb(collect) AS collect_row,
     draft.id AS current_draft_id,draft.version AS current_draft_version,
-    draft.data_hash AS current_draft_data_hash,draft.data AS current_draft_data
+    draft.data_hash AS current_draft_data_hash,draft.data AS current_draft_data,
+    creation_evidence.store_id AS creation_evidence_store_id,
+    creation_evidence.warehouse_record_id AS creation_evidence_warehouse_record_id,
+    creation_evidence.platform_warehouse_id AS creation_evidence_platform_warehouse_id,
+    creation_evidence.schema_version AS creation_evidence_schema_version,
+    creation_evidence.fulfillment_type AS creation_evidence_fulfillment_type,
+    creation_evidence.status AS creation_evidence_status,creation_evidence.outcome AS creation_evidence_outcome,
+    creation_evidence.observed_at AS creation_evidence_observed_at,
+    creation_evidence.expires_at AS creation_evidence_expires_at,
+    creation_evidence.evidence_hash AS creation_evidence_hash,
+    creation_evidence.correlation_id AS creation_evidence_correlation_id,
+    creation_evidence.actor_account_id AS creation_evidence_actor_account_id,
+    terminal.id AS terminal_link_id,terminal.job_id AS terminal_job_id,
+    terminal.status AS terminal_status,terminal.idempotency_key AS terminal_idempotency_key,
+    terminal.result_hash AS terminal_result_hash,terminal.request_hash AS terminal_request_hash,
+    terminal.target_store_id AS terminal_target_store_id,
+    terminal.listing_base_id AS terminal_listing_base_id,terminal.active_plan_id AS terminal_active_plan_id,
+    terminal.source_hash AS terminal_source_hash,terminal.config_hash AS terminal_config_hash,
+    terminal.upload_policy_version_id AS terminal_upload_policy_version_id,
+    terminal.publication_policy_hash AS terminal_publication_policy_hash,
+    terminal.media_evidence_hash AS terminal_media_evidence_hash,
+    terminal.submission_snapshot_id AS terminal_submission_snapshot_id,
+    terminal.submission_job_id AS terminal_submission_job_id
   FROM auto_listing_job_items AS item
   JOIN auto_listing_jobs AS job ON job.account_id=item.account_id AND job.id=item.job_id
   JOIN auto_listing_source_snapshots AS source ON source.account_id=item.account_id AND source.id=item.snapshot_id
@@ -131,6 +193,11 @@ const CONTEXT_SQL = `
     ON policy.account_id=item.account_id AND policy.id=job.upload_policy_version_id
   JOIN stores AS store ON store.owner_account_id=item.account_id AND store.id=item.target_store_id
   LEFT JOIN store_credentials AS credential ON credential.store_id=store.id
+  LEFT JOIN auto_listing_rfbs_warehouse_evidence AS creation_evidence
+    ON creation_evidence.account_id=job.account_id AND creation_evidence.id=job.warehouse_validation_evidence_id
+  LEFT JOIN auto_listing_submission_links AS terminal
+    ON terminal.account_id=item.account_id AND terminal.auto_listing_item_id=item.id
+   AND terminal.status IN ('SUBMITTED','RECONCILING','SUCCEEDED')
   JOIN collect_items AS collect ON collect.account_id=item.account_id AND collect.id=base.collect_item_id
     AND collect.deleted_at IS NULL
   JOIN product_drafts AS draft ON draft.id=collect.current_draft_id AND draft.collect_item_id=collect.id
@@ -175,7 +242,7 @@ const WAREHOUSE_SQL = `
   FROM warehouses w WHERE w.store_id=$1
 `;
 
-function contextFrom(row, assets, rich, warehouses) {
+function contextFrom(row, assets, rich, warehouses, publications = []) {
   const base = listingBase(row);
   const selectedWarehouse = warehouses.find((warehouse) => warehouse.id === row.target_warehouse_id);
   return {
@@ -187,6 +254,25 @@ function contextFrom(row, assets, rich, warehouses) {
     listingBase: base,
     frozenConfig: { config: row.config_snapshot, configHash: row.config_hash },
     targetWarehousePlatformId: selectedWarehouse?.warehouse_id || null,
+    warehouseFulfillmentType: String(selectedWarehouse?.warehouse_type || "").trim().toUpperCase() || null,
+    creationWarehouseValidation: row.warehouse_validation_evidence_id ? {
+      evidenceId: row.warehouse_validation_evidence_id,
+      schemaVersion: row.creation_evidence_schema_version,
+      accountId: row.account_id,
+      storeId: row.creation_evidence_store_id,
+      warehouseRecordId: row.creation_evidence_warehouse_record_id,
+      platformWarehouseId: row.creation_evidence_platform_warehouse_id,
+      fulfillmentType: row.creation_evidence_fulfillment_type,
+      status: row.creation_evidence_status,
+      outcome: row.creation_evidence_outcome,
+      observedAt: row.creation_evidence_observed_at instanceof Date
+        ? row.creation_evidence_observed_at.toISOString() : row.creation_evidence_observed_at,
+      expiresAt: row.creation_evidence_expires_at instanceof Date
+        ? row.creation_evidence_expires_at.toISOString() : row.creation_evidence_expires_at,
+      evidenceHash: row.creation_evidence_hash,
+      correlationId: row.creation_evidence_correlation_id,
+      actorAccountId: row.creation_evidence_actor_account_id,
+    } : null,
     visualGroups: visualGroups({ ...row, plan_id: row.plan_id }),
     acceptedAssets: assets.map((asset) => ({
       accountId: asset.account_id, jobId: asset.job_id, itemId: asset.item_id, planId: asset.plan_id,
@@ -194,6 +280,25 @@ function contextFrom(row, assets, rich, warehouses) {
       role: asset.role, status: asset.status, contentHash: asset.content_hash,
       width: Number(asset.width), height: Number(asset.height),
     })),
+    terminalPublishedAssets: publications.map((asset) => ({
+      accountId: asset.account_id, jobId: asset.job_id, itemId: asset.item_id, planId: asset.plan_id,
+      assetId: asset.id, visualGroupKey: asset.visual_group_key, slotKey: asset.slot_key,
+      role: asset.role, status: asset.status, contentHash: asset.content_hash,
+      width: Number(asset.width), height: Number(asset.height), publishedUrl: asset.public_url,
+      publicationVersion: asset.publication_version,
+    })),
+    terminalSubmission: row.terminal_link_id ? {
+      id: row.terminal_link_id, jobId: row.terminal_job_id, status: row.terminal_status,
+      idempotencyKey: row.terminal_idempotency_key, resultHash: row.terminal_result_hash,
+      requestHash: row.terminal_request_hash, targetStoreId: row.terminal_target_store_id,
+      listingBaseId: row.terminal_listing_base_id, activePlanId: row.terminal_active_plan_id,
+      sourceHash: row.terminal_source_hash, configHash: row.terminal_config_hash,
+      uploadPolicyVersionId: row.terminal_upload_policy_version_id,
+      publicationPolicyHash: row.terminal_publication_policy_hash,
+      mediaEvidenceHash: row.terminal_media_evidence_hash,
+      submissionSnapshotId: row.terminal_submission_snapshot_id,
+      submissionJobId: row.terminal_submission_job_id,
+    } : null,
     acceptedRichContent: rich.map((entry) => ({
       accountId: entry.account_id, jobId: entry.job_id, itemId: entry.item_id, planId: entry.plan_id,
       visualGroupKey: richGroupKey(entry), status: entry.status, content: entry.rich_content, outputHash: entry.output_hash,
@@ -251,7 +356,8 @@ function lockedMediaEvidenceHash(row, assets, rich, publications) {
 
 const LINK_COLUMNS = `id,job_id,status,idempotency_key,result_hash,target_store_id,listing_base_id,active_plan_id,
   source_hash,config_hash,request_hash,upload_policy_version_id,publication_policy_hash,media_evidence_hash,
-  direct_health_evidence_id,claim_token,claim_expires_at,attempt_generation,submission_snapshot_id,submission_job_id`;
+  direct_health_evidence_id,warehouse_validation_evidence_id,claim_token,claim_expires_at,attempt_generation,
+  submission_snapshot_id,submission_job_id`;
 
 function assertReusableReservation(row, values) {
   if (!row || ["SUBMITTED", "RECONCILING", "SUCCEEDED"].includes(row.status)) return;
@@ -266,19 +372,46 @@ function assertReusableReservation(row, values) {
 
 async function insertAttempt(database, randomUUID, input = {}) {
   const directHealthEvidenceId = optionalId(input.directHealthEvidenceId);
-  if ((input.action === "DIRECT_UPLOAD") !== Boolean(directHealthEvidenceId)) throw repositoryError();
-  await database.query(
+  const warehouseValidationEvidenceId = optionalId(input.warehouseValidationEvidenceId);
+  if ((input.action === "DIRECT_UPLOAD") !== Boolean(directHealthEvidenceId)
+    || (input.outcome === "RESERVED" && !warehouseValidationEvidenceId)) throw repositoryError();
+  const inserted = await database.query(
     `INSERT INTO auto_listing_upload_attempts (
        id,account_id,job_id,auto_listing_item_id,submission_link_id,actor_account_id,action,
        expected_item_version,target_store_id,target_warehouse_id,product_draft_hash,request_hash,
-       result_hash,direct_health_evidence_id,outcome,error_code,error_safe,listing_pipeline_response_summary,correlation_id
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19)`,
+       result_hash,direct_health_evidence_id,warehouse_validation_evidence_id,outcome,error_code,error_safe,
+       listing_pipeline_response_summary,correlation_id
+     ) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20
+        FROM auto_listing_submission_links AS link
+        WHERE link.account_id=$2 AND link.id=$5
+          AND link.auto_listing_item_id=$4 AND link.job_id=$3 AND link.target_store_id=$9
+          AND (($15::text IS NULL AND link.warehouse_validation_evidence_id IS NULL
+                AND $16::text<>'RESERVED')
+            OR ($15::text IS NOT NULL AND link.warehouse_validation_evidence_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM auto_listing_rfbs_warehouse_evidence AS evidence
+              WHERE evidence.account_id=$2 AND evidence.id=$15::text AND evidence.store_id=$9
+                AND evidence.warehouse_record_id=$10 AND evidence.fulfillment_type='RFBS'
+                AND evidence.outcome='PASSED'
+                AND (($16::text='RESERVED' AND evidence.expires_at>STATEMENT_TIMESTAMP())
+                  OR ($16::text<>'RESERVED' AND EXISTS (
+                    SELECT 1 FROM auto_listing_upload_attempts AS reservation
+                    WHERE reservation.account_id=link.account_id
+                      AND reservation.submission_link_id=link.id
+                      AND reservation.auto_listing_item_id=link.auto_listing_item_id
+                      AND reservation.job_id=link.job_id
+                      AND reservation.target_store_id=link.target_store_id
+                      AND reservation.target_warehouse_id=$10
+                      AND reservation.warehouse_validation_evidence_id=evidence.id
+                      AND reservation.outcome='RESERVED'
+                  )))
+            )))`,
     [`upload-attempt-${randomUUID()}`, id(input.accountId), id(input.jobId), id(input.itemId),
       id(input.submissionLinkId), id(input.actorAccountId), input.action, input.expectedStatusVersion,
       id(input.targetStoreId), id(input.targetWarehouseId), hash(input.productDraftHash), hash(input.requestHash),
-      hash(input.resultHash), directHealthEvidenceId, input.outcome, input.errorCode || null, input.errorSafe || null,
-      JSON.stringify(input.responseSummary || {}), id(input.correlationId)],
+      hash(input.resultHash), directHealthEvidenceId, warehouseValidationEvidenceId, input.outcome,
+      input.errorCode || null, input.errorSafe || null, JSON.stringify(input.responseSummary || {}), id(input.correlationId)],
   );
+  if (inserted.rowCount !== 1) throw repositoryError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
 }
 
 export function createPostgresAutoListingUploadRepository({ pool, randomUUID = crypto.randomUUID } = {}) {
@@ -300,13 +433,15 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         const assets = await client.query(ASSETS_SQL, [accountId, itemId, row.plan_id]);
         const rich = await client.query(RICH_SQL, [accountId, itemId, row.plan_id]);
         const warehouses = await client.query(WAREHOUSE_SQL, [row.target_store_id]);
-        const value = contextFrom(row, assets.rows, rich.rows, warehouses.rows);
+        const publications = await client.query(PUBLICATIONS_SQL,
+          [accountId, itemId, row.plan_id, row.publication_version]);
+        const value = contextFrom(row, assets.rows, rich.rows, warehouses.rows, publications.rows);
         await client.query("COMMIT");
         started = false;
         return value;
       } catch (error) {
         if (started) await client.query("ROLLBACK").catch(() => {});
-        if (String(error?.code || "").startsWith("AUTO_LISTING_")) throw error;
+        if (isRepositoryError(error)) throw error;
         throw repositoryError("AUTO_LISTING_UPLOAD_REPOSITORY_FAILED", 503, true);
       } finally { client.release(); }
     },
@@ -321,8 +456,12 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         resultHash: hash(input.resultHash), uploadPolicyVersionId: id(input.uploadPolicyVersionId),
         publicationPolicyHash: hash(input.publicationPolicyHash), mediaEvidenceHash: hash(input.mediaEvidenceHash),
         directHealthEvidenceId: optionalId(input.directHealthEvidenceId),
+        warehouseFulfillmentType: String(input.warehouseFulfillmentType || "").trim().toUpperCase(),
+        creationWarehouseValidationEvidenceId: optionalId(input.creationWarehouseValidationEvidenceId),
         idempotencyKey: key(input.idempotencyKey), correlationId: id(input.correlationId),
       };
+      const warehouseValidation = values.warehouseFulfillmentType === "RFBS"
+        ? exactWarehouseValidation(input.warehouseValidation, values) : null;
       const publicationPolicy = input.publicationPolicy;
       if (!Number.isSafeInteger(input.expectedStatusVersion) || input.expectedStatusVersion < 1
         || !["REVIEW_APPROVE", "DIRECT_UPLOAD"].includes(input.action)
@@ -330,7 +469,11 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         || input.productDraft?.id !== id(input.productDraft?.id)
         || !Number.isSafeInteger(input.productDraft?.version) || input.productDraft.version < 1
         || !HASH.test(input.productDraft?.dataHash || "") || !publicationPolicy
-        || digest(publicationPolicy) !== values.publicationPolicyHash) throw repositoryError();
+        || digest(publicationPolicy) !== values.publicationPolicyHash
+        || !["FBS", "RFBS"].includes(values.warehouseFulfillmentType)
+        || (values.warehouseFulfillmentType === "RFBS") !== Boolean(values.creationWarehouseValidationEvidenceId)
+        || (values.warehouseFulfillmentType === "RFBS") !== Boolean(warehouseValidation)
+        || (values.warehouseFulfillmentType === "FBS" && input.warehouseValidation != null)) throw repositoryError();
       const client = await pool.connect();
       let started = false;
       try {
@@ -339,13 +482,22 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
           `SELECT item.id,item.account_id,item.job_id,item.status,item.status_version,item.target_store_id,item.target_warehouse_id,
              item.active_content_plan_id,base.id AS listing_base_id,base.product_draft_id,
              base.product_draft_version,base.product_draft_data_hash,job.config_hash,job.upload_policy_version_id,
+             job.warehouse_validation_evidence_id,
              source.snapshot_hash,plan.id AS plan_id,plan.visual_groups,plan.plan,
              policy.mode AS policy_mode,policy.publication_origin,policy.publication_base_url,policy.publication_prefix,
              policy.publication_version,policy.publication_policy_hash,
              draft.id AS current_draft_id,draft.version AS current_draft_version,draft.data_hash AS current_draft_data_hash,
              (credential.store_id IS NOT NULL AND credential.encrypted_api_key<>''
-               AND credential.iv<>'' AND credential.auth_tag<>'') AS credentials_usable
+               AND credential.iv<>'' AND credential.auth_tag<>'') AS credentials_usable,
+             warehouse.warehouse_id AS locked_warehouse_platform_id,
+             UPPER(BTRIM(warehouse.warehouse_type)) AS locked_warehouse_type,
+             warehouse.status AS locked_warehouse_status,warehouse.is_active AS locked_warehouse_active,
+             warehouse.is_archived AS locked_warehouse_archived,
+             EXISTS (SELECT 1 FROM product_stocks ps JOIN products p ON p.id=ps.product_id
+               WHERE ps.warehouse_id=warehouse.id AND ps.store_id=warehouse.store_id
+                 AND LOWER(ps.source)='fbs' AND p.is_archived=FALSE) AS locked_fbs_association
            FROM auto_listing_job_items AS item
+           JOIN accounts AS account ON account.id=item.account_id
            JOIN auto_listing_jobs AS job ON job.account_id=item.account_id AND job.id=item.job_id
            JOIN auto_listing_listing_bases AS base ON base.account_id=item.account_id AND base.job_id=item.job_id AND base.item_id=item.id
            JOIN auto_listing_source_snapshots AS source ON source.account_id=item.account_id AND source.id=item.snapshot_id
@@ -356,8 +508,10 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
            JOIN collect_items AS collect ON collect.account_id=item.account_id AND collect.id=base.collect_item_id AND collect.deleted_at IS NULL
            JOIN product_drafts AS draft ON draft.id=collect.current_draft_id AND draft.collect_item_id=collect.id
            JOIN stores AS store ON store.owner_account_id=item.account_id AND store.id=item.target_store_id
+           JOIN warehouses AS warehouse ON warehouse.store_id=store.id AND warehouse.id=item.target_warehouse_id
            LEFT JOIN store_credentials AS credential ON credential.store_id=store.id
-          WHERE item.account_id=$1 AND item.id=$2 FOR UPDATE OF item`,
+          WHERE item.account_id=$1 AND item.id=$2
+          FOR UPDATE OF item FOR SHARE OF account,store,warehouse`,
           [values.accountId, values.itemId],
         );
         const row = locked.rows[0];
@@ -365,11 +519,20 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
           && Number(row.status_version) === input.expectedStatusVersion;
         const recovering = row?.status === "UPLOADING"
           && Number(row.status_version) === input.expectedStatusVersion + 1;
+        if (row && (row.locked_warehouse_type !== values.warehouseFulfillmentType
+          || row.locked_warehouse_platform_id !== values.targetWarehousePlatformId
+          || row.locked_warehouse_active !== true || row.locked_warehouse_archived !== false
+          || ["disabled", "archived", "archive", "inactive", "deleted", "blocked"]
+            .includes(String(row.locked_warehouse_status || "").trim().toLowerCase())
+          || (values.warehouseFulfillmentType === "FBS" && row.locked_fbs_association !== true))) {
+          throw repositoryError("AUTO_LISTING_UPLOAD_WAREHOUSE_CHANGED", 409);
+        }
         if (!row || (!queued && !recovering) || row.job_id !== values.jobId || row.target_store_id !== values.targetStoreId
           || row.target_warehouse_id !== values.targetWarehouseId || row.active_content_plan_id !== values.activePlanId
           || row.listing_base_id !== values.listingBaseId || row.config_hash !== values.configHash
           || row.snapshot_hash !== values.sourceHash
           || row.upload_policy_version_id !== values.uploadPolicyVersionId || row.credentials_usable !== true
+          || row.warehouse_validation_evidence_id !== values.creationWarehouseValidationEvidenceId
           || (input.action === "DIRECT_UPLOAD" ? row.policy_mode !== "DIRECT" : row.policy_mode !== "REVIEW")
           || row.publication_policy_hash !== values.publicationPolicyHash
           || row.publication_origin !== publicationPolicy.origin
@@ -393,18 +556,16 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
           );
           if (health.rowCount !== 1) throw repositoryError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
         }
-        const warehouse = await client.query(
-          `SELECT w.id,w.warehouse_id FROM warehouses w WHERE w.store_id=$1 AND w.id=$2
-             AND LOWER(w.warehouse_type)='fbs' AND w.is_active=TRUE AND w.is_archived=FALSE
-             AND NOT (LOWER(COALESCE(w.status,''))=ANY(ARRAY['disabled','archived','archive','inactive','deleted','blocked']))
-             AND EXISTS (SELECT 1 FROM product_stocks ps JOIN products p ON p.id=ps.product_id
-               WHERE ps.warehouse_id=w.id AND ps.store_id=w.store_id AND LOWER(ps.source)='fbs' AND p.is_archived=FALSE)
-           FOR SHARE OF w`,
-          [values.targetStoreId, values.targetWarehouseId],
-        );
-        if (warehouse.rowCount !== 1
-          || warehouse.rows[0]?.warehouse_id !== values.targetWarehousePlatformId) {
-          throw repositoryError("AUTO_LISTING_UPLOAD_WAREHOUSE_CHANGED", 409);
+        if (values.warehouseFulfillmentType === "RFBS") {
+          const creationEvidence = await client.query(
+            `SELECT id FROM auto_listing_rfbs_warehouse_evidence
+              WHERE account_id=$1 AND id=$2 AND store_id=$3 AND warehouse_record_id=$4
+                AND platform_warehouse_id=$5 AND fulfillment_type='RFBS' AND outcome='PASSED'
+              FOR SHARE`,
+            [values.accountId, values.creationWarehouseValidationEvidenceId, values.targetStoreId,
+              values.targetWarehouseId, values.targetWarehousePlatformId],
+          );
+          if (creationEvidence.rowCount !== 1) throw repositoryError("AUTO_LISTING_UPLOAD_WAREHOUSE_CHANGED", 409);
         }
         const acceptedAssets = await client.query(ASSETS_SQL, [values.accountId, values.itemId, values.activePlanId]);
         const acceptedRich = await client.query(RICH_SQL, [values.accountId, values.itemId, values.activePlanId]);
@@ -418,6 +579,12 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
           [values.accountId, values.itemId],
         );
         assertReusableReservation(existing.rows[0], values);
+        if (existing.rows[0]) {
+          const expectedEvidence = values.warehouseFulfillmentType === "RFBS";
+          if (expectedEvidence !== Boolean(existing.rows[0].warehouse_validation_evidence_id)) {
+            throw repositoryError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+          }
+        }
         let claimOwned = false;
         if (existing.rows[0]?.status === "RESERVED") {
           const current = existing;
@@ -431,31 +598,75 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
           if (takeover.rowCount === 1) { existing = takeover; claimOwned = true; }
           else existing = current;
         }
+        let currentWarehouseValidationEvidenceId = null;
+        const insertWarehouseValidationEvidence = async (submissionLinkId) => {
+          if (!warehouseValidation) return null;
+            const databaseFresh = await client.query(
+              "SELECT $1::timestamptz>STATEMENT_TIMESTAMP() AS fresh",
+              [warehouseValidation.expiresAt],
+            );
+            if (databaseFresh.rows[0]?.fresh !== true) {
+              throw repositoryError("RFBS_WAREHOUSE_EVIDENCE_EXPIRED", 409);
+            }
+            const warehouseValidationEvidenceId = `auto-listing-rfbs-upload-evidence-${randomUUID()}`;
+            const insertedEvidence = await client.query(
+              `INSERT INTO auto_listing_rfbs_warehouse_evidence (
+                 id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,
+                 fulfillment_type,status,outcome,observed_at,expires_at,evidence_hash,correlation_id,
+                 actor_account_id,raw_response_ref
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11::timestamptz,$12,$13,$14,NULL)
+               RETURNING id`,
+              [warehouseValidationEvidenceId, warehouseValidation.accountId, warehouseValidation.storeId,
+                warehouseValidation.warehouseRecordId, warehouseValidation.platformWarehouseId,
+                warehouseValidation.schemaVersion, warehouseValidation.fulfillmentType,
+                warehouseValidation.status, warehouseValidation.outcome, warehouseValidation.observedAt,
+                warehouseValidation.expiresAt, warehouseValidation.evidenceHash,
+                warehouseValidation.correlationId, warehouseValidation.actorAccountId],
+            );
+            if (insertedEvidence.rowCount !== 1) throw repositoryError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+            await client.query(
+              `INSERT INTO audit_events (
+                 event_id,account_id,store_id,action,entity_type,entity_id,correlation_id,metadata,
+                 status,actor_type,actor_id,source,occurred_at
+               ) VALUES ($1,$2,$3,'AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED',
+                 'auto_listing_rfbs_warehouse_evidence',$4,$5,$6::jsonb,'SUCCESS','account',$2,
+                 'auto-listing-upload-repository',STATEMENT_TIMESTAMP())`,
+              [`AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED:${warehouseValidationEvidenceId}`,
+                values.accountId, values.targetStoreId, warehouseValidationEvidenceId,
+                values.correlationId, JSON.stringify({ phase: "UPLOAD", submissionItemId: values.itemId,
+                  submissionLinkId, submissionIdempotencyKey: values.idempotencyKey,
+                  warehouseRecordId: values.targetWarehouseId,
+                  platformWarehouseId: values.targetWarehousePlatformId,
+                  evidenceHash: warehouseValidation.evidenceHash })],
+            );
+            return warehouseValidationEvidenceId;
+        };
         if (!existing.rows[0]) {
+          const submissionLinkId = `upload-link-${randomUUID()}`;
+          currentWarehouseValidationEvidenceId = await insertWarehouseValidationEvidence(submissionLinkId);
           existing = await client.query(
             `INSERT INTO auto_listing_submission_links (
                id,account_id,job_id,auto_listing_item_id,listing_base_id,active_plan_id,target_store_id,
                source_hash,config_hash,request_hash,result_hash,upload_policy_version_id,idempotency_key,status,
                publication_origin,publication_base_url,publication_prefix,publication_version,
-               publication_policy_hash,media_evidence_hash,direct_health_evidence_id,claim_token,claim_expires_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'RESERVED',$14,$15,$16,$17,$18,$19,$20,$21,NOW()+INTERVAL '60 seconds')
+               publication_policy_hash,media_evidence_hash,direct_health_evidence_id,
+               warehouse_validation_evidence_id,claim_token,claim_expires_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'RESERVED',$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW()+INTERVAL '60 seconds')
              ON CONFLICT (account_id,auto_listing_item_id) DO NOTHING
              RETURNING ${LINK_COLUMNS}`,
-            [`upload-link-${randomUUID()}`, values.accountId, values.jobId, values.itemId, values.listingBaseId,
+            [submissionLinkId, values.accountId, values.jobId, values.itemId, values.listingBaseId,
               values.activePlanId, values.targetStoreId, values.sourceHash, values.configHash, values.requestHash,
               values.resultHash, values.uploadPolicyVersionId, values.idempotencyKey, publicationPolicy.origin,
               publicationPolicy.baseUrl, publicationPolicy.prefix, publicationPolicy.publicationVersion,
               values.publicationPolicyHash, values.mediaEvidenceHash, values.directHealthEvidenceId,
-              `claim-${randomUUID()}`],
+              currentWarehouseValidationEvidenceId, `claim-${randomUUID()}`],
           );
           const inserted = Boolean(existing.rows[0]);
-          if (!existing.rows[0]) existing = await client.query(
-            `SELECT ${LINK_COLUMNS} FROM auto_listing_submission_links
-              WHERE account_id=$1 AND auto_listing_item_id=$2 FOR UPDATE`,
-            [values.accountId, values.itemId],
-          );
+          if (!inserted) throw repositoryError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
           assertReusableReservation(existing.rows[0], values);
           claimOwned = inserted;
+        } else if (claimOwned && values.warehouseFulfillmentType === "RFBS") {
+          currentWarehouseValidationEvidenceId = await insertWarehouseValidationEvidence(existing.rows[0].id);
         }
         if (claimOwned && queued) {
           const moved = await client.query(
@@ -472,11 +683,28 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
               values.correlationId, JSON.stringify({ submissionLinkId: existing.rows[0].id })],
           );
         }
+        if (claimOwned && currentWarehouseValidationEvidenceId) {
+          await insertAttempt(client, randomUUID, {
+            accountId: values.accountId, jobId: values.jobId, itemId: values.itemId,
+            submissionLinkId: existing.rows[0].id, actorAccountId: values.accountId,
+            action: input.action, expectedStatusVersion: input.expectedStatusVersion,
+            targetStoreId: values.targetStoreId, targetWarehouseId: values.targetWarehouseId,
+            productDraftHash: input.productDraft.dataHash, requestHash: values.requestHash,
+            resultHash: values.resultHash, directHealthEvidenceId: values.directHealthEvidenceId,
+            warehouseValidationEvidenceId: currentWarehouseValidationEvidenceId,
+            outcome: "RESERVED", errorCode: null, errorSafe: null, correlationId: values.correlationId,
+            responseSummary: { phase: "PRE_SEND", submissionIdempotencyKey: values.idempotencyKey,
+              attemptGeneration: Number(existing.rows[0].attempt_generation || 1) },
+          });
+        }
         await client.query("COMMIT"); started = false;
-        return mapLink({ ...existing.rows[0], claim_owned: claimOwned });
+        const link = mapLink({ ...existing.rows[0], claim_owned: claimOwned });
+        return currentWarehouseValidationEvidenceId
+          ? { ...link, warehouseValidationEvidenceId: currentWarehouseValidationEvidenceId }
+          : link;
       } catch (error) {
         if (started) await client.query("ROLLBACK").catch(() => {});
-        if (String(error?.code || "").startsWith("AUTO_LISTING_")) throw error;
+        if (isRepositoryError(error)) throw error;
         throw repositoryError("AUTO_LISTING_UPLOAD_REPOSITORY_FAILED", 503, true);
       } finally { client.release(); }
     },
@@ -537,7 +765,7 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         return link;
       } catch (error) {
         if (started) await client.query("ROLLBACK").catch(() => {});
-        if (String(error?.code || "").startsWith("AUTO_LISTING_")) throw error;
+        if (isRepositoryError(error)) throw error;
         throw repositoryError("AUTO_LISTING_UPLOAD_REPOSITORY_FAILED", 503, true);
       } finally { client.release(); }
     },
@@ -581,7 +809,7 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         await client.query("COMMIT");
       } catch (error) {
         await client.query("ROLLBACK").catch(() => {});
-        if (String(error?.code || "").startsWith("AUTO_LISTING_")) throw error;
+        if (isRepositoryError(error)) throw error;
         throw repositoryError("AUTO_LISTING_UPLOAD_REPOSITORY_FAILED", 503, true);
       } finally { client.release(); }
     },
@@ -623,7 +851,7 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
         return { status: "UPLOAD_QUEUED", statusVersion: Number(moved.rows[0].status_version) };
       } catch (error) {
         await client.query("ROLLBACK").catch(() => {});
-        if (String(error?.code || "").startsWith("AUTO_LISTING_")) throw error;
+        if (isRepositoryError(error)) throw error;
         throw repositoryError("AUTO_LISTING_UPLOAD_REPOSITORY_FAILED", 503, true);
       } finally { client.release(); }
     },

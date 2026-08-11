@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types as utilTypes } from "node:util";
 
 import { buildAutoListingSubmissionDraft } from "./auto-listing-overlay.mjs";
 import { isVerifiedAutoListingOzonRichContentVersion } from "./auto-listing-ozon-rich-content.mjs";
@@ -9,6 +10,9 @@ const REQUEST_KEYS = new Set(["actor", "itemId", "expectedStatusVersion", "corre
 const HASH = /^[a-f0-9]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const TERMINAL_LINK_STATUSES = new Set(["SUBMITTED", "RECONCILING", "SUCCEEDED"]);
+const RFBS_ERROR_CODES = new Set(["RFBS_WAREHOUSE_NOT_FOUND", "RFBS_WAREHOUSE_DISABLED",
+  "RFBS_WAREHOUSE_SCOPE_MISMATCH", "RFBS_WAREHOUSE_CHANGED", "RFBS_WAREHOUSE_EVIDENCE_EXPIRED",
+  "RFBS_VALIDATION_REQUIRED", "AUTO_LISTING_RFBS_VALIDATION_FAILED"]);
 
 function uploadError(code, status = 422, retryable = false) {
   const error = new Error("自动上架暂时无法提交");
@@ -152,6 +156,37 @@ function safeErrorCode(error) {
   return /^[A-Z][A-Z0-9_]{0,119}$/u.test(code) ? code : "AUTO_LISTING_UPLOAD_FAILED";
 }
 
+function requireRfbsWarehouseVerifier(value) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError();
+    const keys = Reflect.ownKeys(value);
+    const descriptor = Object.getOwnPropertyDescriptor(value, "verifyRfbsWarehouse");
+    if (keys.length !== 1 || keys[0] !== "verifyRfbsWarehouse" || descriptor?.enumerable !== true
+      || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "function"
+      || utilTypes.isProxy(descriptor.value)) throw new TypeError();
+    return Object.freeze({ verifyRfbsWarehouse: descriptor.value });
+  } catch { throw new TypeError("Auto-listing upload RFBS verifier dependency is required"); }
+}
+
+function creationWarehouseValidation(context, accountId) {
+  const type = String(context?.warehouseFulfillmentType || "").trim().toUpperCase();
+  const selected = (context?.warehouses || []).find((warehouse) => warehouse.id === context?.item?.targetWarehouseId);
+  if (!selected || String(selected.warehouseType || "").trim().toUpperCase() !== type
+    || !["FBS", "RFBS"].includes(type)) throw uploadError("RFBS_WAREHOUSE_CHANGED", 409);
+  if (type === "FBS") {
+    if (context.creationWarehouseValidation != null) throw uploadError("RFBS_WAREHOUSE_CHANGED", 409);
+    return { type, evidence: null };
+  }
+  const evidence = context.creationWarehouseValidation;
+  if (!evidence || evidence.accountId !== accountId || evidence.storeId !== context.item.targetStoreId
+    || evidence.warehouseRecordId !== context.item.targetWarehouseId
+    || evidence.platformWarehouseId !== context.targetWarehousePlatformId
+    || evidence.fulfillmentType !== "RFBS" || evidence.outcome !== "PASSED"
+    || !SAFE_ID.test(evidence.evidenceId || "")) throw uploadError("RFBS_WAREHOUSE_CHANGED", 409);
+  return { type, evidence };
+}
+
 /** Single boundary that may enqueue a durable listing, but can never call Ozon directly. */
 export function createAutoListingUploadService({
   repository,
@@ -167,6 +202,7 @@ export function createAutoListingUploadService({
   directUploadAllowed = false,
   publicationPolicy,
   richContentPublicationPolicy,
+  rfbsWarehouseVerifier,
 } = {}) {
   if (![repository?.loadUploadEvidence, repository?.reserveSubmission, repository?.bindSubmission,
     repository?.recordAttempt, repository?.blockSubmission, repository?.releaseSubmissionForRetry,
@@ -175,6 +211,7 @@ export function createAutoListingUploadService({
     || !richContentPublicationPolicy) {
     throw new TypeError("Auto-listing upload dependencies are required");
   }
+  const verifier = requireRfbsWarehouseVerifier(rfbsWarehouseVerifier);
 
   return Object.freeze({
     async submitAutoListingItem(raw = {}) {
@@ -195,6 +232,46 @@ export function createAutoListingUploadService({
         throw uploadError("AUTO_LISTING_DIRECT_UPLOAD_BLOCKED", 503);
       }
       assertFrozenEvidence(context, accountId, itemId, action);
+      const warehouseCreation = creationWarehouseValidation(context, accountId);
+      const configuredPublication = publicationConfig(publicationPolicy);
+      const frozenPublication = publicationConfig(context.uploadPolicy.publicationPolicy);
+      if (digest(configuredPublication) !== context.uploadPolicy.publicationPolicyHash
+        || digest(configuredPublication) !== digest(frozenPublication)
+        || richPublicationOrigin(richContentPublicationPolicy) !== frozenPublication.origin) {
+        throw uploadError("AUTO_LISTING_UPLOAD_PUBLICATION_POLICY_CHANGED", 409);
+      }
+      const terminal = context.terminalSubmission;
+      if (terminal) {
+        let terminalDraft;
+        try {
+          terminalDraft = buildSubmissionDraft({ listingBase: context.listingBase,
+            visualGroups: context.visualGroups, acceptedAssets: context.terminalPublishedAssets,
+            acceptedRichContent: context.acceptedRichContent, frozenConfig: context.frozenConfig,
+            targetWarehousePlatformId: context.targetWarehousePlatformId,
+            publicationPolicy: { origin: frozenPublication.origin } });
+        } catch {
+          throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+        }
+        const terminalRequestHash = digest({ accountId, itemId, action,
+          listingBaseHash: terminalDraft.listingBaseHash, planId: terminalDraft.planId,
+          resultHash: terminalDraft.resultHash });
+        const terminalMediaHash = mediaEvidenceHash({ visualGroups: context.visualGroups,
+          assets: context.terminalPublishedAssets, rich: context.acceptedRichContent,
+          publicationPolicy: frozenPublication });
+        const terminalIdempotencyKey = `auto-listing:${itemId}:${terminalDraft.resultHash}`;
+        if (!TERMINAL_LINK_STATUSES.has(terminal.status) || !SAFE_ID.test(terminal.id || "")
+          || !SAFE_ID.test(terminal.submissionJobId || "") || !SAFE_ID.test(terminal.submissionSnapshotId || "")
+          || terminal.jobId !== context.item.jobId || terminal.targetStoreId !== context.item.targetStoreId
+          || terminal.listingBaseId !== context.listingBaseId || terminal.activePlanId !== context.item.activePlanId
+          || terminal.sourceHash !== context.sourceHash || terminal.configHash !== context.frozenConfig.configHash
+          || terminal.uploadPolicyVersionId !== context.uploadPolicy.id
+          || terminal.publicationPolicyHash !== context.uploadPolicy.publicationPolicyHash
+          || terminal.mediaEvidenceHash !== terminalMediaHash || terminal.requestHash !== terminalRequestHash
+          || terminal.resultHash !== terminalDraft.resultHash || terminal.idempotencyKey !== terminalIdempotencyKey) {
+          throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
+        }
+        return safeResult(itemId, terminal, true);
+      }
       let directHealthEvidenceId = null;
       if (action === "DIRECT_UPLOAD") {
         let systemReadiness;
@@ -213,20 +290,26 @@ export function createAutoListingUploadService({
         }
         directHealthEvidenceId = readiness.evidenceId;
       }
-      const configuredPublication = publicationConfig(publicationPolicy);
-      const frozenPublication = publicationConfig(context.uploadPolicy.publicationPolicy);
-      if (digest(configuredPublication) !== context.uploadPolicy.publicationPolicyHash
-        || digest(configuredPublication) !== digest(frozenPublication)
-        || richPublicationOrigin(richContentPublicationPolicy) !== frozenPublication.origin) {
-        throw uploadError("AUTO_LISTING_UPLOAD_PUBLICATION_POLICY_CHANGED", 409);
+      let warehouseValidation = null;
+      if (warehouseCreation.type === "RFBS") {
+        try {
+          warehouseValidation = await verifier.verifyRfbsWarehouse({ accountId, actorAccountId: accountId,
+            targetStoreId: context.item.targetStoreId, targetWarehouseId: context.item.targetWarehouseId,
+            correlationId });
+        } catch (error) {
+          if (RFBS_ERROR_CODES.has(error?.code)) throw error;
+          throw uploadError("AUTO_LISTING_RFBS_VALIDATION_FAILED", 500);
+        }
       }
-      assertWarehouseEligible({
-        warehouses: context.warehouses,
-        products: context.products,
-        stocks: [{ warehouse_id: context.targetWarehousePlatformId, stock: context.frozenConfig.config.stock }],
-        targetStoreId: context.item.targetStoreId,
-        accountId,
-      });
+      if (warehouseCreation.type === "FBS") {
+        assertWarehouseEligible({
+          warehouses: context.warehouses,
+          products: context.products,
+          stocks: [{ warehouse_id: context.targetWarehousePlatformId, stock: context.frozenConfig.config.stock }],
+          targetStoreId: context.item.targetStoreId,
+          accountId,
+        });
+      }
 
       let publicationOrigin;
       try { publicationOrigin = new URL(frozenPublication.origin).origin; } catch {
@@ -307,6 +390,9 @@ export function createAutoListingUploadService({
         mediaEvidenceHash: mediaHash,
         directHealthEvidenceId,
         productDraft: context.productDraft, idempotencyKey,
+        warehouseFulfillmentType: warehouseCreation.type,
+        creationWarehouseValidationEvidenceId: warehouseCreation.evidence?.evidenceId || null,
+        warehouseValidation,
       });
       if (TERMINAL_LINK_STATUSES.has(reservation?.status) && reservation.submissionJobId) {
         return safeResult(itemId, reservation, true);
@@ -316,6 +402,10 @@ export function createAutoListingUploadService({
       }
       if (reservation?.claimOwned !== true) {
         throw uploadError("AUTO_LISTING_UPLOAD_CLAIM_BUSY", 409, true);
+      }
+      const warehouseValidationEvidenceId = reservation.warehouseValidationEvidenceId || null;
+      if ((warehouseCreation.type === "RFBS") !== Boolean(warehouseValidationEvidenceId)) {
+        throw uploadError("AUTO_LISTING_UPLOAD_CONFLICT", 409);
       }
 
       let listing = await findSubmission({ accountId, idempotencyKey, collectItemId: context.collectItem.id,
@@ -332,6 +422,8 @@ export function createAutoListingUploadService({
             stocks: draft.stocks,
             type: "AUTO_LISTING",
             frozenProductDraft: context.productDraft,
+            warehouseValidationEvidenceId,
+            warehouseFulfillmentType: warehouseCreation.type,
             versions: {
               categoryRuleVersion: draft.versions.categoryRuleVersion,
               dictionaryVersion: draft.versions.dictionaryVersion,
@@ -348,6 +440,7 @@ export function createAutoListingUploadService({
               targetStoreId: context.item.targetStoreId, targetWarehouseId: context.item.targetWarehouseId,
               productDraftHash: context.productDraft.dataHash, requestHash, resultHash: draft.resultHash,
               directHealthEvidenceId,
+              warehouseValidationEvidenceId,
               outcome: caught?.definitelyNotSubmitted === true ? "FAILED" : "BLOCKED", errorCode: code,
               errorSafe: caught?.definitelyNotSubmitted === true
                 ? "标准上架任务尚未创建，可安全重试" : "标准上架任务暂时无法确认",
@@ -370,6 +463,7 @@ export function createAutoListingUploadService({
           targetStoreId: context.item.targetStoreId, targetWarehouseId: context.item.targetWarehouseId,
           productDraftHash: context.productDraft.dataHash, requestHash, resultHash: draft.resultHash,
           directHealthEvidenceId,
+          warehouseValidationEvidenceId,
           outcome: "SUCCEEDED", errorCode: null, errorSafe: null, correlationId,
           responseSummary: { submissionJobId: submission.submissionJobId,
             submissionSnapshotId: submission.submissionSnapshotId, status: submission.status } });
@@ -378,6 +472,7 @@ export function createAutoListingUploadService({
         targetStoreId: context.item.targetStoreId, targetWarehouseId: context.item.targetWarehouseId,
         productDraftHash: context.productDraft.dataHash, requestHash, resultHash: draft.resultHash,
         directHealthEvidenceId,
+        warehouseValidationEvidenceId,
         outcome: "UNCERTAIN", errorCode: "AUTO_LISTING_UPLOAD_UNCERTAIN",
         errorSafe: "标准上架任务暂时无法确认", correlationId, responseSummary: {} };
       if (!ids) {

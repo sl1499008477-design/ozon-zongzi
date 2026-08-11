@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import http from "node:http";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -60,6 +61,12 @@ test("PostgreSQL queue scans all tenants, leases the real user role, drains stal
     await admin.query(`SET search_path TO ${quote(schema)}, public`);
     for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort()) {
       await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+    }
+    await admin.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort()) {
+      await admin.query("INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        [migration.replace(/\.sql$/u, "")]);
     }
     pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema},public` });
     const tenantA = await fixture("a");
@@ -123,6 +130,121 @@ test("PostgreSQL queue scans all tenants, leases the real user role, drains stal
       [tenantA.account, tenantA.item])).rows[0].count), 1);
   } finally {
     await pool?.end();
+    try {
+      await admin.query("SET search_path TO public");
+      await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);
+    } finally { admin.release(); await adminPool.end(); }
+  }
+});
+
+test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sync fails and replay never reimports", {
+  skip: !enabled, timeout: 60_000,
+}, async () => {
+  const { Pool } = await import("pg");
+  const adminPool = new Pool({ connectionString, max: 2 });
+  const admin = await adminPool.connect();
+  const suffix = crypto.randomUUID().replaceAll("-", "");
+  const schema = `auto_listing_partial_success_${suffix}`;
+  const ids = Object.fromEntries(["account", "store", "snapshot", "submissionJob"]
+    .map((key) => [key, `${key}-${suffix}`]));
+  const calls = [];
+  const server = http.createServer((request, response) => {
+    calls.push(request.url);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/v3/product/import") {
+      response.end(JSON.stringify({ result: { task_id: 123456 } }));
+      return;
+    }
+    if (request.url === "/v1/product/import/info") {
+      response.end(JSON.stringify({ result: { items: [
+        { offer_id: "offer-rfbs", product_id: 987654, status: "imported" },
+      ] } }));
+      return;
+    }
+    if (request.url === "/v2/products/stocks") {
+      response.statusCode = 503;
+      response.end(JSON.stringify({ code: "STOCK_TEMPORARY_FAILURE" }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("{}");
+  });
+  let worker;
+  let closePostgresPool;
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    await admin.query(`CREATE SCHEMA ${quote(schema)}`);
+    await admin.query(`SET search_path TO ${quote(schema)}, public`);
+    for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort()) {
+      await admin.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+    }
+    await admin.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort()) {
+      await admin.query("INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        [migration.replace(/\.sql$/u, "")]);
+    }
+    process.env.APP_ENCRYPTION_KEY = `rfbs-task5-${suffix}-local-test-key-material`;
+    process.env.LISTING_PIPELINE_V3 = "1";
+    process.env.OZON_API_BASE = `http://127.0.0.1:${address.port}`;
+    const databaseUrl = new URL(connectionString);
+    databaseUrl.searchParams.set("options", `-c search_path=${schema},public`);
+    process.env.DATABASE_URL = databaseUrl.toString();
+    const { encryptSecret } = await import("../crypto-secrets.mjs");
+    const encrypted = encryptSecret("fake-ozon-api-key");
+    await admin.query("INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'user','active')",
+      [ids.account, `partial-${suffix}`]);
+    await admin.query("INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id) VALUES ($1,'Partial','Partial',$2,'active',$3)",
+      [ids.store, `client-${suffix}`, ids.account]);
+    await admin.query(`INSERT INTO store_credentials
+      (store_id,client_id,encrypted_api_key,iv,auth_tag,algorithm,key_version)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [ids.store, `client-${suffix}`, encrypted.ciphertext, encrypted.iv, encrypted.authTag,
+        encrypted.algorithm, encrypted.keyVersion]);
+    await admin.query(`INSERT INTO submission_snapshots
+      (id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+      VALUES ($1,$2,$3,$4,$5,1,$6::jsonb,$7::jsonb)`,
+      [ids.snapshot, ids.account, ids.store, `partial-${suffix}`, "a".repeat(64),
+        JSON.stringify([{ offer_id: "offer-rfbs", name: "RFBS product" }]),
+        JSON.stringify([{ offer_id: "offer-rfbs", warehouse_id: `platform-${suffix}`, stock: 5 }])]);
+    await admin.query(`INSERT INTO submission_jobs
+      (id,snapshot_id,account_id,store_id,type,status,correlation_id,item_count)
+      VALUES ($1,$2,$3,$4,'AUTO_LISTING','QUEUE_PENDING',$5,1)`,
+      [ids.submissionJob, ids.snapshot, ids.account, ids.store, `partial-${suffix}`]);
+
+    ({ processListingQueueMessage: worker } = await import(`../listing-worker.mjs?partial=${suffix}`));
+    ({ closePostgresPool } = await import("../db/connection.mjs"));
+    await worker({ submissionJobId: ids.submissionJob, action: "submit" });
+    await worker({ submissionJobId: ids.submissionJob, action: "check" });
+    const completed = (await admin.query(
+      `SELECT status,ozon_task_id,success_count,failed_count,error_code,result_summary
+         FROM submission_jobs WHERE id=$1`, [ids.submissionJob])).rows[0];
+    assert.deepEqual({ status: completed.status, task: completed.ozon_task_id,
+      success: completed.success_count, failed: completed.failed_count, code: completed.error_code }, {
+      status: "PARTIAL_SUCCESS", task: "123456", success: 1, failed: 0, code: "OZON_ITEM_RESULT",
+    });
+    assert.deepEqual(completed.result_summary, { success: 1, failed: 0, skipped: 0, stockCount: 1 });
+    assert.equal(calls.filter((path) => path === "/v3/product/import").length, 1);
+    assert.equal(calls.filter((path) => path === "/v1/product/import/info").length, 1);
+    assert.equal(calls.filter((path) => path === "/v2/products/stocks").length, 1);
+
+    await worker({ submissionJobId: ids.submissionJob, action: "submit" });
+    await worker({ submissionJobId: ids.submissionJob, action: "check" });
+    assert.equal(calls.filter((path) => path === "/v3/product/import").length, 1);
+    assert.equal((await admin.query("SELECT status FROM submission_jobs WHERE id=$1", [ids.submissionJob]))
+      .rows[0].status, "PARTIAL_SUCCESS");
+  } finally {
+    await closePostgresPool?.().catch(() => {});
+    await new Promise((resolve) => server.close(resolve));
+    delete process.env.DATABASE_URL;
+    delete process.env.OZON_API_BASE;
+    delete process.env.APP_ENCRYPTION_KEY;
+    delete process.env.LISTING_PIPELINE_V3;
     try {
       await admin.query("SET search_path TO public");
       await admin.query(`DROP SCHEMA IF EXISTS ${quote(schema)} CASCADE`);

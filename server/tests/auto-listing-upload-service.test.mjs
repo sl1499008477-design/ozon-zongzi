@@ -61,6 +61,8 @@ function evidence() {
       targetStoreId: "store-1", targetWarehouseId: "warehouse-db-1", activePlanId: "plan-1" },
     sourceHash: "b".repeat(64), listingBaseId: "base-1", listingBase: base, frozenConfig,
     targetWarehousePlatformId: "warehouse-platform-1",
+    warehouseFulfillmentType: "FBS",
+    creationWarehouseValidation: null,
     visualGroups: { accountId, jobId: "job-1", itemId: "item-1", planId: "plan-1", groups: [
       { visualGroupKey: "group-1", variantIds: ["variant-1"], slots: slots.map(([slotKey, role], order) => ({ slotKey, role, order })) },
     ] },
@@ -80,16 +82,48 @@ function evidence() {
   };
 }
 
+function rfbsValidation(overrides = {}) {
+  const normalized = {
+    schemaVersion: "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1",
+    accountId,
+    storeId: "store-1",
+    warehouseRecordId: "warehouse-db-1",
+    platformWarehouseId: "warehouse-platform-1",
+    fulfillmentType: "RFBS",
+    status: "ACTIVE",
+    outcome: "PASSED",
+    observedAt: "2026-08-11T00:00:00.000Z",
+    expiresAt: "2099-08-11T00:10:00.000Z",
+    correlationId: "corr-1",
+    actorAccountId: accountId,
+    ...overrides,
+  };
+  return { evidenceId: "rfbs-creation-evidence-1", ...normalized, evidenceHash: digest(Object.fromEntries(
+    Object.entries(normalized).filter(([key]) => key !== "evidenceHash"),
+  )) };
+}
+
 function harness(overrides = {}) {
-  const state = { context: evidence(), link: null, calls: [], attempts: [] };
+  const state = { context: evidence(), link: null, calls: [], attempts: [], publishedAssets: [] };
   const repository = {
-    async loadUploadEvidence(input) { state.calls.push(["load", input]); return structuredClone(state.context); },
+    async loadUploadEvidence(input) {
+      state.calls.push(["load", input]);
+      return structuredClone({ ...state.context,
+        terminalPublishedAssets: state.publishedAssets,
+        terminalSubmission: state.link && ["SUBMITTED", "RECONCILING", "SUCCEEDED"].includes(state.link.status)
+          ? state.link : null });
+    },
     async reserveSubmission(input) {
       state.calls.push(["reserve", input]);
       if (state.link) return structuredClone(state.link);
       state.link = { id: "link-1", status: "RESERVED", idempotencyKey: input.idempotencyKey,
         resultHash: input.resultHash, targetStoreId: input.targetStoreId,
-        claimToken: "claim-1", claimOwned: true };
+        requestHash: input.requestHash, jobId: input.jobId, listingBaseId: input.listingBaseId,
+        activePlanId: input.activePlanId, sourceHash: input.sourceHash, configHash: input.configHash,
+        uploadPolicyVersionId: input.uploadPolicyVersionId,
+        publicationPolicyHash: input.publicationPolicyHash, mediaEvidenceHash: input.mediaEvidenceHash,
+        claimToken: "claim-1", claimOwned: true,
+        warehouseValidationEvidenceId: input.warehouseValidation ? "rfbs-upload-evidence-1" : null };
       return structuredClone(state.link);
     },
     async bindSubmission(input) {
@@ -121,8 +155,10 @@ function harness(overrides = {}) {
     async publishListingAsset({ itemId, assetId }) {
       state.calls.push(["publish", { itemId, assetId }]);
       const asset = state.context.acceptedAssets.find((row) => row.assetId === assetId);
-      return { ...asset, publishedUrl: `https://cdn.example.com/${assetId}.jpg`, contentHash: String(assetId.at(-1)).repeat(64),
+      const published = { ...asset, publishedUrl: `https://cdn.example.com/${assetId}.jpg`, contentHash: String(assetId.at(-1)).repeat(64),
         width: 768, height: 1024, publicationVersion: "LISTING_MEDIA_V1" };
+      state.publishedAssets.push(published);
+      return published;
     },
     async createSubmission(input) {
       state.calls.push(["submit", input]);
@@ -131,6 +167,13 @@ function harness(overrides = {}) {
     async findSubmission() { return null; },
     async assertDirectSystemReady() { return { ready: true }; },
     async assertDirectReady() { return { ready: true, evidenceId: "health-evidence-1" }; },
+    rfbsWarehouseVerifier: {
+      async verifyRfbsWarehouse(input) {
+        state.calls.push(["verify", input]);
+        const { evidenceId: _creationOnly, ...fresh } = rfbsValidation({ correlationId: input.correlationId });
+        return fresh;
+      },
+    },
     ...overrides,
   };
   return { state, repository, service: createAutoListingUploadService(deps) };
@@ -171,6 +214,63 @@ test("review upload publishes accepted assets and delegates only the typed overl
   assert.deepEqual(submission.frozenProductDraft, state.context.productDraft);
   assert.equal(state.calls.find(([kind]) => kind === "bind")[1].claimToken, "claim-1");
   assert.equal(state.attempts[0].outcome, "SUCCEEDED");
+});
+
+test("RFBS revalidates before publication and binds the reserved fresh evidence to the standard submission", async () => {
+  const { service, state } = harness();
+  state.context.warehouses[0].warehouseType = "RFBS";
+  state.context.warehouses[0].hasActiveProductAssociation = false;
+  state.context.products = [];
+  state.context.warehouseFulfillmentType = "RFBS";
+  state.context.creationWarehouseValidation = rfbsValidation({ correlationId: "job-corr" });
+  const originalReserve = state.calls;
+
+  await service.submitAutoListingItem(request());
+
+  const transitions = [];
+  for (const [name] of originalReserve) {
+    const normalized = ({ load: "loadUploadEvidence", verify: "verifyRfbsWarehouse", publish: "publishListingAsset",
+      reserve: "reserveSubmission", submit: "createSubmission", bind: "bindSubmissionResult" })[name];
+    if (normalized && transitions.at(-1) !== normalized) transitions.push(normalized);
+  }
+  assert.deepEqual(transitions, ["loadUploadEvidence", "verifyRfbsWarehouse", "publishListingAsset",
+    "reserveSubmission", "createSubmission", "bindSubmissionResult"]);
+  const reserveInput = state.calls.find(([name]) => name === "reserve")[1];
+  assert.equal(reserveInput.warehouseValidation.fulfillmentType, "RFBS");
+  const createInput = state.calls.find(([name]) => name === "submit")[1];
+  assert.equal(createInput.warehouseValidationEvidenceId, "rfbs-upload-evidence-1");
+  assert.equal(createInput.warehouseFulfillmentType, "RFBS");
+  assert.equal(state.attempts[0].warehouseValidationEvidenceId, "rfbs-upload-evidence-1");
+});
+
+test("RFBS verifier failures and changed creation evidence stop before publication or submission writes", async () => {
+  const cases = [
+    { mutate() {}, error: Object.assign(new Error("expired"), { code: "RFBS_WAREHOUSE_EVIDENCE_EXPIRED" }) },
+    { mutate(context) { context.warehouseFulfillmentType = "FBS"; },
+      error: Object.assign(new Error("must not verify"), { code: "RFBS_WAREHOUSE_CHANGED" }) },
+  ];
+  for (const fixture of cases) {
+    const { service, state } = harness({ rfbsWarehouseVerifier: {
+      async verifyRfbsWarehouse() { throw fixture.error; },
+    } });
+    state.context.warehouses[0].warehouseType = "RFBS";
+    state.context.warehouses[0].hasActiveProductAssociation = false;
+    state.context.products = [];
+    state.context.warehouseFulfillmentType = "RFBS";
+    state.context.creationWarehouseValidation = rfbsValidation({ correlationId: "job-corr" });
+    fixture.mutate(state.context);
+    await assert.rejects(service.submitAutoListingItem(request()), { code: fixture.error.code });
+    assert.equal(state.calls.some(([name]) => ["publish", "reserve", "submit", "bind"].includes(name)), false);
+  }
+});
+
+test("FBS upload never invokes the RFBS verifier", async () => {
+  let verifierCalls = 0;
+  const { service } = harness({ rfbsWarehouseVerifier: {
+    async verifyRfbsWarehouse() { verifierCalls += 1; throw new Error("must not verify FBS"); },
+  } });
+  await service.submitAutoListingItem(request());
+  assert.equal(verifierCalls, 0);
 });
 
 test("an expired immutable reservation can resume after a crash without changing the queued generation", async () => {
@@ -387,6 +487,11 @@ test("same result link or uncertain standard-pipeline success is rebound and nev
       return { duplicate: true, job: { id: "submission-job-recovered", snapshotId: "submission-snapshot-recovered", status: "QUEUE_PENDING" } };
     },
   });
+  state.context.warehouses[0].warehouseType = "RFBS";
+  state.context.warehouses[0].hasActiveProductAssociation = false;
+  state.context.products = [];
+  state.context.warehouseFulfillmentType = "RFBS";
+  state.context.creationWarehouseValidation = rfbsValidation({ correlationId: "job-corr" });
   const recovered = await service.submitAutoListingItem(request());
   assert.equal(recovered.submissionJobId, "submission-job-recovered");
   assert.equal(createCalls, 1);
@@ -396,4 +501,14 @@ test("same result link or uncertain standard-pipeline success is rebound and nev
   assert.equal(replay.duplicate, true);
   assert.equal(createCalls, 1);
   assert.equal(state.attempts.length, 1);
+  assert.equal(state.calls.filter(([kind]) => kind === "verify").length, 1);
+  assert.equal(state.calls.filter(([kind]) => kind === "publish").length,
+    state.context.acceptedAssets.length);
+  assert.equal(state.calls.filter(([kind]) => kind === "reserve").length, 1);
+  state.link.resultHash = "0".repeat(64);
+  await assert.rejects(service.submitAutoListingItem(request()), { code: "AUTO_LISTING_UPLOAD_CONFLICT" });
+  assert.equal(state.calls.filter(([kind]) => kind === "verify").length, 1);
+  assert.equal(state.calls.filter(([kind]) => kind === "publish").length,
+    state.context.acceptedAssets.length);
+  assert.equal(state.calls.filter(([kind]) => kind === "reserve").length, 1);
 });
