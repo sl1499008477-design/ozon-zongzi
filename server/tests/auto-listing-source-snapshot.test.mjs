@@ -46,6 +46,8 @@ const source = (overrides = {}) => ({
   sourceType: "COLLECT_BOX",
   sourceRecordId: "collect-1",
   sourceVersion: "7",
+  targetStoreId: "store-a",
+  targetStoreCurrency: "RUB",
   collectItem: collectItem(),
   productDraft: { id: "draft-1", version: 7 },
   rawResponseRef: "raw-response-1",
@@ -86,7 +88,9 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
   assert.equal(result.snapshot.attributes[0].dictionaryValueId, "20");
   assert.equal(result.snapshot.logistics.weight, 1200);
   assert.equal(result.snapshot.productMeasurements.reliable, true);
-  assert.deepEqual(result.snapshot.priceEvidence, { blackKopecks: "10000", greenKopecks: "8000", currency: "RUB" });
+  assert.deepEqual(result.snapshot.priceEvidence, {
+    blackKopecks: "10000", greenKopecks: "8000", currency: "RUB", currencySource: "SOURCE",
+  });
   assert.equal(result.snapshot.variants.length, 2);
   assert.equal(result.snapshot.variants[1].sku, "sku-blue");
   assert.deepEqual(result.snapshot.media.videos, [{ url: "https://media.example/video.mp4" }]);
@@ -121,7 +125,9 @@ test("preserves variant price, media and grouping facts and hashes every frozen 
     }),
   });
   const first = buildAutoListingSourceSnapshot(baseline);
-  assert.deepEqual(first.snapshot.variants[0].priceEvidence, { blackKopecks: "10000", greenKopecks: "8000", currency: "RUB" });
+  assert.deepEqual(first.snapshot.variants[0].priceEvidence, {
+    blackKopecks: "10000", greenKopecks: "8000", currency: "RUB", currencySource: "SOURCE",
+  });
   assert.equal(first.snapshot.variants[0].groupId, "group-a");
   assert.deepEqual(first.snapshot.variants[0].media, ["one"]);
   for (const mutate of [
@@ -252,13 +258,54 @@ test("preserves numeric source price facts and hashes their JSON type", () => {
   assert.notEqual(numeric.snapshotHash, strings.snapshotHash);
 });
 
+test("uses the exact target store currency only when source currency is missing", () => {
+  const draft = structuredClone(collectItem().listingDraft);
+  delete draft.currency;
+  draft.variants = draft.variants.map((variant) => {
+    const copy = { ...variant };
+    delete copy.currency;
+    return copy;
+  });
+  const captured = buildAutoListingSourceSnapshot(source({
+    targetStoreCurrency: "CNY",
+    collectItem: collectItem({ listingDraft: draft }),
+  }));
+  assert.deepEqual(captured.snapshot.priceEvidence, {
+    blackKopecks: "10000", greenKopecks: "8000", currency: "CNY", currencySource: "TARGET_STORE",
+  });
+  assert.equal(captured.snapshot.variants[0].priceEvidence.currency, "CNY");
+  assert.equal(captured.snapshot.variants[0].priceEvidence.currencySource, "TARGET_STORE");
+
+  draft.categoryResolution.target.storeId = "store-other";
+  assert.throws(() => buildAutoListingSourceSnapshot(source({
+    targetStoreCurrency: "CNY",
+    collectItem: collectItem({ listingDraft: draft }),
+  })), { code: "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED" });
+});
+
+test("requires explicit source currency to match the target store currency", () => {
+  const cnyDraft = structuredClone(collectItem().listingDraft);
+  cnyDraft.currency = "CNY";
+  cnyDraft.variants = cnyDraft.variants.map((variant) => ({ ...variant, currency: "CNY" }));
+  const captured = buildAutoListingSourceSnapshot(source({
+    targetStoreCurrency: "CNY",
+    collectItem: collectItem({ listingDraft: cnyDraft }),
+  }));
+  assert.equal(captured.snapshot.priceEvidence.currency, "CNY");
+  assert.equal(captured.snapshot.priceEvidence.currencySource, "SOURCE");
+
+  assert.throws(() => buildAutoListingSourceSnapshot(source({ targetStoreCurrency: "CNY" })), {
+    code: "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
+  });
+});
+
 test("rejects untrusted scope and missing required source facts with stable codes", () => {
   for (const [input, code] of [
     [source({ accountId: "account-b" }), "AUTO_LISTING_SOURCE_SCOPE"],
     [source({ sourceRecordId: "" }), "AUTO_LISTING_SOURCE_INVALID"],
     [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, categoryResolution: { ...collectItem().listingDraft.categoryResolution, target: { ...collectItem().listingDraft.categoryResolution.target, descriptionCategoryId: "" } } } }) }), "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"],
     [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, variants: [{ sku: "" }] } }) }), "AUTO_LISTING_SOURCE_SKU_REQUIRED"],
-    [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, currency: "USD" } }) }), "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB"],
+    [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, currency: "USD" } }) }), "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED"],
   ]) {
     assert.throws(() => buildAutoListingSourceSnapshot(input), (error) => error?.code === code);
   }

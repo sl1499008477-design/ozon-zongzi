@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { buildCollectItemDraftV4 } from "./listing-pipeline.mjs";
+import { resolveAutoListingPriceCurrency } from "./auto-listing-currency.mjs";
 
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const SNAPSHOT_KEYS = [
@@ -15,6 +16,8 @@ const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_SOURCE_SKU_REQUIRED",
   "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+  "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED",
+  "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
 ]);
 
 function sourceError(code) {
@@ -104,9 +107,25 @@ function categorySnapshot(draft) {
   };
 }
 
-function priceEvidence(record, fallback, collectItem) {
-  const currency = text(firstDefined(record?.currency, record?.currencyCode, record?.currency_code, fallback?.currency, fallback?.currencyCode, collectItem.currency));
-  if (currency !== "RUB") throw sourceError("AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB");
+function priceEvidence(record, fallback, collectItem, currencyContext) {
+  const sourceCurrency = firstDefined(
+    record?.currency,
+    record?.currencyCode,
+    record?.currency_code,
+    fallback?.currency,
+    fallback?.currencyCode,
+    fallback?.currency_code,
+    collectItem.currency,
+    collectItem.currencyCode,
+    collectItem.currency_code,
+    "",
+  );
+  const { currency, currencySource } = resolveAutoListingPriceCurrency({
+    sourceCurrency,
+    targetStoreCurrency: currencyContext.targetStoreCurrency,
+    sourceTargetStoreId: currencyContext.sourceTargetStoreId,
+    targetStoreId: currencyContext.targetStoreId,
+  });
   const fact = (...values) => {
     const value = values.find((candidate) => candidate !== undefined);
     if (value === undefined) return "";
@@ -118,10 +137,11 @@ function priceEvidence(record, fallback, collectItem) {
     blackKopecks: fact(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks, fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, ""),
     greenKopecks: fact(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks, fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, ""),
     currency,
+    currencySource,
   };
 }
 
-function variantsSnapshot(draft, collectItem) {
+function variantsSnapshot(draft, collectItem, currencyContext) {
   const primarySku = text(firstDefined(draft.sku, draft.sourceSku, collectItem.sku, collectItem.sourceSku));
   if (!primarySku) throw sourceError("AUTO_LISTING_SOURCE_SKU_REQUIRED");
   const primary = {
@@ -129,7 +149,7 @@ function variantsSnapshot(draft, collectItem) {
     offerId: firstDefined(draft.offerId, draft.offer_id, collectItem.offerId, collectItem.offer_id, ""),
     name: firstDefined(draft.title, draft.name, collectItem.name, collectItem.title, ""),
     price: firstDefined(draft.price, collectItem.price, ""),
-    priceEvidence: priceEvidence(draft, null, collectItem),
+    priceEvidence: priceEvidence(draft, null, collectItem, currencyContext),
     media: firstDefined(draft.media, draft.images, collectItem.images, []),
     groupId: firstDefined(draft.variantGroupId, draft.groupId, null),
     relation: firstDefined(draft.relation, draft.variantRelation, draft.groupEvidence, null),
@@ -145,7 +165,7 @@ function variantsSnapshot(draft, collectItem) {
       offerId: firstDefined(value.offerId, value.offer_id, ""),
       name: firstDefined(value.name, value.title, ""),
       price: firstDefined(value.price, value.priceKopecks, ""),
-      priceEvidence: priceEvidence(value, draft, collectItem),
+      priceEvidence: priceEvidence(value, draft, collectItem, currencyContext),
       media: firstDefined(value.media, value.images, []),
       groupId: firstDefined(value.variantGroupId, value.groupId, value.group_id, null),
       relation: firstDefined(value.relation, value.variantRelation, value.groupEvidence, null),
@@ -181,8 +201,11 @@ const stringOrNull = (value) => value === null || typeof value === "string";
 const requiredString = (value) => typeof value === "string" && value.trim().length > 0;
 const nonemptyStringOrNull = (value) => value === null || requiredString(value);
 const priceFact = (value) => value === null || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
-const rubPrice = (value) => plainObject(value) && value.currency === "RUB"
-  && priceFact(value.blackKopecks) && priceFact(value.greenKopecks);
+const supportedPrice = (value) => plainObject(value) && ["RUB", "CNY"].includes(value.currency)
+  && priceFact(value.blackKopecks) && priceFact(value.greenKopecks)
+  && (value.currencySource === undefined
+    ? value.currency === "RUB"
+    : ["SOURCE", "TARGET_STORE"].includes(value.currencySource));
 
 function assertSemanticSnapshot(snapshot) {
   const { identity, source, targetCategory, attributes, logistics, productMeasurements, priceEvidence, variants, media, richContent, rawEvidence } = snapshot;
@@ -196,7 +219,7 @@ function assertSemanticSnapshot(snapshot) {
     || !plainObject(targetCategory) || !["descriptionCategoryId", "typeId", "targetStoreId"].every((key) => requiredString(targetCategory[key]))
     || !Array.isArray(targetCategory.ancestorCategoryIds) || targetCategory.ancestorCategoryIds.some((id) => !requiredString(id))
     || !Array.isArray(attributes) || !plainObject(logistics) || !plainObject(productMeasurements)
-    || !rubPrice(priceEvidence) || !Array.isArray(variants) || variants.length < 1
+    || !supportedPrice(priceEvidence) || !Array.isArray(variants) || variants.length < 1
     || !plainObject(media) || !Array.isArray(media.images) || !Array.isArray(media.videos)
     || !(richContent === null || typeof richContent === "string" || plainObject(richContent) || Array.isArray(richContent))
     || !plainObject(rawEvidence) || !nonemptyStringOrNull(rawEvidence.rawResponseRef) || !nonemptyStringOrNull(rawEvidence.rawResponseHash)) {
@@ -204,7 +227,7 @@ function assertSemanticSnapshot(snapshot) {
   }
   for (const variant of variants) {
     if (!plainObject(variant) || !requiredString(variant.sku) || !["offerId", "name"].every((key) => typeof variant[key] === "string")
-      || !rubPrice(variant.priceEvidence) || !Array.isArray(variant.media)
+      || !supportedPrice(variant.priceEvidence) || !Array.isArray(variant.media)
       || !stringOrNull(variant.groupId) || !(variant.relation === null || plainObject(variant.relation) || Array.isArray(variant.relation))) {
       throw sourceError("AUTO_LISTING_SOURCE_INVALID");
     }
@@ -309,7 +332,13 @@ export function buildAutoListingSourceSnapshot(input = {}) {
   const rawResponseHash = scalar(input.rawResponseHash, { allowNull: true });
   let draft;
   try { draft = buildCollectItemDraftV4(collectItem); } catch { throw sourceError("AUTO_LISTING_SOURCE_INVALID"); }
-  const variants = variantsSnapshot(draft, collectItem);
+  const targetCategory = categorySnapshot(draft);
+  const currencyContext = {
+    targetStoreCurrency: input.targetStoreCurrency,
+    targetStoreId: input.targetStoreId,
+    sourceTargetStoreId: targetCategory.targetStoreId,
+  };
+  const variants = variantsSnapshot(draft, collectItem, currencyContext);
   const snapshot = normalizedSnapshot({
     identity: {
       accountId, sourceType, sourceRecordId, sourceVersion, primarySku: variants.primarySku,
@@ -324,11 +353,11 @@ export function buildAutoListingSourceSnapshot(input = {}) {
       collectedAt: scalar(firstDefined(input.rawCollectedAt, draft.collectedAt, collectItem.collectedAt, collectItem.createdAt, null), { allowNull: true }),
       productStyle: identifier(firstDefined(draft.productStyle, collectItem.productStyle, "UNKNOWN")) || "UNKNOWN",
     },
-    targetCategory: categorySnapshot(draft),
+    targetCategory,
     attributes: firstDefined(draft.attributes, draft.categoryAttributes, []),
     logistics: firstDefined(draft.logistics, { packageWeight: draft.packageWeight || "", packageLength: draft.packageLength || "", packageWidth: draft.packageWidth || "", packageHeight: draft.packageHeight || "" }),
     productMeasurements: firstDefined(draft.productMeasurements, draft.product_measurements, draft.productDimensions, draft.product_dimensions, collectItem.productMeasurements, collectItem.productDimensions, {}),
-    priceEvidence: priceEvidence(draft, null, collectItem),
+    priceEvidence: priceEvidence(draft, null, collectItem, currencyContext),
     variants: variants.variants,
     media: { images: firstDefined(draft.images, collectItem.images, []), video: firstDefined(draft.video, null), videos: firstDefined(draft.videos, draft.media, collectItem.videos, []) },
     richContent: firstDefined(draft.richContent, draft.rich_content, collectItem.richContent, collectItem.rich_content, null),

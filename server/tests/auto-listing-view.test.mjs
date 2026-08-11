@@ -84,6 +84,17 @@ test("returns the closed ordinary-user review DTO and omits internal evidence", 
   assert.doesNotMatch(serialized, /objectKey|checker|reasoning|requestBody|requestId|internalDocument|metadata|private/i);
 });
 
+test("preserves a native CNY price in the review contract", () => {
+  const value = createAutoListingReviewView(fixture({
+    item: {
+      ...fixture().item,
+      price: { ...fixture().item.price, currency: "CNY" },
+    },
+  }));
+  assert.equal(value.price.currency, "CNY");
+  assert.equal(value.price.finalPriceKopecks, "14600");
+});
+
 test("rejects every cross-account component instead of filtering it silently", () => {
   for (const [field, value] of [
     ["item", { ...fixture().item, accountId: "account-b" }],

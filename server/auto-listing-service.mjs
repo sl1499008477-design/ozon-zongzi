@@ -5,6 +5,7 @@ import {
 } from "./auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image-config.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import {
   buildAutoListingBlockedSourceEvidence,
@@ -24,6 +25,8 @@ const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_SOURCE_SKU_REQUIRED",
   "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+  "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED",
+  "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
 ]);
 
 function error(code, status = 422) {
@@ -98,6 +101,8 @@ function buildJobItems({ accountId, sourceType, sources, targetStore, config, co
         rawResponseRef: source.rawResponseRef,
         rawResponseHash: source.rawResponseHash,
         rawCollectedAt: source.rawCollectedAt,
+        targetStoreId: targetStore.id,
+        targetStoreCurrency: targetStore.currencyCode,
       });
     } catch (caught) {
       const failureCode = text(caught?.code);
@@ -151,9 +156,10 @@ function buildJobItems({ accountId, sourceType, sources, targetStore, config, co
 }
 
 function safePrice(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.currency !== "RUB"
+  const currency = normalizeAutoListingCurrency(value?.currency);
+  if (!value || typeof value !== "object" || Array.isArray(value) || !currency
     || !["BLACK_GTE_80", "BLACK_LT_80"].includes(value.branch)) return undefined;
-  const price = { currency: "RUB", branch: value.branch };
+  const price = { currency, branch: value.branch };
   for (const field of PRICE_STRING_FIELDS) {
     if (value[field] === undefined) continue;
     if (typeof value[field] !== "string" || !/^[+-]?\d+$/.test(value[field])) return undefined;
@@ -262,6 +268,10 @@ export function createAutoListingService({
   }) {
     const store = await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
     const targetStore = validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
+    const targetStoreCurrency = normalizeAutoListingCurrency(targetStore.currencyCode);
+    if (!targetStoreCurrency || targetStoreCurrency !== targetStore.currencyCode) {
+      throw error("AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED", 422);
+    }
     const warehouseEvidence = await storage.loadTargetWarehouse({
       accountId,
       targetStoreId: config.targetStoreId,

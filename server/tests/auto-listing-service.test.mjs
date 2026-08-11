@@ -129,7 +129,7 @@ function fakeRepository({ sources = [source("collect-1")], existing = null } = {
         sources: sources.map((entry, index) => ({ ...entry, id: `row-${index + 1}`, collectItemId: entry.id })),
       };
     },
-    async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", credentialsSaved: true }; },
+    async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "RUB", credentialsSaved: true }; },
     async loadTargetWarehouse(input) { calls.push(["loadTargetWarehouse", input]); return { warehouse: { id: "warehouse-a", storeId: "store-a", accountId: input.accountId, warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }, products: [{ accountId: input.accountId, storeId: "store-a", warehouse_stocks: [{ warehouse_id: "1001", source: "fbs" }] }] }; },
     async loadPublishedStrategy(input) { calls.push(["loadPublishedStrategy", input]); return { strategyVersion: { strategyId: "strategy-a", strategyVersionId: "version-a" }, rules: [] }; },
     async loadPublishedUploadPolicies(input) {
@@ -569,7 +569,7 @@ test("isolates only closed source-business failures with separate blocked eviden
     ["SOURCE_READY", null],
     ["BLOCKED", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"],
     ["BLOCKED", "AUTO_LISTING_SOURCE_SKU_REQUIRED"],
-    ["BLOCKED", "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB"],
+    ["BLOCKED", "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED"],
   ]);
   assert.doesNotMatch(JSON.stringify(result), /raw-collect|listingDraft|currency.*USD/);
   const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
@@ -639,6 +639,53 @@ test("validates unique IDs after deduplication and strips nested price secrets",
   const job = await service.getAutoListingJob({ actor, jobId: "safe-price" });
   assert.deepEqual(job.items[0].price, { currency: "RUB", branch: "BLACK_GTE_80", blackKopecks: "10000", finalPriceKopecks: "14500" });
   await assert.doesNotReject(service.createAutoListingJob({ actor, collectItemIds: Array.from({ length: 101 }, () => "collect-1"), idempotencyKey: "dedup-key", correlationId: "corr", config }));
+});
+
+test("creates a native CNY job from exact target-store currency evidence", async () => {
+  const cny = source("collect-cny");
+  delete cny.collectItem.listingDraft.currency;
+  const repository = fakeRepository({ sources: [cny] });
+  repository.loadTargetStore = async (input) => {
+    repository.calls.push(["loadTargetStore", input]);
+    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "CNY", credentialsSaved: true };
+  };
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-cny"], idempotencyKey: "cny-native", correlationId: "corr-cny", config,
+  });
+  assert.equal(result.items[0].status, "SOURCE_READY");
+  assert.equal(result.items[0].price.currency, "CNY");
+  const graph = repository.calls.find(([name]) => name === "createJobGraph")[1];
+  assert.deepEqual(graph.items[0].snapshot.priceEvidence, {
+    blackKopecks: "10000", greenKopecks: "8000", currency: "CNY", currencySource: "TARGET_STORE",
+  });
+});
+
+test("blocks an explicit source currency that conflicts with the target store", async () => {
+  const repository = fakeRepository();
+  repository.loadTargetStore = async (input) => {
+    repository.calls.push(["loadTargetStore", input]);
+    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "CNY", credentialsSaved: true };
+  };
+  const result = await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "currency-mismatch", correlationId: "corr-cny", config,
+  });
+  assert.deepEqual(result.items.map((item) => [item.status, item.failureCode]), [
+    ["BLOCKED", "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH"],
+  ]);
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), true);
+});
+
+test("rejects an unsupported target-store currency before warehouse or job work", async () => {
+  const repository = fakeRepository();
+  repository.loadTargetStore = async (input) => {
+    repository.calls.push(["loadTargetStore", input]);
+    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "USD", credentialsSaved: true };
+  };
+  await assert.rejects(createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "unsupported-target-currency", correlationId: "corr-usd", config,
+  }), { code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED", status: 422 });
+  assert.equal(repository.calls.some(([name]) => name === "loadTargetWarehouse"), false);
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
 });
 
 test("passes actor account scope to every repository boundary", async () => {
@@ -779,6 +826,7 @@ test("never exposes nested objects through job and item scalar DTO slots", async
 test("repository rejects an empty platform warehouse ID before the shared eligibility policy", async () => {
   const captured = buildAutoListingSourceSnapshot({
     accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-warehouse", sourceVersion: "1",
+    targetStoreId: "store-a", targetStoreCurrency: "RUB",
     rawResponseRef: "raw-warehouse", rawResponseHash: "raw-hash",
     collectItem: source("collect-warehouse").collectItem,
     productDraft: { id: "draft-collect-warehouse", version: 1 },
@@ -826,6 +874,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
 test("repository rejects malformed frozen configuration before connecting", async () => {
   const captured = buildAutoListingSourceSnapshot({
     accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-config", sourceVersion: "1",
+    targetStoreId: "store-a", targetStoreCurrency: "RUB",
     rawResponseRef: "raw-config", rawResponseHash: "raw-hash", collectItem: source("collect-config").collectItem,
   });
   const frozen = frozenGraphConfig();
@@ -870,6 +919,7 @@ test("repository persists only a canonical recomputed price with a non-default s
   collectItem.productStyle = "MODERN";
   const captured = buildAutoListingSourceSnapshot({
     accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1",
+    targetStoreId: "store-a", targetStoreCurrency: "RUB",
     rawResponseRef: "raw-rule", rawResponseHash: "raw-hash", collectItem,
     productDraft: { id: "draft-collect-rule", version: 1 },
   });

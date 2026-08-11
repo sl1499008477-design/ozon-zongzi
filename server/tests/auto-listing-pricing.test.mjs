@@ -92,13 +92,29 @@ test("rounds a half kopeck upward using exact integer arithmetic", () => {
   });
 });
 
-test("rejects a non-RUB currency and a missing high-branch green price", () => {
+test("calculates CNY in native minor units and rejects unsupported currencies", () => {
+  assert.deepEqual(calculateAutoListingPrice({
+    blackKopecks: "10000",
+    greenKopecks: "8000",
+    adjustmentKopecks: "-500",
+    currency: "CNY",
+  }), {
+    currency: "CNY",
+    branch: "BLACK_GTE_80",
+    blackKopecks: "10000",
+    greenKopecks: "8000",
+    realPriceKopecks: "14500",
+    adjustmentKopecks: "-500",
+    finalPriceKopecks: "14000",
+  });
   expectPriceError({
     blackKopecks: "10000",
     greenKopecks: "8000",
-    currency: "CNY",
-  }, "PRICE_CURRENCY_NOT_RUB");
+    currency: "USD",
+  }, "PRICE_CURRENCY_UNSUPPORTED");
+});
 
+test("rejects a missing high-branch green price", () => {
   expectPriceError({
     blackKopecks: "8000",
     currency: "RUB",

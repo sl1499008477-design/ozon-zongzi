@@ -60,11 +60,12 @@ function imageUrl(value, itemId, assetId) {
 }
 
 function priceDto(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.currency !== "RUB"
+  const currency = normalizeAutoListingCurrency(value?.currency);
+  if (!value || typeof value !== "object" || Array.isArray(value) || !currency
     || !["BLACK_GTE_80", "BLACK_LT_80"].includes(value.branch)) throw viewError();
   const keys = ["blackKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"];
   if (value.branch === "BLACK_GTE_80") keys.splice(1, 0, "greenKopecks");
-  const result = { currency: "RUB", branch: value.branch };
+  const result = { currency, branch: value.branch };
   for (const key of keys) {
     if (typeof value[key] !== "string" || !/^[+-]?\d{1,30}$/.test(value[key])) throw viewError();
     result[key] = String(BigInt(value[key]));
@@ -179,3 +180,4 @@ export function createAutoListingReviewView(input = {}) {
     timeline: timelineDto(input.events, accountId),
   });
 }
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";

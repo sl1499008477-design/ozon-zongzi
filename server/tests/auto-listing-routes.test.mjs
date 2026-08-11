@@ -166,6 +166,28 @@ test("create route returns a safe 201 DTO for blocked source siblings", async ()
   });
 });
 
+test("create route preserves a native CNY price without exposing internal evidence", async () => {
+  const service = { createAutoListingJob: async () => ({
+    id: "job_cny", status: "CREATED", items: [{
+      id: "item_cny", status: "SOURCE_READY",
+      price: {
+        currency: "CNY", branch: "BLACK_GTE_80", blackKopecks: "10000",
+        greenKopecks: "8000", realPriceKopecks: "14500",
+        adjustmentKopecks: "0", finalPriceKopecks: "14500",
+        sourceEvidence: { secret: "never" },
+      },
+    }],
+  }) };
+  const { handler, replies } = harness({ runtime: { getService: async () => service } });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0].payload.data.items[0].price, {
+    currency: "CNY", branch: "BLACK_GTE_80", blackKopecks: "10000",
+    greenKopecks: "8000", realPriceKopecks: "14500",
+    adjustmentKopecks: "0", finalPriceKopecks: "14500",
+  });
+  assert.doesNotMatch(JSON.stringify(replies[0]), /sourceEvidence|secret/);
+});
+
 test("invalid create payloads never initialize the runtime", async () => {
   let initialized = 0;
   const { handler, replies } = harness({
@@ -320,6 +342,28 @@ test("known service failures preserve only safe codes and messages", async () =>
     status: 422,
     payload: { ok: false, code: "AUTO_LISTING_CONFIG_INVALID", message: "自动上架请求处理失败", correlationId: "corr_1" },
   });
+});
+
+test("unsupported target-store currency has a stable safe 422 response", async () => {
+  const { handler, replies } = harness({ runtime: { getService: async () => ({
+    createAutoListingJob: async () => {
+      throw Object.assign(new Error("store currency USD credential=secret"), {
+        code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED",
+        status: 500,
+      });
+    },
+  }) } });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], {
+    status: 422,
+    payload: {
+      ok: false,
+      code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED",
+      message: "目标店铺币种暂不支持自动上架",
+      correlationId: "corr_1",
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(replies[0]), /USD|credential|secret/iu);
 });
 
 for (const [code, status, message] of [

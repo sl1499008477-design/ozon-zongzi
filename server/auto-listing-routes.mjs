@@ -1,4 +1,5 @@
 import { autoListingEnabled } from "./runtime-config.mjs";
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 
 const CREATE_PATH = "/auto-listing/jobs/from-collect-box";
 const LIST_PATH = "/auto-listing/jobs";
@@ -15,6 +16,7 @@ const PUBLIC_ERRORS = Object.freeze({
   AUTO_LISTING_SOURCE_VERSION_CONFLICT: 409,
   AUTO_LISTING_CONFIG_INVALID: 422,
   AUTO_LISTING_CONFIG_FORBIDDEN_FIELD: 422,
+  AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED: 422,
   TARGET_STORE_NOT_FOUND: 404,
   TARGET_STORE_DISABLED: 409,
   TARGET_STORE_CREDENTIALS_REQUIRED: 409,
@@ -128,12 +130,13 @@ function parseJobId(match) {
 }
 
 function safePrice(price) {
-  if (!price || typeof price !== "object" || Array.isArray(price) || price.currency !== "RUB") return undefined;
+  const currency = normalizeAutoListingCurrency(price?.currency);
+  if (!price || typeof price !== "object" || Array.isArray(price) || !currency) return undefined;
   const output = {};
   for (const key of ["currency", "branch", "blackKopecks", "greenKopecks", "realPriceKopecks", "adjustmentKopecks", "finalPriceKopecks"]) {
     if (typeof price[key] === "string" && price[key].length <= 80) output[key] = price[key];
   }
-  return output.currency === "RUB" ? output : undefined;
+  return output.currency === currency ? output : undefined;
 }
 
 function safeItem(item = {}) {
@@ -199,6 +202,7 @@ function messageFor(code) {
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
   if (code === "PERMISSION_FORBIDDEN") return "没有该操作权限";
   if (code === "AUTO_LISTING_REQUEST_INVALID") return "自动上架请求无效";
+  if (code === "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED") return "目标店铺币种暂不支持自动上架";
   if (code === "RFBS_WAREHOUSE_NOT_FOUND") return "未找到目标 RFBS 仓库";
   if (code === "RFBS_WAREHOUSE_DISABLED") return "目标 RFBS 仓库不可用";
   if (code === "RFBS_WAREHOUSE_SCOPE_MISMATCH") return "RFBS 仓库不属于当前账号或店铺";

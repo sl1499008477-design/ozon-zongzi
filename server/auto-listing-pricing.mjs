@@ -1,4 +1,6 @@
-const PRICE_CURRENCY_NOT_RUB = "PRICE_CURRENCY_NOT_RUB";
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
+
+const PRICE_CURRENCY_UNSUPPORTED = "PRICE_CURRENCY_UNSUPPORTED";
 const PRICE_INPUT_MISSING = "PRICE_INPUT_MISSING";
 const PRICE_INPUT_INVALID = "PRICE_INPUT_INVALID";
 const PRICE_FINAL_NOT_POSITIVE = "PRICE_FINAL_NOT_POSITIVE";
@@ -38,7 +40,8 @@ export function calculateAutoListingPrice(input = {}) {
     throw priceError(PRICE_INPUT_INVALID);
   }
   if (isMissing(input.currency)) throw priceError(PRICE_INPUT_MISSING);
-  if (input.currency !== "RUB") throw priceError(PRICE_CURRENCY_NOT_RUB);
+  const currency = normalizeAutoListingCurrency(input.currency);
+  if (!currency || currency !== input.currency) throw priceError(PRICE_CURRENCY_UNSUPPORTED);
 
   const blackKopecks = parseIntegerKopecks(input.blackKopecks, { required: true, positive: true });
   const adjustmentKopecks = parseIntegerKopecks(input.adjustmentKopecks, { required: false, positive: false });
@@ -60,7 +63,7 @@ export function calculateAutoListingPrice(input = {}) {
   if (finalPriceKopecks <= 0n) throw priceError(PRICE_FINAL_NOT_POSITIVE);
 
   return {
-    currency: "RUB",
+    currency,
     branch,
     blackKopecks: String(blackKopecks),
     ...(greenKopecks === undefined ? {} : { greenKopecks: String(greenKopecks) }),
