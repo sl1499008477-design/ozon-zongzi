@@ -45,18 +45,19 @@ function validLifecycle(value) {
   }
 }
 
-function validRfbsWarehouseVerifier(value) {
+function closeRfbsWarehouseVerifier(value) {
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)
-      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
     const keys = Reflect.ownKeys(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    return keys.length === 1 && keys[0] === "verifyRfbsWarehouse"
+    if (!(keys.length === 1 && keys[0] === "verifyRfbsWarehouse"
       && descriptors.verifyRfbsWarehouse?.enumerable === true
       && Object.hasOwn(descriptors.verifyRfbsWarehouse, "value")
-      && typeof descriptors.verifyRfbsWarehouse.value === "function";
+      && typeof descriptors.verifyRfbsWarehouse.value === "function")) return null;
+    return Object.freeze({ verifyRfbsWarehouse: descriptors.verifyRfbsWarehouse.value });
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -205,14 +206,15 @@ export function createAutoListingRuntime({
         } catch {
           throw runtimeError("AUTO_LISTING_RFBS_RUNTIME_INITIALIZATION_FAILED", "RFBS 仓库验证运行时初始化失败");
         }
-        if (!validRfbsWarehouseVerifier(rfbsWarehouseVerifier)) {
+        const closedRfbsWarehouseVerifier = closeRfbsWarehouseVerifier(rfbsWarehouseVerifier);
+        if (!closedRfbsWarehouseVerifier) {
           throw runtimeError("AUTO_LISTING_RFBS_RUNTIME_INITIALIZATION_FAILED", "RFBS 仓库验证运行时初始化失败");
         }
         const listingPipelineEnabled = String(env.LISTING_PIPELINE_V3 ?? "1").trim() !== "0";
         return createService({
           repository,
           prepareListingBase,
-          rfbsWarehouseVerifier,
+          rfbsWarehouseVerifier: closedRfbsWarehouseVerifier,
           uploadPolicyGates: {
             directUploadAllowed,
             uploadEnabled: autoListingUploadEnabled(env),

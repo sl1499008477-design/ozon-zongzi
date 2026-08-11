@@ -93,7 +93,11 @@ function validateTarget(row, input) {
       accountId: input.accountId,
       hasActiveProductAssociation: row?.has_active_product_association === true,
     });
-    if (!eligibility.eligible || row?.warehouse_record_id !== input.config.targetWarehouseId) {
+    const selectable = eligibility.eligible === true
+      || (eligibility.fulfillmentType === "RFBS"
+        && eligibility.code === "RFBS_VALIDATION_REQUIRED"
+        && eligibility.evidenceRequired === true);
+    if (!selectable || row?.warehouse_record_id !== input.config.targetWarehouseId) {
       throw preferenceError("LISTING_WAREHOUSE_NOT_ELIGIBLE", 422);
     }
   } catch (error) {

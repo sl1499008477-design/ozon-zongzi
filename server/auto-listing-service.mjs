@@ -10,7 +10,10 @@ import {
   buildAutoListingSourceSnapshot,
 } from "./auto-listing-source-snapshot.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
-import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
+import {
+  assertListingWarehouseEligible,
+  listingWarehouseEligibility,
+} from "./listing-warehouse-eligibility.mjs";
 import { selectAutoListingUploadPolicyForNewJob } from "./auto-listing-upload-policy.mjs";
 import { assertPermission, PERMISSIONS } from "./permissions.mjs";
 
@@ -225,11 +228,33 @@ function requireRepository(repository) {
   return repository;
 }
 
-export function createAutoListingService({ repository, prepareListingBase, uploadPolicyGates = {} } = {}) {
+function requireRfbsWarehouseVerifier(value) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new TypeError();
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (keys.length !== 1 || keys[0] !== "verifyRfbsWarehouse"
+      || descriptors.verifyRfbsWarehouse?.enumerable !== true
+      || !Object.hasOwn(descriptors.verifyRfbsWarehouse, "value")
+      || typeof descriptors.verifyRfbsWarehouse.value !== "function") throw new TypeError();
+    return Object.freeze({ verifyRfbsWarehouse: descriptors.verifyRfbsWarehouse.value });
+  } catch {
+    throw new TypeError("Auto listing RFBS warehouse verifier dependency is required");
+  }
+}
+
+export function createAutoListingService({
+  repository,
+  prepareListingBase,
+  rfbsWarehouseVerifier,
+  uploadPolicyGates = {},
+} = {}) {
   const storage = requireRepository(repository);
   if (typeof prepareListingBase !== "function") {
     throw new TypeError("Auto listing base preparer dependency is required");
   }
+  const verifier = requireRfbsWarehouseVerifier(rfbsWarehouseVerifier);
   async function createFromSources({
     accountId, sourceType, sources, idempotencyKey, correlationId, config, configHash,
   }) {
@@ -248,13 +273,18 @@ export function createAutoListingService({ repository, prepareListingBase, uploa
       || !text(warehouse.warehouse_id || warehouse.warehouseId)) {
       throw error("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
     }
-    assertListingStockSelectionEligible({
-      warehouses: [warehouse],
+    const eligibilityInput = {
+      warehouse,
       products: warehouseEvidence?.products || [],
-      stocks: [{ warehouse_id: warehouse?.warehouse_id || warehouse?.warehouseId }],
       targetStoreId: config.targetStoreId,
       accountId,
-    });
+    };
+    const eligibility = listingWarehouseEligibility(eligibilityInput);
+    const selectable = eligibility.eligible === true
+      || (eligibility.fulfillmentType === "RFBS"
+        && eligibility.code === "RFBS_VALIDATION_REQUIRED"
+        && eligibility.evidenceRequired === true);
+    if (!selectable) assertListingWarehouseEligible(eligibilityInput);
     if (!Array.isArray(sources) || sources.length < 1 || sources.length > 100) {
       throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
     }
@@ -287,6 +317,15 @@ export function createAutoListingService({ repository, prepareListingBase, uploa
       });
       return { ...item, listingBaseTemplate };
     }));
+    const warehouseValidation = eligibility.fulfillmentType === "RFBS"
+      ? await verifier.verifyRfbsWarehouse({
+        accountId,
+        actorAccountId: accountId,
+        targetStoreId: config.targetStoreId,
+        targetWarehouseId: config.targetWarehouseId,
+        correlationId,
+      })
+      : null;
     const created = await storage.createJobGraph({
       accountId,
       actorAccountId: accountId,
@@ -297,6 +336,7 @@ export function createAutoListingService({ repository, prepareListingBase, uploa
       configHash,
       strategyVersionId: published.strategyVersion.strategyVersionId,
       uploadPolicyVersionId: uploadPolicy.id,
+      warehouseValidation,
       items: preparedItems,
     });
     return safeJob(created);

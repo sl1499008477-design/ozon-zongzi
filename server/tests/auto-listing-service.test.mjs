@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAutoListingService as createProductionAutoListingService } from "../auto-listing-service.mjs";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
+import { createAutoListingRfbsWarehouseVerifier } from "../auto-listing-rfbs-warehouse-verifier.mjs";
 import { buildAutoListingSourceSnapshot } from "../auto-listing-source-snapshot.mjs";
 import {
   normalizeAndHashAutoListingConfig,
@@ -83,8 +84,21 @@ const prepareListingBase = async ({ source: entry, pricingEvidence }) => ({
   },
 });
 
-const createAutoListingService = ({ repository }) =>
-  createProductionAutoListingService({ repository, prepareListingBase });
+const forbiddenRfbsWarehouseVerifier = Object.freeze({
+  async verifyRfbsWarehouse() {
+    throw new Error("FBS flows must not invoke the RFBS verifier");
+  },
+});
+
+const createAutoListingService = ({
+  repository,
+  rfbsWarehouseVerifier = forbiddenRfbsWarehouseVerifier,
+  listingBasePreparer = prepareListingBase,
+}) => createProductionAutoListingService({
+  repository,
+  prepareListingBase: listingBasePreparer,
+  rfbsWarehouseVerifier,
+});
 
 const frozenGraphConfig = () => {
   return normalizeAndHashAutoListingConfig(config);
@@ -129,6 +143,243 @@ function fakeRepository({ sources = [source("collect-1")], existing = null } = {
     async listJobs(input) { calls.push(["listJobs", input]); return graph && input.accountId === "account-a" ? [graph] : []; },
   };
 }
+
+function rfbsWarehouseEvidence() {
+  return {
+    warehouse: {
+      id: "warehouse-a", storeId: "store-a", accountId: "account-a", warehouse_id: "2001",
+      warehouse_type: "RFBS", status: "active", is_active: true, is_archived: false,
+    },
+    products: [],
+  };
+}
+
+function rfbsValidation(overrides = {}) {
+  return Object.freeze({
+    schemaVersion: "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1",
+    accountId: "account-a",
+    storeId: "store-a",
+    warehouseRecordId: "warehouse-a",
+    platformWarehouseId: "2001",
+    fulfillmentType: "RFBS",
+    status: "ACTIVE",
+    outcome: "PASSED",
+    observedAt: "2026-08-11T00:00:00.000Z",
+    expiresAt: "2026-08-11T00:10:00.000Z",
+    evidenceHash: "a".repeat(64),
+    correlationId: "corr-rfbs",
+    actorAccountId: "account-a",
+    ...overrides,
+  });
+}
+
+test("service requires an exact closed RFBS verifier dependency", () => {
+  const repository = fakeRepository();
+  for (const rfbsWarehouseVerifier of [
+    null,
+    {},
+    { async verifyRfbsWarehouse() {}, async writeWarehouse() {} },
+  ]) {
+    assert.throws(
+      () => createProductionAutoListingService({ repository, prepareListingBase, rfbsWarehouseVerifier }),
+      { name: "TypeError", message: "Auto listing RFBS warehouse verifier dependency is required" },
+    );
+  }
+});
+
+test("RFBS zero-product job verifies once immediately before graph persistence and hands off evidence", async () => {
+  const repository = fakeRepository();
+  repository.loadTargetWarehouse = async (input) => {
+    repository.calls.push(["loadTargetWarehouse", input]);
+    return rfbsWarehouseEvidence();
+  };
+  const evidence = rfbsValidation();
+  let verifyCalls = 0;
+  const rfbsWarehouseVerifier = Object.freeze({
+    async verifyRfbsWarehouse(input) {
+      verifyCalls += 1;
+      repository.calls.push(["verifyRfbsWarehouse", input]);
+      return evidence;
+    },
+  });
+
+  const listingBasePreparer = async (input) => {
+    repository.calls.push(["prepareListingBase", input]);
+    return prepareListingBase(input);
+  };
+  const result = await createAutoListingService({
+    repository, rfbsWarehouseVerifier, listingBasePreparer,
+  }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "key-rfbs", correlationId: "corr-rfbs", config,
+  });
+
+  assert.equal(result.jobId, "job-1");
+  assert.equal(verifyCalls, 1);
+  const verifyIndex = repository.calls.findIndex(([name]) => name === "verifyRfbsWarehouse");
+  const graphIndex = repository.calls.findIndex(([name]) => name === "createJobGraph");
+  assert.equal(verifyIndex, graphIndex - 1);
+  assert.equal(repository.calls[verifyIndex - 1][0], "prepareListingBase");
+  assert.deepEqual(repository.calls[verifyIndex][1], {
+    accountId: "account-a",
+    actorAccountId: "account-a",
+    targetStoreId: "store-a",
+    targetWarehouseId: "warehouse-a",
+    correlationId: "corr-rfbs",
+  });
+  assert.equal(repository.calls[graphIndex][1].warehouseValidation, evidence);
+  assert.equal(repository.calls[graphIndex][1].warehouseValidation.fulfillmentType, "RFBS");
+});
+
+test("FBS keeps its product-association rule and never invokes the RFBS verifier", async () => {
+  let verifyCalls = 0;
+  const rfbsWarehouseVerifier = Object.freeze({
+    async verifyRfbsWarehouse() { verifyCalls += 1; return rfbsValidation(); },
+  });
+  const associated = fakeRepository();
+  await createAutoListingService({ repository: associated, rfbsWarehouseVerifier }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "key-fbs", correlationId: "corr-fbs", config,
+  });
+  assert.equal(verifyCalls, 0);
+  assert.equal(associated.calls.find(([name]) => name === "createJobGraph")[1].warehouseValidation, null);
+
+  const empty = fakeRepository();
+  empty.loadTargetWarehouse = async (input) => {
+    empty.calls.push(["loadTargetWarehouse", input]);
+    return { ...rfbsWarehouseEvidence(), warehouse: { ...rfbsWarehouseEvidence().warehouse, warehouse_type: "FBS" } };
+  };
+  await assert.rejects(
+    createAutoListingService({ repository: empty, rfbsWarehouseVerifier }).createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: "key-fbs-empty", correlationId: "corr-fbs", config,
+    }),
+    (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE"
+      && error?.body?.reason === "NO_ACTIVE_PRODUCT_ASSOCIATION",
+  );
+  assert.equal(verifyCalls, 0);
+  assert.equal(empty.calls.some(([name]) => name === "createJobGraph"), false);
+});
+
+test("FBO and FBP jobs are rejected locally before verifier or graph persistence", async () => {
+  for (const type of ["FBO", "FBP"]) {
+    let verifyCalls = 0;
+    const repository = fakeRepository();
+    repository.loadTargetWarehouse = async (input) => {
+      repository.calls.push(["loadTargetWarehouse", input]);
+      return { ...rfbsWarehouseEvidence(), warehouse: { ...rfbsWarehouseEvidence().warehouse, warehouse_type: type } };
+    };
+    const rfbsWarehouseVerifier = Object.freeze({
+      async verifyRfbsWarehouse() { verifyCalls += 1; return rfbsValidation(); },
+    });
+    await assert.rejects(
+      createAutoListingService({ repository, rfbsWarehouseVerifier }).createAutoListingJob({
+        actor, collectItemIds: ["collect-1"], idempotencyKey: `key-${type}`, correlationId: "corr-unsupported", config,
+      }),
+      (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE"
+        && error?.body?.reason === "UNSUPPORTED_FULFILLMENT_TYPE",
+    );
+    assert.equal(verifyCalls, 0);
+    assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  }
+});
+
+test("every stable RFBS verification failure leaves graph persistence unreachable", async () => {
+  for (const code of [
+    "RFBS_WAREHOUSE_NOT_FOUND",
+    "RFBS_WAREHOUSE_DISABLED",
+    "RFBS_WAREHOUSE_SCOPE_MISMATCH",
+    "RFBS_WAREHOUSE_CHANGED",
+    "RFBS_WAREHOUSE_EVIDENCE_EXPIRED",
+    "RFBS_VALIDATION_REQUIRED",
+    "AUTO_LISTING_RFBS_VALIDATION_FAILED",
+  ]) {
+    let graphWrites = 0;
+    const repository = fakeRepository();
+    repository.loadTargetWarehouse = async (input) => {
+      repository.calls.push(["loadTargetWarehouse", input]);
+      return rfbsWarehouseEvidence();
+    };
+    repository.createJobGraph = async () => {
+      graphWrites += 1;
+      throw new Error("graph persistence must remain unreachable");
+    };
+    const rfbsWarehouseVerifier = Object.freeze({
+      async verifyRfbsWarehouse() {
+        const failure = new Error("safe RFBS verification failure");
+        failure.code = code;
+        failure.retryable = code === "RFBS_VALIDATION_REQUIRED";
+        throw failure;
+      },
+    });
+
+    await assert.rejects(
+      createAutoListingService({ repository, rfbsWarehouseVerifier }).createAutoListingJob({
+        actor, collectItemIds: ["collect-1"], idempotencyKey: `failure-${code}`, correlationId: "corr-failure", config,
+      }),
+      (error) => error?.code === code && !/credential|api.?key|secret/iu.test(error.message),
+    );
+    assert.equal(graphWrites, 0);
+  }
+});
+
+test("RFBS verification failure uses only the read-only Ozon warehouse endpoint before zero graph writes", async () => {
+  const repository = fakeRepository();
+  repository.loadTargetWarehouse = async (input) => {
+    repository.calls.push(["loadTargetWarehouse", input]);
+    return rfbsWarehouseEvidence();
+  };
+  let graphWrites = 0;
+  repository.createJobGraph = async () => {
+    graphWrites += 1;
+    throw new Error("graph persistence must remain unreachable");
+  };
+  const ozonCalls = [];
+  const rfbsWarehouseVerifier = createAutoListingRfbsWarehouseVerifier({
+    async loadTarget() { return rfbsWarehouseEvidence().warehouse; },
+    async readCredential() {
+      return { id: "store-a", accountId: "account-a", clientId: "client-a", apiKey: "test-only-key" };
+    },
+    async callOzonSellerApi(_credential, path, body) {
+      ozonCalls.push({ path, body });
+      return { result: [] };
+    },
+    now: () => new Date("2026-08-11T00:00:00.000Z"),
+  });
+
+  await assert.rejects(
+    createAutoListingService({ repository, rfbsWarehouseVerifier }).createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: "failure-read-only", correlationId: "corr-read-only", config,
+    }),
+    { code: "RFBS_WAREHOUSE_NOT_FOUND" },
+  );
+  assert.deepEqual(ozonCalls, [{ path: "/v2/warehouse/list", body: {} }]);
+  assert.equal(ozonCalls.filter(({ path }) => path !== "/v2/warehouse/list").length, 0);
+  assert.equal(graphWrites, 0);
+});
+
+test("RFBS idempotent and conflicting replays return the original job before revalidation or binding changes", async () => {
+  const repository = fakeRepository({ existing: { id: "job-original", status: "CREATED", sourceType: "COLLECT_BOX", items: [] } });
+  repository.getJobByIdempotencyKey = async (input) => {
+    repository.calls.push(["getJobByIdempotencyKey", input]);
+    return { id: "job-original", status: "CREATED", sourceType: "COLLECT_BOX", warehouseValidationEvidenceId: "evidence-original", items: [] };
+  };
+  let verifyCalls = 0;
+  const rfbsWarehouseVerifier = Object.freeze({
+    async verifyRfbsWarehouse() { verifyCalls += 1; return rfbsValidation(); },
+  });
+  const service = createAutoListingService({ repository, rfbsWarehouseVerifier });
+
+  const replay = await service.createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "replay-rfbs", correlationId: "corr-rfbs", config,
+  });
+  const conflicting = await service.createAutoListingJob({
+    actor, collectItemIds: ["different-source"], idempotencyKey: "replay-rfbs", correlationId: "different-correlation",
+    config: { ...config, targetWarehouseId: "different-warehouse" },
+  });
+
+  assert.equal(replay.jobId, "job-original");
+  assert.equal(conflicting.jobId, "job-original");
+  assert.equal(verifyCalls, 0);
+  assert.deepEqual(repository.calls.map(([name]) => name), ["getJobByIdempotencyKey", "getJobByIdempotencyKey"]);
+});
 
 test("creates an EXCEL_SKU job from ready import rows while preserving row and collect identities", async () => {
   const repository = fakeRepository({ sources: [source("collect-1"), source("collect-2")] });

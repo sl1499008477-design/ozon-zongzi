@@ -231,9 +231,15 @@ test("runtime injects the AI workflow into job creation only when both feature f
         return prepareListingBase;
       },
       createService(input) {
-        assert.deepEqual(input, { repository, prepareListingBase, rfbsWarehouseVerifier, uploadPolicyGates: {
+        assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
+        assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
+        assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
+        assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
+        assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
+          repository, prepareListingBase, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
           directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
-        } });
+          },
+        });
         return service;
       },
       createAiWorkerDependencies: async () => {
@@ -293,9 +299,14 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
     },
     createService(input) {
       services += 1;
-      assert.deepEqual(input, { repository, prepareListingBase, rfbsWarehouseVerifier, uploadPolicyGates: {
+      assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
+      assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
+      assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
+      assert.deepEqual({ ...input, rfbsWarehouseVerifier: undefined }, {
+        repository, prepareListingBase, rfbsWarehouseVerifier: undefined, uploadPolicyGates: {
         directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
-      } });
+        },
+      });
       return service;
     },
     createAiWorkerDependencies: async () => { throw new Error("must not compose"); },
@@ -338,7 +349,10 @@ test("runtime composes the RFBS verifier from tenant-scoped warehouse and creden
     },
     callOzonSellerApi: sellerApi,
     createService(input) {
-      assert.equal(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
+      assert.notEqual(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
+      assert.equal(Object.isFrozen(input.rfbsWarehouseVerifier), true);
+      assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
+      assert.equal(input.rfbsWarehouseVerifier.verifyRfbsWarehouse, rfbsWarehouseVerifier.verifyRfbsWarehouse);
       return service;
     },
   });
