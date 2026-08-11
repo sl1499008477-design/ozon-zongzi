@@ -141,7 +141,7 @@ function richGroupKey(row) {
 }
 
 const CONTEXT_SQL = `
-  SELECT item.id,item.account_id,item.job_id,item.snapshot_id,item.status,item.status_version,
+  SELECT item.id,item.id AS item_id,item.account_id,item.job_id,item.snapshot_id,item.status,item.status_version,
     item.target_store_id,item.target_warehouse_id,item.active_content_plan_id,
     job.config_snapshot,job.config_hash,job.upload_policy_version_id,job.warehouse_validation_evidence_id,
     source.snapshot_hash,
@@ -479,7 +479,7 @@ export function createPostgresAutoListingUploadRepository({ pool, randomUUID = c
       try {
         await client.query("BEGIN"); started = true;
         const locked = await client.query(
-          `SELECT item.id,item.account_id,item.job_id,item.status,item.status_version,item.target_store_id,item.target_warehouse_id,
+          `SELECT item.id,item.id AS item_id,item.account_id,item.job_id,item.status,item.status_version,item.target_store_id,item.target_warehouse_id,
              item.active_content_plan_id,base.id AS listing_base_id,base.product_draft_id,
              base.product_draft_version,base.product_draft_data_hash,job.config_hash,job.upload_policy_version_id,
              job.warehouse_validation_evidence_id,

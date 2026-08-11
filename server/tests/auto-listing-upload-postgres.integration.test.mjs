@@ -210,6 +210,9 @@ test("PostgreSQL claims one local warehouse item, safely retries the same link, 
     assert.match(reservationConstraint, /RESERVED/iu);
     assert.match(reservationConstraint, /warehouse_validation_evidence_id IS NOT NULL/iu);
     const context = await repository.loadUploadEvidence({ accountId: ids.account, itemId: ids.item });
+    assert.equal(context.item.id, ids.item);
+    assert.equal(context.listingBase.itemId, ids.item);
+    assert.equal(context.visualGroups.itemId, ids.item);
     assert.equal(context.item.targetWarehouseId, ids.warehouseLocal);
     assert.equal(context.targetWarehousePlatformId, warehousePlatformId);
     assert.equal(context.warehouseFulfillmentType, "FBS");
@@ -525,6 +528,9 @@ test("PostgreSQL atomically rechecks RFBS scope and binds one fresh immutable up
 
     const repository = createPostgresAutoListingUploadRepository({ pool });
     const context = await repository.loadUploadEvidence({ accountId: ids.account, itemId: ids.item });
+    assert.equal(context.item.id, ids.item);
+    assert.equal(context.listingBase.itemId, ids.item);
+    assert.equal(context.visualGroups.itemId, ids.item);
     assert.equal(context.warehouseFulfillmentType, "RFBS");
     assert.equal(context.creationWarehouseValidation.evidenceId, ids.creationEvidence);
     assert.equal(context.creationWarehouseValidation.fulfillmentType, "RFBS");

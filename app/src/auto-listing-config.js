@@ -172,18 +172,63 @@ export function autoListingWarehouseOptions({
 } = {}) {
   const storeId = firstText(targetStoreId);
   const options = (Array.isArray(warehouses) ? warehouses : [])
-    .filter((warehouse) => firstText(warehouse?.storeId, warehouse?.store_id) === storeId
-      && warehouse?.listingEligibility?.eligible === true)
-    .map((warehouse) => ({
-      value: firstText(warehouse.warehouse_id, warehouse.warehouseId),
-      label: firstText(warehouse.name, warehouse.label, warehouse.warehouse_name, warehouse.warehouse_id),
-    }))
+    .filter((warehouse) => {
+      if (firstText(warehouse?.storeId, warehouse?.store_id) !== storeId) return false;
+      const eligibility = warehouse?.listingEligibility;
+      const fulfillmentType = firstText(eligibility?.fulfillmentType).toUpperCase();
+      const eligible = eligibility?.eligible === true
+        && ((fulfillmentType === "FBS" && eligibility?.evidenceRequired === false)
+          || (fulfillmentType === "RFBS" && eligibility?.evidenceRequired === true));
+      const pendingRfbs = eligibility?.eligible === false
+        && eligibility?.code === "RFBS_VALIDATION_REQUIRED"
+        && fulfillmentType === "RFBS"
+        && eligibility?.evidenceRequired === true;
+      return eligible || pendingRfbs;
+    })
+    .map((warehouse) => {
+      const eligibility = warehouse.listingEligibility;
+      const fulfillmentType = firstText(eligibility.fulfillmentType).toUpperCase();
+      const pending = eligibility.eligible === false;
+      const statusLabel = pending ? "创建任务时验证" : "已验证";
+      const name = firstText(warehouse.name, warehouse.label, warehouse.warehouse_name, warehouse.warehouse_id);
+      const visibleStatus = pending || fulfillmentType === "RFBS" ? ` · ${statusLabel}` : "";
+      return Object.freeze({
+        value: firstText(warehouse.warehouse_id, warehouse.warehouseId),
+        label: `${name}（${fulfillmentType}${visibleStatus}）`,
+        fulfillmentType,
+        evidenceRequired: eligibility.evidenceRequired === true,
+        statusLabel,
+      });
+    })
     .filter((entry) => entry.value && entry.label);
   const selected = firstText(selectedWarehouseId);
   return Object.freeze({
-    options,
+    options: Object.freeze(options),
     selectedWarehouseId: options.some((entry) => entry.value === selected) ? selected : "",
   });
+}
+
+const AUTO_LISTING_RFBS_ERROR_MESSAGES = Object.freeze({
+  RFBS_WAREHOUSE_NOT_FOUND: "未在当前店铺找到该 RFBS 仓库，请同步仓库后重试",
+  RFBS_WAREHOUSE_DISABLED: "该 RFBS 仓库当前不可用，请在 Ozon 启用或改选其他仓库",
+  RFBS_WAREHOUSE_SCOPE_MISMATCH: "仓库与当前店铺不匹配，请重新选择店铺和仓库",
+  RFBS_WAREHOUSE_CHANGED: "RFBS 仓库信息已变化，请同步仓库后重新选择",
+  RFBS_WAREHOUSE_EVIDENCE_EXPIRED: "RFBS 仓库验证已过期，请重试创建任务",
+  RFBS_VALIDATION_REQUIRED: "Ozon 仓库验证暂时不可用，请稍后重试",
+  AUTO_LISTING_RFBS_VALIDATION_FAILED: "RFBS 仓库验证失败，请稍后重试或联系管理员",
+  UNSUPPORTED_FULFILLMENT_TYPE: "该仓库类型暂不支持自动上架，请选择 FBS 或 RFBS 仓库",
+});
+
+export function autoListingTaskErrorMessage(error) {
+  let code = "";
+  let message = "";
+  try {
+    code = typeof error?.code === "string" ? error.code : "";
+    message = typeof error?.message === "string" ? error.message.trim() : "";
+  } catch {
+    return "任务创建失败";
+  }
+  return AUTO_LISTING_RFBS_ERROR_MESSAGES[code] || message || "任务创建失败";
 }
 
 function bytesToBase64(bytes) {

@@ -12,7 +12,7 @@ test("automatic listing page owns the complete review-mode ordinary-user workflo
     "采集箱推送",
     "Excel SKU",
     "上架店铺",
-    "活跃 FBS 仓库",
+    "活跃 FBS / RFBS 仓库",
     "上架库存",
     "售价加减",
     "图片比例",
@@ -34,6 +34,7 @@ test("automatic listing page owns the complete review-mode ordinary-user workflo
     "重试失败行",
     "取消任务",
   ]) assert.match(page, new RegExp(required));
+  assert.match(page, /RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。/u);
 });
 
 test("page uses focused pure models and stable backend routes without direct Ozon writes", () => {

@@ -26,6 +26,7 @@ import {
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
+  autoListingTaskErrorMessage,
   autoListingWarehouseOptions,
   autoListingExcelSerializedBodyLimit,
   deriveAutoListingConfig,
@@ -283,7 +284,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
       }
       if (!refreshed) setError("任务已创建，但列表刷新失败，请手动刷新");
     } catch (caught) {
-      setError(caught?.message || "任务创建失败");
+      setError(autoListingTaskErrorMessage(caught));
     } finally {
       createInFlightRef.current = false;
       setSubmitting(false);
@@ -478,12 +479,13 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
             <Form.Item name="targetStoreId" label="上架店铺" rules={[{ required: true, message: "请选择上架店铺" }]}>
               <Select options={stores.map((store) => ({ value: store.id, label: store.label || store.companyName || store.id }))} />
             </Form.Item>
-            <Form.Item name="targetWarehouseId" label="活跃 FBS 仓库" rules={[{ required: true, message: "请选择活跃 FBS 仓库" }]}>
-              <Select options={warehouseChoice.options} placeholder="只显示后端确认可用的仓库" />
+            <Form.Item name="targetWarehouseId" label="活跃 FBS / RFBS 仓库" rules={[{ required: true, message: "请选择活跃 FBS / RFBS 仓库" }]}>
+              <Select options={warehouseChoice.options} placeholder="只显示后端确认可用或创建时可验证的仓库" />
             </Form.Item>
             <Form.Item name="stock" label="上架库存" rules={[{ required: true }]}><InputNumber min={1} precision={0} /></Form.Item>
             <Form.Item name="priceAdjustmentRubles" label="售价加减（卢布）" rules={[{ required: true }]}><Input /></Form.Item>
           </div>
+          <Alert type="info" showIcon title="RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。" />
           <Alert type="info" showIcon title="售价计算规则" description="黑标价大于等于 80：真实售价＝（黑标价－绿标价）×2.25＋黑标价；低于 80：真实售价＝黑标价÷1.0715。最后再加上或减去上面的金额。" />
 
           <div className="auto-listing-section-title">图片生成配置</div>

@@ -87,6 +87,13 @@ const state = ensureAccountState({
         status: "active",
       },
       {
+        id: "warehouse_b_rfbs",
+        localStoreId: "store_b",
+        warehouse_id: "rfbs-b",
+        warehouse_type: "rfbs",
+        status: "active",
+      },
+      {
         id: "warehouse_b_archived_only",
         localStoreId: "store_b",
         warehouse_id: "fbs-b-archived",
@@ -134,6 +141,7 @@ assert.deepEqual(payloadB.caches.postings.map((item) => item.id), ["posting_b"])
 assert.deepEqual(payloadB.caches.warehouses.map((item) => item.id), [
   "warehouse_b",
   "warehouse_b_fbo",
+  "warehouse_b_rfbs",
   "warehouse_b_archived_only",
 ]);
 assert.deepEqual(payloadB.caches.warehouses[0].listingEligibility, {
@@ -149,6 +157,12 @@ assert.deepEqual(payloadB.caches.warehouses[1].listingEligibility, {
   evidenceRequired: false,
 });
 assert.deepEqual(payloadB.caches.warehouses[2].listingEligibility, {
+  eligible: false,
+  code: "RFBS_VALIDATION_REQUIRED",
+  fulfillmentType: "RFBS",
+  evidenceRequired: true,
+});
+assert.deepEqual(payloadB.caches.warehouses[3].listingEligibility, {
   eligible: false,
   code: "NO_ACTIVE_PRODUCT_ASSOCIATION",
   fulfillmentType: "FBS",

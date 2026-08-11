@@ -121,11 +121,18 @@ test("price preview mirrors the approved two-branch formula with integer roundin
   }), { code: "PRICE_FINAL_NOT_POSITIVE" });
 });
 
-test("warehouse choices trust only backend eligibility and clear stale selection after a store switch", () => {
+test("warehouse choices trust only the exact backend FBS or pending RFBS contract and clear stale store selections", () => {
   const warehouses = [
-    { id: "local-1", warehouse_id: "101", storeId: "store-a", name: "Active", listingEligibility: { eligible: true } },
+    { id: "local-1", warehouse_id: "101", storeId: "store-a", name: "Active", listingEligibility: {
+      eligible: true, code: "ELIGIBLE_ACTIVE_FBS", fulfillmentType: "FBS", evidenceRequired: false,
+    } },
+    { id: "local-rfbs", warehouse_id: "1001", storeId: "store-a", name: "CEL-测试", listingEligibility: {
+      eligible: false, code: "RFBS_VALIDATION_REQUIRED", fulfillmentType: "RFBS", evidenceRequired: true,
+    } },
     { id: "local-2", warehouse_id: "102", storeId: "store-a", name: "Archived FBS", listingEligibility: { eligible: false } },
-    { id: "local-3", warehouse_id: "103", storeId: "store-b", name: "Other", listingEligibility: { eligible: true } },
+    { id: "local-3", warehouse_id: "103", storeId: "store-b", name: "Other", listingEligibility: {
+      eligible: true, code: "ELIGIBLE_ACTIVE_FBS", fulfillmentType: "FBS", evidenceRequired: false,
+    } },
     { id: "local-4", warehouse_id: "104", storeId: "store-a", name: "Looks active by name" },
   ];
   const result = autoListingWarehouseOptions({
@@ -134,8 +141,38 @@ test("warehouse choices trust only backend eligibility and clear stale selection
     selectedWarehouseId: "103",
   });
 
-  assert.deepEqual(result.options, [{ value: "101", label: "Active" }]);
+  assert.deepEqual(result.options, [
+    {
+      value: "101", label: "Active（FBS）", fulfillmentType: "FBS", evidenceRequired: false,
+      statusLabel: "已验证",
+    },
+    {
+      value: "1001", label: "CEL-测试（RFBS · 创建任务时验证）", fulfillmentType: "RFBS", evidenceRequired: true,
+      statusLabel: "创建任务时验证",
+    },
+  ]);
   assert.equal(result.selectedWarehouseId, "");
+});
+
+test("warehouse choices reject RFBS lookalikes, unsupported types, and malformed backend eligibility", () => {
+  const pending = {
+    eligible: false, code: "RFBS_VALIDATION_REQUIRED", fulfillmentType: "RFBS", evidenceRequired: true,
+  };
+  const result = autoListingWarehouseOptions({
+    targetStoreId: "store-a",
+    selectedWarehouseId: "1001",
+    warehouses: [
+      { warehouse_id: "1001", storeId: "store-a", name: "Valid", listingEligibility: pending },
+      { warehouse_id: "1002", storeId: "store-a", name: "Wrong code", listingEligibility: { ...pending, code: "NO_ACTIVE_PRODUCT_ASSOCIATION" } },
+      { warehouse_id: "1003", storeId: "store-a", name: "Wrong type", listingEligibility: { ...pending, fulfillmentType: "FBO" } },
+      { warehouse_id: "1004", storeId: "store-a", name: "Wrong evidence", listingEligibility: { ...pending, evidenceRequired: false } },
+      { warehouse_id: "1005", storeId: "store-a", name: "Pretends by local field", warehouse_type: "RFBS", listingEligibility: { eligible: false } },
+      { warehouse_id: "1006", storeId: "store-b", name: "Other store", listingEligibility: pending },
+      { warehouse_id: "1007", storeId: "store-a", name: "FBO", listingEligibility: { eligible: false, code: "UNSUPPORTED_FULFILLMENT_TYPE", fulfillmentType: "FBO", evidenceRequired: false } },
+    ],
+  });
+  assert.deepEqual(result.options.map(({ value }) => value), ["1001"]);
+  assert.equal(result.selectedWarehouseId, "1001");
 });
 
 test("reads a bounded workbook once and returns only request-safe metadata", async () => {
