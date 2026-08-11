@@ -8,7 +8,7 @@ import {
   verifyAutoListingBlockedSourceEvidence,
   verifyAutoListingSourceSnapshot,
 } from "./auto-listing-source-snapshot.mjs";
-import { assertListingStockSelectionEligible } from "./listing-warehouse-eligibility.mjs";
+import { assertListingWarehouseEligible } from "./listing-warehouse-eligibility.mjs";
 import { validateTargetStoreRecord } from "./listing-submission-policy.mjs";
 import { resolveAiContentStrategy } from "./ai-content-strategy.mjs";
 import { calculateAutoListingPrice } from "./auto-listing-pricing.mjs";
@@ -19,6 +19,11 @@ import { deriveEffectiveAutoListingImageConfig } from "./auto-listing-item-image
 import { freezeAutoListingListingBase } from "./auto-listing-overlay.mjs";
 
 const JOB_IDEMPOTENCY_CONSTRAINT = "auto_listing_jobs_account_id_idempotency_key_key";
+const WAREHOUSE_EVIDENCE_KEYS = Object.freeze([
+  "schemaVersion", "accountId", "storeId", "warehouseRecordId", "platformWarehouseId",
+  "fulfillmentType", "status", "outcome", "observedAt", "expiresAt", "evidenceHash",
+  "correlationId", "actorAccountId",
+]);
 const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_SOURCE_SKU_REQUIRED",
@@ -140,7 +145,9 @@ async function loadWarehouseWithClient(client, { accountId, targetStoreId, targe
   };
 }
 
-async function lockTargetWarehouseEvidenceWithClient(client, { accountId, targetStoreId, targetWarehouseId }) {
+async function lockTargetWarehouseEvidenceWithClient(client, {
+  accountId, targetStoreId, targetWarehouseId, warehouseValidation = null,
+}) {
   const storeResult = await client.query(
     `SELECT s.id,s.owner_account_id,s.label,s.company_name,s.client_id,s.currency_code,s.status
        FROM stores s
@@ -223,12 +230,12 @@ async function lockTargetWarehouseEvidenceWithClient(client, { accountId, target
     failure.body = { reason: "WAREHOUSE_ID_MISSING" };
     throw failure;
   }
-  assertListingStockSelectionEligible({
-    warehouses: [warehouse],
+  assertListingWarehouseEligible({
+    warehouse,
     products: [...productsById.values()],
-    stocks: [{ warehouse_id: platformWarehouseId }],
     targetStoreId,
     accountId,
+    validationEvidence: warehouseValidation,
   });
   return { warehouse, products: [...productsById.values()] };
 }
@@ -266,6 +273,7 @@ function mapJob(row, items, events) {
     sourceType: row.source_type,
     status: row.status,
     correlationId: row.correlation_id,
+    warehouseValidationEvidenceId: row.warehouse_validation_evidence_id || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     items: items.map((item) => {
@@ -308,7 +316,8 @@ function mapJob(row, items, events) {
 
 async function readJobWithClient(client, accountId, jobId) {
   const jobResult = await client.query(
-    `SELECT id,account_id,source_type,status,strategy_version_id,correlation_id,created_at,updated_at
+    `SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id,
+            correlation_id,created_at,updated_at
        FROM auto_listing_jobs WHERE id=$1 AND account_id=$2`,
     [jobId, accountId],
   );
@@ -334,6 +343,101 @@ async function readJobWithClient(client, accountId, jobId) {
   return mapJob(job, itemResult.rows, eventResult.rows);
 }
 
+function canonicalWarehouseValidation(value, graph) {
+  if (value === null || value === undefined) return null;
+  if (!plainJsonObject(value)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  const keys = Object.keys(value);
+  if (keys.length !== WAREHOUSE_EVIDENCE_KEYS.length
+    || keys.some((key) => !WAREHOUSE_EVIDENCE_KEYS.includes(key))) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const text = {};
+  for (const key of WAREHOUSE_EVIDENCE_KEYS) {
+    const candidate = value[key];
+    if (typeof candidate !== "string" || candidate !== candidate.trim() || !candidate
+      || candidate.length > 500 || /[\u0000-\u001f\u007f]/u.test(candidate)) {
+      throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    }
+    text[key] = candidate;
+  }
+  if (text.schemaVersion !== "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1"
+    || text.fulfillmentType !== "RFBS" || text.status !== "ACTIVE" || text.outcome !== "PASSED"
+    || text.accountId !== graph.accountId || text.actorAccountId !== graph.actorAccountId
+    || text.storeId !== graph.configSnapshot.targetStoreId
+    || text.warehouseRecordId !== graph.configSnapshot.targetWarehouseId
+    || text.correlationId !== graph.correlationId
+    || !/^[a-f0-9]{64}$/.test(text.evidenceHash)
+    || /^wh_/iu.test(text.platformWarehouseId)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const observed = new Date(text.observedAt);
+  const expires = new Date(text.expiresAt);
+  if (!Number.isFinite(observed.getTime()) || !Number.isFinite(expires.getTime())
+    || observed.toISOString() !== text.observedAt || expires.toISOString() !== text.expiresAt
+    || expires.getTime() <= observed.getTime()) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  const normalized = {
+    schemaVersion: text.schemaVersion,
+    accountId: text.accountId,
+    storeId: text.storeId,
+    warehouseRecordId: text.warehouseRecordId,
+    platformWarehouseId: text.platformWarehouseId,
+    fulfillmentType: text.fulfillmentType,
+    status: text.status,
+    outcome: text.outcome,
+    observedAt: text.observedAt,
+    expiresAt: text.expiresAt,
+    correlationId: text.correlationId,
+    actorAccountId: text.actorAccountId,
+  };
+  const expectedHash = crypto.createHash("sha256").update(JSON.stringify(normalized), "utf8").digest("hex");
+  if (text.evidenceHash !== expectedHash) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  return Object.freeze({ ...normalized, evidenceHash: text.evidenceHash });
+}
+
+function persistedWarehouseValidation(row) {
+  if (!row) return null;
+  const timestamp = (value) => value instanceof Date ? value.toISOString() : String(value);
+  return {
+    schemaVersion: row.schema_version,
+    accountId: row.account_id,
+    storeId: row.store_id,
+    warehouseRecordId: row.warehouse_record_id,
+    platformWarehouseId: row.platform_warehouse_id,
+    fulfillmentType: row.fulfillment_type,
+    status: row.status,
+    outcome: row.outcome,
+    observedAt: timestamp(row.observed_at),
+    expiresAt: timestamp(row.expires_at),
+    correlationId: row.correlation_id,
+    actorAccountId: row.actor_account_id,
+    evidenceHash: row.evidence_hash,
+  };
+}
+
+async function assertReplayWarehouseBindingWithClient(client, graph, job) {
+  const evidenceId = job?.warehouseValidationEvidenceId || null;
+  if (!graph.warehouseValidation) {
+    if (evidenceId !== null) throw repositoryError("AUTO_LISTING_WAREHOUSE_EVIDENCE_CONFLICT", 409);
+    return;
+  }
+  if (!evidenceId) throw repositoryError("AUTO_LISTING_WAREHOUSE_EVIDENCE_CONFLICT", 409);
+  const result = await client.query(
+    `SELECT id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,
+            fulfillment_type,status,outcome,observed_at,expires_at,evidence_hash,correlation_id,
+            actor_account_id,raw_response_ref
+       FROM auto_listing_rfbs_warehouse_evidence
+      WHERE account_id=$1 AND id=$2`,
+    [graph.accountId, evidenceId],
+  );
+  const row = result.rows[0];
+  if (!row || row.raw_response_ref !== null
+    || !sameJson(persistedWarehouseValidation(row), graph.warehouseValidation)) {
+    throw repositoryError("AUTO_LISTING_WAREHOUSE_EVIDENCE_CONFLICT", 409);
+  }
+}
+
 function assertGraph(graph) {
   if (!graph || typeof graph !== "object") throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   const accountId = requiredAccountId(graph.accountId);
@@ -349,6 +453,9 @@ function assertGraph(graph) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   const { config: configSnapshot, configHash } = frozenConfig;
+  const warehouseValidation = canonicalWarehouseValidation(graph.warehouseValidation, {
+    ...graph, accountId, configSnapshot,
+  });
   const items = graph.items.map((item) => {
     const collectItemId = graph.sourceType === "EXCEL_SKU"
       ? requiredText(item?.collectItemId) : requiredText(item?.sourceRecordId);
@@ -432,7 +539,7 @@ function assertGraph(graph) {
   if (new Set(items.map((item) => item.sourceOrder)).size !== items.length) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
-  return { ...graph, accountId, idempotencyKey, configSnapshot, configHash, items };
+  return { ...graph, accountId, idempotencyKey, configSnapshot, configHash, warehouseValidation, items };
 }
 
 function sourceVersionConflict() {
@@ -799,6 +906,7 @@ export function createAutoListingRepository({
         );
         if (replay.rows[0]) {
           const existing = await readJobWithClient(client, graph.accountId, replay.rows[0].id);
+          await assertReplayWarehouseBindingWithClient(client, graph, existing);
           await client.query("COMMIT");
           committed = true;
           return { ...existing, duplicate: true };
@@ -807,6 +915,7 @@ export function createAutoListingRepository({
           accountId: graph.accountId,
           targetStoreId: graph.configSnapshot.targetStoreId,
           targetWarehouseId: graph.configSnapshot.targetWarehouseId,
+          warehouseValidation: graph.warehouseValidation,
         });
         const strategy = await client.query(
           `SELECT strategy_key FROM ai_content_strategy_versions
@@ -972,14 +1081,46 @@ export function createAutoListingRepository({
           }
         }
         const jobId = newId("auto_listing_job");
+        let warehouseValidationEvidenceId = null;
+        if (graph.warehouseValidation) {
+          warehouseValidationEvidenceId = newId("auto_listing_rfbs_warehouse_evidence");
+          const evidence = graph.warehouseValidation;
+          await client.query(
+            `INSERT INTO auto_listing_rfbs_warehouse_evidence (
+               id,account_id,store_id,warehouse_record_id,platform_warehouse_id,schema_version,
+               fulfillment_type,status,outcome,observed_at,expires_at,evidence_hash,correlation_id,
+               actor_account_id,raw_response_ref
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::timestamptz,$11::timestamptz,$12,$13,$14,$15)
+             RETURNING id`,
+            [warehouseValidationEvidenceId, evidence.accountId, evidence.storeId,
+              evidence.warehouseRecordId, evidence.platformWarehouseId, evidence.schemaVersion,
+              evidence.fulfillmentType, evidence.status, evidence.outcome, evidence.observedAt,
+              evidence.expiresAt, evidence.evidenceHash, evidence.correlationId,
+              evidence.actorAccountId, null],
+          );
+          await client.query(
+            `INSERT INTO audit_events (
+               event_id,account_id,store_id,action,entity_type,entity_id,correlation_id,metadata,
+               status,actor_type,actor_id,source,occurred_at
+             ) VALUES ($1,$2,$3,'AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED',
+               'auto_listing_rfbs_warehouse_evidence',$4,$5,$6::jsonb,'SUCCESS','account',$7,
+               'auto-listing-repository',STATEMENT_TIMESTAMP())`,
+            [`AUTO_LISTING_RFBS_WAREHOUSE_VALIDATED:${warehouseValidationEvidenceId}`,
+              graph.accountId, evidence.storeId, warehouseValidationEvidenceId,
+              evidence.correlationId, json({ warehouseRecordId: evidence.warehouseRecordId,
+                platformWarehouseId: evidence.platformWarehouseId, evidenceHash: evidence.evidenceHash,
+                observedAt: evidence.observedAt, expiresAt: evidence.expiresAt }), evidence.actorAccountId],
+          );
+        }
         await client.query(
           `INSERT INTO auto_listing_jobs (
              id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,
-             strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id
-           ) VALUES ($1,$2,$3,'CREATED',$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12)`,
+             strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,
+             correlation_id,warehouse_validation_evidence_id
+           ) VALUES ($1,$2,$3,'CREATED',$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)`,
           [jobId, graph.accountId, graph.sourceType, graph.idempotencyKey, json(graph.configSnapshot), graph.configHash,
             graph.strategyVersionId, graph.uploadPolicyVersionId, aiProfileId, aiProfileVersion,
-            graph.actorAccountId, graph.correlationId],
+            graph.actorAccountId, graph.correlationId, warehouseValidationEvidenceId],
         );
         for (const item of graph.items) {
           const proposedSnapshotId = newId("auto_listing_snapshot");
@@ -1078,6 +1219,7 @@ export function createAutoListingRepository({
             const replayClient = await pool.connect();
             try {
               const replay = await readJobWithClient(replayClient, graph.accountId, existing.rows[0].id);
+              await assertReplayWarehouseBindingWithClient(replayClient, graph, replay);
               return { ...replay, duplicate: true };
             } finally {
               replayClient.release();

@@ -67,6 +67,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     configHash,
     strategyVersionId: `strategy-version-${accountId}`,
     uploadPolicyVersionId: `upload-policy-${accountId}`,
+    warehouseValidation: null,
     items: [{
       sourceType: "COLLECT_BOX",
       sourceRecordId,

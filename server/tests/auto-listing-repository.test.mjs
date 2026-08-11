@@ -317,8 +317,30 @@ function warehouseGraph({ itemCount = 1 } = {}) {
     configHash,
     strategyVersionId: "strategy-version-a",
     uploadPolicyVersionId: "upload-policy-review-a",
+    warehouseValidation: null,
     items,
   };
+}
+
+function rfbsWarehouseValidation(overrides = {}) {
+  const { evidenceHash: overriddenHash, ...normalizedOverrides } = overrides;
+  const normalized = {
+    schemaVersion: "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1",
+    accountId: "account-a",
+    storeId: "store-a",
+    warehouseRecordId: "warehouse-a",
+    platformWarehouseId: "platform-a",
+    fulfillmentType: "RFBS",
+    status: "ACTIVE",
+    outcome: "PASSED",
+    observedAt: "2026-08-11T04:00:00.000Z",
+    expiresAt: "2099-08-11T04:10:00.000Z",
+    correlationId: "lock-evidence-correlation",
+    actorAccountId: "account-a",
+    ...normalizedOverrides,
+  };
+  return { ...normalized, evidenceHash: overriddenHash
+    || crypto.createHash("sha256").update(JSON.stringify(normalized)).digest("hex") };
 }
 
 function excelWarehouseGraph() {
@@ -392,6 +414,8 @@ function warehouseEvidenceFixture({
         product_id: "product-a", product_store_id: "store-a", product_status: "active", product_is_archived: false,
         product_raw_is_archived: false, warehouse_id: "warehouse-a", source: "fbs",
       }] : [] };
+      if (/INSERT INTO auto_listing_rfbs_warehouse_evidence/.test(sql)) return { rows: [{ id: params[0] }] };
+      if (/INSERT INTO audit_events/.test(sql)) return { rows: [] };
       if (/INSERT INTO auto_listing_jobs/.test(sql)) throw stop;
       throw new Error(`unexpected query: ${sql}`);
     },
@@ -422,9 +446,9 @@ test("job creation without an AI workflow keeps the legacy profile-free path", a
 
   assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
   const insertCall = calls.find(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
-  assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id/iu);
+  assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,\s*correlation_id,warehouse_validation_evidence_id/iu);
   assert.deepEqual(insertCall.params.slice(6), [
-    "strategy-version-a", "upload-policy-review-a", null, null, "account-a", "lock-evidence-correlation",
+    "strategy-version-a", "upload-policy-review-a", null, null, "account-a", "lock-evidence-correlation", null,
   ]);
   const policyCall = calls.find(({ sql }) => /FROM auto_listing_upload_policy_versions/.test(sql));
   assert.match(policyCall.sql, /publication_origin IS NOT NULL/iu);
@@ -432,6 +456,62 @@ test("job creation without an AI workflow keeps the legacy profile-free path", a
   assert.match(policyCall.sql, /publication_prefix IS NOT NULL/iu);
   assert.match(policyCall.sql, /publication_version IS NOT NULL/iu);
   assert.match(policyCall.sql, /publication_policy_hash ~ '\^\[a-f0-9\]\{64\}\$'/iu);
+});
+
+test("RFBS creation inserts exact normalized evidence, audit, and job binding in one transaction", async () => {
+  const input = warehouseGraph();
+  input.warehouseValidation = rfbsWarehouseValidation();
+  const { repository, calls, stop } = warehouseEvidenceFixture({
+    warehouse: { warehouse_type: "RFBS" }, associations: false,
+  });
+  await assert.rejects(repository.createJobGraph(input), (error) => error === stop);
+
+  const evidenceIndex = calls.findIndex(({ sql }) => /INSERT INTO auto_listing_rfbs_warehouse_evidence/.test(sql));
+  const auditIndex = calls.findIndex(({ sql }) => /INSERT INTO audit_events/.test(sql));
+  const jobIndex = calls.findIndex(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql));
+  assert.ok(evidenceIndex > 0 && auditIndex > evidenceIndex && jobIndex > auditIndex);
+  const evidence = calls[evidenceIndex];
+  assert.deepEqual(evidence.params.slice(1), [
+    "account-a", "store-a", "warehouse-a", "platform-a",
+    "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1", "RFBS", "ACTIVE", "PASSED",
+    "2026-08-11T04:00:00.000Z", "2099-08-11T04:10:00.000Z",
+    input.warehouseValidation.evidenceHash, "lock-evidence-correlation", "account-a", null,
+  ]);
+  assert.equal(calls[jobIndex].params.at(-1), evidence.params[0]);
+  assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("malformed or cross-scope RFBS warehouse evidence fails before a database connection", async () => {
+  let connections = 0;
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => { connections += 1; throw new Error("must not connect"); },
+    query: async () => ({ rows: [] }),
+  } });
+  for (const evidence of [
+    rfbsWarehouseValidation({ accountId: "account-b" }),
+    rfbsWarehouseValidation({ storeId: "store-b" }),
+    rfbsWarehouseValidation({ warehouseRecordId: "warehouse-b" }),
+    rfbsWarehouseValidation({ outcome: "FAILED" }),
+    rfbsWarehouseValidation({ fulfillmentType: "FBS" }),
+    rfbsWarehouseValidation({ evidenceHash: "0".repeat(64) }),
+    { ...rfbsWarehouseValidation(), extra: "open-contract" },
+  ]) {
+    const input = warehouseGraph();
+    input.warehouseValidation = evidence;
+    await assert.rejects(repository.createJobGraph(input), { code: "AUTO_LISTING_REPOSITORY_INVALID" });
+  }
+  assert.equal(connections, 0);
+});
+
+test("RFBS evidence platform identity is compared with the locked local warehouse before writes", async () => {
+  const input = warehouseGraph();
+  input.warehouseValidation = rfbsWarehouseValidation({ platformWarehouseId: "platform-b" });
+  const { repository, calls } = warehouseEvidenceFixture({ warehouse: { warehouse_type: "RFBS" }, associations: false });
+  await assert.rejects(repository.createJobGraph(input), (error) => error?.code === "LISTING_WAREHOUSE_NOT_ELIGIBLE"
+    && error?.body?.reason === "RFBS_VALIDATION_REQUIRED");
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_rfbs_warehouse_evidence|INSERT INTO auto_listing_jobs/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
 });
 
 test("EXCEL_SKU job creation locks the ready import-row to collect-item relationship", async () => {
@@ -491,9 +571,9 @@ test("job creation locks and freezes the one enabled account AI profile without 
   assert.match(profileCall.sql, /FOR SHARE/iu);
   assert.doesNotMatch(profileCall.sql, /ORDER\s+BY|LIMIT|latest|api_key/iu);
   assert.deepEqual(profileCall.params, ["account-a"]);
-  assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,correlation_id/iu);
+  assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,\s*correlation_id,warehouse_validation_evidence_id/iu);
   assert.deepEqual(insertCall.params.slice(6), [
-    "strategy-version-a", "upload-policy-review-a", "profile-a", 3, "account-a", "lock-evidence-correlation",
+    "strategy-version-a", "upload-policy-review-a", "profile-a", 3, "account-a", "lock-evidence-correlation", null,
   ]);
 });
 
@@ -573,7 +653,7 @@ test("idempotent job replay returns before profile selection and does not change
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/.test(sql)) {
         return { rows: [{ id: "job-existing" }] };
       }
-      if (/SELECT id,account_id,source_type,status,strategy_version_id,correlation_id/.test(sql)) {
+      if (/SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id/.test(sql)) {
         return { rows: [{
           id: "job-existing", account_id: "account-a", source_type: "COLLECT_BOX", status: "CREATED",
           strategy_version_id: "strategy-version-a", correlation_id: "existing-correlation",
@@ -598,6 +678,50 @@ test("idempotent job replay returns before profile selection and does not change
   assert.equal(calls.some(({ sql }) => /FROM ai_gateway_profiles/.test(sql)), false);
   assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs/.test(sql)), false);
   assert.equal(stageCount, 0);
+});
+
+test("idempotent RFBS replay exact-compares the immutable original evidence binding", async () => {
+  const persistedValidation = rfbsWarehouseValidation();
+  const evidenceId = "rfbs-evidence-existing";
+  const makeRepository = () => createAutoListingRepository({ pool: {
+    connect: async () => ({
+      async query(sql) {
+        if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
+        if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/.test(sql)) {
+          return { rows: [{ id: "job-existing" }] };
+        }
+        if (/SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id/.test(sql)) {
+          return { rows: [{ id: "job-existing", account_id: "account-a", source_type: "COLLECT_BOX",
+            status: "CREATED", strategy_version_id: "strategy-version-a",
+            warehouse_validation_evidence_id: evidenceId, correlation_id: "lock-evidence-correlation",
+            created_at: new Date(0), updated_at: new Date(0) }] };
+        }
+        if (/FROM auto_listing_rfbs_warehouse_evidence/.test(sql)) return { rows: [{
+          id: evidenceId, account_id: "account-a", store_id: "store-a", warehouse_record_id: "warehouse-a",
+          platform_warehouse_id: "platform-a", schema_version: persistedValidation.schemaVersion,
+          fulfillment_type: "RFBS", status: "ACTIVE", outcome: "PASSED",
+          observed_at: new Date(persistedValidation.observedAt), expires_at: new Date(persistedValidation.expiresAt),
+          evidence_hash: persistedValidation.evidenceHash, correlation_id: persistedValidation.correlationId,
+          actor_account_id: "account-a", raw_response_ref: null,
+        }] };
+        if (/FROM auto_listing_job_items i|FROM auto_listing_events/.test(sql)) return { rows: [] };
+        throw new Error(`unexpected query: ${sql}`);
+      },
+      release() {},
+    }),
+    query: async () => ({ rows: [] }),
+  } });
+
+  const matching = warehouseGraph();
+  matching.warehouseValidation = persistedValidation;
+  assert.equal((await makeRepository().createJobGraph(matching)).duplicate, true);
+
+  const conflicting = warehouseGraph();
+  conflicting.correlationId = "different-correlation";
+  conflicting.warehouseValidation = rfbsWarehouseValidation({ correlationId: "different-correlation" });
+  await assert.rejects(makeRepository().createJobGraph(conflicting), {
+    code: "AUTO_LISTING_WAREHOUSE_EVIDENCE_CONFLICT", status: 409,
+  });
 });
 
 function blockedSourceGraph() {
@@ -660,7 +784,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       if (/INSERT INTO auto_listing_jobs/.test(sql)) {
         job = {
           id: params[0], account_id: params[1], source_type: params[2], status: "CREATED",
-          strategy_version_id: params[6], correlation_id: params[11],
+          strategy_version_id: params[6], warehouse_validation_evidence_id: params[12], correlation_id: params[11],
           created_at: new Date(0), updated_at: new Date(0),
         };
         return { rows: [] };
@@ -693,7 +817,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
         });
         return { rows: [] };
       }
-      if (/SELECT id,account_id,source_type,status,strategy_version_id,correlation_id/.test(sql)) return { rows: job ? [job] : [] };
+      if (/SELECT id,account_id,source_type,status,strategy_version_id,warehouse_validation_evidence_id/.test(sql)) return { rows: job ? [job] : [] };
       if (/FROM auto_listing_job_items i/.test(sql)) return { rows: items.map((item) => ({
         ...item,
         source_record_id: snapshots.get(item.snapshot_id).source_record_id,
