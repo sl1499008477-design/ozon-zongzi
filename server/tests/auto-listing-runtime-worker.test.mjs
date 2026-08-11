@@ -211,6 +211,7 @@ test("runtime injects the AI workflow into job creation only when both feature f
     };
     const repository = { name: "repository-a" };
     const service = { name: "service-a" };
+    const rfbsWarehouseVerifier = { async verifyRfbsWarehouse() {} };
     const prepareListingBase = async () => {};
     let workflowFactories = 0;
     let workerDependencyFactories = 0;
@@ -224,13 +225,14 @@ test("runtime injects the AI workflow into job creation only when both feature f
         return workflow;
       },
       createRepository(input) { repositoryInputs.push(input); return repository; },
+      createRfbsWarehouseVerifier() { return rfbsWarehouseVerifier; },
       createListingBasePreparer(input) {
         assert.equal(input.pool, pool);
         assert.equal(input.env, env);
         return prepareListingBase;
       },
       createService(input) {
-        assert.deepEqual(input, { repository, prepareListingBase, uploadPolicyGates: {
+        assert.deepEqual(input, { repository, prepareListingBase, rfbsWarehouseVerifier, uploadPolicyGates: {
           directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
         } });
         return service;
@@ -276,6 +278,7 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   const pool = { name: "pool-a" };
   const repository = { name: "repository-a" };
   const service = { name: "service-a" };
+  const rfbsWarehouseVerifier = { async verifyRfbsWarehouse() {} };
   const prepareListingBase = async () => {};
   let pools = 0;
   let repositories = 0;
@@ -284,13 +287,14 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
     env: {},
     getPostgresPool: async () => { pools += 1; return pool; },
     createRepository(input) { repositories += 1; assert.deepEqual(input, { pool }); return repository; },
+    createRfbsWarehouseVerifier() { return rfbsWarehouseVerifier; },
     createListingBasePreparer(input) {
       assert.equal(input.pool, pool);
       return prepareListingBase;
     },
     createService(input) {
       services += 1;
-      assert.deepEqual(input, { repository, prepareListingBase, uploadPolicyGates: {
+      assert.deepEqual(input, { repository, prepareListingBase, rfbsWarehouseVerifier, uploadPolicyGates: {
         directUploadAllowed: false, uploadEnabled: false, listingPipelineEnabled: true,
       } });
       return service;
@@ -302,4 +306,83 @@ test("legacy auto-listing service remains lazy, memoized, and behaviorally indep
   assert.equal(await runtime.getService(), service);
   assert.equal(await runtime.getService(), service);
   assert.deepEqual({ pools, repositories, services }, { pools: 1, repositories: 1, services: 1 });
+});
+
+test("runtime composes the RFBS verifier from tenant-scoped warehouse and credential ports", async () => {
+  const pool = { name: "pool-a" };
+  const warehouse = { id: "warehouse-a", accountId: "account-a", storeId: "store-a" };
+  const credential = { id: "store-a", clientId: "client-a", apiKey: "test-only-key" };
+  const repositoryCalls = [];
+  const credentialCalls = [];
+  const repository = {
+    async loadTargetWarehouse(input) {
+      repositoryCalls.push(input);
+      return { warehouse, products: [] };
+    },
+  };
+  const rfbsWarehouseVerifier = { async verifyRfbsWarehouse() {} };
+  let verifierDependencies;
+  const sellerApi = async () => ({ result: [] });
+  const service = { name: "service-a" };
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
+    getPostgresPool: async () => pool,
+    createRepository(input) { assert.deepEqual(input, { pool }); return repository; },
+    createListingBasePreparer: async () => async () => {},
+    createRfbsWarehouseVerifier(input) {
+      verifierDependencies = input;
+      return rfbsWarehouseVerifier;
+    },
+    readStoreCredential: async (storeId, accountId) => {
+      credentialCalls.push({ storeId, accountId });
+      return credential;
+    },
+    callOzonSellerApi: sellerApi,
+    createService(input) {
+      assert.equal(input.rfbsWarehouseVerifier, rfbsWarehouseVerifier);
+      return service;
+    },
+  });
+
+  assert.equal(await runtime.getService(), service);
+  assert.deepEqual(Object.keys(verifierDependencies).sort(), ["callOzonSellerApi", "loadTarget", "readCredential"]);
+  assert.equal(verifierDependencies.callOzonSellerApi, sellerApi);
+  assert.equal(await verifierDependencies.loadTarget({
+    accountId: "account-a", targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
+  }), warehouse);
+  assert.deepEqual(repositoryCalls, [{
+    accountId: "account-a", targetStoreId: "store-a", targetWarehouseId: "warehouse-a",
+  }]);
+  assert.equal(await verifierDependencies.readCredential({ accountId: "account-a", targetStoreId: "store-a" }), credential);
+  assert.deepEqual(credentialCalls, [{ storeId: "store-a", accountId: "account-a" }]);
+});
+
+test("disabled auto-listing service composition performs zero credential, decrypt, and network calls", async () => {
+  let credentialCalls = 0;
+  let networkCalls = 0;
+  const service = { name: "disabled-service" };
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({ AUTO_LISTING_ENABLED: "0", AUTO_LISTING_AI_ENABLED: "0" }),
+    getPostgresPool: async () => ({ name: "pool-a" }),
+    createRepository: () => ({
+      async loadTargetWarehouse() { throw new Error("target must remain unread"); },
+    }),
+    createListingBasePreparer: async () => async () => {},
+    readStoreCredential: async () => {
+      credentialCalls += 1;
+      throw new Error("credential must remain encrypted");
+    },
+    callOzonSellerApi: async () => {
+      networkCalls += 1;
+      throw new Error("network must remain dormant");
+    },
+    createService(input) {
+      assert.deepEqual(Object.keys(input.rfbsWarehouseVerifier), ["verifyRfbsWarehouse"]);
+      return service;
+    },
+  });
+
+  assert.equal(await runtime.getService(), service);
+  assert.equal(await runtime.getService(), service);
+  assert.deepEqual({ credentialCalls, networkCalls }, { credentialCalls: 0, networkCalls: 0 });
 });
