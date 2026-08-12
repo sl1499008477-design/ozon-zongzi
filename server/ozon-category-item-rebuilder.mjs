@@ -79,36 +79,36 @@ function descriptorValue(descriptors, key) {
   return Object.hasOwn(descriptors, key) ? descriptors[key].value : undefined;
 }
 
-function cloneData(value, state, depth = 0) {
-  if (depth > MAX_DEPTH || state.nodes >= MAX_NODES) throw sourceCategoryFailure();
+function cloneData(value, state, depth = 0, errorFactory = sourceCategoryFailure) {
+  if (depth > MAX_DEPTH || state.nodes >= MAX_NODES) throw errorFactory();
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string") {
-    if (value.length > MAX_STRING_LENGTH || /[\u0000]/u.test(value)) throw sourceCategoryFailure();
+    if (value.length > MAX_STRING_LENGTH || /[\u0000]/u.test(value)) throw errorFactory();
     return value;
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw sourceCategoryFailure();
+    if (!Number.isFinite(value)) throw errorFactory();
     return value;
   }
-  if (!value || typeof value !== "object" || types.isProxy(value)) throw sourceCategoryFailure();
-  if (state.active.has(value)) throw sourceCategoryFailure();
+  if (!value || typeof value !== "object" || types.isProxy(value)) throw errorFactory();
+  if (state.active.has(value)) throw errorFactory();
   if (state.clones.has(value)) return state.clones.get(value);
   state.nodes += 1;
   state.active.add(value);
   let clone;
   if (Array.isArray(value)) {
-    const descriptors = dataArray(value, MAX_VALUES);
+    const descriptors = dataArray(value, MAX_VALUES, errorFactory);
     clone = [];
     state.clones.set(value, clone);
     for (let index = 0; index < value.length; index += 1) {
-      clone.push(cloneData(descriptors[String(index)].value, state, depth + 1));
+      clone.push(cloneData(descriptors[String(index)].value, state, depth + 1, errorFactory));
     }
   } else {
-    const descriptors = dataObject(value);
+    const descriptors = dataObject(value, null, null, errorFactory);
     clone = {};
     state.clones.set(value, clone);
     for (const key of Object.keys(descriptors)) {
-      clone[key] = cloneData(descriptors[key].value, state, depth + 1);
+      clone[key] = cloneData(descriptors[key].value, state, depth + 1, errorFactory);
     }
   }
   state.active.delete(value);
@@ -135,10 +135,11 @@ function normalizeValue(value, errorFactory = attributesFailure) {
     ?? descriptorValue(descriptors, "name")
     ?? descriptorValue(descriptors, "title");
   const text = typeof rawText === "string" || typeof rawText === "number" ? String(rawText).trim() : "";
-  if (!text) throw errorFactory();
-  const dictionaryValueId = positiveId(
-    descriptorValue(descriptors, "dictionary_value_id") ?? descriptorValue(descriptors, "dictionaryValueId"),
-  );
+  if (!text || text.length > MAX_STRING_LENGTH) throw errorFactory();
+  const rawDictionaryValueId = descriptorValue(descriptors, "dictionary_value_id")
+    ?? descriptorValue(descriptors, "dictionaryValueId");
+  const dictionaryValueId = positiveId(rawDictionaryValueId);
+  if (rawDictionaryValueId != null && !dictionaryValueId) throw errorFactory();
   return { value: text, ...(dictionaryValueId ? { dictionary_value_id: dictionaryValueId } : {}) };
 }
 
@@ -152,9 +153,15 @@ function normalizeAttribute(value, errorFactory = attributesFailure) {
     ?? descriptorValue(descriptors, "attributeId")
     ?? descriptorValue(descriptors, "key"));
   if (!id) throw errorFactory();
-  const complexId = positiveId(descriptorValue(descriptors, "complex_id")
+  const rawComplexId = descriptorValue(descriptors, "complex_id")
     ?? descriptorValue(descriptors, "complexId")
-    ?? descriptorValue(descriptors, "attribute_complex_id"));
+    ?? descriptorValue(descriptors, "attribute_complex_id");
+  const complexId = rawComplexId == null || rawComplexId === 0 || rawComplexId === "0"
+    ? 0
+    : positiveId(rawComplexId);
+  if (rawComplexId != null && rawComplexId !== 0 && rawComplexId !== "0" && !complexId) {
+    throw errorFactory();
+  }
   const rawValues = Object.hasOwn(descriptors, "values")
     ? descriptorValue(descriptors, "values")
     : Object.hasOwn(descriptors, "collection")
@@ -177,19 +184,26 @@ function normalizeAttribute(value, errorFactory = attributesFailure) {
 }
 
 function normalizeSourceAttributes(value, itemCount) {
-  const descriptors = dataArray(value, MAX_ATTRIBUTES);
-  if (value.length === 0) return Array.from({ length: itemCount }, () => []);
+  const cloned = cloneData(
+    value,
+    { active: new WeakSet(), clones: new WeakMap(), nodes: 0 },
+    0,
+    attributesFailure,
+  );
+  const descriptors = dataArray(cloned, MAX_ITEMS, attributesFailure);
+  if (cloned.length === 0) return Array.from({ length: itemCount }, () => []);
   const first = descriptors["0"].value;
   if (Array.isArray(first)) {
-    if (value.length !== itemCount) throw sourceCategoryFailure();
+    if (cloned.length !== itemCount) throw sourceCategoryFailure();
     return Array.from({ length: itemCount }, (_, index) => {
       const group = descriptors[String(index)].value;
-      const groupDescriptors = dataArray(group, MAX_ATTRIBUTES);
+      const groupDescriptors = dataArray(group, MAX_ATTRIBUTES, attributesFailure);
       return Array.from({ length: group.length }, (_unused, attributeIndex) =>
         normalizeAttribute(groupDescriptors[String(attributeIndex)].value));
     });
   }
-  const shared = Array.from({ length: value.length }, (_unused, index) =>
+  if (cloned.length > MAX_ATTRIBUTES) throw attributesFailure();
+  const shared = Array.from({ length: cloned.length }, (_unused, index) =>
     normalizeAttribute(descriptors[String(index)].value));
   return Array.from({ length: itemCount }, () => shared);
 }

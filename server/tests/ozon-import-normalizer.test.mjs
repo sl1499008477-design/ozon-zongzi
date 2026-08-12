@@ -86,6 +86,20 @@ const strictSourceCategory = Object.freeze({
   typeId: 971001,
 });
 
+function strictMetadata(attributes = attrs, dictionaryValues = {}) {
+  return {
+    descriptionCategoryId: 17031664,
+    typeId: 971001,
+    attributes: attributes.map((attribute) => ({
+      id: attribute.id,
+      complexId: attribute.complex_id || 0,
+      required: attribute.is_required === true,
+      dictionaryId: attribute.dictionary_id || null,
+      dictionaryValues: dictionaryValues[attribute.id] || [],
+    })),
+  };
+}
+
 function strictCategoryItem(overrides = {}) {
   return {
     offer_id: "strict-source-category",
@@ -116,6 +130,7 @@ async function testSourceCategoryStrictUsesOnlyFrozenUniqueMatch() {
     strictTypeMatch: true,
     categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
     sourceCategory: strictSourceCategory,
+    currentCategoryMetadata: strictMetadata(),
     targetStoreId: "store-secret-must-not-enter-result",
     getCategoryTree: async () => {
       treeReads += 1;
@@ -140,6 +155,7 @@ async function testSourceCategoryStrictUsesOnlyFrozenUniqueMatch() {
         strictTypeMatch: true,
         categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
         sourceCategory,
+        currentCategoryMetadata: strictMetadata(),
         getCategoryTree: async () => { throw new Error("must not read tree"); },
         getCategoryAttributes: async () => attrs,
       }),
@@ -156,6 +172,7 @@ async function testSourceCategoryStrictUsesOnlyFrozenUniqueMatch() {
       ...strictSourceCategory,
       descriptionCategoryId: { valueOf() { coercions += 1; throw new Error("secret"); } },
     },
+    currentCategoryMetadata: strictMetadata(),
     getCategoryAttributes: async () => attrs,
   }), { code: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" });
   assert.equal(coercions, 0);
@@ -167,8 +184,10 @@ async function testSourceCategoryStrictRequiresEveryRequiredAttribute() {
       strictTypeMatch: true,
       categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
       sourceCategory: strictSourceCategory,
-      getCategoryAttributes: async () => [...attrs, { id: 777, is_required: true, name: "vendor-secret-name" }],
-      getCategoryAttributeValues: async () => [],
+      currentCategoryMetadata: strictMetadata([
+        ...attrs,
+        { id: 777, is_required: true, name: "vendor-secret-name" },
+      ]),
     }),
     (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
       && error.status === 422 && error.cause === null
@@ -188,11 +207,10 @@ async function testSourceCategoryStrictChecksRequiredComplexAttributes() {
     strictTypeMatch: true,
     categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
     sourceCategory: strictSourceCategory,
-    getCategoryAttributes: async () => [
+    currentCategoryMetadata: strictMetadata([
       ...attrs,
       { id: 901, complex_id: 77, is_required: true },
-    ],
-    getCategoryAttributeValues: async () => [],
+    ]),
   });
   assert.deepEqual(result.items[0].complex_attributes, [{
     attributes: [{ complex_id: 77, id: 901, values: [{ value: "complex evidence" }] }],
@@ -202,8 +220,7 @@ async function testSourceCategoryStrictChecksRequiredComplexAttributes() {
     strictTypeMatch: true,
     categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
     sourceCategory: strictSourceCategory,
-    getCategoryAttributes: async () => [...attrs, { id: 901, complex_id: 77, is_required: true }],
-    getCategoryAttributeValues: async () => [],
+    currentCategoryMetadata: strictMetadata([...attrs, { id: 901, complex_id: 77, is_required: true }]),
   }), { code: "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE" });
 }
 
@@ -220,11 +237,10 @@ async function testSourceCategoryStrictValidatesCurrentDictionaryIdsWithSafeFail
         strictTypeMatch: true,
         categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
         sourceCategory: strictSourceCategory,
-        getCategoryAttributes: async () => [
+        currentCategoryMetadata: strictMetadata([
           ...attrs.filter((attribute) => attribute.id !== 85),
           { id: 85, dictionary_id: 28732849, is_required: true, name: "Brand secret" },
-        ],
-        getCategoryAttributeValues: async () => [{ id: 126745801, value: "Нет бренда" }],
+        ], { 85: [{ id: 126745801, value: "Нет бренда" }] }),
       }),
       (error) => error?.code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED"
         && error.status === 422 && error.cause === null
@@ -238,10 +254,10 @@ async function testSourceCategoryStrictValidatesCurrentDictionaryIdsWithSafeFail
     strictTypeMatch: true,
     categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
     sourceCategory: strictSourceCategory,
-    getCategoryAttributes: async () => [
+    currentCategoryMetadata: strictMetadata([
       ...attrs.filter((attribute) => attribute.id !== 85),
       { id: 85, dictionary_id: 28732849, is_required: true },
-    ],
+    ]),
   }), { code: "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED" });
 }
 
@@ -252,15 +268,64 @@ async function testSourceCategoryStrictAcceptsOnlyAnExactCurrentDictionaryId() {
     strictTypeMatch: true,
     categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
     sourceCategory: strictSourceCategory,
-    getCategoryAttributes: async () => [
+    currentCategoryMetadata: strictMetadata([
       ...attrs.filter((attribute) => attribute.id !== 85),
       { id: 85, dictionary_id: 28732849, is_required: true },
-    ],
-    getCategoryAttributeValues: async () => [{ id: 126745801, value: "Нет бренда" }],
+    ], { 85: [{ id: 126745801, value: "Нет бренда" }] }),
   });
   assert.deepEqual(result.items[0].attributes.find((attribute) => attribute.id === 85).values, [
     { value: "stale display label", dictionary_value_id: 126745801 },
   ], "strict policy validates by current dictionary ID and does not infer by text");
+}
+
+async function testSourceCategoryStrictMakesImmutableSourceAttributesAuthoritative() {
+  const item = strictCategoryItem({
+    attributes: [{ id: 200, values: [{ value: "OLD upload value" }] }],
+    _sourceVariant: {
+      attributes: [{ id: 200, values: [{ value: "SOURCE immutable value" }] }],
+    },
+  });
+  const result = await normalizeOzonImportItems([item], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    currentCategoryMetadata: strictMetadata([{ id: 200, is_required: true }]),
+  });
+  assert.deepEqual(result.items[0].attributes, [{
+    complex_id: 0,
+    id: 200,
+    values: [{ value: "SOURCE immutable value" }],
+  }]);
+}
+
+async function testSourceCategoryStrictConsumesClosedMetadataWithoutNetworkReads() {
+  let attributeReads = 0;
+  let dictionaryReads = 0;
+  const result = await normalizeOzonImportItems([strictCategoryItem({
+    attributes: [{ id: 85, values: [{ value: "stale", dictionary_value_id: 126745801 }] }],
+  })], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    currentCategoryMetadata: {
+      descriptionCategoryId: 17031664,
+      typeId: 971001,
+      attributes: [{
+        id: 85,
+        complexId: 0,
+        required: true,
+        dictionaryId: 28732849,
+        dictionaryValues: [{ id: 126745801, value: "Нет бренда" }],
+      }],
+    },
+    getCategoryAttributes: async () => { attributeReads += 1; throw new Error("network forbidden"); },
+    getCategoryAttributeValues: async () => { dictionaryReads += 1; throw new Error("network forbidden"); },
+  });
+  assert.equal(attributeReads, 0);
+  assert.equal(dictionaryReads, 0);
+  assert.deepEqual(result.items[0].attributes[0].values, [
+    { value: "stale", dictionary_value_id: 126745801 },
+  ]);
 }
 
 async function testTargetStoreValidatesDictionaryTypeCandidate() {
@@ -957,6 +1022,8 @@ await testSourceCategoryStrictRequiresEveryRequiredAttribute();
 await testSourceCategoryStrictChecksRequiredComplexAttributes();
 await testSourceCategoryStrictValidatesCurrentDictionaryIdsWithSafeFailure();
 await testSourceCategoryStrictAcceptsOnlyAnExactCurrentDictionaryId();
+await testSourceCategoryStrictMakesImmutableSourceAttributesAuthoritative();
+await testSourceCategoryStrictConsumesClosedMetadataWithoutNetworkReads();
 await testTargetStoreValidatesDictionaryTypeCandidate();
 await testTargetStoreRejectsUnknownDictionaryTypeCandidate();
 await testTargetStoreExactTextPolicy();

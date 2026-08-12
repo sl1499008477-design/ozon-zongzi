@@ -13,6 +13,9 @@ const LEGACY_HASHTAGS_ATTRIBUTE_ID = 22508;
 const HASHTAGS_ATTRIBUTE_IDS = new Set([HASHTAGS_ATTRIBUTE_ID, LEGACY_HASHTAGS_ATTRIBUTE_ID]);
 const MAX_HASHTAGS = 30;
 const MAX_HASHTAG_LENGTH = 30;
+const STRICT_METADATA_KEYS = new Set(["descriptionCategoryId", "typeId", "attributes"]);
+const STRICT_ATTRIBUTE_KEYS = new Set(["id", "complexId", "required", "dictionaryId", "dictionaryValues"]);
+const STRICT_DICTIONARY_VALUE_KEYS = new Set(["id", "value"]);
 
 function autoListingCategoryFailure(code, status) {
   const error = new Error(code);
@@ -40,6 +43,97 @@ function strictPositiveId(value) {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
   const id = Number(value);
   return Number.isSafeInteger(id) ? id : 0;
+}
+
+function strictDataRecord(value, allowedKeys, exactKeys, errorFactory) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw errorFactory();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string" || !allowedKeys.has(key)
+    || descriptors[key].get || descriptors[key].set || descriptors[key].enumerable !== true)
+    || keys.length !== exactKeys.size
+    || [...exactKeys].some((key) => !Object.hasOwn(descriptors, key))) throw errorFactory();
+  return descriptors;
+}
+
+function strictDataArray(value, maximum, errorFactory) {
+  if (!Array.isArray(value) || types.isProxy(value) || value.length > maximum) throw errorFactory();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  let count = 0;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (descriptor.get || descriptor.set) throw errorFactory();
+    if (key === "length") continue;
+    if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
+      || Number(key) >= value.length || descriptor.enumerable !== true) throw errorFactory();
+    count += 1;
+  }
+  if (count !== value.length) throw errorFactory();
+  return descriptors;
+}
+
+function strictCategoryAttributeContext(sourceCategory, value) {
+  const root = strictDataRecord(
+    value, STRICT_METADATA_KEYS, STRICT_METADATA_KEYS, incompleteCategoryAttributesError,
+  );
+  if (strictPositiveId(root.descriptionCategoryId.value) !== sourceCategory.descriptionCategoryId
+    || strictPositiveId(root.typeId.value) !== sourceCategory.typeId) throw sourceCategoryRequiredError();
+  const attributes = root.attributes.value;
+  const attributeDescriptors = strictDataArray(attributes, 1_000, incompleteCategoryAttributesError);
+  const allowedIds = new Set();
+  const metaById = new Map();
+  const metaByKey = new Map();
+  for (let index = 0; index < attributes.length; index += 1) {
+    const descriptor = strictDataRecord(
+      attributeDescriptors[String(index)].value,
+      STRICT_ATTRIBUTE_KEYS,
+      STRICT_ATTRIBUTE_KEYS,
+      incompleteCategoryAttributesError,
+    );
+    const id = strictPositiveId(descriptor.id.value);
+    const rawComplexId = descriptor.complexId.value;
+    const complexId = rawComplexId === 0 || rawComplexId === "0" ? 0 : strictPositiveId(rawComplexId);
+    const required = descriptor.required.value;
+    const rawDictionaryId = descriptor.dictionaryId.value;
+    const dictionaryId = rawDictionaryId == null ? 0 : strictPositiveId(rawDictionaryId);
+    if (!id || (rawComplexId !== 0 && rawComplexId !== "0" && !complexId)
+      || typeof required !== "boolean" || (rawDictionaryId != null && !dictionaryId)) {
+      throw incompleteCategoryAttributesError();
+    }
+    const rawValues = descriptor.dictionaryValues.value;
+    const valueDescriptors = strictDataArray(rawValues, 5_000, unresolvedCategoryDictionaryError);
+    const dictionaryValues = [];
+    const seenValues = new Set();
+    for (let valueIndex = 0; valueIndex < rawValues.length; valueIndex += 1) {
+      const option = strictDataRecord(
+        valueDescriptors[String(valueIndex)].value,
+        STRICT_DICTIONARY_VALUE_KEYS,
+        STRICT_DICTIONARY_VALUE_KEYS,
+        unresolvedCategoryDictionaryError,
+      );
+      const optionId = strictPositiveId(option.id.value);
+      if (!optionId || typeof option.value.value !== "string" || !option.value.value.trim()
+        || seenValues.has(optionId)) throw unresolvedCategoryDictionaryError();
+      seenValues.add(optionId);
+      dictionaryValues.push({ id: optionId, value: option.value.value });
+    }
+    if (!dictionaryId && dictionaryValues.length) throw unresolvedCategoryDictionaryError();
+    const key = `${complexId}:${id}`;
+    if (metaByKey.has(key)) throw incompleteCategoryAttributesError();
+    const metadata = {
+      id,
+      complex_id: complexId,
+      is_required: required,
+      dictionary_id: dictionaryId,
+      dictionaryValues,
+    };
+    allowedIds.add(id);
+    metaById.set(id, metadata);
+    metaByKey.set(key, metadata);
+  }
+  if (!metaByKey.size) throw incompleteCategoryAttributesError();
+  return { allowedIds, metaById, metaByKey };
 }
 
 function strictSourceCategoryOf(value) {
@@ -706,6 +800,12 @@ async function resolveTypeId(item, descriptionCategoryId, ctx, tree) {
 }
 
 async function categoryAttributeContext(descriptionCategoryId, typeId, ctx) {
+  if (ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT") {
+    return strictCategoryAttributeContext(
+      { descriptionCategoryId, typeId },
+      ctx.currentCategoryMetadata,
+    );
+  }
   if (!descriptionCategoryId || !typeId || typeof ctx.getCategoryAttributes !== "function") {
     return { allowedIds: null, metaById: new Map(), metaByKey: new Map() };
   }
@@ -939,37 +1039,11 @@ function assertStrictRequiredAttributes(attributes, metaByKey) {
   }
 }
 
-async function assertStrictDictionaryValues(attributes, {
-  descriptionCategoryId,
-  typeId,
-  metaByKey,
-  ctx,
-} = {}) {
-  if (typeof ctx?.getCategoryAttributeValues !== "function") {
-    if (asArray(attributes).some((attribute) =>
-      attributeDictionaryId(metaByKey?.get?.(strictAttributeKey(attribute))))) {
-      throw unresolvedCategoryDictionaryError();
-    }
-    return;
-  }
-  const cache = new Map();
+function assertStrictDictionaryValues(attributes, { metaByKey } = {}) {
   for (const attribute of asArray(attributes)) {
     const meta = metaByKey?.get?.(strictAttributeKey(attribute)) || {};
     if (!attributeDictionaryId(meta)) continue;
-    const key = `${descriptionCategoryId}:${typeId}:${Number(attribute?.id)}`;
-    if (!cache.has(key)) {
-      try {
-        cache.set(key, await ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, Number(attribute?.id)));
-      } catch (error) {
-        if (isSafeCategoryError(error)) throw error;
-        throw unresolvedCategoryDictionaryError();
-      }
-    }
-    const allowed = new Set(asArray(cache.get(key))
-      .map((option) => toPositiveNumber(firstFilled(
-        option?.id, option?.dictionary_value_id, option?.dictionaryValueId, option?.value_id, option?.valueId,
-      )))
-      .filter(Boolean));
+    const allowed = new Set(asArray(meta.dictionaryValues).map((option) => option.id));
     if (!allowed.size || asArray(attribute?.values).some((value) =>
       !allowed.has(toPositiveNumber(value?.dictionary_value_id)))) {
       throw unresolvedCategoryDictionaryError();
@@ -995,7 +1069,7 @@ function sourceComplexAttributes(item, allowedIds) {
   return [...groups.values()].map((attributes) => ({ attributes }));
 }
 
-function buildAttributes(item, allowedIds, metaById = new Map()) {
+function buildAttributes(item, allowedIds, metaById = new Map(), { sourceEvidenceAuthoritative = false } = {}) {
   const attrs = new Map();
 
   for (const raw of asArray(item.attributes)) {
@@ -1011,7 +1085,9 @@ function buildAttributes(item, allowedIds, metaById = new Map()) {
 
   for (const raw of sourceAttributesOf(item)) {
     const attr = normalizeUploadAttribute(raw);
-    if (attr && hasAllowedAttribute(allowedIds, attr.id)) upsertAttribute(attrs, attr);
+    if (attr && hasAllowedAttribute(allowedIds, attr.id)) {
+      upsertAttribute(attrs, attr, { overwrite: sourceEvidenceAuthoritative });
+    }
   }
 
   const description = cleanText(firstFilled(item.scraped_description, item.description), 4096);
@@ -1130,7 +1206,9 @@ async function normalizeOneImportItem(item, ctx) {
   const width = positiveInt(item.width, sourceAttributeText(item, 9455), item.scraped_width, bundle.width, 100);
   const height = positiveInt(item.height, sourceAttributeText(item, 9456), item.scraped_height, bundle.height, 100);
 
-  const builtAttributes = buildAttributes(item, allowedIds, metaById);
+  const builtAttributes = buildAttributes(item, allowedIds, metaById, {
+    sourceEvidenceAuthoritative: ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT",
+  });
   const complexAttributes = sourceComplexAttributes(item, allowedIds);
   const attributes = ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT"
     ? builtAttributes
@@ -1144,12 +1222,7 @@ async function normalizeOneImportItem(item, ctx) {
     if (!allowedIds || !metaByKey.size) throw incompleteCategoryAttributesError();
     const allAttributes = flattenedCategoryAttributes(attributes, complexAttributes);
     assertStrictRequiredAttributes(allAttributes, metaByKey);
-    await assertStrictDictionaryValues(allAttributes, {
-      descriptionCategoryId,
-      typeId,
-      metaByKey,
-      ctx,
-    });
+    assertStrictDictionaryValues(allAttributes, { metaByKey });
   }
 
   const normalized = {

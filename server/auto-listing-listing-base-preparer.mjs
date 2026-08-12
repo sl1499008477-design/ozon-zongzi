@@ -94,11 +94,6 @@ function defaultRawItems(source, { currencyCode } = {}) {
   });
 }
 
-function attributeId(attribute) {
-  const value = Number(attribute?.id ?? attribute?.attribute_id ?? attribute?.attributeId);
-  return Number.isSafeInteger(value) && value > 0 ? value : 0;
-}
-
 function positiveId(value) {
   if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : 0;
   if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
@@ -106,17 +101,30 @@ function positiveId(value) {
   return Number.isSafeInteger(id) ? id : 0;
 }
 
-function normalizedAttributeKeys(items) {
+function inputAttributeKeys(items) {
   const keys = new Set();
   const include = (attribute) => {
-    const id = positiveId(attribute?.id);
-    const complexId = positiveId(attribute?.complex_id) || 0;
+    const id = positiveId(attribute?.id ?? attribute?.attribute_id ?? attribute?.attributeId ?? attribute?.key);
+    const complexId = positiveId(
+      attribute?.complex_id ?? attribute?.complexId ?? attribute?.attribute_complex_id,
+    ) || 0;
     if (id) keys.add(`${complexId}:${id}`);
   };
+  const includeAttributes = (value) => {
+    for (const attribute of Array.isArray(value) ? value : []) include(attribute);
+  };
   for (const item of items) {
-    for (const attribute of Array.isArray(item.attributes) ? item.attributes : []) include(attribute);
+    const sourceVariant = plainObject(item?._sourceVariant) ? item._sourceVariant : {};
+    const directBundle = plainObject(item?._bundleItem) ? item._bundleItem : {};
+    const sourceBundle = plainObject(sourceVariant?._bundleItem) ? sourceVariant._bundleItem : {};
+    includeAttributes(item.attributes);
+    includeAttributes(sourceVariant.attributes);
+    includeAttributes(directBundle.attributes);
+    includeAttributes(sourceBundle.attributes);
+    includeAttributes(item.bundleComplexAttrs);
+    includeAttributes(sourceVariant._bundleComplexAttrs);
     for (const group of Array.isArray(item.complex_attributes) ? item.complex_attributes : []) {
-      for (const attribute of Array.isArray(group?.attributes) ? group.attributes : []) include(attribute);
+      includeAttributes(group?.attributes);
     }
   }
   return keys;
@@ -127,6 +135,13 @@ function sourceVariant(raw, normalized, index) {
   const sourceVariantId = text(raw?.offer_id || raw?.offerId || sourceSku || String(index + 1));
   if (!sourceSku || !sourceVariantId) throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
   return { sourceVariantId, sourceSku, item: normalized };
+}
+
+function immutableSourceEvidenceAttributes(rawItems) {
+  return deepFreeze(rawItems.map((item) => {
+    const sourceVariant = plainObject(item?._sourceVariant) ? item._sourceVariant : {};
+    return structuredClone(Array.isArray(sourceVariant.attributes) ? sourceVariant.attributes : []);
+  }));
 }
 
 function exactTargetCategory(value) {
@@ -211,11 +226,12 @@ export function createAutoListingListingBasePreparer({
     if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 1_000) {
       throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
     }
-    const categoryCapabilities = new Map();
-    const categoryAttributeMetadata = new Map();
-    const categoryDictionaryReadPromises = new Map();
+    const sourceEvidenceAttributes = immutableSourceEvidenceAttributes(rawItems);
+    const sourceVariantIds = rawItems.map((item, index) => sourceVariant(item, null, index).sourceVariantId);
+    if (new Set(sourceVariantIds).size !== sourceVariantIds.length) {
+      throw failure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+    }
     const categoryDictionaryValues = new Map();
-    const categoryKey = (descriptionCategoryId, typeId) => `${Number(descriptionCategoryId)}:${Number(typeId)}`;
     const dictionaryKey = (descriptionCategoryId, typeId, attributeIdValue) =>
       `${Number(descriptionCategoryId)}:${Number(typeId)}:${Number(attributeIdValue)}`;
     const sourceCategory = Object.freeze({
@@ -223,61 +239,98 @@ export function createAutoListingListingBasePreparer({
       descriptionCategoryId: Number(category.descriptionCategoryId),
       typeId: Number(category.typeId),
     });
-    const readDictionaryValues = (descriptionCategoryId, typeId, attributeIdValue) => {
-      if (Number(descriptionCategoryId) !== sourceCategory.descriptionCategoryId
-        || Number(typeId) !== sourceCategory.typeId || !positiveId(attributeIdValue)) {
+    let rawCategoryAttributes;
+    try {
+      const attributeResult = await categoryService.getCategoryAttributes({
+        accountId: scope,
+        store: storeAccess,
+        descriptionCategoryId: sourceCategory.descriptionCategoryId,
+        typeId: sourceCategory.typeId,
+        language: "DEFAULT",
+        ...(signal ? { signal } : {}),
+      });
+      if (!Array.isArray(attributeResult?.items) || attributeResult.items.length > 1_000) {
+        throw failure("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE");
+      }
+      rawCategoryAttributes = attributeResult.items;
+    } catch {
+      throw failure("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE");
+    }
+    const metadataInput = () => ({
+      descriptionCategoryId: sourceCategory.descriptionCategoryId,
+      typeId: sourceCategory.typeId,
+      attributes: rawCategoryAttributes,
+      dictionaryValues: [...categoryDictionaryValues.entries()].map(([key, values]) => ({
+        attributeId: Number(key.split(":")[2]),
+        values,
+      })),
+    });
+    const preliminaryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    const usedAttributeKeys = inputAttributeKeys(rawItems);
+    const dictionaryAttributeIds = [...new Set(preliminaryMetadata.attributes
+      .filter((attribute) => attribute.dictionaryId
+        && (attribute.required || usedAttributeKeys.has(`${attribute.complexId}:${attribute.id}`)))
+      .map((attribute) => attribute.id))].sort((left, right) => left - right);
+    for (const attributeIdValue of dictionaryAttributeIds) {
+      let dictionaryItems;
+      try {
+        const dictionaryResult = await categoryService.getCategoryAttributeValues({
+          accountId: scope,
+          store: storeAccess,
+          descriptionCategoryId: sourceCategory.descriptionCategoryId,
+          typeId: sourceCategory.typeId,
+          attributeId: attributeIdValue,
+          language: "DEFAULT",
+          limit: 5_000,
+          ...(signal ? { signal } : {}),
+        });
+        if (!Array.isArray(dictionaryResult?.items) || dictionaryResult.items.length > 5_000) {
+          throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+        }
+        dictionaryItems = dictionaryResult.items;
+      } catch {
+        throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+      }
+      categoryDictionaryValues.set(
+        dictionaryKey(sourceCategory.descriptionCategoryId, sourceCategory.typeId, attributeIdValue),
+        dictionaryItems,
+      );
+    }
+    const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    const assertLocalCategory = (descriptionCategoryId, typeId) => {
+      if (positiveId(descriptionCategoryId) !== sourceCategory.descriptionCategoryId
+        || positiveId(typeId) !== sourceCategory.typeId) {
         throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
       }
-      const key = dictionaryKey(descriptionCategoryId, typeId, attributeIdValue);
-      if (!categoryDictionaryReadPromises.has(key)) {
-        categoryDictionaryReadPromises.set(key, (async () => {
-          try {
-            const result = await categoryService.getCategoryAttributeValues({
-              accountId: scope, store: storeAccess, descriptionCategoryId, typeId,
-              attributeId: Number(attributeIdValue), language: "DEFAULT", limit: 5_000,
-              ...(signal ? { signal } : {}),
-            });
-            if (!Array.isArray(result?.items) || result.items.length > 5_000) {
-              throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
-            }
-            categoryDictionaryValues.set(key, result.items);
-            return result.items;
-          } catch {
-            throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
-          }
-        })());
-      }
-      return categoryDictionaryReadPromises.get(key);
     };
     const normalized = await normalizeItems(rawItems, {
       strictTypeMatch: true,
       categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
       sourceCategory,
+      currentCategoryMetadata,
       allowUnresolvedRequiredDictionaryValues: false,
       getCategoryAttributes: async (descriptionCategoryId, typeId) => {
-        if (Number(descriptionCategoryId) !== Number(category.descriptionCategoryId)
-          || Number(typeId) !== Number(category.typeId)) {
-          throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
-        }
-        const result = await categoryService.getCategoryAttributes({
-          accountId: scope, store: storeAccess, descriptionCategoryId, typeId, language: "DEFAULT",
-          ...(signal ? { signal } : {}),
-        });
-        const items = Array.isArray(result?.items) ? result.items : [];
-        categoryCapabilities.set(
-          categoryKey(descriptionCategoryId, typeId),
-          items.some((attribute) => attributeId(attribute) === RICH_CONTENT_ATTRIBUTE_ID),
-        );
-        categoryAttributeMetadata.set(categoryKey(descriptionCategoryId, typeId), items);
-        return items;
+        assertLocalCategory(descriptionCategoryId, typeId);
+        return rawCategoryAttributes;
       },
       getCategoryAttributeValues: async (descriptionCategoryId, typeId, attributeIdValue) => {
-        return readDictionaryValues(descriptionCategoryId, typeId, attributeIdValue);
+        assertLocalCategory(descriptionCategoryId, typeId);
+        const normalizedAttributeId = positiveId(attributeIdValue);
+        if (!normalizedAttributeId) throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+        const key = dictionaryKey(descriptionCategoryId, typeId, normalizedAttributeId);
+        if (!categoryDictionaryValues.has(key)) {
+          throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+        }
+        return categoryDictionaryValues.get(key);
       },
     });
     if (!Array.isArray(normalized?.items) || normalized.items.length !== rawItems.length
       || normalized.items.some((item) => !plainObject(item))) {
       throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
+    }
+    if (normalized.items.some((item, index) =>
+      text(item.offer_id) !== sourceVariant(rawItems[index], item, index).sourceVariantId)) {
+      throw failure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
     }
     if (normalized.items.some((item) => item.currency_code !== storeCurrency)) {
       throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
@@ -286,39 +339,12 @@ export function createAutoListingListingBasePreparer({
       || Number(item.type_id) !== Number(category.typeId))) {
       throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
     }
-    const supported = normalized.items.every((item) =>
-      categoryCapabilities.get(categoryKey(item.description_category_id, item.type_id)) === true);
-    if (!supported) throw failure("AUTO_LISTING_RICH_CONTENT_UNSUPPORTED", 409);
-
-    const metadataInput = () => ({
-      descriptionCategoryId: sourceCategory.descriptionCategoryId,
-      typeId: sourceCategory.typeId,
-      attributes: categoryAttributeMetadata.get(categoryKey(
-        sourceCategory.descriptionCategoryId,
-        sourceCategory.typeId,
-      )) || [],
-      dictionaryValues: [...categoryDictionaryValues.entries()].map(([key, values]) => ({
-        attributeId: Number(key.split(":")[2]),
-        values,
-      })),
-    });
-    const preliminaryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
-    const usedAttributeKeys = normalizedAttributeKeys(normalized.items);
-    const dictionaryAttributeIds = [...new Set(preliminaryMetadata.attributes
-      .filter((attribute) => attribute.dictionaryId
-        && (attribute.required || usedAttributeKeys.has(`${attribute.complexId}:${attribute.id}`)))
-      .map((attribute) => attribute.id))].sort((left, right) => left - right);
-    for (const attributeIdValue of dictionaryAttributeIds) {
-      await readDictionaryValues(
-        sourceCategory.descriptionCategoryId,
-        sourceCategory.typeId,
-        attributeIdValue,
-      );
+    if (!currentCategoryMetadata.attributes.some((attribute) => attribute.id === RICH_CONTENT_ATTRIBUTE_ID)) {
+      throw failure("AUTO_LISTING_RICH_CONTENT_UNSUPPORTED", 409);
     }
-    const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
     const rebuiltItems = rebuildOzonItemsForCategory({
       originalItems: normalized.items,
-      sourceEvidenceAttributes: normalized.items.map((item) => item.attributes || []),
+      sourceEvidenceAttributes,
       replacementCategory: sourceCategory,
       currentCategoryMetadata,
     });

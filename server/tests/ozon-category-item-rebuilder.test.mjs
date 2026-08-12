@@ -235,6 +235,46 @@ test("rejects hostile carriers without executing accessors and returns only safe
   assert.equal(coercions, 0);
 });
 
+test("rejects explicit invalid source attribute IDs instead of folding them into the simple key", () => {
+  for (const attribute of [
+    { id: 200, complex_id: -1, values: [{ value: "invalid complex id" }] },
+    { id: Number.MAX_SAFE_INTEGER + 1, complex_id: 0, values: [{ value: "unsafe id" }] },
+  ]) {
+    assert.throws(() => rebuildOzonItemsForCategory({
+      originalItems: [originalItem()],
+      sourceEvidenceAttributes: [[attribute]],
+      replacementCategory,
+      currentCategoryMetadata,
+    }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+      && error.status === 422 && error.cause === null);
+  }
+});
+
+test("bounds source attribute nested strings, arrays, nodes, and depth with safe failures", () => {
+  const tooDeep = {};
+  let cursor = tooDeep;
+  for (let depth = 0; depth < 66; depth += 1) {
+    cursor.child = {};
+    cursor = cursor.child;
+  }
+  const cases = [
+    { id: 200, values: [{ value: "x".repeat(2_000_001) }] },
+    { id: 200, values: ["x".repeat(2_000_001)] },
+    { id: 200, values: Array.from({ length: 5_001 }, () => ({ value: "x" })) },
+    { id: 200, values: [{ value: tooDeep }] },
+  ];
+  for (const attribute of cases) {
+    assert.throws(() => rebuildOzonItemsForCategory({
+      originalItems: [originalItem()],
+      sourceEvidenceAttributes: [[attribute]],
+      replacementCategory,
+      currentCategoryMetadata,
+    }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+      && error.status === 422 && error.cause === null
+      && !JSON.stringify(error).includes("xxxxx"));
+  }
+});
+
 test("category metadata projection binds exact category, attribute, and dictionary IDs without store identity", () => {
   const metadata = buildOzonCategoryRebuildMetadata({
     descriptionCategoryId: 789,

@@ -171,6 +171,11 @@ test("forwards the category preparation abort signal to every Ozon category read
 });
 
 test("snapshots only used or required replacement dictionaries once in exact sorted scope", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    attributes: [{ id: 500, values: [{ value: "input option", dictionary_value_id: 500001 }] }],
+  }));
   const dictionaryReads = [];
   const options = new Map([
     [85, { id: 126745801, value: "Нет бренда" }],
@@ -213,7 +218,7 @@ test("snapshots only used or required replacement dictionaries once in exact sor
   });
 
   await createAutoListingListingBasePreparer(deps)({
-    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    accountId: "account-a", source: itemSource, targetStore: { id: "store-a", ownerAccountId: "account-a" },
     targetCategory: frozenTargetCategory(),
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   });
@@ -224,6 +229,52 @@ test("snapshots only used or required replacement dictionaries once in exact sor
     attributeId,
     limit: 5_000,
   })));
+});
+
+test("sorts real strict-normalizer dictionary reads instead of letting input attribute order drive network", async () => {
+  const itemSource = source();
+  const orderedAttributes = [
+    { id: 500, values: [{ value: "stale", dictionary_value_id: 500001 }] },
+    { id: 85, values: [{ value: "stale", dictionary_value_id: 126745801 }] },
+    { id: 400, values: [{ value: "stale", dictionary_value_id: 400001 }] },
+  ];
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    price: "100.00",
+    currency_code: "RUB",
+    images: ["https://source.example.test/strict.jpg"],
+    attributes: orderedAttributes,
+  }));
+  const dictionaryReads = [];
+  const values = new Map([
+    [85, { id: 126745801, value: "Нет бренда" }],
+    [400, { id: 400001, value: "Required" }],
+    [500, { id: 500001, value: "Used" }],
+  ]);
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 900, dictionary_id: 90 },
+          { id: 500, dictionary_id: 50 },
+          { id: 85, dictionary_id: 7, is_required: true },
+          { id: 400, dictionary_id: 40, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        dictionaryReads.push(input.attributeId);
+        return { items: [values.get(input.attributeId)] };
+      },
+    },
+  });
+  delete deps.normalizeItems;
+  await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: itemSource, targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(dictionaryReads, [85, 400, 500]);
 });
 
 test("normalizes category dictionary read failures without leaking the upstream error", async () => {
@@ -241,6 +292,134 @@ test("normalizes category dictionary read failures without leaking the upstream 
     && error.status === 422 && error.retryable === false && error.cause === null
     && !error.message.includes("secret") && !JSON.stringify(error).includes("secret"));
   assert.equal(dictionaryReadCount, 1);
+
+  let getterReads = 0;
+  const hostileResult = {};
+  Object.defineProperty(hostileResult, "items", {
+    enumerable: true,
+    get() { getterReads += 1; throw new Error("credential-secret dictionary getter"); },
+  });
+  const hostileDeps = dependencies();
+  hostileDeps.categoryService.getCategoryAttributeValues = async () => hostileResult;
+  await assert.rejects(createAutoListingListingBasePreparer(hostileDeps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED"
+    && error.cause === null && !error.message.includes("secret"));
+  assert.equal(getterReads, 1);
+});
+
+test("normalizes category attribute read failures before dictionary or later write boundaries", async () => {
+  let dictionaryReads = 0;
+  let normalizedReturns = 0;
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() { throw new Error("credential-secret attribute failure"); },
+      async getCategoryAttributeValues() { dictionaryReads += 1; return { items: [] }; },
+    },
+    async normalizeItems(items, context) {
+      await context.getCategoryAttributes(789, 999);
+      normalizedReturns += 1;
+      return { items };
+    },
+  });
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+    && error.status === 422 && error.retryable === false && error.cause === null
+    && !error.message.includes("secret") && !JSON.stringify(error).includes("secret"));
+  assert.equal(dictionaryReads, 0);
+  assert.equal(normalizedReturns, 0);
+
+  let getterReads = 0;
+  const hostileResult = {};
+  Object.defineProperty(hostileResult, "items", {
+    enumerable: true,
+    get() { getterReads += 1; throw new Error("credential-secret getter"); },
+  });
+  const hostileDeps = dependencies();
+  hostileDeps.categoryService.getCategoryAttributes = async () => hostileResult;
+  await assert.rejects(createAutoListingListingBasePreparer(hostileDeps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+    && error.cause === null && !error.message.includes("secret"));
+  assert.equal(getterReads, 1);
+});
+
+test("uses immutable raw source evidence over normalized old upload attributes for the exact variant", async () => {
+  const itemSource = source();
+  itemSource.collectItem.listingDraft.variants = itemSource.collectItem.listingDraft.variants.map((variant) => ({
+    ...variant,
+    _sourceVariant: {
+      attributes: [{ id: 200, values: [{ value: `SOURCE ${variant.offer_id}` }] }],
+    },
+  }));
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() { return { items: [{ id: 200, is_required: true }, { id: 11254 }] }; },
+      async getCategoryAttributeValues() { assert.fail("non-dictionary evidence must not read values"); },
+    },
+    async normalizeItems(items, context) {
+      await context.getCategoryAttributes(789, 999);
+      return { items: items.map((item) => ({
+        ...normalizedItem(item.offer_id.endsWith("red") ? "red" : "blue"),
+        offer_id: item.offer_id,
+        currency_code: item.currency_code,
+        attributes: [{ id: 200, values: [{ value: `OLD ${item.offer_id}` }] }],
+      })), warnings: [] };
+    },
+  });
+  const result = await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: itemSource, targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(result.variants.map(({ item }) => item.attributes[0].values[0].value), [
+    "SOURCE offer-blue",
+    "SOURCE offer-red",
+  ]);
+});
+
+test("rejects normalized variants whose offer order no longer matches immutable source evidence", async () => {
+  const deps = dependencies({
+    async normalizeItems(items, context) {
+      await context.getCategoryAttributes(789, 999);
+      return { items: items.toReversed().map((item) => ({
+        ...normalizedItem(item.offer_id.endsWith("red") ? "red" : "blue"),
+        offer_id: item.offer_id,
+        currency_code: item.currency_code,
+      })), warnings: [] };
+    },
+  });
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), { code: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" });
+
+  const duplicateSource = source();
+  duplicateSource.collectItem.listingDraft.variants[1].offer_id = "offer-blue";
+  const duplicateDeps = dependencies({
+    async normalizeItems(items, context) {
+      await context.getCategoryAttributes(789, 999);
+      return { items: items.map((item, index) => ({
+        ...normalizedItem(index ? "red" : "blue"),
+        offer_id: item.offer_id,
+        currency_code: item.currency_code,
+      })) };
+    },
+  });
+  await assert.rejects(createAutoListingListingBasePreparer(duplicateDeps)({
+    accountId: "account-a", source: duplicateSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), { code: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" });
 });
 
 for (const provenance of ["MANUAL", "OZON_REFRESH"]) {
