@@ -128,6 +128,19 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
   };
 }
 
+function bindGraphToSharedVersion(input, version) {
+  const item = input.items[0];
+  item.snapshot.targetCategory.sharedCategoryVersion = version;
+  item.snapshotHash = crypto.createHash("sha256")
+    .update(canonicalAutoListingSourceSnapshot(item.snapshot)).digest("hex");
+  item.effectiveImageConfig = deriveEffectiveAutoListingImageConfig({
+    configSnapshot: input.configSnapshot,
+    configHash: input.configHash,
+    sourceCapture: { snapshot: item.snapshot, snapshotHash: item.snapshotHash },
+  });
+  return input;
+}
+
 function withChangedSourceHash(input) {
   const changed = structuredClone(input);
   changed.items[0].snapshot.rawEvidence.rawResponseHash = "different-raw-hash";
@@ -239,6 +252,54 @@ function twoConnectionTargetEvidenceBarrier(scopedPool, timeoutMs = 5_000) {
   };
 }
 
+function categoryGraphFenceBarrier(scopedPool, timeoutMs = 5_000) {
+  let reached = false;
+  let settled = false;
+  let resolveReached;
+  let rejectReached;
+  let resolveProceed;
+  const fenceReached = new Promise((resolve, reject) => {
+    resolveReached = resolve;
+    rejectReached = reject;
+  });
+  fenceReached.catch(() => {});
+  const proceed = new Promise((resolve) => { resolveProceed = resolve; });
+  const timeout = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    const failure = new Error(`category graph fence barrier timed out after ${timeoutMs}ms`);
+    if (!reached) rejectReached(failure);
+    resolveProceed();
+  }, timeoutMs);
+  return {
+    query: (...args) => scopedPool.query(...args),
+    waitForFence: () => fenceReached,
+    release() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveProceed();
+    },
+    async connect() {
+      const connection = await scopedPool.connect();
+      return {
+        async query(sql, params) {
+          const result = await connection.query(sql, params);
+          if (!reached && /auto-listing-shared-category-fence/u.test(sql)) {
+            reached = true;
+            resolveReached();
+            await proceed;
+          }
+          return result;
+        },
+        release: (error) => connection.release(error),
+        on: (...args) => connection.on?.(...args),
+        off: (...args) => connection.off?.(...args),
+      };
+    },
+  };
+}
+
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function waitForBackendLock({ observer, backendPid, marker, timeoutMs = 5_000, pollMs = 25 } = {}) {
@@ -329,8 +390,10 @@ async function registerGraphSources(client, graphInput) {
   }
   await client.query(
     `INSERT INTO auto_listing_category_preparation_leases (
-       id,account_id,holder_backend_pid,state,acquired_at,expires_at
-     ) VALUES ($1,$2,pg_backend_pid(),'ACTIVE',NOW(),NOW()+INTERVAL '1 hour')
+       id,account_id,holder_backend_pid,holder_backend_started_at,state,acquired_at,expires_at
+     ) VALUES ($1,$2,pg_backend_pid(),
+       (SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid()),
+       'ACTIVE',NOW(),NOW()+INTERVAL '1 hour')
      ON CONFLICT (account_id,id) DO NOTHING`,
     [graphInput.categoryPreparationLeaseId, graphInput.accountId],
   );
@@ -442,7 +505,7 @@ if (!enabled) {
   }, () => {});
 } else {
   test("PostgreSQL repository rolls back graphs, scopes replays, preserves snapshots and orders events", { timeout: 20_000 }, async () => {
-    const { Pool } = await import("pg");
+    const { Pool, Client } = await import("pg");
     const pool = new Pool({ connectionString: databaseUrl });
     const client = await pool.connect();
     const suffix = crypto.randomUUID().replaceAll("-", "");
@@ -761,7 +824,9 @@ if (!enabled) {
 
       const sharedLeft = graph(accountA, "race-same-left", "race-same");
       const sharedRight = graph(accountA, "race-same-right", "race-same");
+      sharedRight.categoryPreparationLeaseId = `category-lease-race-same-right-${suffix}`;
       await registerGraphSources(client, sharedLeft);
+      await registerGraphSources(client, sharedRight);
       const sameHashBarrier = twoConnectionSnapshotBarrier(scopedPool);
       const sameHashRepository = createAutoListingRepository({ pool: sameHashBarrier });
       const sameHashResults = await runBarrierRace(sameHashRepository, sameHashBarrier, [sharedLeft, sharedRight]);
@@ -775,7 +840,9 @@ if (!enabled) {
 
       const conflictLeft = graph(accountA, "race-conflict-left", "race-conflict");
       const conflictRight = withChangedSourceHash(graph(accountA, "race-conflict-right", "race-conflict"));
+      conflictRight.categoryPreparationLeaseId = `category-lease-race-conflict-right-${suffix}`;
       await registerGraphSources(client, conflictLeft);
+      await registerGraphSources(client, conflictRight);
       const conflictBarrier = twoConnectionSnapshotBarrier(scopedPool);
       const conflictRepository = createAutoListingRepository({ pool: conflictBarrier });
       const conflictResults = await runBarrierRace(conflictRepository, conflictBarrier, [conflictLeft, conflictRight]);
@@ -852,6 +919,7 @@ if (!enabled) {
         stock: 1, priceAdjustmentKopecks: "0",
       });
       reuseSecond.idempotencyKey = "shared-category-store-two";
+      reuseSecond.categoryPreparationLeaseId = `category-lease-shared-category-store-two-${suffix}`;
       reuseSecond.configSnapshot = secondFrozen.config;
       reuseSecond.configHash = secondFrozen.configHash;
       reuseSecond.items[0].targetStoreId = secondStoreId;
@@ -860,6 +928,7 @@ if (!enabled) {
         configSnapshot: secondFrozen.config, configHash: secondFrozen.configHash,
         sourceCapture: { snapshot: reuseSecond.items[0].snapshot, snapshotHash: reuseSecond.items[0].snapshotHash },
       });
+      await registerGraphSources(client, reuseSecond);
       const reuseSecondJob = await repository.createJobGraph(reuseSecond);
       assert.notEqual(reuseFirstJob.id, reuseSecondJob.id);
       assert.equal(reuseFirstJob.items[0].sourceHash, reuseSecondJob.items[0].sourceHash);
@@ -1186,6 +1255,182 @@ if (!enabled) {
         "SELECT state FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
         [accountA, crashLease.leaseId],
       )).rows[0].state, "ORPHANED");
+      await client.query(
+        "UPDATE warehouses SET warehouse_type='FBS' WHERE id=$1 AND store_id=$2",
+        [`warehouse-${accountA}`, `store-${accountA}`],
+      );
+      await client.query(
+        `INSERT INTO product_stocks (product_id,warehouse_id,store_id,source)
+         VALUES ($1,$2,$3,'fbs') ON CONFLICT DO NOTHING`,
+        [`product-${accountA}`, `warehouse-${accountA}`, `store-${accountA}`],
+      );
+
+      const graphCrashSource = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+      }))[0];
+      const graphCrash = bindGraphToSharedVersion(
+        graph(accountA, "shared-category-graph-crash", "shared-category-graph-crash"),
+        graphCrashSource.sharedCategory.version,
+      );
+      await registerGraphSources(client, graphCrash);
+      const graphCrashLoaded = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [graphCrash.items[0].sourceRecordId],
+      }))[0];
+      const graphCrashItem = {
+        collectItemId: graphCrashLoaded.id,
+        evidenceId: graphCrashLoaded.categoryEvidence.id,
+        sharedCategoryId: graphCrashLoaded.sharedCategory.id,
+        sharedCategoryVersion: graphCrashLoaded.sharedCategory.version,
+        sourceDescriptionCategoryId: graphCrashLoaded.categoryEvidence.sourceDescriptionCategoryId,
+        sourceTypeId: graphCrashLoaded.categoryEvidence.sourceTypeId,
+        descriptionCategoryId: graphCrashLoaded.sharedCategory.currentDescriptionCategoryId,
+        typeId: graphCrashLoaded.sharedCategory.currentTypeId,
+        taxonomyScope: graphCrashLoaded.sharedCategory.taxonomyScope,
+        taxonomyFingerprint: graphCrashLoaded.sharedCategory.taxonomyFingerprint || "",
+        provenance: graphCrashLoaded.sharedCategory.source,
+      };
+      const crashFence = categoryGraphFenceBarrier(scopedPool);
+      const graphCrashRepository = createAutoListingRepository({ pool: crashFence });
+      const graphCrashLease = await graphCrashRepository.acquireCategoryPreparationLease({
+        accountId: accountA, items: [graphCrashItem],
+      });
+      graphCrash.categoryPreparationLeaseId = graphCrashLease.leaseId;
+      graphCrash.categoryPreparationSignal = graphCrashLease.signal;
+      const graphCrashCreation = graphCrashRepository.createJobGraph(graphCrash);
+      graphCrashCreation.catch(() => {});
+      const graphCrashTransition = new Client({ connectionString: databaseUrl });
+      await graphCrashTransition.connect();
+      let graphCrashMutation;
+      try {
+        await Promise.race([
+          crashFence.waitForFence(),
+          delay(2_000).then(() => { throw new Error("graph crash fence was not reached"); }),
+        ]);
+        const graphCrashPid = Number((await client.query(
+          "SELECT holder_backend_pid FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+          [accountA, graphCrashLease.leaseId],
+        )).rows[0].holder_backend_pid);
+        await client.query("SELECT pg_terminate_backend($1)", [graphCrashPid]);
+        await graphCrashTransition.query(`SET search_path TO ${schemaSql}, public`);
+        const mutationMarker = `auto-listing-graph-crash-transition-${suffix}`;
+        graphCrashMutation = graphCrashTransition.query(
+          `/* ${mutationMarker} */ UPDATE account_ozon_shared_categories
+              SET version=version+1,updated_at=updated_at+INTERVAL '1 millisecond'
+            WHERE account_id=$1 AND id=$2`,
+          [accountA, graphCrashItem.sharedCategoryId],
+        );
+        graphCrashMutation.catch(() => {});
+        await Promise.race([
+          graphCrashMutation,
+          delay(2_000).then(() => { throw new Error("transition did not recover after lease backend crash"); }),
+        ]);
+        crashFence.release();
+        await assert.rejects(graphCrashCreation, (error) => [
+          "AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE",
+          "AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE",
+        ].includes(error?.code));
+      } finally {
+        crashFence.release();
+        await graphCrashCreation.catch(() => {});
+        await graphCrashRepository.releaseCategoryPreparationLease({
+          accountId: accountA, leaseId: graphCrashLease.leaseId, outcome: "FAILED",
+        }).catch(() => {});
+        await graphCrashMutation?.catch(() => {});
+        await graphCrashTransition.end();
+      }
+      for (const [table, predicate, params] of [
+        ["auto_listing_jobs", "idempotency_key=$2", [accountA, graphCrash.idempotencyKey]],
+        ["auto_listing_source_snapshots", "source_record_id=$2", [accountA, graphCrash.items[0].sourceRecordId]],
+        ["auto_listing_listing_bases", "collect_item_id=$2", [accountA, graphCrash.items[0].sourceRecordId]],
+        ["auto_listing_ai_outbox", "job_id IN (SELECT id FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2)", [accountA, graphCrash.idempotencyKey]],
+      ]) {
+        assert.equal(Number((await client.query(
+          `SELECT count(*)::int AS count FROM ${table} WHERE account_id=$1 AND ${predicate}`,
+          params,
+        )).rows[0].count), 0);
+      }
+
+      const graphExpirySource = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+      }))[0];
+      const graphExpiry = bindGraphToSharedVersion(
+        graph(accountA, "shared-category-graph-expiry", "shared-category-graph-expiry"),
+        graphExpirySource.sharedCategory.version,
+      );
+      await registerGraphSources(client, graphExpiry);
+      const graphExpiryLoaded = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [graphExpiry.items[0].sourceRecordId],
+      }))[0];
+      const graphExpiryItem = { ...graphCrashItem,
+        collectItemId: graphExpiryLoaded.id,
+        evidenceId: graphExpiryLoaded.categoryEvidence.id,
+        sharedCategoryVersion: graphExpiryLoaded.sharedCategory.version,
+      };
+      const expiryFence = categoryGraphFenceBarrier(scopedPool);
+      const graphExpiryRepository = createAutoListingRepository({
+        pool: expiryFence, categoryLeaseHoldTimeoutMs: 1_000,
+      });
+      const graphExpiryLease = await graphExpiryRepository.acquireCategoryPreparationLease({
+        accountId: accountA, items: [graphExpiryItem],
+      });
+      graphExpiry.categoryPreparationLeaseId = graphExpiryLease.leaseId;
+      graphExpiry.categoryPreparationSignal = graphExpiryLease.signal;
+      const graphExpiryCreation = graphExpiryRepository.createJobGraph(graphExpiry);
+      graphExpiryCreation.catch(() => {});
+      const graphExpiryTransition = new Client({ connectionString: databaseUrl });
+      const graphExpiryObserver = new Client({ connectionString: databaseUrl });
+      await Promise.all([graphExpiryTransition.connect(), graphExpiryObserver.connect()]);
+      let expiryMutation;
+      try {
+        await Promise.race([
+          expiryFence.waitForFence(),
+          delay(2_000).then(() => { throw new Error("graph expiry fence was not reached"); }),
+        ]);
+        await new Promise((resolve) => {
+          if (graphExpiryLease.signal.aborted) resolve();
+          else graphExpiryLease.signal.addEventListener("abort", resolve, { once: true });
+        });
+        await graphExpiryTransition.query(`SET search_path TO ${schemaSql}, public`);
+        const expiryMutationPid = Number((await graphExpiryTransition.query(
+          "SELECT pg_backend_pid() AS pid",
+        )).rows[0].pid);
+        const expiryMarker = `auto-listing-graph-expiry-transition-${suffix}`;
+        expiryMutation = graphExpiryTransition.query(
+          `/* ${expiryMarker} */ UPDATE account_ozon_shared_categories
+              SET version=version+1,updated_at=updated_at+INTERVAL '1 millisecond'
+            WHERE account_id=$1 AND id=$2`,
+          [accountA, graphExpiryItem.sharedCategoryId],
+        );
+        expiryMutation.catch(() => {});
+        await waitForBackendLock({
+          observer: graphExpiryObserver, backendPid: expiryMutationPid,
+          marker: expiryMarker, timeoutMs: 750, pollMs: 10,
+        });
+        expiryFence.release();
+        await assert.rejects(graphExpiryCreation, {
+          code: "AUTO_LISTING_CATEGORY_LEASE_EXPIRED",
+        });
+        await graphExpiryRepository.releaseCategoryPreparationLease({
+          accountId: accountA, leaseId: graphExpiryLease.leaseId, outcome: "TIMEOUT",
+        });
+        await expiryMutation;
+      } finally {
+        expiryFence.release();
+        await graphExpiryCreation.catch(() => {});
+        await graphExpiryRepository.releaseCategoryPreparationLease({
+          accountId: accountA, leaseId: graphExpiryLease.leaseId, outcome: "TIMEOUT",
+        }).catch(() => {});
+        await expiryMutation?.catch(() => {});
+        await Promise.all([graphExpiryObserver.end(), graphExpiryTransition.end()]);
+      }
+      assert.deepEqual((await client.query(
+        "SELECT state,outcome FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+        [accountA, graphExpiryLease.leaseId],
+      )).rows[0], { state: "EXPIRED", outcome: "TIMEOUT" });
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
+        [accountA, graphExpiry.idempotencyKey],
+      )).rows[0].count), 0);
     } finally {
       await client.query("RESET search_path").catch(() => {});
       await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});

@@ -1033,9 +1033,12 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     ...categoryAuthority("collect-warehouse"),
   });
   const client = {
-    async query(sql) {
+    async query(sql, params = []) {
       if (/^(BEGIN|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
+      if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
+      if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
       if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
@@ -1150,6 +1153,9 @@ test("repository persists only a canonical recomputed price with a non-default s
       calls.push([sql, params]);
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || /INSERT INTO auto_listing_(jobs|job_items|events|listing_bases)/.test(sql)) return { rows: [] };
       if (/SELECT id FROM auto_listing_jobs/.test(sql)) return { rows: [] };
+      if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
+      if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
+      if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
       if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };

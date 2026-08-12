@@ -407,6 +407,9 @@ function warehouseEvidenceFixture({
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
+      if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
+      if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
+      if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
       if (/FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/FROM ai_content_strategy_versions/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
@@ -470,6 +473,7 @@ test("job creation without an AI workflow keeps the legacy profile-free path", a
   assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,\s*correlation_id,warehouse_validation_evidence_id/iu);
   assert.deepEqual(insertCall.params.slice(6), [
     "strategy-version-a", "upload-policy-review-a", null, null, "account-a", "lock-evidence-correlation", null,
+    "category-lease-a",
   ]);
   const policyCall = calls.find(({ sql }) => /FROM auto_listing_upload_policy_versions/.test(sql));
   assert.match(policyCall.sql, /publication_origin IS NOT NULL/iu);
@@ -498,7 +502,8 @@ test("RFBS creation inserts exact normalized evidence, audit, and job binding in
     "2026-08-11T04:00:00.000Z", "2099-08-11T04:10:00.000Z",
     input.warehouseValidation.evidenceHash, "lock-evidence-correlation", "account-a", null,
   ]);
-  assert.equal(calls[jobIndex].params.at(-1), evidence.params[0]);
+  assert.equal(calls[jobIndex].params.at(-2), evidence.params[0]);
+  assert.equal(calls[jobIndex].params.at(-1), "category-lease-a");
   assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
   assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
 });
@@ -614,7 +619,7 @@ test("category preparation lease uses one dedicated PostgreSQL session, sorted a
   const client = {
     async query(sql, params = []) {
       calls.push({ sql: String(sql), params });
-      if (/pg_backend_pid/u.test(sql)) return { rows: [{ pid: 4242 }] };
+      if (/pg_backend_pid/u.test(sql)) return { rows: [{ pid: 4242, backend_started_at: "2026-08-12 00:00:00.123456+00" }] };
       if (/account_ozon_shared_category_lease_key/u.test(sql) && !/pg_advisory_lock/u.test(sql)) {
         return { rows: [{ collect_item_id: params[1], shared_category_id: params[3], lock_key: params[3] === "shared-b" ? "2" : "1" }] };
       }
@@ -768,6 +773,7 @@ test("job creation locks and freezes the one enabled account AI profile without 
   assert.match(insertCall.sql, /strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,\s*correlation_id,warehouse_validation_evidence_id/iu);
   assert.deepEqual(insertCall.params.slice(6), [
     "strategy-version-a", "upload-policy-review-a", "profile-a", 3, "account-a", "lock-evidence-correlation", null,
+    "category-lease-a",
   ]);
 });
 
@@ -988,6 +994,9 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/.test(sql)) return { rows: [] };
+      if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
+      if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
+      if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
       if (/FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
@@ -1208,6 +1217,9 @@ function reusedEvidenceFixture({ graph, persistedSnapshot }) {
       calls.push({ sql, params });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql)) return { rows: [] };
       if (/FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2/.test(sql)) return { rows: [] };
+      if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
+      if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
+      if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
         client_id: "client-a", currency_code: "RUB", status: "active",

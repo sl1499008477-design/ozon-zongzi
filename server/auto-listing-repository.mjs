@@ -761,6 +761,7 @@ export function createAutoListingRepository({
   }
   const newId = (prefix) => requiredText(idFactory(prefix), "AUTO_LISTING_REPOSITORY_INVALID");
   const activeCategoryLeases = new Map();
+  const categoryLeaseMapKey = (accountId, leaseId) => `${accountId}\u001f${leaseId}`;
 
   async function connectForCategoryLease() {
     let timer;
@@ -781,12 +782,69 @@ export function createAutoListingRepository({
     }
   }
 
-  function expireCategoryLease(leaseId) {
-    const held = activeCategoryLeases.get(leaseId);
+  function expireCategoryLease(accountId, leaseId) {
+    const held = activeCategoryLeases.get(categoryLeaseMapKey(accountId, leaseId));
     if (!held) return;
     const failure = repositoryError("AUTO_LISTING_CATEGORY_LEASE_EXPIRED", 409);
     held.expired = true;
     held.controller.abort(failure);
+  }
+
+  function assertCategoryPreparationSignal(graph) {
+    if (!graph.categoryPreparationSignal?.aborted) return;
+    const reason = graph.categoryPreparationSignal.reason;
+    if (reason && typeof reason === "object" && typeof reason.code === "string") throw reason;
+    throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
+  }
+
+  async function lockCategoryGraphHandoffWithClient(client, graph) {
+    assertCategoryPreparationSignal(graph);
+    const sharedCategoryIds = [...new Set(graph.items
+      .filter((item) => Object.hasOwn(item, "snapshot"))
+      .map((item) => requiredText(item.snapshot.targetCategory.sharedCategoryId)))];
+    if (!sharedCategoryIds.length) return;
+    const keys = await client.query(
+      `/* auto-listing-category-graph-lock-keys */
+       SELECT input.shared_category_id,
+              account_ozon_shared_category_lease_key($1,input.shared_category_id)::text AS lock_key
+         FROM unnest($2::text[]) AS input(shared_category_id)`,
+      [graph.accountId, sharedCategoryIds],
+    );
+    if (keys.rows.length !== sharedCategoryIds.length
+      || new Set(keys.rows.map((row) => row.shared_category_id)).size !== sharedCategoryIds.length) {
+      throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
+    }
+    const lockKeys = keys.rows.map((row) => requiredText(row.lock_key))
+      .sort((left, right) => BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0);
+    for (const lockKey of lockKeys) {
+      const taken = await client.query(
+        "SELECT pg_try_advisory_xact_lock_shared($1::bigint) AS locked",
+        [lockKey],
+      );
+      if (taken.rows[0]?.locked !== true) {
+        throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
+      }
+      assertCategoryPreparationSignal(graph);
+    }
+  }
+
+  async function assertCategoryGraphLeaseActiveWithClient(client, graph) {
+    assertCategoryPreparationSignal(graph);
+    const result = await client.query(
+      `/* auto-listing-category-graph-lease-active */ SELECT lease.id
+         FROM auto_listing_category_preparation_leases lease
+         JOIN pg_stat_activity activity
+           ON activity.pid=lease.holder_backend_pid
+          AND activity.datname=current_database()
+          AND activity.backend_start=lease.holder_backend_started_at
+        WHERE lease.account_id=$1 AND lease.id=$2 AND lease.state='ACTIVE'
+          AND lease.finalized_job_id IS NULL AND lease.expires_at>clock_timestamp()`,
+      [graph.accountId, graph.categoryPreparationLeaseId],
+    );
+    if (result.rows.length !== 1) {
+      throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
+    }
+    assertCategoryPreparationSignal(graph);
   }
 
   const loadExcelImportContext = async ({ accountId, importFileId } = {}) => {
@@ -990,19 +1048,27 @@ export function createAutoListingRepository({
       const controller = new AbortController();
       const onClientError = (caught) => {
         if (!leaseId) return;
-        const held = activeCategoryLeases.get(leaseId);
+        const mapKey = categoryLeaseMapKey(scope, leaseId);
+        const held = activeCategoryLeases.get(mapKey);
         if (held?.client !== client) return;
-        activeCategoryLeases.delete(leaseId);
+        activeCategoryLeases.delete(mapKey);
         clearTimeout(held.timer);
         controller.abort(repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503));
         try { client.release(caught || repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503)); } catch {}
       };
       client.on?.("error", onClientError);
       try {
-        backendPid = Number((await client.query("SELECT pg_backend_pid()::int AS pid")).rows[0]?.pid);
+        const backend = (await client.query(
+          `SELECT activity.pid::int AS pid,activity.backend_start::text AS backend_started_at
+             FROM pg_stat_activity activity
+            WHERE activity.pid=pg_backend_pid() AND activity.datname=current_database()`,
+        )).rows[0];
+        backendPid = Number(backend?.pid);
         if (!Number.isSafeInteger(backendPid) || backendPid < 1) {
           throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
         }
+        const backendStartedAt = String(backend?.backend_started_at || "");
+        if (!backendStartedAt) throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
         const resolved = [];
         for (const item of checked) {
           const row = (await client.query(
@@ -1043,7 +1109,7 @@ export function createAutoListingRepository({
         await client.query("SELECT set_config('statement_timeout',$1,FALSE)", [`${categoryLeaseWaitTimeoutMs + 1_000}ms`]);
         for (const lockKey of lockKeys) {
           try {
-            await client.query("SELECT pg_advisory_lock($1::bigint) AS locked", [lockKey]);
+            await client.query("SELECT pg_advisory_lock_shared($1::bigint) AS locked", [lockKey]);
           } catch (caught) {
             if (["55P03", "57014"].includes(caught?.code)) {
               throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_TIMEOUT", 503);
@@ -1089,9 +1155,9 @@ export function createAutoListingRepository({
         await client.query("BEGIN");
         await client.query(
           `INSERT INTO auto_listing_category_preparation_leases (
-             id,account_id,holder_backend_pid,state,acquired_at,expires_at
-           ) VALUES ($1,$2,$3,'ACTIVE',$4,$5)`,
-          [leaseId, scope, backendPid, acquiredAt.toISOString(), expiresAt.toISOString()],
+             id,account_id,holder_backend_pid,holder_backend_started_at,state,acquired_at,expires_at
+           ) VALUES ($1,$2,$3,$4,'ACTIVE',$5,$6)`,
+          [leaseId, scope, backendPid, backendStartedAt, acquiredAt.toISOString(), expiresAt.toISOString()],
         );
         for (const item of checked) {
           await client.query(
@@ -1107,9 +1173,9 @@ export function createAutoListingRepository({
           );
         }
         await client.query("COMMIT");
-        const timer = setTimeout(() => { expireCategoryLease(leaseId); }, categoryLeaseHoldTimeoutMs);
+        const timer = setTimeout(() => { expireCategoryLease(scope, leaseId); }, categoryLeaseHoldTimeoutMs);
         timer.unref?.();
-        activeCategoryLeases.set(leaseId, {
+        activeCategoryLeases.set(categoryLeaseMapKey(scope, leaseId), {
           accountId: scope, backendPid, client, timer, controller, expired: false, onClientError,
         });
         return Object.freeze({ leaseId, expiresAt: expiresAt.toISOString(), signal: controller.signal });
@@ -1128,9 +1194,10 @@ export function createAutoListingRepository({
       if (!["COMMITTED", "FAILED", "CONFLICT", "TIMEOUT"].includes(outcome)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
-      const held = activeCategoryLeases.get(id);
+      const mapKey = categoryLeaseMapKey(scope, id);
+      const held = activeCategoryLeases.get(mapKey);
       if (!held || held.accountId !== scope) throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
-      activeCategoryLeases.delete(id);
+      activeCategoryLeases.delete(mapKey);
       clearTimeout(held.timer);
       let failed = null;
       try {
@@ -1142,7 +1209,17 @@ export function createAutoListingRepository({
             RETURNING id`,
           [scope, id, held.backendPid, outcome],
         );
-        if (updated.rows.length !== 1) throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+        if (updated.rows.length !== 1) {
+          const finalized = await held.client.query(
+            `SELECT id FROM auto_listing_category_preparation_leases
+              WHERE account_id=$1 AND id=$2 AND holder_backend_pid=$3
+                AND state='RELEASED' AND outcome='COMMITTED' AND finalized_job_id IS NOT NULL`,
+            [scope, id, held.backendPid],
+          );
+          if (outcome !== "COMMITTED" || finalized.rows.length !== 1) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+          }
+        }
       } catch (caught) {
         failed = caught;
       } finally {
@@ -1257,7 +1334,12 @@ export function createAutoListingRepository({
 
     async createJobGraph(graphInput) {
       const graph = assertGraph(graphInput);
-      const client = await pool.connect();
+      const heldCategoryLease = activeCategoryLeases.get(categoryLeaseMapKey(
+        graph.accountId, graph.categoryPreparationLeaseId,
+      ));
+      const borrowedCategoryLeaseClient = heldCategoryLease?.accountId === graph.accountId
+        ? heldCategoryLease.client : null;
+      const client = borrowedCategoryLeaseClient || await pool.connect();
       let committed = false;
       try {
         await client.query("BEGIN");
@@ -1272,6 +1354,8 @@ export function createAutoListingRepository({
           committed = true;
           return { ...existing, duplicate: true };
         }
+        await lockCategoryGraphHandoffWithClient(client, graph);
+        await assertCategoryGraphLeaseActiveWithClient(client, graph);
         await lockTargetWarehouseEvidenceWithClient(client, {
           accountId: graph.accountId,
           targetStoreId: graph.configSnapshot.targetStoreId,
@@ -1418,13 +1502,7 @@ export function createAutoListingRepository({
           if (item.status === "SOURCE_READY" && item.strategyId !== strategy.rows[0].strategy_key) {
             throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
           }
-          if (item.status === "SOURCE_READY") {
-            const draft = source.rows[0];
-            if (draft.draft_id !== item.listingBaseTemplate.productDraft.id
-              || Number(draft.draft_version) !== item.listingBaseTemplate.productDraft.version
-              || draft.draft_data_hash !== item.listingBaseTemplate.productDraft.dataHash) {
-              throw sourceVersionConflict();
-            }
+          if (Object.hasOwn(item, "snapshot")) {
             const category = item.snapshot.targetCategory;
             const categoryFence = await client.query(
               `/* auto-listing-shared-category-fence */ SELECT shared.id
@@ -1444,7 +1522,12 @@ export function createAutoListingRepository({
                  JOIN auto_listing_category_preparation_leases category_lease
                    ON category_lease.account_id=current_category.account_id
                   AND category_lease.id=$13 AND category_lease.state='ACTIVE'
-                  AND category_lease.expires_at>statement_timestamp()
+                  AND category_lease.expires_at>clock_timestamp()
+                  AND category_lease.finalized_job_id IS NULL
+                 JOIN pg_stat_activity category_lease_backend
+                   ON category_lease_backend.pid=category_lease.holder_backend_pid
+                  AND category_lease_backend.datname=current_database()
+                  AND category_lease_backend.backend_start=category_lease.holder_backend_started_at
                  JOIN auto_listing_category_preparation_lease_items category_lease_item
                    ON category_lease_item.account_id=category_lease.account_id
                   AND category_lease_item.lease_id=category_lease.id
@@ -1476,6 +1559,14 @@ export function createAutoListingRepository({
                 graph.categoryPreparationLeaseId],
             );
             if (categoryFence.rows.length !== 1) throw sourceVersionConflict();
+          }
+          if (item.status === "SOURCE_READY") {
+            const draft = source.rows[0];
+            if (draft.draft_id !== item.listingBaseTemplate.productDraft.id
+              || Number(draft.draft_version) !== item.listingBaseTemplate.productDraft.version
+              || draft.draft_data_hash !== item.listingBaseTemplate.productDraft.dataHash) {
+              throw sourceVersionConflict();
+            }
             const resolved = resolveAiContentStrategy({
               strategyVersion: { strategyId: strategy.rows[0].strategy_key, strategyVersionId: graph.strategyVersionId },
               rules: publishedRules(rules.rows),
@@ -1492,6 +1583,7 @@ export function createAutoListingRepository({
             if (!samePrice(item.price, price)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
           }
         }
+        await assertCategoryGraphLeaseActiveWithClient(client, graph);
         const jobId = newId("auto_listing_job");
         let warehouseValidationEvidenceId = null;
         if (graph.warehouseValidation) {
@@ -1528,11 +1620,12 @@ export function createAutoListingRepository({
           `INSERT INTO auto_listing_jobs (
              id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,
              strategy_version_id,upload_policy_version_id,ai_profile_id,ai_profile_version,created_by,
-             correlation_id,warehouse_validation_evidence_id
-           ) VALUES ($1,$2,$3,'CREATED',$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)`,
+             correlation_id,warehouse_validation_evidence_id,category_preparation_lease_id
+           ) VALUES ($1,$2,$3,'CREATED',$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
           [jobId, graph.accountId, graph.sourceType, graph.idempotencyKey, json(graph.configSnapshot), graph.configHash,
             graph.strategyVersionId, graph.uploadPolicyVersionId, aiProfileId, aiProfileVersion,
-            graph.actorAccountId, graph.correlationId, warehouseValidationEvidenceId],
+            graph.actorAccountId, graph.correlationId, warehouseValidationEvidenceId,
+            graph.categoryPreparationLeaseId],
         );
         for (const item of graph.items) {
           const proposedSnapshotId = newId("auto_listing_snapshot");
@@ -1602,6 +1695,7 @@ export function createAutoListingRepository({
             );
           }
           if (!blocked && stageInitialPlanWork) {
+            await assertCategoryGraphLeaseActiveWithClient(client, graph);
             const staged = await stageInitialPlanWork({
               client,
               accountId: graph.accountId,
@@ -1616,7 +1710,9 @@ export function createAutoListingRepository({
             }
           }
         }
+        await assertCategoryGraphLeaseActiveWithClient(client, graph);
         const created = await readJobWithClient(client, graph.accountId, jobId);
+        await assertCategoryGraphLeaseActiveWithClient(client, graph);
         await client.query("COMMIT");
         committed = true;
         return created;
@@ -1638,9 +1734,31 @@ export function createAutoListingRepository({
             }
           }
         }
+        if (caught?.code === "23514"
+          && /category preparation lease cannot commit/u.test(String(caught.message || ""))) {
+          const lease = (await pool.query(
+            `SELECT lease.state,lease.expires_at<=clock_timestamp() AS expired,
+                    EXISTS (
+                      SELECT 1 FROM pg_stat_activity activity
+                       WHERE activity.pid=lease.holder_backend_pid
+                         AND activity.datname=current_database()
+                         AND activity.backend_start=lease.holder_backend_started_at
+                    ) AS backend_active
+               FROM auto_listing_category_preparation_leases lease
+              WHERE lease.account_id=$1 AND lease.id=$2`,
+            [graph.accountId, graph.categoryPreparationLeaseId],
+          )).rows[0];
+          if (lease?.expired === true) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_EXPIRED", 409);
+          }
+          if (!lease || lease.backend_active !== true) {
+            throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
+          }
+          throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+        }
         throw caught;
       } finally {
-        client.release();
+        if (!borrowedCategoryLeaseClient) client.release();
       }
     },
 

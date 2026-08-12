@@ -17,6 +17,10 @@ const preparationLeaseMigrationUrl = new URL(
   "../db/migrations/065_auto_listing_category_preparation_leases.sql",
   import.meta.url,
 );
+const graphHandoffMigrationUrl = new URL(
+  "../db/migrations/066_auto_listing_category_graph_handoff.sql",
+  import.meta.url,
+);
 
 function normalizedSql(sql) {
   return String(sql).replace(/\s+/g, " ").trim();
@@ -94,6 +98,22 @@ test("065 adds a PostgreSQL-session category preparation lease and gates every s
   );
   assert.match(compact, /BEFORE INSERT OR UPDATE OR DELETE ON account_ozon_shared_categories/i);
   assert.doesNotMatch(compact, /api_key|credential|raw_response/i);
+});
+
+test("066 binds graph commit to one lease and rejects an expired deferred commit", async () => {
+  const sql = await readFile(graphHandoffMigrationUrl, "utf8");
+  const compact = normalizedSql(sql);
+  assert.match(compact, /ADD COLUMN category_preparation_lease_id TEXT/i);
+  assert.match(compact, /UNIQUE.*account_id.*category_preparation_lease_id/is);
+  assert.match(compact, /DEFERRABLE INITIALLY DEFERRED/i);
+  assert.match(compact, /clock_timestamp\(\).*expires_at/is);
+  assert.match(compact, /outcome='COMMITTED'/i);
+  assert.match(compact, /finalized_job_id/i);
+  assert.match(compact, /holder_backend_started_at TIMESTAMPTZ/i);
+  assert.match(compact, /activity\.backend_start=lease_row\.holder_backend_started_at/i);
+  assert.match(compact, /FOREIGN KEY \(account_id,finalized_job_id\)/i);
+  assert.match(compact, /FROM pg_locks held_lock/i);
+  assert.match(compact, /held_lock\.mode='ShareLock'/i);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {
