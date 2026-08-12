@@ -2151,6 +2151,12 @@ export async function updateSubmissionItemsV3(rawInput = {}) {
     retryable: false,
     cause: null,
   });
+  const contractFailure = () => Object.assign(new Error("Ozon 商品结果结构无效，需要核对原任务"), {
+    code: "OZON_IMPORT_RESULT_CONTRACT_INVALID",
+    retryable: false,
+    cause: null,
+  });
+  if (input === undefined) throw contractFailure();
   if (!input || Array.isArray(input)
       || Object.keys(input).some((key) => !["accountId", "jobId", "snapshotId", "ozonTaskId", "statusVersion", "items"].includes(key))
       || typeof input.accountId !== "string" || !input.accountId || input.accountId.length > 240
@@ -2163,10 +2169,26 @@ export async function updateSubmissionItemsV3(rawInput = {}) {
   const { accountId, jobId, snapshotId, ozonTaskId, statusVersion } = input;
   const projectedItems = input.items;
   if (!Array.isArray(projectedItems)) throw identityFailure();
+  const allowedItemKeys = new Set([
+    "index", "sku", "offerId", "productId", "status", "errors", "classification", "errorEvidence", "response",
+  ]);
+  const allowedStatuses = new Set(["CHECKING", "SUCCEEDED", "FAILED", "SKIPPED", "UNKNOWN_RESULT"]);
   const offerCounts = new Map();
   for (const item of projectedItems) {
-    const offerId = item && typeof item === "object" && typeof item.offerId === "string" ? item.offerId : "";
-    if (offerId) offerCounts.set(offerId, (offerCounts.get(offerId) || 0) + 1);
+    if (!item || typeof item !== "object" || Array.isArray(item)
+        || Object.keys(item).some((key) => !allowedItemKeys.has(key))
+        || typeof item.offerId !== "string" || !item.offerId || item.offerId.length > 240
+        || typeof item.status !== "string" || !allowedStatuses.has(item.status)
+        || !Object.hasOwn(item, "productId")) throw contractFailure();
+    const productIdAbsent = item.productId === "" || item.productId === null;
+    const numericProductId = typeof item.productId === "string" && /^[1-9][0-9]{0,15}$/u.test(item.productId)
+      ? Number(item.productId)
+      : 0;
+    const canonicalProductId = Number.isSafeInteger(numericProductId) && numericProductId > 0
+      && String(numericProductId) === item.productId;
+    if ((item.status === "SUCCEEDED" && !canonicalProductId)
+        || (item.status !== "SUCCEEDED" && !productIdAbsent)) throw contractFailure();
+    offerCounts.set(item.offerId, (offerCounts.get(item.offerId) || 0) + 1);
   }
   return transaction(async (client) => {
     const current = await client.query(
@@ -2198,11 +2220,8 @@ export async function updateSubmissionItemsV3(rawInput = {}) {
     for (const target of current.rows) {
       const update = projectedItems.find((item) => item && typeof item === "object" && item.offerId === target.offer_id);
       if (!update) throw identityFailure();
-      const status = typeof update.status === "string" ? update.status : "";
-      if (!["CHECKING", "SUCCEEDED", "FAILED", "SKIPPED", "UNKNOWN_RESULT"].includes(status)) throw resultConflict();
-      const productId = typeof update.productId === "string" && /^[1-9][0-9]{0,239}$/u.test(update.productId)
-        ? update.productId
-        : "";
+      const status = update.status;
+      const productId = update.productId === null ? "" : update.productId;
       const evidence = projectProductionOzonImportErrorEvidence(update.errorEvidence);
       const currentStatus = String(target.status || "").toUpperCase();
       const currentProductId = String(target.product_id || "");

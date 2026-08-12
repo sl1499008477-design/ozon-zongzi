@@ -18,6 +18,30 @@ assert.equal(Object.isFrozen(success), true);
 assert.equal(Object.isFrozen(success.items), true);
 assert.equal(Object.isFrozen(success.items[0].response), true);
 
+for (const productId of [
+  0, -1, 1.5, Number.NaN, undefined, "", " ", "0", "01",
+  Number.MAX_SAFE_INTEGER + 1, String(Number.MAX_SAFE_INTEGER + 1), {}, [],
+]) {
+  const item = { offer_id: "offer-1", product_id: productId, status: "imported" };
+  if (productId === undefined) delete item.product_id;
+  const invalidSuccess = deriveOzonImportStatus({ result: { items: [item] } }, {
+    expectedOfferIds: ["offer-1"],
+  });
+  assert.equal(invalidSuccess.status, "UNKNOWN_RESULT");
+  assert.equal(invalidSuccess.done, false);
+  if (typeof productId === "number" && Number.isNaN(productId)) {
+    assert.deepEqual(invalidSuccess.items, []);
+  } else {
+    assert.equal(invalidSuccess.items[0].productId, "");
+    assert.equal(invalidSuccess.items[0].errorEvidence, null);
+  }
+}
+
+const canonicalSuccess = deriveOzonImportStatus({ result: { items: [{
+  offer_id: "offer-1", product_id: Number.MAX_SAFE_INTEGER, status: "imported",
+}] } }, { expectedOfferIds: ["offer-1"] });
+assert.equal(canonicalSuccess.items[0].productId, String(Number.MAX_SAFE_INTEGER));
+
 const partial = deriveOzonImportStatus({
   result: {
     items: [
@@ -43,7 +67,7 @@ assert.doesNotMatch(JSON.stringify({
 const checking = deriveOzonImportStatus({
   result: {
     items: [
-      { offer_id: "offer-1", status: "imported" },
+      { offer_id: "offer-1", product_id: 101, status: "imported" },
       { offer_id: "offer-2", status: "processing" },
     ],
   },
@@ -74,6 +98,11 @@ assert.equal(rejected.status, "FAILED");
 assert.equal(rejected.done, true);
 assert.equal(rejected.errorMessage, "Ozon 返回商品导入失败");
 assert.doesNotMatch(JSON.stringify(rejected), /请求校验失败/);
+
+const unscopedSuccess = deriveOzonImportStatus({ result: { status: "success" } });
+assert.equal(unscopedSuccess.status, "UNKNOWN_RESULT");
+assert.equal(unscopedSuccess.done, false);
+assert.deepEqual(unscopedSuccess.items, []);
 
 let getterReads = 0;
 const hostileItem = { status: "failed", errors: [] };

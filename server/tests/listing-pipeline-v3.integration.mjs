@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { encryptSecret } from "../crypto-secrets.mjs";
+import { deriveOzonImportStatus } from "../ozon-import-status.mjs";
 import { getPostgresPool, closePostgresPool, postgresEnabled } from "../db/connection.mjs";
 import { runMigrations } from "../db/migrate.mjs";
 import {
@@ -497,6 +498,7 @@ try {
     offerId: "wrong-offer",
     sku: "source-sku",
     status: "FAILED",
+    productId: "",
     errors: ["raw-third-party-secret"],
     response: { message: "raw-third-party-secret", credential: "secret" },
     errorEvidence: safeEvidence,
@@ -537,6 +539,7 @@ try {
   await persistSubmissionItems(created.job.id, [{
     offerId: "offer-1",
     status: "FAILED",
+    productId: "",
     errors: ["raw-third-party-secret"],
     response: { message: "raw-third-party-secret", credential: "secret" },
     errorEvidence: safeEvidence,
@@ -596,6 +599,79 @@ try {
     "SELECT status,product_id FROM submission_items WHERE job_id=$1", [autoSubmission.job.id],
   );
   assert.deepEqual(immutableSuccess.rows[0], { status: "SUCCEEDED", product_id: "991001" });
+
+  const invalidSuccessSubmission = await createSubmissionV3({
+    collectItem: baseItem,
+    accountId,
+    storeId,
+    normalizedItems: [
+      { ...normalizedItems[0], offer_id: "offer-invalid-a", name: "Invalid A" },
+      { ...normalizedItems[0], offer_id: "offer-invalid-b", name: "Invalid B" },
+    ],
+    stocks: [
+      { offer_id: "offer-invalid-a", warehouse_id: 1, stock: 1 },
+      { offer_id: "offer-invalid-b", warehouse_id: 1, stock: 1 },
+    ],
+  });
+  const invalidSuccessTaskId = `ozon-task-invalid-success-${suffix}`;
+  await pool.query("UPDATE submission_jobs SET ozon_task_id=$2 WHERE id=$1", [
+    invalidSuccessSubmission.job.id, invalidSuccessTaskId,
+  ]);
+  const invalidSuccessScope = {
+    accountId,
+    snapshotId: invalidSuccessSubmission.job.snapshotId,
+    ozonTaskId: invalidSuccessTaskId,
+    statusVersion: 1,
+  };
+  const invalidBefore = await pool.query(
+    `SELECT
+       (SELECT JSONB_AGG(JSONB_BUILD_OBJECT('offer',offer_id,'status',status,'product',product_id) ORDER BY offer_id)
+        FROM submission_items WHERE job_id=$1) AS items,
+       (SELECT COUNT(*)::int FROM submission_events WHERE job_id=$1) AS events`,
+    [invalidSuccessSubmission.job.id],
+  );
+  const invalidRepositoryProductIds = [
+    0, -1, 1.5, Number.NaN, undefined, "", " ", "0", "01",
+    Number.MAX_SAFE_INTEGER + 1, String(Number.MAX_SAFE_INTEGER + 1), {}, [], null,
+  ];
+  for (const productId of invalidRepositoryProductIds) {
+    const invalidItem = {
+      offerId: "offer-invalid-a", status: "SUCCEEDED", productId, response: {}, errorEvidence: null,
+    };
+    if (productId === undefined) delete invalidItem.productId;
+    await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
+      invalidItem,
+      { offerId: "offer-invalid-b", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
+    ], invalidSuccessScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONTRACT_INVALID"
+      && error?.retryable === false && error?.cause === null);
+  }
+  for (const status of ["CHECKING", "FAILED", "SKIPPED", "UNKNOWN_RESULT"]) {
+    await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
+      { offerId: "offer-invalid-a", status, productId: "123", response: {}, errorEvidence: null },
+      { offerId: "offer-invalid-b", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
+    ], invalidSuccessScope), { code: "OZON_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
+  }
+  await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
+    { offerId: "offer-invalid-a", status: "SUCCEEDED", productId: "123", unexpected: true },
+    { offerId: "offer-invalid-b", status: "CHECKING", productId: "" },
+  ], invalidSuccessScope), { code: "OZON_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
+  const mixedInvalidSuccess = deriveOzonImportStatus({ result: { items: [
+    { offer_id: "offer-invalid-a", status: "imported", product_id: 0 },
+    { offer_id: "offer-invalid-b", status: "imported", product_id: 123456 },
+  ] } }, { expectedOfferIds: ["offer-invalid-a", "offer-invalid-b"] });
+  assert.equal(mixedInvalidSuccess.status, "UNKNOWN_RESULT");
+  const ignoredInvalidSuccess = await persistSubmissionItems(
+    invalidSuccessSubmission.job.id, mixedInvalidSuccess.items, invalidSuccessScope,
+  );
+  assert.deepEqual(ignoredInvalidSuccess, { applied: false, ignored: true, idempotent: false });
+  const invalidAfter = await pool.query(
+    `SELECT
+       (SELECT JSONB_AGG(JSONB_BUILD_OBJECT('offer',offer_id,'status',status,'product',product_id) ORDER BY offer_id)
+        FROM submission_items WHERE job_id=$1) AS items,
+       (SELECT COUNT(*)::int FROM submission_events WHERE job_id=$1) AS events`,
+    [invalidSuccessSubmission.job.id],
+  );
+  assert.deepEqual(invalidAfter.rows[0], invalidBefore.rows[0]);
 
   const batchSubmission = await createSubmissionV3({
     collectItem: baseItem,

@@ -16,7 +16,7 @@ function deepFreeze(value) {
 function normalizeStatus(value = "") {
   if (typeof value !== "string") return "UNKNOWN_RESULT";
   const status = value.toLowerCase();
-  if (SUCCEEDED_STATES.has(status)) return "SUCCEEDED";
+  if (SUCCEEDED_STATES.has(status)) return "UNKNOWN_RESULT";
   if (status === "skipped") return "SKIPPED";
   if (FAILED_STATES.has(status)) return "FAILED";
   if (CHECKING_STATES.has(status)) return "CHECKING";
@@ -61,7 +61,10 @@ function safeString(value, max = 240) {
 function safeProductId(value) {
   if (value === null || value === undefined || value === "" || value === 0 || value === "0") return "";
   if (Number.isSafeInteger(value) && value > 0) return String(value);
-  if (typeof value === "string" && /^[1-9][0-9]{0,239}$/u.test(value)) return value;
+  if (typeof value === "string" && /^[1-9][0-9]{0,15}$/u.test(value)) {
+    const numeric = Number(value);
+    if (Number.isSafeInteger(numeric) && numeric > 0 && String(numeric) === value) return value;
+  }
   return "";
 }
 

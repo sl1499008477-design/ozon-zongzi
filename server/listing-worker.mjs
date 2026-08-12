@@ -234,7 +234,8 @@ async function processCheck(jobId) {
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
     if (["OZON_TASK_ID_UNKNOWN", "OZON_IMPORT_RESULT_CONFLICT",
-      "OZON_IMPORT_RESULT_SCOPE_MISMATCH", "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"].includes(error?.code)) {
+      "OZON_IMPORT_RESULT_SCOPE_MISMATCH", "OZON_IMPORT_OFFER_IDENTITY_MISMATCH",
+      "OZON_IMPORT_RESULT_CONTRACT_INVALID"].includes(error?.code)) {
       await failSubmission(latest || work, error, "RECONCILING");
     } else {
       const count = await incrementSubmissionStatusCheckV3(jobId);
