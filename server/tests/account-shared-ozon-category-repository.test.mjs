@@ -73,6 +73,14 @@ function assertCode(code) {
   return (error) => error?.code === code && !Object.hasOwn(error, "cause");
 }
 
+function initializedState(evidenceRows = []) {
+  return {
+    collectOzonCategorySourceEvidence: evidenceRows,
+    accountOzonSharedCategories: [],
+    accountOzonSharedCategoryEvents: [],
+  };
+}
+
 test("JSON records immutable evidence and one account-shared source-direct row without store identity", async () => {
   const persisted = [];
   const { state, repository } = createJson({
@@ -105,6 +113,56 @@ test("JSON records immutable evidence and one account-shared source-direct row w
     events: state.accountOzonSharedCategoryEvents,
   }).includes("store"), false);
   assert.equal(persisted.length, 1);
+});
+
+test("JSON preload rejects non-contract evidence without leaking extra raw vendor secrets", async () => {
+  const preload = { id: "evidence-preload", ...sourceEvidence(), rawVendorSecret: "token-secret" };
+  const { repository } = createJson({ state: initializedState([preload]) });
+
+  await assert.rejects(repository.readCurrentEvidence({
+    accountId: "account-a",
+    collectItemIds: ["collect-a"],
+  }), (error) => (
+    error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
+      && !String(error?.message).includes("token-secret")
+      && !Object.hasOwn(error, "cause")
+  ));
+  await assert.rejects(repository.recordSourceEvidence(sourceEvidence({
+    sourceVersion: "draft:8",
+    productDraftVersion: 8,
+  })), assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+});
+
+test("JSON preload never executes evidence accessors or proxies and rejects cycles safely", async () => {
+  const fixtures = [];
+
+  const accessor = { id: "accessor", ...sourceEvidence() };
+  Object.defineProperty(accessor, "sourceSku", {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error("getter vendor-secret"); },
+  });
+  fixtures.push(accessor);
+
+  fixtures.push(new Proxy({ id: "proxy", ...sourceEvidence() }, {
+    get() { throw new Error("proxy vendor-secret"); },
+  }));
+
+  const cyclic = { id: "cyclic", ...sourceEvidence() };
+  cyclic.rawVendorCycle = cyclic;
+  fixtures.push(cyclic);
+
+  for (const preload of fixtures) {
+    const { repository } = createJson({ state: initializedState([preload]) });
+    await assert.rejects(repository.readCurrentEvidence({
+      accountId: "account-a",
+      collectItemIds: ["collect-a"],
+    }), (error) => (
+      error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
+        && !String(error?.message).includes("vendor-secret")
+        && !Object.hasOwn(error, "cause")
+    ));
+  }
 });
 
 test("evidence replay is idempotent and a conflicting source version fails closed", async () => {
@@ -261,6 +319,69 @@ test("reads require exact account scope and return immutable projections", async
   }), assertCode("ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID"));
 });
 
+test("JSON and PostgreSQL current evidence use capturedAt DESC then stable id DESC", async () => {
+  const olderHighDraftVersion = {
+    id: "evidence-z-old",
+    ...sourceEvidence({
+      sourceVersion: "draft:99",
+      productDraftVersion: 99,
+      capturedAt: "2026-08-12T01:02:03.000Z",
+    }),
+  };
+  const newestLowDraftVersion = {
+    id: "evidence-a-new",
+    ...sourceEvidence({
+      sourceVersion: "draft:1",
+      productDraftVersion: 1,
+      capturedAt: "2026-08-12T01:02:04.000Z",
+      provenance: {
+        ...sourceEvidence().provenance,
+        capturedAt: "2026-08-12T01:02:04.000Z",
+      },
+    }),
+  };
+  const sameTimeHigherId = {
+    id: "evidence-z-new",
+    ...sourceEvidence({
+      sourceVersion: "draft:2",
+      productDraftVersion: 2,
+      capturedAt: "2026-08-12T01:02:04.000Z",
+      provenance: {
+        ...sourceEvidence().provenance,
+        capturedAt: "2026-08-12T01:02:04.000Z",
+      },
+    }),
+  };
+  const fixtures = [olderHighDraftVersion, newestLowDraftVersion, sameTimeHigherId];
+  const json = createJson({ state: initializedState(fixtures) }).repository;
+  const queries = [];
+  const postgres = createPostgresAccountSharedOzonCategoryRepository({
+    pool: {
+      async query(sql) {
+        queries.push(sql);
+        return { rows: [{
+          id: sameTimeHigherId.id,
+          provenance: { categoryEvidence: sourceEvidence({
+            sourceVersion: sameTimeHigherId.sourceVersion,
+            productDraftVersion: sameTimeHigherId.productDraftVersion,
+            capturedAt: sameTimeHigherId.capturedAt,
+            provenance: sameTimeHigherId.provenance,
+          }) },
+        }] };
+      },
+    },
+  });
+
+  const input = { accountId: "account-a", collectItemIds: ["collect-a"] };
+  const [jsonCurrent, postgresCurrent] = await Promise.all([
+    json.readCurrentEvidence(input),
+    postgres.readCurrentEvidence(input),
+  ]);
+  assert.equal(jsonCurrent[0].id, "evidence-z-new");
+  assert.equal(postgresCurrent[0].id, "evidence-z-new");
+  assert.match(queries[0], /ORDER BY collect_item_id,captured_at DESC,id DESC/iu);
+});
+
 test("manual confirmation appends a new evidence version before activating the shared row", async () => {
   const persisted = [];
   const { state, repository } = createJson({ persist: async (next) => {
@@ -333,6 +454,43 @@ test("all transitions enforce optimistic versions and atomically append safe eve
     transitionedAt: "2026-08-12T02:03:05.000Z",
   }), assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
   assert.deepEqual(state, beforeFailure, "failed persistence cannot expose a row without its event");
+});
+
+test("JSON stale replay cannot reuse an idempotent transition through different evidence", async () => {
+  const { state, repository } = createJson();
+  const first = await repository.recordSourceEvidence(sourceEvidence());
+  const second = await repository.recordSourceEvidence(sourceEvidence({
+    sourceVersion: "draft:8",
+    productDraftVersion: 8,
+    capturedAt: "2026-08-12T01:02:04.000Z",
+    provenance: {
+      ...sourceEvidence().provenance,
+      capturedAt: "2026-08-12T01:02:04.000Z",
+    },
+  }));
+  assert.notEqual(first.evidence.id, second.evidence.id);
+
+  await repository.activateRefreshedCategory({
+    accountId: "account-a",
+    evidenceId: first.evidence.id,
+    expectedVersion: 1,
+    currentDescriptionCategoryId: 17028702,
+    currentTypeId: 94405,
+    taxonomyFingerprint: TAXONOMY_HASH,
+    validatedAt: VALIDATED_AT,
+  });
+
+  await assert.rejects(repository.activateRefreshedCategory({
+    accountId: "account-a",
+    evidenceId: second.evidence.id,
+    expectedVersion: 1,
+    currentDescriptionCategoryId: 17028702,
+    currentTypeId: 94405,
+    taxonomyFingerprint: TAXONOMY_HASH,
+    validatedAt: VALIDATED_AT,
+  }), assertCode("OZON_CATEGORY_SHARED_VERSION_CONFLICT"));
+  assert.equal(state.accountOzonSharedCategories[0].evidenceId, first.evidence.id);
+  assert.equal(state.accountOzonSharedCategoryEvents.length, 2);
 });
 
 test("taxonomy refresh activation and review transitions reject raw or unapproved failure codes", async () => {

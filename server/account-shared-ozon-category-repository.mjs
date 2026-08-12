@@ -14,6 +14,13 @@ const SAFE_FAILURE_CODES = new Set([
   "OZON_TYPE_DUPLICATE",
   "MANUAL_REVIEW_REQUIRED",
 ]);
+const STORED_EVIDENCE_KEYS = Object.freeze([
+  "id", "accountId", "collectItemId", "sourceVersion", "productDraftId",
+  "productDraftVersion", "ozonProductId", "sourceSku", "taxonomyScope",
+  "sourceDescriptionCategoryId", "sourceTypeId", "normalizedPath",
+  "attributeSummary", "provenance", "capturedAt", "rawResponseRef",
+  "rawResponseHash",
+]);
 const HASH = /^[0-9a-f]{64}$/u;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -94,8 +101,26 @@ function deepFreeze(value, seen = new WeakSet()) {
   return Object.freeze(value);
 }
 
+function normalizeStoredEvidence(record) {
+  try {
+    exactObject(record, STORED_EVIDENCE_KEYS);
+    const { id, ...input } = record;
+    return Object.freeze({ id: text(id), ...sourceCategoryEvidence(input) });
+  } catch {
+    throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+  }
+}
+
 function publicEvidence(record) {
-  return deepFreeze(clone(record));
+  return normalizeStoredEvidence(record);
+}
+
+function validateStoredEvidenceRows(state) {
+  if (!Array.isArray(state.collectOzonCategorySourceEvidence)
+    || types.isProxy(state.collectOzonCategorySourceEvidence)) {
+    throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+  }
+  for (const record of state.collectOzonCategorySourceEvidence) normalizeStoredEvidence(record);
 }
 
 function publicShared(record) {
@@ -402,6 +427,7 @@ function transitionInState(working, {
 }) {
   const { shared } = findSharedForEvidence(working, accountId, evidenceId);
   if (shared.version === expectedVersion + 1
+    && shared.evidenceId === evidenceId
     && Object.entries(desired).every(([key, value]) => shared[key] === value)) return shared;
   if (shared.version !== expectedVersion) {
     throw repositoryError("OZON_CATEGORY_SHARED_VERSION_CONFLICT", 409);
@@ -436,6 +462,7 @@ export function createJsonAccountSharedOzonCategoryRepository({
 
   async function write(operation) {
     return enqueueState(state, async () => {
+      if (Array.isArray(state.collectOzonCategorySourceEvidence)) validateStoredEvidenceRows(state);
       const working = normalizeState(clone(state));
       const result = operation(working);
       try {
@@ -491,13 +518,14 @@ export function createJsonAccountSharedOzonCategoryRepository({
     async readCurrentEvidence(input) {
       const { accountId, ids } = readInput(input, "collectItemIds");
       await migrate();
+      validateStoredEvidenceRows(state);
       const current = new Map();
       for (const evidence of state.collectOzonCategorySourceEvidence) {
         if (evidence.accountId !== accountId || !ids.includes(evidence.collectItemId)) continue;
         const previous = current.get(evidence.collectItemId);
-        if (!previous || evidence.productDraftVersion > previous.productDraftVersion
-          || (evidence.productDraftVersion === previous.productDraftVersion
-            && evidence.capturedAt.localeCompare(previous.capturedAt) > 0)) {
+        if (!previous || evidence.capturedAt.localeCompare(previous.capturedAt) > 0
+          || (evidence.capturedAt === previous.capturedAt
+            && evidence.id.localeCompare(previous.id) > 0)) {
           current.set(evidence.collectItemId, evidence);
         }
       }
@@ -509,6 +537,7 @@ export function createJsonAccountSharedOzonCategoryRepository({
     async readSharedForEvidence(input) {
       const { accountId, ids } = readInput(input, "evidenceIds");
       await migrate();
+      validateStoredEvidenceRows(state);
       const signatures = new Set(state.collectOzonCategorySourceEvidence
         .filter((row) => row.accountId === accountId && ids.includes(row.id))
         .map(signature));
