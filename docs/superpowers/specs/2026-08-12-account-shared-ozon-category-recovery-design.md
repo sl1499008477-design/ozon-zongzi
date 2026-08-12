@@ -2,7 +2,9 @@
 
 日期：2026-08-12
 
-状态：业务设计已确认，待书面复审
+状态：业务设计已确认，实施计划已完成
+
+实施计划：`docs/superpowers/plans/2026-08-12-account-shared-ozon-category-recovery.md`
 
 ## 目标
 
