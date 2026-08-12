@@ -246,17 +246,13 @@ test("projects an account-scoped category record as a stable public summary", ()
     accountId: "private-account",
     collectItemId: "collect-public-summary",
     taxonomyScope: "OZON:DEFAULT",
-    status: "MATCHED",
+    status: "ACTIVE",
+    sourceDescriptionCategoryId: 17_033_604,
     sourceTypeId: 94_405,
-    targetDescriptionCategoryId: 17_028_702,
-    targetTypeId: 94_405,
-    displayPath: {
-      zh: ["运动与休闲", "捞鱼网"],
-      ru: ["Спорт и отдых", "Подсачек"],
-      internal: ["must not be public"],
-    },
-    method: "TYPE_ID_EXACT",
-    matchedAt: "2026-08-03T10:00:00.000Z",
+    currentDescriptionCategoryId: 17_028_702,
+    currentTypeId: 94_405,
+    source: "MANUAL",
+    version: 3,
     validatedAt: "2026-08-03T10:00:00.000Z",
     credentialStoreId: "credential-store-private",
     leaseToken: "lease-private",
@@ -269,19 +265,17 @@ test("projects an account-scoped category record as a stable public summary", ()
   };
 
   assert.deepEqual(publicCategoryResolutionSummary(record), {
-    status: "MATCHED",
+    status: "ACTIVE",
     taxonomyScope: "OZON:DEFAULT",
-    targetDescriptionCategoryId: 17_028_702,
-    targetTypeId: 94_405,
-    displayPath: {
-      zh: ["运动与休闲", "捞鱼网"],
-      ru: ["Спорт и отдых", "Подсачек"],
-    },
-    method: "TYPE_ID_EXACT",
-    matchedAt: "2026-08-03T10:00:00.000Z",
+    sourceDescriptionCategoryId: 17_033_604,
+    sourceTypeId: 94_405,
+    currentDescriptionCategoryId: 17_028_702,
+    currentTypeId: 94_405,
+    source: "MANUAL",
+    version: 3,
     validatedAt: "2026-08-03T10:00:00.000Z",
     action: "NONE",
-    message: "类目已匹配",
+    message: "使用采集类目准备上架",
   });
 
   const item = publicCollectionItem({

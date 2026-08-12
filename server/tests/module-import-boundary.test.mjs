@@ -12,9 +12,9 @@ function assertRejected(source, expectedSpecifier) {
 
 test("rejects real static Repository and recursive database imports across syntax forms", () => {
   for (const [source, expectedSpecifier] of [
-    ['import { createRepository } from "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
-    ['import repository from "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
-    ['import "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
+    ['import { createRepository } from "./account-shared-ozon-category-repository.mjs";', "./account-shared-ozon-category-repository.mjs"],
+    ['import repository from "./account-shared-ozon-category-repository.mjs";', "./account-shared-ozon-category-repository.mjs"],
+    ['import "./account-shared-ozon-category-repository.mjs";', "./account-shared-ozon-category-repository.mjs"],
     ['import database from "../db/migrate.mjs";', "../db/migrate.mjs"],
     ['import/* comment */"./db/connection.mjs";', "./db/connection.mjs"],
     ['import { pool } /* binding */ from /* specifier */ "../db/internal/pool.mjs";', "../db/internal/pool.mjs"],
@@ -27,11 +27,7 @@ test("rejects real static Repository and recursive database imports across synta
 test("new shared category Repository is limited to exact approved category importers", () => {
   const source = 'import { createJsonAccountSharedOzonCategoryRepository } from "./account-shared-ozon-category-repository.mjs";';
   for (const modulePath of [
-    "server/collect-category-resolution-runtime.mjs",
-    "server/collect-category-auto-resolution-composition.mjs",
-    "server/collect-category-resolution-service.mjs",
-    "server/collector-ozon-enrichment-service.mjs",
-    "server/account-shared-ozon-category-service.mjs",
+    "server/account-shared-ozon-category-runtime.mjs",
   ]) {
     assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(source, {
       label: modulePath,
@@ -41,7 +37,7 @@ test("new shared category Repository is limited to exact approved category impor
   for (const modulePath of [
     "server/index.mjs",
     "server/account-scoped-collection-routes.mjs",
-    "server/collect-category-resolution-service-helper.mjs",
+    "server/account-shared-ozon-category-service-helper.mjs",
     "server/approved/account-shared-ozon-category-service.mjs",
   ]) {
     assert.throws(
@@ -50,20 +46,6 @@ test("new shared category Repository is limited to exact approved category impor
         && error?.specifier === "./account-shared-ozon-category-repository.mjs",
     );
   }
-});
-
-test("retired named Repository remains forbidden even from new approved importers", () => {
-  assert.throws(
-    () => assertCategoryResolutionPortBoundary(
-      'import repository from "./collect-category-resolution-repository.mjs";',
-      {
-        label: "category runtime",
-        modulePath: "server/collect-category-resolution-runtime.mjs",
-      },
-    ),
-    (error) => error?.code === "CATEGORY_RESOLUTION_MODULE_BOUNDARY"
-      && error?.specifier === "./collect-category-resolution-repository.mjs",
-  );
 });
 
 test("rejects a static import after a string-named binding called from", () => {
@@ -75,7 +57,7 @@ test("rejects a static import after a string-named binding called from", () => {
 
 test("rejects real literal dynamic imports with comments and escaped specifiers", () => {
   for (const [source, expectedSpecifier] of [
-    ['await import("./collect-category-resolution-repository.mjs");', "./collect-category-resolution-repository.mjs"],
+    ['await import("./account-shared-ozon-category-repository.mjs");', "./account-shared-ozon-category-repository.mjs"],
     ['await import(/* comment */ "../db/internal/pool.mjs");', "../db/internal/pool.mjs"],
     ['await import /* before call */ ("./db/connection.mjs");', "./db/connection.mjs"],
     [String.raw`await import("../d\x62/internal/pool.mjs");`, "../db/internal/pool.mjs"],
@@ -87,10 +69,10 @@ test("rejects real literal dynamic imports with comments and escaped specifiers"
 
 test("rejects Repository imports with URL query and fragment suffixes", () => {
   for (const [source, expectedSpecifier] of [
-    ['import repository from "./collect-category-resolution-repository.mjs?source=guard";', "./collect-category-resolution-repository.mjs?source=guard"],
-    ['import "./collect-category-resolution-repository.mjs#fixture";', "./collect-category-resolution-repository.mjs#fixture"],
-    ['await import("./collect-category-resolution-repository.mjs?source=guard");', "./collect-category-resolution-repository.mjs?source=guard"],
-    ['await import("./collect-category-resolution-repository.mjs#fixture");', "./collect-category-resolution-repository.mjs#fixture"],
+    ['import repository from "./account-shared-ozon-category-repository.mjs?source=guard";', "./account-shared-ozon-category-repository.mjs?source=guard"],
+    ['import "./account-shared-ozon-category-repository.mjs#fixture";', "./account-shared-ozon-category-repository.mjs#fixture"],
+    ['await import("./account-shared-ozon-category-repository.mjs?source=guard");', "./account-shared-ozon-category-repository.mjs?source=guard"],
+    ['await import("./account-shared-ozon-category-repository.mjs#fixture");', "./account-shared-ozon-category-repository.mjs#fixture"],
   ]) {
     assertRejected(source, expectedSpecifier);
   }
@@ -109,12 +91,12 @@ test("rejects recursive database imports with URL query and fragment suffixes", 
 
 test("keeps percent-encoded filename characters distinct from URL suffix delimiters", () => {
   for (const source of [
-    'import "./collect-category-resolution-repository.mjs%3Fbypass";',
-    'await import("./collect-category-resolution-repository.mjs%23bypass");',
+    'import "./account-shared-ozon-category-repository.mjs%3Fbypass";',
+    'await import("./account-shared-ozon-category-repository.mjs%23bypass");',
     'import "./safe%3Fname.mjs";',
     'await import("./safe%23name.mjs");',
     'import "./safe.mjs?redirect=./db/connection.mjs";',
-    'await import("./safe.mjs#./collect-category-resolution-repository.mjs");',
+    'await import("./safe.mjs#./account-shared-ozon-category-repository.mjs");',
   ]) {
     assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(source, { label: "fixture" }));
   }

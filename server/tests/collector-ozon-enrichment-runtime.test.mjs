@@ -509,12 +509,14 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
     readJson: async () => ({}),
     sendJson() {},
     now: () => new Date(completedAt),
-    categoryResolutionPort: {
-      async onEnrichmentComplete(input) {
-        assert.equal(persisted.caches.collectBox[0].status, "COMPLETE");
-        categoryCalls.push(structuredClone(input));
-        throw Object.assign(new Error("apiKey=must-not-log"), {
-          code: "CATEGORY_RESOLUTION_SCHEDULE_FAILED",
+    categoryEvidencePort: {
+      async recordCollectionResult(input) {
+        assert.equal(input.state.caches.collectBox[0].status, "COMPLETE");
+        categoryCalls.push({
+          accountId: input.accountId,
+          collectItemId: input.collectItemId,
+          sourceVersion: input.sourceVersion,
+          productDraftVersion: input.productDraftVersion,
         });
       },
     },
@@ -576,10 +578,10 @@ test("JSON runtime merges a linked Seller result and audits only allowlisted evi
   assert.deepEqual(categoryCalls, [{
     accountId: "account-runtime",
     collectItemId: "collect-runtime-merge",
-    completedAt,
+    sourceVersion: "draft:4",
+    productDraftVersion: 4,
   }]);
-  assert.equal(loggerSignals.length, 1);
-  assert.equal(JSON.stringify(loggerSignals).includes("must-not-log"), false);
+  assert.equal(loggerSignals.length, 0);
 });
 
 test("JSON success transaction rechecks the claim after loadState crosses its expiry", async () => {

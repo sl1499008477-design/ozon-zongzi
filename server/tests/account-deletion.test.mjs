@@ -60,7 +60,7 @@ function scopedFixture() {
       requestId: "request-other",
       sku: "4862904234",
     }],
-    collectCategoryResolutions: [{
+    collectOzonCategorySourceEvidence: [{
       id: "resolution-target",
       accountId: "account-target",
       collectItemId: "collect-target",
@@ -135,7 +135,7 @@ test("removeAccountScope removes only the deleted account business scope and kee
   assert.equal(result.deletedCollectorSessionCount, 1);
   assert.equal(result.deletedCollectorOzonEnrichmentCacheCount, 1);
   assert.equal(result.deletedCollectorOzonEnrichmentJobCount, 1);
-  assert.equal(result.deletedCollectCategoryResolutionCount, 1);
+  assert.equal(result.deletedAccountSharedCategoryRecordCounts.collectOzonCategorySourceEvidence, 1);
   assert.deepEqual(state.accounts.map((item) => item.id), ["account-other"]);
   assert.deepEqual(state.stores.map((item) => item.id), ["store-other"]);
   assert.deepEqual(Object.keys(state.sessions), ["other-token"]);
@@ -150,7 +150,7 @@ test("removeAccountScope removes only the deleted account business scope and kee
     ["enrichment-job-other"],
   );
   assert.deepEqual(
-    state.collectCategoryResolutions.map((item) => item.id),
+    state.collectOzonCategorySourceEvidence.map((item) => item.id),
     ["resolution-other"],
   );
   assert.deepEqual(state.caches.products.map((item) => item.id), ["product-other"]);

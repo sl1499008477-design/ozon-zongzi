@@ -2,7 +2,7 @@ import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs
 import {
   TAXONOMY_SCOPE_OZON_DEFAULT,
   taxonomyFingerprint,
-} from "./collect-category-resolution-policy.mjs";
+} from "./ozon-taxonomy-category-policy.mjs";
 
 export const DEFAULT_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 

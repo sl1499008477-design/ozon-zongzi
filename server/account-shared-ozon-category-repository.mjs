@@ -785,10 +785,15 @@ export function createPostgresAccountSharedOzonCategoryRepository({
   pool,
   idFactory = randomUUID,
   now = () => new Date().toISOString(),
+  transactionOwner = "repository",
 } = {}) {
   if (!pool || typeof pool.query !== "function" || typeof idFactory !== "function" || typeof now !== "function") {
     throw invalid();
   }
+  if (!["repository", "caller"].includes(transactionOwner)) throw invalid();
+  const runWrite = (operation) => transactionOwner === "caller"
+    ? operation(pool)
+    : withTransaction(pool, operation);
 
   async function transition(input, kind) {
     const extras = kind === "ACTIVATE" ? [
@@ -808,7 +813,7 @@ export function createPostgresAccountSharedOzonCategoryRepository({
       status: kind === "INVALIDATE" ? "INVALIDATED" : "NEEDS_REVIEW",
       safeFailureCode: safeFailureCode(input.safeFailureCode),
     };
-    return publicShared(await withTransaction(pool, (client) => transitionPostgres(client, {
+    return publicShared(await runWrite((client) => transitionPostgres(client, {
       ...base, desired, transitionedAt,
     })));
   }
@@ -816,7 +821,7 @@ export function createPostgresAccountSharedOzonCategoryRepository({
   return Object.freeze({
     async recordSourceEvidence(input) {
       const evidence = sourceCategoryEvidence(input);
-      const result = await withTransaction(pool, (client) => recordEvidencePostgres(client, evidence, { idFactory }));
+      const result = await runWrite((client) => recordEvidencePostgres(client, evidence, { idFactory }));
       return deepFreeze({ evidence: publicEvidence(result.evidence), shared: publicShared(result.shared) });
     },
 
@@ -879,7 +884,7 @@ export function createPostgresAccountSharedOzonCategoryRepository({
         safeFailureCode: "",
         validatedAt,
       };
-      const result = await withTransaction(pool, async (client) => {
+      const result = await runWrite(async (client) => {
         const recorded = await recordEvidencePostgres(client, evidence, { idFactory });
         return transitionPostgres(client, {
           accountId,

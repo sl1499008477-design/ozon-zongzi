@@ -3,9 +3,7 @@ import test from "node:test";
 import { createJsonAccountScopedCollectionHandler } from "../account-scoped-collection-routes.mjs";
 import {
   assertCollectorScopeFieldsAbsentV4,
-  captureCategoryResolutionStoreSnapshot,
   prepareCollectRequestV4,
-  scheduleCategoryResolutionAfterCollect,
 } from "../collection-pipeline.mjs";
 
 const retiredKeys = [
@@ -103,102 +101,6 @@ test("V4 ingress rejects server-owned taxonomy and resolution fields at every de
       key,
     );
   }
-});
-
-test("post-commit category scheduling sends only backend account/item identity and preserves success on failure", async () => {
-  const inputs = [];
-  const logged = [];
-  const collected = {
-    duplicate: false,
-    requestId: "collect-request-safe",
-    collectItemId: "collect-item-safe",
-    item: { id: "collect-item-safe", accountId: "account-authoritative", status: "COMPLETE" },
-  };
-
-  const result = await scheduleCategoryResolutionAfterCollect({
-    categoryResolutionPort: {
-      async scheduleForCollect(input) {
-        inputs.push(structuredClone(input));
-        throw Object.assign(new Error("apiKey=must-not-log"), {
-          code: "CATEGORY_RESOLUTION_SCHEDULE_FAILED",
-        });
-      },
-    },
-    accountId: "account-authoritative",
-    collected,
-    logger: { error: (...values) => logged.push(values) },
-  });
-
-  assert.equal(result, collected);
-  assert.deepEqual(inputs, [{
-    accountId: "account-authoritative",
-    collectItemId: "collect-item-safe",
-  }]);
-  assert.equal(JSON.stringify(inputs).includes("store"), false);
-  assert.equal(JSON.stringify(logged).includes("must-not-log"), false);
-});
-
-test("post-commit success also survives a category port initialization failure", async () => {
-  const collected = {
-    collectItemId: "collect-item-safe",
-    item: { id: "collect-item-safe" },
-  };
-  const categoryResolutionPort = Object.defineProperty({}, "scheduleForCollect", {
-    get() {
-      throw Object.assign(new Error("credential detail must stay hidden"), {
-        code: "CATEGORY_PORT_INITIALIZATION_FAILED",
-      });
-    },
-  });
-  const logged = [];
-
-  const result = await scheduleCategoryResolutionAfterCollect({
-    categoryResolutionPort,
-    accountId: "account-authoritative",
-    collected,
-    logger: { error: (...values) => logged.push(values) },
-  });
-
-  assert.equal(result, collected);
-  assert.equal(JSON.stringify(logged).includes("credential detail"), false);
-});
-
-test("PostgreSQL-facing acceptance getter failure skips post-commit scheduling without a context reread", async () => {
-  let contextReads = 0;
-  let scheduleCalls = 0;
-  const categoryResolutionPort = Object.defineProperty({
-    async scheduleForCollect() {
-      contextReads += 1;
-      scheduleCalls += 1;
-    },
-  }, "captureCredentialStoreSnapshot", {
-    get() {
-      contextReads += 1;
-      throw Object.assign(new Error("apiKey=must-not-log"), {
-        code: "CATEGORY_PORT_INITIALIZATION_FAILED",
-      });
-    },
-  });
-  const logged = [];
-
-  const snapshot = await captureCategoryResolutionStoreSnapshot({
-    categoryResolutionPort,
-    accountId: "account-authoritative",
-    logger: { error: (...values) => logged.push(values) },
-  });
-  const collected = { collectItemId: "collect-item-safe", item: { id: "collect-item-safe" } };
-  const result = await scheduleCategoryResolutionAfterCollect({
-    categoryResolutionPort,
-    accountId: "account-authoritative",
-    collected,
-    credentialStoreSnapshot: snapshot,
-    logger: { error: (...values) => logged.push(values) },
-  });
-
-  assert.equal(result, collected);
-  assert.equal(contextReads, 1);
-  assert.equal(scheduleCalls, 0);
-  assert.equal(JSON.stringify(logged).includes("must-not-log"), false);
 });
 
 test("V4 ingress rejects credential-shaped keys at nested array and object depth", () => {

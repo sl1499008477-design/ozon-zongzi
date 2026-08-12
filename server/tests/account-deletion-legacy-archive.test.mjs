@@ -114,7 +114,7 @@ await writeFile(dataFile, JSON.stringify({
     requestId: "request-b",
     sku: "shared-sku",
   }],
-  collectCategoryResolutions: [{
+  collectOzonCategorySourceEvidence: [{
     id: "category-resolution-a",
     accountId: "account-a",
     collectItemId: "collect-a",
@@ -245,7 +245,7 @@ test("real JSON account deletion persists no A archive or Collector auth artifac
     ["enrichment-job-b"],
   );
   assert.deepEqual(
-    saved.collectCategoryResolutions.map((record) => record.id),
+    saved.collectOzonCategorySourceEvidence.map((record) => record.id),
     ["category-resolution-b"],
   );
   assert.doesNotMatch(

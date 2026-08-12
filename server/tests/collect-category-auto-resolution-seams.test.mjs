@@ -7,33 +7,18 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const worker = path.join(
-  repositoryRoot,
-  "server/tests/support/collect-category-auto-resolution-seams.worker.mjs",
-);
+const worker = path.join(repositoryRoot, "server/tests/support/collect-category-auto-resolution-seams.worker.mjs");
 const databaseSentinels = Object.freeze({
   DATABASE_URL: "postgresql://database-sentinel.invalid/never-connect",
   POSTGRES_HOST: "postgres-sentinel.invalid",
-  POSTGRES_PORT: "6543",
-  POSTGRES_DB: "sentinel_db",
-  POSTGRES_USER: "sentinel_user",
-  POSTGRES_PASSWORD: "sentinel_password_never_use",
-  POSTGRES_SSL: "true",
-  POSTGRES_STATE_TABLE: "sentinel_state",
-  PG_BOSS_SCHEMA: "sentinel_queue",
-  PG_BOSS_APPLICATION_NAME: "sentinel_worker",
-  PG_BOSS_POOL_SIZE: "99",
+  POSTGRES_PASSWORD: "sentinel-password-never-use",
 });
 
 function runWorker(mode, dataDir) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [worker, mode], {
       cwd: repositoryRoot,
-      env: {
-        ...process.env,
-        ...databaseSentinels,
-        E2E_TEMP_DATA_DIR: dataDir,
-      },
+      env: { ...process.env, ...databaseSentinels, E2E_TEMP_DATA_DIR: dataDir },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -56,68 +41,18 @@ async function assertWorker(t, mode, expected) {
   assert.deepEqual(JSON.parse(child.stdout), expected);
 }
 
-test("current-store HTTP events wake only their handler composition", async (t) => {
-  await assertWorker(t, "store-wake", {
-    firstWakeCount: 1,
-    secondWakeCount: 1,
-    controlledProfileCalls: 2,
-  });
+test("fast collection delegates account-shared evidence inside the injected ingestion transaction", async (t) => {
+  await assertWorker(t, "fast-collect", { status: 200, evidencePortCalls: 1, storeResolverCalls: 0 });
 });
 
-test("PostgreSQL-facing collection capture and scheduling use the injected category runtime", async (t) => {
-  await assertWorker(t, "fast-collect", {
-    status: 200,
-    snapshotCalls: 1,
-    scheduleCalls: 1,
-  });
+test("PATCHing a collection draft cannot create category authority", async (t) => {
+  await assertWorker(t, "fast-patch", { status: 200, draftUpdates: 1, evidencePortCalls: 0 });
 });
 
-test("PostgreSQL-facing manual draft save is delegated inside the draft transaction", async (t) => {
-  await assertWorker(t, "fast-manual", {
-    status: 200,
-    errorCode: null,
-    draftUpdates: 1,
-    draftCommitted: true,
-    canonicalSaves: 1,
-    sharedExecutor: true,
-    responseHasAccountId: false,
-  });
+test("dedicated category confirmation authenticates before reading an ordinary user's body", async (t) => {
+  await assertWorker(t, "confirmation-auth", { status: 403, code: "PERMISSION_FORBIDDEN", bodyReads: 0 });
 });
 
-test("PostgreSQL-facing manual draft save rejects a persisted account mismatch before canonical write", async (t) => {
-  await assertWorker(t, "fast-manual-scope-mismatch", {
-    status: 403,
-    errorCode: "COLLECT_ITEM_ACCOUNT_SCOPE_MISMATCH",
-    draftUpdates: 1,
-    draftCommitted: false,
-    canonicalSaves: 0,
-    sharedExecutor: false,
-    responseHasAccountId: false,
-  });
-});
-
-test("PostgreSQL-facing canonical or audit failure leaves the draft transaction uncommitted", async (t) => {
-  await assertWorker(t, "fast-manual-canonical-failure", {
-    status: 503,
-    errorCode: "CONTROLLED_CANONICAL_FAILURE",
-    draftUpdates: 1,
-    draftCommitted: false,
-    canonicalSaves: 1,
-    sharedExecutor: true,
-    responseHasAccountId: false,
-  });
-});
-
-test("credential updates invalidate the matching category cache before waking reconciliation", async (t) => {
-  await assertWorker(t, "credential-invalidate", {
-    status: 200,
-    events: ["invalidate:account-seam:store-seam-a", "wake:account-seam:store-seam-a"],
-  });
-});
-
-test("production composition overrides are own-property validated and the default path remains usable", async (t) => {
-  await assertWorker(t, "override-validation", {
-    invalidOverrides: 6,
-    defaultHandler: true,
-  });
+test("account-shared composition rejects invalid overrides and exposes no store wake/timer API", async (t) => {
+  await assertWorker(t, "override-validation", { invalidOverrides: 3, hasStoreWake: false, hasTimer: false });
 });

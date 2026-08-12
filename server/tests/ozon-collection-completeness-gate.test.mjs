@@ -58,7 +58,7 @@ function collectInput({ source = "ozon", sourceSku = "ozon-complete-sku", reques
 function jsonHarness(body, {
   failEnqueue = false,
   failSave = false,
-  categoryResolutionPort = null,
+  categoryEvidencePort = null,
   logger = null,
 } = {}) {
   const state = {
@@ -93,7 +93,7 @@ function jsonHarness(body, {
       createJsonCollectorOzonEnrichmentRepository({ state: nextState })
         .completeLinkedJobsFromCollectEvidence(input)
     ),
-    categoryResolutionPort,
+    categoryEvidencePort,
     logger,
     sendJson: (_res, status, data) => { response.status = status; response.body = data; },
     sendError: (_res, status, message, code, details = {}) => {
@@ -390,103 +390,36 @@ test("JSON collection stores public Ozon data with enrichment and one linked pen
   assert.equal(harness.saved, 1);
 });
 
-test("JSON category scheduling runs after collection commit and cannot roll back success", async () => {
-  const scheduleCalls = [];
-  const logged = [];
-  let harness;
-  harness = jsonHarness(collectInput({
-    sourceSku: "category-schedule-after-commit",
-    requestId: "category-schedule-after-commit",
+test("JSON collection records account-shared category evidence in the caller-owned state transaction", async () => {
+  const calls = [];
+  const harness = jsonHarness(collectInput({
+    sourceSku: "category-evidence-atomic",
+    requestId: "category-evidence-atomic",
   }), {
-    categoryResolutionPort: {
-      async captureCredentialStoreSnapshot() {
-        return Object.freeze({});
-      },
-      async scheduleForCollect(input) {
-        const stored = harness.state.caches.collectBox.find((item) => item.id === input.collectItemId);
-        assert.equal(stored?.status, "COMPLETE", "collection must commit before category scheduling");
-        scheduleCalls.push(structuredClone(input));
-        throw Object.assign(new Error("credential secret must stay out of logs"), {
-          code: "CATEGORY_RESOLUTION_SCHEDULE_FAILED",
-        });
+    categoryEvidencePort: {
+      async recordCollectionResult(input) {
+        calls.push(input);
+        assert.equal(input.state.caches.collectBox.length, 1);
+        input.state.collectOzonCategorySourceEvidence = [{
+          accountId: input.accountId,
+          collectItemId: input.collectItemId,
+        }];
       },
     },
-    logger: { error: (...values) => logged.push(values) },
   });
 
   await harness.invoke();
 
   assert.equal(harness.response.status, 200);
   assert.equal(harness.saved, 1);
+  assert.equal(calls.length, 1);
   assert.equal(harness.state.collectRequests[0].status, "SUCCEEDED");
-  assert.deepEqual(scheduleCalls, [{
+  assert.deepEqual(harness.state.collectOzonCategorySourceEvidence, [{
     accountId: "json-account",
     collectItemId: harness.state.caches.collectBox[0].id,
-    credentialStoreSnapshot: {},
   }]);
-  assert.equal(JSON.stringify(harness.response.body).includes("credentialStoreId"), false);
-  assert.equal(JSON.stringify(harness.state.caches.collectBox[0]).includes("credentialStoreId"), false);
-  assert.equal(JSON.stringify(logged).includes("credential secret"), false);
-});
-
-test("JSON collection captures an opaque store snapshot before commit and forwards it after commit", async () => {
-  const acceptedStoreSnapshot = Object.freeze({ opaque: true });
-  const calls = [];
-  const harness = jsonHarness(collectInput({
-    sourceSku: "category-snapshot-before-commit",
-    requestId: "category-snapshot-before-commit",
-  }), {
-    categoryResolutionPort: {
-      async captureCredentialStoreSnapshot(input) {
-        calls.push(["capture", structuredClone(input)]);
-        return acceptedStoreSnapshot;
-      },
-      async scheduleForCollect(input) {
-        calls.push(["schedule", input]);
-      },
-    },
-  });
-
-  await harness.invoke();
-
-  assert.equal(harness.response.status, 200);
-  assert.deepEqual(calls[0], ["capture", { accountId: "json-account" }]);
-  assert.equal(calls[1][0], "schedule");
-  assert.equal(calls[1][1].credentialStoreSnapshot, acceptedStoreSnapshot);
-  assert.equal(JSON.stringify(harness.state).includes("credentialStoreSnapshot"), false);
-  assert.equal(JSON.stringify(harness.response.body).includes("credentialStoreSnapshot"), false);
-});
-
-test("JSON collection skips immediate category scheduling when the capture Port fails before commit", async () => {
-  let currentStore = "store-before-capture-failure";
-  let contextReads = 0;
-  let scheduleCalls = 0;
-  const categoryResolutionPort = {
-    async captureCredentialStoreSnapshot() {
-      contextReads += 1;
-      currentStore = "store-after-capture-failure";
-      throw Object.assign(new Error("sensitive capture failure"), {
-        code: "CATEGORY_CONTEXT_UNAVAILABLE",
-      });
-    },
-    async scheduleForCollect() {
-      scheduleCalls += 1;
-      contextReads += 1;
-      return currentStore;
-    },
-  };
-  const harness = jsonHarness(collectInput({
-    sourceSku: "capture-port-failure",
-    requestId: "capture-port-failure",
-  }), { categoryResolutionPort, logger: { error() {} } });
-
-  await harness.invoke();
-
-  assert.equal(harness.response.status, 200);
-  assert.equal(harness.state.collectRequests[0].status, "SUCCEEDED");
-  assert.equal(currentStore, "store-after-capture-failure");
-  assert.equal(contextReads, 1);
-  assert.equal(scheduleCalls, 0);
+  assert.equal(Object.hasOwn(calls[0], "store"), false);
+  assert.equal(Object.hasOwn(calls[0], "storeId"), false);
 });
 
 test("JSON pending canonical item becomes complete and atomically supersedes its active linked job", async () => {
@@ -1160,12 +1093,13 @@ if (!postgresEnabled()) {
 
       const completed = await ingestCollectRequestV4({
         authenticatedAccount: { id: accountId },
-        categoryResolutionPort: {
-          async captureCredentialStoreSnapshot() {
-            return Object.freeze({});
-          },
-          async scheduleForCollect(input) {
-            categoryScheduleCalls.push(structuredClone(input));
+        categoryEvidencePort: {
+          async recordCollectionResult(input) {
+            categoryScheduleCalls.push({
+              accountId: input.accountId,
+              collectItemId: input.collectItemId,
+              callerOwnedTransaction: typeof input.postgresExecutor?.query === "function",
+            });
           },
         },
         input: collectInput({
@@ -1182,7 +1116,7 @@ if (!postgresEnabled()) {
       assert.deepEqual(categoryScheduleCalls, [{
         accountId,
         collectItemId: first.collectItemId,
-        credentialStoreSnapshot: {},
+        callerOwnedTransaction: true,
       }]);
       assert.deepEqual(completed.enrichment, {
         status: "COMPLETE",

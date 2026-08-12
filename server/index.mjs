@@ -91,7 +91,6 @@ import {
   authenticateCollectionRequest,
   getCollectRequestForAccount,
   ingestCollectRequestV4,
-  captureCategoryResolutionStoreSnapshot,
   assertCollectorScopeFieldsAbsentV4,
   preflightCollectRequestsV4,
 } from "./collection-pipeline.mjs";
@@ -135,9 +134,8 @@ import { withoutCollectorScope } from "./collector-scope-sanitizer.mjs";
 import { getCollectorTaskForAccount } from "./collector-desktop-service.mjs";
 import { collectorAccountChangeReason, collectorParentSessionTokens, createCollectorAuthRuntime } from "./collector-auth-runtime.mjs";
 import {
-  createCollectCategoryAutoResolutionComposition,
-  createOperatingStoreNotifier,
-} from "./collect-category-auto-resolution-composition.mjs";
+  createAccountSharedOzonCategoryComposition,
+} from "./account-shared-ozon-category-composition.mjs";
 import {
   assertOzonListingLogisticsReady,
   assertOzonListingReady,
@@ -394,26 +392,13 @@ function requiredOptionalFunctionOverride(overrides, name) {
   return { [name]: overrides[name] };
 }
 
-export function createServerCollectCategoryAutoResolutionComposition(overrides = {}) {
-  const categoryService = Object.hasOwn(overrides, "categoryService")
-    ? overrides.categoryService
-    : ozonCategoryService;
-  const currentCredentialStoreForAccount = Object.hasOwn(overrides, "currentCredentialStoreForAccount")
-    ? overrides.currentCredentialStoreForAccount
-    : async (accountId) => jsonStateTransaction.run(async () => (
-        currentStoreIdForAccount(await loadState(), accountId)
-      ));
+export function createServerAccountSharedOzonCategoryComposition(overrides = {}) {
   const logger = Object.hasOwn(overrides, "logger") ? overrides.logger : console;
-  const timersOverride = Object.hasOwn(overrides, "timers")
-    ? { timers: overrides.timers }
-    : {};
-  return createCollectCategoryAutoResolutionComposition({
+  return createAccountSharedOzonCategoryComposition({
     loadState,
     saveState,
     persistenceMode,
     stateTransaction: jsonStateTransaction,
-    categoryService,
-    currentCredentialStoreForAccount,
     collectorAuthRuntime,
     authenticateAccount: async (req) => {
       if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
@@ -428,16 +413,15 @@ export function createServerCollectCategoryAutoResolutionComposition(overrides =
     ...requiredOptionalFunctionOverride(overrides, "randomUUID"),
     ...requiredOptionalFunctionOverride(overrides, "sleep"),
     logger,
-    ...timersOverride,
   });
 }
-const defaultCollectCategoryAutoResolutionComposition =
-  createServerCollectCategoryAutoResolutionComposition();
+const defaultAccountSharedOzonCategoryComposition =
+  createServerAccountSharedOzonCategoryComposition();
 const {
-  collectCategoryResolutionRuntime,
+  accountSharedOzonCategoryRuntime,
   collectorOzonEnrichmentRuntime,
   handleJsonAccountScopedCollectionRoute,
-} = defaultCollectCategoryAutoResolutionComposition;
+} = defaultAccountSharedOzonCategoryComposition;
 const ozonSyncService = createOzonSyncService({
   loadState,
   saveState,
@@ -760,7 +744,7 @@ function taxonomyScopeForCollectionItem() {
 async function publicCollectBoxItemsForAccount(
   state,
   account,
-  categoryResolutionReadPort = collectCategoryResolutionRuntime,
+  categoryResolutionReadPort = accountSharedOzonCategoryRuntime,
 ) {
   const items = cacheItemsForAccount(state, "collectBox", account);
   const accountId = String(account?.id || "").trim();
@@ -783,11 +767,11 @@ async function publicCollectBoxItemsForAccount(
     });
   }
   const byCollectItemId = new Map();
-  for (const resolution of Array.isArray(resolutions) ? resolutions : []) {
-    const collectItemId = String(resolution?.collectItemId || "");
+  for (const entry of Array.isArray(resolutions) ? resolutions : []) {
+    const collectItemId = String(entry?.collectItemId || "");
+    const resolution = entry?.categoryResolution;
     if (
-      String(resolution?.accountId || "") !== accountId
-      || requestedScopes.get(collectItemId) !== String(resolution?.taxonomyScope || "")
+      requestedScopes.get(collectItemId) !== String(resolution?.taxonomyScope || "")
       || byCollectItemId.has(collectItemId)
     ) continue;
     byCollectItemId.set(collectItemId, resolution);
@@ -896,10 +880,7 @@ async function saveCollectBoxItemAtomic(item, { account }) {
   return { item: scopedItem, state: latest };
 }
 
-async function updateCollectBoxItemAtomic(id, patch, {
-  account,
-  saveManualFromDraft = null,
-} = {}) {
+async function updateCollectBoxItemAtomic(id, patch, { account } = {}) {
   const latest = await loadState();
   const index = (latest.caches.collectBox || []).findIndex((item) =>
     String(item.id) === String(id) && cacheItemBelongsToAccount(latest, item, account),
@@ -954,21 +935,6 @@ async function updateCollectBoxItemAtomic(id, patch, {
     createdBy: current.createdBy || account.id,
     updatedAt: new Date().toISOString(),
   });
-  const categoryResolution = patch?.listingDraft?.categoryResolution;
-  if (String(categoryResolution?.method || "").trim().toUpperCase() === "MANUAL") {
-    if (typeof saveManualFromDraft !== "function") {
-      throw Object.assign(new Error("人工类目保存服务不可用"), {
-        status: 503,
-        code: "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVE_UNAVAILABLE",
-      });
-    }
-    await saveManualFromDraft({
-      accountId: account.id,
-      collectItemId: String(id),
-      categoryResolution,
-      state: latest,
-    });
-  }
   await saveState(latest);
   await mirrorCollectItemV3(latest.caches.collectBox[index], {
     accountId: account.id,
@@ -2517,16 +2483,15 @@ async function mutateLatestStateWithRetry(mutator, maxAttempts = 4) {
 }
 
 export async function handleFastCollectionRoute(req, res, url, {
-  categoryResolutionPort,
+  categoryEvidencePort,
   pipelineEnabled = listingPipelineEnabled,
   authenticateRequest = collectorAuthRuntime.authenticateRequest,
   authenticateMutationRequest = authenticateCollectionRequest,
-  captureStoreSnapshot = captureCategoryResolutionStoreSnapshot,
   ingestCollectRequest = ingestCollectRequestV4,
   updateCollectItemDraft = updateCollectItemDraftV4,
 } = {}) {
-  if (typeof categoryResolutionPort !== "object" || categoryResolutionPort === null) {
-    throw new TypeError("fast collection category resolution port is required");
+  if (typeof categoryEvidencePort?.recordCollectionResult !== "function") {
+    throw new TypeError("fast collection category evidence port is required");
   }
   if (!pipelineEnabled()) return false;
   const sourceCollectMatch = url.pathname.match(/^\/sources\/([^/]+)\/collect(?:\/batch)?$/);
@@ -2542,14 +2507,6 @@ export async function handleFastCollectionRoute(req, res, url, {
       : collectRequestMatch
         ? await collectorAuthRuntime.authenticateRequest(req, "collector.job.read")
         : await authenticateMutationRequest(req);
-    const credentialStoreSnapshot = sourceCollectMatch && req.method === "POST"
-      ? await captureStoreSnapshot({
-          categoryResolutionPort,
-          accountId: account.id,
-          logger: console,
-        })
-      : null;
-
     if (collectRequestMatch && req.method === "GET") {
       const request = await getCollectRequestForAccount(account.id, decodeURIComponent(collectRequestMatch[1]));
       if (!request) sendError(res, 404, "采集请求不存在", "COLLECT_REQUEST_NOT_FOUND");
@@ -2566,32 +2523,6 @@ export async function handleFastCollectionRoute(req, res, url, {
         accountId: account.id,
         patch: body,
         expectedVersion,
-        beforeCommit: async ({ client, item: updatedItem, accountId: persistedAccountId }) => {
-          const categoryResolution = body?.listingDraft?.categoryResolution;
-          if (String(categoryResolution?.method || "").trim().toUpperCase() !== "MANUAL") return;
-          if (String(persistedAccountId || "") !== String(account.id || "")) {
-            throw Object.assign(new Error("采集箱条目账号范围不一致"), {
-              status: 403,
-              code: "COLLECT_ITEM_ACCOUNT_SCOPE_MISMATCH",
-            });
-          }
-          if (typeof categoryResolutionPort.saveManualFromDraft !== "function") {
-            throw Object.assign(new Error("人工类目保存服务不可用"), {
-              status: 503,
-              code: "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVE_UNAVAILABLE",
-            });
-          }
-          await categoryResolutionPort.saveManualFromDraft({
-            accountId: account.id,
-            collectItemId: decodeURIComponent(collectItemMatch[1]),
-            categoryResolution,
-            postgresExecutor: client,
-            collectItem: {
-              ...updatedItem,
-              accountId: persistedAccountId,
-            },
-          });
-        },
       });
       if (!item) sendError(res, 404, "采集箱条目不存在");
       else sendJson(res, 200, item);
@@ -2635,8 +2566,7 @@ export async function handleFastCollectionRoute(req, res, url, {
           const result = await ingestCollectRequest({
             authenticatedAccount: account,
             input: { ...input, source: input.source || sourceId },
-            categoryResolutionPort,
-            credentialStoreSnapshot,
+            categoryEvidencePort,
             logger: console,
           });
           const importedItem = { ...result.item, collectRequestId: result.requestId, duplicate: result.duplicate };
@@ -2690,21 +2620,17 @@ const handleCollectorHttpRoute = createCollectorHttpHandler({
 });
 
 export function createHttpHandler({
-  composition = defaultCollectCategoryAutoResolutionComposition,
-  categoryResolutionReadPort = composition?.collectCategoryResolutionRuntime,
+  composition = defaultAccountSharedOzonCategoryComposition,
+  categoryResolutionReadPort = composition?.accountSharedOzonCategoryRuntime,
 } = {}) {
   if (
     typeof composition?.collectorOzonEnrichmentRuntime?.handleHttpRoute !== "function"
     || typeof composition?.handleJsonAccountScopedCollectionRoute !== "function"
-    || typeof composition?.collectCategoryResolutionRuntime?.onOperatingStoreAvailable !== "function"
+    || typeof composition?.handleCategoryConfirmationRoute !== "function"
     || typeof categoryResolutionReadPort?.readForItems !== "function"
   ) {
     throw new TypeError("server category auto-resolution HTTP composition is required");
   }
-  const notifyOperatingStoreAvailable = createOperatingStoreNotifier(
-    composition.collectCategoryResolutionRuntime,
-    composition.categoryService,
-  );
   return async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (handleRemovedDataCollectionStoreRoute(req, res, url, { sendJson })) return;
@@ -2715,6 +2641,7 @@ export function createHttpHandler({
 
   if (handleRetiredExtensionSyncRoute(req, res, url, { sendJson })) return;
   if (await collectorAuthRuntime.handleHttpRoute(req, res, url)) return;
+  if (await composition.handleCategoryConfirmationRoute(req, res, url)) return;
   if (await composition.collectorOzonEnrichmentRuntime.handleHttpRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleReviewAssetRoute(req, res, url)) return;
   if (await autoListingWebRuntime.handleItemRoute(req, res, url)) return;
@@ -2733,7 +2660,7 @@ export function createHttpHandler({
   })) return;
   if (await handleCollectorHttpRoute(req, res)) return;
   if (await handleFastCollectionRoute(req, res, url, {
-    categoryResolutionPort: composition.collectCategoryResolutionRuntime,
+    categoryEvidencePort: composition.accountSharedOzonCategoryRuntime,
   })) return;
   return jsonStateTransaction.run(async () => {
   const state = await loadState();
@@ -3180,11 +3107,6 @@ export function createHttpHandler({
       },
     });
     await saveState(state);
-    await notifyOperatingStoreAvailable({
-      accountId: account.id,
-      storeId: store.id,
-      invalidateCategoryCache: true,
-    });
     sendJson(res, 200, { ok: true, token: state.token, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -3230,7 +3152,6 @@ export function createHttpHandler({
       store.updatedAt = new Date().toISOString();
     }
     await saveState(state);
-    await notifyOperatingStoreAvailable({ accountId: account.id, storeId: store.id });
     sendJson(res, 200, { ok: true, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -3278,13 +3199,6 @@ export function createHttpHandler({
     }
     store.updatedAt = new Date().toISOString();
     await saveState(state);
-    if (nextApiKey) {
-      await notifyOperatingStoreAvailable({
-        accountId: account.id,
-        storeId: store.id,
-        invalidateCategoryCache: true,
-      });
-    }
     sendJson(res, 200, { ok: true, store: publicStore(store, state), state: localStatePayload(state) });
     return;
   }
@@ -4403,10 +4317,7 @@ export function createHttpHandler({
     const account = requireAuth(req, state);
     const id = decodeURIComponent(collectItemMatch[1]);
     const body = await readBody(req);
-    const item = await updateCollectBoxItemAtomic(id, body, {
-      account,
-      saveManualFromDraft: composition.collectCategoryResolutionRuntime.saveManualFromDraft,
-    });
+    const item = await updateCollectBoxItemAtomic(id, body, { account });
     if (!item) {
       sendError(res, 404, "采集箱条目不存在");
       return;
@@ -5194,10 +5105,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-let stopCollectCategoryResolutionWorker = () => {};
 server.once("close", () => {
-  stopCollectCategoryResolutionWorker();
-  collectCategoryResolutionRuntime.stop();
   void autoListingWebRuntime.stopWorkers();
 });
 
@@ -5209,6 +5117,5 @@ if (process.env.QH_LOCAL_NO_LISTEN !== "1") {
     void autoListingWebRuntime.startWorkers().catch(() => {
       console.error("[auto-listing] user workflow workers failed to start");
     });
-    stopCollectCategoryResolutionWorker = collectCategoryResolutionRuntime.start();
   });
 }

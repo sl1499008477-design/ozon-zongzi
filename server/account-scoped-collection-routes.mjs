@@ -1,8 +1,6 @@
 import {
   assertCollectorScopeFieldsAbsentV4,
-  captureCategoryResolutionStoreSnapshot,
   preflightCollectRequestsV4,
-  scheduleCategoryResolutionAfterCollect,
 } from "./collection-pipeline.mjs";
 import {
   buildOzonEnrichmentSummary,
@@ -28,7 +26,7 @@ export function createJsonAccountScopedCollectionHandler({
   sendJson,
   sendError,
   countAccountItems,
-  categoryResolutionPort = null,
+  categoryEvidencePort = null,
   logger = null,
   now = () => new Date(),
 } = {}) {
@@ -70,11 +68,6 @@ export function createJsonAccountScopedCollectionHandler({
       }
 
       const account = await authenticate(req, "collector.upload");
-      const credentialStoreSnapshot = await captureCategoryResolutionStoreSnapshot({
-        categoryResolutionPort,
-        accountId: account.id,
-        logger,
-      });
       const pathSource = decodeURIComponent(sourceMatch[1]);
       const body = await readJson(req);
       const processedAt = new Date(now());
@@ -225,6 +218,21 @@ export function createJsonAccountScopedCollectionHandler({
               now: processedAt,
             });
           }
+          if (prepared.identity.source === "ozon" && categoryEvidencePort) {
+            const draftVersion = Math.max(1, Number(item.draftVersion || 1));
+            await categoryEvidencePort.recordCollectionResult({
+              state: workingState,
+              accountId: account.id,
+              collectItemId: item.id,
+              item,
+              productDraftId: `draft:${item.id}`,
+              productDraftVersion: draftVersion,
+              sourceVersion: `draft:${draftVersion}`,
+              capturedAt: prepared.normalizedItem.capturedAt || processedAt.toISOString(),
+              rawResponseRef: `collect-request:${prepared.persistedRequestId}`,
+              rawResponseHash: prepared.contentHash,
+            });
+          }
           const response = {
             item,
             collectItemId: item.id,
@@ -279,18 +287,6 @@ export function createJsonAccountScopedCollectionHandler({
               ...(imported[0]?.enrichment ? { enrichment: imported[0].enrichment } : {}),
             };
       });
-      const collectedItems = isBatch
-        ? (Array.isArray(responseBody.data) ? responseBody.data : [])
-        : responseBody.data ? [responseBody.data] : [];
-      for (const item of collectedItems) {
-        await scheduleCategoryResolutionAfterCollect({
-          categoryResolutionPort,
-          accountId: account.id,
-          collected: { collectItemId: item.id, item },
-          credentialStoreSnapshot,
-          logger,
-        });
-      }
       sendJson(res, 200, responseBody);
     } catch (error) {
       sendError(

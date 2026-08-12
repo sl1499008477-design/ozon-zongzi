@@ -38,7 +38,7 @@ export function createCollectorOzonEnrichmentRuntime({
   randomUUID,
   sleep,
   logger = console,
-  categoryResolutionPort = null,
+  categoryEvidencePort = null,
 } = {}) {
   if (
     typeof loadState !== "function"
@@ -192,7 +192,7 @@ export function createCollectorOzonEnrichmentRuntime({
     });
   }
 
-  async function completeCollectItem({ completion, ...input } = {}) {
+  async function completeCollectItem({ completion, categoryEvidence = null, ...input } = {}) {
     const terminalCompletion = () => {
       const completedAt = typeof now === "function" ? new Date(now()) : new Date();
       if (Number.isNaN(completedAt.getTime())) throw new TypeError("Ozon enrichment completion time required");
@@ -207,6 +207,23 @@ export function createCollectorOzonEnrichmentRuntime({
             transactionOwner: "caller",
           });
           await terminalRepository.completeJobAndCache(terminalCompletion());
+          if (categoryEvidencePort && categoryEvidence) {
+            await categoryEvidencePort.recordCollectionResult({
+              postgresExecutor: client,
+              accountId: input.accountId,
+              collectItemId: input.collectItemId,
+              item: {
+                ...categoryEvidence.result,
+                listingDraft: input.listingDraft,
+                sourceSku: categoryEvidence.result?.sku,
+              },
+              productDraftVersion: Number(input.expectedVersion || 0) + 1,
+              sourceVersion: `draft:${Number(input.expectedVersion || 0) + 1}`,
+              capturedAt: new Date(categoryEvidence.completedAt).toISOString(),
+              rawResponseHash: completion.responseHash,
+              rawResponseRef: `collector_ozon_enrichment_cache:${categoryEvidence.result?.source}:${categoryEvidence.result?.sku}:${categoryEvidence.result?.contractVersion}`,
+            });
+          }
         },
       });
     }
@@ -229,6 +246,24 @@ export function createCollectorOzonEnrichmentRuntime({
       item.updatedAt = persistedCompletion.now.toISOString();
       const terminalRepository = createJsonCollectorOzonEnrichmentRepository({ state });
       await terminalRepository.completeJobAndCache(persistedCompletion);
+      if (categoryEvidencePort && categoryEvidence) {
+        await categoryEvidencePort.recordCollectionResult({
+          state,
+          accountId: input.accountId,
+          collectItemId: input.collectItemId,
+          item: {
+            ...categoryEvidence.result,
+            listingDraft: input.listingDraft,
+            sourceSku: categoryEvidence.result?.sku,
+          },
+          productDraftId: `draft:${input.collectItemId}`,
+          productDraftVersion: currentVersion + 1,
+          sourceVersion: `draft:${currentVersion + 1}`,
+          capturedAt: new Date(categoryEvidence.completedAt).toISOString(),
+          rawResponseHash: completion.responseHash,
+          rawResponseRef: `collector_ozon_enrichment_cache:${categoryEvidence.result?.source}:${categoryEvidence.result?.sku}:${categoryEvidence.result?.contractVersion}`,
+        });
+      }
       await saveState(state);
       return structuredClone(item);
     });
@@ -479,11 +514,7 @@ export function createCollectorOzonEnrichmentRuntime({
       "collector Ozon enrichment audit persistence failed",
       event,
     ),
-    categoryResolutionPort,
-    onCategoryResolutionError: (event) => logger?.error?.(
-      "collector Ozon category resolution scheduling failed",
-      event,
-    ),
+    categoryEvidencePort,
   });
   const handleHttpRoute = createCollectorOzonEnrichmentHttpHandler({
     authenticate,

@@ -108,15 +108,23 @@ export function removeAccountScope(
   const collectorOzonEnrichmentJobs = Array.isArray(state.collectorOzonEnrichmentJobs)
     ? state.collectorOzonEnrichmentJobs
     : [];
-  const collectCategoryResolutions = Array.isArray(state.collectCategoryResolutions)
-    ? state.collectCategoryResolutions
-    : [];
+  const categoryAccountArrays = [
+    "collectOzonCategorySourceEvidence",
+    "accountOzonSharedCategories",
+    "accountOzonSharedCategoryEvents",
+    "accountOzonCategoryConfirmations",
+  ];
   const retainedCollectorOzonEnrichmentCache = collectorOzonEnrichmentCache
     .filter((record) => normalized(record?.accountId) !== accountId);
   const retainedCollectorOzonEnrichmentJobs = collectorOzonEnrichmentJobs
     .filter((record) => normalized(record?.accountId) !== accountId);
-  const retainedCollectCategoryResolutions = collectCategoryResolutions
-    .filter((record) => normalized(record?.accountId) !== accountId);
+  const deletedCategoryRecordCounts = {};
+  for (const key of categoryAccountArrays) {
+    const records = Array.isArray(state[key]) ? state[key] : [];
+    const retained = records.filter((record) => normalized(record?.accountId) !== accountId);
+    deletedCategoryRecordCounts[key] = records.length - retained.length;
+    state[key] = retained;
+  }
 
   state.accounts = accounts.filter((account) => normalized(account?.id) !== accountId);
   state.stores = stores.filter((store) => !storeIds.has(normalized(store?.id)));
@@ -125,7 +133,6 @@ export function removeAccountScope(
   state.collectorSessions = retainedCollectorSessions;
   state.collectorOzonEnrichmentCache = retainedCollectorOzonEnrichmentCache;
   state.collectorOzonEnrichmentJobs = retainedCollectorOzonEnrichmentJobs;
-  state.collectCategoryResolutions = retainedCollectCategoryResolutions;
   state.hashes = filterMap(state.hashes, accountId, storeIds);
   state.leases = filterMap(state.leases, accountId, storeIds);
   state.browserAgents = filterMap(state.browserAgents, accountId, storeIds);
@@ -173,7 +180,6 @@ export function removeAccountScope(
       collectorOzonEnrichmentCache.length - retainedCollectorOzonEnrichmentCache.length,
     deletedCollectorOzonEnrichmentJobCount:
       collectorOzonEnrichmentJobs.length - retainedCollectorOzonEnrichmentJobs.length,
-    deletedCollectCategoryResolutionCount:
-      collectCategoryResolutions.length - retainedCollectCategoryResolutions.length,
+    deletedAccountSharedCategoryRecordCounts: deletedCategoryRecordCounts,
   };
 }

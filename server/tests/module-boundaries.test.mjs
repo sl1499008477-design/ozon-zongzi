@@ -28,7 +28,7 @@ const [
   readFile(new URL("../collector-ozon-enrichment-service.mjs", import.meta.url), "utf8"),
   readFile(new URL("../collector-ozon-enrichment-routes.mjs", import.meta.url), "utf8"),
   readFile(new URL("../collector-ozon-enrichment-runtime.mjs", import.meta.url), "utf8"),
-  readFile(new URL("../collect-category-resolution-runtime.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../account-shared-ozon-category-runtime.mjs", import.meta.url), "utf8"),
   readFile(new URL("../account-scoped-collection-routes.mjs", import.meta.url), "utf8"),
   readFile(new URL("../auto-listing-routes.mjs", import.meta.url), "utf8"),
   readFile(new URL("../auto-listing-runtime.mjs", import.meta.url), "utf8"),
@@ -41,11 +41,7 @@ assert.doesNotMatch(
   "account-shared category persistence cannot carry store identity, credentials, or network access",
 );
 for (const modulePath of [
-  "server/collect-category-resolution-runtime.mjs",
-  "server/collect-category-auto-resolution-composition.mjs",
-  "server/collect-category-resolution-service.mjs",
-  "server/collector-ozon-enrichment-service.mjs",
-  "server/account-shared-ozon-category-service.mjs",
+  "server/account-shared-ozon-category-runtime.mjs",
 ]) {
   assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(
     'import repository from "./account-shared-ozon-category-repository.mjs";',
@@ -168,13 +164,13 @@ assert.match(
 );
 assert.match(
   categoryResolutionRuntime,
-  /createJsonCollectCategoryResolutionRepository/,
-  "category resolution runtime must own JSON repository selection",
+  /createJsonAccountSharedOzonCategoryRepository/,
+  "account-shared category runtime must own JSON repository selection",
 );
 assert.match(
   categoryResolutionRuntime,
-  /createPostgresCollectCategoryResolutionRepository/,
-  "category resolution runtime must own PostgreSQL repository selection",
+  /createPostgresAccountSharedOzonCategoryRepository/,
+  "account-shared category runtime must own PostgreSQL repository selection",
 );
 assert.doesNotMatch(
   accountScopedCollectionRoutes,
@@ -193,10 +189,10 @@ for (const [source, label] of [
   assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(source, { label }));
 }
 for (const [name, source, expectedSpecifier] of [
-  ["named Repository", 'import { createRepository } from "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
-  ["default Repository", 'import repository from "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
-  ["side-effect Repository", 'import "./collect-category-resolution-repository.mjs";', "./collect-category-resolution-repository.mjs"],
-  ["dynamic Repository", 'await import("./collect-category-resolution-repository.mjs");', "./collect-category-resolution-repository.mjs"],
+  ["named Repository", 'import { createRepository } from "./account-shared-ozon-category-repository.mjs";', "./account-shared-ozon-category-repository.mjs"],
+  ["default Repository", 'import repository from "./account-shared-ozon-category-repository.mjs";', "./account-shared-ozon-category-repository.mjs"],
+  ["side-effect Repository", 'import "./account-shared-ozon-category-repository.mjs";', "./account-shared-ozon-category-repository.mjs"],
+  ["dynamic Repository", 'await import("./account-shared-ozon-category-repository.mjs");', "./account-shared-ozon-category-repository.mjs"],
   ["named database", 'import { getPool } from "./db/connection.mjs";', "./db/connection.mjs"],
   ["default database", 'import database from "../db/migrate.mjs";', "../db/migrate.mjs"],
   ["side-effect database", 'import "./db/bootstrap.mjs";', "./db/bootstrap.mjs"],
@@ -219,13 +215,9 @@ const fastCollectionRouteIndex = serverEntry.indexOf(
 );
 const broadJsonTransactionIndex = serverEntry.indexOf("return jsonStateTransaction.run(async () =>", enrichmentRouteIndex);
 const fastCollectionHandlerIndex = serverEntry.indexOf("async function handleFastCollectionRoute(");
-const fastStoreSnapshotIndex = serverEntry.indexOf(
-  "const credentialStoreSnapshot = sourceCollectMatch",
-  fastCollectionHandlerIndex,
-);
 const fastCollectionBodyIndex = serverEntry.indexOf(
   "const body = await readBody(req);",
-  fastStoreSnapshotIndex,
+  fastCollectionHandlerIndex,
 );
 assert.ok(
   collectorAuthRouteIndex >= 0
@@ -239,9 +231,10 @@ assert.ok(
   "auto-listing route must dispatch before the broad JSON state transaction",
 );
 assert.ok(
-  fastStoreSnapshotIndex > fastCollectionHandlerIndex
-    && fastCollectionBodyIndex > fastStoreSnapshotIndex,
-  "fast PostgreSQL collection ingress must freeze its server-owned store before reading the body",
+  fastCollectionBodyIndex > fastCollectionHandlerIndex
+    && !serverEntry.includes("credentialStoreSnapshot")
+    && !serverEntry.includes("captureCategoryResolutionStoreSnapshot"),
+  "fast PostgreSQL collection ingress must not retain per-store category resolver snapshots",
 );
 
 for (const functionName of [

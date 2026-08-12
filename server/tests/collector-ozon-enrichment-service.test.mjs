@@ -374,8 +374,7 @@ function harness({
   start = START,
   collectItems,
   assertListingReady,
-  categoryResolutionPort,
-  onCategoryResolutionError,
+  categoryEvidencePort,
 } = {}) {
   const clock = { value: start };
   const sessions = [
@@ -398,8 +397,7 @@ function harness({
     audit: async (event) => audits.push(event),
     ...(collectItems ? { collectItems } : {}),
     ...(assertListingReady ? { assertListingReady } : {}),
-    ...(categoryResolutionPort ? { categoryResolutionPort } : {}),
-    ...(onCategoryResolutionError ? { onCategoryResolutionError } : {}),
+    ...(categoryEvidencePort ? { categoryEvidencePort } : {}),
   });
   return { audits, clock, repository: fake, service };
 }
@@ -1570,7 +1568,7 @@ test("linked completion fills blank logistics without replacing target category"
   assert.equal(JSON.stringify(h.audits.at(-1)).includes("cookie"), false);
 });
 
-test("linked completion notifies category resolution only after commit and isolates callback failure", async () => {
+test("linked completion carries source evidence into the atomic collect-item commit", async () => {
   const completedAt = "2026-08-01T08:00:01.000Z";
   const collectItem = {
     id: "collect-linked-category-hook",
@@ -1582,26 +1580,16 @@ test("linked completion notifies category resolution only after commit and isola
     },
     enrichment: { status: "PENDING_ENRICHMENT" },
   };
-  let committed = false;
   let terminalRepository;
-  const hookCalls = [];
-  const safeErrors = [];
+  const evidenceInputs = [];
   const h = harness({
     start: Date.parse(completedAt),
-    categoryResolutionPort: {
-      async onEnrichmentComplete(input) {
-        assert.equal(committed, true, "category scheduling must follow the durable item commit");
-        hookCalls.push(clone(input));
-        throw Object.assign(new Error("secret callback detail"), {
-          code: "CATEGORY_SCHEDULE_UNAVAILABLE",
-        });
-      },
-    },
-    onCategoryResolutionError: async (event) => safeErrors.push(clone(event)),
+    categoryEvidencePort: { async recordCollectionResult() { throw new Error("runtime owns persistence"); } },
     collectItems: {
       async read() { return clone(collectItem); },
       async save() { throw new Error("complete port owns the atomic save"); },
       async complete(input) {
+        evidenceInputs.push(clone(input.categoryEvidence));
         Object.assign(collectItem, {
           draftVersion: collectItem.draftVersion + 1,
           listingDraft: clone(input.listingDraft),
@@ -1612,7 +1600,6 @@ test("linked completion notifies category resolution only after commit and isola
           ...input.completion,
           now: new Date(completedAt),
         });
-        committed = true;
         return clone(collectItem);
       },
       async fail() { throw new Error("unused"); },
@@ -1644,17 +1631,10 @@ test("linked completion notifies category resolution only after commit and isola
   assert.equal(result.status, "COMPLETE");
   assert.equal(collectItem.status, "COMPLETE");
   assert.equal(collectItem.listingDraft.sourceCategory.typeIdCandidate, 456);
-  assert.deepEqual(hookCalls, [{
-    accountId: "account-a",
-    collectItemId: collectItem.id,
-    completedAt: new Date(completedAt),
-  }]);
-  assert.deepEqual(safeErrors, [{
-    accountId: "account-a",
-    collectItemId: collectItem.id,
-    code: "CATEGORY_SCHEDULE_UNAVAILABLE",
-  }]);
-  assert.equal(JSON.stringify(safeErrors).includes("secret callback detail"), false);
+  assert.equal(evidenceInputs.length, 1);
+  assert.equal(evidenceInputs[0].result.sourceCategory.descriptionCategoryId, 17_000_001);
+  assert.equal(evidenceInputs[0].result.sourceCategory.typeIdCandidate, 456);
+  assert.equal(new Date(evidenceInputs[0].completedAt).toISOString(), completedAt);
   assert.equal(h.repository.jobs[0].status, "SUCCESS");
 });
 

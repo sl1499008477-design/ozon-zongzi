@@ -410,21 +410,19 @@ try {
   const persistedTarget = persistedAfterManualSave.caches.collectBox
     .find((row) => row.id === sourceOnlyCollectId).listingDraft.categoryResolution;
   assert.equal(persistedTarget.target.storeId, storeId);
-  const canonicalManual = persistedAfterManualSave.collectCategoryResolutions
-    .find((row) => row.accountId === "acct_submit_test"
-      && row.collectItemId === sourceOnlyCollectId
-      && row.taxonomyScope === "OZON:DEFAULT");
-  assert.equal(canonicalManual.status, "MATCHED");
-  assert.equal(canonicalManual.method, "MANUAL");
-  assert.equal(canonicalManual.targetDescriptionCategoryId, 17028941);
-  assert.equal(canonicalManual.targetTypeId, 91670);
-  assert.equal(canonicalManual.credentialStoreId, storeId);
+  assert.equal(
+    (persistedAfterManualSave.accountOzonSharedCategories || [])
+      .some((row) => row.source === "MANUAL"),
+    false,
+    "PATCH cannot create account-shared manual category authority",
+  );
+  assert.deepEqual(persistedAfterManualSave.accountOzonCategoryConfirmations || [], []);
   assert.equal(
     persistedAfterManualSave.auditEvents.some((event) =>
       event.action === "COLLECT_CATEGORY_RESOLUTION_MANUAL_SAVED"
       && event.accountId === "acct_submit_test"
       && event.entityId === sourceOnlyCollectId),
-    true,
+    false,
   );
 
   const publicStateAfterManualSave = await requestJson(
@@ -437,9 +435,7 @@ try {
   );
   const publicManual = publicStateAfterManualSave.body.caches.collectBox
     .find((row) => row.id === sourceOnlyCollectId).categoryResolution;
-  assert.equal(publicManual.method, "MANUAL");
-  assert.equal(publicManual.targetDescriptionCategoryId, 17028941);
-  assert.equal(publicManual.targetTypeId, 91670);
+  assert.notEqual(publicManual?.source, "MANUAL");
 
   const ineligibleWarehouseCases = [
     { warehouseId: fboWarehouseId, reason: "UNSUPPORTED_FULFILLMENT_TYPE" },

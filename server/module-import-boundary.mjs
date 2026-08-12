@@ -34,19 +34,12 @@ function importSpecifiers(source) {
 }
 
 const ACCOUNT_SHARED_CATEGORY_REPOSITORY_IMPORTERS = new Set([
-  "server/collect-category-resolution-runtime.mjs",
-  "server/collect-category-auto-resolution-composition.mjs",
-  "server/collect-category-resolution-service.mjs",
-  "server/collector-ozon-enrichment-service.mjs",
-  "server/account-shared-ozon-category-service.mjs",
+  "server/account-shared-ozon-category-runtime.mjs",
 ]);
 
 function categoryResolutionImportDisposition(specifier) {
   const suffixIndex = specifier.search(/[?#]/);
   const modulePath = suffixIndex === -1 ? specifier : specifier.slice(0, suffixIndex);
-  if (/(?:^|\/)collect-category-resolution-repository\.mjs$/i.test(modulePath)) {
-    return "RETIRED_REPOSITORY";
-  }
   if (/(?:^|\/)account-shared-ozon-category-repository\.mjs$/i.test(modulePath)) {
     return "ACCOUNT_SHARED_REPOSITORY";
   }

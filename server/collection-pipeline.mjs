@@ -20,7 +20,6 @@ import {
 } from "./collect-item-identity-policy.mjs";
 
 let ready = false;
-const SKIP_IMMEDIATE_CATEGORY_RESOLUTION = Object.freeze({});
 
 async function poolReady() {
   const pool = await getPostgresPool();
@@ -74,75 +73,6 @@ function canonicalJson(value) {
 
 function collectorError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
-}
-
-function stableCategoryScheduleErrorCode(error) {
-  const code = String(error?.code || "").trim().toUpperCase();
-  return /^[A-Z][A-Z0-9_]{0,119}$/.test(code)
-    ? code
-    : "CATEGORY_RESOLUTION_SCHEDULE_FAILED";
-}
-
-export async function scheduleCategoryResolutionAfterCollect({
-  categoryResolutionPort = null,
-  accountId,
-  collected,
-  credentialStoreSnapshot = null,
-  logger = null,
-} = {}) {
-  if (credentialStoreSnapshot === SKIP_IMMEDIATE_CATEGORY_RESOLUTION) return collected;
-  let scopedAccountId = "";
-  let collectItemId = "";
-  try {
-    const scheduleForCollect = categoryResolutionPort?.scheduleForCollect;
-    if (typeof scheduleForCollect !== "function") return collected;
-    scopedAccountId = clean(accountId, 240);
-    collectItemId = clean(collected?.collectItemId || collected?.item?.id, 240);
-    if (!scopedAccountId || !collectItemId) return collected;
-    await scheduleForCollect.call(categoryResolutionPort, {
-      accountId: scopedAccountId,
-      collectItemId,
-      ...(credentialStoreSnapshot ? { credentialStoreSnapshot } : {}),
-    });
-  } catch (error) {
-    try {
-      logger?.error?.("collect category scheduling failed", {
-        accountId: scopedAccountId,
-        collectItemId,
-        code: stableCategoryScheduleErrorCode(error),
-      });
-    } catch {
-      // A secondary logger cannot reverse a successfully committed collection.
-    }
-  }
-  return collected;
-}
-
-export async function captureCategoryResolutionStoreSnapshot({
-  categoryResolutionPort = null,
-  accountId,
-  logger = null,
-} = {}) {
-  const scopedAccountId = clean(accountId, 240);
-  if (!scopedAccountId) return null;
-  try {
-    const capture = categoryResolutionPort?.captureCredentialStoreSnapshot;
-    if (typeof capture !== "function") return SKIP_IMMEDIATE_CATEGORY_RESOLUTION;
-    const snapshot = await capture.call(categoryResolutionPort, { accountId: scopedAccountId });
-    return snapshot && typeof snapshot === "object"
-      ? snapshot
-      : SKIP_IMMEDIATE_CATEGORY_RESOLUTION;
-  } catch (error) {
-    try {
-      logger?.error?.("collect category store snapshot failed", {
-        accountId: scopedAccountId,
-        code: stableCategoryScheduleErrorCode(error),
-      });
-    } catch {
-      // A secondary logger cannot reverse an accepted collection request.
-    }
-    return SKIP_IMMEDIATE_CATEGORY_RESOLUTION;
-  }
 }
 
 function rejectCollectorScopeFields(input = {}) {
@@ -352,13 +282,6 @@ export async function ingestCollectRequestV4(options = {}) {
   if (!postgresEnabled()) return null;
   const usingAccountScopedContract = Boolean(options.authenticatedAccount || options.input);
   const authenticatedAccount = options.authenticatedAccount || { id: options.accountId };
-  const credentialStoreSnapshot = Object.hasOwn(options, "credentialStoreSnapshot")
-    ? options.credentialStoreSnapshot
-    : await captureCategoryResolutionStoreSnapshot({
-        categoryResolutionPort: options.categoryResolutionPort,
-        accountId: authenticatedAccount.id,
-        logger: options.logger,
-      });
   const legacyItem = options.item && typeof options.item === "object" ? options.item : {};
   const input = usingAccountScopedContract
     ? (options.input && typeof options.input === "object" ? options.input : {})
@@ -526,6 +449,21 @@ export async function ingestCollectRequestV4(options = {}) {
         captureRaw: true,
         changeReason: "PREPROCESSED",
       });
+      if (sourceId === "ozon" && options.categoryEvidencePort) {
+        const draftVersion = Math.max(1, Number(mirrored?.version || 1));
+        await options.categoryEvidencePort.recordCollectionResult({
+          postgresExecutor: client,
+          accountId,
+          collectItemId: collectId,
+          item: normalizedItem,
+          productDraftId: mirrored?.draftId,
+          productDraftVersion: draftVersion,
+          sourceVersion: `draft:${draftVersion}`,
+          capturedAt: preparedItem.capturedAt || new Date().toISOString(),
+          rawResponseRef: mirrored?.rawId,
+          rawResponseHash: contentHash,
+        });
+      }
       if (effectiveEnrichment) {
         const repository = createCollectorEnrichmentRepositoryForTransaction(client);
         if (effectiveEnrichment.status === "PENDING_ENRICHMENT") {
@@ -561,13 +499,7 @@ export async function ingestCollectRequestV4(options = {}) {
       );
       return { duplicate: false, requestId, ...response };
     });
-    return scheduleCategoryResolutionAfterCollect({
-      categoryResolutionPort: options.categoryResolutionPort,
-      accountId,
-      collected,
-      credentialStoreSnapshot,
-      logger: options.logger,
-    });
+    return collected;
   } catch (error) {
     const pool = await poolReady();
     await pool.query(

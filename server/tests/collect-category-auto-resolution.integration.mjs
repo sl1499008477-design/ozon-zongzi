@@ -65,7 +65,7 @@ test("the E2E worker removes every production database environment key before se
   assert.deepEqual(JSON.parse(child.stdout), { persistence: "json", remaining: [] });
 });
 
-test("production-composed HTTP collection resolves two items through the real completion hook and one public batch read", async (t) => {
+test("production-composed account-shared runtime records two source-evidence items and reads them in one batch", async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "sonli-category-e2e-worker-"));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const worker = path.resolve(
@@ -85,12 +85,12 @@ test("production-composed HTTP collection resolves two items through the real co
     persistence: "json",
     items: 2,
     batchReads: 1,
-    singleReads: 0,
-    operationalLogs: 1,
+    sharedSelections: 1,
+    storeScopedFields: 0,
   });
 });
 
-test("the automatic category E2E remains an explicitly protected active verification gate", async () => {
+test("the account-shared category E2E remains an explicitly protected active verification gate", async () => {
   const manifest = await import("../../scripts/test-manifest.mjs");
   const file = "server/tests/collect-category-auto-resolution.integration.mjs";
   assert.equal(manifest.requiredActiveTestFiles?.includes(file), true);

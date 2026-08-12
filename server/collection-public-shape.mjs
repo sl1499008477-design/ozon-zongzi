@@ -172,8 +172,8 @@ function projectLegacyCategoryResolutions(value) {
 
 function categoryResolutionGuidance(status) {
   switch (status) {
-    case "MATCHED":
-      return { action: "NONE", message: "类目已匹配" };
+    case "ACTIVE":
+      return { action: "NONE", message: "使用采集类目准备上架" };
     case "NEEDS_REVIEW":
       return { action: "REVIEW", message: "请手动确认类目" };
     case "RETRYABLE_ERROR":
@@ -195,22 +195,20 @@ export function publicCategoryResolutionSummary(record = {}) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return null;
   const status = cleanScopeValue(record.status).toUpperCase();
   const taxonomyScope = cleanScopeValue(record.taxonomyScope);
-  if (!status || !taxonomyScope) return null;
-  const matched = status === "MATCHED";
-  const targetDescriptionCategoryId = matched
-    ? positiveIdentifier(record.targetDescriptionCategoryId)
-    : null;
-  const targetTypeId = matched ? positiveIdentifier(record.targetTypeId) : null;
+  if (!["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"].includes(status)
+    || taxonomyScope !== "OZON:DEFAULT") return null;
   const guidance = categoryResolutionGuidance(status);
   return {
     status,
     taxonomyScope,
-    targetDescriptionCategoryId,
-    targetTypeId,
-    displayPath: matched ? publicDisplayPath(record.displayPath) : {},
-    method: matched ? cleanScopeValue(record.method).slice(0, 120) || null : null,
-    matchedAt: matched ? publicInstant(record.matchedAt) : null,
-    validatedAt: matched ? publicInstant(record.validatedAt) : null,
+    sourceDescriptionCategoryId: positiveIdentifier(record.sourceDescriptionCategoryId),
+    sourceTypeId: positiveIdentifier(record.sourceTypeId),
+    currentDescriptionCategoryId: positiveIdentifier(record.currentDescriptionCategoryId),
+    currentTypeId: positiveIdentifier(record.currentTypeId),
+    source: ["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"].includes(record.source)
+      ? record.source : null,
+    version: positiveIdentifier(record.version),
+    validatedAt: publicInstant(record.validatedAt),
     action: guidance.action,
     message: guidance.message,
   };
