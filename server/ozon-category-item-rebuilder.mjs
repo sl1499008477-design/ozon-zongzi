@@ -122,6 +122,15 @@ function deepFreeze(value, seen = new WeakSet()) {
   return Object.freeze(value);
 }
 
+export function projectOzonCategorySourceData(value) {
+  return deepFreeze(cloneData(
+    value,
+    { active: new WeakSet(), clones: new WeakMap(), nodes: 0 },
+    0,
+    attributesFailure,
+  ));
+}
+
 function normalizeValue(value, errorFactory = attributesFailure) {
   if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) {
     const text = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
@@ -206,6 +215,22 @@ function normalizeSourceAttributes(value, itemCount) {
   const shared = Array.from({ length: cloned.length }, (_unused, index) =>
     normalizeAttribute(descriptors[String(index)].value));
   return Array.from({ length: itemCount }, () => shared);
+}
+
+export function projectOzonCategorySourceItems(value) {
+  const items = projectOzonCategorySourceData(value);
+  const itemDescriptors = dataArray(items, MAX_ITEMS, attributesFailure);
+  if (items.length < 1) throw attributesFailure();
+  const sourceEvidenceAttributes = Array.from({ length: items.length }, (_unused, index) => {
+    const item = dataObject(itemDescriptors[String(index)].value, null, null, attributesFailure);
+    const rawSourceVariant = descriptorValue(item, "_sourceVariant");
+    if (rawSourceVariant === undefined) return [];
+    const sourceVariant = dataObject(rawSourceVariant, null, null, attributesFailure);
+    const rawAttributes = descriptorValue(sourceVariant, "attributes");
+    if (rawAttributes === undefined) return [];
+    return normalizeSourceAttributes(rawAttributes, 1)[0];
+  });
+  return deepFreeze({ items, sourceEvidenceAttributes });
 }
 
 function normalizedContract(input) {

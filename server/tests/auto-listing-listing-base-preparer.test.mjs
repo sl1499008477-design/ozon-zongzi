@@ -107,9 +107,11 @@ test("freezes a complete target-store-normalized template before AI work", async
   const deps = dependencies();
   const prepare = createAutoListingListingBasePreparer(deps);
   const price = { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" };
+  const sourceInput = source();
+  const sourceBefore = structuredClone(sourceInput);
   const result = await prepare({
     accountId: "account-a",
-    source: source(),
+    source: sourceInput,
     targetStore: { id: "store-a", ownerAccountId: "account-a" },
     targetCategory: frozenTargetCategory(),
     pricingEvidence: price,
@@ -137,6 +139,9 @@ test("freezes a complete target-store-normalized template before AI work", async
   assert.equal(Object.isFrozen(result.variants[0].item), true);
   assert.equal(Object.isFrozen(result.variants[0].item.attributes), true);
   assert.equal(Object.isFrozen(result.variants[0].item.attributes[0].values), true);
+  assert.deepEqual(sourceInput, sourceBefore);
+  assert.equal(Object.isFrozen(sourceInput), false);
+  assert.equal(Object.isFrozen(sourceInput.collectItem.listingDraft.variants), false);
 });
 
 test("forwards the category preparation abort signal to every Ozon category read", async () => {
@@ -349,6 +354,256 @@ test("normalizes category attribute read failures before dictionary or later wri
   }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
     && error.cause === null && !error.message.includes("secret"));
   assert.equal(getterReads, 1);
+});
+
+test("rejects hostile raw listing evidence before category, dictionary, or normalization boundaries", async (t) => {
+  const secret = "source-evidence-secret";
+  const baseItem = () => ({
+    sku: "sku-hostile",
+    offer_id: "offer-hostile",
+    _sourceVariant: {
+      attributes: [{
+        id: 85,
+        values: [{ value: "Нет бренда", dictionary_value_id: 126745801 }],
+      }],
+    },
+  });
+  const proxyCases = [];
+  for (const revoked of [false, true]) {
+    const wrap = (value) => {
+      if (!revoked) return new Proxy(value, {});
+      const pair = Proxy.revocable(value, {});
+      pair.revoke();
+      return pair.proxy;
+    };
+    for (const location of ["itemsArray", "item", "sourceVariant", "attributes", "values", "nestedValue"]) {
+      proxyCases.push({
+        name: `${revoked ? "revoked" : "transparent"} proxy at ${location}`,
+        build() {
+          const item = baseItem();
+          if (location === "itemsArray") return wrap([item]);
+          if (location === "item") return [wrap(item)];
+          if (location === "sourceVariant") item._sourceVariant = wrap(item._sourceVariant);
+          if (location === "attributes") item._sourceVariant.attributes = wrap(item._sourceVariant.attributes);
+          if (location === "values") item._sourceVariant.attributes[0].values = wrap(
+            item._sourceVariant.attributes[0].values,
+          );
+          if (location === "nestedValue") item._sourceVariant.attributes[0].values[0] = wrap(
+            item._sourceVariant.attributes[0].values[0],
+          );
+          return [item];
+        },
+      });
+    }
+  }
+
+  const hostileCases = [
+    {
+      name: "accessor descriptor",
+      build(mutations) {
+        const item = baseItem();
+        Object.defineProperty(item._sourceVariant.attributes[0].values[0], "value", {
+          enumerable: true,
+          get() { mutations.getters += 1; throw new Error(secret); },
+          set() { mutations.setters += 1; },
+        });
+        return [item];
+      },
+    },
+    {
+      name: "setter-only descriptor",
+      build(mutations) {
+        const item = baseItem();
+        Object.defineProperty(item._sourceVariant.attributes[0].values[0], "value", {
+          enumerable: true,
+          set() { mutations.setters += 1; },
+        });
+        return [item];
+      },
+    },
+    ...proxyCases,
+    {
+      name: "cycle",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values[0].cycle = item;
+        return [item];
+      },
+    },
+    {
+      name: "dangerous key",
+      build() {
+        const item = baseItem();
+        Object.defineProperty(item._sourceVariant, "__proto__", {
+          enumerable: true, configurable: true, writable: true, value: { polluted: true },
+        });
+        return [item];
+      },
+    },
+    {
+      name: "custom prototype",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values[0] = Object.assign(
+          Object.create({ inherited: secret }),
+          { value: "Нет бренда", dictionary_value_id: 126745801 },
+        );
+        return [item];
+      },
+    },
+    {
+      name: "symbol extra",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0][Symbol(secret)] = true;
+        return [item];
+      },
+    },
+    {
+      name: "attribute key extra",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].unexpected = secret;
+        return [item];
+      },
+    },
+    {
+      name: "nested value key extra",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values[0].unexpected = secret;
+        return [item];
+      },
+    },
+    {
+      name: "array extra",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes.extra = secret;
+        return [item];
+      },
+    },
+    {
+      name: "oversized string",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values[0].value = "x".repeat(2_000_001);
+        return [item];
+      },
+    },
+    {
+      name: "oversized array",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values = Array.from({ length: 5_001 }, () => ({ value: "x" }));
+        return [item];
+      },
+    },
+    {
+      name: "over depth",
+      build() {
+        const item = baseItem();
+        let cursor = item._sourceVariant.attributes[0].values[0];
+        for (let index = 0; index < 66; index += 1) {
+          cursor.next = {};
+          cursor = cursor.next;
+        }
+        return [item];
+      },
+    },
+    {
+      name: "over node limit",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values[0].padding = Array.from({ length: 5_000 }, () => {
+          const root = {};
+          let cursor = root;
+          for (let index = 0; index < 40; index += 1) {
+            cursor.next = {};
+            cursor = cursor.next;
+          }
+          return root;
+        });
+        return [item];
+      },
+    },
+  ];
+
+  for (const hostileCase of hostileCases) {
+    await t.test(hostileCase.name, async () => {
+      const calls = { access: 0, build: 0, attributes: 0, dictionary: 0, normalize: 0 };
+      const mutations = { getters: 0, setters: 0 };
+      const deps = dependencies({
+        async loadStoreAccess() {
+          calls.access += 1;
+          return {
+            id: "store-a", ownerAccountId: "account-a", clientId: "client-a",
+            apiKey: "must-never-be-persisted", currencyCode: "RUB",
+          };
+        },
+        buildRawItems() {
+          calls.build += 1;
+          return hostileCase.build(mutations);
+        },
+        categoryService: {
+          async getCategoryAttributes() { calls.attributes += 1; return { items: [] }; },
+          async getCategoryAttributeValues() { calls.dictionary += 1; return { items: [] }; },
+        },
+        async normalizeItems() { calls.normalize += 1; return { items: [] }; },
+      });
+      let caught;
+      try {
+        await createAutoListingListingBasePreparer(deps)({
+          accountId: "account-a", source: source(),
+          targetStore: { id: "store-a", ownerAccountId: "account-a" },
+          targetCategory: frozenTargetCategory(),
+          pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+        });
+      } catch (error) {
+        caught = error;
+      }
+      assert.equal(caught?.code, "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE");
+      assert.equal(caught?.message, "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE");
+      assert.equal(caught?.status, 422);
+      assert.equal(caught?.retryable, false);
+      assert.equal(caught?.cause, null);
+      assert.doesNotMatch(String(caught?.message), /source-evidence-secret/u);
+      assert.doesNotMatch(JSON.stringify(caught), /source-evidence-secret/u);
+      assert.deepEqual(calls, { access: 0, build: 1, attributes: 0, dictionary: 0, normalize: 0 });
+      assert.deepEqual(mutations, { getters: 0, setters: 0 });
+    });
+  }
+});
+
+test("rejects hostile source evidence before invoking even the pure raw-item builder", async () => {
+  const itemSource = source();
+  let getterReads = 0;
+  Object.defineProperty(
+    itemSource.collectItem.listingDraft.variants[0],
+    "_sourceVariant",
+    { enumerable: true, get() { getterReads += 1; throw new Error("source-evidence-secret"); } },
+  );
+  const calls = { access: 0, build: 0, attributes: 0, dictionary: 0, normalize: 0 };
+  const deps = dependencies({
+    async loadStoreAccess() { calls.access += 1; throw new Error("must not load credentials"); },
+    buildRawItems() { calls.build += 1; return []; },
+    categoryService: {
+      async getCategoryAttributes() { calls.attributes += 1; return { items: [] }; },
+      async getCategoryAttributeValues() { calls.dictionary += 1; return { items: [] }; },
+    },
+    async normalizeItems() { calls.normalize += 1; return { items: [] }; },
+  });
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: itemSource,
+    targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+    && error.message === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+    && error.status === 422 && error.retryable === false && error.cause === null
+    && !JSON.stringify(error).includes("source-evidence-secret"));
+  assert.equal(getterReads, 0);
+  assert.deepEqual(calls, { access: 0, build: 0, attributes: 0, dictionary: 0, normalize: 0 });
 });
 
 test("uses immutable raw source evidence over normalized old upload attributes for the exact variant", async () => {

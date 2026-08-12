@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 
 import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
-import { rebuildOzonItemsForCategory } from "./ozon-category-item-rebuilder.mjs";
+import {
+  projectOzonCategorySourceData,
+  projectOzonCategorySourceItems,
+  rebuildOzonItemsForCategory,
+} from "./ozon-category-item-rebuilder.mjs";
 import { buildOzonCategoryRebuildMetadata } from "./ozon-category-service.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 
@@ -137,13 +141,6 @@ function sourceVariant(raw, normalized, index) {
   return { sourceVariantId, sourceSku, item: normalized };
 }
 
-function immutableSourceEvidenceAttributes(rawItems) {
-  return deepFreeze(rawItems.map((item) => {
-    const sourceVariant = plainObject(item?._sourceVariant) ? item._sourceVariant : {};
-    return structuredClone(Array.isArray(sourceVariant.attributes) ? sourceVariant.attributes : []);
-  }));
-}
-
 function exactTargetCategory(value) {
   const positive = (nested) => /^[1-9][0-9]*$/u.test(String(nested ?? ""))
     && Number.isSafeInteger(Number(nested));
@@ -193,6 +190,7 @@ export function createAutoListingListingBasePreparer({
   return async function prepareAutoListingListingBase({
     accountId, source, targetStore, targetCategory, pricingEvidence, signal,
   } = {}) {
+    const safeSource = projectOzonCategorySourceData(source);
     const scope = text(accountId);
     const targetStoreId = text(targetStore?.id);
     const ownerAccountId = text(targetStore?.ownerAccountId || targetStore?.accountId);
@@ -201,9 +199,23 @@ export function createAutoListingListingBasePreparer({
       throw failure("AUTO_LISTING_CATEGORY_LEASE_INVALID", 500);
     }
     signal?.throwIfAborted();
-    const { productDraft, versions: frozenVersions } = productDraftEvidence(source, fallbackVersions);
+    const { productDraft, versions: frozenVersions } = productDraftEvidence(safeSource, fallbackVersions);
     const frozenPriceEvidence = priceEvidence(pricingEvidence);
     const category = exactTargetCategory(targetCategory);
+    const builtItems = buildRawItems(safeSource, { currencyCode: frozenPriceEvidence.currency });
+    const projectedSource = projectOzonCategorySourceItems(builtItems);
+    const rawItems = projectedSource.items.map((item) => ({
+      ...item,
+      description_category_id: Number(category.descriptionCategoryId),
+      descriptionCategoryId: Number(category.descriptionCategoryId),
+      type_id: Number(category.typeId),
+      typeId: Number(category.typeId),
+    }));
+    const sourceEvidenceAttributes = projectedSource.sourceEvidenceAttributes;
+    const sourceVariantIds = rawItems.map((item, index) => sourceVariant(item, null, index).sourceVariantId);
+    if (new Set(sourceVariantIds).size !== sourceVariantIds.length) {
+      throw failure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+    }
     const storeAccess = await loadStoreAccess({ accountId: scope, targetStoreId });
     const storeCurrency = normalizeAutoListingCurrency(storeAccess?.currencyCode || storeAccess?.currency_code || storeAccess?.currency);
     if (!plainObject(storeAccess) || text(storeAccess.id) !== targetStoreId
@@ -213,23 +225,6 @@ export function createAutoListingListingBasePreparer({
     }
     if (!storeCurrency || storeCurrency !== frozenPriceEvidence.currency) {
       throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
-    }
-
-    const builtItems = buildRawItems(source, { currencyCode: storeCurrency });
-    const rawItems = Array.isArray(builtItems) ? builtItems.map((item) => ({
-      ...structuredClone(item),
-      description_category_id: Number(category.descriptionCategoryId),
-      descriptionCategoryId: Number(category.descriptionCategoryId),
-      type_id: Number(category.typeId),
-      typeId: Number(category.typeId),
-    })) : builtItems;
-    if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 1_000) {
-      throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
-    }
-    const sourceEvidenceAttributes = immutableSourceEvidenceAttributes(rawItems);
-    const sourceVariantIds = rawItems.map((item, index) => sourceVariant(item, null, index).sourceVariantId);
-    if (new Set(sourceVariantIds).size !== sourceVariantIds.length) {
-      throw failure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
     }
     const categoryDictionaryValues = new Map();
     const dictionaryKey = (descriptionCategoryId, typeId, attributeIdValue) =>
