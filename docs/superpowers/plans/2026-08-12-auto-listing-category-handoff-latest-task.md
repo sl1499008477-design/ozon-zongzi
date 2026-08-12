@@ -1,5 +1,7 @@
 # Auto-Listing Category Handoff and Latest Task Rows Implementation Plan
 
+> **部分作废：** 本计划中“按目标店铺交接类目”的 Task 1 及 Task 4 类目验收不再执行，已由 `docs/superpowers/specs/2026-08-12-account-shared-ozon-category-recovery-design.md` 取代。Task 2 的最新任务投影和 Task 3 的真实创建时间仍然有效；在新实施计划获批前不得继续类目生产实现。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task.
 
 **Goal:** Reuse the current target store's verified Ozon category when creating a Collect Box auto-listing job, show only the newest task row for each product/store pair, and display the job creation time.
