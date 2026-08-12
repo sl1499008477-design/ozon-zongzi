@@ -369,7 +369,7 @@ const authenticateAutoListingRequest = async (req) => {
   if (listingPipelineEnabled()) return authenticateCollectionRequest(req);
   return jsonStateTransaction.run(async () => requireAuth(req, await loadState()));
 };
-const autoListingRuntime = createAutoListingRuntime();
+const autoListingRuntime = createAutoListingRuntime({ persistenceMode });
 const handleAutoListingRoute = createAutoListingHttpHandler({
   authenticate: authenticateAutoListingRequest,
   runtime: autoListingRuntime,

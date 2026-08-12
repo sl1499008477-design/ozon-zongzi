@@ -16,6 +16,27 @@ try {
   assert.equal(captured.options.headers["Api-Key"], "secret-1");
   assert.equal(captured.options.body, '{"value":1}');
 
+  const externalAbort = new AbortController();
+  let transportSignal;
+  globalThis.fetch = async (_url, options) => {
+    transportSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    });
+  };
+  const externallyAborted = callOzonSellerApi(
+    store, "/v1/external-abort", {}, 50, { signal: externalAbort.signal },
+  );
+  externallyAborted.catch(() => {});
+  externalAbort.abort();
+  assert.equal(transportSignal.aborted, true);
+  await assert.rejects(externallyAborted, (error) => error.code === "OZON_TIMEOUT");
+
+  globalThis.fetch = async (url, options) => {
+    captured = { url, options };
+    return { ok: true, status: 200, text: async () => '{"result":{"ok":true}}' };
+  };
+
   await getOzonSellerApi(store, "/v1/get");
   assert.equal(captured.options.method, "GET");
   assert.equal("body" in captured.options, false);

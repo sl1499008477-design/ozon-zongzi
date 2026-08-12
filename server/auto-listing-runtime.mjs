@@ -121,6 +121,7 @@ export function createAutoListingRuntime({
   createRfbsWarehouseVerifier = createAutoListingRfbsWarehouseVerifier,
   readStoreCredential = null,
   callOzonSellerApi = defaultCallOzonSellerApi,
+  persistenceMode = () => "postgres",
 } = {}) {
   if (typeof resolvePool !== "function" || typeof createRepository !== "function" || typeof createService !== "function"
     || !env || typeof env !== "object" || typeof createAiWorker !== "function"
@@ -130,7 +131,7 @@ export function createAutoListingRuntime({
     || !(createListingBasePreparer === null || typeof createListingBasePreparer === "function")
     || typeof createRfbsWarehouseVerifier !== "function"
     || !(readStoreCredential === null || typeof readStoreCredential === "function")
-    || typeof callOzonSellerApi !== "function") {
+    || typeof callOzonSellerApi !== "function" || typeof persistenceMode !== "function") {
     throw new TypeError("Auto listing runtime dependencies are required");
   }
 
@@ -179,6 +180,12 @@ export function createAutoListingRuntime({
     }
     if (!servicePromise) {
       const initialization = Promise.resolve().then(async () => {
+        if (persistenceMode() !== "postgres") {
+          throw runtimeError(
+            "AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE",
+            "自动上架要求 PostgreSQL 共享类目租约",
+          );
+        }
         const pool = await resolvePool();
         const prepareListingBase = await resolveListingBasePreparer({ pool, env });
         if (typeof prepareListingBase !== "function") {

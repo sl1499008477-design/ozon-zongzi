@@ -13,6 +13,10 @@ const lookupMigrationUrl = new URL(
   "../db/migrations/064_account_shared_ozon_category_lookup_evidence.sql",
   import.meta.url,
 );
+const preparationLeaseMigrationUrl = new URL(
+  "../db/migrations/065_auto_listing_category_preparation_leases.sql",
+  import.meta.url,
+);
 
 function normalizedSql(sql) {
   return String(sql).replace(/\s+/g, " ").trim();
@@ -73,6 +77,23 @@ test("064 adds constrained lookup provenance, canonical pointers, and an append-
   assert.match(compact, /append_only/i);
   assert.match(compact, /NOT EXISTS \(\s*SELECT 1 FROM collect_items WHERE account_id=OLD\.account_id AND id=OLD\.collect_item_id\s*\)/i);
   assert.match(compact, /NOT EXISTS \(\s*SELECT 1 FROM collect_ozon_category_source_evidence WHERE account_id=OLD\.account_id AND id=OLD\.source_evidence_id\s*\)/i);
+});
+
+test("065 adds a PostgreSQL-session category preparation lease and gates every shared-row transition", async () => {
+  const sql = await readFile(preparationLeaseMigrationUrl, "utf8");
+  const compact = normalizedSql(sql);
+  assert.match(compact, /CREATE TABLE auto_listing_category_preparation_leases/i);
+  assert.match(compact, /CREATE TABLE auto_listing_category_preparation_lease_items/i);
+  assert.match(compact, /holder_backend_pid INTEGER NOT NULL/i);
+  assert.match(compact, /state TEXT NOT NULL CHECK \(state IN \('ACTIVE','RELEASED','EXPIRED','ORPHANED'\)\)/i);
+  assert.match(compact, /account_ozon_shared_category_lease_key\(account_id TEXT,shared_category_id TEXT\)/i);
+  assert.match(compact, /hashtextextended/i);
+  assert.match(
+    compact,
+    /pg_advisory_xact_lock\(\s*account_ozon_shared_category_lease_key/i,
+  );
+  assert.match(compact, /BEFORE INSERT OR UPDATE OR DELETE ON account_ozon_shared_categories/i);
+  assert.doesNotMatch(compact, /api_key|credential|raw_response/i);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {

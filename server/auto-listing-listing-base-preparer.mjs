@@ -143,12 +143,16 @@ export function createAutoListingListingBasePreparer({
   }
 
   return async function prepareAutoListingListingBase({
-    accountId, source, targetStore, targetCategory, pricingEvidence,
+    accountId, source, targetStore, targetCategory, pricingEvidence, signal,
   } = {}) {
     const scope = text(accountId);
     const targetStoreId = text(targetStore?.id);
     const ownerAccountId = text(targetStore?.ownerAccountId || targetStore?.accountId);
     if (!scope || !targetStoreId || ownerAccountId !== scope) throw failure("AUTO_LISTING_TARGET_STORE_FORBIDDEN", 403);
+    if (signal !== undefined && !(signal instanceof AbortSignal)) {
+      throw failure("AUTO_LISTING_CATEGORY_LEASE_INVALID", 500);
+    }
+    signal?.throwIfAborted();
     const { productDraft, versions: frozenVersions } = productDraftEvidence(source, fallbackVersions);
     const frozenPriceEvidence = priceEvidence(pricingEvidence);
     const category = exactTargetCategory(targetCategory);
@@ -187,6 +191,7 @@ export function createAutoListingListingBasePreparer({
         }
         const result = await categoryService.getCategoryAttributes({
           accountId: scope, store: storeAccess, descriptionCategoryId, typeId, language: "DEFAULT",
+          ...(signal ? { signal } : {}),
         });
         const items = Array.isArray(result?.items) ? result.items : [];
         categoryCapabilities.set(
@@ -203,6 +208,7 @@ export function createAutoListingListingBasePreparer({
         return (await categoryService.getCategoryAttributeValues({
           accountId: scope, store: storeAccess, descriptionCategoryId, typeId,
           attributeId: attributeIdValue, language: "DEFAULT", limit: 5_000,
+          ...(signal ? { signal } : {}),
         })).items;
       },
     });

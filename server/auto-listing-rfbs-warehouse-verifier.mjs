@@ -60,13 +60,19 @@ function closedInput(value) {
   const record = plainDataRecord(value);
   if (!record) return null;
   const keys = Object.keys(record);
-  if (keys.length !== INPUT_KEYS.length || keys.some((key) => !INPUT_KEYS.includes(key))) return null;
+  if (![INPUT_KEYS.length, INPUT_KEYS.length + 1].includes(keys.length)
+    || keys.some((key) => !INPUT_KEYS.includes(key) && key !== "signal")
+    || (keys.length === INPUT_KEYS.length + 1 && !Object.hasOwn(record, "signal"))) return null;
   const result = {};
   for (const key of INPUT_KEYS) {
     const candidate = record[key];
     if (typeof candidate !== "string" || candidate !== candidate.trim()
       || candidate.length < 1 || candidate.length > 240 || /[\u0000-\u001f\u007f]/u.test(candidate)) return null;
     result[key] = candidate;
+  }
+  if (Object.hasOwn(record, "signal")) {
+    if (!(record.signal instanceof AbortSignal)) return null;
+    result.signal = record.signal;
   }
   if (result.actorAccountId !== result.accountId) return null;
   return Object.freeze(result);
@@ -365,7 +371,10 @@ export function createAutoListingRfbsWarehouseVerifier({
           "/v2/warehouse/list",
           {},
           REQUEST_TIMEOUT_MS,
-          { maxResponseBytes: RESPONSE_LIMIT_BYTES },
+          {
+            maxResponseBytes: RESPONSE_LIMIT_BYTES,
+            ...(input.signal ? { signal: input.signal } : {}),
+          },
         );
       } catch (error) {
         throw mapOzonFailure(error);

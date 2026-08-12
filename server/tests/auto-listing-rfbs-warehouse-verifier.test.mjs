@@ -117,6 +117,13 @@ test("returns closed normalized evidence after exactly one read-only warehouse-l
   assert.equal(JSON.stringify(evidence).includes("api-key-secret"), false);
 });
 
+test("forwards the preparation abort signal to the bounded Ozon warehouse read", async () => {
+  const controller = new AbortController();
+  const { verifier, calls } = harness();
+  await verifier.verifyRfbsWarehouse({ ...validInput(), signal: controller.signal });
+  assert.equal(calls.find(({ port }) => port === "callOzonSellerApi").options.signal, controller.signal);
+});
+
 test("accepts the Ozon RFBS boolean only when it agrees with any explicit type", async () => {
   for (const row of [
     { warehouse_id: "1001", is_rfbs: true, status: "active" },

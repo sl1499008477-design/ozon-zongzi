@@ -76,23 +76,6 @@ function categoryAuthorizationFromSource(source) {
   };
 }
 
-function categoryAuthorizationFromItem(item) {
-  const category = item.snapshot.targetCategory;
-  return {
-    collectItemId: item.collectItemId,
-    evidenceId: category.evidenceId,
-    sharedCategoryId: category.sharedCategoryId,
-    sharedCategoryVersion: category.sharedCategoryVersion,
-    sourceDescriptionCategoryId: Number(category.sourceDescriptionCategoryId),
-    sourceTypeId: Number(category.sourceTypeId),
-    descriptionCategoryId: Number(category.descriptionCategoryId),
-    typeId: Number(category.typeId),
-    taxonomyScope: category.taxonomyScope,
-    taxonomyFingerprint: category.taxonomyFingerprint,
-    provenance: category.provenance,
-  };
-}
-
 function assertRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).some((key) => !REQUEST_KEYS.has(key))) {
@@ -280,7 +263,8 @@ function safeJob(row = {}) {
 
 function requireRepository(repository) {
   const required = ["loadCollectSources", "loadTargetStore", "loadTargetWarehouse", "loadPublishedStrategy",
-    "loadPublishedUploadPolicies", "authorizeCategoryPreparation", "getJobByIdempotencyKey",
+    "loadPublishedUploadPolicies", "acquireCategoryPreparationLease", "releaseCategoryPreparationLease",
+    "getJobByIdempotencyKey",
     "createJobGraph", "getJob", "listJobs"];
   if (!repository || required.some((name) => typeof repository[name] !== "function")) {
     throw new TypeError("Auto listing repository dependencies are required");
@@ -303,6 +287,17 @@ function requireRfbsWarehouseVerifier(value) {
   } catch {
     throw new TypeError("Auto listing RFBS warehouse verifier dependency is required");
   }
+}
+
+function categoryLeaseSignal(value) {
+  if (!(value instanceof AbortSignal)) throw error("AUTO_LISTING_CATEGORY_LEASE_INVALID", 500);
+  return value;
+}
+
+function assertCategoryLeaseActive(signal) {
+  if (!signal.aborted) return;
+  if (signal.reason?.code === "AUTO_LISTING_CATEGORY_LEASE_EXPIRED") throw signal.reason;
+  throw error("AUTO_LISTING_CATEGORY_LEASE_EXPIRED", 409);
 }
 
 export function createAutoListingService({
@@ -333,97 +328,124 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
       }
     }
-    await storage.authorizeCategoryPreparation({
+    const categoryLease = await storage.acquireCategoryPreparationLease({
       accountId,
       items: sources.map(categoryAuthorizationFromSource),
     });
-    const warehouseEvidence = await storage.loadTargetWarehouse({
-      accountId,
-      targetStoreId: config.targetStoreId,
-      targetWarehouseId: config.targetWarehouseId,
-    });
-    const warehouse = warehouseEvidence?.warehouse;
-    if (!warehouse
-      || text(warehouse.id) !== config.targetWarehouseId
-      || text(warehouse.storeId || warehouse.store_id) !== config.targetStoreId
-      || text(warehouse.accountId || warehouse.account_id || warehouse.ownerAccountId) !== accountId
-      || !text(warehouse.warehouse_id || warehouse.warehouseId)) {
-      throw error("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
-    }
-    const eligibilityInput = {
-      warehouse,
-      products: warehouseEvidence?.products || [],
-      targetStoreId: config.targetStoreId,
-      accountId,
-    };
-    const eligibility = listingWarehouseEligibility(eligibilityInput);
-    const selectable = eligibility.eligible === true
-      || (eligibility.fulfillmentType === "RFBS"
-        && eligibility.code === "RFBS_VALIDATION_REQUIRED"
-        && eligibility.evidenceRequired === true);
-    if (!selectable) assertListingWarehouseEligible(eligibilityInput);
-    const published = await storage.loadPublishedStrategy({ accountId });
-    if (!published?.strategyVersion || !Array.isArray(published.rules)) {
-      throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
-    }
-    const uploadPolicy = selectAutoListingUploadPolicyForNewJob({
-      accountId,
-      policies: await storage.loadPublishedUploadPolicies({ accountId }),
-      directUploadAllowed: uploadPolicyGates.directUploadAllowed === true,
-      uploadEnabled: uploadPolicyGates.uploadEnabled === true,
-      listingPipelineEnabled: uploadPolicyGates.listingPipelineEnabled === true,
-    });
-    const items = buildJobItems({
-      accountId, sourceType, sources, targetStore, config, configHash, published,
-    });
-    const readyCategoryItems = items.filter((item) => item.status === "SOURCE_READY")
-      .map(categoryAuthorizationFromItem);
-    if (readyCategoryItems.length) {
-      await storage.authorizeCategoryPreparation({ accountId, items: readyCategoryItems });
-    }
-    const preparedItems = await Promise.all(items.map(async (item) => {
-      if (item.status !== "SOURCE_READY") return item;
-      const source = sources[item.sourceOrder];
-      const listingBaseTemplate = await prepareListingBase({
+    let leaseOutcome = "FAILED";
+    let primaryError = null;
+    try {
+      const signal = categoryLeaseSignal(categoryLease.signal);
+      assertCategoryLeaseActive(signal);
+      const warehouseEvidence = await storage.loadTargetWarehouse({
         accountId,
-        source,
-        targetStore,
-        targetCategory: item.snapshot.targetCategory,
-        pricingEvidence: {
-          currency: item.snapshot.priceEvidence.currency,
-          currencySource: item.snapshot.priceEvidence.currencySource,
-          blackKopecks: item.snapshot.priceEvidence.blackKopecks,
-          greenKopecks: item.snapshot.priceEvidence.greenKopecks || null,
-        },
-      });
-      return { ...item, listingBaseTemplate };
-    }));
-    if (eligibility.fulfillmentType === "RFBS" && readyCategoryItems.length) {
-      await storage.authorizeCategoryPreparation({ accountId, items: readyCategoryItems });
-    }
-    const warehouseValidation = eligibility.fulfillmentType === "RFBS"
-      ? await verifier.verifyRfbsWarehouse({
-        accountId,
-        actorAccountId: accountId,
         targetStoreId: config.targetStoreId,
         targetWarehouseId: config.targetWarehouseId,
+      });
+      const warehouse = warehouseEvidence?.warehouse;
+      if (!warehouse
+        || text(warehouse.id) !== config.targetWarehouseId
+        || text(warehouse.storeId || warehouse.store_id) !== config.targetStoreId
+        || text(warehouse.accountId || warehouse.account_id || warehouse.ownerAccountId) !== accountId
+        || !text(warehouse.warehouse_id || warehouse.warehouseId)) {
+        throw error("AUTO_LISTING_WAREHOUSE_NOT_FOUND", 404);
+      }
+      const eligibilityInput = {
+        warehouse,
+        products: warehouseEvidence?.products || [],
+        targetStoreId: config.targetStoreId,
+        accountId,
+      };
+      const eligibility = listingWarehouseEligibility(eligibilityInput);
+      const selectable = eligibility.eligible === true
+        || (eligibility.fulfillmentType === "RFBS"
+          && eligibility.code === "RFBS_VALIDATION_REQUIRED"
+          && eligibility.evidenceRequired === true);
+      if (!selectable) assertListingWarehouseEligible(eligibilityInput);
+      const published = await storage.loadPublishedStrategy({ accountId });
+      if (!published?.strategyVersion || !Array.isArray(published.rules)) {
+        throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
+      }
+      const uploadPolicy = selectAutoListingUploadPolicyForNewJob({
+        accountId,
+        policies: await storage.loadPublishedUploadPolicies({ accountId }),
+        directUploadAllowed: uploadPolicyGates.directUploadAllowed === true,
+        uploadEnabled: uploadPolicyGates.uploadEnabled === true,
+        listingPipelineEnabled: uploadPolicyGates.listingPipelineEnabled === true,
+      });
+      const items = buildJobItems({
+        accountId, sourceType, sources, targetStore, config, configHash, published,
+      });
+      assertCategoryLeaseActive(signal);
+      const preparedResults = await Promise.allSettled(items.map(async (item) => {
+        if (item.status !== "SOURCE_READY") return item;
+        assertCategoryLeaseActive(signal);
+        const source = sources[item.sourceOrder];
+        const listingBaseTemplate = await prepareListingBase({
+          accountId,
+          source,
+          targetStore,
+          targetCategory: item.snapshot.targetCategory,
+          pricingEvidence: {
+            currency: item.snapshot.priceEvidence.currency,
+            currencySource: item.snapshot.priceEvidence.currencySource,
+            blackKopecks: item.snapshot.priceEvidence.blackKopecks,
+            greenKopecks: item.snapshot.priceEvidence.greenKopecks || null,
+          },
+          signal,
+        });
+        return { ...item, listingBaseTemplate };
+      }));
+      const preparationFailure = preparedResults.find((result) => result.status === "rejected");
+      assertCategoryLeaseActive(signal);
+      if (preparationFailure) throw preparationFailure.reason;
+      const preparedItems = preparedResults.map((result) => result.value);
+      const warehouseValidation = eligibility.fulfillmentType === "RFBS"
+        ? await verifier.verifyRfbsWarehouse({
+          accountId,
+          actorAccountId: accountId,
+          targetStoreId: config.targetStoreId,
+          targetWarehouseId: config.targetWarehouseId,
+          correlationId,
+          signal,
+        })
+        : null;
+      assertCategoryLeaseActive(signal);
+      const created = await storage.createJobGraph({
+        accountId,
+        actorAccountId: accountId,
+        sourceType,
+        idempotencyKey,
         correlationId,
-      })
-      : null;
-    const created = await storage.createJobGraph({
-      accountId,
-      actorAccountId: accountId,
-      sourceType,
-      idempotencyKey,
-      correlationId,
-      configSnapshot: config,
-      configHash,
-      strategyVersionId: published.strategyVersion.strategyVersionId,
-      uploadPolicyVersionId: uploadPolicy.id,
-      warehouseValidation,
-      items: preparedItems,
-    });
-    return safeJob(created);
+        configSnapshot: config,
+        configHash,
+        strategyVersionId: published.strategyVersion.strategyVersionId,
+        uploadPolicyVersionId: uploadPolicy.id,
+        categoryPreparationLeaseId: categoryLease.leaseId,
+        categoryPreparationSignal: signal,
+        warehouseValidation,
+        items: preparedItems,
+      });
+      leaseOutcome = "COMMITTED";
+      return safeJob(created);
+    } catch (caught) {
+      primaryError = caught;
+      if (categoryLease.signal?.aborted) leaseOutcome = "TIMEOUT";
+      if (leaseOutcome !== "TIMEOUT" && (caught?.code === "AUTO_LISTING_SOURCE_VERSION_CONFLICT"
+        || caught?.code === "AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE"
+        || caught?.code === "AUTO_LISTING_CATEGORY_LEASE_EXPIRED")) {
+        leaseOutcome = "CONFLICT";
+      }
+      throw caught;
+    } finally {
+      try {
+        await storage.releaseCategoryPreparationLease({
+          accountId, leaseId: categoryLease.leaseId, outcome: leaseOutcome,
+        });
+      } catch (releaseError) {
+        if (!primaryError) throw releaseError;
+      }
+    }
   }
 
   return {

@@ -128,11 +128,24 @@ const effectiveImageConfig = (frozen, captured) => deriveEffectiveAutoListingIma
 
 function fakeRepository({ sources = [source("collect-1")], existing = null } = {}) {
   const calls = [];
+  const categoryLeaseController = new AbortController();
   let graph = existing;
   return {
     calls,
+    categoryLeaseController,
     async loadCollectSources(input) { calls.push(["loadCollectSources", input]); return sources; },
-    async authorizeCategoryPreparation(input) { calls.push(["authorizeCategoryPreparation", input]); return { authorized: true }; },
+    async acquireCategoryPreparationLease(input) {
+      calls.push(["acquireCategoryPreparationLease", input]);
+      return {
+        leaseId: "category-lease-a",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        signal: categoryLeaseController.signal,
+      };
+    },
+    async releaseCategoryPreparationLease(input) {
+      calls.push(["releaseCategoryPreparationLease", input]);
+      return { released: true };
+    },
     async loadExcelImportContext(input) {
       calls.push(["loadExcelImportContext", input]);
       return {
@@ -302,14 +315,15 @@ test("RFBS zero-product job verifies once immediately before graph persistence a
   const verifyIndex = repository.calls.findIndex(([name]) => name === "verifyRfbsWarehouse");
   const graphIndex = repository.calls.findIndex(([name]) => name === "createJobGraph");
   assert.equal(verifyIndex, graphIndex - 1);
-  assert.equal(repository.calls[verifyIndex - 1][0], "authorizeCategoryPreparation");
-  assert.ok(repository.calls.findIndex(([name]) => name === "prepareListingBase") < verifyIndex - 1);
+  assert.equal(repository.calls[verifyIndex - 1][0], "prepareListingBase");
+  assert.ok(repository.calls.findIndex(([name]) => name === "acquireCategoryPreparationLease") < verifyIndex - 1);
   assert.deepEqual(repository.calls[verifyIndex][1], {
     accountId: "account-a",
     actorAccountId: "account-a",
     targetStoreId: "store-a",
     targetWarehouseId: "warehouse-a",
     correlationId: "corr-rfbs",
+    signal: repository.categoryLeaseController.signal,
   });
   assert.equal(repository.calls[graphIndex][1].warehouseValidation, evidence);
   assert.equal(repository.calls[graphIndex][1].warehouseValidation.fulfillmentType, "RFBS");
@@ -559,16 +573,72 @@ test("orders replay, store/currency, shared category, warehouse, then paid graph
   const calls = repository.calls.map(([name]) => name);
   assert.ok(calls.indexOf("getJobByIdempotencyKey") < calls.indexOf("loadTargetStore"));
   assert.ok(calls.indexOf("loadTargetStore") < calls.indexOf("loadCollectSources"));
-  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("authorizeCategoryPreparation"));
-  assert.ok(calls.indexOf("authorizeCategoryPreparation") < calls.indexOf("loadTargetWarehouse"));
+  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("acquireCategoryPreparationLease"));
+  assert.ok(calls.indexOf("acquireCategoryPreparationLease") < calls.indexOf("loadTargetWarehouse"));
   assert.ok(calls.indexOf("loadTargetWarehouse") < calls.indexOf("createJobGraph"));
+  assert.ok(calls.indexOf("createJobGraph") < calls.indexOf("releaseCategoryPreparationLease"));
+  assert.equal(repository.calls.find(([name]) => name === "createJobGraph")[1].categoryPreparationLeaseId,
+    "category-lease-a");
+  assert.equal(repository.calls.find(([name]) => name === "createJobGraph")[1].categoryPreparationSignal,
+    repository.categoryLeaseController.signal);
+  assert.deepEqual(repository.calls.find(([name]) => name === "releaseCategoryPreparationLease")[1], {
+    accountId: "account-a", leaseId: "category-lease-a", outcome: "COMMITTED",
+  });
 });
 
-test("a category transition after source read but before preparation authorization has zero external or paid side effects", async () => {
+test("a preparation failure releases the category lease before surfacing the error", async () => {
+  const repository = fakeRepository();
+  const failure = Object.assign(new Error("Ozon failed"), { code: "OZON_CATEGORY_UNAVAILABLE" });
+  await assert.rejects(createAutoListingService({
+    repository,
+    listingBasePreparer: async () => { throw failure; },
+  }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "lease-failure", correlationId: "corr", config,
+  }), (error) => error === failure);
+  const release = repository.calls.find(([name]) => name === "releaseCategoryPreparationLease");
+  assert.deepEqual(release?.[1], {
+    accountId: "account-a", leaseId: "category-lease-a", outcome: "FAILED",
+  });
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+});
+
+test("lease expiry aborts every later port but keeps the session held until the in-flight port settles", async () => {
+  const repository = fakeRepository();
+  let settlePreparation;
+  let preparationStarted;
+  const started = new Promise((resolve) => { preparationStarted = resolve; });
+  const preparing = new Promise((resolve) => { settlePreparation = resolve; });
+  const run = createAutoListingService({
+    repository,
+    listingBasePreparer: async (input) => {
+      assert.equal(input.signal, repository.categoryLeaseController.signal);
+      preparationStarted();
+      await preparing;
+      return prepareListingBase(input);
+    },
+  }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "lease-expiry", correlationId: "corr", config,
+  });
+  await started;
+  repository.categoryLeaseController.abort(Object.assign(
+    new Error("AUTO_LISTING_CATEGORY_LEASE_EXPIRED"),
+    { code: "AUTO_LISTING_CATEGORY_LEASE_EXPIRED" },
+  ));
+  await Promise.resolve();
+  assert.equal(repository.calls.some(([name]) => name === "releaseCategoryPreparationLease"), false);
+  settlePreparation();
+  await assert.rejects(run, { code: "AUTO_LISTING_CATEGORY_LEASE_EXPIRED" });
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+  assert.deepEqual(repository.calls.find(([name]) => name === "releaseCategoryPreparationLease")[1], {
+    accountId: "account-a", leaseId: "category-lease-a", outcome: "TIMEOUT",
+  });
+});
+
+test("a category transition after source read but before lease acquisition has zero external or paid side effects", async () => {
   const counters = { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 };
   const repository = fakeRepository();
-  repository.authorizeCategoryPreparation = async (input) => {
-    repository.calls.push(["authorizeCategoryPreparation", input]);
+  repository.acquireCategoryPreparationLease = async (input) => {
+    repository.calls.push(["acquireCategoryPreparationLease", input]);
     const conflict = new Error("AUTO_LISTING_SOURCE_VERSION_CONFLICT");
     conflict.code = "AUTO_LISTING_SOURCE_VERSION_CONFLICT";
     conflict.status = 409;
@@ -594,7 +664,7 @@ test("a category transition after source read but before preparation authorizati
     }), { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
   assert.deepEqual(counters, { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 });
   assert.deepEqual(repository.calls.map(([name]) => name), [
-    "getJobByIdempotencyKey", "loadTargetStore", "loadCollectSources", "authorizeCategoryPreparation",
+    "getJobByIdempotencyKey", "loadTargetStore", "loadCollectSources", "acquireCategoryPreparationLease",
   ]);
 });
 
@@ -606,8 +676,8 @@ test("Excel non-replay orders lightweight header, replay, store/currency, catego
     ["loadExcelImportContext", "getJobByIdempotencyKey"],
     ["getJobByIdempotencyKey", "loadTargetStore"],
     ["loadTargetStore", "loadExcelImportSources"],
-    ["loadExcelImportSources", "authorizeCategoryPreparation"],
-    ["authorizeCategoryPreparation", "loadTargetWarehouse"],
+    ["loadExcelImportSources", "acquireCategoryPreparationLease"],
+    ["acquireCategoryPreparationLease", "loadTargetWarehouse"],
   ]) assert.ok(calls.indexOf(before) < calls.indexOf(after), `${before} must precede ${after}`);
 });
 
@@ -989,6 +1059,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
   const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "warehouse-empty", correlationId: "corr",
+    categoryPreparationLeaseId: "category-lease-a",
     configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a",
     uploadPolicyVersionId: "upload-policy-review-v1",
     items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],
@@ -1019,6 +1090,7 @@ test("repository rejects malformed frozen configuration before connecting", asyn
   };
   const graph = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "config-check", correlationId: "corr",
+    categoryPreparationLeaseId: "category-lease-a",
     configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a", items: [item],
   };
   let connections = 0;
@@ -1067,6 +1139,7 @@ test("repository persists only a canonical recomputed price with a non-default s
   const frozen = frozenGraphConfig();
   const graphInput = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "rule-key", correlationId: "corr",
+    categoryPreparationLeaseId: "category-lease-a",
     configSnapshot: frozen.config, configHash: frozen.configHash, strategyVersionId: "version-a",
     uploadPolicyVersionId: "upload-policy-review-v1",
     items: [{ ...item, effectiveImageConfig: effectiveImageConfig(frozen, captured) }],

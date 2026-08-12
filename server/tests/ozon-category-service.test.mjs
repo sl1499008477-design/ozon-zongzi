@@ -36,6 +36,22 @@ const service = createOzonCategoryService({
   cacheTtlMs: CACHE_TTL_MS,
 });
 
+test("category reads forward an external abort signal to the Ozon transport", async () => {
+  const controller = new AbortController();
+  let options;
+  const abortable = createOzonCategoryService({
+    callOzonSellerApi: async (_store, _path, _body, _timeout, receivedOptions) => {
+      options = receivedOptions;
+      return { result: [] };
+    },
+  });
+  await abortable.getCategoryAttributes({
+    accountId: "acct-a", store: { id: "store-a", ownerAccountId: "acct-a" },
+    descriptionCategoryId: 10, typeId: 20, signal: controller.signal,
+  });
+  assert.equal(options.signal, controller.signal);
+});
+
 const treeInput = input();
 const firstTree = await service.getCategoryTree(treeInput);
 assert.equal(firstTree.meta.source, "OZON_API");

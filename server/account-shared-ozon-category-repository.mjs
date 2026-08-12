@@ -947,13 +947,25 @@ async function transitionPostgres(client, {
     [accountId, evidenceId],
   )).rows[0];
   if (!evidenceRow) throw repositoryError("OZON_CATEGORY_EVIDENCE_NOT_FOUND", 404);
+  const sharedIdentity = (await client.query(
+    `SELECT id FROM account_ozon_shared_categories
+      WHERE account_id=$1 AND source_description_category_id=$2
+        AND source_type_id=$3 AND taxonomy_scope=$4`,
+    [accountId, rowNumber(evidenceRow.source_description_category_id),
+      rowNumber(evidenceRow.source_type_id), text(evidenceRow.taxonomy_scope, 80)],
+  )).rows[0];
+  if (!sharedIdentity) throw repositoryError("OZON_CATEGORY_SHARED_NOT_FOUND", 404);
+  await client.query(
+    "SELECT pg_advisory_xact_lock(account_ozon_shared_category_lease_key($1,$2))",
+    [accountId, sharedIdentity.id],
+  );
   const sharedRow = (await client.query(
     `SELECT * FROM account_ozon_shared_categories
-      WHERE account_id=$1 AND source_description_category_id=$2
+      WHERE account_id=$1 AND id=$5 AND source_description_category_id=$2
         AND source_type_id=$3 AND taxonomy_scope=$4
       FOR UPDATE`,
     [accountId, rowNumber(evidenceRow.source_description_category_id),
-      rowNumber(evidenceRow.source_type_id), text(evidenceRow.taxonomy_scope, 80)],
+      rowNumber(evidenceRow.source_type_id), text(evidenceRow.taxonomy_scope, 80), sharedIdentity.id],
   )).rows[0];
   if (!sharedRow) throw repositoryError("OZON_CATEGORY_SHARED_NOT_FOUND", 404);
   const current = mapSharedRow(sharedRow);

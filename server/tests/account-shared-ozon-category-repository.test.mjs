@@ -881,7 +881,7 @@ const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
 async function migrationFiles() {
   return (await readdir(migrationsDir))
-    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 64)
+    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 65)
     .sort();
 }
 

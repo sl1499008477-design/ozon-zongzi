@@ -254,7 +254,11 @@ export function createOzonCategoryService({
     return removed;
   }
 
-  async function getCategoryTree({ accountId, store, language } = {}) {
+  async function getCategoryTree({ accountId, store, language, signal } = {}) {
+    if (signal !== undefined && !(signal instanceof AbortSignal)) {
+      throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+    }
+    signal?.throwIfAborted();
     const normalizedLanguage = normalizedLanguageOf(language);
     const scope = scopeOf({ accountId, store });
     const epoch = scopeEpoch(scope);
@@ -269,6 +273,7 @@ export function createOzonCategoryService({
         "/v1/description-category/tree",
         { language: normalizedLanguage },
         120000,
+        signal ? { signal } : {},
       );
     } catch (source) {
       throw unavailableError("TREE", source);
@@ -285,7 +290,12 @@ export function createOzonCategoryService({
     descriptionCategoryId,
     typeId,
     language,
+    signal,
   } = {}) {
+    if (signal !== undefined && !(signal instanceof AbortSignal)) {
+      throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+    }
+    signal?.throwIfAborted();
     const normalizedDescriptionCategoryId = requiredPositiveIdOf(descriptionCategoryId);
     const normalizedTypeId = requiredPositiveIdOf(typeId);
     const normalizedLanguage = normalizedLanguageOf(language);
@@ -312,6 +322,7 @@ export function createOzonCategoryService({
           language: normalizedLanguage,
         },
         60000,
+        signal ? { signal } : {},
       );
     } catch (source) {
       throw unavailableError("ATTRIBUTES", source);
@@ -330,7 +341,12 @@ export function createOzonCategoryService({
     attributeId,
     language,
     limit,
+    signal,
   } = {}) {
+    if (signal !== undefined && !(signal instanceof AbortSignal)) {
+      throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
+    }
+    signal?.throwIfAborted();
     const normalizedDescriptionCategoryId = requiredPositiveIdOf(descriptionCategoryId);
     const normalizedTypeId = requiredPositiveIdOf(typeId);
     const normalizedAttributeId = requiredPositiveIdOf(attributeId);
@@ -373,6 +389,7 @@ export function createOzonCategoryService({
             ...(lastValueId ? { last_value_id: lastValueId } : {}),
           },
           60000,
+          signal ? { signal } : {},
         );
       } catch (source) {
         throw unavailableError("VALUES", source);

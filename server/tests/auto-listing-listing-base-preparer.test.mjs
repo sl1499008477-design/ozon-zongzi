@@ -127,6 +127,34 @@ test("freezes a complete target-store-normalized template before AI work", async
   assert.deepEqual(deps.calls[0], ["access", { accountId: "account-a", targetStoreId: "store-a" }]);
 });
 
+test("forwards the category preparation abort signal to every Ozon category read", async () => {
+  const controller = new AbortController();
+  const seen = [];
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes(input) {
+        seen.push(input.signal);
+        return { items: [{ id: 85 }, { id: 11254 }] };
+      },
+      async getCategoryAttributeValues(input) {
+        seen.push(input.signal);
+        return { items: [] };
+      },
+    },
+    normalizeItems: async (items, context) => {
+      await context.getCategoryAttributes(789, 999);
+      await context.getCategoryAttributeValues(789, 999, 85);
+      return { items: items.map((_item, index) => normalizedItem(index ? "red" : "blue")) };
+    },
+  });
+  await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(), signal: controller.signal,
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+  assert.deepEqual(seen, [controller.signal, controller.signal]);
+});
+
 for (const provenance of ["MANUAL", "OZON_REFRESH"]) {
   test(`frozen V2 ${provenance} category overrides source and draft category before Ozon normalization`, async () => {
     const itemSource = source();

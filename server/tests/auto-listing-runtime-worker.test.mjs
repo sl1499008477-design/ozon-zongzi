@@ -53,6 +53,17 @@ test("runtime keeps AI worker fully dormant when either feature flag is disabled
   }
 });
 
+test("auto listing fails closed before PostgreSQL when shared category authority is JSON", async () => {
+  let pools = 0;
+  const runtime = createAutoListingRuntime({
+    env: enabledEnv({ AUTO_LISTING_AI_ENABLED: "0" }),
+    persistenceMode: () => "json",
+    getPostgresPool: async () => { pools += 1; throw new Error("must not connect"); },
+  });
+  await assert.rejects(runtime.getService(), { code: "AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE" });
+  assert.equal(pools, 0);
+});
+
 test("enabled runtime starts the queue consumer before startup replay and stops relay before draining the worker", async () => {
   const events = [];
   const runtime = createAutoListingRuntime({

@@ -113,11 +113,18 @@ async function requestOzonSellerApi(store, apiPath, {
   body,
   timeoutMs = 60000,
   maxResponseBytes = 0,
+  signal,
 }) {
   if (!store?.clientId || !store?.apiKey) {
     throw credentialsError(apiPath);
   }
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
+    throw new TypeError("Ozon request signal must be an AbortSignal");
+  }
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let response;
@@ -177,6 +184,7 @@ async function requestOzonSellerApi(store, apiPath, {
     return data;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -187,6 +195,7 @@ export function callOzonSellerApi(store, apiPath, body, timeoutMs = 60000, optio
     body: body || {},
     timeoutMs,
     maxResponseBytes: Number.isSafeInteger(maxResponseBytes) && maxResponseBytes > 0 ? maxResponseBytes : 0,
+    signal: options?.signal,
   });
 }
 

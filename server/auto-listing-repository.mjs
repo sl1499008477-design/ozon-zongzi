@@ -491,6 +491,11 @@ function assertGraph(graph) {
   if (!graph || typeof graph !== "object") throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   const accountId = requiredAccountId(graph.accountId);
   const idempotencyKey = requiredText(graph.idempotencyKey);
+  const categoryPreparationLeaseId = requiredText(graph.categoryPreparationLeaseId);
+  if (graph.categoryPreparationSignal !== undefined
+    && !(graph.categoryPreparationSignal instanceof AbortSignal)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
   if (!["COLLECT_BOX", "EXCEL_SKU"].includes(graph.sourceType)
     || requiredText(graph.actorAccountId) !== accountId || !requiredText(graph.strategyVersionId)
     || !requiredText(graph.uploadPolicyVersionId)
@@ -588,7 +593,8 @@ function assertGraph(graph) {
   if (new Set(items.map((item) => item.sourceOrder)).size !== items.length) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
-  return { ...graph, accountId, idempotencyKey, configSnapshot, configHash, warehouseValidation, items };
+  return { ...graph, accountId, idempotencyKey, categoryPreparationLeaseId,
+    configSnapshot, configHash, warehouseValidation, items };
 }
 
 function sourceVersionConflict() {
@@ -737,6 +743,8 @@ export function createAutoListingRepository({
   idFactory = defaultIdFactory,
   now = () => new Date(),
   stageInitialPlanWork = null,
+  categoryLeaseWaitTimeoutMs = 5_000,
+  categoryLeaseHoldTimeoutMs = 600_000,
 } = {}) {
   if (!pool || typeof pool.connect !== "function" || typeof pool.query !== "function") {
     throw new TypeError("PostgreSQL pool is required for auto listing repository");
@@ -745,7 +753,41 @@ export function createAutoListingRepository({
   if (stageInitialPlanWork !== null && typeof stageInitialPlanWork !== "function") {
     throw new TypeError("Auto listing initial AI workflow port must be a function or null");
   }
+  if (!Number.isInteger(categoryLeaseWaitTimeoutMs) || categoryLeaseWaitTimeoutMs < 10
+    || categoryLeaseWaitTimeoutMs > 30_000
+    || !Number.isInteger(categoryLeaseHoldTimeoutMs) || categoryLeaseHoldTimeoutMs < 1_000
+    || categoryLeaseHoldTimeoutMs > 900_000) {
+    throw new TypeError("Auto listing category lease timeouts are invalid");
+  }
   const newId = (prefix) => requiredText(idFactory(prefix), "AUTO_LISTING_REPOSITORY_INVALID");
+  const activeCategoryLeases = new Map();
+
+  async function connectForCategoryLease() {
+    let timer;
+    let timedOut = false;
+    const pending = Promise.resolve().then(() => pool.connect());
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(repositoryError("AUTO_LISTING_CATEGORY_LEASE_TIMEOUT", 503));
+      }, categoryLeaseWaitTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([pending, timeout]);
+    } finally {
+      clearTimeout(timer);
+      if (timedOut) pending.then((client) => client.release()).catch(() => {});
+    }
+  }
+
+  function expireCategoryLease(leaseId) {
+    const held = activeCategoryLeases.get(leaseId);
+    if (!held) return;
+    const failure = repositoryError("AUTO_LISTING_CATEGORY_LEASE_EXPIRED", 409);
+    held.expired = true;
+    held.controller.abort(failure);
+  }
 
   const loadExcelImportContext = async ({ accountId, importFileId } = {}) => {
     const scope = requiredAccountId(accountId);
@@ -932,42 +974,199 @@ export function createAutoListingRepository({
       };
     },
 
-    async authorizeCategoryPreparation({ accountId, items } = {}) {
+    async acquireCategoryPreparationLease({ accountId, items } = {}) {
       const scope = requiredAccountId(accountId);
       const checked = Array.isArray(items) && items.length >= 1 && items.length <= 100
         ? items.map(exactCategoryAuthorizationItem) : [];
       if (!checked.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      const byCollectItem = new Map();
       for (const item of checked) {
-        const result = await pool.query(
-          `/* auto-listing-category-preparation-authorization */ SELECT shared.id
-             FROM collect_ozon_category_current_sources current_category
-             JOIN collect_ozon_category_source_evidence evidence
-               ON evidence.account_id=current_category.account_id
-              AND evidence.id=current_category.source_evidence_id
-              AND evidence.collect_item_id=current_category.collect_item_id
-              AND evidence.source_kind=current_category.source_kind
-              AND evidence.source_record_id=current_category.source_record_id
-              AND evidence.source_version=current_category.source_version
-             JOIN account_ozon_shared_categories shared
-               ON shared.account_id=evidence.account_id
-              AND shared.source_description_category_id=evidence.source_description_category_id
-              AND shared.source_type_id=evidence.source_type_id
-              AND shared.taxonomy_scope=evidence.taxonomy_scope
-            WHERE current_category.account_id=$1 AND current_category.collect_item_id=$2
-              AND evidence.id=$3 AND shared.id=$4 AND shared.version=$5
-              AND shared.status='ACTIVE'
-              AND shared.current_description_category_id=$6 AND shared.current_type_id=$7
-              AND shared.taxonomy_scope=$8 AND COALESCE(shared.taxonomy_fingerprint,'')=$9
-              AND evidence.source_description_category_id=$10 AND evidence.source_type_id=$11
-              AND shared.source=$12`,
-          [scope, item.collectItemId, item.evidenceId, item.sharedCategoryId,
-            item.sharedCategoryVersion, item.descriptionCategoryId, item.typeId,
-            item.taxonomyScope, item.taxonomyFingerprint, item.sourceDescriptionCategoryId,
-            item.sourceTypeId, item.provenance],
-        );
-        if (result.rows.length !== 1) throw sourceVersionConflict();
+        if (byCollectItem.has(item.collectItemId)) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+        byCollectItem.set(item.collectItemId, item);
       }
-      return Object.freeze({ authorized: true, itemCount: checked.length });
+      const client = await connectForCategoryLease();
+      let backendPid = 0;
+      let leaseId = "";
+      const controller = new AbortController();
+      const onClientError = (caught) => {
+        if (!leaseId) return;
+        const held = activeCategoryLeases.get(leaseId);
+        if (held?.client !== client) return;
+        activeCategoryLeases.delete(leaseId);
+        clearTimeout(held.timer);
+        controller.abort(repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503));
+        try { client.release(caught || repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503)); } catch {}
+      };
+      client.on?.("error", onClientError);
+      try {
+        backendPid = Number((await client.query("SELECT pg_backend_pid()::int AS pid")).rows[0]?.pid);
+        if (!Number.isSafeInteger(backendPid) || backendPid < 1) {
+          throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_UNAVAILABLE", 503);
+        }
+        const resolved = [];
+        for (const item of checked) {
+          const row = (await client.query(
+            `/* auto-listing-category-preparation-lease-key */
+             SELECT current_category.collect_item_id,shared.id AS shared_category_id,
+                    account_ozon_shared_category_lease_key(shared.account_id,shared.id)::text AS lock_key
+               FROM collect_ozon_category_current_sources current_category
+               JOIN collect_ozon_category_source_evidence evidence
+                 ON evidence.account_id=current_category.account_id
+                AND evidence.id=current_category.source_evidence_id
+                AND evidence.collect_item_id=current_category.collect_item_id
+                AND evidence.source_kind=current_category.source_kind
+                AND evidence.source_record_id=current_category.source_record_id
+                AND evidence.source_version=current_category.source_version
+               JOIN account_ozon_shared_categories shared
+                 ON shared.account_id=evidence.account_id
+                AND shared.source_description_category_id=evidence.source_description_category_id
+                AND shared.source_type_id=evidence.source_type_id
+                AND shared.taxonomy_scope=evidence.taxonomy_scope
+              WHERE current_category.account_id=$1 AND current_category.collect_item_id=$2
+                AND evidence.id=$3 AND shared.id=$4 AND shared.version=$5
+                AND shared.status='ACTIVE'
+                AND shared.current_description_category_id=$6 AND shared.current_type_id=$7
+                AND shared.taxonomy_scope=$8 AND COALESCE(shared.taxonomy_fingerprint,'')=$9
+                AND evidence.source_description_category_id=$10 AND evidence.source_type_id=$11
+                AND shared.source=$12`,
+            [scope, item.collectItemId, item.evidenceId, item.sharedCategoryId,
+              item.sharedCategoryVersion, item.descriptionCategoryId, item.typeId,
+              item.taxonomyScope, item.taxonomyFingerprint, item.sourceDescriptionCategoryId,
+              item.sourceTypeId, item.provenance],
+          )).rows[0];
+          if (!row) throw sourceVersionConflict();
+          resolved.push({ item, lockKey: requiredText(row.lock_key) });
+        }
+        const lockKeys = [...new Set(resolved.map(({ lockKey }) => lockKey))]
+          .sort((left, right) => BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0);
+        await client.query("SELECT set_config('lock_timeout',$1,FALSE)", [`${categoryLeaseWaitTimeoutMs}ms`]);
+        await client.query("SELECT set_config('statement_timeout',$1,FALSE)", [`${categoryLeaseWaitTimeoutMs + 1_000}ms`]);
+        for (const lockKey of lockKeys) {
+          try {
+            await client.query("SELECT pg_advisory_lock($1::bigint) AS locked", [lockKey]);
+          } catch (caught) {
+            if (["55P03", "57014"].includes(caught?.code)) {
+              throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_TIMEOUT", 503);
+            }
+            throw caught;
+          }
+        }
+        await client.query("SELECT set_config('lock_timeout','0',FALSE),set_config('statement_timeout','0',FALSE)");
+        for (const { item } of resolved) {
+          const fenced = await client.query(
+            `/* auto-listing-category-preparation-lease-fence */ SELECT shared.id
+               FROM collect_ozon_category_current_sources current_category
+               JOIN collect_ozon_category_source_evidence evidence
+                 ON evidence.account_id=current_category.account_id
+                AND evidence.id=current_category.source_evidence_id
+                AND evidence.collect_item_id=current_category.collect_item_id
+                AND evidence.source_kind=current_category.source_kind
+                AND evidence.source_record_id=current_category.source_record_id
+                AND evidence.source_version=current_category.source_version
+               JOIN account_ozon_shared_categories shared
+                 ON shared.account_id=evidence.account_id
+                AND shared.source_description_category_id=evidence.source_description_category_id
+                AND shared.source_type_id=evidence.source_type_id
+                AND shared.taxonomy_scope=evidence.taxonomy_scope
+              WHERE current_category.account_id=$1 AND current_category.collect_item_id=$2
+                AND evidence.id=$3 AND shared.id=$4 AND shared.version=$5
+                AND shared.status='ACTIVE'
+                AND shared.current_description_category_id=$6 AND shared.current_type_id=$7
+                AND shared.taxonomy_scope=$8 AND COALESCE(shared.taxonomy_fingerprint,'')=$9
+                AND evidence.source_description_category_id=$10 AND evidence.source_type_id=$11
+                AND shared.source=$12`,
+            [scope, item.collectItemId, item.evidenceId, item.sharedCategoryId,
+              item.sharedCategoryVersion, item.descriptionCategoryId, item.typeId,
+              item.taxonomyScope, item.taxonomyFingerprint, item.sourceDescriptionCategoryId,
+              item.sourceTypeId, item.provenance],
+          );
+          if (fenced.rows.length !== 1) throw sourceVersionConflict();
+        }
+        const acquiredAt = new Date(now());
+        if (!Number.isFinite(acquiredAt.getTime())) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+        const expiresAt = new Date(acquiredAt.getTime() + categoryLeaseHoldTimeoutMs);
+        leaseId = newId("auto_listing_category_lease");
+        await client.query("BEGIN");
+        await client.query(
+          `INSERT INTO auto_listing_category_preparation_leases (
+             id,account_id,holder_backend_pid,state,acquired_at,expires_at
+           ) VALUES ($1,$2,$3,'ACTIVE',$4,$5)`,
+          [leaseId, scope, backendPid, acquiredAt.toISOString(), expiresAt.toISOString()],
+        );
+        for (const item of checked) {
+          await client.query(
+            `INSERT INTO auto_listing_category_preparation_lease_items (
+               account_id,lease_id,collect_item_id,evidence_id,shared_category_id,
+               shared_category_version,source_description_category_id,source_type_id,
+               description_category_id,type_id,taxonomy_scope,taxonomy_fingerprint,provenance
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+            [scope, leaseId, item.collectItemId, item.evidenceId, item.sharedCategoryId,
+              item.sharedCategoryVersion, item.sourceDescriptionCategoryId, item.sourceTypeId,
+              item.descriptionCategoryId, item.typeId, item.taxonomyScope,
+              item.taxonomyFingerprint, item.provenance],
+          );
+        }
+        await client.query("COMMIT");
+        const timer = setTimeout(() => { expireCategoryLease(leaseId); }, categoryLeaseHoldTimeoutMs);
+        timer.unref?.();
+        activeCategoryLeases.set(leaseId, {
+          accountId: scope, backendPid, client, timer, controller, expired: false, onClientError,
+        });
+        return Object.freeze({ leaseId, expiresAt: expiresAt.toISOString(), signal: controller.signal });
+      } catch (caught) {
+        await client.query("ROLLBACK").catch(() => {});
+        await client.query("SELECT pg_advisory_unlock_all()").catch(() => {});
+        client.off?.("error", onClientError);
+        try { client.release(caught); } catch {}
+        throw caught;
+      }
+    },
+
+    async releaseCategoryPreparationLease({ accountId, leaseId, outcome } = {}) {
+      const scope = requiredAccountId(accountId);
+      const id = requiredText(leaseId);
+      if (!["COMMITTED", "FAILED", "CONFLICT", "TIMEOUT"].includes(outcome)) {
+        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      }
+      const held = activeCategoryLeases.get(id);
+      if (!held || held.accountId !== scope) throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+      activeCategoryLeases.delete(id);
+      clearTimeout(held.timer);
+      let failed = null;
+      try {
+        const updated = await held.client.query(
+          `UPDATE auto_listing_category_preparation_leases
+              SET state=CASE WHEN $4='TIMEOUT' THEN 'EXPIRED' ELSE 'RELEASED' END,
+                  outcome=$4,released_at=clock_timestamp(),updated_at=clock_timestamp()
+            WHERE account_id=$1 AND id=$2 AND holder_backend_pid=$3 AND state='ACTIVE'
+            RETURNING id`,
+          [scope, id, held.backendPid, outcome],
+        );
+        if (updated.rows.length !== 1) throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+      } catch (caught) {
+        failed = caught;
+      } finally {
+        await held.client.query("SELECT pg_advisory_unlock_all()").catch(() => {});
+        held.client.off?.("error", held.onClientError);
+        try { held.client.release(failed || undefined); } catch {}
+      }
+      if (failed) throw failed;
+      return Object.freeze({ released: true });
+    },
+
+    async recoverCategoryPreparationLeases({ accountId } = {}) {
+      const scope = requiredAccountId(accountId);
+      const result = await pool.query(
+        `UPDATE auto_listing_category_preparation_leases lease
+            SET state=CASE WHEN lease.expires_at<=clock_timestamp() THEN 'EXPIRED' ELSE 'ORPHANED' END,
+                outcome=CASE WHEN lease.expires_at<=clock_timestamp() THEN 'TIMEOUT' ELSE 'CRASHED' END,
+                released_at=clock_timestamp(),updated_at=clock_timestamp()
+          WHERE lease.account_id=$1 AND lease.state='ACTIVE'
+            AND NOT EXISTS (SELECT 1 FROM pg_stat_activity activity WHERE activity.pid=lease.holder_backend_pid)
+          RETURNING id,state`,
+        [scope],
+      );
+      return Object.freeze(result.rows.map((row) => Object.freeze({ id: row.id, state: row.state })));
     },
 
     async loadTargetStore({ accountId, targetStoreId } = {}) {
@@ -1242,6 +1441,17 @@ export function createAutoListingRepository({
                   AND shared.source_description_category_id=evidence.source_description_category_id
                   AND shared.source_type_id=evidence.source_type_id
                   AND shared.taxonomy_scope=evidence.taxonomy_scope
+                 JOIN auto_listing_category_preparation_leases category_lease
+                   ON category_lease.account_id=current_category.account_id
+                  AND category_lease.id=$13 AND category_lease.state='ACTIVE'
+                  AND category_lease.expires_at>statement_timestamp()
+                 JOIN auto_listing_category_preparation_lease_items category_lease_item
+                   ON category_lease_item.account_id=category_lease.account_id
+                  AND category_lease_item.lease_id=category_lease.id
+                  AND category_lease_item.collect_item_id=current_category.collect_item_id
+                  AND category_lease_item.evidence_id=evidence.id
+                  AND category_lease_item.shared_category_id=shared.id
+                  AND category_lease_item.shared_category_version=shared.version
                 WHERE current_category.account_id=$1 AND current_category.collect_item_id=$2
                   AND evidence.id=$3 AND shared.id=$4 AND shared.version=$5
                   AND shared.status='ACTIVE'
@@ -1252,11 +1462,18 @@ export function createAutoListingRepository({
                   AND evidence.source_description_category_id=$10
                   AND evidence.source_type_id=$11
                   AND shared.source=$12
-                FOR SHARE OF current_category,evidence,shared`,
+                  AND category_lease_item.source_description_category_id=$10
+                  AND category_lease_item.source_type_id=$11
+                  AND category_lease_item.description_category_id=$6
+                  AND category_lease_item.type_id=$7
+                  AND category_lease_item.taxonomy_scope=$8
+                  AND category_lease_item.taxonomy_fingerprint=$9
+                  AND category_lease_item.provenance=$12`,
               [graph.accountId, item.collectItemId, category.evidenceId, category.sharedCategoryId,
                 category.sharedCategoryVersion, category.descriptionCategoryId, category.typeId,
                 category.taxonomyScope, category.taxonomyFingerprint,
-                category.sourceDescriptionCategoryId, category.sourceTypeId, category.provenance],
+                category.sourceDescriptionCategoryId, category.sourceTypeId, category.provenance,
+                graph.categoryPreparationLeaseId],
             );
             if (categoryFence.rows.length !== 1) throw sourceVersionConflict();
             const resolved = resolveAiContentStrategy({

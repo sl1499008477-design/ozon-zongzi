@@ -324,6 +324,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
   return {
     accountId: "account-a",
     actorAccountId: "account-a",
+    categoryPreparationLeaseId: "category-lease-a",
     sourceType: "COLLECT_BOX",
     idempotencyKey: "lock-evidence-key",
     correlationId: "lock-evidence-correlation",
@@ -608,44 +609,50 @@ test("loads Excel replay context without category, draft, collect, or ready-row 
   assert.deepEqual(calls[0].params, ["account-a", "import-1"]);
 });
 
-test("category preparation authorization is an account-scoped exact non-transactional read fence", async () => {
+test("category preparation lease uses one dedicated PostgreSQL session, sorted advisory locks, and bounded audit evidence", async () => {
   const calls = [];
-  const repository = createAutoListingRepository({ pool: {
-    connect: async () => assert.fail("read authorization must not hold a transaction across network calls"),
-    async query(sql, params) {
+  const client = {
+    async query(sql, params = []) {
       calls.push({ sql: String(sql), params });
-      return { rows: [{ collect_item_id: "collect-a" }] };
+      if (/pg_backend_pid/u.test(sql)) return { rows: [{ pid: 4242 }] };
+      if (/account_ozon_shared_category_lease_key/u.test(sql) && !/pg_advisory_lock/u.test(sql)) {
+        return { rows: [{ collect_item_id: params[1], shared_category_id: params[3], lock_key: params[3] === "shared-b" ? "2" : "1" }] };
+      }
+      if (/pg_advisory_lock/u.test(sql)) return { rows: [{ locked: null }] };
+      if (/auto-listing-category-preparation-lease-fence/u.test(sql)) return { rows: [{ collect_item_id: params[1] }] };
+      if (/UPDATE auto_listing_category_preparation_leases/u.test(sql)) {
+        return { rows: [{ id: "lease-a" }] };
+      }
+      return { rows: [] };
     },
-  } });
-  const item = {
-    collectItemId: "collect-a", evidenceId: "evidence-a", sharedCategoryId: "shared-a",
-    sharedCategoryVersion: 7, sourceDescriptionCategoryId: 123, sourceTypeId: 456,
-    descriptionCategoryId: 789, typeId: 999, taxonomyScope: "OZON:DEFAULT",
-    taxonomyFingerprint: "", provenance: "MANUAL",
+    release(error) { calls.push({ sql: "RELEASE", error }); },
   };
-
-  await repository.authorizeCategoryPreparation({ accountId: "account-a", items: [item] });
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].sql, /auto-listing-category-preparation-authorization/u);
-  assert.match(calls[0].sql, /current_category\.account_id=\$1/u);
-  assert.match(calls[0].sql, /shared\.status='ACTIVE'/u);
-  assert.doesNotMatch(calls[0].sql, /store_id|target_store/iu);
-  assert.deepEqual(calls[0].params, [
-    "account-a", "collect-a", "evidence-a", "shared-a", 7, 789, 999, "OZON:DEFAULT", "", 123, 456, "MANUAL",
-  ]);
-});
-
-test("category preparation authorization fails closed when the exact shared version is no longer current", async () => {
-  const repository = createAutoListingRepository({ pool: {
-    connect: async () => assert.fail("read authorization must not transact"),
-    query: async () => ({ rows: [] }),
-  } });
-  await assert.rejects(repository.authorizeCategoryPreparation({ accountId: "account-a", items: [{
-    collectItemId: "collect-a", evidenceId: "evidence-a", sharedCategoryId: "shared-a",
+  const repository = createAutoListingRepository({
+    pool: { connect: async () => client, query: async (sql, params) => client.query(sql, params) },
+    idFactory: () => "lease-a",
+    categoryLeaseWaitTimeoutMs: 100,
+    categoryLeaseHoldTimeoutMs: 10_000,
+  });
+  const item = (collectItemId, sharedCategoryId) => ({
+    collectItemId, evidenceId: `evidence-${collectItemId}`, sharedCategoryId,
     sharedCategoryVersion: 7, sourceDescriptionCategoryId: 123, sourceTypeId: 456,
     descriptionCategoryId: 789, typeId: 999, taxonomyScope: "OZON:DEFAULT",
     taxonomyFingerprint: "", provenance: "MANUAL",
-  }] }), { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
+  });
+
+  const lease = await repository.acquireCategoryPreparationLease({
+    accountId: "account-a", items: [item("collect-b", "shared-b"), item("collect-a", "shared-a")],
+  });
+  assert.equal(lease.leaseId, "lease-a");
+  const lockCalls = calls.filter(({ sql }) => /pg_advisory_lock/u.test(sql));
+  assert.deepEqual(lockCalls.map(({ params }) => params[0]), ["1", "2"]);
+  assert.equal(calls.filter(({ sql }) => /auto-listing-category-preparation-lease-fence/u.test(sql)).length, 2);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_category_preparation_leases/u.test(sql)), true);
+  await repository.releaseCategoryPreparationLease({
+    accountId: "account-a", leaseId: lease.leaseId, outcome: "COMMITTED",
+  });
+  assert.equal(calls.some(({ sql }) => /pg_advisory_unlock_all/u.test(sql)), true);
+  assert.equal(calls.at(-1).sql, "RELEASE");
 });
 
 test("loads Collect Box source rows with versioned draft and raw identities", async () => {
@@ -1335,6 +1342,7 @@ test("repository accepts only canonical blocked-source evidence before connectin
   });
   const graph = {
     accountId: "account-a", actorAccountId: "account-a", sourceType: "COLLECT_BOX", idempotencyKey: "blocked-source",
+    categoryPreparationLeaseId: "category-lease-a",
     correlationId: "corr", configSnapshot: config, configHash, strategyVersionId: "version-a",
     uploadPolicyVersionId: "upload-policy-review-a",
     items: [{

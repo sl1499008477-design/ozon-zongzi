@@ -75,6 +75,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
   return {
     accountId,
     actorAccountId: accountId,
+    categoryPreparationLeaseId: `category-lease-${suffix}`,
     sourceType: "COLLECT_BOX",
     idempotencyKey,
     correlationId: `corr-${suffix}`,
@@ -325,6 +326,28 @@ async function registerGraphSources(client, graphInput) {
         [graphInput.accountId, item.sourceRecordId, category.evidenceId, String(draft.version)],
       );
     }
+  }
+  await client.query(
+    `INSERT INTO auto_listing_category_preparation_leases (
+       id,account_id,holder_backend_pid,state,acquired_at,expires_at
+     ) VALUES ($1,$2,pg_backend_pid(),'ACTIVE',NOW(),NOW()+INTERVAL '1 hour')
+     ON CONFLICT (account_id,id) DO NOTHING`,
+    [graphInput.categoryPreparationLeaseId, graphInput.accountId],
+  );
+  for (const item of graphInput.items.filter((entry) => entry.status === "SOURCE_READY")) {
+    const category = item.snapshot.targetCategory;
+    await client.query(
+      `INSERT INTO auto_listing_category_preparation_lease_items (
+         account_id,lease_id,collect_item_id,evidence_id,shared_category_id,
+         shared_category_version,source_description_category_id,source_type_id,
+         description_category_id,type_id,taxonomy_scope,taxonomy_fingerprint,provenance
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (account_id,lease_id,collect_item_id) DO NOTHING`,
+      [graphInput.accountId, graphInput.categoryPreparationLeaseId, item.collectItemId || item.sourceRecordId,
+        category.evidenceId, category.sharedCategoryId, category.sharedCategoryVersion,
+        category.sourceDescriptionCategoryId, category.sourceTypeId, category.descriptionCategoryId,
+        category.typeId, category.taxonomyScope, category.taxonomyFingerprint, category.provenance],
+    );
   }
 }
 
@@ -862,43 +885,15 @@ if (!enabled) {
            'SUB2API_OPENAI_IMAGES','text','image',1)`,
         [`profile-task4-${suffix}`, accountA],
       );
-      const mutator = await pool.connect();
-      const observer = await pool.connect();
-      let resolveCreationPid;
-      const creationPid = new Promise((resolve) => { resolveCreationPid = resolve; });
-      const categoryRacePool = {
-        async connect() {
-          const connection = await pool.connect();
-          await connection.query(`SET search_path TO ${schemaSql}, public`);
-          resolveCreationPid(Number((await connection.query("SELECT pg_backend_pid() AS pid")).rows[0].pid));
-          return connection;
-        },
-        async query(sql, params) { return client.query(sql, params); },
-      };
-      let creation;
-      try {
-        await mutator.query(`SET search_path TO ${schemaSql}, public`);
-        await mutator.query("BEGIN");
-        await mutator.query(
-          `UPDATE account_ozon_shared_categories
-              SET version=version+1,updated_at=clock_timestamp()
-            WHERE account_id=$1 AND id=$2`,
-          [accountA, staleCategory.items[0].snapshot.targetCategory.sharedCategoryId],
-        );
-        creation = createAutoListingRepository({ pool: categoryRacePool }).createJobGraph(staleCategory);
-        creation.catch(() => {});
-        const backendPid = await creationPid;
-        await waitForBackendLock({
-          observer, backendPid, marker: "auto-listing-shared-category-fence",
-        });
-        await mutator.query("COMMIT");
-        await assert.rejects(creation, { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
-      } finally {
-        await mutator.query("ROLLBACK").catch(() => {});
-        await creation?.catch(() => {});
-        observer.release();
-        mutator.release();
-      }
+      await client.query(
+        `UPDATE account_ozon_shared_categories
+            SET version=version+1,updated_at=clock_timestamp()
+          WHERE account_id=$1 AND id=$2`,
+        [accountA, staleCategory.items[0].snapshot.targetCategory.sharedCategoryId],
+      );
+      await assert.rejects(repository.createJobGraph(staleCategory), {
+        code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT",
+      });
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
         [accountA, staleCategory.idempotencyKey],
@@ -915,7 +910,7 @@ if (!enabled) {
       let transitioned = false;
       const racedRepository = {
         ...fullServiceRepository,
-        async authorizeCategoryPreparation(input) {
+        async acquireCategoryPreparationLease(input) {
           if (!transitioned) {
             transitioned = true;
             await client.query(
@@ -925,7 +920,7 @@ if (!enabled) {
               [accountA, fullServiceRace.items[0].snapshot.targetCategory.sharedCategoryId],
             );
           }
-          return fullServiceRepository.authorizeCategoryPreparation(input);
+          return fullServiceRepository.acquireCategoryPreparationLease(input);
         },
         async createJobGraph(input) {
           counters.paidAi += 1;
@@ -960,6 +955,237 @@ if (!enabled) {
         "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
         [accountA, fullServiceRace.idempotencyKey],
       )).rows[0].count), 0);
+
+      await client.query(
+        "DELETE FROM product_stocks WHERE store_id=$1 AND warehouse_id=$2",
+        [`store-${accountA}`, `warehouse-${accountA}`],
+      );
+      await client.query(
+        "UPDATE warehouses SET warehouse_type='RFBS' WHERE id=$1 AND store_id=$2",
+        [`warehouse-${accountA}`, `store-${accountA}`],
+      );
+      const leaseSource = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+      }))[0];
+      const leaseItem = {
+        collectItemId: leaseSource.id,
+        evidenceId: leaseSource.categoryEvidence.id,
+        sharedCategoryId: leaseSource.sharedCategory.id,
+        sharedCategoryVersion: leaseSource.sharedCategory.version,
+        sourceDescriptionCategoryId: leaseSource.categoryEvidence.sourceDescriptionCategoryId,
+        sourceTypeId: leaseSource.categoryEvidence.sourceTypeId,
+        descriptionCategoryId: leaseSource.sharedCategory.currentDescriptionCategoryId,
+        typeId: leaseSource.sharedCategory.currentTypeId,
+        taxonomyScope: leaseSource.sharedCategory.taxonomyScope,
+        taxonomyFingerprint: leaseSource.sharedCategory.taxonomyFingerprint || "",
+        provenance: leaseSource.sharedCategory.source,
+      };
+      let heldLease;
+      let preparationStarted;
+      let preparationFailedBeforeStart;
+      let finishPreparation;
+      const startedPreparation = new Promise((resolve, reject) => {
+        preparationStarted = resolve;
+        preparationFailedBeforeStart = reject;
+      });
+      const preparationBarrier = new Promise((resolve) => { finishPreparation = resolve; });
+      const leaseFirstCounters = { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 };
+      const leaseFirstRepository = {
+        ...repository,
+        async loadCollectSources(input) {
+          const loaded = await repository.loadCollectSources(input);
+          return loaded.map((sourceRow) => ({
+            ...sourceRow,
+            collectItem: {
+              ...sourceRow.collectItem,
+              sku: fullServiceRace.items[0].snapshot.identity.primarySku,
+              listingDraft: {
+                sku: fullServiceRace.items[0].snapshot.identity.primarySku,
+                offerId: fullServiceRace.items[0].snapshot.identity.primaryOfferId,
+                title: "Lease race product",
+                currency: "RUB",
+                blackKopecks: "10000",
+                greenKopecks: "8000",
+                images: [],
+                variants: [{
+                  sku: fullServiceRace.items[0].snapshot.identity.primarySku,
+                  offerId: fullServiceRace.items[0].snapshot.identity.primaryOfferId,
+                }],
+              },
+            },
+          }));
+        },
+        async acquireCategoryPreparationLease(input) {
+          heldLease = await repository.acquireCategoryPreparationLease(input);
+          return heldLease;
+        },
+        async createJobGraph(input) {
+          assert.equal(input.categoryPreparationSignal, heldLease.signal);
+          leaseFirstCounters.paidAi += 1;
+          leaseFirstCounters.objectStorage += 1;
+          leaseFirstCounters.graph += 1;
+          return repository.createJobGraph(input);
+        },
+      };
+      const observedAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 600_000).toISOString();
+      const rfbsEvidenceBody = {
+        schemaVersion: "AUTO_LISTING_RFBS_WAREHOUSE_EVIDENCE_V1",
+        accountId: accountA,
+        storeId: `store-${accountA}`,
+        warehouseRecordId: `warehouse-${accountA}`,
+        platformWarehouseId: `platform-${accountA}`,
+        fulfillmentType: "RFBS",
+        status: "ACTIVE",
+        outcome: "PASSED",
+        observedAt,
+        expiresAt,
+        correlationId: fullServiceRace.correlationId,
+        actorAccountId: accountA,
+      };
+      const leaseFirstService = createAutoListingService({
+        repository: leaseFirstRepository,
+        async prepareListingBase({ signal }) {
+          assert.equal(signal, heldLease.signal);
+          leaseFirstCounters.ozonCategory += 1;
+          preparationStarted();
+          await preparationBarrier;
+          return fullServiceRace.items[0].listingBaseTemplate;
+        },
+        rfbsWarehouseVerifier: Object.freeze({
+          async verifyRfbsWarehouse({ signal }) {
+            assert.equal(signal, heldLease.signal);
+            leaseFirstCounters.rfbs += 1;
+            return Object.freeze({
+              ...rfbsEvidenceBody,
+              evidenceHash: crypto.createHash("sha256")
+                .update(JSON.stringify(rfbsEvidenceBody)).digest("hex"),
+            });
+          },
+        }),
+      });
+      const serviceCreation = leaseFirstService.createAutoListingJob({
+        actor: { id: accountA, role: "admin" },
+        collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+        idempotencyKey: `${fullServiceRace.idempotencyKey}-lease-first`,
+        correlationId: fullServiceRace.correlationId,
+        config: fullServiceRace.configSnapshot,
+      });
+      serviceCreation.catch(preparationFailedBeforeStart);
+      await startedPreparation;
+      const transitionClient = await pool.connect();
+      const transitionObserver = await pool.connect();
+      let transition;
+      try {
+        await transitionClient.query(`SET search_path TO ${schemaSql}, public`);
+        const transitionPid = Number((await transitionClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+        const marker = `auto-listing-category-lease-transition-${suffix}`;
+        transition = transitionClient.query(
+          `/* ${marker} */ UPDATE account_ozon_shared_categories
+              SET version=version+1,updated_at=updated_at+INTERVAL '1 millisecond'
+            WHERE account_id=$1 AND id=$2`,
+          [accountA, leaseItem.sharedCategoryId],
+        );
+        transition.catch(() => {});
+        await waitForBackendLock({ observer: transitionObserver, backendPid: transitionPid, marker });
+        assert.deepEqual(leaseFirstCounters,
+          { ozonCategory: 1, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 });
+        assert.equal((await client.query(
+          "SELECT state FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+          [accountA, heldLease.leaseId],
+        )).rows[0].state, "ACTIVE");
+        finishPreparation();
+        await serviceCreation;
+        await transition;
+      } finally {
+        finishPreparation();
+        await serviceCreation.catch(() => {});
+        await transition?.catch(() => {});
+        transitionObserver.release();
+        transitionClient.release();
+      }
+      assert.deepEqual(leaseFirstCounters,
+        { ozonCategory: 1, rfbs: 1, paidAi: 1, objectStorage: 1, graph: 1 });
+      assert.deepEqual((await client.query(
+        "SELECT state,outcome FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+        [accountA, heldLease.leaseId],
+      )).rows[0], { state: "RELEASED", outcome: "COMMITTED" });
+
+      const expiringSource = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+      }))[0];
+      const expiringItem = { ...leaseItem, sharedCategoryVersion: expiringSource.sharedCategory.version };
+      const expiringRepository = createAutoListingRepository({
+        pool: scopedPool, categoryLeaseHoldTimeoutMs: 1_000,
+      });
+      const expiringLease = await expiringRepository.acquireCategoryPreparationLease({
+        accountId: accountA, items: [expiringItem],
+      });
+      const expiryTransitionClient = await pool.connect();
+      const expiryObserver = await pool.connect();
+      let expiryTransition;
+      try {
+        await expiryTransitionClient.query(`SET search_path TO ${schemaSql}, public`);
+        const expiryTransitionPid = Number((await expiryTransitionClient.query(
+          "SELECT pg_backend_pid() AS pid",
+        )).rows[0].pid);
+        const expiryMarker = `auto-listing-category-expiry-transition-${suffix}`;
+        expiryTransition = expiryTransitionClient.query(
+          `/* ${expiryMarker} */ UPDATE account_ozon_shared_categories
+              SET version=version+1,updated_at=updated_at+INTERVAL '1 millisecond'
+            WHERE account_id=$1 AND id=$2`,
+          [accountA, expiringItem.sharedCategoryId],
+        );
+        expiryTransition.catch(() => {});
+        await waitForBackendLock({
+          observer: expiryObserver, backendPid: expiryTransitionPid, marker: expiryMarker,
+        });
+        await new Promise((resolve) => {
+          if (expiringLease.signal.aborted) resolve();
+          else expiringLease.signal.addEventListener("abort", resolve, { once: true });
+        });
+        await waitForBackendLock({
+          observer: expiryObserver, backendPid: expiryTransitionPid, marker: expiryMarker,
+        });
+        await expiringRepository.releaseCategoryPreparationLease({
+          accountId: accountA, leaseId: expiringLease.leaseId, outcome: "TIMEOUT",
+        });
+        await expiryTransition;
+      } finally {
+        await expiryTransition?.catch(() => {});
+        expiryObserver.release();
+        expiryTransitionClient.release();
+      }
+      assert.deepEqual((await client.query(
+        "SELECT state,outcome FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+        [accountA, expiringLease.leaseId],
+      )).rows[0], { state: "EXPIRED", outcome: "TIMEOUT" });
+
+      const crashSource = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+      }))[0];
+      const crashItem = { ...leaseItem,
+        sharedCategoryVersion: crashSource.sharedCategory.version,
+      };
+      const crashLease = await repository.acquireCategoryPreparationLease({
+        accountId: accountA, items: [crashItem],
+      });
+      const crashPid = Number((await client.query(
+        "SELECT holder_backend_pid FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+        [accountA, crashLease.leaseId],
+      )).rows[0].holder_backend_pid);
+      await client.query("SELECT pg_terminate_backend($1)", [crashPid]);
+      await client.query(
+        `UPDATE account_ozon_shared_categories
+            SET version=version+1,updated_at=updated_at+INTERVAL '1 millisecond'
+          WHERE account_id=$1 AND id=$2`,
+        [accountA, crashItem.sharedCategoryId],
+      );
+      await repository.recoverCategoryPreparationLeases({ accountId: accountA });
+      assert.equal((await client.query(
+        "SELECT state FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id=$2",
+        [accountA, crashLease.leaseId],
+      )).rows[0].state, "ORPHANED");
     } finally {
       await client.query("RESET search_path").catch(() => {});
       await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
