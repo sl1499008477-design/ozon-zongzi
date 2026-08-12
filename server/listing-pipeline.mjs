@@ -18,6 +18,10 @@ import {
   validateTargetStoreRecord,
 } from "./listing-submission-policy.mjs";
 import { assertListingWarehouseEligible } from "./listing-warehouse-eligibility.mjs";
+import {
+  projectOzonImportCarrier,
+  projectProductionOzonImportErrorEvidence,
+} from "./ozon-category-import-error-policy.mjs";
 
 export const LISTING_QUEUE = "ozon-product-import-v3";
 export const TERMINAL_SUBMISSION_STATUSES = new Set(["SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED"]);
@@ -1237,8 +1241,56 @@ export async function softDeleteCollectItemsForAccountV4(accountId, ids = []) {
   return result.rowCount;
 }
 
+export function projectSubmissionItemPublicResultV3(raw = {}) {
+  const item = projectOzonImportCarrier(raw);
+  if (!item || Array.isArray(item)) {
+    return Object.freeze({
+      sku: "", offer_id: "", status: "UNKNOWN_RESULT", product_id: "", errors: Object.freeze([]), errorEvidence: null,
+    });
+  }
+  const status = typeof item.status === "string" && /^[A-Z_]{1,40}$/u.test(item.status)
+    ? item.status
+    : "UNKNOWN_RESULT";
+  const failed = ["FAILED", "PARTIAL_SUCCESS"].includes(status) || Boolean(item.error_code);
+  const response = item.response && typeof item.response === "object" && !Array.isArray(item.response)
+    ? item.response
+    : Object.create(null);
+  const errorEvidence = response.schemaVersion === "OZON_SUBMISSION_ITEM_RESPONSE_V1"
+    ? projectProductionOzonImportErrorEvidence(response.errorEvidence)
+    : null;
+  return Object.freeze({
+    sku: typeof item.sku === "string" ? item.sku.slice(0, 240) : "",
+    offer_id: typeof item.offer_id === "string" ? item.offer_id.slice(0, 240) : "",
+    status,
+    product_id: typeof item.product_id === "string" ? item.product_id.slice(0, 240) : "",
+    errors: Object.freeze(failed ? [Object.freeze({
+      code: "OZON_ITEM_RESULT",
+      message: "Ozon 返回商品导入失败",
+    })] : []),
+    errorEvidence,
+  });
+}
+
+function publicSubmissionStatusMessage(status) {
+  return {
+    QUEUE_PENDING: "商品上架任务已创建",
+    QUEUED: "商品上架任务等待处理",
+    VALIDATING: "正在校验商品上架数据",
+    SUBMITTING: "正在提交商品",
+    OZON_ACCEPTED: "Ozon 已接收商品导入任务",
+    CHECKING: "Ozon 正在处理商品导入",
+    RECONCILING: "正在核对 Ozon 商品导入结果",
+    RETRY_PENDING: "商品上架任务等待安全重试",
+    SUCCEEDED: "商品已上架",
+    PARTIAL_SUCCESS: "部分商品上架失败",
+    FAILED: "商品上架失败",
+    CANCELLED: "商品上架任务已取消",
+  }[status] || "";
+}
+
 function publicJob(row = {}) {
   const itemRows = Array.isArray(row.items) ? row.items : [];
+  const publicItems = itemRows.map(projectSubmissionItemPublicResultV3);
   return {
     id: row.id,
     localTaskId: row.id,
@@ -1258,28 +1310,16 @@ function publicJob(row = {}) {
     failedCount: Number(row.failed_count || 0),
     skippedCount: Number(row.skipped_count || 0),
     sku: row.source_sku || itemRows[0]?.sku || itemRows[0]?.offer_id || "",
-    errorMessage: row.error_message || "",
-    errorCode: row.error_code || "",
-    statusMessage: row.status_message || "",
+    errorMessage: row.error_message ? "商品上架失败，请重试或联系管理员" : "",
+    errorCode: row.error_code ? "OZON_ITEM_RESULT" : "",
+    statusMessage: row.status_message ? publicSubmissionStatusMessage(row.status) : "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     submittedAt: row.submitted_at,
     completedAt: row.completed_at,
     correlationId: row.correlation_id,
-    items: itemRows.map((item) => ({
-      sku: item.sku,
-      offer_id: item.offer_id,
-      status: item.status,
-      product_id: item.product_id,
-      errors: item.error_message ? [{ code: item.error_code, message: item.error_message }] : [],
-    })),
-    statusResponse: { result: { items: itemRows.map((item) => item.response && Object.keys(item.response).length ? item.response : {
-      sku: item.sku,
-      offer_id: item.offer_id,
-      status: item.status,
-      product_id: item.product_id,
-      errors: item.error_message ? [{ code: item.error_code, message: item.error_message }] : [],
-    }) } },
+    items: publicItems,
+    statusResponse: { result: { items: publicItems } },
   };
 }
 
@@ -1713,7 +1753,7 @@ export async function getSubmissionJobDetailV3(idOrTaskId, accountId) {
       fromStatus: event.from_status,
       toStatus: event.to_status,
       type: event.event_type,
-      message: event.message,
+      message: publicSubmissionStatusMessage(event.to_status),
       actorType: event.actor_type,
       actorId: event.actor_id,
       createdAt: event.created_at,
@@ -2095,15 +2135,54 @@ export async function transitionSubmissionJobV3(jobId, toStatus, patch = {}, eve
 }
 
 export async function updateSubmissionItemsV3(jobId, items = []) {
+  const projectedItems = projectOzonImportCarrier(items);
+  const identityFailure = () => Object.assign(new Error("Ozon 商品结果标识无法与冻结上架商品一致对应"), {
+    code: "OZON_IMPORT_OFFER_IDENTITY_MISMATCH",
+    retryable: false,
+    cause: null,
+  });
+  if (!Array.isArray(projectedItems)) throw identityFailure();
+  const offerCounts = new Map();
+  for (const item of projectedItems) {
+    const offerId = item && typeof item === "object" && typeof item.offerId === "string" ? item.offerId : "";
+    if (offerId) offerCounts.set(offerId, (offerCounts.get(offerId) || 0) + 1);
+  }
   return transaction(async (client) => {
-    const current = await client.query("SELECT * FROM submission_items WHERE job_id=$1 ORDER BY sort_order", [jobId]);
-    for (let index = 0; index < current.rows.length; index += 1) {
-      const target = current.rows[index];
-      const update = items.find((item) => (item.offerId && item.offerId === target.offer_id) || (item.sku && item.sku === target.sku)) || items[index];
-      if (!update) continue;
+    const current = await client.query(
+      `SELECT si.*,j.account_id FROM submission_items AS si
+       JOIN submission_jobs AS j ON j.id=si.job_id AND j.snapshot_id=si.snapshot_id
+       WHERE si.job_id=$1 ORDER BY si.sort_order`,
+      [jobId],
+    );
+    const targetOfferCounts = new Map();
+    for (const target of current.rows) {
+      if (target.offer_id) targetOfferCounts.set(target.offer_id, (targetOfferCounts.get(target.offer_id) || 0) + 1);
+    }
+    if (projectedItems.length !== current.rows.length
+        || offerCounts.size !== projectedItems.length
+        || targetOfferCounts.size !== current.rows.length
+        || [...targetOfferCounts].some(([offerId, count]) => count !== 1 || offerCounts.get(offerId) !== 1)) {
+      throw identityFailure();
+    }
+    for (const target of current.rows) {
+      const update = projectedItems.find((item) => item && typeof item === "object" && item.offerId === target.offer_id);
+      if (!update) throw identityFailure();
+      const status = typeof update.status === "string" && /^[A-Z_]{1,40}$/u.test(update.status)
+        ? update.status
+        : target.status;
+      const productId = typeof update.productId === "string" && /^[1-9][0-9]{0,239}$/u.test(update.productId)
+        ? update.productId
+        : "";
+      const failed = status === "FAILED";
+      const evidence = projectProductionOzonImportErrorEvidence(update.errorEvidence);
+      const response = Object.freeze({
+        schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1",
+        rawResponse: update.response && typeof update.response === "object" ? update.response : {},
+        errorEvidence: evidence,
+      });
       await client.query(
         `UPDATE submission_items SET status=$2, product_id=$3, error_code=$4, error_message=$5, response=$6::jsonb, updated_at=NOW() WHERE id=$1`,
-        [target.id, update.status || target.status, update.productId || "", update.errors?.[0] ? clean(update.errors[0], 160) : "", clean((update.errors || []).join("；"), 3000), json(update.response || {})],
+        [target.id, status, productId, failed ? "OZON_ITEM_RESULT" : "", failed ? "Ozon 返回商品导入失败" : "", json(response)],
       );
     }
   });

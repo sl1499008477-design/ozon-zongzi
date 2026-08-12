@@ -12,12 +12,39 @@ import {
   assertListingStocksBelongToTarget,
   assertUsableOperatingStore,
   createSubmissionV3,
+  getSubmissionJobDetailV3,
+  getSubmissionJobV3,
   listCollectItemsV3,
   loadSubmissionWorkV3,
   mirrorCollectItemV3,
   prepareCollectItemForListing,
+  projectSubmissionItemPublicResultV3,
   softDeleteCollectItemsForAccountV4,
+  updateSubmissionItemsV3,
 } from "../listing-pipeline.mjs";
+
+const safeProjection = projectSubmissionItemPublicResultV3({
+  sku: "safe-sku",
+  offer_id: "safe-offer",
+  status: "FAILED",
+  product_id: "",
+  error_code: "UNKNOWN",
+  error_message: "raw-third-party-secret",
+  response: {
+    schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1",
+    rawResponse: { message: "raw-third-party-secret", credential: "secret" },
+    errorEvidence: null,
+  },
+});
+assert.deepEqual(safeProjection, {
+  sku: "safe-sku",
+  offer_id: "safe-offer",
+  status: "FAILED",
+  product_id: "",
+  errors: [{ code: "OZON_ITEM_RESULT", message: "Ozon 返回商品导入失败" }],
+  errorEvidence: null,
+});
+assert.doesNotMatch(JSON.stringify(safeProjection), /raw-third-party-secret|credential/iu);
 
 if (!postgresEnabled()) {
   console.log("listing pipeline v3 integration skipped: PostgreSQL is not configured");
@@ -399,6 +426,64 @@ try {
   );
   assert.equal(snapshot.rows[0].items[0].name, "用户修改标题");
   assert.equal(snapshot.rows[0].store_id, storeId);
+
+  const safeEvidence = Object.freeze({
+    schemaVersion: "OZON_IMPORT_ERROR_EVIDENCE_V1",
+    policyVersion: 1,
+    code: "TEST_SAFE_EVIDENCE",
+    field: "description_category_id",
+    attributeId: null,
+    state: "FAILED",
+    offerId: "offer-1",
+    productId: null,
+    classification: "EXPLICIT_CATEGORY_FAILURE",
+  });
+  await assert.rejects(updateSubmissionItemsV3(created.job.id, [{
+    offerId: "wrong-offer",
+    sku: "source-sku",
+    status: "FAILED",
+    errors: ["raw-third-party-secret"],
+    response: { message: "raw-third-party-secret", credential: "secret" },
+    errorEvidence: safeEvidence,
+  }]), (error) => error?.code === "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"
+    && error?.retryable === false && error?.cause === null
+    && !/raw-third-party-secret|credential/iu.test(error.message));
+  let persistedImportResult = await pool.query(
+    "SELECT status,response FROM submission_items WHERE job_id=$1 AND offer_id='offer-1'",
+    [created.job.id],
+  );
+  assert.equal(persistedImportResult.rows[0].status, "PENDING");
+  await updateSubmissionItemsV3(created.job.id, [{
+    offerId: "offer-1",
+    status: "FAILED",
+    errors: ["raw-third-party-secret"],
+    response: { message: "raw-third-party-secret", credential: "secret" },
+    errorEvidence: safeEvidence,
+  }]);
+  persistedImportResult = await pool.query(
+    "SELECT status,response FROM submission_items WHERE job_id=$1 AND offer_id='offer-1'",
+    [created.job.id],
+  );
+  assert.equal(persistedImportResult.rows[0].status, "FAILED");
+  assert.equal(persistedImportResult.rows[0].response.schemaVersion, "OZON_SUBMISSION_ITEM_RESPONSE_V1");
+  assert.equal(persistedImportResult.rows[0].response.rawResponse.message, "raw-third-party-secret");
+  assert.equal(persistedImportResult.rows[0].response.errorEvidence, null);
+  const publicImportJob = await getSubmissionJobV3(created.job.id, accountId);
+  assert.equal(publicImportJob.items[0].errorEvidence, null);
+  assert.doesNotMatch(JSON.stringify(publicImportJob), /raw-third-party-secret|credential/iu);
+  assert.equal(await getSubmissionJobV3(created.job.id, foreignAccountId), null);
+  await pool.query(
+    "UPDATE submission_jobs SET error_code='UNKNOWN',error_message='job-third-party-secret',status_message='status-third-party-secret' WHERE id=$1",
+    [created.job.id],
+  );
+  await pool.query(
+    "UPDATE submission_events SET message='event-third-party-secret' WHERE job_id=$1",
+    [created.job.id],
+  );
+  const closedPublicJob = await getSubmissionJobV3(created.job.id, accountId);
+  const closedPublicDetail = await getSubmissionJobDetailV3(created.job.id, accountId);
+  assert.doesNotMatch(JSON.stringify({ closedPublicJob, closedPublicDetail }), /third-party-secret/iu);
+  assert.equal(closedPublicJob.errorMessage, "商品上架失败，请重试或联系管理员");
 
   await pool.query("UPDATE stores SET is_current=FALSE WHERE owner_account_id=$1", [accountId]);
   await pool.query("UPDATE stores SET is_current=TRUE WHERE id=$1", [secondStoreId]);
