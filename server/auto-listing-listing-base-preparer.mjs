@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 
 import { normalizeOzonImportItems } from "./ozon-import-normalizer.mjs";
+import { rebuildOzonItemsForCategory } from "./ozon-category-item-rebuilder.mjs";
+import { buildOzonCategoryRebuildMetadata } from "./ozon-category-service.mjs";
 import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";
 
 const HASH = /^[a-f0-9]{64}$/u;
@@ -11,6 +13,7 @@ function failure(code, status = 422) {
   error.code = code;
   error.status = status;
   error.retryable = false;
+  error.cause = null;
   return error;
 }
 
@@ -21,6 +24,13 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]))
     : value;
 const digest = (value) => crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const nested of Object.values(value)) deepFreeze(nested, seen);
+  return Object.freeze(value);
+}
 
 function productDraftEvidence(source, fallbackVersions) {
   const draft = source?.productDraft;
@@ -89,11 +99,34 @@ function attributeId(attribute) {
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+function positiveId(value) {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : 0;
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : 0;
+}
+
+function normalizedAttributeKeys(items) {
+  const keys = new Set();
+  const include = (attribute) => {
+    const id = positiveId(attribute?.id);
+    const complexId = positiveId(attribute?.complex_id) || 0;
+    if (id) keys.add(`${complexId}:${id}`);
+  };
+  for (const item of items) {
+    for (const attribute of Array.isArray(item.attributes) ? item.attributes : []) include(attribute);
+    for (const group of Array.isArray(item.complex_attributes) ? item.complex_attributes : []) {
+      for (const attribute of Array.isArray(group?.attributes) ? group.attributes : []) include(attribute);
+    }
+  }
+  return keys;
+}
+
 function sourceVariant(raw, normalized, index) {
   const sourceSku = text(raw?.sku || raw?.sourceSku || raw?.source_sku || raw?.scraped_sku);
   const sourceVariantId = text(raw?.offer_id || raw?.offerId || sourceSku || String(index + 1));
   if (!sourceSku || !sourceVariantId) throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
-  return { sourceVariantId, sourceSku, item: structuredClone(normalized) };
+  return { sourceVariantId, sourceSku, item: normalized };
 }
 
 function exactTargetCategory(value) {
@@ -179,10 +212,47 @@ export function createAutoListingListingBasePreparer({
       throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
     }
     const categoryCapabilities = new Map();
+    const categoryAttributeMetadata = new Map();
+    const categoryDictionaryReadPromises = new Map();
+    const categoryDictionaryValues = new Map();
     const categoryKey = (descriptionCategoryId, typeId) => `${Number(descriptionCategoryId)}:${Number(typeId)}`;
+    const dictionaryKey = (descriptionCategoryId, typeId, attributeIdValue) =>
+      `${Number(descriptionCategoryId)}:${Number(typeId)}:${Number(attributeIdValue)}`;
+    const sourceCategory = Object.freeze({
+      kind: "UNIQUE_MATCH",
+      descriptionCategoryId: Number(category.descriptionCategoryId),
+      typeId: Number(category.typeId),
+    });
+    const readDictionaryValues = (descriptionCategoryId, typeId, attributeIdValue) => {
+      if (Number(descriptionCategoryId) !== sourceCategory.descriptionCategoryId
+        || Number(typeId) !== sourceCategory.typeId || !positiveId(attributeIdValue)) {
+        throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
+      }
+      const key = dictionaryKey(descriptionCategoryId, typeId, attributeIdValue);
+      if (!categoryDictionaryReadPromises.has(key)) {
+        categoryDictionaryReadPromises.set(key, (async () => {
+          try {
+            const result = await categoryService.getCategoryAttributeValues({
+              accountId: scope, store: storeAccess, descriptionCategoryId, typeId,
+              attributeId: Number(attributeIdValue), language: "DEFAULT", limit: 5_000,
+              ...(signal ? { signal } : {}),
+            });
+            if (!Array.isArray(result?.items) || result.items.length > 5_000) {
+              throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+            }
+            categoryDictionaryValues.set(key, result.items);
+            return result.items;
+          } catch {
+            throw failure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED");
+          }
+        })());
+      }
+      return categoryDictionaryReadPromises.get(key);
+    };
     const normalized = await normalizeItems(rawItems, {
       strictTypeMatch: true,
-      categoryMatchPolicy: "FROZEN_ACCOUNT_SHARED_EXACT",
+      categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+      sourceCategory,
       allowUnresolvedRequiredDictionaryValues: false,
       getCategoryAttributes: async (descriptionCategoryId, typeId) => {
         if (Number(descriptionCategoryId) !== Number(category.descriptionCategoryId)
@@ -198,18 +268,11 @@ export function createAutoListingListingBasePreparer({
           categoryKey(descriptionCategoryId, typeId),
           items.some((attribute) => attributeId(attribute) === RICH_CONTENT_ATTRIBUTE_ID),
         );
+        categoryAttributeMetadata.set(categoryKey(descriptionCategoryId, typeId), items);
         return items;
       },
       getCategoryAttributeValues: async (descriptionCategoryId, typeId, attributeIdValue) => {
-        if (Number(descriptionCategoryId) !== Number(category.descriptionCategoryId)
-          || Number(typeId) !== Number(category.typeId)) {
-          throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
-        }
-        return (await categoryService.getCategoryAttributeValues({
-          accountId: scope, store: storeAccess, descriptionCategoryId, typeId,
-          attributeId: attributeIdValue, language: "DEFAULT", limit: 5_000,
-          ...(signal ? { signal } : {}),
-        })).items;
+        return readDictionaryValues(descriptionCategoryId, typeId, attributeIdValue);
       },
     });
     if (!Array.isArray(normalized?.items) || normalized.items.length !== rawItems.length
@@ -227,11 +290,44 @@ export function createAutoListingListingBasePreparer({
       categoryCapabilities.get(categoryKey(item.description_category_id, item.type_id)) === true);
     if (!supported) throw failure("AUTO_LISTING_RICH_CONTENT_UNSUPPORTED", 409);
 
-    return Object.freeze({
+    const metadataInput = () => ({
+      descriptionCategoryId: sourceCategory.descriptionCategoryId,
+      typeId: sourceCategory.typeId,
+      attributes: categoryAttributeMetadata.get(categoryKey(
+        sourceCategory.descriptionCategoryId,
+        sourceCategory.typeId,
+      )) || [],
+      dictionaryValues: [...categoryDictionaryValues.entries()].map(([key, values]) => ({
+        attributeId: Number(key.split(":")[2]),
+        values,
+      })),
+    });
+    const preliminaryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    const usedAttributeKeys = normalizedAttributeKeys(normalized.items);
+    const dictionaryAttributeIds = [...new Set(preliminaryMetadata.attributes
+      .filter((attribute) => attribute.dictionaryId
+        && (attribute.required || usedAttributeKeys.has(`${attribute.complexId}:${attribute.id}`)))
+      .map((attribute) => attribute.id))].sort((left, right) => left - right);
+    for (const attributeIdValue of dictionaryAttributeIds) {
+      await readDictionaryValues(
+        sourceCategory.descriptionCategoryId,
+        sourceCategory.typeId,
+        attributeIdValue,
+      );
+    }
+    const currentCategoryMetadata = buildOzonCategoryRebuildMetadata(metadataInput());
+    const rebuiltItems = rebuildOzonItemsForCategory({
+      originalItems: normalized.items,
+      sourceEvidenceAttributes: normalized.items.map((item) => item.attributes || []),
+      replacementCategory: sourceCategory,
+      currentCategoryMetadata,
+    });
+
+    return deepFreeze({
       productDraft,
       pricingEvidence: frozenPriceEvidence,
       richContentAttributeSupported: true,
-      variants: normalized.items.map((item, index) => sourceVariant(rawItems[index], item, index)),
+      variants: rebuiltItems.map((item, index) => sourceVariant(rawItems[index], item, index)),
       versions: frozenVersions,
     });
   };

@@ -44,6 +44,7 @@ async function normalize(items, options = {}) {
   return normalizeOzonImportItems(items, {
     strictTypeMatch: !!options.strictTypeMatch,
     categoryMatchPolicy: options.categoryMatchPolicy,
+    sourceCategory: options.sourceCategory,
     targetStoreId: options.targetStoreId,
     now: options.now,
     allowUnresolvedRequiredDictionaryValues: !!options.allowUnresolvedRequiredDictionaryValues,
@@ -78,6 +79,189 @@ function collectedCategoryItem({ offerId, descriptionCategoryId, typeName, typeI
 }
 
 const fixedNow = () => new Date("2026-08-01T00:00:00.000Z");
+
+const strictSourceCategory = Object.freeze({
+  kind: "UNIQUE_MATCH",
+  descriptionCategoryId: 17031664,
+  typeId: 971001,
+});
+
+function strictCategoryItem(overrides = {}) {
+  return {
+    offer_id: "strict-source-category",
+    sku: "strict-source-sku",
+    name: "Strict source category product",
+    price: "100.00",
+    currency_code: "RUB",
+    images: ["https://cdn.example.test/strict.jpg"],
+    description_category_id: 17031664,
+    type_id: 971001,
+    weight: 100,
+    depth: 100,
+    width: 100,
+    height: 100,
+    attributes: [{ id: 85, values: [{ value: "Нет бренда" }] }],
+    _sourceVariant: {
+      description_category_id: 99999999,
+      type_id: 88888888,
+      attributes: [{ key: "8229", value: "fuzzy source name must never be consulted" }],
+    },
+    ...overrides,
+  };
+}
+
+async function testSourceCategoryStrictUsesOnlyFrozenUniqueMatch() {
+  let treeReads = 0;
+  const result = await normalizeOzonImportItems([strictCategoryItem()], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    targetStoreId: "store-secret-must-not-enter-result",
+    getCategoryTree: async () => {
+      treeReads += 1;
+      throw new Error("fuzzy/store category matching is forbidden");
+    },
+    getCategoryAttributes: async () => attrs,
+    getCategoryAttributeValues: async () => [],
+  });
+
+  assert.equal(treeReads, 0);
+  assert.equal(result.items[0].description_category_id, 17031664);
+  assert.equal(result.items[0].type_id, 971001);
+  assert.doesNotMatch(JSON.stringify(result), /store-secret|targetStoreId|storeId/);
+
+  for (const sourceCategory of [
+    undefined,
+    { ...strictSourceCategory, descriptionCategoryId: 17028737 },
+    { kind: "NEEDS_REVIEW", reasonCode: "TYPE_AMBIGUOUS" },
+  ]) {
+    await assert.rejects(
+      () => normalizeOzonImportItems([strictCategoryItem()], {
+        strictTypeMatch: true,
+        categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+        sourceCategory,
+        getCategoryTree: async () => { throw new Error("must not read tree"); },
+        getCategoryAttributes: async () => attrs,
+      }),
+      (error) => error?.code === "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"
+        && error.status === 409 && error.cause === null,
+    );
+  }
+
+  let coercions = 0;
+  await assert.rejects(() => normalizeOzonImportItems([strictCategoryItem()], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: {
+      ...strictSourceCategory,
+      descriptionCategoryId: { valueOf() { coercions += 1; throw new Error("secret"); } },
+    },
+    getCategoryAttributes: async () => attrs,
+  }), { code: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" });
+  assert.equal(coercions, 0);
+}
+
+async function testSourceCategoryStrictRequiresEveryRequiredAttribute() {
+  await assert.rejects(
+    () => normalizeOzonImportItems([strictCategoryItem()], {
+      strictTypeMatch: true,
+      categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+      sourceCategory: strictSourceCategory,
+      getCategoryAttributes: async () => [...attrs, { id: 777, is_required: true, name: "vendor-secret-name" }],
+      getCategoryAttributeValues: async () => [],
+    }),
+    (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+      && error.status === 422 && error.cause === null
+      && !error.message.includes("vendor-secret-name") && !JSON.stringify(error).includes("vendor-secret-name"),
+  );
+}
+
+async function testSourceCategoryStrictChecksRequiredComplexAttributes() {
+  const item = strictCategoryItem({
+    bundleComplexAttrs: [{
+      id: 901,
+      complex_id: 77,
+      values: [{ value: "complex evidence" }],
+    }],
+  });
+  const result = await normalizeOzonImportItems([item], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    getCategoryAttributes: async () => [
+      ...attrs,
+      { id: 901, complex_id: 77, is_required: true },
+    ],
+    getCategoryAttributeValues: async () => [],
+  });
+  assert.deepEqual(result.items[0].complex_attributes, [{
+    attributes: [{ complex_id: 77, id: 901, values: [{ value: "complex evidence" }] }],
+  }]);
+
+  await assert.rejects(() => normalizeOzonImportItems([strictCategoryItem()], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    getCategoryAttributes: async () => [...attrs, { id: 901, complex_id: 77, is_required: true }],
+    getCategoryAttributeValues: async () => [],
+  }), { code: "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE" });
+}
+
+async function testSourceCategoryStrictValidatesCurrentDictionaryIdsWithSafeFailure() {
+  for (const value of [
+    { value: "Нет бренда" },
+    { value: "Нет бренда", dictionary_value_id: 99999999 },
+  ]) {
+    const item = strictCategoryItem({
+      attributes: [{ id: 85, values: [value] }],
+    });
+    await assert.rejects(
+      () => normalizeOzonImportItems([item], {
+        strictTypeMatch: true,
+        categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+        sourceCategory: strictSourceCategory,
+        getCategoryAttributes: async () => [
+          ...attrs.filter((attribute) => attribute.id !== 85),
+          { id: 85, dictionary_id: 28732849, is_required: true, name: "Brand secret" },
+        ],
+        getCategoryAttributeValues: async () => [{ id: 126745801, value: "Нет бренда" }],
+      }),
+      (error) => error?.code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED"
+        && error.status === 422 && error.cause === null
+        && !error.message.includes("Нет бренда") && !JSON.stringify(error).includes("Нет бренда"),
+    );
+  }
+
+  await assert.rejects(() => normalizeOzonImportItems([strictCategoryItem({
+    attributes: [{ id: 85, values: [{ value: "Нет бренда", dictionary_value_id: 126745801 }] }],
+  })], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    getCategoryAttributes: async () => [
+      ...attrs.filter((attribute) => attribute.id !== 85),
+      { id: 85, dictionary_id: 28732849, is_required: true },
+    ],
+  }), { code: "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED" });
+}
+
+async function testSourceCategoryStrictAcceptsOnlyAnExactCurrentDictionaryId() {
+  const result = await normalizeOzonImportItems([strictCategoryItem({
+    attributes: [{ id: 85, values: [{ value: "stale display label", dictionary_value_id: 126745801 }] }],
+  })], {
+    strictTypeMatch: true,
+    categoryMatchPolicy: "SOURCE_CATEGORY_STRICT",
+    sourceCategory: strictSourceCategory,
+    getCategoryAttributes: async () => [
+      ...attrs.filter((attribute) => attribute.id !== 85),
+      { id: 85, dictionary_id: 28732849, is_required: true },
+    ],
+    getCategoryAttributeValues: async () => [{ id: 126745801, value: "Нет бренда" }],
+  });
+  assert.deepEqual(result.items[0].attributes.find((attribute) => attribute.id === 85).values, [
+    { value: "stale display label", dictionary_value_id: 126745801 },
+  ], "strict policy validates by current dictionary ID and does not infer by text");
+}
 
 async function testTargetStoreValidatesDictionaryTypeCandidate() {
   const targetTree = [{
@@ -768,6 +952,11 @@ async function testNonCategoryFailureKeepsWarningWhenStrictTypeMatchIsFalse() {
 
 await testFollowSellPayloadToOzonImportItem();
 await testStrictTypeMatchFailsFast();
+await testSourceCategoryStrictUsesOnlyFrozenUniqueMatch();
+await testSourceCategoryStrictRequiresEveryRequiredAttribute();
+await testSourceCategoryStrictChecksRequiredComplexAttributes();
+await testSourceCategoryStrictValidatesCurrentDictionaryIdsWithSafeFailure();
+await testSourceCategoryStrictAcceptsOnlyAnExactCurrentDictionaryId();
 await testTargetStoreValidatesDictionaryTypeCandidate();
 await testTargetStoreRejectsUnknownDictionaryTypeCandidate();
 await testTargetStoreExactTextPolicy();

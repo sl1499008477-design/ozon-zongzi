@@ -49,7 +49,11 @@ const normalizedItem = (suffix) => ({
   width: 80,
   height: 80,
   dimension_unit: "mm",
-  attributes: [{ id: 85, complex_id: 0, values: [{ value: "Нет бренда" }] }],
+  attributes: [{
+    id: 85,
+    complex_id: 0,
+    values: [{ value: "Нет бренда", dictionary_value_id: 126745801 }],
+  }],
 });
 
 const frozenTargetCategory = (provenance = "MANUAL") => ({
@@ -84,9 +88,11 @@ function dependencies(overrides = {}) {
       },
       async getCategoryAttributes(input) {
         calls.push(["attributes", { descriptionCategoryId: input.descriptionCategoryId, typeId: input.typeId }]);
-        return { items: [{ id: 85 }, { id: 11254 }] };
+        return { items: [{ id: 85, dictionary_id: 7, is_required: true }, { id: 11254 }] };
       },
-      async getCategoryAttributeValues() { return { items: [] }; },
+      async getCategoryAttributeValues() {
+        return { items: [{ id: 126745801, value: "Нет бренда" }] };
+      },
     },
     normalizeItems: async (items, context) => {
       calls.push(["normalize", { count: items.length, targetStoreId: context.targetStoreId }]);
@@ -125,6 +131,12 @@ test("freezes a complete target-store-normalized template before AI work", async
   });
   assert.doesNotMatch(JSON.stringify(result), /must-never-be-persisted|client-a|apiKey/);
   assert.deepEqual(deps.calls[0], ["access", { accountId: "account-a", targetStoreId: "store-a" }]);
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.variants), true);
+  assert.equal(Object.isFrozen(result.variants[0]), true);
+  assert.equal(Object.isFrozen(result.variants[0].item), true);
+  assert.equal(Object.isFrozen(result.variants[0].item.attributes), true);
+  assert.equal(Object.isFrozen(result.variants[0].item.attributes[0].values), true);
 });
 
 test("forwards the category preparation abort signal to every Ozon category read", async () => {
@@ -134,16 +146,19 @@ test("forwards the category preparation abort signal to every Ozon category read
     categoryService: {
       async getCategoryAttributes(input) {
         seen.push(input.signal);
-        return { items: [{ id: 85 }, { id: 11254 }] };
+        return { items: [{ id: 85, dictionary_id: 7, is_required: true }, { id: 11254 }] };
       },
       async getCategoryAttributeValues(input) {
         seen.push(input.signal);
-        return { items: [] };
+        return { items: [{ id: 126745801, value: "Нет бренда" }] };
       },
     },
     normalizeItems: async (items, context) => {
       await context.getCategoryAttributes(789, 999);
-      await context.getCategoryAttributeValues(789, 999, 85);
+      await Promise.all([
+        context.getCategoryAttributeValues(789, 999, 85),
+        context.getCategoryAttributeValues(789, 999, 85),
+      ]);
       return { items: items.map((_item, index) => normalizedItem(index ? "red" : "blue")) };
     },
   });
@@ -153,6 +168,79 @@ test("forwards the category preparation abort signal to every Ozon category read
     pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
   });
   assert.deepEqual(seen, [controller.signal, controller.signal]);
+});
+
+test("snapshots only used or required replacement dictionaries once in exact sorted scope", async () => {
+  const dictionaryReads = [];
+  const options = new Map([
+    [85, { id: 126745801, value: "Нет бренда" }],
+    [400, { id: 400001, value: "Required option" }],
+    [500, { id: 500001, value: "Used option" }],
+  ]);
+  const deps = dependencies({
+    categoryService: {
+      async getCategoryAttributes() {
+        return { items: [
+          { id: 900, dictionary_id: 90 },
+          { id: 500, dictionary_id: 50 },
+          { id: 85, dictionary_id: 7, is_required: true },
+          { id: 400, dictionary_id: 40, is_required: true },
+          { id: 11254 },
+        ] };
+      },
+      async getCategoryAttributeValues(input) {
+        dictionaryReads.push({
+          descriptionCategoryId: input.descriptionCategoryId,
+          typeId: input.typeId,
+          attributeId: input.attributeId,
+          limit: input.limit,
+        });
+        return { items: [options.get(input.attributeId)] };
+      },
+    },
+    async normalizeItems(items, context) {
+      await context.getCategoryAttributes(789, 999);
+      return { items: items.map((item, index) => ({
+        ...normalizedItem(index ? "red" : "blue"),
+        currency_code: item.currency_code,
+        attributes: [
+          { id: 500, values: [{ value: "stale label", dictionary_value_id: 500001 }] },
+          { id: 85, values: [{ value: "stale label", dictionary_value_id: 126745801 }] },
+          { id: 400, values: [{ value: "stale label", dictionary_value_id: 400001 }] },
+        ],
+      })), warnings: [] };
+    },
+  });
+
+  await createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  });
+
+  assert.deepEqual(dictionaryReads, [85, 400, 500].map((attributeId) => ({
+    descriptionCategoryId: 789,
+    typeId: 999,
+    attributeId,
+    limit: 5_000,
+  })));
+});
+
+test("normalizes category dictionary read failures without leaking the upstream error", async () => {
+  const deps = dependencies();
+  let dictionaryReadCount = 0;
+  deps.categoryService.getCategoryAttributeValues = async () => {
+    dictionaryReadCount += 1;
+    throw new Error("credential-secret from upstream");
+  };
+  await assert.rejects(createAutoListingListingBasePreparer(deps)({
+    accountId: "account-a", source: source(), targetStore: { id: "store-a", ownerAccountId: "account-a" },
+    targetCategory: frozenTargetCategory(),
+    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+  }), (error) => error?.code === "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED"
+    && error.status === 422 && error.retryable === false && error.cause === null
+    && !error.message.includes("secret") && !JSON.stringify(error).includes("secret"));
+  assert.equal(dictionaryReadCount, 1);
 });
 
 for (const provenance of ["MANUAL", "OZON_REFRESH"]) {
@@ -169,16 +257,23 @@ for (const provenance of ["MANUAL", "OZON_REFRESH"]) {
         async getCategoryTree() { observed.tree += 1; throw new Error("category tree is not authority"); },
         async getCategoryAttributes(input) {
           observed.attributes.push([input.descriptionCategoryId, input.typeId]);
-          return { items: [{ id: 85 }, { id: 11254 }] };
+          return { items: [{ id: 85, dictionary_id: 7, is_required: true }, { id: 11254 }] };
         },
         async getCategoryAttributeValues(input) {
           observed.values.push([input.descriptionCategoryId, input.typeId]);
-          return { items: [] };
+          return { items: [{ id: 126745801, value: "Нет бренда" }] };
         },
       },
       async normalizeItems(items, context) {
         observed.raw = structuredClone(items);
+        assert.equal(context.categoryMatchPolicy, "SOURCE_CATEGORY_STRICT");
+        assert.deepEqual(context.sourceCategory, {
+          kind: "UNIQUE_MATCH",
+          descriptionCategoryId: 789,
+          typeId: 999,
+        });
         assert.equal(Object.hasOwn(context, "getCategoryTree"), false);
+        assert.equal(Object.hasOwn(context, "targetStoreId"), false);
         await context.getCategoryAttributes(789, 999);
         await context.getCategoryAttributeValues(789, 999, 85);
         return {
@@ -207,16 +302,32 @@ for (const provenance of ["MANUAL", "OZON_REFRESH"]) {
   });
 }
 
-test("the same account freezes identical V2 category authority for two target stores", async () => {
+test("the same account keeps category shared while two stores retain separate credentials and currencies", async () => {
+  const categoryReads = [];
   const deps = dependencies({
     async loadStoreAccess({ accountId, targetStoreId }) {
       return { id: targetStoreId, ownerAccountId: accountId, clientId: `client-${targetStoreId}`,
-        apiKey: "test-only", currencyCode: "RUB" };
+        apiKey: `credential-${targetStoreId}`, currencyCode: targetStoreId === "store-a" ? "RUB" : "CNY" };
+    },
+    categoryService: {
+      async getCategoryAttributes(input) {
+        categoryReads.push({
+          storeId: input.store.id,
+          clientId: input.store.clientId,
+          credential: input.store.apiKey,
+          category: [input.descriptionCategoryId, input.typeId],
+        });
+        return { items: [{ id: 85 }, { id: 11254 }] };
+      },
+      async getCategoryAttributeValues() { return { items: [] }; },
     },
     async normalizeItems(items, context) {
+      assert.equal(context.categoryMatchPolicy, "SOURCE_CATEGORY_STRICT");
+      assert.equal(Object.hasOwn(context, "targetStoreId"), false);
       await context.getCategoryAttributes(789, 999);
       return { items: items.map((item, index) => ({
         ...normalizedItem(index === 0 ? "blue" : "red"),
+        currency_code: item.currency_code,
         description_category_id: item.description_category_id,
         type_id: item.type_id,
       })), warnings: [] };
@@ -227,13 +338,27 @@ test("the same account freezes identical V2 category authority for two target st
   const results = await Promise.all(["store-a", "store-b"].map((targetStoreId) => prepare({
     accountId: "account-a", source: source(), targetStore: { id: targetStoreId, ownerAccountId: "account-a" },
     targetCategory: frozen,
-    pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+    pricingEvidence: {
+      currency: targetStoreId === "store-a" ? "RUB" : "CNY",
+      currencySource: "TARGET_STORE",
+      blackKopecks: "10000",
+      greenKopecks: "8000",
+    },
   })));
   assert.deepEqual(results.map((result) => result.variants.map(({ item }) =>
     [item.description_category_id, item.type_id])), [
     [[789, 999], [789, 999]],
     [[789, 999], [789, 999]],
   ]);
+  assert.deepEqual(results.map((result) => result.variants.map(({ item }) => item.currency_code)), [
+    ["RUB", "RUB"],
+    ["CNY", "CNY"],
+  ]);
+  assert.deepEqual(categoryReads, [
+    { storeId: "store-a", clientId: "client-store-a", credential: "credential-store-a", category: [789, 999] },
+    { storeId: "store-b", clientId: "client-store-b", credential: "credential-store-b", category: [789, 999] },
+  ]);
+  assert.doesNotMatch(JSON.stringify(results), /store-a|store-b|client-store|credential-store/);
 });
 
 test("builds CNY normalized variants and V2 price evidence from the target store", async () => {

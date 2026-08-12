@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 const TYPE_MATCH_SCORE = {
   EXACT: 3,
   NORMALIZED: 2,
@@ -11,6 +13,54 @@ const LEGACY_HASHTAGS_ATTRIBUTE_ID = 22508;
 const HASHTAGS_ATTRIBUTE_IDS = new Set([HASHTAGS_ATTRIBUTE_ID, LEGACY_HASHTAGS_ATTRIBUTE_ID]);
 const MAX_HASHTAGS = 30;
 const MAX_HASHTAG_LENGTH = 30;
+
+function autoListingCategoryFailure(code, status) {
+  const error = new Error(code);
+  error.status = status;
+  error.code = code;
+  error.retryable = false;
+  error.cause = null;
+  return error;
+}
+
+function sourceCategoryRequiredError() {
+  return autoListingCategoryFailure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+}
+
+function incompleteCategoryAttributesError() {
+  return autoListingCategoryFailure("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", 422);
+}
+
+function unresolvedCategoryDictionaryError() {
+  return autoListingCategoryFailure("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", 422);
+}
+
+function strictPositiveId(value) {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : 0;
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : 0;
+}
+
+function strictSourceCategoryOf(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw sourceCategoryRequiredError();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  const expected = ["kind", "descriptionCategoryId", "typeId"];
+  if (keys.length !== expected.length || keys.some((key) => typeof key !== "string"
+    || !expected.includes(key) || descriptors[key].get || descriptors[key].set
+    || descriptors[key].enumerable !== true)) throw sourceCategoryRequiredError();
+  const source = {
+    kind: descriptors.kind.value,
+    descriptionCategoryId: strictPositiveId(descriptors.descriptionCategoryId.value),
+    typeId: strictPositiveId(descriptors.typeId.value),
+  };
+  if (source.kind !== "UNIQUE_MATCH" || !source.descriptionCategoryId || !source.typeId) {
+    throw sourceCategoryRequiredError();
+  }
+  return source;
+}
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -657,21 +707,30 @@ async function resolveTypeId(item, descriptionCategoryId, ctx, tree) {
 
 async function categoryAttributeContext(descriptionCategoryId, typeId, ctx) {
   if (!descriptionCategoryId || !typeId || typeof ctx.getCategoryAttributes !== "function") {
-    return { allowedIds: null, metaById: new Map() };
+    return { allowedIds: null, metaById: new Map(), metaByKey: new Map() };
   }
   const attrs = await ctx.getCategoryAttributes(descriptionCategoryId, typeId);
-  if (!asArray(attrs).length) return { allowedIds: null, metaById: new Map() };
+  if (!asArray(attrs).length) return { allowedIds: null, metaById: new Map(), metaByKey: new Map() };
   const metaById = new Map();
+  const metaByKey = new Map();
   const ids = [];
   for (const attr of attrs) {
     const id = toPositiveNumber(firstFilled(attr?.id, attr?.attribute_id, attr?.attributeId));
     if (!id) continue;
+    const complexId = toPositiveNumber(firstFilled(
+      attr?.complex_id, attr?.complexId, attr?.attribute_complex_id,
+    ));
     ids.push(id);
     metaById.set(id, attr);
+    if (ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT" && metaByKey.has(`${complexId}:${id}`)) {
+      throw incompleteCategoryAttributesError();
+    }
+    metaByKey.set(`${complexId}:${id}`, attr);
   }
   return {
     allowedIds: ids.length ? new Set(ids) : null,
     metaById,
+    metaByKey,
   };
 }
 
@@ -743,6 +802,9 @@ const SAFE_CATEGORY_ERROR_CODES = new Set([
   "OZON_CATEGORY_VALUES_UNAVAILABLE",
   "OZON_CATEGORY_DATA_INVALID",
   "OZON_CATEGORY_TYPE_NOT_FOUND",
+  "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+  "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE",
+  "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED",
 ]);
 
 function isSafeCategoryError(error) {
@@ -857,6 +919,64 @@ async function resolveDictionaryAttributeValues(attributes, {
   return out;
 }
 
+function flattenedCategoryAttributes(attributes, complexAttributes) {
+  return [
+    ...asArray(attributes),
+    ...asArray(complexAttributes).flatMap((group) => asArray(group?.attributes)),
+  ];
+}
+
+function strictAttributeKey(attribute) {
+  return `${toPositiveNumber(attribute?.complex_id)}:${toPositiveNumber(attribute?.id)}`;
+}
+
+function assertStrictRequiredAttributes(attributes, metaByKey) {
+  const present = new Set(asArray(attributes)
+    .filter((attribute) => asArray(attribute?.values).length)
+    .map(strictAttributeKey));
+  for (const [key, meta] of metaByKey.entries()) {
+    if (isRequiredAttribute(meta) && !present.has(key)) throw incompleteCategoryAttributesError();
+  }
+}
+
+async function assertStrictDictionaryValues(attributes, {
+  descriptionCategoryId,
+  typeId,
+  metaByKey,
+  ctx,
+} = {}) {
+  if (typeof ctx?.getCategoryAttributeValues !== "function") {
+    if (asArray(attributes).some((attribute) =>
+      attributeDictionaryId(metaByKey?.get?.(strictAttributeKey(attribute))))) {
+      throw unresolvedCategoryDictionaryError();
+    }
+    return;
+  }
+  const cache = new Map();
+  for (const attribute of asArray(attributes)) {
+    const meta = metaByKey?.get?.(strictAttributeKey(attribute)) || {};
+    if (!attributeDictionaryId(meta)) continue;
+    const key = `${descriptionCategoryId}:${typeId}:${Number(attribute?.id)}`;
+    if (!cache.has(key)) {
+      try {
+        cache.set(key, await ctx.getCategoryAttributeValues(descriptionCategoryId, typeId, Number(attribute?.id)));
+      } catch (error) {
+        if (isSafeCategoryError(error)) throw error;
+        throw unresolvedCategoryDictionaryError();
+      }
+    }
+    const allowed = new Set(asArray(cache.get(key))
+      .map((option) => toPositiveNumber(firstFilled(
+        option?.id, option?.dictionary_value_id, option?.dictionaryValueId, option?.value_id, option?.valueId,
+      )))
+      .filter(Boolean));
+    if (!allowed.size || asArray(attribute?.values).some((value) =>
+      !allowed.has(toPositiveNumber(value?.dictionary_value_id)))) {
+      throw unresolvedCategoryDictionaryError();
+    }
+  }
+}
+
 function sourceComplexAttributes(item, allowedIds) {
   const groups = new Map();
   const all = [
@@ -953,7 +1073,16 @@ async function normalizeOneImportItem(item, ctx) {
   ));
   let typeId = explicitDescriptionCategoryId && explicitTypeId ? explicitTypeId : 0;
   let categoryResolution = null;
-  if (ctx.categoryMatchPolicy === "TARGET_STORE_EXACT") {
+  if (ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT") {
+    const sourceCategory = strictSourceCategoryOf(ctx.sourceCategory);
+    const sourceDescriptionCategoryId = sourceCategory.descriptionCategoryId;
+    const sourceTypeId = sourceCategory.typeId;
+    if (explicitDescriptionCategoryId !== sourceDescriptionCategoryId || explicitTypeId !== sourceTypeId) {
+      throw sourceCategoryRequiredError();
+    }
+    descriptionCategoryId = sourceDescriptionCategoryId;
+    typeId = sourceTypeId;
+  } else if (ctx.categoryMatchPolicy === "TARGET_STORE_EXACT") {
     const resolved = await resolveTargetStoreCategory(item, ctx);
     categoryResolution = resolved.resolution;
     if (!resolved.candidate) throw pendingCategoryError(item, categoryResolution);
@@ -990,7 +1119,7 @@ async function normalizeOneImportItem(item, ctx) {
     throw new Error(`${sku ? `SKU ${sku} ` : ""}${detail}`);
   }
 
-  const { allowedIds, metaById } = await categoryAttributeContext(descriptionCategoryId, typeId, ctx);
+  const { allowedIds, metaById, metaByKey } = await categoryAttributeContext(descriptionCategoryId, typeId, ctx);
   const images = normalizeImages(item.images);
   const source = sourceVariantOf(item);
   const bundle = bundleItemOf(item);
@@ -1001,12 +1130,27 @@ async function normalizeOneImportItem(item, ctx) {
   const width = positiveInt(item.width, sourceAttributeText(item, 9455), item.scraped_width, bundle.width, 100);
   const height = positiveInt(item.height, sourceAttributeText(item, 9456), item.scraped_height, bundle.height, 100);
 
-  const attributes = await resolveDictionaryAttributeValues(buildAttributes(item, allowedIds, metaById), {
-    descriptionCategoryId,
-    typeId,
-    metaById,
-    ctx,
-  });
+  const builtAttributes = buildAttributes(item, allowedIds, metaById);
+  const complexAttributes = sourceComplexAttributes(item, allowedIds);
+  const attributes = ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT"
+    ? builtAttributes
+    : await resolveDictionaryAttributeValues(builtAttributes, {
+        descriptionCategoryId,
+        typeId,
+        metaById,
+        ctx,
+      });
+  if (ctx.categoryMatchPolicy === "SOURCE_CATEGORY_STRICT") {
+    if (!allowedIds || !metaByKey.size) throw incompleteCategoryAttributesError();
+    const allAttributes = flattenedCategoryAttributes(attributes, complexAttributes);
+    assertStrictRequiredAttributes(allAttributes, metaByKey);
+    await assertStrictDictionaryValues(allAttributes, {
+      descriptionCategoryId,
+      typeId,
+      metaByKey,
+      ctx,
+    });
+  }
 
   const normalized = {
     offer_id: cleanText(item.offer_id || item.offerId || `jz-${item.scraped_sku || Date.now()}`),
@@ -1028,7 +1172,7 @@ async function normalizeOneImportItem(item, ctx) {
     height,
     dimension_unit: "mm",
     attributes,
-    complex_attributes: sourceComplexAttributes(item, allowedIds),
+    complex_attributes: complexAttributes,
   };
 
   return { item: stripUndefined(normalized), categoryResolution };

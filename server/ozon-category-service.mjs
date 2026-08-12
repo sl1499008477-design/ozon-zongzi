@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 import { callOzonSellerApi as defaultCallOzonSellerApi } from "./ozon-client.mjs";
 import {
   TAXONOMY_SCOPE_OZON_DEFAULT,
@@ -7,6 +9,7 @@ import {
 export const DEFAULT_CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const CATEGORY_UNAVAILABLE_MESSAGE = "未能从 Ozon 获取真实类目数据，请重试";
+const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 function categoryError(operation, status, code) {
   const error = new Error(CATEGORY_UNAVAILABLE_MESSAGE);
@@ -41,16 +44,184 @@ function positiveIdOf(value) {
 }
 
 function positiveIntegerIdOf(value) {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : 0;
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) return 0;
   const id = Number(value);
-  return Number.isInteger(id) && id > 0 ? id : 0;
+  return Number.isSafeInteger(id) ? id : 0;
 }
 
 function requiredPositiveIdOf(value) {
-  const id = Number(value);
-  if (!Number.isInteger(id) || id <= 0) {
+  const id = positiveIntegerIdOf(value);
+  if (!id) {
     throw categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID");
   }
   return id;
+}
+
+function autoListingCategoryError(code, status) {
+  const error = new Error(code);
+  error.status = status;
+  error.code = code;
+  error.retryable = false;
+  error.cause = null;
+  return error;
+}
+
+const sourceCategoryMetadataError = () => autoListingCategoryError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+const attributeMetadataError = () => autoListingCategoryError("AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", 422);
+const dictionaryMetadataError = () => autoListingCategoryError("AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", 422);
+
+function dataRecord(value, errorFactory = () => categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID")) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw errorFactory();
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string"
+    || DANGEROUS_KEYS.has(key) || descriptors[key].get || descriptors[key].set
+    || descriptors[key].enumerable !== true)) {
+    throw errorFactory();
+  }
+  return descriptors;
+}
+
+function dataArray(value, maximum, errorFactory = () => categoryError("INPUT", 400, "OZON_CATEGORY_DATA_INVALID")) {
+  if (!Array.isArray(value) || types.isProxy(value) || value.length > maximum) {
+    throw errorFactory();
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  let count = 0;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (descriptor.get || descriptor.set) throw errorFactory();
+    if (key === "length") continue;
+    if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
+      || Number(key) >= value.length || descriptor.enumerable !== true) {
+      throw errorFactory();
+    }
+    count += 1;
+  }
+  if (count !== value.length) throw errorFactory();
+  return descriptors;
+}
+
+function descriptorValue(descriptors, ...keys) {
+  for (const key of keys) {
+    if (Object.hasOwn(descriptors, key)) return descriptors[key].value;
+  }
+  return undefined;
+}
+
+function requiredAttributeFlag(descriptors) {
+  return ["is_required", "required", "isRequired", "is_required_attribute", "isRequiredAttribute"]
+    .map((key) => descriptorValue(descriptors, key))
+    .some((value) => value === true || value === 1
+      || (typeof value === "string" && ["true", "1", "yes"].includes(value.trim().toLowerCase())));
+}
+
+function freezeCategoryMetadata(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) freezeCategoryMetadata(nested);
+  return Object.freeze(value);
+}
+
+export function buildOzonCategoryRebuildMetadata(input = {}) {
+  const inputDescriptors = dataRecord(input, sourceCategoryMetadataError);
+  const inputKeys = Reflect.ownKeys(inputDescriptors);
+  const allowedInputKeys = new Set(["descriptionCategoryId", "typeId", "attributes", "dictionaryValues"]);
+  if (inputKeys.length < 3 || inputKeys.length > 4
+    || inputKeys.some((key) => !allowedInputKeys.has(key))
+    || !["descriptionCategoryId", "typeId", "attributes"].every((key) =>
+      Object.hasOwn(inputDescriptors, key))) throw sourceCategoryMetadataError();
+  const normalizedDescriptionCategoryId = positiveIntegerIdOf(inputDescriptors.descriptionCategoryId.value);
+  const normalizedTypeId = positiveIntegerIdOf(inputDescriptors.typeId.value);
+  if (!normalizedDescriptionCategoryId || !normalizedTypeId) throw sourceCategoryMetadataError();
+  const attributes = inputDescriptors.attributes.value;
+  const dictionaryValues = Object.hasOwn(inputDescriptors, "dictionaryValues")
+    ? inputDescriptors.dictionaryValues.value
+    : [];
+  const attributeDescriptors = dataArray(attributes, 1_000, attributeMetadataError);
+  const dictionaryEntryDescriptors = dataArray(dictionaryValues, 1_000, dictionaryMetadataError);
+  const valuesByAttribute = new Map();
+  for (let entryIndex = 0; entryIndex < dictionaryValues.length; entryIndex += 1) {
+    const entry = dictionaryEntryDescriptors[String(entryIndex)].value;
+    const descriptors = dataRecord(entry, dictionaryMetadataError);
+    const keys = Object.keys(descriptors);
+    if (keys.length !== 2 || !Object.hasOwn(descriptors, "attributeId")
+      || !Object.hasOwn(descriptors, "values")) {
+      throw dictionaryMetadataError();
+    }
+    const attributeId = positiveIntegerIdOf(descriptors.attributeId.value);
+    if (!attributeId) throw dictionaryMetadataError();
+    const rawValues = descriptors.values.value;
+    if (valuesByAttribute.has(attributeId)) {
+      throw dictionaryMetadataError();
+    }
+    const rawValueDescriptors = dataArray(rawValues, 5_000, dictionaryMetadataError);
+    const seen = new Set();
+    const projectedValues = [];
+    for (let valueIndex = 0; valueIndex < rawValues.length; valueIndex += 1) {
+      const raw = rawValueDescriptors[String(valueIndex)].value;
+      const valueDescriptors = dataRecord(raw, dictionaryMetadataError);
+      const id = positiveIntegerIdOf(descriptorValue(
+        valueDescriptors, "id", "dictionary_value_id", "dictionaryValueId", "value_id", "valueId",
+      ));
+      const rawText = descriptorValue(valueDescriptors, "value", "name", "title", "label");
+      const value = typeof rawText === "string" ? rawText.trim() : "";
+      if (!id || !value || value.length > 5_000 || seen.has(id)) {
+        throw dictionaryMetadataError();
+      }
+      seen.add(id);
+      projectedValues.push({ id, value });
+    }
+    valuesByAttribute.set(attributeId, projectedValues);
+  }
+  const seenAttributes = new Set();
+  const projectedAttributes = [];
+  for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex += 1) {
+    const raw = attributeDescriptors[String(attributeIndex)].value;
+    const descriptors = dataRecord(raw, attributeMetadataError);
+    const id = positiveIntegerIdOf(descriptorValue(descriptors, "id", "attribute_id", "attributeId"));
+    if (!id) throw attributeMetadataError();
+    const rawComplexId = descriptorValue(descriptors, "complex_id", "complexId", "attribute_complex_id");
+    const complexId = rawComplexId == null || rawComplexId === 0 || rawComplexId === "0"
+      ? 0
+      : positiveIntegerIdOf(rawComplexId);
+    if (rawComplexId != null && rawComplexId !== 0 && rawComplexId !== "0" && !complexId) {
+      throw attributeMetadataError();
+    }
+    const rawDictionaryId = descriptorValue(descriptors, "dictionary_id", "dictionaryId");
+    const dictionaryId = positiveIntegerIdOf(rawDictionaryId);
+    if (rawDictionaryId != null && !dictionaryId) throw attributeMetadataError();
+    const dictionary = descriptorValue(descriptors, "dictionary");
+    const nestedDictionaryRawId = dictionary == null ? null : descriptorValue(
+      dataRecord(dictionary, attributeMetadataError), "id", "dictionary_id", "dictionaryId",
+    );
+    const nestedDictionaryId = positiveIntegerIdOf(nestedDictionaryRawId);
+    if (nestedDictionaryRawId != null && !nestedDictionaryId) throw attributeMetadataError();
+    if (dictionaryId && nestedDictionaryId && dictionaryId !== nestedDictionaryId) {
+      throw attributeMetadataError();
+    }
+    const key = `${complexId}:${id}`;
+    if (seenAttributes.has(key)) throw attributeMetadataError();
+    seenAttributes.add(key);
+    projectedAttributes.push({
+      id,
+      complexId,
+      required: requiredAttributeFlag(descriptors),
+      dictionaryId: dictionaryId || nestedDictionaryId || null,
+      dictionaryValues: valuesByAttribute.get(id) || [],
+    });
+  }
+  for (const attributeId of valuesByAttribute.keys()) {
+    const matching = projectedAttributes.filter((attribute) => attribute.id === attributeId);
+    if (matching.length !== 1 || !matching[0].dictionaryId) throw dictionaryMetadataError();
+  }
+  return freezeCategoryMetadata({
+    descriptionCategoryId: normalizedDescriptionCategoryId,
+    typeId: normalizedTypeId,
+    attributes: projectedAttributes,
+  });
 }
 
 function findDescriptionCategoryIdByTypeId(tree, typeId) {
