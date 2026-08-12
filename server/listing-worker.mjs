@@ -202,14 +202,24 @@ async function processCheck(jobId) {
         message: "开始核对 Ozon 最终状态",
         actorId: workerId,
       });
+      work = await loadSubmissionWorkV3(jobId);
     }
     const checkCount = await incrementSubmissionStatusCheckV3(jobId);
     const credential = await readStoreCredentialV3(work.store_id, work.account_id);
     const response = await callOzonSellerApi(credential, "/v1/product/import/info", {
       task_id: Number(work.ozon_task_id) || work.ozon_task_id,
     }, 60000);
-    const statusInfo = deriveOzonImportStatus(response);
-    await updateSubmissionItemsV3(jobId, statusInfo.items);
+    const statusInfo = deriveOzonImportStatus(response, {
+      expectedOfferIds: (Array.isArray(work.items) ? work.items : []).map((item) => String(item?.offer_id || "")),
+    });
+    await updateSubmissionItemsV3({
+      accountId: work.account_id,
+      jobId,
+      snapshotId: work.snapshot_id,
+      ozonTaskId: work.ozon_task_id,
+      statusVersion: Number(work.status_version),
+      items: statusInfo.items,
+    });
     if (statusInfo.done) {
       await finishSuccessfulImport(work, statusInfo);
     } else if (checkCount >= maxStatusChecks) {
@@ -223,7 +233,8 @@ async function processCheck(jobId) {
     }
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
-    if (error?.code === "OZON_TASK_ID_UNKNOWN") {
+    if (["OZON_TASK_ID_UNKNOWN", "OZON_IMPORT_RESULT_CONFLICT",
+      "OZON_IMPORT_RESULT_SCOPE_MISMATCH", "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"].includes(error?.code)) {
       await failSubmission(latest || work, error, "RECONCILING");
     } else {
       const count = await incrementSubmissionStatusCheckV3(jobId);

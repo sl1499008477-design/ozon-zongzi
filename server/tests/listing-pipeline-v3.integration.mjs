@@ -46,6 +46,10 @@ assert.deepEqual(safeProjection, {
 });
 assert.doesNotMatch(JSON.stringify(safeProjection), /raw-third-party-secret|credential/iu);
 
+function persistSubmissionItems(jobId, items, scope) {
+  return updateSubmissionItemsV3({ ...scope, jobId, items });
+}
+
 if (!postgresEnabled()) {
   console.log("listing pipeline v3 integration skipped: PostgreSQL is not configured");
   process.exit(0);
@@ -64,6 +68,9 @@ const collectId = `test_collect_${suffix}`;
 const changedPayloadCollectId = `test_collect_changed_payload_${suffix}`;
 const raceCollectId = `test_collect_race_${suffix}`;
 const autoListingCollectId = `test_collect_auto_listing_${suffix}`;
+const foreignScopeSnapshotId = `test_foreign_scope_snapshot_${suffix}`;
+const foreignScopeJobId = `test_foreign_scope_job_${suffix}`;
+const foreignScopeItemId = `test_foreign_scope_item_${suffix}`;
 const collectIds = [collectId, changedPayloadCollectId, raceCollectId, autoListingCollectId];
 const warehouseAId = `wh_${crypto.createHash("sha256").update(`${storeId}|1`).digest("hex").slice(0, 24)}`;
 const warehouseBId = `wh_${crypto.createHash("sha256").update(`${secondStoreId}|2`).digest("hex").slice(0, 24)}`;
@@ -93,6 +100,8 @@ async function requestJson(handle, pathname, body, token) {
 }
 
 async function cleanup() {
+  await pool.query("DELETE FROM submission_jobs WHERE id=$1", [foreignScopeJobId]);
+  await pool.query("DELETE FROM submission_snapshots WHERE id=$1", [foreignScopeSnapshotId]);
   const jobs = await pool.query("SELECT id, snapshot_id FROM submission_jobs WHERE collect_item_id=ANY($1::text[])", [collectIds]);
   const jobIds = jobs.rows.map((row) => row.id);
   const snapshotIds = jobs.rows.map((row) => row.snapshot_id);
@@ -419,6 +428,10 @@ try {
     stocks: [{ offer_id: "offer-1", warehouse_id: 1, stock: 5 }],
   });
   assert.equal(created.duplicate, false);
+  const createdOzonTaskId = `ozon-task-created-${suffix}`;
+  const autoOzonTaskId = `ozon-task-auto-${suffix}`;
+  await pool.query("UPDATE submission_jobs SET ozon_task_id=$2 WHERE id=$1", [created.job.id, createdOzonTaskId]);
+  await pool.query("UPDATE submission_jobs SET ozon_task_id=$2 WHERE id=$1", [autoSubmission.job.id, autoOzonTaskId]);
   normalizedItems[0].name = "外部对象被修改";
   const snapshot = await pool.query(
     "SELECT items,store_id,idempotency_key FROM submission_snapshots WHERE id=$1",
@@ -438,14 +451,56 @@ try {
     productId: null,
     classification: "EXPLICIT_CATEGORY_FAILURE",
   });
+  const createdScope = {
+    accountId,
+    snapshotId: created.job.snapshotId,
+    ozonTaskId: createdOzonTaskId,
+    statusVersion: 1,
+  };
+  await pool.query(`INSERT INTO submission_snapshots
+    (id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+    VALUES ($1,$2,$3,$4,$5,1,$6::jsonb,'[]'::jsonb)`,
+  [foreignScopeSnapshotId, foreignAccountId, foreignStoreId, `foreign-scope-${suffix}`,
+    "f".repeat(64), JSON.stringify([{ offer_id: "offer-1", name: "Foreign same offer" }])]);
+  await pool.query(`INSERT INTO submission_jobs
+    (id,snapshot_id,account_id,store_id,type,status,ozon_task_id,correlation_id,item_count)
+    VALUES ($1,$2,$3,$4,'COLLECT_BOX_DRAFT','CHECKING',$5,$6,1)`,
+  [foreignScopeJobId, foreignScopeSnapshotId, foreignAccountId, foreignStoreId,
+    createdOzonTaskId, `foreign-scope-${suffix}`]);
+  await pool.query(`INSERT INTO submission_items
+    (id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id)
+    VALUES ($1,$2,$3,'offer-1',0,'foreign-source','offer-1','PENDING','')`,
+  [foreignScopeItemId, foreignScopeJobId, foreignScopeSnapshotId]);
+  await assert.rejects(persistSubmissionItems(foreignScopeJobId, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "cross-account-same-identity-secret" }, errorEvidence: null,
+  }], createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+    && !/cross-account-same-identity-secret/iu.test(error.message));
+  assert.deepEqual((await pool.query(
+    "SELECT status,product_id FROM submission_items WHERE id=$1", [foreignScopeItemId],
+  )).rows[0], { status: "PENDING", product_id: "" });
+  assert.equal(Number((await pool.query(
+    "SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1", [foreignScopeJobId],
+  )).rows[0].count), 0);
+  const beforeForeignScope = await pool.query(
+    `SELECT
+       (SELECT status FROM submission_items WHERE job_id=$1 AND offer_id='offer-1') AS item_status,
+       (SELECT COUNT(*)::int FROM submission_events WHERE job_id=$1) AS event_count`,
+    [created.job.id],
+  );
   await assert.rejects(updateSubmissionItemsV3(created.job.id, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "legacy-signature-secret" }, errorEvidence: null,
+  }]), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+    && !/legacy-signature-secret/iu.test(error.message));
+  await assert.rejects(persistSubmissionItems(created.job.id, [{
     offerId: "wrong-offer",
     sku: "source-sku",
     status: "FAILED",
     errors: ["raw-third-party-secret"],
     response: { message: "raw-third-party-secret", credential: "secret" },
     errorEvidence: safeEvidence,
-  }]), (error) => error?.code === "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"
+  }], createdScope), (error) => error?.code === "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"
     && error?.retryable === false && error?.cause === null
     && !/raw-third-party-secret|credential/iu.test(error.message));
   let persistedImportResult = await pool.query(
@@ -453,13 +508,39 @@ try {
     [created.job.id],
   );
   assert.equal(persistedImportResult.rows[0].status, "PENDING");
-  await updateSubmissionItemsV3(created.job.id, [{
+  await assert.rejects(persistSubmissionItems(created.job.id, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "foreign-scope-secret" }, errorEvidence: null,
+  }], { ...createdScope, accountId: foreignAccountId }),
+  (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+    && !/foreign-scope-secret/iu.test(error.message));
+  await assert.rejects(persistSubmissionItems(created.job.id, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "wrong-task-secret" }, errorEvidence: null,
+  }], { ...createdScope, ozonTaskId: `wrong-${createdOzonTaskId}` }),
+  (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+    && !/wrong-task-secret/iu.test(error.message));
+  await assert.rejects(persistSubmissionItems(created.job.id, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "wrong-snapshot-secret" }, errorEvidence: null,
+  }], { ...createdScope, snapshotId: foreignScopeSnapshotId }),
+  (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+    && !/wrong-snapshot-secret/iu.test(error.message));
+  const afterForeignScope = await pool.query(
+    `SELECT
+       (SELECT status FROM submission_items WHERE job_id=$1 AND offer_id='offer-1') AS item_status,
+       (SELECT COUNT(*)::int FROM submission_events WHERE job_id=$1) AS event_count`,
+    [created.job.id],
+  );
+  assert.deepEqual(afterForeignScope.rows[0], beforeForeignScope.rows[0]);
+
+  await persistSubmissionItems(created.job.id, [{
     offerId: "offer-1",
     status: "FAILED",
     errors: ["raw-third-party-secret"],
     response: { message: "raw-third-party-secret", credential: "secret" },
     errorEvidence: safeEvidence,
-  }]);
+  }], createdScope);
   persistedImportResult = await pool.query(
     "SELECT status,response FROM submission_items WHERE job_id=$1 AND offer_id='offer-1'",
     [created.job.id],
@@ -468,6 +549,124 @@ try {
   assert.equal(persistedImportResult.rows[0].response.schemaVersion, "OZON_SUBMISSION_ITEM_RESPONSE_V1");
   assert.equal(persistedImportResult.rows[0].response.rawResponse.message, "raw-third-party-secret");
   assert.equal(persistedImportResult.rows[0].response.errorEvidence, null);
+  const beforeReplayEvents = Number((await pool.query(
+    "SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1", [created.job.id],
+  )).rows[0].count);
+  await persistSubmissionItems(created.job.id, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "idempotent-backend-replay" }, errorEvidence: null,
+  }], createdScope);
+  const afterReplayEvents = Number((await pool.query(
+    "SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1", [created.job.id],
+  )).rows[0].count);
+  assert.equal(afterReplayEvents, beforeReplayEvents);
+  await assert.rejects(persistSubmissionItems(created.job.id, [{
+    offerId: "offer-1", status: "CHECKING", productId: "",
+    response: { message: "stale-checking-secret" }, errorEvidence: null,
+  }], createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+    && error?.retryable === false && error?.cause === null
+    && !/stale-checking-secret/iu.test(error.message));
+  persistedImportResult = await pool.query(
+    "SELECT status,product_id,response FROM submission_items WHERE job_id=$1 AND offer_id='offer-1'",
+    [created.job.id],
+  );
+  assert.equal(persistedImportResult.rows[0].status, "FAILED");
+
+  await persistSubmissionItems(autoSubmission.job.id, [{
+    offerId: "offer-auto", status: "SUCCEEDED", productId: "991001",
+    response: { product_id: 991001 }, errorEvidence: null,
+  }], { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 });
+  await persistSubmissionItems(autoSubmission.job.id, [{
+    offerId: "offer-auto", status: "SUCCEEDED", productId: "991001",
+    response: { product_id: 991001 }, errorEvidence: null,
+  }], { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 });
+  for (const conflict of [
+    { status: "CHECKING", productId: "" },
+    { status: "FAILED", productId: "" },
+    { status: "SUCCEEDED", productId: "991002" },
+  ]) {
+    await assert.rejects(persistSubmissionItems(autoSubmission.job.id, [{
+      offerId: "offer-auto", ...conflict,
+      response: { message: "terminal-conflict-secret" }, errorEvidence: null,
+    }], { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 }),
+    (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+      && !/terminal-conflict-secret/iu.test(error.message));
+  }
+  const immutableSuccess = await pool.query(
+    "SELECT status,product_id FROM submission_items WHERE job_id=$1", [autoSubmission.job.id],
+  );
+  assert.deepEqual(immutableSuccess.rows[0], { status: "SUCCEEDED", product_id: "991001" });
+
+  const batchSubmission = await createSubmissionV3({
+    collectItem: baseItem,
+    accountId,
+    storeId,
+    normalizedItems: [
+      { ...normalizedItems[0], offer_id: "offer-batch-a", name: "Batch A" },
+      { ...normalizedItems[0], offer_id: "offer-batch-b", name: "Batch B" },
+    ],
+    stocks: [
+      { offer_id: "offer-batch-a", warehouse_id: 1, stock: 1 },
+      { offer_id: "offer-batch-b", warehouse_id: 1, stock: 1 },
+    ],
+  });
+  const batchOzonTaskId = `ozon-task-batch-${suffix}`;
+  await pool.query("UPDATE submission_jobs SET ozon_task_id=$2 WHERE id=$1", [batchSubmission.job.id, batchOzonTaskId]);
+  const batchScope = {
+    accountId,
+    snapshotId: batchSubmission.job.snapshotId,
+    ozonTaskId: batchOzonTaskId,
+    statusVersion: 1,
+  };
+  await persistSubmissionItems(batchSubmission.job.id, [
+    { offerId: "offer-batch-a", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
+    { offerId: "offer-batch-b", status: "SUCCEEDED", productId: "991101", response: {}, errorEvidence: null },
+  ], batchScope);
+  const exactMixedReplay = await persistSubmissionItems(batchSubmission.job.id, [
+    { offerId: "offer-batch-a", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
+    { offerId: "offer-batch-b", status: "SUCCEEDED", productId: "991101", response: {}, errorEvidence: null },
+  ], batchScope);
+  assert.deepEqual(exactMixedReplay, { applied: false, ignored: false, idempotent: true });
+  const ignoredUnknown = await persistSubmissionItems(batchSubmission.job.id, [
+    { offerId: "offer-batch-a", status: "UNKNOWN_RESULT", productId: "", response: {}, errorEvidence: null },
+    { offerId: "offer-batch-b", status: "SUCCEEDED", productId: "991101", response: {}, errorEvidence: null },
+  ], batchScope);
+  assert.deepEqual(ignoredUnknown, { applied: false, ignored: true, idempotent: false });
+  await assert.rejects(persistSubmissionItems(batchSubmission.job.id, [
+    { offerId: "offer-batch-a", status: "SUCCEEDED", productId: "991102", response: {}, errorEvidence: null },
+    { offerId: "offer-batch-b", status: "FAILED", productId: "", response: {}, errorEvidence: null },
+  ], batchScope), { code: "OZON_IMPORT_RESULT_CONFLICT", retryable: false, cause: null });
+  const atomicBatch = await pool.query(
+    "SELECT offer_id,status,product_id FROM submission_items WHERE job_id=$1 ORDER BY offer_id",
+    [batchSubmission.job.id],
+  );
+  assert.deepEqual(atomicBatch.rows, [
+    { offer_id: "offer-batch-a", status: "CHECKING", product_id: "" },
+    { offer_id: "offer-batch-b", status: "SUCCEEDED", product_id: "991101" },
+  ]);
+
+  const historicalEvidence = {
+    schemaVersion: "OZON_IMPORT_ERROR_EVIDENCE_V1", policyVersion: 1,
+    code: "HISTORICAL_REVIEWED_CATEGORY_CODE", field: "description_category_id",
+    attributeId: null, state: "FAILED", offerId: "offer-1", productId: null,
+    classification: "EXPLICIT_CATEGORY_FAILURE",
+  };
+  await pool.query(
+    `UPDATE submission_items SET response=JSONB_BUILD_OBJECT(
+       'schemaVersion','OZON_SUBMISSION_ITEM_RESPONSE_V1','rawResponse','{}'::jsonb,
+       'errorEvidence',$2::jsonb) WHERE job_id=$1`,
+    [created.job.id, JSON.stringify(historicalEvidence)],
+  );
+  await assert.rejects(persistSubmissionItems(created.job.id, [{
+    offerId: "offer-1", status: "FAILED", productId: "",
+    response: { message: "stale-unknown-secret" }, errorEvidence: null,
+  }], createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+    && !/stale-unknown-secret/iu.test(error.message));
+  const preservedHistoricalEvidence = await pool.query(
+    "SELECT response->'errorEvidence' AS evidence FROM submission_items WHERE job_id=$1",
+    [created.job.id],
+  );
+  assert.deepEqual(preservedHistoricalEvidence.rows[0].evidence, historicalEvidence);
   const publicImportJob = await getSubmissionJobV3(created.job.id, accountId);
   assert.equal(publicImportJob.items[0].errorEvidence, null);
   assert.doesNotMatch(JSON.stringify(publicImportJob), /raw-third-party-secret|credential/iu);

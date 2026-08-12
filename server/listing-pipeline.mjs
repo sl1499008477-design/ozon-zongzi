@@ -2134,13 +2134,34 @@ export async function transitionSubmissionJobV3(jobId, toStatus, patch = {}, eve
   });
 }
 
-export async function updateSubmissionItemsV3(jobId, items = []) {
-  const projectedItems = projectOzonImportCarrier(items);
+export async function updateSubmissionItemsV3(rawInput = {}) {
+  const input = projectOzonImportCarrier(rawInput);
   const identityFailure = () => Object.assign(new Error("Ozon 商品结果标识无法与冻结上架商品一致对应"), {
     code: "OZON_IMPORT_OFFER_IDENTITY_MISMATCH",
     retryable: false,
     cause: null,
   });
+  const scopeFailure = () => Object.assign(new Error("Ozon 商品结果不属于当前账号任务"), {
+    code: "OZON_IMPORT_RESULT_SCOPE_MISMATCH",
+    retryable: false,
+    cause: null,
+  });
+  const resultConflict = () => Object.assign(new Error("Ozon 商品终态与已保存结果冲突，需要核对原任务"), {
+    code: "OZON_IMPORT_RESULT_CONFLICT",
+    retryable: false,
+    cause: null,
+  });
+  if (!input || Array.isArray(input)
+      || Object.keys(input).some((key) => !["accountId", "jobId", "snapshotId", "ozonTaskId", "statusVersion", "items"].includes(key))
+      || typeof input.accountId !== "string" || !input.accountId || input.accountId.length > 240
+      || typeof input.jobId !== "string" || !input.jobId || input.jobId.length > 240
+      || typeof input.snapshotId !== "string" || !input.snapshotId || input.snapshotId.length > 240
+      || typeof input.ozonTaskId !== "string" || !input.ozonTaskId || input.ozonTaskId.length > 240
+      || !Number.isSafeInteger(input.statusVersion) || input.statusVersion < 1) {
+    throw scopeFailure();
+  }
+  const { accountId, jobId, snapshotId, ozonTaskId, statusVersion } = input;
+  const projectedItems = input.items;
   if (!Array.isArray(projectedItems)) throw identityFailure();
   const offerCounts = new Map();
   for (const item of projectedItems) {
@@ -2149,11 +2170,17 @@ export async function updateSubmissionItemsV3(jobId, items = []) {
   }
   return transaction(async (client) => {
     const current = await client.query(
-      `SELECT si.*,j.account_id FROM submission_items AS si
+      `SELECT si.*,j.account_id,j.ozon_task_id,si.response->'errorEvidence' AS current_error_evidence
+       FROM submission_items AS si
        JOIN submission_jobs AS j ON j.id=si.job_id AND j.snapshot_id=si.snapshot_id
-       WHERE si.job_id=$1 ORDER BY si.sort_order`,
-      [jobId],
+       WHERE si.job_id=$1 AND j.account_id=$2
+         AND si.snapshot_id=$3 AND j.snapshot_id=$3
+         AND j.ozon_task_id=$4 AND j.status_version=$5
+       ORDER BY si.sort_order
+       FOR UPDATE OF si,j`,
+      [jobId, accountId, snapshotId, ozonTaskId, statusVersion],
     );
+    if (!current.rows.length) throw scopeFailure();
     const targetOfferCounts = new Map();
     for (const target of current.rows) {
       if (target.offer_id) targetOfferCounts.set(target.offer_id, (targetOfferCounts.get(target.offer_id) || 0) + 1);
@@ -2164,27 +2191,61 @@ export async function updateSubmissionItemsV3(jobId, items = []) {
         || [...targetOfferCounts].some(([offerId, count]) => count !== 1 || offerCounts.get(offerId) !== 1)) {
       throw identityFailure();
     }
+    const terminalStatuses = new Set(["SUCCEEDED", "FAILED", "SKIPPED"]);
+    const mutableStatuses = new Set(["PENDING", "CHECKING", "UNKNOWN_RESULT"]);
+    const nextByTargetId = new Map();
+    let ignoreUnknownBatch = false;
     for (const target of current.rows) {
       const update = projectedItems.find((item) => item && typeof item === "object" && item.offerId === target.offer_id);
       if (!update) throw identityFailure();
-      const status = typeof update.status === "string" && /^[A-Z_]{1,40}$/u.test(update.status)
-        ? update.status
-        : target.status;
+      const status = typeof update.status === "string" ? update.status : "";
+      if (!["CHECKING", "SUCCEEDED", "FAILED", "SKIPPED", "UNKNOWN_RESULT"].includes(status)) throw resultConflict();
       const productId = typeof update.productId === "string" && /^[1-9][0-9]{0,239}$/u.test(update.productId)
         ? update.productId
         : "";
-      const failed = status === "FAILED";
       const evidence = projectProductionOzonImportErrorEvidence(update.errorEvidence);
+      const currentStatus = String(target.status || "").toUpperCase();
+      const currentProductId = String(target.product_id || "");
+      const currentEvidence = target.current_error_evidence ?? null;
+      const evidenceMatches = JSON.stringify(currentEvidence) === JSON.stringify(evidence);
+      if (terminalStatuses.has(currentStatus)) {
+        if (status === currentStatus && productId === currentProductId && evidenceMatches) continue;
+        throw resultConflict();
+      }
+      if (!mutableStatuses.has(currentStatus) || currentProductId || currentEvidence !== null) throw resultConflict();
+      if (status === currentStatus && productId === currentProductId && evidenceMatches) continue;
+      if (status === "UNKNOWN_RESULT") {
+        ignoreUnknownBatch = true;
+        continue;
+      }
+      if (status !== "SUCCEEDED" && productId) throw resultConflict();
+      if (status !== "FAILED" && evidence !== null) throw resultConflict();
+      const failed = status === "FAILED";
       const response = Object.freeze({
         schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1",
         rawResponse: update.response && typeof update.response === "object" ? update.response : {},
         errorEvidence: evidence,
       });
-      await client.query(
-        `UPDATE submission_items SET status=$2, product_id=$3, error_code=$4, error_message=$5, response=$6::jsonb, updated_at=NOW() WHERE id=$1`,
-        [target.id, status, productId, failed ? "OZON_ITEM_RESULT" : "", failed ? "Ozon 返回商品导入失败" : "", json(response)],
-      );
+      nextByTargetId.set(target.id, { target, status, productId, failed, evidence, response });
     }
+    if (ignoreUnknownBatch) return Object.freeze({ applied: false, ignored: true, idempotent: false });
+    for (const { target, status, productId, failed, evidence, response } of nextByTargetId.values()) {
+      const updated = await client.query(
+        `UPDATE submission_items
+         SET status=$2,product_id=$3,error_code=$4,error_message=$5,response=$6::jsonb,updated_at=NOW()
+         WHERE id=$1 AND job_id=$7 AND snapshot_id=$8 AND status=$9 AND product_id=$10
+           AND COALESCE(response->'errorEvidence','null'::jsonb)=$11::jsonb`,
+        [target.id, status, productId, failed ? "OZON_ITEM_RESULT" : "",
+          failed ? "Ozon 返回商品导入失败" : "", json(response), jobId, target.snapshot_id,
+          target.status, target.product_id, json(target.current_error_evidence ?? null)],
+      );
+      if (updated.rowCount !== 1) throw resultConflict();
+    }
+    return Object.freeze({
+      applied: nextByTargetId.size > 0,
+      ignored: false,
+      idempotent: nextByTargetId.size === 0,
+    });
   });
 }
 

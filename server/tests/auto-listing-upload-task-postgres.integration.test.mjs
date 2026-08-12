@@ -145,7 +145,7 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
   const admin = await adminPool.connect();
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const schema = `auto_listing_partial_success_${suffix}`;
-  const ids = Object.fromEntries(["account", "store", "warehouse", "snapshot", "submissionJob"]
+  const ids = Object.fromEntries(["account", "store", "warehouse", "snapshot", "submissionJob", "submissionItem"]
     .map((key) => [key, `${key}-${suffix}`]));
   const calls = [];
   const server = http.createServer((request, response) => {
@@ -220,6 +220,10 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
       (id,snapshot_id,account_id,store_id,type,status,correlation_id,item_count)
       VALUES ($1,$2,$3,$4,'AUTO_LISTING','QUEUE_PENDING',$5,1)`,
       [ids.submissionJob, ids.snapshot, ids.account, ids.store, `partial-${suffix}`]);
+    await admin.query(`INSERT INTO submission_items
+      (id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id)
+      VALUES ($1,$2,$3,'offer-rfbs',0,'source-rfbs','offer-rfbs','PENDING','')`,
+      [ids.submissionItem, ids.submissionJob, ids.snapshot]);
 
     ({ processListingQueueMessage: worker } = await import(`../listing-worker.mjs?partial=${suffix}`));
     ({ closePostgresPool } = await import("../db/connection.mjs"));
@@ -242,6 +246,33 @@ test("standard pipeline retains product success as PARTIAL_SUCCESS when stock sy
     assert.equal(calls.filter((path) => path === "/v3/product/import").length, 1);
     assert.equal((await admin.query("SELECT status FROM submission_jobs WHERE id=$1", [ids.submissionJob]))
       .rows[0].status, "PARTIAL_SUCCESS");
+
+    const conflictSnapshotId = `conflict-snapshot-${suffix}`;
+    const conflictJobId = `conflict-job-${suffix}`;
+    const conflictItemId = `conflict-item-${suffix}`;
+    await admin.query(`INSERT INTO submission_snapshots
+      (id,account_id,store_id,idempotency_key,snapshot_hash,item_count,items,stocks)
+      VALUES ($1,$2,$3,$4,$5,1,$6::jsonb,'[]'::jsonb)`,
+      [conflictSnapshotId, ids.account, ids.store, `conflict-${suffix}`, "c".repeat(64),
+        JSON.stringify([{ offer_id: "offer-rfbs", name: "Conflict product" }])]);
+    await admin.query(`INSERT INTO submission_jobs
+      (id,snapshot_id,account_id,store_id,type,status,ozon_task_id,correlation_id,item_count)
+      VALUES ($1,$2,$3,$4,'COLLECT_BOX_DRAFT','OZON_ACCEPTED','123456',$5,1)`,
+      [conflictJobId, conflictSnapshotId, ids.account, ids.store, `conflict-${suffix}`]);
+    await admin.query(`INSERT INTO submission_items
+      (id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id)
+      VALUES ($1,$2,$3,'offer-rfbs',0,'source-rfbs','offer-rfbs','SUCCEEDED','777777')`,
+      [conflictItemId, conflictJobId, conflictSnapshotId]);
+    await worker({ submissionJobId: conflictJobId, action: "check" });
+    const reconciledConflict = (await admin.query(
+      "SELECT status,error_code FROM submission_jobs WHERE id=$1", [conflictJobId],
+    )).rows[0];
+    assert.deepEqual(reconciledConflict, {
+      status: "RECONCILING", error_code: "OZON_IMPORT_RESULT_CONFLICT",
+    });
+    assert.deepEqual((await admin.query(
+      "SELECT status,product_id FROM submission_items WHERE id=$1", [conflictItemId],
+    )).rows[0], { status: "SUCCEEDED", product_id: "777777" });
   } finally {
     await closePostgresPool?.().catch(() => {});
     await new Promise((resolve) => server.close(resolve));

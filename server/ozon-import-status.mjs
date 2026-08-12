@@ -83,9 +83,9 @@ function normalizedUnknown(index, response = {}) {
   });
 }
 
-function normalizeItem(item, index, expectedOfferId, batchHasSucceeded) {
+function normalizeItem(item, index, expectedOfferId, batchHasPartialOutcome) {
   if (!objectValue(item)) return normalizedUnknown(index, item || {});
-  const classified = classifyOzonCategoryImportResult({ item, expectedOfferId, batchHasSucceeded });
+  const classified = classifyOzonCategoryImportResult({ item, expectedOfferId, batchHasPartialOutcome });
   const status = classified.classification === "SUCCEEDED"
     ? "SUCCEEDED"
     : classified.classification === "CHECKING"
@@ -141,10 +141,10 @@ export function deriveOzonImportStatus(data, rawOptions) {
       !identityInvalid && expectedSet.has(rawOffers[index]) ? rawOffers[index] : "",
       false,
     ));
-    const batchHasSucceeded = preliminary.some((item) => item.status === "SUCCEEDED");
+    const batchHasPartialOutcome = preliminary.some((item) => ["SUCCEEDED", "SKIPPED"].includes(item.status));
     const normalizedItems = preliminary.map((item, index) => item.status === "FAILED"
       ? normalizeItem(rawItems[index], index,
-        !identityInvalid && expectedSet.has(rawOffers[index]) ? rawOffers[index] : "", batchHasSucceeded)
+        !identityInvalid && expectedSet.has(rawOffers[index]) ? rawOffers[index] : "", batchHasPartialOutcome)
       : item);
     const failed = normalizedItems.filter((item) => item.status === "FAILED").length;
     const success = normalizedItems.filter((item) => item.status === "SUCCEEDED").length;

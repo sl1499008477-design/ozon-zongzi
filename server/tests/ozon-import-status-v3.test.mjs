@@ -52,6 +52,21 @@ assert.equal(checking.status, "CHECKING");
 assert.equal(checking.done, false);
 assert.equal(checking.items[1].classification, "CHECKING");
 
+const skippedBatch = deriveOzonImportStatus({
+  result: {
+    items: [
+      { offer_id: "offer-1", status: "skipped", errors: [{ code: "UNKNOWN", field: "unknown" }] },
+      { offer_id: "offer-2", status: "failed", errors: [{
+        code: "TEST_ONLY_EXACT_CATEGORY_CODE", field: "description_category_id",
+      }] },
+    ],
+  },
+}, { expectedOfferIds: ["offer-1", "offer-2"] });
+assert.equal(skippedBatch.status, "PARTIAL_SUCCESS");
+assert.equal(skippedBatch.items[0].status, "SKIPPED");
+assert.equal(skippedBatch.items[0].classification, "OTHER_TERMINAL_FAILURE");
+assert.equal(skippedBatch.items.every((item) => item.errorEvidence === null), true);
+
 const rejected = deriveOzonImportStatus({
   result: { status: "validation_error", errors: [{ message: "请求校验失败" }] },
 });

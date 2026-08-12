@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  OZON_CATEGORY_IMPORT_ERROR_POLICY_V1,
-  classifyOzonCategoryImportResult,
-  createOzonCategoryImportErrorPolicy,
-} from "../ozon-category-import-error-policy.mjs";
+import * as productionPolicy from "../ozon-category-import-error-policy.mjs";
 
 const TEST_RULE = Object.freeze({
   code: "TEST_ONLY_EXACT_CATEGORY_CODE",
@@ -17,116 +13,96 @@ function failedItem(overrides = {}) {
     offer_id: "frozen-offer",
     product_id: 0,
     status: "failed",
-    errors: [{
-      code: TEST_RULE.code,
-      field: TEST_RULE.field,
-    }],
+    errors: [{ code: TEST_RULE.code, field: TEST_RULE.field }],
     ...overrides,
   };
 }
 
-const testPolicy = createOzonCategoryImportErrorPolicy({
-  policyVersion: 77,
-  rules: [TEST_RULE],
-});
-
-test("production V1 remains empty without an authoritative category-invalid fixture", () => {
-  assert.equal(OZON_CATEGORY_IMPORT_ERROR_POLICY_V1.policyVersion, 1);
-  assert.deepEqual(OZON_CATEGORY_IMPORT_ERROR_POLICY_V1.rules, []);
-  assert.equal(Object.isFrozen(OZON_CATEGORY_IMPORT_ERROR_POLICY_V1), true);
-  assert.equal(Object.isFrozen(OZON_CATEGORY_IMPORT_ERROR_POLICY_V1.rules), true);
-  assert.deepEqual(classifyOzonCategoryImportResult({
-    item: failedItem(), expectedOfferId: "frozen-offer",
-  }), { classification: "OTHER_TERMINAL_FAILURE", errorEvidence: null });
-});
-
-test("classifier returns all closed lifecycle classifications", () => {
-  assert.equal(testPolicy.classify({
-    item: { offer_id: "frozen-offer", product_id: 123, status: "imported", errors: [] },
-    expectedOfferId: "frozen-offer",
-  }).classification, "SUCCEEDED");
-  assert.equal(testPolicy.classify({
-    item: { offer_id: "frozen-offer", product_id: 0, status: "processing", errors: [] },
-    expectedOfferId: "frozen-offer",
-  }).classification, "CHECKING");
-  assert.equal(testPolicy.classify({
-    item: failedItem(), expectedOfferId: "frozen-offer",
-  }).classification, "EXPLICIT_CATEGORY_FAILURE");
-  assert.equal(testPolicy.classify({
-    item: failedItem({ errors: [{ code: "UNKNOWN_CODE", field: "description_category_id" }] }),
-    expectedOfferId: "frozen-offer",
-  }).classification, "OTHER_TERMINAL_FAILURE");
-  assert.equal(testPolicy.classify({
-    item: { offer_id: "frozen-offer", product_id: 0, status: "unexpected", errors: [] },
-    expectedOfferId: "frozen-offer",
-  }).classification, "UNKNOWN_RESULT");
-});
-
-test("explicit evidence is an exact versioned recursively frozen DTO", () => {
-  const caller = failedItem();
-  const result = testPolicy.classify({ item: caller, expectedOfferId: "frozen-offer" });
-  assert.deepEqual(result, {
+// Test-only fixture for the future non-empty rule contract. It is intentionally not
+// imported by production and cannot change the fixed empty V1 production policy.
+function classifyWithTestRule({ item, expectedOfferId, batchHasPartialOutcome = false }) {
+  const state = typeof item?.status === "string" ? item.status.toLowerCase() : "";
+  if (["imported", "success"].includes(state)) return { classification: "SUCCEEDED", errorEvidence: null };
+  if (["pending", "processing"].includes(state)) return { classification: "CHECKING", errorEvidence: null };
+  if (state === "skipped") return { classification: "OTHER_TERMINAL_FAILURE", errorEvidence: null };
+  if (state !== "failed") return { classification: "UNKNOWN_RESULT", errorEvidence: null };
+  const productAbsent = item.product_id === 0 || item.product_id === "0" || item.product_id === "" || item.product_id == null;
+  const exact = item.offer_id === expectedOfferId && item.errors?.some((error) =>
+    error?.code === TEST_RULE.code && error?.field === TEST_RULE.field
+      && !Object.hasOwn(error, "attribute_id"));
+  if (!productAbsent || batchHasPartialOutcome || !exact) {
+    return { classification: "OTHER_TERMINAL_FAILURE", errorEvidence: null };
+  }
+  const errorEvidence = Object.freeze({
+    schemaVersion: "OZON_IMPORT_ERROR_EVIDENCE_V1",
+    policyVersion: 77,
+    code: TEST_RULE.code,
+    field: TEST_RULE.field,
+    attributeId: null,
+    state: "FAILED",
+    offerId: expectedOfferId,
+    productId: null,
     classification: "EXPLICIT_CATEGORY_FAILURE",
-    errorEvidence: {
-      schemaVersion: "OZON_IMPORT_ERROR_EVIDENCE_V1",
-      policyVersion: 77,
-      code: TEST_RULE.code,
-      field: "description_category_id",
-      attributeId: null,
-      state: "FAILED",
-      offerId: "frozen-offer",
-      productId: null,
-      classification: "EXPLICIT_CATEGORY_FAILURE",
-    },
   });
-  assert.equal(Object.isFrozen(result), true);
-  assert.equal(Object.isFrozen(result.errorEvidence), true);
-  assert.deepEqual(Object.keys(result.errorEvidence), [
-    "schemaVersion", "policyVersion", "code", "field", "attributeId", "state",
-    "offerId", "productId", "classification",
+  return Object.freeze({ classification: "EXPLICIT_CATEGORY_FAILURE", errorEvidence });
+}
+
+test("production module exposes no rule constructor, mutable policy, or test injection backdoor", () => {
+  assert.deepEqual(Object.keys(productionPolicy).sort(), [
+    "classifyOzonCategoryImportResult",
+    "projectOzonImportCarrier",
+    "projectProductionOzonImportErrorEvidence",
   ]);
-  assert.equal(Object.isFrozen(caller), false);
-  assert.equal(Object.isFrozen(caller.errors), false);
+  assert.equal("createOzonCategoryImportErrorPolicy" in productionPolicy, false);
+  assert.equal("OZON_CATEGORY_IMPORT_ERROR_POLICY_V1" in productionPolicy, false);
 });
 
-test("exact code, field and optional attribute identity are all required", () => {
-  const numericPolicy = createOzonCategoryImportErrorPolicy({
-    policyVersion: 78,
-    rules: [{ ...TEST_RULE, field: "attribute", attributeId: 9042 }],
+test("fixed empty production V1 never emits explicit evidence for any exact-looking input", () => {
+  const result = productionPolicy.classifyOzonCategoryImportResult({
+    item: failedItem(), expectedOfferId: "frozen-offer", batchHasPartialOutcome: false,
   });
+  assert.deepEqual(result, { classification: "OTHER_TERMINAL_FAILURE", errorEvidence: null });
+  assert.equal(Object.isFrozen(result), true);
+});
+
+test("production classifies success, checking, terminal failure, skipped, and unknown safely", () => {
   const cases = [
-    failedItem({ errors: [{ code: "OTHER", field: TEST_RULE.field }] }),
-    failedItem({ errors: [{ code: TEST_RULE.code, field: "type_id" }] }),
-    failedItem({ errors: [{ code: TEST_RULE.code, field: TEST_RULE.field, attribute_id: 9042 }] }),
+    [{ offer_id: "frozen-offer", product_id: 123, status: "imported", errors: [] }, "SUCCEEDED"],
+    [{ offer_id: "frozen-offer", product_id: 0, status: "processing", errors: [] }, "CHECKING"],
+    [failedItem({ errors: [{ code: "UNKNOWN", field: "unknown" }] }), "OTHER_TERMINAL_FAILURE"],
+    [failedItem({ status: "skipped" }), "OTHER_TERMINAL_FAILURE"],
+    [failedItem({ status: "unexpected" }), "UNKNOWN_RESULT"],
   ];
-  for (const item of cases) {
-    assert.notEqual(testPolicy.classify({ item, expectedOfferId: "frozen-offer" }).classification,
-      "EXPLICIT_CATEGORY_FAILURE");
+  for (const [item, expected] of cases) {
+    const result = productionPolicy.classifyOzonCategoryImportResult({
+      item, expectedOfferId: "frozen-offer", batchHasPartialOutcome: false,
+    });
+    assert.equal(result.classification, expected);
+    assert.equal(result.errorEvidence, null);
   }
-  assert.equal(numericPolicy.classify({
-    item: failedItem({ errors: [{ code: TEST_RULE.code, field: "attribute", attribute_id: 9042 }] }),
-    expectedOfferId: "frozen-offer",
-  }).classification, "EXPLICIT_CATEGORY_FAILURE");
-  assert.notEqual(numericPolicy.classify({
-    item: failedItem({ errors: [{ code: TEST_RULE.code, field: "attribute", attribute_id: 9043 }] }),
-    expectedOfferId: "frozen-offer",
-  }).classification, "EXPLICIT_CATEGORY_FAILURE");
 });
 
-test("offer mismatch, product presence, nonterminal state and partial success cannot be explicit", () => {
-  const inputs = [
-    { item: failedItem(), expectedOfferId: "other-offer" },
+test("test-only exact-rule engine requires FAILED and suppresses skipped and partial batches", () => {
+  const explicit = classifyWithTestRule({ item: failedItem(), expectedOfferId: "frozen-offer" });
+  assert.equal(explicit.classification, "EXPLICIT_CATEGORY_FAILURE");
+  assert.equal(explicit.errorEvidence.state, "FAILED");
+  assert.equal(Object.isFrozen(explicit), true);
+  assert.equal(Object.isFrozen(explicit.errorEvidence), true);
+  for (const input of [
+    { item: failedItem({ status: "skipped" }), expectedOfferId: "frozen-offer" },
+    { item: failedItem({ status: "error" }), expectedOfferId: "frozen-offer" },
+    { item: failedItem({ status: "rejected" }), expectedOfferId: "frozen-offer" },
+    { item: failedItem(), expectedOfferId: "frozen-offer", batchHasPartialOutcome: true },
     { item: failedItem({ product_id: 123 }), expectedOfferId: "frozen-offer" },
-    { item: failedItem({ status: "processing" }), expectedOfferId: "frozen-offer" },
-    { item: failedItem(), expectedOfferId: "frozen-offer", batchHasSucceeded: true },
-  ];
-  for (const input of inputs) {
-    assert.notEqual(testPolicy.classify(input).classification, "EXPLICIT_CATEGORY_FAILURE");
-    assert.equal(testPolicy.classify(input).errorEvidence, null);
+    { item: failedItem(), expectedOfferId: "other-offer" },
+  ]) {
+    const result = classifyWithTestRule(input);
+    assert.notEqual(result.classification, "EXPLICIT_CATEGORY_FAILURE");
+    assert.equal(result.errorEvidence, null);
   }
 });
 
-test("message wording and known non-category families carry no authority", () => {
+test("message wording and non-category fields carry no production authority", () => {
   const cases = [
     failedItem({ errors: [{ code: "UNKNOWN", field: "unknown", message: "description_category_id category invalid" }] }),
     failedItem({ errors: [{ code: "ATTRIBUTE_INVALID", field: "attribute", message: "category" }] }),
@@ -138,7 +114,9 @@ test("message wording and known non-category families carry no authority", () =>
     failedItem({ errors: [{ code: "STOCK", field: "stock" }] }),
   ];
   for (const item of cases) {
-    const result = testPolicy.classify({ item, expectedOfferId: "frozen-offer" });
+    const result = productionPolicy.classifyOzonCategoryImportResult({
+      item, expectedOfferId: "frozen-offer", batchHasPartialOutcome: false,
+    });
     assert.equal(result.classification, "OTHER_TERMINAL_FAILURE");
     assert.equal(result.errorEvidence, null);
   }
@@ -156,32 +134,16 @@ test("malformed, accessor, proxy, cyclic and oversized carriers fail closed with
   const transparentProxy = new Proxy(failedItem(), {});
   const revocable = Proxy.revocable(failedItem(), {});
   revocable.revoke();
-  const hostile = [
-    null,
-    [],
-    accessor,
-    transparentProxy,
-    revocable.proxy,
-    cyclic,
+  for (const item of [
+    null, [], accessor, transparentProxy, revocable.proxy, cyclic,
     failedItem({ note: "x".repeat(2_000_001) }),
     failedItem({ errors: Array.from({ length: 5_001 }, () => ({ code: "x", field: "x" })) }),
-  ];
-  for (const item of hostile) {
-    const result = testPolicy.classify({ item, expectedOfferId: "frozen-offer" });
+  ]) {
+    const result = productionPolicy.classifyOzonCategoryImportResult({
+      item, expectedOfferId: "frozen-offer", batchHasPartialOutcome: false,
+    });
     assert.deepEqual(result, { classification: "UNKNOWN_RESULT", errorEvidence: null });
     assert.doesNotMatch(JSON.stringify(result), /source-evidence-secret|credential|authorization/iu);
   }
   assert.equal(getterReads, 0);
-});
-
-test("policy creation rejects unsafe or duplicate trusted rules", () => {
-  assert.throws(() => createOzonCategoryImportErrorPolicy({
-    policyVersion: 0, rules: [],
-  }), { code: "OZON_CATEGORY_IMPORT_POLICY_INVALID" });
-  assert.throws(() => createOzonCategoryImportErrorPolicy({
-    policyVersion: 2, rules: [TEST_RULE, TEST_RULE],
-  }), { code: "OZON_CATEGORY_IMPORT_POLICY_INVALID" });
-  assert.throws(() => createOzonCategoryImportErrorPolicy({
-    policyVersion: 2, rules: [{ ...TEST_RULE, code: "x".repeat(1_001) }],
-  }), { code: "OZON_CATEGORY_IMPORT_POLICY_INVALID" });
 });

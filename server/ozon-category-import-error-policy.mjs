@@ -5,30 +5,18 @@ const MAX_STRING_LENGTH = 2_000_000;
 const MAX_ARRAY_LENGTH = 5_000;
 const MAX_DEPTH = 64;
 const MAX_NODES = 200_000;
-const SAFE_CLASSIFICATIONS = new Set([
-  "SUCCEEDED",
-  "CHECKING",
-  "EXPLICIT_CATEGORY_FAILURE",
-  "OTHER_TERMINAL_FAILURE",
-  "UNKNOWN_RESULT",
-]);
 const SUCCEEDED_STATES = new Set(["imported", "success", "processed", "done", "complete", "completed", "finished"]);
 const CHECKING_STATES = new Set(["pending", "processing", "created", "queued", "running", "importing", "checking", "in_progress"]);
-const TERMINAL_FAILURE_STATES = new Set(["failed", "error", "rejected", "cancelled", "canceled", "validation_error", "skipped"]);
+const TERMINAL_FAILURE_STATES = new Set(["failed", "error", "rejected", "cancelled", "canceled", "validation_error"]);
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const POLICY_VERSION = 1;
+const POLICY_RULES = Object.freeze([]);
 
 function frozenResult(classification, errorEvidence = null) {
   return Object.freeze({ classification, errorEvidence });
 }
 
 const UNKNOWN = frozenResult("UNKNOWN_RESULT");
-
-function policyError() {
-  return Object.assign(new Error("Ozon category import policy is invalid"), {
-    code: "OZON_CATEGORY_IMPORT_POLICY_INVALID",
-    cause: null,
-  });
-}
 
 function descriptors(value) {
   try {
@@ -152,34 +140,14 @@ function normalizedErrors(item) {
   return output;
 }
 
-function normalizeRule(rule) {
-  const cloned = projectOzonImportCarrier(rule);
-  if (!cloned || Array.isArray(cloned)) throw policyError();
-  const allowed = new Set(["code", "field", "attributeId"]);
-  if (Object.keys(cloned).some((key) => !allowed.has(key))) throw policyError();
-  const code = stringField(cloned, "code", { required: true });
-  const field = stringField(cloned, "field", { required: true });
-  if (code === undefined || field === undefined) throw policyError();
-  let attributeId = null;
-  if (Object.hasOwn(cloned, "attributeId") && cloned.attributeId !== null) {
-    attributeId = exactPositiveInteger(cloned.attributeId);
-    if (attributeId === null) throw policyError();
-  }
-  return Object.freeze({ code, field, attributeId });
-}
-
-function ruleKey(rule) {
-  return `${rule.code}\u0000${rule.field}\u0000${rule.attributeId ?? ""}`;
-}
-
 function classifyWithRules(policyVersion, rules, rawInput) {
   const input = projectOzonImportCarrier(rawInput);
   if (!input || Array.isArray(input)) return UNKNOWN;
   const item = input.item;
   const expectedOfferId = input.expectedOfferId;
   if (!item || Array.isArray(item) || typeof expectedOfferId !== "string" || expectedOfferId.length === 0 || expectedOfferId.length > 240) return UNKNOWN;
-  if (Object.keys(input).some((key) => !["item", "expectedOfferId", "batchHasSucceeded"].includes(key))) return UNKNOWN;
-  if (Object.hasOwn(input, "batchHasSucceeded") && typeof input.batchHasSucceeded !== "boolean") return UNKNOWN;
+  if (Object.keys(input).some((key) => !["item", "expectedOfferId", "batchHasPartialOutcome"].includes(key))) return UNKNOWN;
+  if (Object.hasOwn(input, "batchHasPartialOutcome") && typeof input.batchHasPartialOutcome !== "boolean") return UNKNOWN;
   const offerId = stringField(item, "offer_id", { required: true, max: 240 });
   const state = normalizedState(item);
   const productId = normalizedProductId(item);
@@ -187,8 +155,10 @@ function classifyWithRules(policyVersion, rules, rawInput) {
   if (offerId === undefined || offerId !== expectedOfferId || state === undefined || productId === undefined || errors === undefined) return UNKNOWN;
   if (SUCCEEDED_STATES.has(state)) return frozenResult("SUCCEEDED");
   if (CHECKING_STATES.has(state)) return frozenResult("CHECKING");
+  if (state === "skipped") return frozenResult("OTHER_TERMINAL_FAILURE");
   if (!TERMINAL_FAILURE_STATES.has(state)) return UNKNOWN;
-  if (input.batchHasSucceeded || productId !== null) return frozenResult("OTHER_TERMINAL_FAILURE");
+  if (state !== "failed") return frozenResult("OTHER_TERMINAL_FAILURE");
+  if (input.batchHasPartialOutcome || productId !== null) return frozenResult("OTHER_TERMINAL_FAILURE");
   const matched = errors.find((error) => rules.some((rule) => rule.code === error.code
     && rule.field === error.field && rule.attributeId === error.attributeId));
   if (!matched) return frozenResult("OTHER_TERMINAL_FAILURE");
@@ -206,29 +176,8 @@ function classifyWithRules(policyVersion, rules, rawInput) {
   return frozenResult("EXPLICIT_CATEGORY_FAILURE", errorEvidence);
 }
 
-export function createOzonCategoryImportErrorPolicy(raw = {}) {
-  const input = projectOzonImportCarrier(raw);
-  if (!input || Array.isArray(input) || !Number.isSafeInteger(input.policyVersion) || input.policyVersion < 1
-      || !Array.isArray(input.rules) || Object.keys(input).some((key) => !["policyVersion", "rules"].includes(key))) throw policyError();
-  const rules = input.rules.map(normalizeRule);
-  if (new Set(rules.map(ruleKey)).size !== rules.length) throw policyError();
-  const policy = {
-    policyVersion: input.policyVersion,
-    rules: Object.freeze(rules),
-    classify(rawInput) {
-      return classifyWithRules(input.policyVersion, rules, rawInput);
-    },
-  };
-  return Object.freeze(policy);
-}
-
-export const OZON_CATEGORY_IMPORT_ERROR_POLICY_V1 = createOzonCategoryImportErrorPolicy({
-  policyVersion: 1,
-  rules: [],
-});
-
 export function classifyOzonCategoryImportResult(input) {
-  return OZON_CATEGORY_IMPORT_ERROR_POLICY_V1.classify(input);
+  return classifyWithRules(POLICY_VERSION, POLICY_RULES, input);
 }
 
 export function projectProductionOzonImportErrorEvidence(value) {
@@ -236,15 +185,11 @@ export function projectProductionOzonImportErrorEvidence(value) {
   if (!projected || Array.isArray(projected)) return null;
   const exactKeys = ["schemaVersion", "policyVersion", "code", "field", "attributeId", "state", "offerId", "productId", "classification"];
   if (Object.keys(projected).length !== exactKeys.length || exactKeys.some((key) => !Object.hasOwn(projected, key))) return null;
-  if (projected.schemaVersion !== EVIDENCE_SCHEMA || projected.policyVersion !== OZON_CATEGORY_IMPORT_ERROR_POLICY_V1.policyVersion
+  if (projected.schemaVersion !== EVIDENCE_SCHEMA || projected.policyVersion !== POLICY_VERSION
       || projected.state !== "FAILED" || projected.productId !== null
       || projected.classification !== "EXPLICIT_CATEGORY_FAILURE") return null;
-  const rule = OZON_CATEGORY_IMPORT_ERROR_POLICY_V1.rules.find((candidate) => candidate.code === projected.code
+  const rule = POLICY_RULES.find((candidate) => candidate.code === projected.code
     && candidate.field === projected.field && candidate.attributeId === projected.attributeId);
   if (!rule || typeof projected.offerId !== "string" || projected.offerId.length === 0 || projected.offerId.length > 240) return null;
   return Object.freeze({ ...projected });
-}
-
-export function isOzonImportClassification(value) {
-  return SAFE_CLASSIFICATIONS.has(value);
 }
