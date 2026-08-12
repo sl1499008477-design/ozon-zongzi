@@ -595,6 +595,154 @@ if (!enabled) {
     }
   });
 
+  test("PostgreSQL 067 accepts only provably exact historical lease and job bindings", { timeout: 60_000 }, async () => {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: databaseUrl });
+    const client = await pool.connect();
+    const migration067 = await readFile(
+      path.join(migrationsDir, "067_auto_listing_category_lease_replay.sql"), "utf8",
+    );
+    const baseMigrations = (await readdir(migrationsDir))
+      .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && file < "067_").sort();
+    const cases = [
+      {
+        name: "exact",
+        leases: [{ id: "lease-a", finalizedJobId: "job-a" }],
+        jobs: [{ id: "job-a", leaseId: "lease-a" }],
+        accepted: true,
+      },
+      {
+        name: "lease-to-job-only",
+        leases: [{ id: "lease-a", finalizedJobId: "job-a" }],
+        jobs: [{ id: "job-a", leaseId: null }],
+      },
+      {
+        name: "lease-points-job-owned-by-other-lease",
+        leases: [
+          { id: "lease-a", finalizedJobId: "job-a" },
+          { id: "lease-b", finalizedJobId: "job-a" },
+        ],
+        jobs: [{ id: "job-a", leaseId: "lease-b" }],
+      },
+      {
+        name: "job-to-lease-only",
+        leases: [{ id: "lease-a", finalizedJobId: null }],
+        jobs: [{ id: "job-a", leaseId: "lease-a" }],
+      },
+      {
+        name: "multiple-finalizing-candidates",
+        leases: [
+          { id: "lease-a", finalizedJobId: "job-a" },
+          { id: "lease-b", finalizedJobId: "job-a" },
+        ],
+        jobs: [{ id: "job-a", leaseId: null }],
+      },
+    ];
+    try {
+      for (const [fixtureIndex, fixture] of cases.entries()) {
+        const suffix = crypto.randomUUID().replaceAll("-", "");
+        const schemaSql = quoteIdentifier(`auto_listing_task4_067_${fixtureIndex}_${suffix}`);
+        const accountId = `account-${fixture.name}-${suffix}`;
+        try {
+          await client.query(`CREATE SCHEMA ${schemaSql}`);
+          await client.query(`SET search_path TO ${schemaSql}, public`);
+          for (const migration of baseMigrations) {
+            await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+          }
+          await client.query(
+            "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+            [accountId, `user-${accountId}`],
+          );
+          for (const lease of fixture.leases) {
+            await client.query(
+              `INSERT INTO auto_listing_category_preparation_leases (
+                 id,account_id,holder_backend_pid,holder_backend_started_at,state,acquired_at,expires_at
+               ) VALUES ($1,$2,pg_backend_pid(),
+                 (SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid()),
+                 'ACTIVE',NOW(),NOW()+INTERVAL '1 hour')`,
+              [lease.id, accountId],
+            );
+          }
+          await client.query("ALTER TABLE auto_listing_jobs DISABLE TRIGGER auto_listing_jobs_category_handoff_commit_guard");
+          for (const job of fixture.jobs) {
+            await client.query(
+              `INSERT INTO auto_listing_jobs (
+                 id,account_id,source_type,status,idempotency_key,config_snapshot,config_hash,
+                 correlation_id,category_preparation_lease_id
+               ) VALUES ($1,$2,'COLLECT_BOX','CREATED',$1,'{}'::jsonb,$3,'067-upgrade',$4)`,
+              [job.id, accountId, "a".repeat(64), job.leaseId],
+            );
+          }
+          await client.query("ALTER TABLE auto_listing_jobs ENABLE TRIGGER auto_listing_jobs_category_handoff_commit_guard");
+          for (const lease of fixture.leases.filter((entry) => entry.finalizedJobId)) {
+            await client.query(
+              `UPDATE auto_listing_category_preparation_leases
+                  SET state='RELEASED',outcome='COMMITTED',finalized_job_id=$3,
+                      released_at=clock_timestamp(),updated_at=clock_timestamp()
+                WHERE account_id=$1 AND id=$2`,
+              [accountId, lease.id, lease.finalizedJobId],
+            );
+          }
+          const before = (await client.query(
+            `SELECT id,state,outcome,finalized_job_id FROM auto_listing_category_preparation_leases
+              WHERE account_id=$1 ORDER BY id`, [accountId],
+          )).rows;
+          const jobsBefore = (await client.query(
+            `SELECT id,category_preparation_lease_id FROM auto_listing_jobs
+              WHERE account_id=$1 ORDER BY id`, [accountId],
+          )).rows;
+          let migrationError = null;
+          await client.query("BEGIN");
+          try {
+            await client.query(migration067);
+            await client.query("COMMIT");
+          } catch (error) {
+            migrationError = error;
+            await client.query("ROLLBACK");
+          }
+          if (fixture.accepted) {
+            assert.equal(migrationError, null, fixture.name);
+            assert.equal(Number((await client.query(
+              `SELECT count(*)::int AS count
+                 FROM auto_listing_category_preparation_leases lease
+                 FULL JOIN auto_listing_jobs job
+                   ON job.account_id=lease.account_id
+                  AND job.id=lease.finalized_job_id
+                  AND job.category_preparation_lease_id=lease.id
+                WHERE COALESCE(lease.account_id,job.account_id)=$1
+                  AND ((lease.outcome='COMMITTED' AND job.id IS NULL)
+                    OR (job.category_preparation_lease_id IS NOT NULL AND lease.id IS NULL))`,
+              [accountId],
+            )).rows[0].count), 0);
+          } else {
+            assert.equal(migrationError?.code, "23514", fixture.name);
+            assert.match(String(migrationError?.message), /historical category lease\/job binding requires manual repair/u);
+            assert.equal(Number((await client.query(
+              `SELECT count(*)::int AS count FROM information_schema.columns
+                WHERE table_schema=current_schema() AND table_name='auto_listing_category_preparation_leases'
+                  AND column_name='replayed_job_id'`,
+            )).rows[0].count), 0, `${fixture.name}: migration must roll back DDL`);
+            assert.deepEqual((await client.query(
+              `SELECT id,state,outcome,finalized_job_id FROM auto_listing_category_preparation_leases
+                WHERE account_id=$1 ORDER BY id`, [accountId],
+            )).rows, before, `${fixture.name}: migration failure must leave audit rows intact`);
+            assert.deepEqual((await client.query(
+              `SELECT id,category_preparation_lease_id FROM auto_listing_jobs
+                WHERE account_id=$1 ORDER BY id`, [accountId],
+            )).rows, jobsBefore, `${fixture.name}: migration failure must leave jobs intact`);
+          }
+        } finally {
+          await client.query("ROLLBACK").catch(() => {});
+          await client.query("RESET search_path").catch(() => {});
+          await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
+        }
+      }
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  });
+
   test("PostgreSQL repository rolls back graphs, scopes replays, preserves snapshots and orders events", { timeout: 20_000 }, async () => {
     const { Pool, Client } = await import("pg");
     const pool = new Pool({ connectionString: databaseUrl });
