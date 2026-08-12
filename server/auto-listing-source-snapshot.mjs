@@ -28,6 +28,7 @@ function sourceError(code) {
 
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const identifier = (value) => (typeof value === "string" || typeof value === "number") ? String(value).trim() : "";
+const positiveIdentifier = (value) => /^[1-9][0-9]*$/u.test(identifier(value)) ? identifier(value) : "";
 
 function scalar(value, { allowNull = false } = {}) {
   if (allowNull && (value === undefined || value === null || value === "")) return null;
@@ -77,33 +78,43 @@ function firstDefined(...values) {
   return values.at(-1);
 }
 
-function safeAncestorIds(target = {}) {
-  const ids = firstDefined(target.ancestorCategoryIds, target.ancestor_category_ids, []);
-  if (!Array.isArray(ids)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-  return ids.map((id) => {
-    const value = identifier(id);
-    if (!value) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
-    return value;
-  });
-}
-
-function categorySnapshot(draft) {
-  const resolution = draft.categoryResolution && typeof draft.categoryResolution === "object" ? draft.categoryResolution : {};
-  const target = resolution.target && typeof resolution.target === "object" ? resolution.target : {};
-  const descriptionCategoryId = identifier(firstDefined(draft.descriptionCategoryId, draft.description_category_id));
-  const typeId = identifier(firstDefined(draft.typeId, draft.type_id));
-  const targetStoreId = identifier(target.storeId);
-  if (!descriptionCategoryId || !typeId || !targetStoreId) throw sourceError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED");
+function categorySnapshot({ accountId, categoryEvidence, sharedCategory }) {
+  if (!plainObject(categoryEvidence) || !plainObject(sharedCategory)) {
+    throw sourceError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED");
+  }
+  const evidenceId = identifier(categoryEvidence.id);
+  const sharedCategoryId = identifier(sharedCategory.id);
+  const sharedCategoryVersion = sharedCategory.version;
+  const sourceDescriptionCategoryId = positiveIdentifier(categoryEvidence.sourceDescriptionCategoryId);
+  const sourceTypeId = positiveIdentifier(categoryEvidence.sourceTypeId);
+  const descriptionCategoryId = positiveIdentifier(sharedCategory.currentDescriptionCategoryId);
+  const typeId = positiveIdentifier(sharedCategory.currentTypeId);
+  const taxonomyScope = text(categoryEvidence.taxonomyScope);
+  const sharedTaxonomyScope = text(sharedCategory.taxonomyScope);
+  const taxonomyFingerprint = sharedCategory.taxonomyFingerprint === null
+    ? "" : text(sharedCategory.taxonomyFingerprint);
+  const provenance = text(sharedCategory.source);
+  if (!evidenceId || !sharedCategoryId || !Number.isSafeInteger(sharedCategoryVersion) || sharedCategoryVersion < 1
+    || !sourceDescriptionCategoryId || !sourceTypeId || !descriptionCategoryId || !typeId || !taxonomyScope
+    || sharedTaxonomyScope !== taxonomyScope || text(categoryEvidence.accountId) !== accountId
+    || text(sharedCategory.accountId) !== accountId
+    || identifier(sharedCategory.sourceDescriptionCategoryId) !== sourceDescriptionCategoryId
+    || identifier(sharedCategory.sourceTypeId) !== sourceTypeId || sharedCategory.status !== "ACTIVE"
+    || !["SOURCE_DIRECT", "MANUAL", "OZON_REFRESH"].includes(provenance)) {
+    throw sourceError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED");
+  }
   return {
+    schemaVersion: "AUTO_LISTING_ACCOUNT_CATEGORY_V2",
+    evidenceId,
+    sharedCategoryId,
+    sharedCategoryVersion,
+    sourceDescriptionCategoryId,
+    sourceTypeId,
     descriptionCategoryId,
     typeId,
-    targetStoreId,
-    ancestorCategoryIds: safeAncestorIds(target),
-    categoryPath: firstDefined(draft.categoryPath, resolution.categoryPath, resolution.path, resolution.source?.path, []),
-    sourceEvidence: firstDefined(resolution.source, draft.sourceCategory, null),
-    match: firstDefined(resolution.match, resolution.dictionaryMatch, null),
-    dictionary: firstDefined(resolution.dictionary, null),
-    taxonomy: firstDefined(resolution.taxonomy, target.taxonomy, null),
+    taxonomyScope,
+    taxonomyFingerprint,
+    provenance,
   };
 }
 
@@ -216,8 +227,7 @@ function assertSemanticSnapshot(snapshot) {
     || !stringOrNull(source.productDraftId) || !(source.productDraftVersion === null || (Number.isInteger(source.productDraftVersion) && source.productDraftVersion > 0))
     || !stringOrNull(source.collectedAt)
     || identity.sourceType !== source.sourceType || identity.sourceRecordId !== source.sourceRecordId || identity.sourceVersion !== source.sourceVersion
-    || !plainObject(targetCategory) || !["descriptionCategoryId", "typeId", "targetStoreId"].every((key) => requiredString(targetCategory[key]))
-    || !Array.isArray(targetCategory.ancestorCategoryIds) || targetCategory.ancestorCategoryIds.some((id) => !requiredString(id))
+    || !plainObject(targetCategory) || !validCategorySnapshot(targetCategory)
     || !Array.isArray(attributes) || !plainObject(logistics) || !plainObject(productMeasurements)
     || !supportedPrice(priceEvidence) || !Array.isArray(variants) || variants.length < 1
     || !plainObject(media) || !Array.isArray(media.images) || !Array.isArray(media.videos)
@@ -233,6 +243,27 @@ function assertSemanticSnapshot(snapshot) {
     }
   }
   if (!variants.some((variant) => variant.sku === identity.primarySku)) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+}
+
+function validCategorySnapshot(value) {
+  if (value.schemaVersion === "AUTO_LISTING_ACCOUNT_CATEGORY_V2") {
+    const keys = ["schemaVersion", "evidenceId", "sharedCategoryId", "sharedCategoryVersion",
+      "sourceDescriptionCategoryId", "sourceTypeId", "descriptionCategoryId", "typeId",
+      "taxonomyScope", "taxonomyFingerprint", "provenance"];
+    return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+      && ["evidenceId", "sharedCategoryId", "sourceDescriptionCategoryId", "sourceTypeId",
+        "descriptionCategoryId", "typeId", "taxonomyScope", "provenance"].every((key) => requiredString(value[key]))
+      && ["sourceDescriptionCategoryId", "sourceTypeId", "descriptionCategoryId", "typeId"]
+        .every((key) => positiveIdentifier(value[key]))
+      && Number.isSafeInteger(value.sharedCategoryVersion) && value.sharedCategoryVersion > 0
+      && value.taxonomyScope === "OZON:DEFAULT"
+      && typeof value.taxonomyFingerprint === "string"
+      && (value.taxonomyFingerprint === "" || /^[0-9a-f]{64}$/u.test(value.taxonomyFingerprint))
+      && ["SOURCE_DIRECT", "MANUAL", "OZON_REFRESH"].includes(value.provenance);
+  }
+  return ["descriptionCategoryId", "typeId", "targetStoreId"].every((key) => requiredString(value[key]))
+    && Array.isArray(value.ancestorCategoryIds)
+    && value.ancestorCategoryIds.every((id) => requiredString(id));
 }
 
 function assertBlockedEvidence(evidence) {
@@ -332,11 +363,11 @@ export function buildAutoListingSourceSnapshot(input = {}) {
   const rawResponseHash = scalar(input.rawResponseHash, { allowNull: true });
   let draft;
   try { draft = buildCollectItemDraftV4(collectItem); } catch { throw sourceError("AUTO_LISTING_SOURCE_INVALID"); }
-  const targetCategory = categorySnapshot(draft);
+  const targetCategory = categorySnapshot({ accountId, categoryEvidence: input.categoryEvidence, sharedCategory: input.sharedCategory });
   const currencyContext = {
     targetStoreCurrency: input.targetStoreCurrency,
     targetStoreId: input.targetStoreId,
-    sourceTargetStoreId: targetCategory.targetStoreId,
+    sourceTargetStoreId: input.targetStoreId,
   };
   const variants = variantsSnapshot(draft, collectItem, currencyContext);
   const snapshot = normalizedSnapshot({

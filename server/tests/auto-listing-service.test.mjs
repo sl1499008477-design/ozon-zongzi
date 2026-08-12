@@ -45,6 +45,17 @@ const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => 
   accountId: "account-a",
   sourceVersion: "3",
   rawResponseRef: `raw-${id}`,
+  categoryEvidence: {
+    id: `evidence-${id}`, accountId: "account-a", sourceDescriptionCategoryId: 123,
+    sourceTypeId: 456, taxonomyScope: "OZON:DEFAULT",
+  },
+  sharedCategory: {
+    id: "shared-123-456", accountId: "account-a", version: 1,
+    evidenceId: `evidence-${id}`, status: "ACTIVE", source: "SOURCE_DIRECT",
+    sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    currentDescriptionCategoryId: 123, currentTypeId: 456,
+    taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+  },
   collectItem: {
     id,
     accountId: "account-a",
@@ -68,6 +79,11 @@ const source = (id, price = { blackKopecks: "10000", greenKopecks: "8000" }) => 
     id: `draft-${id}`, version: 3, dataHash: "1".repeat(64),
     normalizerVersion: "normalizer-v3", categoryRuleVersion: "category-v5", dictionaryVersion: "dictionary-live",
   },
+});
+
+const categoryAuthority = (id) => ({
+  categoryEvidence: source(id).categoryEvidence,
+  sharedCategory: source(id).sharedCategory,
 });
 
 const prepareListingBase = async ({ source: entry, pricingEvidence }) => ({
@@ -502,6 +518,38 @@ test("uses only actor scope, freezes server strategy and persists valid plus blo
   assert.doesNotMatch(JSON.stringify(result), /raw-collect|credentialsSaved|textDensityByRole/);
 });
 
+test("orders replay, store/currency, shared category, warehouse, then paid graph", async () => {
+  const repository = fakeRepository();
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "category-order", correlationId: "corr", config,
+  });
+  const calls = repository.calls.map(([name]) => name);
+  assert.ok(calls.indexOf("getJobByIdempotencyKey") < calls.indexOf("loadTargetStore"));
+  assert.ok(calls.indexOf("loadTargetStore") < calls.indexOf("loadCollectSources"));
+  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("loadTargetWarehouse"));
+  assert.ok(calls.indexOf("loadTargetWarehouse") < calls.indexOf("createJobGraph"));
+});
+
+test("missing or unconfirmed shared category stops before warehouse, paid AI, object storage, graph, or Ozon", async () => {
+  for (const category of [
+    null,
+    { ...source("collect-1").sharedCategory, status: "NEEDS_REVIEW" },
+    { ...source("collect-1").sharedCategory, accountId: "account-b" },
+    { ...source("collect-1").sharedCategory, currentTypeId: 0 },
+    { ...source("collect-1").sharedCategory, taxonomyScope: "OZON:FOREIGN" },
+    { ...source("collect-1").sharedCategory, taxonomyFingerprint: "not-a-hash" },
+  ]) {
+    const item = source("collect-1");
+    item.sharedCategory = category;
+    const repository = fakeRepository({ sources: [item] });
+    await assert.rejects(createAutoListingService({ repository }).createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: `category-closed-${category?.status || "absent"}`,
+      correlationId: "corr", config,
+    }), { code: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED" });
+    assert.equal(repository.calls.some(([name]) => ["loadTargetWarehouse", "loadPublishedStrategy", "createJobGraph"].includes(name)), false);
+  }
+});
+
 test("keeps low-branch and missing-price source evidence isolated per sibling", async () => {
   const repository = fakeRepository({ sources: [
     source("collect-good"),
@@ -547,19 +595,17 @@ test("keeps numeric source price facts immutable while blocking only that siblin
   assert.equal(graph.items[1].snapshot.variants[0].priceEvidence.greenKopecks, 8_000);
 });
 
-test("isolates only closed source-business failures with separate blocked evidence", async () => {
-  const missingCategory = source("collect-no-category");
-  missingCategory.collectItem.listingDraft.categoryResolution.target.descriptionCategoryId = "";
+test("isolates only non-category source-business failures with separate blocked evidence", async () => {
   const missingSku = source("collect-no-sku");
   missingSku.collectItem.listingDraft.variants = [{ sku: "" }];
   const foreignCurrency = source("collect-usd");
   foreignCurrency.collectItem.listingDraft.currency = "USD";
   foreignCurrency.collectItem.listingDraft.variants[0].currency = "USD";
-  const repository = fakeRepository({ sources: [source("collect-good"), missingCategory, missingSku, foreignCurrency] });
+  const repository = fakeRepository({ sources: [source("collect-good"), missingSku, foreignCurrency] });
 
   const result = await createAutoListingService({ repository }).createAutoListingJob({
     actor,
-    collectItemIds: ["collect-good", "collect-no-category", "collect-no-sku", "collect-usd"],
+    collectItemIds: ["collect-good", "collect-no-sku", "collect-usd"],
     idempotencyKey: "source-fact-isolation",
     correlationId: "corr",
     config,
@@ -567,7 +613,6 @@ test("isolates only closed source-business failures with separate blocked eviden
 
   assert.deepEqual(result.items.map((item) => [item.status, item.failureCode || null]), [
     ["SOURCE_READY", null],
-    ["BLOCKED", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"],
     ["BLOCKED", "AUTO_LISTING_SOURCE_SKU_REQUIRED"],
     ["BLOCKED", "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED"],
   ]);
@@ -614,13 +659,12 @@ test("rejects missing or foreign formal warehouses before any graph insert", asy
   }
 });
 
-test("blocks store-mismatched category siblings without selecting their strategy or price", async () => {
+test("same account category authority is reusable for a second target store", async () => {
   const wrong = source("collect-wrong");
   wrong.collectItem.listingDraft.categoryResolution.target.storeId = "store-other";
   const repository = fakeRepository({ sources: [source("collect-good"), wrong] });
   const result = await createAutoListingService({ repository }).createAutoListingJob({ actor, collectItemIds: ["collect-good", "collect-wrong"], idempotencyKey: "key-category", correlationId: "corr", config });
-  assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "BLOCKED"]);
-  assert.equal(result.items[1].failureCode, "AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH");
+  assert.deepEqual(result.items.map((item) => item.status), ["SOURCE_READY", "SOURCE_READY"]);
 });
 
 test("returns an existing same-account job before resources are revalidated", async () => {
@@ -718,18 +762,18 @@ test("rejects invalid target-store, FBO, inactive association, and missing strat
   }
 });
 
-test("uses reliable ancestor IDs but never display category labels for strategy matching", async () => {
+test("uses the frozen shared category ID and never display labels for strategy matching", async () => {
   const item = source("collect-ancestor");
   item.collectItem.listingDraft.categoryResolution.target.ancestorCategoryIds = ["ancestor-id"];
   item.collectItem.listingDraft.categoryResolution.source.path = ["Display only"];
   const repository = fakeRepository({ sources: [item] });
   repository.loadPublishedStrategy = async (input) => ({
     strategyVersion: { strategyId: "strategy-a", strategyVersionId: "version-a" },
-    rules: [{ ruleId: "ancestor", ruleOrder: 1, matchType: "ANCESTOR_CATEGORY", categoryId: "ancestor-id", style: "PARAMETER_FIRST", textDensityByRole: {} }],
+    rules: [{ ruleId: "exact", ruleOrder: 1, matchType: "EXACT_CATEGORY", categoryId: "123", style: "PARAMETER_FIRST", textDensityByRole: {} }],
   });
   const result = await createAutoListingService({ repository }).createAutoListingJob({ actor, collectItemIds: ["collect-ancestor"], idempotencyKey: "ancestor-key", correlationId: "corr", config });
   const persisted = repository.calls.find(([name]) => name === "createJobGraph")[1].items[0];
-  assert.equal(persisted.matchedBy, "ANCESTOR_CATEGORY");
+  assert.equal(persisted.matchedBy, "EXACT_CATEGORY");
   assert.equal(persisted.style, "PARAMETER_FIRST");
   assert.equal(Object.hasOwn(result.items[0], "matchedBy"), false);
   assert.equal(Object.hasOwn(result.items[0], "style"), false);
@@ -754,7 +798,12 @@ test("bounds list requests and keeps cross-account same-key replays independent"
   await assert.rejects(service.listAutoListingJobs({ actor, limit: 0 }), (error) => error?.code === "AUTO_LISTING_REQUEST_INVALID");
   await assert.rejects(service.listAutoListingJobs({ actor, limit: 101 }), (error) => error?.code === "AUTO_LISTING_REQUEST_INVALID");
   await service.createAutoListingJob({ actor, collectItemIds: ["collect-1"], idempotencyKey: "same-key", correlationId: "corr", config });
-  const otherRepository = fakeRepository({ sources: [{ ...source("collect-1"), accountId: "account-b", collectItem: { ...source("collect-1").collectItem, accountId: "account-b" } }] });
+  const otherSource = structuredClone(source("collect-1"));
+  otherSource.accountId = "account-b";
+  otherSource.collectItem.accountId = "account-b";
+  otherSource.categoryEvidence.accountId = "account-b";
+  otherSource.sharedCategory.accountId = "account-b";
+  const otherRepository = fakeRepository({ sources: [otherSource] });
   const other = createAutoListingService({ repository: otherRepository });
   await other.createAutoListingJob({ actor: { id: "account-b", role: "user" }, collectItemIds: ["collect-1"], idempotencyKey: "same-key", correlationId: "corr", config: { ...config, targetStoreId: "store-a", targetWarehouseId: "warehouse-a" } });
   assert.equal(otherRepository.calls.find(([name]) => name === "getJobByIdempotencyKey")[1].accountId, "account-b");
@@ -830,6 +879,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
     rawResponseRef: "raw-warehouse", rawResponseHash: "raw-hash",
     collectItem: source("collect-warehouse").collectItem,
     productDraft: { id: "draft-collect-warehouse", version: 1 },
+    ...categoryAuthority("collect-warehouse"),
   });
   const client = {
     async query(sql) {
@@ -876,6 +926,7 @@ test("repository rejects malformed frozen configuration before connecting", asyn
     accountId: "account-a", sourceType: "COLLECT_BOX", sourceRecordId: "collect-config", sourceVersion: "1",
     targetStoreId: "store-a", targetStoreCurrency: "RUB",
     rawResponseRef: "raw-config", rawResponseHash: "raw-hash", collectItem: source("collect-config").collectItem,
+    ...categoryAuthority("collect-config"),
   });
   const frozen = frozenGraphConfig();
   const item = {
@@ -922,6 +973,7 @@ test("repository persists only a canonical recomputed price with a non-default s
     targetStoreId: "store-a", targetStoreCurrency: "RUB",
     rawResponseRef: "raw-rule", rawResponseHash: "raw-hash", collectItem,
     productDraft: { id: "draft-collect-rule", version: 1 },
+    ...categoryAuthority("collect-rule"),
   });
   const item = {
     sourceType: "COLLECT_BOX", sourceRecordId: "collect-rule", sourceVersion: "1", snapshot: captured.snapshot,
@@ -950,6 +1002,7 @@ test("repository persists only a canonical recomputed price with a non-default s
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-v1" }] };
       if (/FROM ai_gateway_profiles/.test(sql)) return { rows: [{ id: "profile-a", config_version: 3 }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [{ id: "rule-modern", rule_order: 1, rule_kind: "PRODUCT_STYLE", category_id: null, ancestor_category_id: null, product_style: "MODERN", rule: { style: "VISUAL_FIRST", textDensityByRole: {} } }] };
+      if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) return { rows: [{ id: "shared-123-456" }] };
       if (/FROM collect_items c/.test(sql)) return { rows: [{
         draft_id: "draft-collect-rule", draft_version: 1, draft_data_hash: "1".repeat(64),
       }] };

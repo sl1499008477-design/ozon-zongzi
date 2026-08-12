@@ -40,6 +40,24 @@ function text(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function validSharedCategorySource(accountId, source) {
+  const evidence = source?.categoryEvidence;
+  const shared = source?.sharedCategory;
+  const positiveId = (value) => /^[1-9][0-9]*$/u.test(String(value ?? ""));
+  const fingerprint = shared?.taxonomyFingerprint;
+  return Boolean(evidence && shared && text(evidence.id) && text(shared.id)
+    && evidence.accountId === accountId && shared.accountId === accountId
+    && shared.status === "ACTIVE"
+    && shared.taxonomyScope === "OZON:DEFAULT" && evidence.taxonomyScope === "OZON:DEFAULT"
+    && String(shared.sourceDescriptionCategoryId) === String(evidence.sourceDescriptionCategoryId)
+    && String(shared.sourceTypeId) === String(evidence.sourceTypeId)
+    && [evidence.sourceDescriptionCategoryId, evidence.sourceTypeId,
+      shared.currentDescriptionCategoryId, shared.currentTypeId].every(positiveId)
+    && ["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"].includes(shared.source)
+    && (fingerprint === null || fingerprint === "" || (typeof fingerprint === "string" && /^[0-9a-f]{64}$/u.test(fingerprint)))
+    && Number.isSafeInteger(shared.version) && shared.version > 0);
+}
+
 function assertRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).some((key) => !REQUEST_KEYS.has(key))) {
@@ -101,6 +119,8 @@ function buildJobItems({ accountId, sourceType, sources, targetStore, config, co
         rawResponseRef: source.rawResponseRef,
         rawResponseHash: source.rawResponseHash,
         rawCollectedAt: source.rawCollectedAt,
+        categoryEvidence: source.categoryEvidence,
+        sharedCategory: source.sharedCategory,
         targetStoreId: targetStore.id,
         targetStoreCurrency: targetStore.currencyCode,
       });
@@ -134,9 +154,6 @@ function buildJobItems({ accountId, sourceType, sources, targetStore, config, co
         configSnapshot: config, configHash, sourceCapture: captured,
       }),
     };
-    if (captured.snapshot.targetCategory.targetStoreId !== config.targetStoreId) {
-      return { ...base, status: "BLOCKED", failureCode: "AUTO_LISTING_CATEGORY_TARGET_STORE_MISMATCH" };
-    }
     const strategy = strategyFor(captured.snapshot, source, published);
     try {
       return {
@@ -264,13 +281,21 @@ export function createAutoListingService({
   }
   const verifier = requireRfbsWarehouseVerifier(rfbsWarehouseVerifier);
   async function createFromSources({
-    accountId, sourceType, sources, idempotencyKey, correlationId, config, configHash,
+    accountId, sourceType, sources, idempotencyKey, correlationId, config, configHash, targetStore: suppliedStore = null,
   }) {
-    const store = await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
-    const targetStore = validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
+    const store = suppliedStore || await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
+    const targetStore = suppliedStore || validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
     const targetStoreCurrency = normalizeAutoListingCurrency(targetStore.currencyCode);
     if (!targetStoreCurrency || targetStoreCurrency !== targetStore.currencyCode) {
       throw error("AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED", 422);
+    }
+    if (!Array.isArray(sources) || sources.length < 1 || sources.length > 100) {
+      throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
+    }
+    for (const source of sources) {
+      if (!validSharedCategorySource(accountId, source)) {
+        throw error("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+      }
     }
     const warehouseEvidence = await storage.loadTargetWarehouse({
       accountId,
@@ -297,9 +322,6 @@ export function createAutoListingService({
         && eligibility.code === "RFBS_VALIDATION_REQUIRED"
         && eligibility.evidenceRequired === true);
     if (!selectable) assertListingWarehouseEligible(eligibilityInput);
-    if (!Array.isArray(sources) || sources.length < 1 || sources.length > 100) {
-      throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
-    }
     const published = await storage.loadPublishedStrategy({ accountId });
     if (!published?.strategyVersion || !Array.isArray(published.rules)) {
       throw error("AUTO_LISTING_STRATEGY_NOT_PUBLISHED", 409);
@@ -364,12 +386,18 @@ export function createAutoListingService({
       const { config, configHash } = normalizeAndHashAutoListingConfig(input.config);
       const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey });
       if (replay) return safeJob(replay);
+      const store = await storage.loadTargetStore({ accountId, targetStoreId: config.targetStoreId });
+      const targetStore = validateTargetStoreRecord({ accountId, targetStoreId: config.targetStoreId, store });
+      const targetStoreCurrency = normalizeAutoListingCurrency(targetStore.currencyCode);
+      if (!targetStoreCurrency || targetStoreCurrency !== targetStore.currencyCode) {
+        throw error("AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED", 422);
+      }
       const sources = await storage.loadCollectSources({ accountId, collectItemIds });
       if (!Array.isArray(sources) || sources.length !== collectItemIds.length) {
         throw error("AUTO_LISTING_SOURCE_NOT_FOUND", 404);
       }
       return createFromSources({
-        accountId, sourceType: "COLLECT_BOX", sources, idempotencyKey, correlationId, config, configHash,
+        accountId, sourceType: "COLLECT_BOX", sources, idempotencyKey, correlationId, config, configHash, targetStore,
       });
     },
     async createExcelAutoListingJob(input = {}) {

@@ -26,6 +26,18 @@ const publicationPolicyHash = crypto.createHash("sha256").update(JSON.stringify(
   prefix: publicationPolicy.prefix, publicationVersion: publicationPolicy.publicationVersion,
 })).digest("hex");
 
+function categoryAuthority(accountId, suffix) {
+  const evidenceId = `category-evidence-${suffix}`;
+  return {
+    categoryEvidence: { id: evidenceId, accountId, sourceDescriptionCategoryId: 123,
+      sourceTypeId: 456, taxonomyScope: "OZON:DEFAULT" },
+    sharedCategory: { id: `shared-category-${accountId}`, accountId, version: 1,
+      evidenceId, status: "ACTIVE", source: "SOURCE_DIRECT",
+      sourceDescriptionCategoryId: 123, sourceTypeId: 456, currentDescriptionCategoryId: 123,
+      currentTypeId: 456, taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null },
+  };
+}
+
 function graph(accountId, idempotencyKey, suffix, overrides = {}) {
   const sourceRecordId = `collect-${suffix}`;
   const productDraftId = `draft-${suffix}`;
@@ -44,6 +56,7 @@ function graph(accountId, idempotencyKey, suffix, overrides = {}) {
     rawResponseRef: `raw-${suffix}`,
     rawResponseHash: `raw-hash-${suffix}`,
     productDraft: { id: productDraftId, version: 1 },
+    ...categoryAuthority(accountId, suffix),
     targetStoreCurrency: "RUB",
     collectItem: {
       id: sourceRecordId,
@@ -258,12 +271,21 @@ async function registerGraphSources(client, graphInput) {
     );
     if (item.status === "SOURCE_READY") {
       const draft = item.listingBaseTemplate.productDraft;
+      const category = item.snapshot.targetCategory;
+      const categoryRawId = `category-raw-${item.sourceRecordId}`;
+      await client.query(
+        `INSERT INTO collect_raw_payloads (
+           id,collect_item_id,account_id,source_sku,payload_hash,payload,collected_at
+         ) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,NOW()) ON CONFLICT (id) DO NOTHING`,
+        [categoryRawId, item.sourceRecordId, graphInput.accountId, item.snapshot.identity.primarySku,
+          crypto.createHash("sha256").update(categoryRawId).digest("hex")],
+      );
       await client.query(
         `INSERT INTO product_drafts (
-           id,collect_item_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version
-         ) VALUES ($1,$2,$3,$4,'{}'::jsonb,$5,$6,$7)
+           id,collect_item_id,source_payload_id,version,data_hash,data,normalizer_version,category_rule_version,dictionary_version
+         ) VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6,$7,$8)
          ON CONFLICT (id) DO NOTHING`,
-        [draft.id, item.sourceRecordId, draft.version, draft.dataHash,
+        [draft.id, item.sourceRecordId, categoryRawId, draft.version, draft.dataHash,
           item.listingBaseTemplate.versions.normalizerVersion,
           item.listingBaseTemplate.versions.categoryRuleVersion,
           item.listingBaseTemplate.versions.dictionaryVersion],
@@ -271,6 +293,35 @@ async function registerGraphSources(client, graphInput) {
       await client.query(
         "UPDATE collect_items SET current_draft_id=$1 WHERE id=$2 AND account_id=$3",
         [draft.id, item.sourceRecordId, graphInput.accountId],
+      );
+      await client.query(
+        `INSERT INTO collect_ozon_category_source_evidence (
+           id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+           source_description_category_id,source_type_id,taxonomy_scope,captured_at,
+           raw_response_hash,raw_response_ref,provenance
+         ) VALUES ($1,$2,'PRODUCT_DRAFT',$3,$4,$3,$5,$6,$7,$8,NOW(),$9,$10,'{}'::jsonb)
+         ON CONFLICT (account_id,id) DO NOTHING`,
+        [category.evidenceId, graphInput.accountId, item.sourceRecordId, String(draft.version), draft.id,
+          category.sourceDescriptionCategoryId, category.sourceTypeId, category.taxonomyScope,
+          crypto.createHash("sha256").update(categoryRawId).digest("hex"), categoryRawId],
+      );
+      await client.query(
+        `INSERT INTO account_ozon_shared_categories (
+           id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+           current_description_category_id,current_type_id,status,source,version,
+           taxonomy_fingerprint,safe_failure_code,source_evidence_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,1,NULL,'',$9)
+         ON CONFLICT (account_id,source_description_category_id,source_type_id,taxonomy_scope) DO NOTHING`,
+        [category.sharedCategoryId, graphInput.accountId, category.sourceDescriptionCategoryId,
+          category.sourceTypeId, category.taxonomyScope, category.descriptionCategoryId,
+          category.typeId, category.provenance, category.evidenceId],
+      );
+      await client.query(
+        `INSERT INTO collect_ozon_category_current_sources (
+           account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,source_version
+         ) VALUES ($1,$2,$3,'PRODUCT_DRAFT',$2,$4)
+         ON CONFLICT (account_id,collect_item_id) DO NOTHING`,
+        [graphInput.accountId, item.sourceRecordId, category.evidenceId, String(draft.version)],
       );
     }
   }
@@ -456,6 +507,29 @@ if (!enabled) {
         [linkedDraft, linkedCollect, rawOne],
       );
       await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2 AND account_id=$3", [linkedDraft, linkedCollect, accountA]);
+      const linkedCategoryEvidence = `category-evidence-linked-${suffix}`;
+      await client.query(
+        `INSERT INTO collect_ozon_category_source_evidence (
+           id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+           source_description_category_id,source_type_id,taxonomy_scope,captured_at,
+           raw_response_hash,raw_response_ref,provenance
+         ) VALUES ($1,$2,'PRODUCT_DRAFT',$3,'7',$3,$4,123,456,'OZON:DEFAULT',NOW(),$5,$6,'{}'::jsonb)`,
+        [linkedCategoryEvidence, accountA, linkedCollect, linkedDraft,
+          crypto.createHash("sha256").update(rawOne).digest("hex"), rawOne],
+      );
+      await client.query(
+        `INSERT INTO account_ozon_shared_categories (
+           id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+           current_description_category_id,current_type_id,status,source,version,safe_failure_code,source_evidence_id
+         ) VALUES ($1,$2,123,456,'OZON:DEFAULT',123,456,'ACTIVE','SOURCE_DIRECT',1,'',$3)`,
+        [`shared-category-${accountA}`, accountA, linkedCategoryEvidence],
+      );
+      await client.query(
+        `INSERT INTO collect_ozon_category_current_sources (
+           account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,source_version
+         ) VALUES ($1,$2,$3,'PRODUCT_DRAFT',$2,'7')`,
+        [accountA, linkedCollect, linkedCategoryEvidence],
+      );
       const linked = await repository.loadCollectSources({ accountId: accountA, collectItemIds: [linkedCollect] });
       assert.equal(
         linked[0].sourceVersion,
@@ -719,6 +793,118 @@ if (!enabled) {
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_events WHERE item_id=$1", [eventItem.id],
       )).rows[0].count), eventCountBefore);
+
+      const secondStoreId = `store-second-${accountA}`;
+      const secondWarehouseId = `warehouse-second-${accountA}`;
+      const secondProductId = `product-second-${accountA}`;
+      await client.query(
+        `INSERT INTO stores (id,label,company_name,client_id,status,owner_account_id,currency_code)
+         VALUES ($1,'Second','Second',$2,'active',$3,'RUB')`,
+        [secondStoreId, `client-second-${accountA}`, accountA],
+      );
+      await client.query(
+        "INSERT INTO store_credentials (store_id,client_id,encrypted_api_key,iv,auth_tag) VALUES ($1,$2,'ciphertext','iv','tag')",
+        [secondStoreId, `client-second-${accountA}`],
+      );
+      await client.query(
+        `INSERT INTO warehouses (id,store_id,warehouse_id,warehouse_type,status,is_active,is_archived)
+         VALUES ($1,$2,$3,'FBS','active',TRUE,FALSE)`,
+        [secondWarehouseId, secondStoreId, `platform-${secondWarehouseId}`],
+      );
+      await client.query(
+        "INSERT INTO products (id,store_id,product_id,sku,status,raw) VALUES ($1,$2,$1,$3,'active','{}'::jsonb)",
+        [secondProductId, secondStoreId, `sku-${secondProductId}`],
+      );
+      await client.query(
+        "INSERT INTO product_stocks (product_id,warehouse_id,store_id,source) VALUES ($1,$2,$3,'fbs')",
+        [secondProductId, secondWarehouseId, secondStoreId],
+      );
+      const reuseFirst = graph(accountA, "shared-category-store-one", "shared-category-store-reuse");
+      await registerGraphSources(client, reuseFirst);
+      const reuseFirstJob = await repository.createJobGraph(reuseFirst);
+      const reuseSecond = structuredClone(reuseFirst);
+      const secondFrozen = normalizeAndHashAutoListingConfig({
+        targetStoreId: secondStoreId, targetWarehouseId: secondWarehouseId,
+        stock: 1, priceAdjustmentKopecks: "0",
+      });
+      reuseSecond.idempotencyKey = "shared-category-store-two";
+      reuseSecond.configSnapshot = secondFrozen.config;
+      reuseSecond.configHash = secondFrozen.configHash;
+      reuseSecond.items[0].targetStoreId = secondStoreId;
+      reuseSecond.items[0].targetWarehouseId = secondWarehouseId;
+      reuseSecond.items[0].effectiveImageConfig = deriveEffectiveAutoListingImageConfig({
+        configSnapshot: secondFrozen.config, configHash: secondFrozen.configHash,
+        sourceCapture: { snapshot: reuseSecond.items[0].snapshot, snapshotHash: reuseSecond.items[0].snapshotHash },
+      });
+      const reuseSecondJob = await repository.createJobGraph(reuseSecond);
+      assert.notEqual(reuseFirstJob.id, reuseSecondJob.id);
+      assert.equal(reuseFirstJob.items[0].sourceHash, reuseSecondJob.items[0].sourceHash);
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id=$2",
+        [accountA, reuseFirst.items[0].sourceRecordId],
+      )).rows[0].count), 1);
+
+      const staleCategory = graph(accountA, "shared-category-stale", "shared-category-stale");
+      await registerGraphSources(client, staleCategory);
+      const loadedCategory = await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [staleCategory.items[0].sourceRecordId],
+      });
+      assert.equal(loadedCategory[0].sharedCategory.version, 1);
+      assert.equal((await repository.loadCollectSources({
+        accountId: accountB, collectItemIds: [staleCategory.items[0].sourceRecordId],
+      })).length, 0);
+      await client.query(
+        `INSERT INTO ai_gateway_profiles
+          (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,text_model,image_model,config_version)
+         VALUES ($1,$2,'Task4','https://gateway.invalid','TASK4_AI_KEY','SUB2API_RESPONSES',
+           'SUB2API_OPENAI_IMAGES','text','image',1)`,
+        [`profile-task4-${suffix}`, accountA],
+      );
+      const mutator = await pool.connect();
+      const observer = await pool.connect();
+      let resolveCreationPid;
+      const creationPid = new Promise((resolve) => { resolveCreationPid = resolve; });
+      const categoryRacePool = {
+        async connect() {
+          const connection = await pool.connect();
+          await connection.query(`SET search_path TO ${schemaSql}, public`);
+          resolveCreationPid(Number((await connection.query("SELECT pg_backend_pid() AS pid")).rows[0].pid));
+          return connection;
+        },
+        async query(sql, params) { return client.query(sql, params); },
+      };
+      let creation;
+      try {
+        await mutator.query(`SET search_path TO ${schemaSql}, public`);
+        await mutator.query("BEGIN");
+        await mutator.query(
+          `UPDATE account_ozon_shared_categories
+              SET version=version+1,updated_at=clock_timestamp()
+            WHERE account_id=$1 AND id=$2`,
+          [accountA, staleCategory.items[0].snapshot.targetCategory.sharedCategoryId],
+        );
+        creation = createAutoListingRepository({ pool: categoryRacePool }).createJobGraph(staleCategory);
+        creation.catch(() => {});
+        const backendPid = await creationPid;
+        await waitForBackendLock({
+          observer, backendPid, marker: "auto-listing-shared-category-fence",
+        });
+        await mutator.query("COMMIT");
+        await assert.rejects(creation, { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
+      } finally {
+        await mutator.query("ROLLBACK").catch(() => {});
+        await creation?.catch(() => {});
+        observer.release();
+        mutator.release();
+      }
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
+        [accountA, staleCategory.idempotencyKey],
+      )).rows[0].count), 0);
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id=$2",
+        [accountA, staleCategory.items[0].sourceRecordId],
+      )).rows[0].count), 0);
     } finally {
       await client.query("RESET search_path").catch(() => {});
       await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});

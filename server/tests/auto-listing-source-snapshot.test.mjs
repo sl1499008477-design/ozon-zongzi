@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildAutoListingBlockedSourceEvidence,
   buildAutoListingSourceSnapshot,
+  canonicalAutoListingSourceSnapshot,
   verifyAutoListingBlockedSourceEvidence,
   verifyAutoListingSourceSnapshot,
 } from "../auto-listing-source-snapshot.mjs";
@@ -48,6 +49,18 @@ const source = (overrides = {}) => ({
   sourceVersion: "7",
   targetStoreId: "store-a",
   targetStoreCurrency: "RUB",
+  categoryEvidence: {
+    id: "category-evidence-id", accountId: "account-a",
+    sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    taxonomyScope: "OZON:DEFAULT",
+  },
+  sharedCategory: {
+    id: "shared-category-id", accountId: "account-a", version: 1,
+    evidenceId: "category-evidence-id", status: "ACTIVE", source: "SOURCE_DIRECT",
+    sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    currentDescriptionCategoryId: 123, currentTypeId: 456,
+    taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null,
+  },
   collectItem: collectItem(),
   productDraft: { id: "draft-1", version: 7 },
   rawResponseRef: "raw-response-1",
@@ -85,6 +98,20 @@ test("builds an isolated snapshot preserving listing facts and multi-variant evi
   assert.equal(result.snapshot.source.collectedAt, "2026-08-04T01:02:03.000Z");
   assert.equal(result.snapshot.targetCategory.descriptionCategoryId, "123");
   assert.equal(result.snapshot.targetCategory.typeId, "456");
+  assert.deepEqual(result.snapshot.targetCategory, {
+    schemaVersion: "AUTO_LISTING_ACCOUNT_CATEGORY_V2",
+    evidenceId: "category-evidence-id",
+    sharedCategoryId: "shared-category-id",
+    sharedCategoryVersion: 1,
+    sourceDescriptionCategoryId: "123",
+    sourceTypeId: "456",
+    descriptionCategoryId: "123",
+    typeId: "456",
+    taxonomyScope: "OZON:DEFAULT",
+    taxonomyFingerprint: "",
+    provenance: "SOURCE_DIRECT",
+  });
+  assert.equal(Object.hasOwn(result.snapshot.targetCategory, "targetStoreId"), false);
   assert.equal(result.snapshot.attributes[0].dictionaryValueId, "20");
   assert.equal(result.snapshot.logistics.weight, 1200);
   assert.equal(result.snapshot.productMeasurements.reliable, true);
@@ -155,7 +182,7 @@ test("requires complete trusted scope and makes raw evidence and arrays JSON-exa
   assert.throws(() => buildAutoListingSourceSnapshot(sparse), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
 });
 
-test("keeps matched target-store and reliable ancestor IDs separate from display labels", () => {
+test("reads historical V1 store-bound category snapshots but creates only exact V2 authority", () => {
   const result = buildAutoListingSourceSnapshot(source({
     collectItem: collectItem({ listingDraft: {
       ...collectItem().listingDraft,
@@ -166,9 +193,15 @@ test("keeps matched target-store and reliable ancestor IDs separate from display
       },
     } }),
   }));
-  assert.equal(result.snapshot.targetCategory.targetStoreId, "store-a");
-  assert.deepEqual(result.snapshot.targetCategory.ancestorCategoryIds, ["ancestor-1", "ancestor-2"]);
   assert.deepEqual(verifyAutoListingSourceSnapshot(result), result);
+  const legacy = structuredClone(result.snapshot);
+  legacy.targetCategory = {
+    descriptionCategoryId: "123", typeId: "456", targetStoreId: "store-a",
+    ancestorCategoryIds: ["ancestor-1", "ancestor-2"], categoryPath: [],
+    sourceEvidence: null, match: null, dictionary: null, taxonomy: null,
+  };
+  const snapshotHash = crypto.createHash("sha256").update(canonicalAutoListingSourceSnapshot(legacy)).digest("hex");
+  assert.equal(verifyAutoListingSourceSnapshot({ snapshot: legacy, snapshotHash }).snapshot.targetCategory.targetStoreId, "store-a");
   assert.throws(() => verifyAutoListingSourceSnapshot({ snapshot: { identity: {} }, snapshotHash: "bad" }), (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID");
 });
 
@@ -181,6 +214,24 @@ test("rejects semantically incomplete snapshots even when the supplied hash matc
     () => verifyAutoListingSourceSnapshot({ ...valid, snapshot: malformed, snapshotHash }),
     (error) => error?.code === "AUTO_LISTING_SOURCE_INVALID",
   );
+});
+
+test("rejects rehashed V2 category IDs, taxonomy, and fingerprint outside the exact contract", () => {
+  const valid = buildAutoListingSourceSnapshot(source());
+  for (const mutate of [
+    (category) => { category.descriptionCategoryId = "not-an-id"; },
+    (category) => { category.taxonomyScope = "OZON:FOREIGN"; },
+    (category) => { category.taxonomyFingerprint = "not-a-hash"; },
+    (category) => { category.extra = "authority-smuggling"; },
+  ]) {
+    const snapshot = structuredClone(valid.snapshot);
+    mutate(snapshot.targetCategory);
+    const snapshotHash = crypto.createHash("sha256")
+      .update(canonicalAutoListingSourceSnapshot(snapshot)).digest("hex");
+    assert.throws(() => verifyAutoListingSourceSnapshot({ snapshot, snapshotHash }), {
+      code: "AUTO_LISTING_SOURCE_INVALID",
+    });
+  }
 });
 
 test("rejects non-scalar nested source versions even when canonical hashing succeeds", () => {
@@ -215,7 +266,7 @@ test("rejects rehashed empty raw evidence and invalid canonical source boundarie
   for (const mutate of [
     (snapshot) => { snapshot.rawEvidence.rawResponseRef = ""; },
     (snapshot) => { snapshot.identity.sourceType = "UNTRUSTED"; snapshot.source.sourceType = "UNTRUSTED"; },
-    (snapshot) => { snapshot.targetCategory.ancestorCategoryIds = [""]; },
+    (snapshot) => { snapshot.targetCategory.taxonomyScope = ""; },
     (snapshot) => { snapshot.source.productDraftVersion = 0; },
   ]) {
     const malformed = structuredClone(valid.snapshot);
@@ -277,10 +328,10 @@ test("uses the exact target store currency only when source currency is missing"
   assert.equal(captured.snapshot.variants[0].priceEvidence.currencySource, "TARGET_STORE");
 
   draft.categoryResolution.target.storeId = "store-other";
-  assert.throws(() => buildAutoListingSourceSnapshot(source({
+  assert.equal(buildAutoListingSourceSnapshot(source({
     targetStoreCurrency: "CNY",
     collectItem: collectItem({ listingDraft: draft }),
-  })), { code: "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED" });
+  })).snapshot.priceEvidence.currency, "CNY");
 });
 
 test("requires explicit source currency to match the target store currency", () => {
@@ -303,7 +354,7 @@ test("rejects untrusted scope and missing required source facts with stable code
   for (const [input, code] of [
     [source({ accountId: "account-b" }), "AUTO_LISTING_SOURCE_SCOPE"],
     [source({ sourceRecordId: "" }), "AUTO_LISTING_SOURCE_INVALID"],
-    [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, categoryResolution: { ...collectItem().listingDraft.categoryResolution, target: { ...collectItem().listingDraft.categoryResolution.target, descriptionCategoryId: "" } } } }) }), "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"],
+    [source({ sharedCategory: { ...source().sharedCategory, currentDescriptionCategoryId: 0 } }), "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED"],
     [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, variants: [{ sku: "" }] } }) }), "AUTO_LISTING_SOURCE_SKU_REQUIRED"],
     [source({ collectItem: collectItem({ listingDraft: { ...collectItem().listingDraft, currency: "USD" } }) }), "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED"],
   ]) {

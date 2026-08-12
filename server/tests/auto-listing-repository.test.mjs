@@ -36,6 +36,17 @@ function listingBaseTemplate(sourceRecordId, sourceOrder) {
   };
 }
 
+function categoryAuthority(collectItemId) {
+  return {
+    categoryEvidence: { id: `evidence-${collectItemId}`, accountId: "account-a",
+      sourceDescriptionCategoryId: 123, sourceTypeId: 456, taxonomyScope: "OZON:DEFAULT" },
+    sharedCategory: { id: "shared-123-456", accountId: "account-a", version: 1,
+      evidenceId: `evidence-${collectItemId}`, status: "ACTIVE", source: "SOURCE_DIRECT",
+      sourceDescriptionCategoryId: 123, sourceTypeId: 456, currentDescriptionCategoryId: 123,
+      currentTypeId: 456, taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: null },
+  };
+}
+
 function transitionFixture({
   status, recoveryPoint = null, failureCode = "AUTO_LISTING_TRANSIENT", legacyCurrentEvent = null,
   legacyFallbackEvent = null, insertError = null, statusVersion = 3, updatedStatusVersion = null,
@@ -262,6 +273,7 @@ function warehouseGraph({ itemCount = 1 } = {}) {
       rawResponseRef: `raw-lock-${sourceOrder}`,
       rawResponseHash: `hash-lock-${sourceOrder}`,
       productDraft: { id: `draft-${sourceRecordId}`, version: 1 },
+      ...categoryAuthority(sourceRecordId),
       collectItem: {
         id: sourceRecordId,
         accountId: "account-a",
@@ -354,6 +366,7 @@ function excelWarehouseGraph() {
     targetStoreId: "store-a", targetStoreCurrency: "RUB",
     sourceVersion: "1", rawResponseRef: "raw-lock-0", rawResponseHash: "hash-lock-0",
     productDraft: { id: "draft-collect-lock-0", version: 1 },
+    ...categoryAuthority(collectItemId),
     collectItem: {
       id: collectItemId, accountId: "account-a", sku: "sku-lock-0",
       listingDraft: {
@@ -384,6 +397,7 @@ function warehouseEvidenceFixture({
   profiles = [{ id: "profile-a", config_version: 3 }],
   catalog = null,
   stageInitialPlanWork = null,
+  categoryFence = true,
 } = {}) {
   const calls = [];
   const stop = Object.assign(new Error("stop after evidence"), { code: "STOP_AFTER_EVIDENCE" });
@@ -398,6 +412,9 @@ function warehouseEvidenceFixture({
       if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
       if (/FROM ai_gateway_model_catalogs/.test(sql)) return { rows: catalog === null ? [] : [{ catalog }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) {
+        return { rows: categoryFence ? [{ id: "shared-123-456" }] : [] };
+      }
       if (/FROM auto_listing_import_rows/.test(sql)) return { rows: [{
         draft_id: `draft-${params[1]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
       }] };
@@ -544,6 +561,12 @@ test("loads finalizable Excel source rows with account and ready-state boundarie
           source: "SKU", source_sku: "7003", summary: {}, draft_id: null, draft_version: null,
           draft_data: null, raw_response_ref: "raw-1", raw_payload: { normalized: { title: "Product" } },
           payload_hash: "hash-1", collected_at: "2026-08-07T00:00:00.000Z",
+          evidence_id: "evidence-1", evidence_account_id: "account-a",
+          source_description_category_id: 123, source_type_id: 456, taxonomy_scope: "OZON:DEFAULT",
+          shared_category_id: "shared-a", shared_category_account_id: "account-a",
+          shared_category_version: 1, shared_category_evidence_id: "evidence-1",
+          shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
+          current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
         }] };
       },
     },
@@ -572,11 +595,21 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
             id: "collect-draft", account_id: "account-a", source: "SKU", source_sku: "7001", summary: {},
             draft_id: "draft-1", draft_version: 7, draft_data: {}, raw_response_ref: "raw-draft",
             raw_payload: { normalized: {} }, payload_hash: "payload-draft", collected_at: "2026-08-07T00:00:00.000Z",
+            evidence_id: "evidence-draft", evidence_account_id: "account-a", source_description_category_id: 123,
+            source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
+            shared_category_account_id: "account-a", shared_category_version: 2, shared_category_evidence_id: "evidence-draft",
+            shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
+            current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
           },
           {
             id: "collect-raw", account_id: "account-a", source: "SKU", source_sku: "7002", summary: {},
             draft_id: null, draft_version: null, draft_data: null, raw_response_ref: "raw-raw",
             raw_payload: { normalized: {} }, payload_hash: "payload-raw", collected_at: "2026-08-07T00:00:00.000Z",
+            evidence_id: "evidence-raw", evidence_account_id: "account-a", source_description_category_id: 123,
+            source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
+            shared_category_account_id: "account-a", shared_category_version: 2, shared_category_evidence_id: "evidence-raw",
+            shared_category_status: "ACTIVE", shared_category_source: "SOURCE_DIRECT",
+            current_description_category_id: 123, current_type_id: 456, taxonomy_fingerprint: null,
           },
         ] };
       },
@@ -591,6 +624,59 @@ test("loads Collect Box source rows with versioned draft and raw identities", as
     "draft:7:payload-draft:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
     "raw:payload-raw:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
   ]);
+  assert.deepEqual(result.map((entry) => entry.sharedCategory.version), [2, 2]);
+});
+
+test("Collect Box category source query is account scoped, store independent, and fail closed", async () => {
+  const calls = [];
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => assert.fail("read path must not transact"),
+    async query(sql, params) { calls.push({ sql, params }); return { rows: [] }; },
+  } });
+  assert.deepEqual(await repository.loadCollectSources({ accountId: "account-a", collectItemIds: ["collect-a"] }), []);
+  assert.match(calls[0].sql, /collect_ozon_category_current_sources/);
+  assert.match(calls[0].sql, /account_ozon_shared_categories/);
+  assert.match(calls[0].sql, /shared\.status='ACTIVE'/);
+  assert.match(calls[0].sql, /shared\.account_id=c\.account_id/);
+  assert.match(calls[0].sql, /evidence\.id=current_category\.source_evidence_id/);
+  assert.match(calls[0].sql, /evidence\.source_kind=current_category\.source_kind/);
+  assert.match(calls[0].sql, /evidence\.source_record_id=current_category\.source_record_id/);
+  assert.match(calls[0].sql, /evidence\.source_version=current_category\.source_version/);
+  assert.match(calls[0].sql, /shared\.source_description_category_id=evidence\.source_description_category_id/);
+  assert.match(calls[0].sql, /shared\.source_type_id=evidence\.source_type_id/);
+  assert.match(calls[0].sql, /shared\.taxonomy_scope=evidence\.taxonomy_scope/);
+  assert.doesNotMatch(calls[0].sql, /target_store|store_id/i);
+  assert.deepEqual(calls[0].params, ["account-a", ["collect-a"]]);
+});
+
+test("Collect Box source mapping rejects foreign, incomplete, and non-active category authority", async () => {
+  const valid = {
+    id: "collect-a", account_id: "account-a", source: "SKU", source_sku: "7001", summary: {},
+    draft_id: null, draft_version: null, draft_data: null, raw_response_ref: "raw-a",
+    raw_payload: { normalized: {} }, payload_hash: "payload-a", collected_at: "2026-08-07T00:00:00.000Z",
+    evidence_id: "evidence-a", evidence_account_id: "account-a", source_description_category_id: 123,
+    source_type_id: 456, taxonomy_scope: "OZON:DEFAULT", shared_category_id: "shared-a",
+    shared_category_account_id: "account-a", shared_category_version: 1,
+    shared_category_evidence_id: "evidence-a", shared_category_status: "ACTIVE",
+    shared_category_source: "SOURCE_DIRECT", current_description_category_id: 123,
+    current_type_id: 456, taxonomy_fingerprint: null,
+  };
+  for (const override of [
+    { evidence_account_id: "account-b" },
+    { shared_category_account_id: "account-b" },
+    { evidence_id: null },
+    { shared_category_version: null },
+    { shared_category_status: "INVALIDATED" },
+    { shared_category_status: "NEEDS_REVIEW" },
+  ]) {
+    const repository = createAutoListingRepository({ pool: {
+      connect: async () => assert.fail("read path must not transact"),
+      query: async () => ({ rows: [{ ...valid, ...override }] }),
+    } });
+    await assert.rejects(repository.loadCollectSources({ accountId: "account-a", collectItemIds: ["collect-a"] }), {
+      code: "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
+    });
+  }
 });
 
 test("job creation locks and freezes the one enabled account AI profile without latest-profile inference", async () => {
@@ -613,6 +699,21 @@ test("job creation locks and freezes the one enabled account AI profile without 
   assert.deepEqual(insertCall.params.slice(6), [
     "strategy-version-a", "upload-policy-review-a", "profile-a", 3, "account-a", "lock-evidence-correlation", null,
   ]);
+});
+
+test("shared category version change before graph commit conflicts with zero paid or graph side effects", async () => {
+  let paidStages = 0;
+  const { repository, calls } = warehouseEvidenceFixture({
+    categoryFence: false,
+    stageInitialPlanWork: async () => { paidStages += 1; return { status: "PLANNING", statusVersion: 2 }; },
+  });
+  await assert.rejects(repository.createJobGraph(warehouseGraph()), {
+    code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT",
+  });
+  assert.equal(paidStages, 0);
+  assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs|INSERT INTO auto_listing_source_snapshots/.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
+  assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
 });
 
 test("new jobs accept a connection-backed profile only when its latest successful catalog still contains both frozen models", async () => {
@@ -816,6 +917,7 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
       if (/FROM ai_gateway_profiles/.test(sql)) return { rows: profiles };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) return { rows: [{ id: "shared-123-456" }] };
       if (/FROM collect_items c/.test(sql)) return { rows: [{
         draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
       }] };
@@ -1034,6 +1136,7 @@ function reusedEvidenceFixture({ graph, persistedSnapshot }) {
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-a" }] };
       if (/FROM ai_gateway_profiles/.test(sql)) return { rows: [{ id: "profile-a", config_version: 3 }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
+      if (/FROM collect_ozon_category_current_sources current_category/.test(sql)) return { rows: [{ id: "shared-123-456" }] };
       if (/FROM collect_items c/.test(sql)) return { rows: [{
         draft_id: `draft-${params[0]}`, draft_version: 1, draft_data_hash: "1".repeat(64),
       }] };

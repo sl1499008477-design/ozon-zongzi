@@ -60,6 +60,44 @@ function sourceSnapshotVersion(row = {}) {
   return `${businessVersion}:${SOURCE_SNAPSHOT_CONTRACT_VERSION}`;
 }
 
+function categoryAuthorityFromRow(scope, row = {}) {
+  const positive = (value) => {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+  };
+  const evidence = {
+    id: typeof row.evidence_id === "string" ? row.evidence_id.trim() : "",
+    accountId: typeof row.evidence_account_id === "string" ? row.evidence_account_id.trim() : "",
+    sourceDescriptionCategoryId: positive(row.source_description_category_id),
+    sourceTypeId: positive(row.source_type_id),
+    taxonomyScope: typeof row.taxonomy_scope === "string" ? row.taxonomy_scope.trim() : "",
+  };
+  const shared = {
+    id: typeof row.shared_category_id === "string" ? row.shared_category_id.trim() : "",
+    accountId: typeof row.shared_category_account_id === "string" ? row.shared_category_account_id.trim() : "",
+    version: positive(row.shared_category_version),
+    evidenceId: typeof row.shared_category_evidence_id === "string" ? row.shared_category_evidence_id.trim() : "",
+    status: row.shared_category_status,
+    source: row.shared_category_source,
+    sourceDescriptionCategoryId: evidence.sourceDescriptionCategoryId,
+    sourceTypeId: evidence.sourceTypeId,
+    currentDescriptionCategoryId: positive(row.current_description_category_id),
+    currentTypeId: positive(row.current_type_id),
+    taxonomyScope: evidence.taxonomyScope,
+    taxonomyFingerprint: row.taxonomy_fingerprint,
+  };
+  if (!evidence.id || evidence.accountId !== scope || !evidence.sourceDescriptionCategoryId
+    || !evidence.sourceTypeId || evidence.taxonomyScope !== "OZON:DEFAULT" || !shared.id || shared.accountId !== scope
+    || !shared.version || !shared.evidenceId || shared.status !== "ACTIVE"
+    || !["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"].includes(shared.source)
+    || !shared.currentDescriptionCategoryId || !shared.currentTypeId
+    || !(shared.taxonomyFingerprint === null
+      || (typeof shared.taxonomyFingerprint === "string" && /^[0-9a-f]{64}$/u.test(shared.taxonomyFingerprint)))) {
+    throw repositoryError("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+  }
+  return { categoryEvidence: evidence, sharedCategory: shared };
+}
+
 function json(value) {
   return JSON.stringify(value ?? null);
 }
@@ -505,7 +543,7 @@ function assertGraph(graph) {
       || captured.snapshot.identity.sourceVersion !== item.sourceVersion
       || captured.snapshot.identity.sourceType !== item.sourceType
       || captured.rawResponseRef !== captured.snapshot.rawEvidence.rawResponseRef
-      || (item.status === "SOURCE_READY" && captured.snapshot.targetCategory.targetStoreId !== item.targetStoreId)) {
+      || captured.snapshot.targetCategory.schemaVersion !== "AUTO_LISTING_ACCOUNT_CATEGORY_V2") {
       throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
     }
     let effectiveImageConfig;
@@ -695,7 +733,13 @@ export function createAutoListingRepository({
         `SELECT c.id,c.account_id,c.source,c.source_sku,c.summary,
                 d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash,d.data AS draft_data,
                 d.normalizer_version,d.category_rule_version,d.dictionary_version,
-                raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at
+                raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at,
+                evidence.id AS evidence_id,evidence.account_id AS evidence_account_id,
+                evidence.source_description_category_id,evidence.source_type_id,evidence.taxonomy_scope,
+                shared.id AS shared_category_id,shared.account_id AS shared_category_account_id,
+                shared.version AS shared_category_version,shared.source_evidence_id AS shared_category_evidence_id,
+                shared.status AS shared_category_status,shared.source AS shared_category_source,
+                shared.current_description_category_id,shared.current_type_id,shared.taxonomy_fingerprint
            FROM collect_items c
            LEFT JOIN product_drafts d ON d.id=c.current_draft_id AND d.collect_item_id=c.id
            LEFT JOIN LATERAL (
@@ -704,11 +748,27 @@ export function createAutoListingRepository({
                 AND ((d.id IS NOT NULL AND id=d.source_payload_id) OR d.id IS NULL)
               ORDER BY created_at DESC,id DESC LIMIT 1
            ) raw ON TRUE
+           JOIN collect_ozon_category_current_sources current_category
+             ON current_category.account_id=c.account_id AND current_category.collect_item_id=c.id
+           JOIN collect_ozon_category_source_evidence evidence
+             ON evidence.account_id=current_category.account_id
+            AND evidence.id=current_category.source_evidence_id
+            AND evidence.collect_item_id=current_category.collect_item_id
+            AND evidence.source_kind=current_category.source_kind
+            AND evidence.source_record_id=current_category.source_record_id
+            AND evidence.source_version=current_category.source_version
+           JOIN account_ozon_shared_categories shared
+             ON shared.account_id=c.account_id
+            AND shared.source_description_category_id=evidence.source_description_category_id
+            AND shared.source_type_id=evidence.source_type_id
+            AND shared.taxonomy_scope=evidence.taxonomy_scope
+            AND shared.status='ACTIVE'
           WHERE c.account_id=$1 AND c.id=ANY($2::text[]) AND c.deleted_at IS NULL
           ORDER BY array_position($2::text[],c.id)`,
         [scope, ids],
       );
       return result.rows.map((row) => {
+        const categoryAuthority = categoryAuthorityFromRow(scope, row);
         const rawNormalized = row.raw_payload?.normalized && typeof row.raw_payload.normalized === "object"
           ? row.raw_payload.normalized : {};
         return {
@@ -718,6 +778,7 @@ export function createAutoListingRepository({
           rawResponseRef: row.raw_response_ref || null,
           rawResponseHash: row.payload_hash || null,
           rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
+          ...categoryAuthority,
           collectItem: {
             ...rawNormalized,
             id: row.id,
@@ -758,7 +819,13 @@ export function createAutoListingRepository({
         `SELECT r.id AS row_id,r.collect_item_id,c.account_id,c.source,c.source_sku,c.summary,
                 d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash,d.data AS draft_data,
                 d.normalizer_version,d.category_rule_version,d.dictionary_version,
-                raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at
+                raw.id AS raw_response_ref,raw.payload AS raw_payload,raw.payload_hash,raw.collected_at,
+                evidence.id AS evidence_id,evidence.account_id AS evidence_account_id,
+                evidence.source_description_category_id,evidence.source_type_id,evidence.taxonomy_scope,
+                shared.id AS shared_category_id,shared.account_id AS shared_category_account_id,
+                shared.version AS shared_category_version,shared.source_evidence_id AS shared_category_evidence_id,
+                shared.status AS shared_category_status,shared.source AS shared_category_source,
+                shared.current_description_category_id,shared.current_type_id,shared.taxonomy_fingerprint
            FROM auto_listing_import_rows r
            JOIN collect_items c
              ON c.id=r.collect_item_id AND c.account_id=r.account_id AND c.deleted_at IS NULL
@@ -769,12 +836,28 @@ export function createAutoListingRepository({
                 AND ((d.id IS NOT NULL AND id=d.source_payload_id) OR d.id IS NULL)
               ORDER BY created_at DESC,id DESC LIMIT 1
            ) raw ON TRUE
+           JOIN collect_ozon_category_current_sources current_category
+             ON current_category.account_id=c.account_id AND current_category.collect_item_id=c.id
+           JOIN collect_ozon_category_source_evidence evidence
+             ON evidence.account_id=current_category.account_id
+            AND evidence.id=current_category.source_evidence_id
+            AND evidence.collect_item_id=current_category.collect_item_id
+            AND evidence.source_kind=current_category.source_kind
+            AND evidence.source_record_id=current_category.source_record_id
+            AND evidence.source_version=current_category.source_version
+           JOIN account_ozon_shared_categories shared
+             ON shared.account_id=c.account_id
+            AND shared.source_description_category_id=evidence.source_description_category_id
+            AND shared.source_type_id=evidence.source_type_id
+            AND shared.taxonomy_scope=evidence.taxonomy_scope
+            AND shared.status='ACTIVE'
           WHERE r.account_id=$1 AND r.import_file_id=$2 AND r.status='READY'
           ORDER BY r.row_number,r.id`,
         [scope, fileId],
       );
       const sources = sourceResult.rows.map((row) => {
         if (row.account_id !== scope) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+        const categoryAuthority = categoryAuthorityFromRow(scope, row);
         const rawNormalized = row.raw_payload?.normalized && typeof row.raw_payload.normalized === "object"
           ? row.raw_payload.normalized : {};
         return {
@@ -785,6 +868,7 @@ export function createAutoListingRepository({
           rawResponseRef: row.raw_response_ref || null,
           rawResponseHash: row.payload_hash || null,
           rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
+          ...categoryAuthority,
           collectItem: {
             ...rawNormalized,
             id: row.collect_item_id,
@@ -1072,11 +1156,44 @@ export function createAutoListingRepository({
               || draft.draft_data_hash !== item.listingBaseTemplate.productDraft.dataHash) {
               throw sourceVersionConflict();
             }
+            const category = item.snapshot.targetCategory;
+            const categoryFence = await client.query(
+              `/* auto-listing-shared-category-fence */ SELECT shared.id
+                 FROM collect_ozon_category_current_sources current_category
+                 JOIN collect_ozon_category_source_evidence evidence
+                   ON evidence.account_id=current_category.account_id
+                  AND evidence.id=current_category.source_evidence_id
+                  AND evidence.collect_item_id=current_category.collect_item_id
+                  AND evidence.source_kind=current_category.source_kind
+                  AND evidence.source_record_id=current_category.source_record_id
+                  AND evidence.source_version=current_category.source_version
+                 JOIN account_ozon_shared_categories shared
+                   ON shared.account_id=evidence.account_id
+                  AND shared.source_description_category_id=evidence.source_description_category_id
+                  AND shared.source_type_id=evidence.source_type_id
+                  AND shared.taxonomy_scope=evidence.taxonomy_scope
+                WHERE current_category.account_id=$1 AND current_category.collect_item_id=$2
+                  AND evidence.id=$3 AND shared.id=$4 AND shared.version=$5
+                  AND shared.status='ACTIVE'
+                  AND shared.current_description_category_id=$6
+                  AND shared.current_type_id=$7
+                  AND shared.taxonomy_scope=$8
+                  AND COALESCE(shared.taxonomy_fingerprint,'')=$9
+                  AND evidence.source_description_category_id=$10
+                  AND evidence.source_type_id=$11
+                  AND shared.source=$12
+                FOR SHARE OF current_category,evidence,shared`,
+              [graph.accountId, item.collectItemId, category.evidenceId, category.sharedCategoryId,
+                category.sharedCategoryVersion, category.descriptionCategoryId, category.typeId,
+                category.taxonomyScope, category.taxonomyFingerprint,
+                category.sourceDescriptionCategoryId, category.sourceTypeId, category.provenance],
+            );
+            if (categoryFence.rows.length !== 1) throw sourceVersionConflict();
             const resolved = resolveAiContentStrategy({
               strategyVersion: { strategyId: strategy.rows[0].strategy_key, strategyVersionId: graph.strategyVersionId },
               rules: publishedRules(rules.rows),
               product: { descriptionCategoryId: item.snapshot.targetCategory.descriptionCategoryId,
-                categoryAncestors: item.snapshot.targetCategory.ancestorCategoryIds.map((categoryId, index) => ({ categoryId, distance: index + 1 })),
+                categoryAncestors: (item.snapshot.targetCategory.ancestorCategoryIds || []).map((categoryId, index) => ({ categoryId, distance: index + 1 })),
                 productStyle: item.snapshot.source.productStyle },
             });
             if (item.strategyId !== resolved.strategyId || item.strategyVersionId !== resolved.strategyVersionId
