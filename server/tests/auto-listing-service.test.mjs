@@ -132,6 +132,17 @@ function fakeRepository({ sources = [source("collect-1")], existing = null } = {
   return {
     calls,
     async loadCollectSources(input) { calls.push(["loadCollectSources", input]); return sources; },
+    async authorizeCategoryPreparation(input) { calls.push(["authorizeCategoryPreparation", input]); return { authorized: true }; },
+    async loadExcelImportContext(input) {
+      calls.push(["loadExcelImportContext", input]);
+      return {
+        id: input.importFileId, accountId: input.accountId, status: "COLLECTING", statusVersion: 2,
+        acceptedRows: sources.length, readyRows: sources.length, failedRows: 0,
+        configSnapshot: normalizeAndHashAutoListingConfig(config).config,
+        configHash: normalizeAndHashAutoListingConfig(config).configHash,
+        idempotencyKey: `job-${input.importFileId}`, correlationId: `corr-${input.importFileId}`,
+      };
+    },
     async loadExcelImportSources(input) {
       calls.push(["loadExcelImportSources", input]);
       return {
@@ -291,7 +302,8 @@ test("RFBS zero-product job verifies once immediately before graph persistence a
   const verifyIndex = repository.calls.findIndex(([name]) => name === "verifyRfbsWarehouse");
   const graphIndex = repository.calls.findIndex(([name]) => name === "createJobGraph");
   assert.equal(verifyIndex, graphIndex - 1);
-  assert.equal(repository.calls[verifyIndex - 1][0], "prepareListingBase");
+  assert.equal(repository.calls[verifyIndex - 1][0], "authorizeCategoryPreparation");
+  assert.ok(repository.calls.findIndex(([name]) => name === "prepareListingBase") < verifyIndex - 1);
   assert.deepEqual(repository.calls[verifyIndex][1], {
     accountId: "account-a",
     actorAccountId: "account-a",
@@ -470,6 +482,27 @@ test("creates an EXCEL_SKU job from ready import rows while preserving row and c
   assert.equal(repository.calls.find(([name]) => name === "loadExcelImportSources")[1].accountId, "account-a");
 });
 
+test("Excel replay returns from its lightweight header even when category sources are no longer readable", async () => {
+  const repository = fakeRepository();
+  repository.getJobByIdempotencyKey = async (input) => {
+    repository.calls.push(["getJobByIdempotencyKey", input]);
+    return { id: "job-existing", sourceType: "EXCEL_SKU", status: "CREATED", items: [] };
+  };
+  repository.loadExcelImportSources = async () => {
+    assert.fail("replay must not join current category authority");
+  };
+  repository.loadTargetStore = async () => {
+    assert.fail("replay must return before target-store reads");
+  };
+
+  const replay = await createAutoListingService({ repository }).createExcelAutoListingJob({
+    actor, importFileId: "import-replay",
+  });
+
+  assert.equal(replay.jobId, "job-existing");
+  assert.deepEqual(repository.calls.map(([name]) => name), ["loadExcelImportContext", "getJobByIdempotencyKey"]);
+});
+
 test("refuses to create an Excel job until every accepted import row is terminal", async () => {
   const repository = fakeRepository();
   repository.loadExcelImportSources = async () => ({
@@ -526,8 +559,56 @@ test("orders replay, store/currency, shared category, warehouse, then paid graph
   const calls = repository.calls.map(([name]) => name);
   assert.ok(calls.indexOf("getJobByIdempotencyKey") < calls.indexOf("loadTargetStore"));
   assert.ok(calls.indexOf("loadTargetStore") < calls.indexOf("loadCollectSources"));
-  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("loadTargetWarehouse"));
+  assert.ok(calls.indexOf("loadCollectSources") < calls.indexOf("authorizeCategoryPreparation"));
+  assert.ok(calls.indexOf("authorizeCategoryPreparation") < calls.indexOf("loadTargetWarehouse"));
   assert.ok(calls.indexOf("loadTargetWarehouse") < calls.indexOf("createJobGraph"));
+});
+
+test("a category transition after source read but before preparation authorization has zero external or paid side effects", async () => {
+  const counters = { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 };
+  const repository = fakeRepository();
+  repository.authorizeCategoryPreparation = async (input) => {
+    repository.calls.push(["authorizeCategoryPreparation", input]);
+    const conflict = new Error("AUTO_LISTING_SOURCE_VERSION_CONFLICT");
+    conflict.code = "AUTO_LISTING_SOURCE_VERSION_CONFLICT";
+    conflict.status = 409;
+    throw conflict;
+  };
+  repository.createJobGraph = async () => {
+    counters.paidAi += 1;
+    counters.objectStorage += 1;
+    counters.graph += 1;
+    throw new Error("graph must remain unreachable");
+  };
+  const rfbsWarehouseVerifier = Object.freeze({
+    async verifyRfbsWarehouse() { counters.rfbs += 1; return rfbsValidation(); },
+  });
+  const listingBasePreparer = async () => {
+    counters.ozonCategory += 1;
+    throw new Error("Ozon category must remain unreachable");
+  };
+
+  await assert.rejects(createAutoListingService({ repository, rfbsWarehouseVerifier, listingBasePreparer })
+    .createAutoListingJob({
+      actor, collectItemIds: ["collect-1"], idempotencyKey: "category-race", correlationId: "corr", config,
+    }), { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
+  assert.deepEqual(counters, { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 });
+  assert.deepEqual(repository.calls.map(([name]) => name), [
+    "getJobByIdempotencyKey", "loadTargetStore", "loadCollectSources", "authorizeCategoryPreparation",
+  ]);
+});
+
+test("Excel non-replay orders lightweight header, replay, store/currency, category sources, authorization, then warehouse", async () => {
+  const repository = fakeRepository();
+  await createAutoListingService({ repository }).createExcelAutoListingJob({ actor, importFileId: "import-order" });
+  const calls = repository.calls.map(([name]) => name);
+  for (const [before, after] of [
+    ["loadExcelImportContext", "getJobByIdempotencyKey"],
+    ["getJobByIdempotencyKey", "loadTargetStore"],
+    ["loadTargetStore", "loadExcelImportSources"],
+    ["loadExcelImportSources", "authorizeCategoryPreparation"],
+    ["authorizeCategoryPreparation", "loadTargetWarehouse"],
+  ]) assert.ok(calls.indexOf(before) < calls.indexOf(after), `${before} must precede ${after}`);
 });
 
 test("missing or unconfirmed shared category stops before warehouse, paid AI, object storage, graph, or Ozon", async () => {

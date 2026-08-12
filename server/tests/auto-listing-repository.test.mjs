@@ -585,6 +585,69 @@ test("loads finalizable Excel source rows with account and ready-state boundarie
   assert.deepEqual(calls[1].params, ["account-a", "import-1"]);
 });
 
+test("loads Excel replay context without category, draft, collect, or ready-row joins", async () => {
+  const calls = [];
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => assert.fail("lightweight replay header must not transact"),
+    async query(sql, params) {
+      calls.push({ sql: String(sql), params });
+      return { rows: [{
+        id: "import-1", account_id: "account-a", status: "COLLECTING", status_version: 2,
+        accepted_rows: 1, ready_rows: 1, failed_rows: 0,
+        config_snapshot: { targetStoreId: "store-a" }, config_hash: "a".repeat(64),
+        idempotency_key: "job-import-1", correlation_id: "corr-import-1",
+      }] };
+    },
+  } });
+
+  const file = await repository.loadExcelImportContext({ accountId: "account-a", importFileId: "import-1" });
+  assert.equal(file.idempotencyKey, "job-import-1");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /FROM auto_listing_import_files/u);
+  assert.doesNotMatch(calls[0].sql, /collect_|product_drafts|category|auto_listing_import_rows/iu);
+  assert.deepEqual(calls[0].params, ["account-a", "import-1"]);
+});
+
+test("category preparation authorization is an account-scoped exact non-transactional read fence", async () => {
+  const calls = [];
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => assert.fail("read authorization must not hold a transaction across network calls"),
+    async query(sql, params) {
+      calls.push({ sql: String(sql), params });
+      return { rows: [{ collect_item_id: "collect-a" }] };
+    },
+  } });
+  const item = {
+    collectItemId: "collect-a", evidenceId: "evidence-a", sharedCategoryId: "shared-a",
+    sharedCategoryVersion: 7, sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    descriptionCategoryId: 789, typeId: 999, taxonomyScope: "OZON:DEFAULT",
+    taxonomyFingerprint: "", provenance: "MANUAL",
+  };
+
+  await repository.authorizeCategoryPreparation({ accountId: "account-a", items: [item] });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /auto-listing-category-preparation-authorization/u);
+  assert.match(calls[0].sql, /current_category\.account_id=\$1/u);
+  assert.match(calls[0].sql, /shared\.status='ACTIVE'/u);
+  assert.doesNotMatch(calls[0].sql, /store_id|target_store/iu);
+  assert.deepEqual(calls[0].params, [
+    "account-a", "collect-a", "evidence-a", "shared-a", 7, 789, 999, "OZON:DEFAULT", "", 123, 456, "MANUAL",
+  ]);
+});
+
+test("category preparation authorization fails closed when the exact shared version is no longer current", async () => {
+  const repository = createAutoListingRepository({ pool: {
+    connect: async () => assert.fail("read authorization must not transact"),
+    query: async () => ({ rows: [] }),
+  } });
+  await assert.rejects(repository.authorizeCategoryPreparation({ accountId: "account-a", items: [{
+    collectItemId: "collect-a", evidenceId: "evidence-a", sharedCategoryId: "shared-a",
+    sharedCategoryVersion: 7, sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    descriptionCategoryId: 789, typeId: 999, taxonomyScope: "OZON:DEFAULT",
+    taxonomyFingerprint: "", provenance: "MANUAL",
+  }] }), { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
+});
+
 test("loads Collect Box source rows with versioned draft and raw identities", async () => {
   const repository = createAutoListingRepository({
     pool: {
@@ -714,6 +777,25 @@ test("shared category version change before graph commit conflicts with zero pai
   assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_jobs|INSERT INTO auto_listing_source_snapshots/.test(sql)), false);
   assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);
   assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("graph preflight rejects every ozon-ready variant whose category differs from its V2 snapshot", async () => {
+  const graph = warehouseGraph();
+  const second = structuredClone(graph.items[0].listingBaseTemplate.variants[0]);
+  second.sourceVariantId = "variant-second";
+  second.sourceSku = "sku-second";
+  second.item.offer_id = "offer-second";
+  second.item.description_category_id = 789;
+  second.item.type_id = 999;
+  graph.items[0].listingBaseTemplate.variants.push(second);
+  let connections = 0;
+  const repository = createAutoListingRepository({ pool: {
+    async connect() { connections += 1; throw new Error("must reject before connect"); },
+    query: async () => ({ rows: [] }),
+  } });
+
+  await assert.rejects(repository.createJobGraph(graph), { code: "AUTO_LISTING_REPOSITORY_INVALID" });
+  assert.equal(connections, 0);
 });
 
 test("new jobs accept a connection-backed profile only when its latest successful catalog still contains both frozen models", async () => {

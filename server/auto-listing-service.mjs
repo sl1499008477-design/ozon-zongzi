@@ -58,6 +58,41 @@ function validSharedCategorySource(accountId, source) {
     && Number.isSafeInteger(shared.version) && shared.version > 0);
 }
 
+function categoryAuthorizationFromSource(source) {
+  const evidence = source.categoryEvidence;
+  const shared = source.sharedCategory;
+  return {
+    collectItemId: text(source.collectItemId || source.id),
+    evidenceId: text(evidence.id),
+    sharedCategoryId: text(shared.id),
+    sharedCategoryVersion: shared.version,
+    sourceDescriptionCategoryId: Number(evidence.sourceDescriptionCategoryId),
+    sourceTypeId: Number(evidence.sourceTypeId),
+    descriptionCategoryId: Number(shared.currentDescriptionCategoryId),
+    typeId: Number(shared.currentTypeId),
+    taxonomyScope: shared.taxonomyScope,
+    taxonomyFingerprint: shared.taxonomyFingerprint || "",
+    provenance: shared.source,
+  };
+}
+
+function categoryAuthorizationFromItem(item) {
+  const category = item.snapshot.targetCategory;
+  return {
+    collectItemId: item.collectItemId,
+    evidenceId: category.evidenceId,
+    sharedCategoryId: category.sharedCategoryId,
+    sharedCategoryVersion: category.sharedCategoryVersion,
+    sourceDescriptionCategoryId: Number(category.sourceDescriptionCategoryId),
+    sourceTypeId: Number(category.sourceTypeId),
+    descriptionCategoryId: Number(category.descriptionCategoryId),
+    typeId: Number(category.typeId),
+    taxonomyScope: category.taxonomyScope,
+    taxonomyFingerprint: category.taxonomyFingerprint,
+    provenance: category.provenance,
+  };
+}
+
 function assertRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).some((key) => !REQUEST_KEYS.has(key))) {
@@ -245,7 +280,8 @@ function safeJob(row = {}) {
 
 function requireRepository(repository) {
   const required = ["loadCollectSources", "loadTargetStore", "loadTargetWarehouse", "loadPublishedStrategy",
-    "loadPublishedUploadPolicies", "getJobByIdempotencyKey", "createJobGraph", "getJob", "listJobs"];
+    "loadPublishedUploadPolicies", "authorizeCategoryPreparation", "getJobByIdempotencyKey",
+    "createJobGraph", "getJob", "listJobs"];
   if (!repository || required.some((name) => typeof repository[name] !== "function")) {
     throw new TypeError("Auto listing repository dependencies are required");
   }
@@ -297,6 +333,10 @@ export function createAutoListingService({
         throw error("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
       }
     }
+    await storage.authorizeCategoryPreparation({
+      accountId,
+      items: sources.map(categoryAuthorizationFromSource),
+    });
     const warehouseEvidence = await storage.loadTargetWarehouse({
       accountId,
       targetStoreId: config.targetStoreId,
@@ -336,6 +376,11 @@ export function createAutoListingService({
     const items = buildJobItems({
       accountId, sourceType, sources, targetStore, config, configHash, published,
     });
+    const readyCategoryItems = items.filter((item) => item.status === "SOURCE_READY")
+      .map(categoryAuthorizationFromItem);
+    if (readyCategoryItems.length) {
+      await storage.authorizeCategoryPreparation({ accountId, items: readyCategoryItems });
+    }
     const preparedItems = await Promise.all(items.map(async (item) => {
       if (item.status !== "SOURCE_READY") return item;
       const source = sources[item.sourceOrder];
@@ -343,6 +388,7 @@ export function createAutoListingService({
         accountId,
         source,
         targetStore,
+        targetCategory: item.snapshot.targetCategory,
         pricingEvidence: {
           currency: item.snapshot.priceEvidence.currency,
           currencySource: item.snapshot.priceEvidence.currencySource,
@@ -352,6 +398,9 @@ export function createAutoListingService({
       });
       return { ...item, listingBaseTemplate };
     }));
+    if (eligibility.fulfillmentType === "RFBS" && readyCategoryItems.length) {
+      await storage.authorizeCategoryPreparation({ accountId, items: readyCategoryItems });
+    }
     const warehouseValidation = eligibility.fulfillmentType === "RFBS"
       ? await verifier.verifyRfbsWarehouse({
         accountId,
@@ -405,17 +454,12 @@ export function createAutoListingService({
       const accountId = text(input.actor?.id);
       const importFileId = text(input.importFileId);
       if (!accountId || !importFileId || importFileId.length > 240
+        || typeof storage.loadExcelImportContext !== "function"
         || typeof storage.loadExcelImportSources !== "function") {
         throw error("AUTO_LISTING_REQUEST_INVALID");
       }
-      const context = await storage.loadExcelImportSources({ accountId, importFileId });
-      const file = context?.importFile;
-      const sources = context?.sources;
-      if (!file || file.accountId !== accountId || file.id !== importFileId || file.status !== "COLLECTING"
-        || !Number.isInteger(file.statusVersion) || file.statusVersion < 1
-        || !Number.isInteger(file.acceptedRows) || !Number.isInteger(file.readyRows) || !Number.isInteger(file.failedRows)
-        || file.readyRows + file.failedRows !== file.acceptedRows || file.readyRows < 1
-        || !Array.isArray(sources) || sources.length !== file.readyRows
+      const file = await storage.loadExcelImportContext({ accountId, importFileId });
+      if (!file || file.accountId !== accountId || file.id !== importFileId
         || !text(file.idempotencyKey) || !text(file.correlationId)) {
         throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
       }
@@ -423,15 +467,43 @@ export function createAutoListingService({
       try { frozen = verifyAutoListingFrozenConfig(file.configSnapshot, file.configHash); } catch {
         throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
       }
-      if (sources.some((source) => !text(source?.id) || !text(source?.collectItemId))) {
-        throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
-      }
       const replay = await storage.getJobByIdempotencyKey({ accountId, idempotencyKey: file.idempotencyKey });
       if (replay) return safeJob(replay);
+      const store = await storage.loadTargetStore({ accountId, targetStoreId: frozen.config.targetStoreId });
+      const targetStore = validateTargetStoreRecord({
+        accountId, targetStoreId: frozen.config.targetStoreId, store,
+      });
+      const targetStoreCurrency = normalizeAutoListingCurrency(targetStore.currencyCode);
+      if (!targetStoreCurrency || targetStoreCurrency !== targetStore.currencyCode) {
+        throw error("AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED", 422);
+      }
+      const context = await storage.loadExcelImportSources({ accountId, importFileId });
+      const loadedFile = context?.importFile;
+      const sources = context?.sources;
+      let loadedFrozen = null;
+      try {
+        loadedFrozen = loadedFile
+          ? verifyAutoListingFrozenConfig(loadedFile.configSnapshot, loadedFile.configHash) : null;
+      } catch {
+        throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
+      }
+      if (!loadedFile || loadedFile.accountId !== accountId || loadedFile.id !== importFileId
+        || loadedFile.status !== "COLLECTING" || loadedFile.statusVersion !== file.statusVersion
+        || loadedFile.idempotencyKey !== file.idempotencyKey || loadedFile.correlationId !== file.correlationId
+        || loadedFile.configHash !== file.configHash || loadedFrozen?.configHash !== frozen.configHash
+        || !Number.isInteger(loadedFile.statusVersion) || loadedFile.statusVersion < 1
+        || !Number.isInteger(loadedFile.acceptedRows) || !Number.isInteger(loadedFile.readyRows)
+        || !Number.isInteger(loadedFile.failedRows)
+        || loadedFile.readyRows + loadedFile.failedRows !== loadedFile.acceptedRows || loadedFile.readyRows < 1
+        || !Array.isArray(sources) || sources.length !== loadedFile.readyRows
+        || sources.some((source) => !text(source?.id) || !text(source?.collectItemId))) {
+        throw error("AUTO_LISTING_IMPORT_NOT_FINALIZABLE", 409);
+      }
       return createFromSources({
         accountId, sourceType: "EXCEL_SKU", sources,
         idempotencyKey: file.idempotencyKey, correlationId: file.correlationId,
         config: frozen.config, configHash: frozen.configHash,
+        targetStore,
       });
     },
     async getAutoListingJob({ actor, jobId } = {}) {

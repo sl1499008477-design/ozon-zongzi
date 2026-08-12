@@ -644,6 +644,26 @@ function samePrice(left, right) {
     && leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
 }
 
+function exactCategoryAuthorizationItem(value) {
+  const keys = ["collectItemId", "evidenceId", "sharedCategoryId", "sharedCategoryVersion",
+    "sourceDescriptionCategoryId", "sourceTypeId", "descriptionCategoryId", "typeId",
+    "taxonomyScope", "taxonomyFingerprint", "provenance"];
+  const positive = (nested) => Number.isSafeInteger(nested) && nested > 0;
+  if (!plainJsonObject(value) || Object.keys(value).length !== keys.length
+    || keys.some((key) => !Object.hasOwn(value, key)) || !requiredText(value.collectItemId)
+    || !requiredText(value.evidenceId) || !requiredText(value.sharedCategoryId)
+    || !positive(value.sharedCategoryVersion)
+    || !positive(value.sourceDescriptionCategoryId) || !positive(value.sourceTypeId)
+    || !positive(value.descriptionCategoryId) || !positive(value.typeId)
+    || value.taxonomyScope !== "OZON:DEFAULT"
+    || !(value.taxonomyFingerprint === ""
+      || (typeof value.taxonomyFingerprint === "string" && /^[0-9a-f]{64}$/u.test(value.taxonomyFingerprint)))
+    || !["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"].includes(value.provenance)) {
+    throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+  }
+  return { ...value, collectItemId: requiredText(value.collectItemId) };
+}
+
 const LISTING_BASE_TEMPLATE_KEYS = new Set([
   "productDraft", "pricingEvidence", "richContentAttributeSupported", "variants", "versions",
 ]);
@@ -673,7 +693,10 @@ function verifiedListingBaseTemplate({ accountId, collectItemId, targetStoreId, 
     || frozen.pricingEvidence.currency !== item.snapshot.priceEvidence.currency
     || frozen.pricingEvidence.currencySource !== item.snapshot.priceEvidence.currencySource
     || frozen.pricingEvidence.blackKopecks !== item.snapshot.priceEvidence.blackKopecks
-    || frozen.pricingEvidence.greenKopecks !== (item.snapshot.priceEvidence.greenKopecks || null)) {
+    || frozen.pricingEvidence.greenKopecks !== (item.snapshot.priceEvidence.greenKopecks || null)
+    || frozen.variants.some((variant) =>
+      Number(variant.item?.description_category_id) !== Number(item.snapshot.targetCategory.descriptionCategoryId)
+      || Number(variant.item?.type_id) !== Number(item.snapshot.targetCategory.typeId))) {
     throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
   }
   return {
@@ -724,7 +747,30 @@ export function createAutoListingRepository({
   }
   const newId = (prefix) => requiredText(idFactory(prefix), "AUTO_LISTING_REPOSITORY_INVALID");
 
+  const loadExcelImportContext = async ({ accountId, importFileId } = {}) => {
+    const scope = requiredAccountId(accountId);
+    const fileId = requiredText(importFileId);
+    const result = await pool.query(
+      `SELECT id,account_id,status,status_version,accepted_rows,ready_rows,failed_rows,
+              config_snapshot,config_hash,idempotency_key,correlation_id
+         FROM auto_listing_import_files
+        WHERE account_id=$1 AND id=$2`,
+      [scope, fileId],
+    );
+    const file = result.rows?.[0];
+    if (!file) return null;
+    if (file.account_id !== scope || file.id !== fileId) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+    return {
+      id: file.id, accountId: file.account_id, status: file.status,
+      statusVersion: Number(file.status_version), acceptedRows: Number(file.accepted_rows),
+      readyRows: Number(file.ready_rows), failedRows: Number(file.failed_rows),
+      configSnapshot: file.config_snapshot, configHash: file.config_hash,
+      idempotencyKey: file.idempotency_key, correlationId: file.correlation_id,
+    };
+  };
+
   return {
+    loadExcelImportContext,
     async loadCollectSources({ accountId, collectItemIds } = {}) {
       const scope = requiredAccountId(accountId);
       const ids = Array.isArray(collectItemIds) ? [...new Set(collectItemIds.map((id) => requiredText(id)))] : [];
@@ -803,18 +849,8 @@ export function createAutoListingRepository({
     async loadExcelImportSources({ accountId, importFileId } = {}) {
       const scope = requiredAccountId(accountId);
       const fileId = requiredText(importFileId);
-      const fileResult = await pool.query(
-        `SELECT id,account_id,status,status_version,accepted_rows,ready_rows,failed_rows,
-                config_snapshot,config_hash,idempotency_key,correlation_id
-           FROM auto_listing_import_files
-          WHERE account_id=$1 AND id=$2`,
-        [scope, fileId],
-      );
-      const file = fileResult.rows?.[0];
+      const file = await loadExcelImportContext({ accountId: scope, importFileId: fileId });
       if (!file) return null;
-      if (file.account_id !== scope || file.id !== fileId) {
-        throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
-      }
       const sourceResult = await pool.query(
         `SELECT r.id AS row_id,r.collect_item_id,c.account_id,c.source,c.source_sku,c.summary,
                 d.id AS draft_id,d.version AS draft_version,d.data_hash AS draft_data_hash,d.data AS draft_data,
@@ -890,14 +926,48 @@ export function createAutoListingRepository({
       });
       return {
         importFile: {
-          id: file.id, accountId: file.account_id, status: file.status,
-          statusVersion: Number(file.status_version), acceptedRows: Number(file.accepted_rows),
-          readyRows: Number(file.ready_rows), failedRows: Number(file.failed_rows),
-          configSnapshot: file.config_snapshot, configHash: file.config_hash,
-          idempotencyKey: file.idempotency_key, correlationId: file.correlation_id,
+          ...file,
         },
         sources,
       };
+    },
+
+    async authorizeCategoryPreparation({ accountId, items } = {}) {
+      const scope = requiredAccountId(accountId);
+      const checked = Array.isArray(items) && items.length >= 1 && items.length <= 100
+        ? items.map(exactCategoryAuthorizationItem) : [];
+      if (!checked.length) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      for (const item of checked) {
+        const result = await pool.query(
+          `/* auto-listing-category-preparation-authorization */ SELECT shared.id
+             FROM collect_ozon_category_current_sources current_category
+             JOIN collect_ozon_category_source_evidence evidence
+               ON evidence.account_id=current_category.account_id
+              AND evidence.id=current_category.source_evidence_id
+              AND evidence.collect_item_id=current_category.collect_item_id
+              AND evidence.source_kind=current_category.source_kind
+              AND evidence.source_record_id=current_category.source_record_id
+              AND evidence.source_version=current_category.source_version
+             JOIN account_ozon_shared_categories shared
+               ON shared.account_id=evidence.account_id
+              AND shared.source_description_category_id=evidence.source_description_category_id
+              AND shared.source_type_id=evidence.source_type_id
+              AND shared.taxonomy_scope=evidence.taxonomy_scope
+            WHERE current_category.account_id=$1 AND current_category.collect_item_id=$2
+              AND evidence.id=$3 AND shared.id=$4 AND shared.version=$5
+              AND shared.status='ACTIVE'
+              AND shared.current_description_category_id=$6 AND shared.current_type_id=$7
+              AND shared.taxonomy_scope=$8 AND COALESCE(shared.taxonomy_fingerprint,'')=$9
+              AND evidence.source_description_category_id=$10 AND evidence.source_type_id=$11
+              AND shared.source=$12`,
+          [scope, item.collectItemId, item.evidenceId, item.sharedCategoryId,
+            item.sharedCategoryVersion, item.descriptionCategoryId, item.typeId,
+            item.taxonomyScope, item.taxonomyFingerprint, item.sourceDescriptionCategoryId,
+            item.sourceTypeId, item.provenance],
+        );
+        if (result.rows.length !== 1) throw sourceVersionConflict();
+      }
+      return Object.freeze({ authorized: true, itemCount: checked.length });
     },
 
     async loadTargetStore({ accountId, targetStoreId } = {}) {

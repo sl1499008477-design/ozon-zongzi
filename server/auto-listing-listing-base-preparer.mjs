@@ -96,9 +96,26 @@ function sourceVariant(raw, normalized, index) {
   return { sourceVariantId, sourceSku, item: structuredClone(normalized) };
 }
 
+function exactTargetCategory(value) {
+  const positive = (nested) => /^[1-9][0-9]*$/u.test(String(nested ?? ""))
+    && Number.isSafeInteger(Number(nested));
+  if (!plainObject(value)
+    || value.schemaVersion !== "AUTO_LISTING_ACCOUNT_CATEGORY_V2"
+    || !text(value.evidenceId) || !text(value.sharedCategoryId)
+    || !Number.isSafeInteger(value.sharedCategoryVersion) || value.sharedCategoryVersion < 1
+    || !positive(value.sourceDescriptionCategoryId) || !positive(value.sourceTypeId)
+    || !positive(value.descriptionCategoryId) || !positive(value.typeId)
+    || value.taxonomyScope !== "OZON:DEFAULT"
+    || !(value.taxonomyFingerprint === "" || HASH.test(value.taxonomyFingerprint || ""))
+    || !["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"].includes(value.provenance)) {
+    throw failure("AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", 409);
+  }
+  return Object.freeze(structuredClone(value));
+}
+
 function assertDependencies({ loadStoreAccess, categoryService, normalizeItems, buildRawItems }) {
   if (typeof loadStoreAccess !== "function" || typeof normalizeItems !== "function" || typeof buildRawItems !== "function"
-    || !categoryService || ["getCategoryTree", "getCategoryAttributes", "getCategoryAttributeValues"]
+    || !categoryService || ["getCategoryAttributes", "getCategoryAttributeValues"]
       .some((key) => typeof categoryService[key] !== "function")) {
     throw new TypeError("Auto listing base preparer dependencies are required");
   }
@@ -126,7 +143,7 @@ export function createAutoListingListingBasePreparer({
   }
 
   return async function prepareAutoListingListingBase({
-    accountId, source, targetStore, pricingEvidence,
+    accountId, source, targetStore, targetCategory, pricingEvidence,
   } = {}) {
     const scope = text(accountId);
     const targetStoreId = text(targetStore?.id);
@@ -134,6 +151,7 @@ export function createAutoListingListingBasePreparer({
     if (!scope || !targetStoreId || ownerAccountId !== scope) throw failure("AUTO_LISTING_TARGET_STORE_FORBIDDEN", 403);
     const { productDraft, versions: frozenVersions } = productDraftEvidence(source, fallbackVersions);
     const frozenPriceEvidence = priceEvidence(pricingEvidence);
+    const category = exactTargetCategory(targetCategory);
     const storeAccess = await loadStoreAccess({ accountId: scope, targetStoreId });
     const storeCurrency = normalizeAutoListingCurrency(storeAccess?.currencyCode || storeAccess?.currency_code || storeAccess?.currency);
     if (!plainObject(storeAccess) || text(storeAccess.id) !== targetStoreId
@@ -145,7 +163,14 @@ export function createAutoListingListingBasePreparer({
       throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
     }
 
-    const rawItems = buildRawItems(source, { currencyCode: storeCurrency });
+    const builtItems = buildRawItems(source, { currencyCode: storeCurrency });
+    const rawItems = Array.isArray(builtItems) ? builtItems.map((item) => ({
+      ...structuredClone(item),
+      description_category_id: Number(category.descriptionCategoryId),
+      descriptionCategoryId: Number(category.descriptionCategoryId),
+      type_id: Number(category.typeId),
+      typeId: Number(category.typeId),
+    })) : builtItems;
     if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 1_000) {
       throw failure("AUTO_LISTING_LISTING_BASE_INCOMPLETE");
     }
@@ -153,13 +178,13 @@ export function createAutoListingListingBasePreparer({
     const categoryKey = (descriptionCategoryId, typeId) => `${Number(descriptionCategoryId)}:${Number(typeId)}`;
     const normalized = await normalizeItems(rawItems, {
       strictTypeMatch: true,
-      categoryMatchPolicy: "TARGET_STORE_EXACT",
-      targetStoreId,
+      categoryMatchPolicy: "FROZEN_ACCOUNT_SHARED_EXACT",
       allowUnresolvedRequiredDictionaryValues: false,
-      getCategoryTree: async () => (
-        await categoryService.getCategoryTree({ accountId: scope, store: storeAccess, language: "DEFAULT" })
-      ).items,
       getCategoryAttributes: async (descriptionCategoryId, typeId) => {
+        if (Number(descriptionCategoryId) !== Number(category.descriptionCategoryId)
+          || Number(typeId) !== Number(category.typeId)) {
+          throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
+        }
         const result = await categoryService.getCategoryAttributes({
           accountId: scope, store: storeAccess, descriptionCategoryId, typeId, language: "DEFAULT",
         });
@@ -170,12 +195,16 @@ export function createAutoListingListingBasePreparer({
         );
         return items;
       },
-      getCategoryAttributeValues: async (descriptionCategoryId, typeId, attributeIdValue) => (
-        await categoryService.getCategoryAttributeValues({
+      getCategoryAttributeValues: async (descriptionCategoryId, typeId, attributeIdValue) => {
+        if (Number(descriptionCategoryId) !== Number(category.descriptionCategoryId)
+          || Number(typeId) !== Number(category.typeId)) {
+          throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
+        }
+        return (await categoryService.getCategoryAttributeValues({
           accountId: scope, store: storeAccess, descriptionCategoryId, typeId,
           attributeId: attributeIdValue, language: "DEFAULT", limit: 5_000,
-        })
-      ).items,
+        })).items;
+      },
     });
     if (!Array.isArray(normalized?.items) || normalized.items.length !== rawItems.length
       || normalized.items.some((item) => !plainObject(item))) {
@@ -183,6 +212,10 @@ export function createAutoListingListingBasePreparer({
     }
     if (normalized.items.some((item) => item.currency_code !== storeCurrency)) {
       throw failure("AUTO_LISTING_PRICE_EVIDENCE_INVALID");
+    }
+    if (normalized.items.some((item) => Number(item.description_category_id) !== Number(category.descriptionCategoryId)
+      || Number(item.type_id) !== Number(category.typeId))) {
+      throw failure("AUTO_LISTING_SOURCE_VERSION_CONFLICT", 409);
     }
     const supported = normalized.items.every((item) =>
       categoryCapabilities.get(categoryKey(item.description_category_id, item.type_id)) === true);

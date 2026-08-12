@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
+import { createAutoListingService } from "../auto-listing-service.mjs";
 import { normalizeAndHashAutoListingConfig } from "../auto-listing-contract.mjs";
 import { deriveEffectiveAutoListingImageConfig } from "../auto-listing-item-image-config.mjs";
 import {
@@ -853,6 +854,7 @@ if (!enabled) {
       assert.equal((await repository.loadCollectSources({
         accountId: accountB, collectItemIds: [staleCategory.items[0].sourceRecordId],
       })).length, 0);
+
       await client.query(
         `INSERT INTO ai_gateway_profiles
           (id,account_id,display_name,base_url,api_key_env_name,text_protocol,image_protocol,text_model,image_model,config_version)
@@ -904,6 +906,59 @@ if (!enabled) {
       assert.equal(Number((await client.query(
         "SELECT count(*)::int AS count FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id=$2",
         [accountA, staleCategory.items[0].sourceRecordId],
+      )).rows[0].count), 0);
+
+      const fullServiceRace = graph(accountA, "shared-category-full-service-race", "shared-category-full-service-race");
+      await registerGraphSources(client, fullServiceRace);
+      const fullServiceRepository = createAutoListingRepository({ pool: scopedPool });
+      const counters = { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 };
+      let transitioned = false;
+      const racedRepository = {
+        ...fullServiceRepository,
+        async authorizeCategoryPreparation(input) {
+          if (!transitioned) {
+            transitioned = true;
+            await client.query(
+              `UPDATE account_ozon_shared_categories
+                  SET version=version+1,updated_at=clock_timestamp()
+                WHERE account_id=$1 AND id=$2`,
+              [accountA, fullServiceRace.items[0].snapshot.targetCategory.sharedCategoryId],
+            );
+          }
+          return fullServiceRepository.authorizeCategoryPreparation(input);
+        },
+        async createJobGraph(input) {
+          counters.paidAi += 1;
+          counters.objectStorage += 1;
+          counters.graph += 1;
+          return fullServiceRepository.createJobGraph(input);
+        },
+      };
+      const racedService = createAutoListingService({
+        repository: racedRepository,
+        async prepareListingBase() {
+          counters.ozonCategory += 1;
+          throw new Error("Ozon category port must remain unreachable");
+        },
+        rfbsWarehouseVerifier: Object.freeze({
+          async verifyRfbsWarehouse() {
+            counters.rfbs += 1;
+            throw new Error("RFBS port must remain unreachable");
+          },
+        }),
+      });
+      await assert.rejects(racedService.createAutoListingJob({
+        actor: { id: accountA, role: "admin" },
+        collectItemIds: [fullServiceRace.items[0].sourceRecordId],
+        idempotencyKey: fullServiceRace.idempotencyKey,
+        correlationId: fullServiceRace.correlationId,
+        config: fullServiceRace.configSnapshot,
+      }), { code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT" });
+      assert.equal(transitioned, true);
+      assert.deepEqual(counters, { ozonCategory: 0, rfbs: 0, paidAi: 0, objectStorage: 0, graph: 0 });
+      assert.equal(Number((await client.query(
+        "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
+        [accountA, fullServiceRace.idempotencyKey],
       )).rows[0].count), 0);
     } finally {
       await client.query("RESET search_path").catch(() => {});
