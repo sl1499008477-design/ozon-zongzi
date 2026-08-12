@@ -284,6 +284,7 @@ CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_transition
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   triggering_evidence submission_category_error_evidence%ROWTYPE;
+  source_evidence collect_ozon_category_source_evidence%ROWTYPE;
   replacement account_ozon_shared_categories%ROWTYPE;
 BEGIN
   IF TG_OP='DELETE' AND (
@@ -305,15 +306,28 @@ BEGIN
     RETURN OLD;
   END IF;
   IF OLD.status='CLAIMED' AND NEW.status='MATCHED' THEN
+    IF JSONB_TYPEOF(NEW.corrected_items)<>'array'
+      OR JSONB_ARRAY_LENGTH(NEW.corrected_items) NOT BETWEEN 1 AND 100
+      OR OCTET_LENGTH(NEW.corrected_items::TEXT)>2097152
+    THEN
+      RAISE EXCEPTION 'invalid matched submission category recovery correction shape'
+        USING ERRCODE = '23514';
+    END IF;
     SELECT * INTO triggering_evidence
       FROM submission_category_error_evidence
      WHERE account_id=OLD.account_id AND id=OLD.triggering_error_evidence_id;
+    SELECT * INTO source_evidence
+      FROM collect_ozon_category_source_evidence
+     WHERE account_id=OLD.account_id AND id=OLD.source_evidence_id;
     SELECT * INTO replacement
       FROM account_ozon_shared_categories
      WHERE account_id=OLD.account_id AND id=NEW.replacement_shared_category_id
        AND version=NEW.replacement_shared_category_version AND status='ACTIVE'
        AND source_evidence_id=OLD.source_evidence_id;
-    IF triggering_evidence.id IS NULL OR replacement.id IS NULL
+    IF triggering_evidence.id IS NULL OR source_evidence.id IS NULL OR replacement.id IS NULL
+      OR replacement.source_description_category_id IS DISTINCT FROM source_evidence.source_description_category_id
+      OR replacement.source_type_id IS DISTINCT FROM source_evidence.source_type_id
+      OR replacement.taxonomy_scope IS DISTINCT FROM source_evidence.taxonomy_scope
       OR NEW.corrected_items_hash IS DISTINCT FROM ENCODE(SHA256(CONVERT_TO(
         canonical_submission_category_recovery_json(NEW.corrected_items),'UTF8')), 'hex')
       OR JSONB_ARRAY_LENGTH(NEW.corrected_items) <> JSONB_ARRAY_LENGTH(triggering_evidence.original_items)

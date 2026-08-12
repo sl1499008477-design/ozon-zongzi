@@ -252,6 +252,30 @@ if (!enabled) {
             version=2,taxonomy_fingerprint=$1,safe_failure_code='',validated_at=$2,updated_at=$2
         WHERE account_id=$3 AND id=$4`, ["c".repeat(64), "2026-08-13T00:00:00.500Z", ids.account, ids.shared]);
       await client.query("COMMIT");
+      const forgedSharedId = `forged-shared-${suffix}`;
+      await client.query(`INSERT INTO ${q(schema)}.account_ozon_shared_categories(
+        id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+        current_description_category_id,current_type_id,status,source,version,source_evidence_id,
+        taxonomy_fingerprint,safe_failure_code,validated_at,created_at,updated_at)
+        VALUES($1,$2,11,21,'OZON:DEFAULT',30,40,'ACTIVE','OZON_REFRESH',2,$3,$4,'',$5,$5,$5)`,
+      [forgedSharedId, ids.account, ids.source, "f".repeat(64), "2026-08-13T00:00:00.600Z"]);
+      const directMatchSql = `UPDATE ${q(schema)}.submission_category_recovery_attempts
+        SET status='MATCHED',corrected_items=$2::JSONB,corrected_items_hash=$3,
+            replacement_shared_category_id=$4,replacement_shared_category_version=$5,
+            updated_at='2026-08-13T00:00:00.750Z' WHERE id=$1`;
+      for (const [items, hash, replacementId, version] of [
+        [{ forged: true }, "a".repeat(64), ids.shared, 2],
+        [42, "a".repeat(64), ids.shared, 2],
+        [null, "a".repeat(64), ids.shared, 2],
+        [[{ ...corrected[0], description: "x".repeat(2_097_153) }], "a".repeat(64), ids.shared, 2],
+        [corrected, "a".repeat(64), ids.shared, 2],
+        [[{ ...corrected[0], description_category_id: 31 }], canonicalSha([{ ...corrected[0], description_category_id: 31 }]), ids.shared, 2],
+        [corrected, canonicalSha(corrected), forgedSharedId, 2],
+      ]) {
+        await assertCheckRejected(client, directMatchSql, [
+          attempt.attemptId, JSON.stringify(items), hash, replacementId, version,
+        ]);
+      }
       const forgedCorrection = [{ ...corrected[0], price: "999" }];
       await assertCheckRejected(client,
         `UPDATE ${q(schema)}.submission_category_recovery_attempts
@@ -307,7 +331,7 @@ if (!enabled) {
         accountId: ids.account, jobId: ids.job, evidenceId: evidence.id,
       });
       assert.deepEqual(terminalBasis.existingAttempt, {
-        attemptId: attempt.attemptId, status: "SUCCEEDED",
+        attemptId: attempt.attemptId, status: "SUCCEEDED", correlationId: `corr-${suffix}`,
       });
       await assert.rejects(client.query(`UPDATE ${q(schema)}.submission_category_recovery_attempts SET corrected_items='[]' WHERE id=$1`, [attempt.attemptId]), (error) => error.code === "23514");
       await assert.rejects(client.query(`DELETE FROM ${q(schema)}.submission_category_error_evidence WHERE id=$1`, [evidence.id]), (error) => error.code === "23514");
@@ -397,21 +421,30 @@ if (!enabled) {
       });
       const sharedRepository = createPostgresAccountSharedOzonCategoryRepository({ pool: scopedPool });
       let schedules = 0;
+      let externalCalls = 0;
       const service = createAutoListingCategoryRecoveryService({
         repository: recoveryRepository,
-        loadOperatingStoreAccess: async () => ({ clientId: "client", apiKey: "key" }),
-        confirmOfferAbsent: async () => ({ status: "ABSENT", code: "ABSENT" }),
-        invalidateSharedCategory: sharedRepository.invalidateSharedCategory,
-        refreshCategory: async () => ({
+        loadOperatingStoreAccess: async () => { externalCalls += 1; return { clientId: "client", apiKey: "key" }; },
+        confirmOfferAbsent: async () => { externalCalls += 1; return {
+          status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT",
+        }; },
+        invalidateSharedCategory: async (input) => {
+          externalCalls += 1; return sharedRepository.invalidateSharedCategory(input);
+        },
+        refreshCategory: async () => { externalCalls += 1; return {
           kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
           taxonomyFingerprint: "c".repeat(64), metadata: { attributes: [] },
-        }),
-        rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({
+        }; },
+        rebuildItems: async ({ originalItems }) => { externalCalls += 1; return originalItems.map((item) => ({
           ...item, description_category_id: 30, type_id: 40, attributes: [],
-        })),
-        activateRefreshedCategory: sharedRepository.activateRefreshedCategory,
-        markSharedNeedsReview: sharedRepository.markSharedNeedsReview,
-        scheduleRetry: async () => { schedules += 1; return { scheduled: true }; },
+        })); },
+        activateRefreshedCategory: async (input) => {
+          externalCalls += 1; return sharedRepository.activateRefreshedCategory(input);
+        },
+        markSharedNeedsReview: async (input) => {
+          externalCalls += 1; return sharedRepository.markSharedNeedsReview(input);
+        },
+        scheduleRetry: async () => { externalCalls += 1; schedules += 1; return { scheduled: true }; },
         now: () => "2026-08-13T01:00:00.000Z",
       });
       const result = await service.recover({
@@ -426,6 +459,79 @@ if (!enabled) {
       assert.deepEqual(result, { attemptId: `recovery-${suffix}`, status: "RETRY_PENDING" },
         JSON.stringify(persisted));
       assert.equal(schedules, 1);
+      const request = {
+        accountId: ids.account, jobId: ids.job, evidenceId, correlationId: `corr-${suffix}`,
+      };
+      const afterFirst = externalCalls;
+      assert.deepEqual(await service.recover(request), {
+        attemptId: `recovery-${suffix}`, status: "RETRY_PENDING",
+      });
+      assert.equal(externalCalls, afterFirst);
+      const identity = {
+        accountId: ids.account, jobId: ids.job, snapshotId: ids.snapshot, evidenceId,
+        attemptId: `recovery-${suffix}`, sourceEvidenceId: ids.source,
+        oldSharedCategoryId: ids.shared, oldSharedCategoryVersion: 1,
+        originalOzonTaskId: "task-original", correlationId: `corr-${suffix}`,
+      };
+      await recoveryRepository.markCategoryRecoveryRetryAccepted({
+        ...identity, expectedStatus: "RETRY_PENDING", retryOzonTaskId: "task-retry",
+        transitionedAt: "2026-08-13T01:00:01.000Z",
+      });
+      assert.deepEqual(await service.recover(request), {
+        attemptId: `recovery-${suffix}`, status: "RETRY_ACCEPTED",
+      });
+      assert.equal(externalCalls, afterFirst);
+      await recoveryRepository.completeCategoryRecovery({
+        ...identity, expectedStatus: "RETRY_ACCEPTED", retryOzonTaskId: "task-retry",
+        transitionedAt: "2026-08-13T01:00:02.000Z",
+      });
+      assert.deepEqual(await service.recover(request), {
+        attemptId: `recovery-${suffix}`, status: "SUCCEEDED",
+      });
+      assert.equal(externalCalls, afterFirst);
+
+      const staleIds = await seed(client, `${suffix}stale`);
+      const staleSnapshot = (await client.query(
+        `SELECT items,snapshot_hash FROM ${q(schema)}.submission_snapshots WHERE id=$1`, [staleIds.snapshot],
+      )).rows[0];
+      const staleEvidenceId = `category-error-${suffix}-stale`;
+      await client.query(`INSERT INTO ${q(schema)}.submission_category_error_evidence(
+        id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,
+        original_ozon_task_id,original_snapshot_hash,original_items,source_evidence_id,old_shared_category_id,
+        old_shared_category_version,classifier_policy_version,safe_evidence)
+        VALUES($1,$2,$3,$4,$5,'offer-a','task-original',$6,$7,$8,$9,1,'ozon-category-policy.v2',$10)`,
+      [staleEvidenceId, staleIds.account, staleIds.job, staleIds.snapshot, staleIds.item,
+        staleSnapshot.snapshot_hash, JSON.stringify(staleSnapshot.items), staleIds.source,
+        staleIds.shared, JSON.stringify(safeEvidence())]);
+      let staleSchedules = 0;
+      const staleService = createAutoListingCategoryRecoveryService({
+        repository: createAutoListingCategoryRecoveryPostgres({
+          pool: scopedPool, idFactory: () => `stale-recovery-${suffix}`,
+          now: () => "2026-08-13T01:01:00.000Z",
+        }),
+        loadOperatingStoreAccess: async () => ({ clientId: "client", apiKey: "key" }),
+        confirmOfferAbsent: async () => {
+          await scopedPool.query("UPDATE submission_items SET product_id='99' WHERE job_id=$1 AND id=$2",
+            [staleIds.job, staleIds.item]);
+          return { status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT" };
+        },
+        invalidateSharedCategory: sharedRepository.invalidateSharedCategory,
+        refreshCategory: async () => { throw new Error("must-not-refresh"); },
+        rebuildItems: async () => { throw new Error("must-not-rebuild"); },
+        activateRefreshedCategory: sharedRepository.activateRefreshedCategory,
+        markSharedNeedsReview: sharedRepository.markSharedNeedsReview,
+        scheduleRetry: async () => { staleSchedules += 1; },
+        now: () => "2026-08-13T01:01:00.000Z",
+      });
+      await assert.rejects(staleService.recover({
+        accountId: staleIds.account, jobId: staleIds.job, evidenceId: staleEvidenceId,
+        correlationId: `corr-${suffix}stale`,
+      }), (error) => error.code === "AUTO_LISTING_CATEGORY_RECOVERY_NOT_ELIGIBLE"
+        && error.cause === null);
+      assert.equal(staleSchedules, 0);
+      assert.equal((await client.query(`SELECT COUNT(*)::INT AS count
+        FROM ${q(schema)}.submission_category_recovery_attempts WHERE account_id=$1`,
+      [staleIds.account])).rows[0].count, 0);
     } finally {
       await client.query(`DROP SCHEMA IF EXISTS ${q(schema)} CASCADE`).catch(() => {});
       client.release();

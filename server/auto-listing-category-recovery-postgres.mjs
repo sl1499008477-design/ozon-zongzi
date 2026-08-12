@@ -224,7 +224,10 @@ function parseBasis(row) {
       validatedAt: row.shared_validated_at === null ? null : new Date(row.shared_validated_at).toISOString(),
     }),
     existingAttempt: row.attempt_id === null ? null
-      : Object.freeze({ attemptId: row.attempt_id, status: row.attempt_status }),
+      : Object.freeze({
+        attemptId: row.attempt_id, status: row.attempt_status,
+        correlationId: row.attempt_correlation_id,
+      }),
   });
 }
 
@@ -254,6 +257,7 @@ export function createAutoListingCategoryRecoveryPostgres({
       return transaction(pool, async (client) => {
         const rows = (await client.query(
           `SELECT evidence.*,attempt.id AS attempt_id,attempt.status AS attempt_status,
+                  attempt.correlation_id AS attempt_correlation_id,
                   shared.account_id AS shared_account_id,
                   shared.source_description_category_id AS shared_source_description_category_id,
                   shared.source_type_id AS shared_source_type_id,
@@ -297,7 +301,8 @@ export function createAutoListingCategoryRecoveryPostgres({
                   AND attempt.source_evidence_id=evidence.source_evidence_id
                   AND attempt.old_shared_category_id=evidence.old_shared_category_id
                   AND attempt.old_shared_category_version=evidence.old_shared_category_version
-                  AND attempt.original_ozon_task_id=evidence.original_ozon_task_id)
+                  AND attempt.original_ozon_task_id=evidence.original_ozon_task_id
+                  AND attempt.original_snapshot_hash=evidence.original_snapshot_hash)
               )
             FOR SHARE OF evidence,job,snapshot,source,shared`,
           [input.accountId, input.jobId, input.evidenceId],
@@ -358,6 +363,13 @@ export function createAutoListingCategoryRecoveryPostgres({
             input.originalOzonTaskId],
         )).rows[0];
         if (!eligible) throw notFound();
+        const itemRows = (await client.query(
+          `SELECT status,product_id FROM submission_items
+            WHERE job_id=$1 AND snapshot_id=$2 ORDER BY id FOR UPDATE`,
+          [input.jobId, input.snapshotId],
+        )).rows;
+        if (!itemRows.length || itemRows.some((item) => item.status !== "FAILED"
+          || (typeof item.product_id === "string" && item.product_id.trim() !== ""))) throw notFound();
         let row = (await client.query(
           `INSERT INTO submission_category_recovery_attempts(
              id,account_id,submission_job_id,submission_snapshot_id,triggering_error_evidence_id,
@@ -401,7 +413,8 @@ export function createAutoListingCategoryRecoveryPostgres({
               SET status='MATCHED',corrected_items=$12::JSONB,corrected_items_hash=$13,
                   replacement_shared_category_id=$14,replacement_shared_category_version=$15,
                   updated_at=GREATEST($16::TIMESTAMPTZ,attempt.updated_at+INTERVAL '1 microsecond')
-             FROM account_ozon_shared_categories AS shared
+             FROM account_ozon_shared_categories AS shared,
+                  collect_ozon_category_source_evidence AS source
             WHERE attempt.account_id=$1 AND attempt.submission_job_id=$2
               AND attempt.submission_snapshot_id=$3 AND attempt.triggering_error_evidence_id=$4
               AND attempt.id=$5 AND attempt.source_evidence_id=$6
@@ -411,6 +424,10 @@ export function createAutoListingCategoryRecoveryPostgres({
               AND shared.account_id=attempt.account_id AND shared.id=$14
               AND shared.version=$15 AND shared.status='ACTIVE'
               AND shared.source_evidence_id=attempt.source_evidence_id
+              AND source.account_id=attempt.account_id AND source.id=attempt.source_evidence_id
+              AND shared.source_description_category_id=source.source_description_category_id
+              AND shared.source_type_id=source.source_type_id
+              AND shared.taxonomy_scope=source.taxonomy_scope
            RETURNING attempt.*`,
           [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
             input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
@@ -487,6 +504,38 @@ export function createAutoListingCategoryRecoveryPostgres({
               || existing.safe_review_code !== input.safeReviewCode) throw conflict();
             return attemptDto(existing);
           }
+          const eligible = (await client.query(
+            `SELECT job.id
+               FROM submission_category_error_evidence AS evidence
+               JOIN submission_jobs AS job
+                 ON job.account_id=evidence.account_id AND job.id=evidence.submission_job_id
+                AND job.snapshot_id=evidence.submission_snapshot_id
+               JOIN submission_snapshots AS snapshot
+                 ON snapshot.account_id=evidence.account_id AND snapshot.id=evidence.submission_snapshot_id
+                AND snapshot.snapshot_hash=evidence.original_snapshot_hash
+                AND snapshot.items=evidence.original_items
+               JOIN account_ozon_shared_categories AS shared
+                 ON shared.account_id=evidence.account_id AND shared.id=evidence.old_shared_category_id
+                AND shared.source_evidence_id=evidence.source_evidence_id
+                AND shared.version=evidence.old_shared_category_version AND shared.status='ACTIVE'
+              WHERE evidence.account_id=$1 AND evidence.submission_job_id=$2
+                AND evidence.submission_snapshot_id=$3 AND evidence.id=$4
+                AND evidence.source_evidence_id=$5 AND evidence.old_shared_category_id=$6
+                AND evidence.old_shared_category_version=$7 AND evidence.original_ozon_task_id=$8
+                AND job.status='FAILED' AND job.ozon_task_id=evidence.original_ozon_task_id
+              FOR UPDATE OF job,shared`,
+            [input.accountId, input.jobId, input.snapshotId, input.evidenceId,
+              input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+              input.originalOzonTaskId],
+          )).rows[0];
+          if (!eligible) throw notFound();
+          const itemRows = (await client.query(
+            `SELECT status,product_id FROM submission_items
+              WHERE job_id=$1 AND snapshot_id=$2 ORDER BY id FOR UPDATE`,
+            [input.jobId, input.snapshotId],
+          )).rows;
+          if (!itemRows.length || itemRows.some((item) => item.status !== "FAILED"
+            || (typeof item.product_id === "string" && item.product_id.trim() !== ""))) throw notFound();
           targetAttemptId = identifier(idFactory());
           const claimed = (await client.query(
             `INSERT INTO submission_category_recovery_attempts(

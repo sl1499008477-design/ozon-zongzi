@@ -57,7 +57,9 @@ function harness(overrides = {}) {
   const service = createAutoListingCategoryRecoveryService({
     repository,
     loadOperatingStoreAccess: async () => { calls.push("access"); return { clientId: "client", apiKey: "key" }; },
-    confirmOfferAbsent: async () => { calls.push("absence"); return { status: "ABSENT", code: "ABSENT" }; },
+    confirmOfferAbsent: async () => { calls.push("absence"); return {
+      status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT",
+    }; },
     invalidateSharedCategory: async () => {
       calls.push("invalidate");
       shared = sharedCategory({ ...shared, status: "INVALIDATED", version: shared.version + 1 });
@@ -109,7 +111,9 @@ test("recovery uses the exact safe order and commits corrected items before one 
 test("present or unknown offer state becomes NEEDS_REVIEW with zero category or retry work", async () => {
   for (const status of ["PRESENT", "UNKNOWN"]) {
     const { service, calls } = harness({
-      confirmOfferAbsent: async () => { calls.push("absence"); return { status, code: `OFFER_${status}` }; },
+      confirmOfferAbsent: async () => { calls.push("absence"); return {
+        status, code: status === "PRESENT" ? "OZON_OFFER_PRESENT" : "OZON_OFFER_RECONCILIATION_UNKNOWN",
+      }; },
     });
     assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
     assert.deepEqual(calls, ["load", "access", "absence", "review"]);
@@ -264,6 +268,64 @@ test("hostile shared DTOs are not executed and invalid review DTOs expose one fi
   assert.equal(second.calls.at(-1), "review");
 });
 
+test("absence, refresh and review ports require exact descriptor-safe DTOs", async () => {
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  let getterRuns = 0;
+  const getter = {};
+  Object.defineProperty(getter, "status", {
+    enumerable: true, get() { getterRuns += 1; throw new Error("port-secret"); },
+  });
+  for (const absence of [
+    { status: "ABSENT", code: "ABSENT" },
+    { status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT", extra: "secret" },
+    getter,
+    new Proxy({ status: "ABSENT", code: "OZON_OFFERS_CONFIRMED_ABSENT" }, {}),
+    revoked.proxy,
+  ]) {
+    const { service, calls } = harness({ confirmOfferAbsent: async () => absence });
+    assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+    assert.equal(calls.includes("claim"), false);
+    assert.equal(calls.includes("schedule"), false);
+  }
+  assert.equal(getterRuns, 0);
+
+  for (const refresh of [
+    { kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: { attributes: [] }, extra: true },
+    new Proxy({ kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
+      taxonomyFingerprint: "a".repeat(64), metadata: { attributes: [] } }, {}),
+    revoked.proxy,
+  ]) {
+    const { service, calls } = harness({ refreshCategory: async () => refresh });
+    assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+    assert.equal(calls.includes("rebuild"), false);
+    assert.equal(calls.includes("schedule"), false);
+  }
+
+  for (const review of [
+    { attemptId: "attempt-wrong", status: "NEEDS_REVIEW" },
+    { attemptId: "attempt-a", status: "MATCHED" },
+    { attemptId: "attempt-a", status: "NEEDS_REVIEW", extra: true },
+    new Proxy({ attemptId: "attempt-a", status: "NEEDS_REVIEW" }, {}),
+    revoked.proxy,
+  ]) {
+    const { service, calls } = harness({
+      repository: {
+        saveCategoryRecoveryMatch: async () => { calls.push("save-match"); throw new Error("raw-secret"); },
+        requireCategoryRecoveryReview: async () => { calls.push("review"); return review; },
+      },
+    });
+    await assert.rejects(service.recover(request), (error) => {
+      assert.equal(error.code, "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE");
+      assert.equal(error.cause, null);
+      assert.doesNotMatch(error.message, /raw|secret/u);
+      return true;
+    });
+    assert.equal(calls.includes("schedule"), false);
+  }
+});
+
 test("correction cannot alter frozen price/currency/content/media/store/warehouse/stock identity", async () => {
   const { service, calls } = harness({
     rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({ ...item, currency_code: "CNY" })),
@@ -321,7 +383,9 @@ test("a persisted existing attempt replays before store access or offer reconcil
     repository: {
       loadCategoryRecoveryBasis: async () => {
         calls.push("load");
-        return { ...basis(), existingAttempt: { attemptId: "attempt-a", status: "RETRY_ACCEPTED" } };
+        return { ...basis(), existingAttempt: {
+          attemptId: "attempt-a", status: "RETRY_ACCEPTED", correlationId: "correlation-a",
+        } };
       },
     },
   });

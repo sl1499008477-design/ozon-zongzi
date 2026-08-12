@@ -88,6 +88,28 @@ function claimResult(raw) {
   return value;
 }
 
+function absenceResult(raw) {
+  const value = exact(raw, ["status", "code"]);
+  const combinations = new Map([
+    ["ABSENT", "OZON_OFFERS_CONFIRMED_ABSENT"],
+    ["PRESENT", "OZON_OFFER_PRESENT"],
+    ["UNKNOWN", "OZON_OFFER_RECONCILIATION_INVALID"],
+    ["UNKNOWN", "OZON_OFFER_RECONCILIATION_UNKNOWN"],
+  ]);
+  return value && combinations.get(value.status) === value.code ? value : null;
+}
+
+function categoryResult(raw) {
+  const value = exact(raw, [
+    "kind", "descriptionCategoryId", "typeId", "taxonomyFingerprint", "metadata",
+  ]);
+  if (!value || value.kind !== "UNIQUE_MATCH" || !positive(value.descriptionCategoryId)
+    || !positive(value.typeId) || typeof value.taxonomyFingerprint !== "string"
+    || !HASH.test(value.taxonomyFingerprint) || !value.metadata
+    || typeof value.metadata !== "object" || Array.isArray(value.metadata)) return null;
+  return value;
+}
+
 function evidence(value, basis) {
   const result = exact(value, [
     "schemaVersion", "policyVersion", "errorCode", "field", "attributeId", "state",
@@ -120,13 +142,15 @@ function recoveryBasis(raw, request) {
     || !evidence(value.safeEvidence, value)) return null;
   const shared = sharedCategory(value.sharedCategory);
   if (!shared || shared.accountId !== value.accountId
-    || shared.evidenceId !== value.sourceEvidenceId
-    || shared.version !== value.oldSharedCategoryVersion || shared.status !== "ACTIVE") return null;
+    || shared.evidenceId !== value.sourceEvidenceId) return null;
   if (value.existingAttempt !== null) {
-    const existing = exact(value.existingAttempt, ["attemptId", "status"]);
+    const existing = exact(value.existingAttempt, ["attemptId", "status", "correlationId"]);
     if (!existing || !safeId(existing.attemptId)
+      || existing.correlationId !== request.correlationId
       || !["CLAIMED", "MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED", "SUCCEEDED", "NEEDS_REVIEW"]
         .includes(existing.status)) return null;
+  } else if (shared.version !== value.oldSharedCategoryVersion || shared.status !== "ACTIVE") {
+    return null;
   }
   const seen = new Set();
   for (let index = 0; index < value.offers.length; index += 1) {
@@ -174,15 +198,18 @@ function validCorrection(original, corrected, category) {
 }
 
 async function safeReview(repository, basis, request, attemptId, code, now) {
-  const result = await repository.requireCategoryRecoveryReview({
+  const result = attemptResult(await repository.requireCategoryRecoveryReview({
     accountId: request.accountId, jobId: request.jobId, snapshotId: basis.snapshotId,
     evidenceId: request.evidenceId, attemptId: attemptId || null,
     sourceEvidenceId: basis.sourceEvidenceId, oldSharedCategoryId: basis.oldSharedCategoryId,
     oldSharedCategoryVersion: basis.oldSharedCategoryVersion,
     originalOzonTaskId: basis.originalOzonTaskId, correlationId: request.correlationId,
     safeReviewCode: code, transitionedAt: now(),
-  });
-  return Object.freeze({ attemptId: result.attemptId, status: "NEEDS_REVIEW" });
+  }), ["attemptId", "status"], { status: "NEEDS_REVIEW" });
+  if (!result || (attemptId !== null && result.attemptId !== attemptId)) {
+    throw failure("AUTO_LISTING_CATEGORY_RECOVERY_PORT_INVALID", 409);
+  }
+  return Object.freeze({ attemptId: result.attemptId, status: result.status });
 }
 
 function transitionIdentity(basis, request, attemptId) {
@@ -234,9 +261,9 @@ export function createAutoListingCategoryRecoveryService({
         const credential = await loadOperatingStoreAccess({
           accountId: request.accountId, jobId: request.jobId, snapshotId: basis.snapshotId,
         });
-        absence = await confirmOfferAbsent({ offers: basis.offers, credential });
+        absence = absenceResult(await confirmOfferAbsent({ offers: basis.offers, credential }));
       } catch {
-        absence = { status: "UNKNOWN" };
+        absence = null;
       }
       if (!absence || absence.status !== "ABSENT") {
         return safeReview(repository, basis, request, null,
@@ -254,8 +281,7 @@ export function createAutoListingCategoryRecoveryService({
         }));
         if (!attempt) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_PORT_INVALID", 409);
       } catch {
-        return safeReview(repository, basis, request, null,
-          "AUTO_LISTING_CATEGORY_RECOVERY_ALREADY_ATTEMPTED", now);
+        throw failure("AUTO_LISTING_CATEGORY_RECOVERY_NOT_ELIGIBLE", 409);
       }
       if (attempt?.claimed === false) {
         return Object.freeze({ attemptId: attempt.attemptId, status: attempt.status });
@@ -280,15 +306,11 @@ export function createAutoListingCategoryRecoveryService({
         invalidated = true;
         currentSharedCategoryVersion = invalidation.version;
         currentSharedCategory = invalidation;
-        const category = await refreshCategory({
+        const category = categoryResult(await refreshCategory({
           accountId: request.accountId, sourceEvidenceId: basis.sourceEvidenceId,
           taxonomyScope: "OZON:DEFAULT",
-        });
-        if (!category || category.kind !== "UNIQUE_MATCH"
-          || !Number.isSafeInteger(category.descriptionCategoryId) || category.descriptionCategoryId < 1
-          || !Number.isSafeInteger(category.typeId) || category.typeId < 1
-          || typeof category.taxonomyFingerprint !== "string"
-          || !/^[0-9a-f]{64}$/u.test(category.taxonomyFingerprint)) {
+        }));
+        if (!category) {
           reviewCode = "AUTO_LISTING_CATEGORY_RECOVERY_MATCH_AMBIGUOUS";
           throw failure(reviewCode, 409);
         }
