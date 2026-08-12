@@ -197,6 +197,37 @@ function normalizeState(working) {
   if (!Array.isArray(working.accountOzonSharedCategoryEvents)) {
     working.accountOzonSharedCategoryEvents = [];
   }
+  if (!Array.isArray(working.collectOzonCategoryLookupEvidence)) {
+    working.collectOzonCategoryLookupEvidence = [];
+  }
+  if (!Array.isArray(working.collectOzonCategoryCurrentSources)) {
+    working.collectOzonCategoryCurrentSources = [];
+  }
+  const pointedItems = new Set(working.collectOzonCategoryCurrentSources
+    .map((row) => `${row.accountId}\u0001${row.collectItemId}`));
+  const backfill = new Map();
+  for (const evidence of working.collectOzonCategorySourceEvidence) {
+    if (!evidence?.collectItemId || evidence?.provenance?.sourceKind === "ENRICHMENT_CACHE") continue;
+    const key = `${evidence.accountId}\u0001${evidence.collectItemId}`;
+    if (pointedItems.has(key)) continue;
+    const item = (Array.isArray(working?.caches?.collectBox) ? working.caches.collectBox : [])
+      .find((row) => String(row?.accountId || "") === evidence.accountId
+        && String(row?.id || "") === evidence.collectItemId);
+    const draftId = item?.currentDraftId ?? item?.current_draft_id ?? null;
+    const draftVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
+    if (evidence.provenance.sourceKind === "PRODUCT_DRAFT"
+      && ((draftId !== null && String(draftId) !== evidence.productDraftId)
+        || (draftVersion > 0 && draftVersion !== evidence.productDraftVersion))) continue;
+    backfill.set(key, {
+      accountId: evidence.accountId,
+      collectItemId: evidence.collectItemId,
+      evidenceId: evidence.id,
+      sourceKind: evidence.provenance.sourceKind,
+      sourceRecordId: evidence.provenance.sourceRecordId,
+      sourceVersion: evidence.sourceVersion,
+    });
+  }
+  working.collectOzonCategoryCurrentSources.push(...backfill.values());
   return working;
 }
 
@@ -205,7 +236,9 @@ function stateNeedsMigration(state) {
     || Object.hasOwn(state, "collectCategoryResolutionRuntimeCursors")
     || !Array.isArray(state.collectOzonCategorySourceEvidence)
     || !Array.isArray(state.accountOzonSharedCategories)
-    || !Array.isArray(state.accountOzonSharedCategoryEvents);
+    || !Array.isArray(state.accountOzonSharedCategoryEvents)
+    || !Array.isArray(state.collectOzonCategoryLookupEvidence)
+    || !Array.isArray(state.collectOzonCategoryCurrentSources);
 }
 
 function commitState(target, working) {
@@ -214,6 +247,8 @@ function commitState(target, working) {
   target.collectOzonCategorySourceEvidence = working.collectOzonCategorySourceEvidence;
   target.accountOzonSharedCategories = working.accountOzonSharedCategories;
   target.accountOzonSharedCategoryEvents = working.accountOzonSharedCategoryEvents;
+  target.collectOzonCategoryLookupEvidence = working.collectOzonCategoryLookupEvidence;
+  target.collectOzonCategoryCurrentSources = working.collectOzonCategoryCurrentSources;
 }
 
 function enqueueState(state, operation) {
@@ -374,6 +409,26 @@ function makeEvent({
 
 function recordEvidenceInState(working, evidenceInput, { idFactory }) {
   const evidence = sourceCategoryEvidence(evidenceInput);
+  if (evidence.provenance.sourceKind === "OZON_READ_LOOKUP") {
+    const lookup = {
+      id: evidence.rawResponseRef,
+      accountId: evidence.accountId,
+      collectItemId: evidence.collectItemId,
+      requestedOzonProductId: evidence.provenance.requestedOzonProductId,
+      requestedSourceSku: evidence.provenance.requestedSourceSku,
+      matchedOzonProductId: evidence.provenance.matchedOzonProductId,
+      matchedSourceSku: evidence.provenance.matchedSourceSku,
+      lookupContractVersion: evidence.provenance.lookupContractVersion,
+      responseHash: evidence.rawResponseHash,
+      capturedAt: evidence.capturedAt,
+    };
+    const existingLookup = working.collectOzonCategoryLookupEvidence.find((row) =>
+      row.accountId === lookup.accountId && row.id === lookup.id);
+    if (existingLookup && JSON.stringify(existingLookup) !== JSON.stringify(lookup)) {
+      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+    }
+    if (!existingLookup) working.collectOzonCategoryLookupEvidence.push(lookup);
+  }
   const existing = working.collectOzonCategorySourceEvidence.find(
     (row) => sourceKey(row) === sourceKey(evidence),
   );
@@ -384,6 +439,7 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
     const shared = working.accountOzonSharedCategories.find(
       (row) => signature(row) === signature(existing),
     );
+    setCurrentSourceInState(working, existing);
     return { evidence: existing, shared, created: false };
   }
 
@@ -421,7 +477,33 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
       sourceEvidence: record,
     }));
   }
+  setCurrentSourceInState(working, record);
   return { evidence: record, shared, created: true };
+}
+
+function setCurrentSourceInState(working, evidence) {
+  if (!evidence.collectItemId || evidence.provenance.sourceKind === "ENRICHMENT_CACHE") return;
+  if (evidence.provenance.sourceKind === "PRODUCT_DRAFT") {
+    const item = (Array.isArray(working?.caches?.collectBox) ? working.caches.collectBox : [])
+      .find((row) => String(row?.accountId || "") === evidence.accountId
+        && String(row?.id || "") === evidence.collectItemId);
+    const canonicalDraftId = item?.currentDraftId ?? item?.current_draft_id ?? null;
+    const canonicalVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
+    if (canonicalDraftId !== null && String(canonicalDraftId) !== evidence.productDraftId) return;
+    if (canonicalVersion > 0 && canonicalVersion !== evidence.productDraftVersion) return;
+  }
+  const pointer = {
+    accountId: evidence.accountId,
+    collectItemId: evidence.collectItemId,
+    evidenceId: evidence.id,
+    sourceKind: evidence.provenance.sourceKind,
+    sourceRecordId: evidence.provenance.sourceRecordId,
+    sourceVersion: evidence.sourceVersion,
+  };
+  const index = working.collectOzonCategoryCurrentSources.findIndex((row) =>
+    row.accountId === pointer.accountId && row.collectItemId === pointer.collectItemId);
+  if (index < 0) working.collectOzonCategoryCurrentSources.push(pointer);
+  else working.collectOzonCategoryCurrentSources[index] = pointer;
 }
 
 function findSharedForEvidence(working, accountId, evidenceId) {
@@ -539,17 +621,13 @@ export function createJsonAccountSharedOzonCategoryRepository({
       const { accountId, ids } = readInput(input, "collectItemIds");
       await migrate();
       validateStoredEvidenceRows(state);
-      const current = new Map();
-      for (const evidence of state.collectOzonCategorySourceEvidence) {
-        if (evidence.accountId !== accountId || !ids.includes(evidence.collectItemId)) continue;
-        const previous = current.get(evidence.collectItemId);
-        if (!previous || evidence.capturedAt.localeCompare(previous.capturedAt) > 0
-          || (evidence.capturedAt === previous.capturedAt
-            && evidence.id.localeCompare(previous.id) > 0)) {
-          current.set(evidence.collectItemId, evidence);
-        }
-      }
-      return deepFreeze([...current.values()].sort((left, right) =>
+      const pointerIds = new Map(state.collectOzonCategoryCurrentSources
+        .filter((row) => row.accountId === accountId && ids.includes(row.collectItemId))
+        .map((row) => [row.collectItemId, row.evidenceId]));
+      const current = state.collectOzonCategorySourceEvidence.filter((evidence) =>
+        evidence.accountId === accountId
+        && pointerIds.get(evidence.collectItemId) === evidence.id);
+      return deepFreeze(current.sort((left, right) =>
         left.collectItemId.localeCompare(right.collectItemId),
       ).map(publicEvidence));
     },
@@ -569,12 +647,11 @@ export function createJsonAccountSharedOzonCategoryRepository({
 
     async confirmManualCategory(input) {
       exactObject(input, [
-        "accountId", "evidence", "expectedVersion", "currentDescriptionCategoryId",
+        "accountId", "evidenceId", "expectedVersion", "currentDescriptionCategoryId",
         "currentTypeId", "taxonomyFingerprint", "validatedAt",
       ]);
       const accountId = text(input.accountId);
-      const evidence = sourceCategoryEvidence(input.evidence);
-      if (evidence.accountId !== accountId) throw invalid();
+      const evidenceId = text(input.evidenceId);
       const expectedVersion = positiveInteger(input.expectedVersion);
       const validatedAt = isoInstant(input.validatedAt);
       const desired = {
@@ -586,18 +663,15 @@ export function createJsonAccountSharedOzonCategoryRepository({
         safeFailureCode: "",
         validatedAt,
       };
-      const result = await write((working) => {
-        const recorded = recordEvidenceInState(working, evidence, { idFactory });
-        return transitionInState(working, {
+      const result = await write((working) => transitionInState(working, {
           accountId,
-          evidenceId: recorded.evidence.id,
+          evidenceId,
           expectedVersion,
           desired,
           eventType: "MANUAL_CATEGORY_CONFIRMED",
           transitionedAt: validatedAt,
           idFactory,
-        });
-      });
+        }));
       return publicShared(result);
     },
 
@@ -660,29 +734,65 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
           AND source_type_id=$3 AND taxonomy_scope=$4`,
       [evidence.accountId, evidence.sourceDescriptionCategoryId, evidence.sourceTypeId, evidence.taxonomyScope],
     );
+    await setCurrentSourcePostgres(client, existing);
     return { evidence: existing, shared: mapSharedRow(sharedResult.rows[0]), created: false };
   }
 
   const evidenceId = text(idFactory());
   const productDraft = evidence.provenance.sourceKind === "PRODUCT_DRAFT";
+  const lookup = evidence.provenance.sourceKind === "OZON_READ_LOOKUP";
+  if (lookup) {
+    await client.query(
+      `INSERT INTO collect_ozon_category_lookup_evidence
+        (id,account_id,collect_item_id,requested_ozon_product_id,requested_source_sku,
+         matched_ozon_product_id,matched_source_sku,lookup_contract_version,response_hash,
+         captured_at,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+       ON CONFLICT (account_id,id) DO NOTHING`,
+      [evidence.rawResponseRef, evidence.accountId, evidence.collectItemId,
+        evidence.provenance.requestedOzonProductId, evidence.provenance.requestedSourceSku,
+        evidence.provenance.matchedOzonProductId, evidence.provenance.matchedSourceSku,
+        evidence.provenance.lookupContractVersion, evidence.rawResponseHash, evidence.capturedAt],
+    );
+    const lookupRow = (await client.query(
+      `SELECT * FROM collect_ozon_category_lookup_evidence
+        WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+      [evidence.accountId, evidence.rawResponseRef],
+    )).rows[0];
+    const expectedLookup = [evidence.collectItemId, evidence.provenance.requestedOzonProductId,
+      evidence.provenance.requestedSourceSku, evidence.provenance.matchedOzonProductId,
+      evidence.provenance.matchedSourceSku, evidence.provenance.lookupContractVersion,
+      evidence.rawResponseHash, evidence.capturedAt];
+    const actualLookup = lookupRow ? [lookupRow.collect_item_id,
+      lookupRow.requested_ozon_product_id === null ? null : Number(lookupRow.requested_ozon_product_id),
+      lookupRow.requested_source_sku, Number(lookupRow.matched_ozon_product_id),
+      lookupRow.matched_source_sku, lookupRow.lookup_contract_version, lookupRow.response_hash,
+      new Date(lookupRow.captured_at).toISOString()] : [];
+    if (JSON.stringify(actualLookup) !== JSON.stringify(expectedLookup)) {
+      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+    }
+  }
   const evidenceRow = (await client.query(
     `INSERT INTO collect_ozon_category_source_evidence
       (id,account_id,source_kind,source_record_id,source_version,collect_item_id,
        product_draft_id,enrichment_source,enrichment_sku,enrichment_contract_version,
        source_description_category_id,source_type_id,taxonomy_scope,captured_at,
-       raw_response_hash,raw_response_ref,provenance,created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$14)
+       raw_response_hash,raw_response_ref,product_raw_response_ref,lookup_evidence_id,
+       provenance,created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$14)
      RETURNING *`,
     [
       evidenceId, evidence.accountId, evidence.provenance.sourceKind,
       evidence.provenance.sourceRecordId, evidence.sourceVersion,
-      productDraft ? evidence.collectItemId : null,
+      productDraft || lookup ? evidence.collectItemId : null,
       productDraft ? evidence.productDraftId : null,
-      productDraft ? null : evidence.provenance.enrichmentSource,
-      productDraft ? null : evidence.sourceSku,
-      productDraft ? null : evidence.provenance.enrichmentContractVersion,
+      productDraft || lookup ? null : evidence.provenance.enrichmentSource,
+      productDraft || lookup ? null : evidence.sourceSku,
+      productDraft || lookup ? null : evidence.provenance.enrichmentContractVersion,
       evidence.sourceDescriptionCategoryId, evidence.sourceTypeId, evidence.taxonomyScope,
       evidence.capturedAt, evidence.rawResponseHash, evidence.rawResponseRef,
+      productDraft ? evidence.rawResponseRef : null,
+      lookup ? evidence.rawResponseRef : null,
       JSON.stringify({ ...evidence.provenance, categoryEvidence: evidence }),
     ],
   )).rows[0];
@@ -725,11 +835,40 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
       [evidence.accountId, evidence.sourceDescriptionCategoryId, evidence.sourceTypeId, evidence.taxonomyScope],
     )).rows[0];
   }
+  const storedEvidence = categoryEvidenceFromRow(evidenceRow);
+  await setCurrentSourcePostgres(client, storedEvidence);
   return {
-    evidence: categoryEvidenceFromRow(evidenceRow),
+    evidence: storedEvidence,
     shared: mapSharedRow(sharedRow),
     created: true,
   };
+}
+
+async function setCurrentSourcePostgres(client, evidence) {
+  if (!evidence.collectItemId || evidence.provenance.sourceKind === "ENRICHMENT_CACHE") return;
+  if (evidence.provenance.sourceKind === "PRODUCT_DRAFT") {
+    const current = (await client.query(
+      `SELECT 1 FROM collect_items AS item
+        JOIN product_drafts AS draft
+          ON draft.id=item.current_draft_id AND draft.collect_item_id=item.id
+       WHERE item.account_id=$1 AND item.id=$2 AND draft.id=$3 AND draft.version=$4`,
+      [evidence.accountId, evidence.collectItemId, evidence.productDraftId,
+        evidence.productDraftVersion],
+    )).rows[0];
+    if (!current) return;
+  }
+  await client.query(
+    `INSERT INTO collect_ozon_category_current_sources
+      (account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,
+       source_version,updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (account_id,collect_item_id) DO UPDATE SET
+       source_evidence_id=EXCLUDED.source_evidence_id,source_kind=EXCLUDED.source_kind,
+       source_record_id=EXCLUDED.source_record_id,source_version=EXCLUDED.source_version,
+       updated_at=EXCLUDED.updated_at`,
+    [evidence.accountId, evidence.collectItemId, evidence.id, evidence.provenance.sourceKind,
+      evidence.provenance.sourceRecordId, evidence.sourceVersion, evidence.capturedAt],
+  );
 }
 
 async function transitionPostgres(client, {
@@ -830,10 +969,18 @@ export function createPostgresAccountSharedOzonCategoryRepository({
       if (!ids.length) return Object.freeze([]);
       try {
         const rows = (await pool.query(
-          `SELECT DISTINCT ON (collect_item_id) *
-             FROM collect_ozon_category_source_evidence
-            WHERE account_id=$1 AND collect_item_id=ANY($2::text[])
-            ORDER BY collect_item_id,captured_at DESC,id DESC`,
+          `SELECT evidence.*
+             FROM collect_ozon_category_current_sources AS current_source
+             JOIN collect_ozon_category_source_evidence AS evidence
+               ON evidence.account_id=current_source.account_id
+              AND evidence.id=current_source.source_evidence_id
+              AND evidence.collect_item_id=current_source.collect_item_id
+              AND evidence.source_kind=current_source.source_kind
+              AND evidence.source_record_id=current_source.source_record_id
+              AND evidence.source_version=current_source.source_version
+            WHERE current_source.account_id=$1
+              AND current_source.collect_item_id=ANY($2::text[])
+            ORDER BY current_source.collect_item_id`,
           [accountId, ids],
         )).rows;
         return deepFreeze(rows.map((row) => publicEvidence(categoryEvidenceFromRow(row))));
@@ -867,12 +1014,11 @@ export function createPostgresAccountSharedOzonCategoryRepository({
 
     async confirmManualCategory(input) {
       exactObject(input, [
-        "accountId", "evidence", "expectedVersion", "currentDescriptionCategoryId",
+        "accountId", "evidenceId", "expectedVersion", "currentDescriptionCategoryId",
         "currentTypeId", "taxonomyFingerprint", "validatedAt",
       ]);
       const accountId = text(input.accountId);
-      const evidence = sourceCategoryEvidence(input.evidence);
-      if (evidence.accountId !== accountId) throw invalid();
+      const evidenceId = text(input.evidenceId);
       const expectedVersion = positiveInteger(input.expectedVersion);
       const validatedAt = isoInstant(input.validatedAt);
       const desired = {
@@ -884,16 +1030,13 @@ export function createPostgresAccountSharedOzonCategoryRepository({
         safeFailureCode: "",
         validatedAt,
       };
-      const result = await runWrite(async (client) => {
-        const recorded = await recordEvidencePostgres(client, evidence, { idFactory });
-        return transitionPostgres(client, {
+      const result = await runWrite((client) => transitionPostgres(client, {
           accountId,
-          evidenceId: recorded.evidence.id,
+          evidenceId,
           expectedVersion,
           desired,
           transitionedAt: validatedAt,
-        });
-      });
+        }));
       return publicShared(result);
     },
 

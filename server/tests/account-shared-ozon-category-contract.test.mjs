@@ -189,6 +189,34 @@ test("source evidence closes the enrichment-cache variant without inventing item
   assert.equal(Object.isFrozen(result.provenance), true);
 });
 
+test("source evidence closes exact Ozon lookup provenance without exposing a response body", () => {
+  const rawResponseRef = `ozon-read:product:${HASH}:${HASH}`;
+  const input = evidence({
+    sourceVersion: `lookup:${HASH}`, productDraftId: null, productDraftVersion: null,
+    rawResponseRef,
+    provenance: {
+      accountId: "account-a", collectItemId: "collect-a", sourceKind: "OZON_READ_LOOKUP",
+      sourceRecordId: rawResponseRef, rawResponseRef, rawResponseHash: HASH,
+      capturedAt: CAPTURED_AT,
+      lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+      requestedOzonProductId: 123456789, requestedSourceSku: "SKU-A",
+      matchedOzonProductId: 123456789, matchedSourceSku: "SKU-A",
+    },
+  });
+  const result = sourceCategoryEvidence(input);
+  assert.deepEqual(Object.keys(result.provenance), [
+    "accountId", "collectItemId", "sourceKind", "sourceRecordId", "rawResponseRef",
+    "rawResponseHash", "capturedAt", "lookupContractVersion", "requestedOzonProductId",
+    "requestedSourceSku", "matchedOzonProductId", "matchedSourceSku",
+  ]);
+  assert.equal(JSON.stringify(result).includes("responseBody"), false);
+  assert.equal(Object.isFrozen(result.provenance), true);
+  assertContractRejected(() => sourceCategoryEvidence({
+    ...input,
+    provenance: { ...input.provenance, matchedSourceSku: "OTHER" },
+  }));
+});
+
 test("shared selection is closed, immutable, account-shared, and preserves unvalidated source-direct state", () => {
   const result = sharedCategorySelection(selection());
   assert.deepEqual(result, selection());

@@ -169,9 +169,12 @@ function categoryFacts(item) {
   return { sourceDescriptionCategoryId, sourceTypeId, normalizedPath, attributeSummary };
 }
 
-function identityMatches(item, identity) {
-  if (identity.kind === "PRODUCT") return productIdOf(item) === identity.value;
-  return offerIdOf(item) === identity.value;
+function identityMatches(item, input) {
+  const productId = productIdOf(item);
+  const offerId = offerIdOf(item);
+  return (!input.ozonProductId || productId === input.ozonProductId)
+    && (!input.sourceSku || offerId === input.sourceSku)
+    && productId !== null && offerId !== "";
 }
 
 function freeze(value) {
@@ -199,7 +202,7 @@ export function createOzonSourceCategoryLookup({
       : { offer_id: identity.value });
     const normalized = responseItem(response);
     if (normalized.kind !== "ITEM") return normalized;
-    if (!identityMatches(normalized.item, identity)) return { kind: "MISMATCH" };
+    if (!identityMatches(normalized.item, input)) return { kind: "MISMATCH" };
     let facts = categoryFacts(normalized.item);
     let evidenceResponse = response;
     let evidenceItem = normalized.item;
@@ -210,8 +213,9 @@ export function createOzonSourceCategoryLookup({
         filter: { product_id: [String(productId)] }, limit: 1,
       });
       const detailed = attributesItem(attributesResponse);
-      if (!detailed || productIdOf(detailed) !== productId
-        || (offerIdOf(normalized.item) && offerIdOf(detailed) !== offerIdOf(normalized.item))) {
+      if (!detailed || !identityMatches(detailed, input)
+        || productIdOf(detailed) !== productId
+        || offerIdOf(detailed) !== offerIdOf(normalized.item)) {
         return { kind: "MISMATCH" };
       }
       facts = categoryFacts(detailed);
@@ -221,19 +225,26 @@ export function createOzonSourceCategoryLookup({
     }
     const capturedAt = new Date(now());
     if (Number.isNaN(capturedAt.getTime())) return { kind: "INVALID" };
-    const productId = productIdOf(evidenceItem) ?? productIdOf(normalized.item);
-    const sourceSku = offerIdOf(evidenceItem) || offerIdOf(normalized.item) || input.sourceSku;
+    const productId = productIdOf(evidenceItem);
+    const sourceSku = offerIdOf(evidenceItem);
     const rawResponseHash = crypto.createHash("sha256")
       .update(JSON.stringify(evidenceResponse)).digest("hex");
+    const identityHash = crypto.createHash("sha256")
+      .update(`${identity.kind}:${identity.value}`).digest("hex");
     return {
       kind: "RESOLVED",
       result: freeze({
         status: "RESOLVED",
         ozonProductId: productId,
         sourceSku,
+        lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+        requestedOzonProductId: input.ozonProductId,
+        requestedSourceSku: input.sourceSku,
+        matchedOzonProductId: productId,
+        matchedSourceSku: sourceSku,
         ...facts,
         rawResponseHash,
-        rawResponseRef: `ozon-read:${identity.kind.toLowerCase()}:${identity.value}:${rawResponseHash}`,
+        rawResponseRef: `ozon-read:${identity.kind.toLowerCase()}:${identityHash}:${rawResponseHash}`,
         capturedAt: capturedAt.toISOString(),
       }),
     };

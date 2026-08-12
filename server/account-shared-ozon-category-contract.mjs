@@ -1,6 +1,7 @@
 import { types } from "node:util";
 
 const HASH = /^[0-9a-f]{64}$/u;
+const LOOKUP_REF = /^ozon-read:(?:product|offer):[0-9a-f]{64}:[0-9a-f]{64}$/u;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const EVIDENCE_KEYS = Object.freeze([
@@ -21,6 +22,10 @@ const PROVENANCE_BASE_KEYS = Object.freeze([
 ]);
 const ENRICHMENT_PROVENANCE_KEYS = Object.freeze([
   ...PROVENANCE_BASE_KEYS, "enrichmentSource", "enrichmentContractVersion",
+]);
+const LOOKUP_PROVENANCE_KEYS = Object.freeze([
+  ...PROVENANCE_BASE_KEYS, "lookupContractVersion", "requestedOzonProductId",
+  "requestedSourceSku", "matchedOzonProductId", "matchedSourceSku",
 ]);
 const ATTRIBUTE_KEYS = new Set(["key", "value", "dictionaryValueId"]);
 const SHARED_STATUSES = new Set(["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"]);
@@ -133,11 +138,13 @@ function attributeSummary(value, seen) {
 }
 
 function evidenceProvenance(value, evidence, seen) {
-  const descriptors = assertDataObject(value, new Set(ENRICHMENT_PROVENANCE_KEYS), seen);
+  const descriptors = assertDataObject(value, new Set([
+    ...ENRICHMENT_PROVENANCE_KEYS, ...LOOKUP_PROVENANCE_KEYS,
+  ]), seen);
   const sourceKind = descriptors.sourceKind?.value;
   const keys = sourceKind === "ENRICHMENT_CACHE"
     ? ENRICHMENT_PROVENANCE_KEYS
-    : PROVENANCE_BASE_KEYS;
+    : sourceKind === "OZON_READ_LOOKUP" ? LOOKUP_PROVENANCE_KEYS : PROVENANCE_BASE_KEYS;
   if (Object.keys(descriptors).length !== keys.length
     || keys.some((key) => !Object.hasOwn(descriptors, key))) throw invalid();
   const projected = {
@@ -165,6 +172,26 @@ function evidenceProvenance(value, evidence, seen) {
       || evidence.productDraftVersion !== null || evidence.sourceSku === null
       || projected.sourceRecordId !== `${projected.enrichmentSource}:${evidence.sourceSku}:${projected.enrichmentContractVersion}`
       || projected.rawResponseRef !== `collector_ozon_enrichment_cache:${projected.sourceRecordId}`) throw invalid();
+  } else if (projected.sourceKind === "OZON_READ_LOOKUP") {
+    projected.lookupContractVersion = text(value.lookupContractVersion, 120);
+    projected.requestedOzonProductId = nullablePositiveInteger(value.requestedOzonProductId);
+    projected.requestedSourceSku = nullableText(value.requestedSourceSku);
+    projected.matchedOzonProductId = positiveInteger(value.matchedOzonProductId);
+    projected.matchedSourceSku = text(value.matchedSourceSku);
+    if (evidence.collectItemId === null || evidence.productDraftId !== null
+      || evidence.productDraftVersion !== null
+      || evidence.ozonProductId !== projected.matchedOzonProductId
+      || evidence.sourceSku !== projected.matchedSourceSku
+      || (!projected.requestedOzonProductId && !projected.requestedSourceSku)
+      || (projected.requestedOzonProductId
+        && projected.requestedOzonProductId !== projected.matchedOzonProductId)
+      || (projected.requestedSourceSku
+        && projected.requestedSourceSku !== projected.matchedSourceSku)
+      || projected.lookupContractVersion !== "account-shared-ozon-category-lookup.v1"
+      || evidence.sourceVersion !== `lookup:${projected.rawResponseHash}`
+      || projected.sourceRecordId !== projected.rawResponseRef
+      || !LOOKUP_REF.test(projected.rawResponseRef)
+      || !projected.rawResponseRef.endsWith(`:${projected.rawResponseHash}`)) throw invalid();
   } else throw invalid();
   return Object.freeze(projected);
 }

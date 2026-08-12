@@ -79,6 +79,44 @@ function evidenceInput(input) {
   });
 }
 
+function lookupEvidenceInput(base, result) {
+  const accountId = text(base.accountId);
+  const collectItemId = text(base.collectItemId);
+  const capturedAt = text(result.capturedAt);
+  const rawResponseRef = text(result.rawResponseRef);
+  const rawResponseHash = text(result.rawResponseHash);
+  return sourceCategoryEvidence({
+    ...base,
+    sourceVersion: `lookup:${rawResponseHash}`,
+    productDraftId: null,
+    productDraftVersion: null,
+    ozonProductId: result.ozonProductId,
+    sourceSku: result.sourceSku,
+    taxonomyScope: base.taxonomyScope || TAXONOMY_SCOPE_OZON_DEFAULT,
+    sourceDescriptionCategoryId: result.sourceDescriptionCategoryId,
+    sourceTypeId: result.sourceTypeId,
+    normalizedPath: result.normalizedPath,
+    attributeSummary: result.attributeSummary,
+    capturedAt,
+    rawResponseRef,
+    rawResponseHash,
+    provenance: {
+      accountId,
+      collectItemId,
+      sourceKind: "OZON_READ_LOOKUP",
+      sourceRecordId: rawResponseRef,
+      rawResponseRef,
+      rawResponseHash,
+      capturedAt,
+      lookupContractVersion: result.lookupContractVersion,
+      requestedOzonProductId: result.requestedOzonProductId,
+      requestedSourceSku: result.requestedSourceSku,
+      matchedOzonProductId: result.matchedOzonProductId,
+      matchedSourceSku: result.matchedSourceSku,
+    },
+  });
+}
+
 function guidance(status) {
   if (status === "ACTIVE") return { action: "NONE", message: "使用采集类目准备上架" };
   if (status === "INVALIDATED") return { action: "WAIT", message: "Ozon 类目已失效，正在自动修复" };
@@ -99,7 +137,7 @@ export function publicAccountSharedCategorySelection(shared = null) {
     validatedAt: shared?.validatedAt ?? null,
     ...guidance(status),
   };
-  return Object.freeze(projected);
+  return deepFreeze(projected);
 }
 
 export function createAccountSharedOzonCategoryService({
@@ -154,17 +192,11 @@ export function createAccountSharedOzonCategoryService({
       const result = await sourceLookup.lookup(values.lookupContext);
       if (result?.status === "RESOLVED") {
         const { lookupContext: _lookupContext, ...base } = values;
-        return recordCollectionSource({
-          ...base,
-          ozonProductId: result.ozonProductId,
-          sourceSku: result.sourceSku,
-          sourceDescriptionCategoryId: result.sourceDescriptionCategoryId,
-          sourceTypeId: result.sourceTypeId,
-          normalizedPath: result.normalizedPath,
-          attributeSummary: result.attributeSummary,
-          capturedAt: result.capturedAt,
-          rawResponseRef: result.rawResponseRef,
-          rawResponseHash: result.rawResponseHash,
+        const input = lookupEvidenceInput(base, result);
+        const recorded = await repository.recordSourceEvidence(input);
+        return deepFreeze({
+          collectItemId: input.collectItemId,
+          categoryResolution: publicAccountSharedCategorySelection(recorded.shared),
         });
       }
     }

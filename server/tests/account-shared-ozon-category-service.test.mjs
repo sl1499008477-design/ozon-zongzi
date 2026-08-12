@@ -116,12 +116,17 @@ test("missing IDs use one exact read lookup before review and only resolved fact
           status: "RESOLVED",
           ozonProductId: 4862904234,
           sourceSku: "offer-a",
+          lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+          requestedOzonProductId: 4862904234,
+          requestedSourceSku: "offer-a",
+          matchedOzonProductId: 4862904234,
+          matchedSourceSku: "offer-a",
           sourceDescriptionCategoryId: 17028702,
           sourceTypeId: 94405,
           normalizedPath: ["家居", "杯子"],
           attributeSummary: [],
           rawResponseHash: HASH,
-          rawResponseRef: "ozon-read:4862904234",
+          rawResponseRef: `ozon-read:product:${HASH}:${HASH}`,
           capturedAt: NOW,
         };
       },
@@ -138,6 +143,12 @@ test("missing IDs use one exact read lookup before review and only resolved fact
   assert.equal(resolved.categoryResolution.status, "ACTIVE");
   assert.equal(calls.length, 1);
   assert.equal(resolvedHarness.state.collectOzonCategorySourceEvidence.length, 1);
+  assert.equal(resolvedHarness.state.collectOzonCategorySourceEvidence[0].provenance.sourceKind,
+    "OZON_READ_LOOKUP");
+  assert.equal(resolvedHarness.state.collectOzonCategoryLookupEvidence.length, 1);
+  assert.equal(JSON.stringify(resolved).includes("ozon-read:"), false);
+  assert.equal(Object.isFrozen(resolved), true);
+  assert.equal(Object.isFrozen(resolved.categoryResolution), true);
 
   const unresolvedHarness = harness({
     lookup: { async lookup() { return { status: "UNRESOLVED", reasonCode: "OZON_SOURCE_LOOKUP_UNRESOLVED" }; } },

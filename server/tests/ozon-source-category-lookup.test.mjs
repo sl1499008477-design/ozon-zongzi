@@ -76,6 +76,25 @@ test("mismatch, authentication, network, malformed, and oversized responses fail
   }
 });
 
+test("every non-empty requested identity and the attributes identity must match exactly", async () => {
+  const cases = [
+    [{ result: { id: 4862904234, description_category_id: 1, type_id: 2 } }],
+    [{ result: { offer_id: "offer-a", description_category_id: 1, type_id: 2 } }],
+    [{ result: { id: 4862904234, offer_id: "other", description_category_id: 1, type_id: 2 } }],
+    [
+      { result: { id: 4862904234, offer_id: "offer-a" } },
+      { result: [{ id: 4862904234, description_category_id: 1, type_id: 2 }] },
+    ],
+  ];
+  for (const responses of cases) {
+    const { lookup } = createLookup(responses);
+    assert.deepEqual(await lookup.lookup(input), {
+      status: "UNRESOLVED",
+      reasonCode: "OZON_SOURCE_LOOKUP_UNRESOLVED",
+    });
+  }
+});
+
 test("credential inputs with accessors or proxies fail closed before transport", async () => {
   let calls = 0;
   const lookup = createOzonSourceCategoryLookup({

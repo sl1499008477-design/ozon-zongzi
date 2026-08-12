@@ -11,6 +11,7 @@ const enabled = process.env.ACCOUNT_SHARED_CATEGORY_POSTGRES_TESTS === "1" && Bo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, "../db/migrations");
 const migration063Path = path.join(migrationsDir, "063_account_shared_ozon_categories.sql");
+const migration064Path = path.join(migrationsDir, "064_account_shared_ozon_category_lookup_evidence.sql");
 const q = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const sha = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
 
@@ -36,6 +37,10 @@ async function apply063(client) {
     await client.query("ROLLBACK");
     throw error;
   }
+}
+
+async function apply064(client) {
+  await client.query(await readFile(migration064Path, "utf8"));
 }
 
 async function insertAccount(client, accountId) {
@@ -90,6 +95,8 @@ async function insertDraftSource(client, {
      VALUES ($1,$2,$3,1,$4,$5::jsonb,$6)`,
     [draftId, collectItemId, rawId, sha(`draft:${draftId}`), JSON.stringify({ sourceCategory }), accountId],
   );
+  await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
+    [draftId, accountId, collectItemId]);
   return { payloadHash };
 }
 
@@ -335,6 +342,18 @@ if (!enabled) {
         "SELECT COUNT(*)::INT AS count FROM account_ozon_shared_category_events WHERE account_id=$1",
         [accountB],
       )).rows[0].count, 0);
+
+      await apply064(client);
+      assert.equal((await client.query(
+        "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_current_sources WHERE account_id=$1",
+        [accountA],
+      )).rows[0].count, 2, "063 data receives canonical current-draft pointers in 064");
+      assert.equal((await client.query(
+        "SELECT to_regclass('collect_ozon_category_lookup_evidence') AS name",
+      )).rows[0].name, "collect_ozon_category_lookup_evidence");
+      assert.equal((await client.query(
+        "SELECT to_regclass('account_ozon_category_confirmation_audit') AS name",
+      )).rows[0].name, "account_ozon_category_confirmation_audit");
     } finally {
       await client.query(`DROP SCHEMA IF EXISTS ${q(schema)} CASCADE`);
       client.release();

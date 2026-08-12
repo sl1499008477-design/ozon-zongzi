@@ -9,6 +9,7 @@ import {
   createJsonAccountSharedOzonCategoryRepository,
   createPostgresAccountSharedOzonCategoryRepository,
 } from "../account-shared-ozon-category-repository.mjs";
+import { createAccountSharedOzonCategoryRuntime } from "../account-shared-ozon-category-runtime.mjs";
 
 const HASH_A = "0123456789abcdef".repeat(4);
 const HASH_B = "fedcba9876543210".repeat(4);
@@ -50,6 +51,26 @@ function sourceEvidence(overrides = {}) {
     rawResponseHash,
     ...overrides,
   };
+}
+
+function lookupEvidence({ accountId, collectItemId, productId = 123456789,
+  sku = "SKU-A", hash = HASH_B, categoryId = 17028702, typeId = 94405 } = {}) {
+  const identityHash = crypto.createHash("sha256").update(`product:${productId}`).digest("hex");
+  const rawResponseRef = `ozon-read:product:${identityHash}:${hash}`;
+  return sourceEvidence({
+    accountId, collectItemId, sourceVersion: `lookup:${hash}`,
+    productDraftId: null, productDraftVersion: null, ozonProductId: productId,
+    sourceSku: sku, sourceDescriptionCategoryId: categoryId, sourceTypeId: typeId,
+    normalizedPath: [], attributeSummary: [], rawResponseRef, rawResponseHash: hash,
+    provenance: {
+      accountId, collectItemId, sourceKind: "OZON_READ_LOOKUP",
+      sourceRecordId: rawResponseRef, rawResponseRef, rawResponseHash: hash,
+      capturedAt: CAPTURED_AT,
+      lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+      requestedOzonProductId: productId, requestedSourceSku: sku,
+      matchedOzonProductId: productId, matchedSourceSku: sku,
+    },
+  });
 }
 
 function sequential(prefix) {
@@ -367,7 +388,7 @@ test("reads require exact account scope and return immutable projections", async
   }), assertCode("ACCOUNT_SHARED_OZON_CATEGORY_CONTRACT_INVALID"));
 });
 
-test("JSON and PostgreSQL current evidence use capturedAt DESC then stable id DESC", async () => {
+test("JSON and PostgreSQL current evidence follow the canonical source pointer, never capture clocks", async () => {
   const olderHighDraftVersion = {
     id: "evidence-z-old",
     ...sourceEvidence({
@@ -401,19 +422,28 @@ test("JSON and PostgreSQL current evidence use capturedAt DESC then stable id DE
     }),
   };
   const fixtures = [olderHighDraftVersion, newestLowDraftVersion, sameTimeHigherId];
-  const json = createJson({ state: initializedState(fixtures) }).repository;
+  const jsonState = initializedState(fixtures);
+  jsonState.collectOzonCategoryCurrentSources = [{
+    accountId: "account-a",
+    collectItemId: "collect-a",
+    evidenceId: olderHighDraftVersion.id,
+    sourceKind: "PRODUCT_DRAFT",
+    sourceRecordId: "draft-a",
+    sourceVersion: "draft:99",
+  }];
+  const json = createJson({ state: jsonState }).repository;
   const queries = [];
   const postgres = createPostgresAccountSharedOzonCategoryRepository({
     pool: {
       async query(sql) {
         queries.push(sql);
         return { rows: [{
-          id: sameTimeHigherId.id,
+          id: olderHighDraftVersion.id,
           provenance: { categoryEvidence: sourceEvidence({
-            sourceVersion: sameTimeHigherId.sourceVersion,
-            productDraftVersion: sameTimeHigherId.productDraftVersion,
-            capturedAt: sameTimeHigherId.capturedAt,
-            provenance: sameTimeHigherId.provenance,
+            sourceVersion: olderHighDraftVersion.sourceVersion,
+            productDraftVersion: olderHighDraftVersion.productDraftVersion,
+            capturedAt: olderHighDraftVersion.capturedAt,
+            provenance: olderHighDraftVersion.provenance,
           }) },
         }] };
       },
@@ -425,26 +455,46 @@ test("JSON and PostgreSQL current evidence use capturedAt DESC then stable id DE
     json.readCurrentEvidence(input),
     postgres.readCurrentEvidence(input),
   ]);
-  assert.equal(jsonCurrent[0].id, "evidence-z-new");
-  assert.equal(postgresCurrent[0].id, "evidence-z-new");
-  assert.match(queries[0], /ORDER BY collect_item_id,captured_at DESC,id DESC/iu);
+  assert.equal(jsonCurrent[0].id, "evidence-z-old");
+  assert.equal(postgresCurrent[0].id, "evidence-z-old");
+  assert.match(queries[0], /collect_ozon_category_current_sources/iu);
+  assert.doesNotMatch(queries[0], /captured_at\s+DESC/iu);
 });
 
-test("manual confirmation appends a new evidence version before activating the shared row", async () => {
+test("JSON ignores a late stale draft capture when the collect item points at another draft", async () => {
+  const state = initializedState();
+  state.caches = { collectBox: [{
+    id: "collect-a", accountId: "account-a", currentDraftId: "draft-current", draftVersion: 2,
+  }] };
+  const { repository } = createJson({ state });
+  const current = await repository.recordSourceEvidence(sourceEvidence({
+    productDraftId: "draft-current", productDraftVersion: 2, sourceVersion: "draft:2",
+    capturedAt: "2026-08-12T01:00:00.000Z",
+    provenance: { ...sourceEvidence().provenance, sourceRecordId: "draft-current",
+      capturedAt: "2026-08-12T01:00:00.000Z" },
+  }));
+  await repository.recordSourceEvidence(sourceEvidence({
+    productDraftId: "draft-stale", productDraftVersion: 1, sourceVersion: "draft:1",
+    capturedAt: "2026-08-12T02:00:00.000Z", rawResponseRef: "raw-stale",
+    provenance: { ...sourceEvidence().provenance, sourceRecordId: "draft-stale",
+      rawResponseRef: "raw-stale", capturedAt: "2026-08-12T02:00:00.000Z" },
+  }));
+  assert.equal((await repository.readCurrentEvidence({
+    accountId: "account-a", collectItemIds: ["collect-a"],
+  }))[0].id, current.evidence.id);
+});
+
+test("manual confirmation transitions the original signature without forging source evidence", async () => {
   const persisted = [];
   const { state, repository } = createJson({ persist: async (next) => {
     persisted.push(structuredClone(next));
   } });
   const captured = await repository.recordSourceEvidence(sourceEvidence());
   const original = structuredClone(state.collectOzonCategorySourceEvidence[0]);
-  const manualEvidence = sourceEvidence({
-    sourceVersion: "draft:7:manual:1",
-    productDraftVersion: 8,
-  });
 
   const updated = await repository.confirmManualCategory({
     accountId: "account-a",
-    evidence: manualEvidence,
+    evidenceId: captured.evidence.id,
     expectedVersion: 1,
     currentDescriptionCategoryId: 17028788,
     currentTypeId: 95555,
@@ -454,16 +504,16 @@ test("manual confirmation appends a new evidence version before activating the s
 
   assert.deepEqual(state.collectOzonCategorySourceEvidence[0], original,
     "the captured fact stays byte-for-byte immutable");
-  assert.equal(state.collectOzonCategorySourceEvidence.length, 2);
+  assert.equal(state.collectOzonCategorySourceEvidence.length, 1);
   assert.equal(updated.source, "MANUAL");
   assert.equal(updated.version, 2);
   assert.equal(updated.currentDescriptionCategoryId, 17028788);
-  assert.notEqual(updated.evidenceId, captured.evidence.id);
+  assert.equal(updated.evidenceId, captured.evidence.id);
   assert.equal(state.accountOzonSharedCategoryEvents.at(-1).sourceEvidenceId, updated.evidenceId);
   const lastCommit = persisted.at(-1);
-  const newEvidenceIndex = JSON.stringify(lastCommit).indexOf(updated.evidenceId);
-  const eventIndex = JSON.stringify(lastCommit).lastIndexOf(updated.evidenceId);
-  assert.ok(newEvidenceIndex >= 0 && eventIndex > newEvidenceIndex);
+  assert.equal(lastCommit.collectOzonCategorySourceEvidence.length, 1);
+  assert.equal(lastCommit.accountOzonSharedCategoryEvents.at(-1).eventType,
+    "MANUAL_CATEGORY_CONFIRMED");
 });
 
 test("all transitions enforce optimistic versions and atomically append safe events", async () => {
@@ -682,7 +732,7 @@ const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
 
 async function migrationFiles() {
   return (await readdir(migrationsDir))
-    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 63)
+    .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= 64)
     .sort();
 }
 
@@ -698,10 +748,14 @@ if (!postgresEnabled) {
     const suffix = crypto.randomUUID().replaceAll("-", "");
     const schema = `shared_category_repository_${suffix}`;
     const accountId = `account-${suffix}`;
+    const foreignAccountId = `account-foreign-${suffix}`;
     const storeId = `store-${suffix}`;
     const collectItemId = `collect-${suffix}`;
     const rawId = `raw-${suffix}`;
     const draftId = `draft-${suffix}`;
+    const secondCollectItemId = `collect-second-${suffix}`;
+    const secondRawId = `raw-second-${suffix}`;
+    const secondDraftId = `draft-second-${suffix}`;
     let scoped = null;
     try {
       const client = await admin.connect();
@@ -736,6 +790,28 @@ if (!postgresEnabled) {
            VALUES ($1,$2,$3,7,$4,'{}'::jsonb,$5)`,
           [draftId, collectItemId, rawId, HASH_B, accountId],
         );
+        await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
+          [draftId, accountId, collectItemId]);
+        await client.query(
+          `INSERT INTO collect_items (id,account_id,store_id,source,identity_key,source_sku,summary)
+           VALUES ($1,$2,$3,'ozon',$4,$5,'{}'::jsonb)`,
+          [secondCollectItemId, accountId, storeId, `identity-second-${suffix}`, `SKU-SECOND-${suffix}`],
+        );
+        await client.query(
+          `INSERT INTO collect_raw_payloads
+            (id,collect_item_id,account_id,store_id,source_sku,source_url,payload_hash,payload,collected_at)
+           VALUES ($1,$2,$3,$4,$5,'https://source.invalid/item',$6,'{}'::jsonb,$7)`,
+          [secondRawId, secondCollectItemId, accountId, storeId, `SKU-SECOND-${suffix}`,
+            HASH_B, CAPTURED_AT],
+        );
+        await client.query(
+          `INSERT INTO product_drafts
+            (id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
+           VALUES ($1,$2,$3,1,$4,'{}'::jsonb,$5)`,
+          [secondDraftId, secondCollectItemId, secondRawId, HASH_A, accountId],
+        );
+        await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE account_id=$2 AND id=$3",
+          [secondDraftId, accountId, secondCollectItemId]);
         await client.query(
           `INSERT INTO collector_ozon_enrichment_cache
             (account_id,source,sku,contract_version,status,result_json,response_hash,captured_at,expires_at)
@@ -794,6 +870,114 @@ if (!postgresEnabled) {
         accountId: `other-${suffix}`, evidenceIds: [first.evidence.id],
       }), []);
 
+      const secondEvidenceInput = sourceEvidence({
+        accountId, collectItemId: secondCollectItemId, sourceVersion: "draft:1",
+        productDraftId: secondDraftId, productDraftVersion: 1,
+        sourceSku: `SKU-SECOND-${suffix}`, rawResponseRef: secondRawId,
+        rawResponseHash: HASH_B,
+        provenance: {
+          accountId, collectItemId: secondCollectItemId, sourceKind: "PRODUCT_DRAFT",
+          sourceRecordId: secondDraftId, rawResponseRef: secondRawId,
+          rawResponseHash: HASH_B, capturedAt: CAPTURED_AT,
+        },
+      });
+      const second = await repository.recordSourceEvidence(secondEvidenceInput);
+
+      let confirmationClock = 6;
+      const confirmationRuntime = createAccountSharedOzonCategoryRuntime({
+        loadState: async () => ({}), saveState: async () => {},
+        stateTransaction: { run: async (operation) => operation() },
+        persistenceMode: () => "postgres",
+        postgresPool: async () => scoped,
+        now: () => new Date(`2026-08-12T02:03:0${confirmationClock++}.000Z`),
+        randomUUID: sequential(`runtime-${suffix}`),
+      });
+      const manual = await confirmationRuntime.confirmManualCategory({
+        actor: { id: accountId, role: "admin" }, collectItemId,
+        expectedSourceVersion: "draft:7", descriptionCategoryId: 17028788, typeId: 95555,
+        taxonomyScope: "OZON:DEFAULT", idempotencyKey: `manual-${suffix}`,
+        correlationId: `correlation-manual-${suffix}`,
+      });
+      assert.equal(manual.categoryResolution.version, 2);
+      assert.equal(manual.categoryResolution.source, "MANUAL");
+      assert.equal((await repository.readSharedForEvidence({
+        accountId, evidenceIds: [second.evidence.id],
+      }))[0].source, "MANUAL", "same signature immediately shares manual selection");
+      const corrected = await confirmationRuntime.confirmManualCategory({
+        actor: { id: accountId, role: "admin" }, collectItemId,
+        expectedSourceVersion: "draft:7", descriptionCategoryId: 17028789, typeId: 95556,
+        taxonomyScope: "OZON:DEFAULT", idempotencyKey: `correction-${suffix}`,
+        correlationId: `correlation-correction-${suffix}`,
+      });
+      assert.equal(corrected.categoryResolution.version, 3);
+      assert.equal((await scoped.query(
+        "SELECT COUNT(*)::INT AS count FROM account_ozon_category_confirmation_audit WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count, 2);
+      const confirmationAuditId = (await scoped.query(
+        "SELECT id FROM account_ozon_category_confirmation_audit WHERE account_id=$1 ORDER BY id LIMIT 1",
+        [accountId],
+      )).rows[0].id;
+      await assert.rejects(scoped.query(
+        "UPDATE account_ozon_category_confirmation_audit SET correlation_id='changed' WHERE id=$1",
+        [confirmationAuditId],
+      ), (error) => error?.code === "23514");
+      await assert.rejects(scoped.query(
+        "DELETE FROM account_ozon_category_confirmation_audit WHERE id=$1",
+        [confirmationAuditId],
+      ), (error) => error?.code === "23514");
+      assert.equal((await scoped.query(
+        "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_source_evidence WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count, 2, "manual confirmation never inserts source evidence");
+
+      const lookup = await repository.recordSourceEvidence(lookupEvidence({
+        accountId, collectItemId, sku: `SKU-${suffix}`,
+      }));
+      assert.equal(lookup.evidence.provenance.sourceKind, "OZON_READ_LOOKUP");
+      assert.equal((await scoped.query(
+        "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_lookup_evidence WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count, 1);
+
+      const rollbackHash = crypto.createHash("sha256").update(`rollback-${suffix}`).digest("hex");
+      const rollbackIdentityHash = crypto.createHash("sha256").update("product:777777").digest("hex");
+      const rollbackRef = `ozon-read:product:${rollbackIdentityHash}:${rollbackHash}`;
+      await scoped.query(`CREATE FUNCTION reject_task3_lookup_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.source_record_id='${rollbackRef}' THEN RAISE EXCEPTION 'controlled rollback'; END IF;
+        RETURN NEW; END $$`);
+      await scoped.query(`CREATE TRIGGER reject_task3_lookup_evidence BEFORE INSERT
+        ON collect_ozon_category_source_evidence FOR EACH ROW EXECUTE FUNCTION reject_task3_lookup_evidence()`);
+      await assert.rejects(repository.recordSourceEvidence(lookupEvidence({
+        accountId, collectItemId, productId: 777777, sku: `SKU-${suffix}`, hash: rollbackHash,
+      })), assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+      assert.equal((await scoped.query(
+        "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_lookup_evidence WHERE account_id=$1 AND id=$2",
+        [accountId, rollbackRef],
+      )).rows[0].count, 0, "lookup provenance rolls back with failed evidence");
+      await scoped.query("DROP TRIGGER reject_task3_lookup_evidence ON collect_ozon_category_source_evidence");
+      await scoped.query("DROP FUNCTION reject_task3_lookup_evidence()");
+
+      const foreignCollectItemId = `collect-foreign-${suffix}`;
+      await scoped.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+        [foreignAccountId, `user-foreign-${suffix}`],
+      );
+      await scoped.query(
+        `INSERT INTO collect_items (id,account_id,source,identity_key,source_sku,summary)
+         VALUES ($1,$2,'ozon',$3,$4,'{}'::jsonb)`,
+        [foreignCollectItemId, foreignAccountId, `identity-foreign-${suffix}`, `SKU-${suffix}`],
+      );
+      const foreignLookup = await repository.recordSourceEvidence(lookupEvidence({
+        accountId: foreignAccountId, collectItemId: foreignCollectItemId, sku: `SKU-${suffix}`,
+      }));
+      assert.equal((await repository.readCurrentEvidence({
+        accountId: foreignAccountId, collectItemIds: [foreignCollectItemId],
+      }))[0].id, foreignLookup.evidence.id);
+      assert.deepEqual(await repository.readCurrentEvidence({
+        accountId, collectItemIds: [foreignCollectItemId],
+      }), []);
+
       const cacheSku = `CACHE-${suffix}`;
       const cacheEvidence = await repository.recordSourceEvidence(sourceEvidence({
         accountId,
@@ -836,16 +1020,6 @@ if (!postgresEnabled) {
       );
       assert.equal(cacheEvent.provenance.rawResponseHash, HASH_B);
 
-      const refreshed = await repository.activateRefreshedCategory({
-        accountId,
-        evidenceId: first.evidence.id,
-        expectedVersion: 1,
-        currentDescriptionCategoryId: 17028702,
-        currentTypeId: 94405,
-        taxonomyFingerprint: TAXONOMY_HASH,
-        validatedAt: VALIDATED_AT,
-      });
-      assert.equal(refreshed.version, 2);
       await assert.rejects(repository.invalidateSharedCategory({
         accountId,
         evidenceId: first.evidence.id,
@@ -854,30 +1028,13 @@ if (!postgresEnabled) {
         transitionedAt: "2026-08-12T02:03:05.000Z",
       }), assertCode("OZON_CATEGORY_SHARED_VERSION_CONFLICT"));
 
-      const manual = await repository.confirmManualCategory({
-        accountId,
-        evidence: sourceEvidence({
-          ...evidenceInput,
-          sourceVersion: "draft:7:manual:1",
-          productDraftVersion: 8,
-        }),
-        expectedVersion: 2,
-        currentDescriptionCategoryId: 17028788,
-        currentTypeId: 95555,
-        taxonomyFingerprint: TAXONOMY_HASH,
-        validatedAt: "2026-08-12T02:03:06.000Z",
-      });
-      assert.equal(manual.version, 3);
-      assert.equal(manual.source, "MANUAL");
-      assert.notEqual(manual.evidenceId, first.evidence.id);
-
       const counts = (await scoped.query(`
         SELECT
           (SELECT COUNT(*)::INT FROM collect_ozon_category_source_evidence WHERE account_id=$1) AS evidence,
           (SELECT COUNT(*)::INT FROM account_ozon_shared_categories WHERE account_id=$1) AS shared,
           (SELECT COUNT(*)::INT FROM account_ozon_shared_category_events WHERE account_id=$1) AS events
       `, [accountId])).rows[0];
-      assert.deepEqual(counts, { evidence: 3, shared: 2, events: 4 });
+      assert.deepEqual(counts, { evidence: 4, shared: 2, events: 4 });
       assert.equal(JSON.stringify((await scoped.query(
         "SELECT * FROM account_ozon_shared_categories WHERE account_id=$1",
         [accountId],

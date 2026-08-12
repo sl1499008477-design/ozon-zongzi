@@ -51,12 +51,17 @@ test("missing source IDs use only an ephemeral account-owned credential for exac
   const sourceLookup = {
     async lookup(context) {
       lookupContexts.push(context);
+      const lookupHash = crypto.createHash("sha256").update("lookup").digest("hex");
+      const identityHash = crypto.createHash("sha256").update("offer:offer-a").digest("hex");
       return Object.freeze({
         status: "RESOLVED", ozonProductId: 10001, sourceSku: "offer-a",
+        lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+        requestedOzonProductId: null, requestedSourceSku: "offer-a",
+        matchedOzonProductId: 10001, matchedSourceSku: "offer-a",
         sourceDescriptionCategoryId: 17028702, sourceTypeId: 94405,
         normalizedPath: Object.freeze(["家居", "杯子"]), attributeSummary: Object.freeze([]),
-        rawResponseRef: "ozon-read:offer:offer-a:lookup",
-        rawResponseHash: crypto.createHash("sha256").update("lookup").digest("hex"),
+        rawResponseRef: `ozon-read:offer:${identityHash}:${lookupHash}`,
+        rawResponseHash: lookupHash,
         capturedAt: NOW,
       });
     },
@@ -147,10 +152,25 @@ test("administrator confirmation is closed, account/version scoped, idempotent, 
   assert.deepEqual(replay, first);
   assert.equal(state.accountOzonCategoryConfirmations.length, 1);
   assert.equal(state.accountOzonSharedCategoryEvents.length, 2);
+  assert.equal(state.collectOzonCategorySourceEvidence.length, 1,
+    "manual authority never forges a source fact");
+  assert.equal(state.accountOzonSharedCategories[0].evidenceId,
+    state.collectOzonCategorySourceEvidence[0].id);
   assert.deepEqual(state.accountOzonCategoryConfirmations[0].actor, {
     id: "account-a", role: "admin",
   });
   assert.equal(state.accountOzonCategoryConfirmations[0].confirmedAt, NOW);
+
+  const corrected = await runtime.confirmManualCategory({
+    ...request,
+    descriptionCategoryId: 17028788,
+    typeId: 95555,
+    idempotencyKey: "category-confirmation-correction",
+    correlationId: "correlation-correction",
+  });
+  assert.equal(corrected.categoryResolution.currentDescriptionCategoryId, 17028788);
+  assert.equal(corrected.categoryResolution.version, 3);
+  assert.equal(state.collectOzonCategorySourceEvidence.length, 1);
 
   for (const invalid of [
     { ...request, actor: { id: "account-a", role: "user" } },
@@ -232,10 +252,14 @@ test("PostgreSQL administrator confirmation keeps transition, audit, and idempot
     taxonomyFingerprint: null, version: 1, evidenceId: "evidence-a", validatedAt: null,
   });
   let confirmationCalls = 0;
+  let confirmationInput = null;
   const client = {
     async query(sql, params = []) {
       queries.push({ sql: String(sql), params });
-      if (String(sql).includes("SELECT metadata FROM audit_events")) return { rows: [] };
+      if (String(sql).includes("FROM account_ozon_category_confirmation_audit")) return { rows: [] };
+      if (String(sql).includes("INSERT INTO account_ozon_category_confirmation_audit")) {
+        return { rowCount: 1, rows: [{ id: params[0] }] };
+      }
       if (String(sql).includes("INSERT INTO audit_events")) return { rowCount: 1, rows: [{ event_id: params[0] }] };
       return { rows: [] };
     },
@@ -249,12 +273,13 @@ test("PostgreSQL administrator confirmation keeps transition, audit, and idempot
     initializePostgresTransactionRepository: () => ({
       readCurrentEvidence: async () => [source],
       readSharedForEvidence: async () => [shared],
-      confirmManualCategory: async () => {
+      confirmManualCategory: async (input) => {
         confirmationCalls += 1;
+        confirmationInput = input;
         return Object.freeze({
           ...shared, source: "MANUAL", taxonomyFingerprint: crypto.createHash("sha256")
             .update("OZON:DEFAULT:17028702:94405").digest("hex"),
-          version: 2, evidenceId: "manual-evidence-a", validatedAt: NOW,
+          version: 2, evidenceId: "evidence-a", validatedAt: NOW,
         });
       },
     }),
@@ -267,6 +292,8 @@ test("PostgreSQL administrator confirmation keeps transition, audit, and idempot
   });
   assert.equal(result.categoryResolution.source, "MANUAL");
   assert.equal(confirmationCalls, 1);
+  assert.equal(confirmationInput.evidenceId, "evidence-a");
+  assert.equal(Object.hasOwn(confirmationInput, "evidence"), false);
   assert.equal(queries[0].sql, "BEGIN");
   assert.ok(queries.some(({ sql }) => sql.includes("pg_advisory_xact_lock")));
   assert.ok(queries.some(({ sql }) => sql.includes("INSERT INTO audit_events")));

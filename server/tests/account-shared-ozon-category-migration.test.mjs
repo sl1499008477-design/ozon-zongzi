@@ -9,6 +9,10 @@ const migrationUrl = new URL(
   "../db/migrations/063_account_shared_ozon_categories.sql",
   import.meta.url,
 );
+const lookupMigrationUrl = new URL(
+  "../db/migrations/064_account_shared_ozon_category_lookup_evidence.sql",
+  import.meta.url,
+);
 
 function normalizedSql(sql) {
   return String(sql).replace(/\s+/g, " ").trim();
@@ -47,6 +51,22 @@ test("063 creates closed account-scoped source evidence and shared category cont
   assert.match(compact, /FOREIGN KEY \(account_id,raw_response_ref,collect_item_id\) REFERENCES collect_raw_payloads\(account_id,id,collect_item_id\)/i);
   assert.match(compact, /account_ozon_shared_categories_due_idx/i);
   assert.match(compact, /account_ozon_shared_categories_read_idx/i);
+});
+
+test("064 adds constrained lookup provenance, canonical pointers, and an append-only confirmation ledger", async () => {
+  const sql = await readFile(lookupMigrationUrl, "utf8");
+  const compact = normalizedSql(sql);
+  assert.match(compact, /CREATE TABLE collect_ozon_category_lookup_evidence/i);
+  assert.match(compact, /OZON_READ_LOOKUP/i);
+  assert.match(compact, /requested_ozon_product_id/i);
+  assert.match(compact, /requested_source_sku/i);
+  assert.match(compact, /matched_ozon_product_id/i);
+  assert.match(compact, /matched_source_sku/i);
+  assert.match(compact, /FOREIGN KEY \(account_id,lookup_evidence_id,collect_item_id\)/i);
+  assert.match(compact, /CREATE TABLE collect_ozon_category_current_sources/i);
+  assert.match(compact, /current_draft_id/i);
+  assert.match(compact, /CREATE TABLE account_ozon_category_confirmation_audit/i);
+  assert.match(compact, /append_only/i);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {

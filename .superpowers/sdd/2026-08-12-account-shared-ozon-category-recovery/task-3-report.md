@@ -106,3 +106,64 @@ Rollback is `git revert <final Task 3 commit SHA>`. This restores the retired ru
 - Verified all external failures map to fixed safe codes/messages and no raw vendor/secret data is logged or returned.
 - Verified candidate or draft data has no code path to the confirmation mutation.
 - Verified unrelated Task 4+ UI and snapshot files were not modified.
+
+---
+
+## Fix round 1/5 — reviewed contract corrections
+
+This section supersedes the earlier statements that lookup reused `PRODUCT_DRAFT`, manual confirmation appended evidence, and Task 3 added no migration.
+
+### Corrected contracts
+
+- `OZON_READ_LOOKUP` is now a formal third immutable source kind. Its exact request identity, exact matched identity, fixed lookup contract version, bounded response hash, account/item, and capture time are closed contract fields. No vendor body, credential, store identity, arbitrary reference, or raw error is retained or returned.
+- Migration `064_account_shared_ozon_category_lookup_evidence.sql` is additive over 063. It creates an append-only lookup metadata table, a constrained source-evidence relationship, canonical current-source pointers, and a dedicated append-only administrator-confirmation ledger. Existing 063 product evidence receives only the new product-raw reference column and current-draft pointers; evidence values are not reinterpreted or rewritten.
+- This migration consumes number 064. The later recovery migration previously planned as 064 must be renamed to 065 when Task 4+ executes it.
+- Manual confirmation now keeps the original current evidence ID and original source signature. It changes only the account-shared row's current category IDs, source=`MANUAL`, taxonomy validation, and optimistic version. Actor, correlation, idempotency, request hash, selected IDs, source evidence, and confirmation time go to the separate append-only ledger and the existing audit stream. Reconfirmation with the same `expectedSourceVersion` is permitted only after locking and version-fencing the shared row.
+- A second item with the same original source signature reads the manual selection immediately because no selected ID is promoted into source evidence or a new signature.
+- Current source is no longer chosen by capture time. Product drafts must match `collect_items.current_draft_id` and draft version; successful exact lookups atomically advance the item pointer to their immutable lookup identity/version. Enrichment cache facts remain canonical by the constrained account/source/SKU/contract-version cache identity and do not become item pointers.
+- Exact lookup requires every non-null requested identity to be present and equal in both the product response and, when used, attributes response. A missing or unequal product ID/offer ID is unresolved. Request values are never used to manufacture a response identity.
+- Public shared-category projections retain the exact eleven keys and are recursively frozen.
+
+### TDD correction record
+
+RED was recorded before implementation:
+
+- migration static test failed with missing 064;
+- JSON/controlled PostgreSQL current-source parity selected capture-clock winners rather than a canonical pointer;
+- manual repository confirmation rejected the corrected `evidenceId` contract and still appended a forged evidence row;
+- resolved lookup evidence persisted as `PRODUCT_DRAFT`;
+- exact identity tests resolved responses missing or disagreeing with requested product/offer identity;
+- disposable PostgreSQL integration reproduced the old manual contract with zero skips.
+
+GREEN after the minimal fixes:
+
+- final contract/runtime/service/lookup/migration/repository suite, including real PostgreSQL 16: 50 passed, 0 failed, 0 skipped;
+- adjacent account deletion, persistence, collection seams/completeness, contract, lookup, runtime, repository, and 063→064 suite: 85 tests, 84 passed, 0 failed, one unrelated collection PostgreSQL branch skipped because that test keys off `DATABASE_URL` rather than the disposable migration URL;
+- `git diff --check` and syntax validation passed.
+
+The real PostgreSQL suite covers 063→064 compatibility, canonical current-draft backfill, manual sharing across two items, same-source reconfirmation, append-only confirmation audit, lookup success, forced evidence failure rollback of lookup provenance, cross-account lookup isolation, immutable evidence/events, and migration rollback checks. Controlled transports remain the only Ozon lookup mechanism used by tests.
+
+### Files and entry migration
+
+Contract/repository/runtime/service/lookup modules and their focused tests were corrected in place. New schema is limited to:
+
+- `server/db/migrations/064_account_shared_ozon_category_lookup_evidence.sql`
+
+The migration integration and static tests were extended for the third source kind. JSON account deletion now removes lookup metadata and current-source pointers for the deleted account. No Task 4+ snapshot or UI file changed. The retired store resolver/wakeup/timer/cursor/notifier/compatibility modules remain deleted; a follow-up dependency scan found no restored production import or call.
+
+### Remaining risks and rollback
+
+- No real Ozon API, paid AI, product mutation, or production data was used. Lookup response parsing is verified only with controlled bounded transports.
+- The full server-entry suite remains blocked under the bundled hardened Node by the pre-existing Sharp native-binary Team-ID signature mismatch. Focused and adjacent suites that do not load Sharp pass as reported above.
+- Lookup identity metadata is intentionally append-only and may grow; account deletion cascades it, but operational retention/partitioning is outside Task 3.
+
+Rollback this correction with `git revert <fix-round-1-commit-sha>`. Migration 064 is additive, so production rollback should normally revert application reads first and retain the new evidence/audit tables; destructive down-migration is intentionally not provided. The original Task 3 implementation can separately be reverted with `git revert 9d6cc75570709ef7fa0def5e6458899bf69c1079` if the entire feature must be removed.
+
+### Fix-round self-review
+
+- Confirmed manual confirmation inserts zero source-evidence rows and both JSON/PostgreSQL adapters transition by the original evidence ID.
+- Confirmed lookup provenance has DB foreign keys and closed DTO invariants, and the public projection contains neither lookup/raw identifiers nor hashes.
+- Confirmed item reads use only canonical pointers and no `captured_at DESC` selection remains.
+- Confirmed all account/item/evidence/lookup/confirmation queries include account scope.
+- Confirmed failure responses remain fixed safe codes and messages without raw vendor, secret, SQL, or transport detail.
+- Confirmed no later recovery snapshot, UI, paid AI, or product-write path was modified.
