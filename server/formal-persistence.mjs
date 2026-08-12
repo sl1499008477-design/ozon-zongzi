@@ -629,19 +629,6 @@ function overwriteAccountDeletionCollectorCounts(
   return true;
 }
 
-export function discardRetiredCollectCategoryLocalState(state = {}) {
-  let changed = false;
-  for (const key of [
-    "collectCategoryResolutions",
-    "collectCategoryResolutionRuntimeCursors",
-  ]) {
-    if (!Object.hasOwn(state, key)) continue;
-    delete state[key];
-    changed = true;
-  }
-  return changed;
-}
-
 export async function deleteRemovedAccountScopes(client, state = {}) {
   const scopes = Array.isArray(state.__deletedAccountScopes)
     ? state.__deletedAccountScopes
@@ -1651,7 +1638,6 @@ export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) 
 }
 
 export async function mirrorStateToRelationalTablesInTransaction(client, state = {}) {
-  const retiredCategoryStateChanged = discardRetiredCollectCategoryLocalState(state);
   const deletionResult = await deleteRemovedAccountScopes(client, state);
   await mirrorAccounts(client, state);
   await mirrorCollectorAuthState(client, state);
@@ -1669,11 +1655,7 @@ export async function mirrorStateToRelationalTablesInTransaction(client, state =
   await mirrorOrders(client, state);
   await mirrorJobs(client, state);
   await mirrorAuditEvents(client, state);
-  return {
-    ...deletionResult,
-    persistedStateChanged:
-      retiredCategoryStateChanged || deletionResult.persistedStateChanged,
-  };
+  return deletionResult;
 }
 
 export async function mirrorStateToRelationalTables(pool, state = {}) {

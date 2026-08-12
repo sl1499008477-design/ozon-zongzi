@@ -40,6 +40,8 @@ CREATE TEMP TABLE account_shared_category_raw_facts (
   enrichment_contract_version TEXT,
   raw_response_hash TEXT,
   raw_response_ref TEXT,
+  raw_payload_account_id TEXT,
+  raw_payload_collect_item_id TEXT,
   captured_at TIMESTAMPTZ,
   taxonomy_scope TEXT NOT NULL,
   category_json JSONB NOT NULL,
@@ -49,10 +51,12 @@ CREATE TEMP TABLE account_shared_category_raw_facts (
 INSERT INTO account_shared_category_raw_facts (
   account_id,source_kind,source_record_id,source_version,collect_item_id,
   product_draft_id,enrichment_source,enrichment_sku,enrichment_contract_version,
-  raw_response_hash,raw_response_ref,captured_at,taxonomy_scope,category_json,provenance
+  raw_response_hash,raw_response_ref,raw_payload_account_id,
+  raw_payload_collect_item_id,captured_at,taxonomy_scope,category_json,provenance
 )
 SELECT item.account_id,'PRODUCT_DRAFT',draft.id,draft.version::TEXT,item.id,
        draft.id,NULL,NULL,NULL,raw.payload_hash,raw.id,
+       raw.account_id,raw.collect_item_id,
        COALESCE(raw.collected_at,raw.created_at),'OZON:DEFAULT',fact.category_json,
        jsonb_build_object(
          'sourceKind','PRODUCT_DRAFT','sourceRecordId',draft.id,
@@ -88,7 +92,8 @@ SELECT item.account_id,'PRODUCT_DRAFT',draft.id,draft.version::TEXT,item.id,
 INSERT INTO account_shared_category_raw_facts (
   account_id,source_kind,source_record_id,source_version,collect_item_id,
   product_draft_id,enrichment_source,enrichment_sku,enrichment_contract_version,
-  raw_response_hash,raw_response_ref,captured_at,taxonomy_scope,category_json,provenance
+  raw_response_hash,raw_response_ref,raw_payload_account_id,
+  raw_payload_collect_item_id,captured_at,taxonomy_scope,category_json,provenance
 )
 SELECT cache.account_id,'ENRICHMENT_CACHE',
        cache.source || ':' || cache.sku || ':' || cache.contract_version,
@@ -96,7 +101,7 @@ SELECT cache.account_id,'ENRICHMENT_CACHE',
        NULL,cache.source,cache.sku,cache.contract_version,
        cache.response_hash,
        'collector_ozon_enrichment_cache:' || cache.source || ':' || cache.sku || ':' || cache.contract_version,
-       cache.captured_at,'OZON:DEFAULT',cache.result_json->'sourceCategory',
+       NULL,NULL,cache.captured_at,'OZON:DEFAULT',cache.result_json->'sourceCategory',
        jsonb_build_object(
          'sourceKind','ENRICHMENT_CACHE',
          'sourceRecordId',cache.source || ':' || cache.sku || ':' || cache.contract_version,
@@ -126,6 +131,20 @@ BEGIN
         )
   ) THEN
     RAISE EXCEPTION 'category migration preflight found malformed positive source IDs'
+      USING ERRCODE='23514';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM account_shared_category_raw_facts
+     WHERE source_kind='PRODUCT_DRAFT'
+       AND account_shared_category_positive_bigint(category_json->>'descriptionCategoryId')
+       AND account_shared_category_positive_bigint(category_json->>'typeIdCandidate')
+       AND (
+         raw_payload_account_id IS DISTINCT FROM account_id
+         OR raw_payload_collect_item_id IS DISTINCT FROM collect_item_id
+       )
+  ) THEN
+    RAISE EXCEPTION 'category migration preflight found cross-account or cross-item raw provenance'
       USING ERRCODE='23514';
   END IF;
 
@@ -177,6 +196,8 @@ SELECT DISTINCT ON (account_id,source_kind,source_record_id,source_version)
 
 CREATE UNIQUE INDEX product_drafts_collect_item_id_id_key
   ON product_drafts(collect_item_id,id);
+CREATE UNIQUE INDEX collect_raw_payloads_account_id_id_collect_item_id_key
+  ON collect_raw_payloads(account_id,id,collect_item_id);
 
 CREATE TABLE collect_ozon_category_source_evidence (
   id TEXT PRIMARY KEY,
@@ -201,6 +222,7 @@ CREATE TABLE collect_ozon_category_source_evidence (
   UNIQUE (account_id,source_kind,source_record_id,source_version),
   FOREIGN KEY (account_id,collect_item_id) REFERENCES collect_items(account_id,id) ON DELETE CASCADE,
   FOREIGN KEY (collect_item_id,product_draft_id) REFERENCES product_drafts(collect_item_id,id) ON DELETE CASCADE,
+  FOREIGN KEY (account_id,raw_response_ref,collect_item_id) REFERENCES collect_raw_payloads(account_id,id,collect_item_id) ON DELETE CASCADE,
   FOREIGN KEY (account_id,enrichment_source,enrichment_sku,enrichment_contract_version) REFERENCES collector_ozon_enrichment_cache(account_id,source,sku,contract_version) ON DELETE CASCADE,
   CHECK (
     (source_kind='PRODUCT_DRAFT'
@@ -233,7 +255,7 @@ CREATE TABLE account_ozon_shared_categories (
   status TEXT NOT NULL CHECK (status IN ('ACTIVE','INVALIDATED','NEEDS_REVIEW')),
   source TEXT NOT NULL CHECK (source IN ('SOURCE_DIRECT','OZON_REFRESH','MANUAL')),
   version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
-  taxonomy_fingerprint TEXT NOT NULL CHECK (taxonomy_fingerprint ~ '^[0-9a-f]{64}$'),
+  taxonomy_fingerprint TEXT CHECK (taxonomy_fingerprint IS NULL OR taxonomy_fingerprint ~ '^[0-9a-f]{64}$'),
   safe_failure_code TEXT NOT NULL DEFAULT '',
   source_evidence_id TEXT NOT NULL,
   validated_at TIMESTAMPTZ,
@@ -267,7 +289,7 @@ CREATE TABLE account_ozon_shared_category_events (
   to_status TEXT NOT NULL CHECK (to_status IN ('ACTIVE','INVALIDATED','NEEDS_REVIEW')),
   from_version INTEGER CHECK (from_version IS NULL OR from_version > 0),
   to_version INTEGER NOT NULL CHECK (to_version > 0),
-  taxonomy_fingerprint TEXT NOT NULL CHECK (taxonomy_fingerprint ~ '^[0-9a-f]{64}$'),
+  taxonomy_fingerprint TEXT CHECK (taxonomy_fingerprint IS NULL OR taxonomy_fingerprint ~ '^[0-9a-f]{64}$'),
   provenance JSONB NOT NULL CHECK (jsonb_typeof(provenance) = 'object'),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (account_id,shared_category_id,to_version,event_type),
@@ -418,7 +440,7 @@ SELECT 'ozon-shared-category-' || MD5(
        ),
        account_id,source_description_category_id,source_type_id,taxonomy_scope,
        source_description_category_id,source_type_id,'ACTIVE','SOURCE_DIRECT',1,
-       raw_response_hash,'',evidence_id,captured_at,NULL,captured_at,captured_at
+       NULL,'',evidence_id,NULL,NULL,captured_at,captured_at
   FROM (
     SELECT DISTINCT ON (
              candidate.account_id,candidate.source_description_category_id,

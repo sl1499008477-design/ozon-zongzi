@@ -236,7 +236,7 @@ if (!enabled) {
       const shared = (await client.query(`
         SELECT id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
                current_description_category_id,current_type_id,status,source,version,
-               taxonomy_fingerprint,source_evidence_id
+               taxonomy_fingerprint,validated_at,source_evidence_id
         FROM account_ozon_shared_categories
         ORDER BY account_id,source_description_category_id
       `)).rows;
@@ -256,6 +256,8 @@ if (!enabled) {
       assert.equal(shared.every((row) => Number(row.current_type_id) === Number(row.source_type_id)), true);
       assert.equal(shared.every((row) => row.status === "ACTIVE" && row.source === "SOURCE_DIRECT"
         && Number(row.version) === 1), true);
+      assert.equal(shared.every((row) => row.taxonomy_fingerprint === null), true);
+      assert.equal(shared.every((row) => row.validated_at === null), true);
 
       const events = (await client.query(
         "SELECT * FROM account_ozon_shared_category_events ORDER BY account_id,id",
@@ -374,6 +376,65 @@ if (!enabled) {
       assert.notEqual((await client.query(
         "SELECT to_regclass('collect_category_resolution_runtime_cursors') AS name",
       )).rows[0].name, null);
+      for (const table of [
+        "collect_ozon_category_source_evidence",
+        "account_ozon_shared_categories",
+        "account_ozon_shared_category_events",
+      ]) {
+        assert.equal((await client.query("SELECT to_regclass($1) AS name", [table])).rows[0].name, null);
+      }
+    } finally {
+      await client.query(`DROP SCHEMA IF EXISTS ${q(schema)} CASCADE`);
+      client.release();
+      await pool.end();
+    }
+  });
+
+  test("063 rejects a product draft linked to another account's raw payload and rolls back", { timeout: 60_000 }, async () => {
+    const pool = new Pool({ connectionString: databaseUrl });
+    const client = await pool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schema = `shared_category_raw_attack_${suffix}`;
+    const accountA = `account-a-${suffix}`;
+    const accountB = `account-b-${suffix}`;
+    const storeA = `store-a-${suffix}`;
+    const storeB = `store-b-${suffix}`;
+    const collectA = `collect-a-${suffix}`;
+    const collectB = `collect-b-${suffix}`;
+    const rawB = `raw-b-${suffix}`;
+    try {
+      await client.query(`CREATE SCHEMA ${q(schema)}`);
+      await client.query(`SET search_path TO ${q(schema)}, public`);
+      await applyBaseMigrations(client);
+      await insertAccount(client, accountA);
+      await insertAccount(client, accountB);
+      await insertStore(client, { id: storeA, accountId: accountA });
+      await insertStore(client, { id: storeB, accountId: accountB });
+      await insertCollectItem(client, { id: collectA, accountId: accountA, storeId: storeA, sku: `sku-a-${suffix}` });
+      await insertCollectItem(client, { id: collectB, accountId: accountB, storeId: storeB, sku: `sku-b-${suffix}` });
+      await client.query(
+        `INSERT INTO collect_raw_payloads
+           (id,collect_item_id,account_id,store_id,source_sku,source_url,payload_hash,payload,collected_at)
+         VALUES ($1,$2,$3,$4,$5,'https://source.invalid/b',$6,'{}'::jsonb,'2026-08-10T01:02:03.000Z')`,
+        [rawB, collectB, accountB, storeB, `sku-b-${suffix}`, sha(`raw:${rawB}`)],
+      );
+      await client.query(
+        `INSERT INTO product_drafts
+           (id,collect_item_id,source_payload_id,version,data_hash,data,updated_by)
+         VALUES ($1,$2,$3,1,$4,$5::jsonb,$6)`,
+        [
+          `draft-a-${suffix}`,
+          collectA,
+          rawB,
+          sha(`draft-a-${suffix}`),
+          JSON.stringify({ sourceCategory: { descriptionCategoryId: 111_111, typeIdCandidate: 222_222 } }),
+          accountA,
+        ],
+      );
+
+      await assert.rejects(apply063(client), (error) => error?.code === "23514");
+
+      assert.notEqual((await client.query("SELECT to_regclass('collect_category_resolutions') AS name")).rows[0].name, null);
       for (const table of [
         "collect_ozon_category_source_evidence",
         "account_ozon_shared_categories",

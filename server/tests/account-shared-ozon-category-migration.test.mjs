@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { mirrorStateToRelationalTablesInTransaction } from "../formal-persistence.mjs";
 
@@ -39,9 +41,10 @@ test("063 creates closed account-scoped source evidence and shared category cont
   assert.match(compact, /version INTEGER NOT NULL DEFAULT 1 CHECK \(version > 0\)/i);
   assert.match(compact, /current_description_category_id BIGINT NOT NULL CHECK \(current_description_category_id > 0\)/i);
   assert.match(compact, /current_type_id BIGINT NOT NULL CHECK \(current_type_id > 0\)/i);
-  assert.match(compact, /taxonomy_fingerprint TEXT NOT NULL CHECK \(taxonomy_fingerprint ~ '\^\[0-9a-f\]\{64\}\$'\)/i);
+  assert.match(compact, /taxonomy_fingerprint TEXT CHECK \(taxonomy_fingerprint IS NULL OR taxonomy_fingerprint ~ '\^\[0-9a-f\]\{64\}\$'\)/i);
   assert.match(compact, /safe_failure_code TEXT NOT NULL DEFAULT ''/i);
   assert.match(compact, /FOREIGN KEY \(account_id,source_evidence_id\) REFERENCES collect_ozon_category_source_evidence\(account_id,id\)/i);
+  assert.match(compact, /FOREIGN KEY \(account_id,raw_response_ref,collect_item_id\) REFERENCES collect_raw_payloads\(account_id,id,collect_item_id\)/i);
   assert.match(compact, /account_ozon_shared_categories_due_idx/i);
   assert.match(compact, /account_ozon_shared_categories_read_idx/i);
 });
@@ -79,8 +82,9 @@ test("063 guards current transitions, freezes evidence/events, and removes only 
   }
 });
 
-test("first relational load/write discards retired local matches without touching canonical source facts", async () => {
+test("failed relational mirror does not mutate retired fields on the caller state", async () => {
   const state = {
+    accounts: [{ id: "account-a", username: "account-a" }],
     collectCategoryResolutions: [{
       id: "legacy-target",
       accountId: "account-a",
@@ -102,19 +106,82 @@ test("first relational load/write discards retired local matches without touchin
   };
   const client = {
     async query() {
-      return { rows: [], rowCount: 0 };
+      throw new Error("forced relational mirror failure");
     },
   };
+  const before = structuredClone(state);
 
-  const result = await mirrorStateToRelationalTablesInTransaction(client, state);
+  await assert.rejects(
+    mirrorStateToRelationalTablesInTransaction(client, state),
+    /forced relational mirror failure/,
+  );
 
-  assert.equal(result.persistedStateChanged, true);
-  assert.equal(Object.hasOwn(state, "collectCategoryResolutions"), false);
-  assert.equal(Object.hasOwn(state, "collectCategoryResolutionRuntimeCursors"), false);
+  assert.deepEqual(state, before);
   assert.deepEqual(state.caches.collectBox[0].sourceCategory, {
     descriptionCategoryId: 17_039_736,
     typeIdCandidate: 123_456,
   });
-  assert.equal(JSON.stringify(state).includes("999999"), false);
-  assert.equal(JSON.stringify(state).includes("888888"), false);
+});
+
+test("JSON first load atomically removes retired category state and preserves source facts", async () => {
+  process.env.QH_LOCAL_NO_DOTENV = "1";
+  delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_HOST;
+  const { loadPersistedState } = await import("../persistence.mjs");
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "shared-category-json-load-"));
+  const dataFile = path.join(dataDir, "local-state.json");
+  const fixture = {
+    collectCategoryResolutions: [{ targetDescriptionCategoryId: 999_999, targetTypeId: 888_888 }],
+    collectCategoryResolutionRuntimeCursors: { global: "legacy" },
+    caches: {
+      collectBox: [{
+        id: "collect-a",
+        sourceCategory: { descriptionCategoryId: 17_039_736, typeIdCandidate: 123_456 },
+      }],
+    },
+  };
+  await writeFile(dataFile, JSON.stringify(fixture), "utf8");
+
+  const loaded = await loadPersistedState({ dataFile });
+  const stored = JSON.parse(await readFile(dataFile, "utf8"));
+
+  for (const state of [loaded, stored]) {
+    assert.equal(Object.hasOwn(state, "collectCategoryResolutions"), false);
+    assert.equal(Object.hasOwn(state, "collectCategoryResolutionRuntimeCursors"), false);
+    assert.deepEqual(state.caches.collectBox[0].sourceCategory, {
+      descriptionCategoryId: 17_039_736,
+      typeIdCandidate: 123_456,
+    });
+  }
+});
+
+test("JSON save removes retired category state only after the atomic write succeeds", async () => {
+  process.env.QH_LOCAL_NO_DOTENV = "1";
+  delete process.env.DATABASE_URL;
+  delete process.env.POSTGRES_HOST;
+  const { savePersistedState } = await import("../persistence.mjs");
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "shared-category-json-save-"));
+  const dataFile = path.join(dataDir, "local-state.json");
+  const state = {
+    collectCategoryResolutions: [{ targetDescriptionCategoryId: 999_999, targetTypeId: 888_888 }],
+    collectCategoryResolutionRuntimeCursors: { global: "legacy" },
+    caches: {
+      collectBox: [{
+        id: "collect-a",
+        sourceCategory: { descriptionCategoryId: 17_039_736, typeIdCandidate: 123_456 },
+      }],
+    },
+  };
+
+  await savePersistedState({ dataDir, dataFile, state });
+  const stored = JSON.parse(await readFile(dataFile, "utf8"));
+
+  for (const value of [state, stored]) {
+    assert.equal(Object.hasOwn(value, "collectCategoryResolutions"), false);
+    assert.equal(Object.hasOwn(value, "collectCategoryResolutionRuntimeCursors"), false);
+    assert.deepEqual(value.caches.collectBox[0].sourceCategory, {
+      descriptionCategoryId: 17_039_736,
+      typeIdCandidate: 123_456,
+    });
+  }
 });

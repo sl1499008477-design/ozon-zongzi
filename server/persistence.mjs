@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import {
   encryptionHealth,
   protectStateForStorage,
@@ -21,6 +22,54 @@ const STATE_ROW_ID = "local-state";
 let schemaReady = false;
 let formalBackfillComplete = false;
 let formalBackfillError = "";
+const RETIRED_CATEGORY_STATE_KEYS = Object.freeze([
+  "collectCategoryResolutions",
+  "collectCategoryResolutionRuntimeCursors",
+]);
+
+function clonePersistenceState(state = {}) {
+  const clone = structuredClone(state);
+  for (const key of ["__storageVersion", "__deletedAccountScopes"]) {
+    if (!Object.hasOwn(state, key)) continue;
+    Object.defineProperty(clone, key, {
+      value: structuredClone(state[key]),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return clone;
+}
+
+export function normalizeRetiredCategoryState(state = {}) {
+  const normalized = clonePersistenceState(state);
+  let changed = false;
+  for (const key of RETIRED_CATEGORY_STATE_KEYS) {
+    if (!Object.hasOwn(normalized, key)) continue;
+    delete normalized[key];
+    changed = true;
+  }
+  return { state: normalized, changed };
+}
+
+function commitNormalizedState(target, normalized) {
+  for (const key of RETIRED_CATEGORY_STATE_KEYS) delete target[key];
+  for (const key of ["auditEvents"]) {
+    if (Object.hasOwn(normalized, key)) target[key] = normalized[key];
+  }
+  for (const key of ["__storageVersion", "__deletedAccountScopes"]) {
+    if (!Object.hasOwn(normalized, key)) {
+      delete target[key];
+      continue;
+    }
+    Object.defineProperty(target, key, {
+      value: normalized[key],
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+}
 
 function stateTableName() {
   const name = process.env.POSTGRES_STATE_TABLE || "local_state";
@@ -50,7 +99,17 @@ async function ensureSchema(pool) {
 async function readJsonState(dataFile) {
   try {
     const raw = await fs.readFile(dataFile, "utf8");
-    return unprotectStateFromStorage(JSON.parse(raw));
+    const result = normalizeRetiredCategoryState(
+      unprotectStateFromStorage(JSON.parse(raw)),
+    );
+    if (result.changed) {
+      await writeJsonAtomically({
+        dataDir: path.dirname(dataFile),
+        dataFile,
+        value: protectStateForStorage(result.state),
+      });
+    }
+    return result.state;
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
@@ -158,8 +217,11 @@ export async function loadPersistedState({ dataFile }) {
   const result = await pool.query(`SELECT state, version FROM ${table} WHERE id = $1`, [STATE_ROW_ID]);
   if (result.rows[0]?.state) {
     let version = Number(result.rows[0].version) || 1;
-    const state = unprotectStateFromStorage(result.rows[0].state);
-    if (stateNeedsSecretProtection(result.rows[0].state)) {
+    const normalized = normalizeRetiredCategoryState(
+      unprotectStateFromStorage(result.rows[0].state),
+    );
+    const state = normalized.state;
+    if (normalized.changed || stateNeedsSecretProtection(result.rows[0].state)) {
       const protectedState = protectStateForStorage(state);
       const update = await pool.query(
         `
@@ -202,9 +264,12 @@ export async function loadPersistedState({ dataFile }) {
 }
 
 export async function savePersistedState({ dataDir, dataFile, state }) {
-  const protectedState = protectStateForStorage(state);
+  const normalized = normalizeRetiredCategoryState(state);
+  const persistenceState = normalized.state;
+  const protectedState = protectStateForStorage(persistenceState);
   if (!postgresEnabled()) {
     await writeJsonAtomically({ dataDir, dataFile, value: protectedState });
+    commitNormalizedState(state, persistenceState);
     return;
   }
 
@@ -216,11 +281,12 @@ export async function savePersistedState({ dataDir, dataFile, state }) {
     await persistPostgresStateAtomically({
       client,
       table,
-      state,
+      state: persistenceState,
       protectedState,
       refreshProtectedState: protectStateForStorage,
       mirror: mirrorStateToRelationalTablesInTransaction,
     });
+    commitNormalizedState(state, persistenceState);
   } finally {
     client.release();
   }
