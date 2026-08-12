@@ -24,6 +24,48 @@ test("rejects real static Repository and recursive database imports across synta
   }
 });
 
+test("new shared category Repository is limited to exact approved category importers", () => {
+  const source = 'import { createJsonAccountSharedOzonCategoryRepository } from "./account-shared-ozon-category-repository.mjs";';
+  for (const modulePath of [
+    "server/collect-category-resolution-runtime.mjs",
+    "server/collect-category-auto-resolution-composition.mjs",
+    "server/collect-category-resolution-service.mjs",
+    "server/collector-ozon-enrichment-service.mjs",
+    "server/account-shared-ozon-category-service.mjs",
+  ]) {
+    assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(source, {
+      label: modulePath,
+      modulePath,
+    }));
+  }
+  for (const modulePath of [
+    "server/index.mjs",
+    "server/account-scoped-collection-routes.mjs",
+    "server/collect-category-resolution-service-helper.mjs",
+    "server/approved/account-shared-ozon-category-service.mjs",
+  ]) {
+    assert.throws(
+      () => assertCategoryResolutionPortBoundary(source, { label: modulePath, modulePath }),
+      (error) => error?.code === "CATEGORY_RESOLUTION_MODULE_BOUNDARY"
+        && error?.specifier === "./account-shared-ozon-category-repository.mjs",
+    );
+  }
+});
+
+test("retired named Repository remains forbidden even from new approved importers", () => {
+  assert.throws(
+    () => assertCategoryResolutionPortBoundary(
+      'import repository from "./collect-category-resolution-repository.mjs";',
+      {
+        label: "category runtime",
+        modulePath: "server/collect-category-resolution-runtime.mjs",
+      },
+    ),
+    (error) => error?.code === "CATEGORY_RESOLUTION_MODULE_BOUNDARY"
+      && error?.specifier === "./collect-category-resolution-repository.mjs",
+  );
+});
+
 test("rejects a static import after a string-named binding called from", () => {
   assertRejected(
     'import { "from" as value } from "./db/connection.mjs";',

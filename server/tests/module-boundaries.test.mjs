@@ -17,6 +17,7 @@ const [
   accountScopedCollectionRoutes,
   autoListingRoutes,
   autoListingRuntime,
+  sharedCategoryRepository,
 ] = await Promise.all([
   readFile(new URL("../index.mjs", import.meta.url), "utf8"),
   readFile(new URL("../../app/src/App.jsx", import.meta.url), "utf8"),
@@ -31,7 +32,33 @@ const [
   readFile(new URL("../account-scoped-collection-routes.mjs", import.meta.url), "utf8"),
   readFile(new URL("../auto-listing-routes.mjs", import.meta.url), "utf8"),
   readFile(new URL("../auto-listing-runtime.mjs", import.meta.url), "utf8"),
+  readFile(new URL("../account-shared-ozon-category-repository.mjs", import.meta.url), "utf8"),
 ]);
+
+assert.doesNotMatch(
+  sharedCategoryRepository,
+  /store_id|storeId|credential|ozon-client|fetch\s*\(/i,
+  "account-shared category persistence cannot carry store identity, credentials, or network access",
+);
+for (const modulePath of [
+  "server/collect-category-resolution-runtime.mjs",
+  "server/collect-category-auto-resolution-composition.mjs",
+  "server/collect-category-resolution-service.mjs",
+  "server/collector-ozon-enrichment-service.mjs",
+  "server/account-shared-ozon-category-service.mjs",
+]) {
+  assert.doesNotThrow(() => assertCategoryResolutionPortBoundary(
+    'import repository from "./account-shared-ozon-category-repository.mjs";',
+    { label: modulePath, modulePath },
+  ));
+}
+assert.throws(
+  () => assertCategoryResolutionPortBoundary(
+    'import repository from "./account-shared-ozon-category-repository.mjs";',
+    { label: "server/index.mjs", modulePath: "server/index.mjs" },
+  ),
+  (error) => error?.code === "CATEGORY_RESOLUTION_MODULE_BOUNDARY",
+);
 
 assert.ok(
   serverEntry.split("\n").length <= 5215,
@@ -92,7 +119,11 @@ function assertAutoListingRouteBoundary(source) {
       if (propertyName === "query") hasQueryCall = true;
     }
   });
-  assert.deepEqual(imports, ["./runtime-config.mjs"], "auto-listing routes may import only feature configuration");
+  assert.deepEqual(
+    imports,
+    ["./runtime-config.mjs", "./auto-listing-currency.mjs"],
+    "auto-listing routes may import only feature configuration and pure currency policy",
+  );
   assert.equal(hasQueryCall, false, "auto-listing routes must not execute SQL query calls");
 }
 
@@ -111,7 +142,8 @@ for (const source of [
   'const rows = await executor["query"]("SELECT * FROM auto_listing_jobs");',
   "const rows = await executor['query']('DELETE FROM auto_listing_jobs');",
 ]) {
-  const fixture = `import { autoListingEnabled } from "./runtime-config.mjs";\n${source}`;
+  const fixture = `import { autoListingEnabled } from "./runtime-config.mjs";
+import { normalizeAutoListingCurrency } from "./auto-listing-currency.mjs";\n${source}`;
   assert.throws(() => assertAutoListingRouteBoundary(fixture), /must not execute SQL query calls/);
 }
 assert.match(
