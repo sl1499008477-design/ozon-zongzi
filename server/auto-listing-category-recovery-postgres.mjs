@@ -560,9 +560,7 @@ export function createAutoListingCategoryRecoveryPostgres({
         const identity = { ...input, attemptId: targetAttemptId };
         let row = (await client.query(
           `UPDATE submission_category_recovery_attempts
-              SET status='NEEDS_REVIEW',corrected_items=NULL,corrected_items_hash=NULL,
-                  replacement_shared_category_id=NULL,replacement_shared_category_version=NULL,
-                  retry_ozon_task_id=NULL,safe_review_code=$11,completed_at=$12,
+              SET status='NEEDS_REVIEW',safe_review_code=$11,completed_at=$12,
                   updated_at=GREATEST($12::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
             WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
               AND triggering_error_evidence_id=$4 AND id=$5 AND source_evidence_id=$6

@@ -189,6 +189,36 @@ if (!enabled) {
         "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE", ...attemptBase.slice(12, 13),
         "2026-08-13T00:00:00.000Z",
       ]);
+      const assertCurrentBasisRejectsDirectClaim = async (mutateSql, mutateParams) => {
+        await client.query("BEGIN");
+        try {
+          await client.query(mutateSql, mutateParams);
+          await assertCheckRejected(client, forgedAttemptSql, attemptBase);
+        } finally {
+          await client.query("ROLLBACK");
+        }
+      };
+      await assertCurrentBasisRejectsDirectClaim(
+        `UPDATE ${q(schema)}.submission_items SET product_id='99' WHERE id=$1`, [ids.item],
+      );
+      await assertCurrentBasisRejectsDirectClaim(
+        `UPDATE ${q(schema)}.submission_items SET status='CHECKING' WHERE id=$1`, [ids.item],
+      );
+      await assertCurrentBasisRejectsDirectClaim(
+        `UPDATE ${q(schema)}.submission_jobs SET status='SUCCEEDED' WHERE id=$1`, [ids.job],
+      );
+      await assertCurrentBasisRejectsDirectClaim(
+        `UPDATE ${q(schema)}.submission_jobs SET ozon_task_id='task-stale' WHERE id=$1`, [ids.job],
+      );
+      await assertCurrentBasisRejectsDirectClaim(
+        `UPDATE ${q(schema)}.account_ozon_shared_categories
+            SET status='INVALIDATED',version=2,safe_failure_code='OZON_CATEGORY_INVALIDATED',
+                updated_at=updated_at+INTERVAL '1 second' WHERE id=$1`, [ids.shared],
+      );
+      await assertCurrentBasisRejectsDirectClaim(
+        `UPDATE ${q(schema)}.account_ozon_shared_categories
+            SET version=2,updated_at=updated_at+INTERVAL '1 second' WHERE id=$1`, [ids.shared],
+      );
       const claimInput = {
         accountId: ids.account, jobId: ids.job, snapshotId: ids.snapshot, evidenceId: evidence.id,
         sourceEvidenceId: ids.source, oldSharedCategoryId: ids.shared, oldSharedCategoryVersion: 1,
@@ -271,6 +301,10 @@ if (!enabled) {
         [corrected, "a".repeat(64), ids.shared, 2],
         [[{ ...corrected[0], description_category_id: 31 }], canonicalSha([{ ...corrected[0], description_category_id: 31 }]), ids.shared, 2],
         [corrected, canonicalSha(corrected), forgedSharedId, 2],
+        [[Object.fromEntries(Object.entries(corrected[0]).filter(([key]) => key !== "attributes"))],
+          canonicalSha([Object.fromEntries(Object.entries(corrected[0]).filter(([key]) => key !== "attributes"))]), ids.shared, 2],
+        [[{ ...corrected[0], attributes: null }], canonicalSha([{ ...corrected[0], attributes: null }]), ids.shared, 2],
+        [[{ ...corrected[0], attributes: {} }], canonicalSha([{ ...corrected[0], attributes: {} }]), ids.shared, 2],
       ]) {
         await assertCheckRejected(client, directMatchSql, [
           attempt.attemptId, JSON.stringify(items), hash, replacementId, version,
@@ -369,9 +403,100 @@ if (!enabled) {
         corrected_items: null, corrected_items_hash: null, replacement_shared_category_id: null,
         replacement_shared_category_version: null, retry_ozon_task_id: null,
       });
+      const postMatchJobIds = [];
+      const assertPostMatchReviewPreservesProvenance = async (label, acceptRetry) => {
+        const postIds = await seed(client, `${suffix}${label}`);
+        postMatchJobIds.push(postIds);
+        const postSnapshot = (await client.query(
+          `SELECT items,snapshot_hash FROM ${q(schema)}.submission_snapshots WHERE id=$1`,
+          [postIds.snapshot],
+        )).rows[0];
+        const postEvidenceId = `category-error-${suffix}-${label}`;
+        await client.query(insertEvidenceSql, [
+          postEvidenceId, postIds.account, postIds.job, postIds.snapshot, postIds.item,
+          "offer-a", "task-original", postSnapshot.snapshot_hash, JSON.stringify(postSnapshot.items),
+          postIds.source, postIds.shared, 1, "ozon-category-policy.v2", JSON.stringify(safeEvidence()),
+        ]);
+        const postRepository = createAutoListingCategoryRecoveryPostgres({
+          pool: scopedPool, idFactory: () => `recovery-${suffix}-${label}`,
+          now: () => "2026-08-13T00:01:00.000Z",
+        });
+        const postClaim = {
+          accountId: postIds.account, jobId: postIds.job, snapshotId: postIds.snapshot,
+          evidenceId: postEvidenceId, sourceEvidenceId: postIds.source,
+          oldSharedCategoryId: postIds.shared, oldSharedCategoryVersion: 1,
+          originalOzonTaskId: "task-original", correlationId: `corr-${suffix}${label}`,
+        };
+        const postAttempt = await postRepository.claimCategoryRecovery(postClaim);
+        await client.query(`UPDATE ${q(schema)}.account_ozon_shared_categories
+          SET current_description_category_id=30,current_type_id=40,status='ACTIVE',
+              source='OZON_REFRESH',version=2,taxonomy_fingerprint=$1,safe_failure_code='',
+              validated_at=$2,updated_at=$2 WHERE account_id=$3 AND id=$4`,
+        ["c".repeat(64), "2026-08-13T00:01:00.100Z", postIds.account, postIds.shared]);
+        const postCorrected = [{
+          ...postSnapshot.items[0], description_category_id: 30, type_id: 40, attributes: [],
+        }];
+        const postHash = canonicalSha(postCorrected);
+        const identity = {
+          ...postClaim, attemptId: postAttempt.attemptId,
+        };
+        await postRepository.saveCategoryRecoveryMatch({
+          ...identity, expectedStatus: "CLAIMED", replacementSharedCategoryId: postIds.shared,
+          replacementSharedCategoryVersion: 2, correctedItems: postCorrected,
+          correctedItemsHash: postHash, transitionedAt: "2026-08-13T00:01:01.000Z",
+        });
+        await postRepository.markCategoryRecoveryRetryPending({
+          ...identity, expectedStatus: "MATCHED", transitionedAt: "2026-08-13T00:01:02.000Z",
+        });
+        let expectedRetry = null;
+        if (acceptRetry) {
+          expectedRetry = `task-retry-${label}`;
+          await postRepository.markCategoryRecoveryRetryAccepted({
+            ...identity, expectedStatus: "RETRY_PENDING", retryOzonTaskId: expectedRetry,
+            transitionedAt: "2026-08-13T00:01:03.000Z",
+          });
+        }
+        await assertCheckRejected(client,
+          `UPDATE ${q(schema)}.submission_category_recovery_attempts
+              SET status='NEEDS_REVIEW',corrected_items=NULL,corrected_items_hash=NULL,
+                  replacement_shared_category_id=NULL,replacement_shared_category_version=NULL,
+                  retry_ozon_task_id=NULL,safe_review_code='AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE',
+                  completed_at='2026-08-13T00:01:04.000Z',updated_at='2026-08-13T00:01:04.000Z'
+            WHERE account_id=$1 AND id=$2`, [postIds.account, postAttempt.attemptId]);
+        assert.deepEqual(await postRepository.requireCategoryRecoveryReview({
+          ...identity, safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE",
+          transitionedAt: "2026-08-13T00:01:05.000Z",
+        }), { attemptId: postAttempt.attemptId, status: "NEEDS_REVIEW" });
+        const preserved = (await client.query(`SELECT status,corrected_items,corrected_items_hash,
+          replacement_shared_category_id,replacement_shared_category_version,retry_ozon_task_id
+          FROM ${q(schema)}.submission_category_recovery_attempts WHERE account_id=$1 AND id=$2`,
+        [postIds.account, postAttempt.attemptId])).rows[0];
+        assert.deepEqual(preserved, {
+          status: "NEEDS_REVIEW", corrected_items: postCorrected, corrected_items_hash: postHash,
+          replacement_shared_category_id: postIds.shared,
+          replacement_shared_category_version: 2, retry_ozon_task_id: expectedRetry,
+        });
+        for (const [column, replacement] of [
+          ["corrected_items", "NULL"], ["corrected_items_hash", "NULL"],
+          ["replacement_shared_category_id", "NULL"],
+          ["replacement_shared_category_version", "NULL"],
+          ...(acceptRetry ? [["retry_ozon_task_id", "NULL"]] : []),
+        ]) {
+          await assertCheckRejected(client,
+            `UPDATE ${q(schema)}.submission_category_recovery_attempts
+                SET ${column}=${replacement},updated_at=updated_at+INTERVAL '1 second'
+              WHERE account_id=$1 AND id=$2`, [postIds.account, postAttempt.attemptId]);
+        }
+      };
+      await assertPostMatchReviewPreservesProvenance("pending-review", false);
+      await assertPostMatchReviewPreservesProvenance("accepted-review", true);
       await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`, [ids.account, ids.job]);
       await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`,
         [reviewIds.account, reviewIds.job]);
+      for (const postIds of postMatchJobIds) {
+        await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`,
+          [postIds.account, postIds.job]);
+      }
       const cleanup = (await client.query(`SELECT
         (SELECT COUNT(*)::INT FROM ${q(schema)}.submission_category_error_evidence) AS evidence,
         (SELECT COUNT(*)::INT FROM ${q(schema)}.submission_category_recovery_attempts) AS attempts`)).rows[0];

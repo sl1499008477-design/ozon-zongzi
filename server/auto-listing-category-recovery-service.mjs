@@ -187,6 +187,7 @@ function validCorrection(original, corrected, category) {
     const before = original[index];
     const after = projected[index];
     if (!after || Array.isArray(after)
+      || !Object.hasOwn(after, "attributes") || !Array.isArray(after.attributes)
       || after.description_category_id !== category.descriptionCategoryId
       || after.type_id !== category.typeId
       || (Object.hasOwn(after, "descriptionCategoryId")

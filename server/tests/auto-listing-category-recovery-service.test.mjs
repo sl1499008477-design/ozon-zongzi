@@ -336,6 +336,41 @@ test("correction cannot alter frozen price/currency/content/media/store/warehous
   assert.equal(calls.includes("shared-review"), true);
 });
 
+test("correction requires each item to own one descriptor-safe attributes array", async () => {
+  let getterRuns = 0;
+  const revoked = Proxy.revocable([], {});
+  revoked.revoke();
+  const cases = [
+    (item) => { const { attributes, ...missing } = item; return missing; },
+    (item) => ({ ...item, attributes: null }),
+    (item) => ({ ...item, attributes: {} }),
+    (item) => {
+      const next = { ...item };
+      Object.defineProperty(next, "attributes", {
+        enumerable: true,
+        get() { getterRuns += 1; throw new Error("attributes-secret"); },
+      });
+      return next;
+    },
+    (item) => ({ ...item, attributes: new Proxy([], {}) }),
+    (item) => ({ ...item, attributes: revoked.proxy }),
+  ];
+  for (const makeItem of cases) {
+    const { service, calls } = harness({
+      rebuildItems: async ({ originalItems }) => originalItems.map((item) => makeItem({
+        ...item, description_category_id: 30, type_id: 40, attributes: [],
+      })),
+    });
+    assert.deepEqual(await service.recover(request), {
+      attemptId: "attempt-a", status: "NEEDS_REVIEW",
+    });
+    assert.equal(calls.includes("save-match"), false);
+    assert.equal(calls.includes("schedule"), false);
+    assert.equal(calls.at(-1), "review");
+  }
+  assert.equal(getterRuns, 0);
+});
+
 test("cross-account or non-explicit/nonzero-product basis fails before store/Ozon access", async () => {
   for (const mutate of [
     (value) => ({ ...value, accountId: "account-b" }),

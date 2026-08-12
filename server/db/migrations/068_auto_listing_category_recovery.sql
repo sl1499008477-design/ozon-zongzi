@@ -156,9 +156,17 @@ CREATE TABLE submission_category_recovery_attempts (
     (status='SUCCEEDED' AND corrected_items IS NOT NULL
       AND retry_ozon_task_id IS NOT NULL AND safe_review_code='' AND completed_at IS NOT NULL)
     OR
-    (status='NEEDS_REVIEW' AND corrected_items IS NULL AND corrected_items_hash IS NULL
-      AND replacement_shared_category_id IS NULL AND replacement_shared_category_version IS NULL
-      AND retry_ozon_task_id IS NULL AND NULLIF(BTRIM(safe_review_code),'') IS NOT NULL
+    (status='NEEDS_REVIEW'
+      AND (
+        (corrected_items IS NULL AND corrected_items_hash IS NULL
+          AND replacement_shared_category_id IS NULL AND replacement_shared_category_version IS NULL
+          AND retry_ozon_task_id IS NULL)
+        OR
+        (corrected_items IS NOT NULL AND corrected_items_hash IS NOT NULL
+          AND replacement_shared_category_id IS NOT NULL
+          AND replacement_shared_category_version IS NOT NULL)
+      )
+      AND NULLIF(BTRIM(safe_review_code),'') IS NOT NULL
       AND completed_at IS NOT NULL)
   )
 );
@@ -229,6 +237,11 @@ FOR EACH ROW EXECUTE FUNCTION reject_submission_category_error_evidence_mutation
 
 CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_insert()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  expected_item_count INTEGER;
+  frozen_item_count INTEGER;
+  current_item_count BIGINT;
+  all_items_eligible BOOLEAN;
 BEGIN
   IF NEW.status<>'CLAIMED'
     OR NEW.corrected_items IS NOT NULL
@@ -239,20 +252,60 @@ BEGIN
     OR NEW.safe_review_code<>''
     OR NEW.completed_at IS NOT NULL
     OR NEW.updated_at IS DISTINCT FROM NEW.claimed_at
-    OR NOT EXISTS (
-      SELECT 1 FROM submission_category_error_evidence AS evidence
-       WHERE evidence.account_id=NEW.account_id
-         AND evidence.submission_job_id=NEW.submission_job_id
-         AND evidence.submission_snapshot_id=NEW.submission_snapshot_id
-         AND evidence.id=NEW.triggering_error_evidence_id
-         AND evidence.source_evidence_id=NEW.source_evidence_id
-         AND evidence.old_shared_category_id=NEW.old_shared_category_id
-         AND evidence.old_shared_category_version=NEW.old_shared_category_version
-         AND evidence.original_ozon_task_id=NEW.original_ozon_task_id
-         AND evidence.original_snapshot_hash=NEW.original_snapshot_hash
-    )
   THEN
     RAISE EXCEPTION 'invalid initial submission category recovery attempt'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT job.item_count,JSONB_ARRAY_LENGTH(evidence.original_items)
+    INTO expected_item_count,frozen_item_count
+    FROM submission_category_error_evidence AS evidence
+    JOIN submission_jobs AS job
+      ON job.account_id=evidence.account_id AND job.id=evidence.submission_job_id
+     AND job.snapshot_id=evidence.submission_snapshot_id
+    JOIN submission_snapshots AS snapshot
+      ON snapshot.account_id=evidence.account_id AND snapshot.id=evidence.submission_snapshot_id
+     AND snapshot.snapshot_hash=evidence.original_snapshot_hash
+     AND snapshot.items=evidence.original_items
+    JOIN collect_ozon_category_source_evidence AS source
+      ON source.account_id=evidence.account_id AND source.id=evidence.source_evidence_id
+    JOIN account_ozon_shared_categories AS shared
+      ON shared.account_id=evidence.account_id AND shared.id=evidence.old_shared_category_id
+     AND shared.source_evidence_id=evidence.source_evidence_id
+     AND shared.source_description_category_id=source.source_description_category_id
+     AND shared.source_type_id=source.source_type_id
+     AND shared.taxonomy_scope=source.taxonomy_scope
+   WHERE evidence.account_id=NEW.account_id
+     AND evidence.submission_job_id=NEW.submission_job_id
+     AND evidence.submission_snapshot_id=NEW.submission_snapshot_id
+     AND evidence.id=NEW.triggering_error_evidence_id
+     AND evidence.source_evidence_id=NEW.source_evidence_id
+     AND evidence.old_shared_category_id=NEW.old_shared_category_id
+     AND evidence.old_shared_category_version=NEW.old_shared_category_version
+     AND evidence.original_ozon_task_id=NEW.original_ozon_task_id
+     AND evidence.original_snapshot_hash=NEW.original_snapshot_hash
+     AND job.status='FAILED' AND job.ozon_task_id=evidence.original_ozon_task_id
+     AND shared.version=evidence.old_shared_category_version AND shared.status='ACTIVE'
+   FOR UPDATE OF job,snapshot,shared;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'initial submission category recovery basis is no longer eligible'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT COUNT(*),COALESCE(BOOL_AND(
+      locked_item.status='FAILED' AND NULLIF(BTRIM(locked_item.product_id),'') IS NULL
+    ),FALSE)
+    INTO current_item_count,all_items_eligible
+    FROM (
+      SELECT item.status,item.product_id
+        FROM submission_items AS item
+       WHERE item.job_id=NEW.submission_job_id
+         AND item.snapshot_id=NEW.submission_snapshot_id
+       ORDER BY item.id
+       FOR UPDATE
+    ) AS locked_item;
+  IF current_item_count<>expected_item_count OR current_item_count<>frozen_item_count
+    OR NOT all_items_eligible
+  THEN
+    RAISE EXCEPTION 'initial submission category recovery items are no longer eligible'
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
@@ -350,7 +403,7 @@ BEGIN
             OR JSONB_TYPEOF(corrected_item.value->'type_id')<>'number'
             OR NOT ((corrected_item.value->>'type_id') ~ '^[1-9][0-9]*$')
             OR (corrected_item.value->>'type_id')::NUMERIC <> replacement.current_type_id
-            OR JSONB_TYPEOF(corrected_item.value->'attributes')<>'array'
+            OR JSONB_TYPEOF(corrected_item.value->'attributes') IS DISTINCT FROM 'array'
       )
     THEN
       RAISE EXCEPTION 'invalid matched submission category recovery correction'
@@ -371,17 +424,15 @@ BEGIN
     OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
     OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at
     OR NEW.updated_at <= OLD.updated_at
-    OR (NEW.status<>'NEEDS_REVIEW' AND OLD.corrected_items IS NOT NULL
+    OR (OLD.corrected_items IS NOT NULL
       AND NEW.corrected_items IS DISTINCT FROM OLD.corrected_items)
-    OR (NEW.status<>'NEEDS_REVIEW' AND OLD.corrected_items_hash IS NOT NULL
+    OR (OLD.corrected_items_hash IS NOT NULL
       AND NEW.corrected_items_hash IS DISTINCT FROM OLD.corrected_items_hash)
     OR (OLD.replacement_shared_category_id IS NOT NULL
-      AND NEW.status<>'NEEDS_REVIEW'
       AND NEW.replacement_shared_category_id IS DISTINCT FROM OLD.replacement_shared_category_id)
     OR (OLD.replacement_shared_category_version IS NOT NULL
-      AND NEW.status<>'NEEDS_REVIEW'
       AND NEW.replacement_shared_category_version IS DISTINCT FROM OLD.replacement_shared_category_version)
-    OR (OLD.retry_ozon_task_id IS NOT NULL AND NEW.status<>'NEEDS_REVIEW'
+    OR (OLD.retry_ozon_task_id IS NOT NULL
       AND NEW.retry_ozon_task_id IS DISTINCT FROM OLD.retry_ozon_task_id)
     OR (OLD.retry_ozon_task_id IS NULL AND NEW.retry_ozon_task_id IS NOT NULL
       AND NEW.status<>'RETRY_ACCEPTED')
