@@ -552,10 +552,45 @@ test("loads finalizable Excel source rows with account and ready-state boundarie
   assert.equal(result.importFile.id, "import-1");
   assert.equal(result.sources[0].id, "row-1");
   assert.equal(result.sources[0].collectItemId, "collect-1");
+  assert.equal(
+    result.sources[0].sourceVersion,
+    "raw:hash-1:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+  );
   assert.match(calls[1].sql, /r\.status='READY'/u);
   assert.match(calls[1].sql, /r\.account_id=\$1/u);
   assert.match(calls[1].sql, /c\.account_id=r\.account_id/u);
   assert.deepEqual(calls[1].params, ["account-a", "import-1"]);
+});
+
+test("loads Collect Box source rows with versioned draft and raw identities", async () => {
+  const repository = createAutoListingRepository({
+    pool: {
+      connect: async () => assert.fail("read path must not open a transaction"),
+      async query() {
+        return { rows: [
+          {
+            id: "collect-draft", account_id: "account-a", source: "SKU", source_sku: "7001", summary: {},
+            draft_id: "draft-1", draft_version: 7, draft_data: {}, raw_response_ref: "raw-draft",
+            raw_payload: { normalized: {} }, payload_hash: "payload-draft", collected_at: "2026-08-07T00:00:00.000Z",
+          },
+          {
+            id: "collect-raw", account_id: "account-a", source: "SKU", source_sku: "7002", summary: {},
+            draft_id: null, draft_version: null, draft_data: null, raw_response_ref: "raw-raw",
+            raw_payload: { normalized: {} }, payload_hash: "payload-raw", collected_at: "2026-08-07T00:00:00.000Z",
+          },
+        ] };
+      },
+    },
+  });
+
+  const result = await repository.loadCollectSources({
+    accountId: "account-a", collectItemIds: ["collect-draft", "collect-raw"],
+  });
+
+  assert.deepEqual(result.map(({ sourceVersion }) => sourceVersion), [
+    "draft:7:payload-draft:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+    "raw:payload-raw:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+  ]);
 });
 
 test("job creation locks and freezes the one enabled account AI profile without latest-profile inference", async () => {

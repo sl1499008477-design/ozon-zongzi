@@ -11,6 +11,7 @@ import { buildGeneratedAssetObjectKey } from "../auto-listing-asset-store.mjs";
 import { createAutoListingRepository } from "../auto-listing-repository.mjs";
 import { createAutoListingRfbsWarehouseVerifier } from "../auto-listing-rfbs-warehouse-verifier.mjs";
 import { createAutoListingService } from "../auto-listing-service.mjs";
+import { buildAutoListingBlockedSourceEvidence } from "../auto-listing-source-snapshot.mjs";
 import { createPostgresAutoListingUploadRepository } from "../auto-listing-upload-postgres.mjs";
 import { createAutoListingUploadService } from "../auto-listing-upload-service.mjs";
 import { createPostgresListingAssetPublicationRepository } from "../listing-asset-publication-postgres.mjs";
@@ -721,9 +722,44 @@ if (!enabled) {
 
       // A CNY store with no explicit source currency keeps CNY through create, upload, and Ozon import.
       const cnyCallsStart = calls.length;
-      const cny = await createScenarioJob(await seedScenario("cny-success", {
+      const cnyScenario = await seedScenario("cny-success", {
         currency: "CNY", sourceCurrency: null,
-      }));
+      });
+      const [cnySource] = await creationRepository.loadCollectSources({
+        accountId: cnyScenario.account,
+        collectItemIds: [cnyScenario.collect],
+      });
+      const contractSuffix = ":AUTO_LISTING_SOURCE_SNAPSHOT_V2";
+      assert.equal(cnySource.sourceVersion.endsWith(contractSuffix), true);
+      const legacySourceVersion = cnySource.sourceVersion.slice(0, -contractSuffix.length);
+      const legacyEvidence = buildAutoListingBlockedSourceEvidence({
+        accountId: cnyScenario.account,
+        sourceType: "COLLECT_BOX",
+        sourceRecordId: cnyScenario.collect,
+        sourceVersion: legacySourceVersion,
+        productDraft: cnySource.productDraft,
+        rawResponseRef: cnySource.rawResponseRef,
+        rawResponseHash: cnySource.rawResponseHash,
+        rawCollectedAt: cnySource.rawCollectedAt,
+        failureCode: "AUTO_LISTING_SOURCE_CURRENCY_NOT_RUB",
+      });
+      await pool.query(`INSERT INTO auto_listing_source_snapshots (
+        id,account_id,source_type,source_record_id,source_version,snapshot,snapshot_hash,raw_response_ref
+      ) VALUES ($1,$2,'COLLECT_BOX',$3,$4,$5::jsonb,$6,$7)`, [
+        `legacy-currency-${suffix}`, cnyScenario.account, cnyScenario.collect,
+        legacySourceVersion, JSON.stringify(legacyEvidence.blockedEvidence),
+        legacyEvidence.snapshotHash, legacyEvidence.rawResponseRef,
+      ]);
+      const cny = await createScenarioJob(cnyScenario);
+      const versionRows = (await pool.query(`SELECT source_version,snapshot_hash
+        FROM auto_listing_source_snapshots
+        WHERE account_id=$1 AND source_record_id=$2 ORDER BY source_version`,
+      [cnyScenario.account, cnyScenario.collect])).rows;
+      assert.equal(versionRows.length, 2);
+      assert.equal(versionRows.some(({ source_version }) => source_version === legacySourceVersion), true);
+      assert.equal(versionRows.some(({ source_version }) => source_version === cnySource.sourceVersion), true);
+      assert.equal(versionRows.find(({ source_version }) => source_version === legacySourceVersion).snapshot_hash,
+        legacyEvidence.snapshotHash);
       const cnyBase = (await pool.query(`SELECT listing_base_version,pricing_evidence,ozon_ready_variants
         FROM auto_listing_listing_bases WHERE account_id=$1 AND job_id=$2 AND item_id=$3`,
       [cny.account, cny.job, cny.item])).rows[0];

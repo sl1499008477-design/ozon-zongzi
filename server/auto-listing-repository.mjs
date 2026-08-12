@@ -31,6 +31,7 @@ const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CURRENCY_UNSUPPORTED",
   "AUTO_LISTING_SOURCE_CURRENCY_MISMATCH",
 ]);
+const SOURCE_SNAPSHOT_CONTRACT_VERSION = "AUTO_LISTING_SOURCE_SNAPSHOT_V2";
 
 function repositoryError(code, status = 422) {
   const error = new Error(code);
@@ -49,6 +50,14 @@ function requiredText(value, code = "AUTO_LISTING_REPOSITORY_INVALID") {
   const result = typeof value === "string" ? value.trim() : "";
   if (!result) throw repositoryError(code);
   return result;
+}
+
+function sourceSnapshotVersion(row = {}) {
+  const payloadIdentity = row.payload_hash || row.raw_response_ref || "missing";
+  const businessVersion = row.draft_id
+    ? `draft:${row.draft_version}:${payloadIdentity}`
+    : `raw:${payloadIdentity}`;
+  return `${businessVersion}:${SOURCE_SNAPSHOT_CONTRACT_VERSION}`;
 }
 
 function json(value) {
@@ -705,9 +714,7 @@ export function createAutoListingRepository({
         return {
           id: row.id,
           accountId: row.account_id,
-          sourceVersion: row.draft_id
-            ? `draft:${row.draft_version}:${row.payload_hash || row.raw_response_ref || "missing"}`
-            : `raw:${row.payload_hash || row.raw_response_ref || "missing"}`,
+          sourceVersion: sourceSnapshotVersion(row),
           rawResponseRef: row.raw_response_ref || null,
           rawResponseHash: row.payload_hash || null,
           rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,
@@ -774,9 +781,7 @@ export function createAutoListingRepository({
           id: row.row_id,
           collectItemId: row.collect_item_id,
           accountId: row.account_id,
-          sourceVersion: row.draft_id
-            ? `draft:${row.draft_version}:${row.payload_hash || row.raw_response_ref || "missing"}`
-            : `raw:${row.payload_hash || row.raw_response_ref || "missing"}`,
+          sourceVersion: sourceSnapshotVersion(row),
           rawResponseRef: row.raw_response_ref || null,
           rawResponseHash: row.payload_hash || null,
           rawCollectedAt: row.collected_at ? new Date(row.collected_at).toISOString() : null,

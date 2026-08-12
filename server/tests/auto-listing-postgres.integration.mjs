@@ -457,6 +457,10 @@ if (!enabled) {
       );
       await client.query("UPDATE collect_items SET current_draft_id=$1 WHERE id=$2 AND account_id=$3", [linkedDraft, linkedCollect, accountA]);
       const linked = await repository.loadCollectSources({ accountId: accountA, collectItemIds: [linkedCollect] });
+      assert.equal(
+        linked[0].sourceVersion,
+        "draft:7:payload-one:AUTO_LISTING_SOURCE_SNAPSHOT_V2",
+      );
       assert.equal(linked[0].rawResponseRef, rawOne);
       assert.equal(linked[0].rawResponseHash, "payload-one");
       assert.equal(linked[0].rawCollectedAt, "2026-08-04T00:00:00.000Z");
