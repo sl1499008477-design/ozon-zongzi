@@ -153,11 +153,11 @@ function classifyEmptyPolicyV1(rawInput) {
   const productId = normalizedProductId(item);
   const errors = normalizedErrors(item);
   if (offerId === undefined || offerId !== expectedOfferId || state === undefined || productId === undefined || errors === undefined) return UNKNOWN;
-  if (SUCCEEDED_STATES.has(state)) return productId === null ? UNKNOWN : frozenResult("SUCCEEDED");
-  if (CHECKING_STATES.has(state)) return frozenResult("CHECKING");
-  if (state === "skipped") return frozenResult("OTHER_TERMINAL_FAILURE");
+  if (SUCCEEDED_STATES.has(state)) return productId === null || errors.length ? UNKNOWN : frozenResult("SUCCEEDED");
+  if (CHECKING_STATES.has(state)) return productId !== null || errors.length ? UNKNOWN : frozenResult("CHECKING");
+  if (state === "skipped") return productId === null ? frozenResult("OTHER_TERMINAL_FAILURE") : UNKNOWN;
   if (!TERMINAL_FAILURE_STATES.has(state)) return UNKNOWN;
-  return frozenResult("OTHER_TERMINAL_FAILURE");
+  return productId === null ? frozenResult("OTHER_TERMINAL_FAILURE") : UNKNOWN;
 }
 
 export function classifyOzonCategoryImportResult(input) {

@@ -100,7 +100,7 @@ function normalizeItem(item, index, expectedOfferId, batchHasPartialOutcome) {
     index,
     sku: safeString(item.sku),
     offerId: itemOfferId(item),
-    productId: safeProductId(item.product_id),
+    productId: status === "SUCCEEDED" ? safeProductId(item.product_id) : "",
     status,
     errors: Object.freeze(status === "FAILED" ? ["OZON_ITEM_RESULT"] : []),
     classification: classified.classification,
@@ -184,4 +184,42 @@ export function deriveOzonImportStatus(data, rawOptions) {
     errorMessage: direct === "FAILED" ? "Ozon 返回商品导入失败" : "",
     statusMessage: "",
   });
+}
+
+const NORMALIZED_ITEM_KEYS = Object.freeze([
+  "index", "sku", "offerId", "productId", "status", "errors", "classification", "errorEvidence", "response",
+]);
+
+function exactKeys(object, keys) {
+  const actual = Object.keys(object);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(object, key));
+}
+
+function exactStringArray(actual, expected) {
+  return Array.isArray(actual) && actual.length === expected.length
+    && actual.every((value, index) => value === expected[index]);
+}
+
+export function projectOzonNormalizedImportItems(rawItems) {
+  const items = projectOzonImportCarrier(rawItems);
+  if (!Array.isArray(items) || items.length === 0) return null;
+  for (const [index, item] of items.entries()) {
+    if (!objectValue(item) || !exactKeys(item, NORMALIZED_ITEM_KEYS)
+        || item.index !== index || !objectValue(item.response)
+        || item.errorEvidence !== null) return null;
+  }
+  const expectedOfferIds = items.map((item) => item.offerId);
+  const derived = deriveOzonImportStatus({
+    result: { items: items.map((item) => item.response) },
+  }, { expectedOfferIds });
+  if (derived.items.length !== items.length) return null;
+  for (const [index, item] of items.entries()) {
+    const expected = derived.items[index];
+    if (item.index !== expected.index || item.sku !== expected.sku
+        || item.offerId !== expected.offerId || item.productId !== expected.productId
+        || item.status !== expected.status || item.classification !== expected.classification
+        || item.errorEvidence !== expected.errorEvidence
+        || !exactStringArray(item.errors, expected.errors)) return null;
+  }
+  return deepFreeze(items);
 }

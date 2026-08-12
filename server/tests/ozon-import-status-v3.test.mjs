@@ -42,6 +42,20 @@ const canonicalSuccess = deriveOzonImportStatus({ result: { items: [{
 }] } }, { expectedOfferIds: ["offer-1"] });
 assert.equal(canonicalSuccess.items[0].productId, String(Number.MAX_SAFE_INTEGER));
 
+for (const item of [
+  { offer_id: "offer-1", product_id: 123, status: "processing", errors: [] },
+  { offer_id: "offer-1", product_id: 123, status: "failed", errors: [] },
+  { offer_id: "offer-1", product_id: 123, status: "skipped", errors: [] },
+  { offer_id: "offer-1", product_id: 123, status: "imported", errors: [{ code: "X", field: "x" }] },
+]) {
+  const contradictory = deriveOzonImportStatus({ result: { items: [item] } }, {
+    expectedOfferIds: ["offer-1"],
+  });
+  assert.equal(contradictory.status, "UNKNOWN_RESULT");
+  assert.equal(contradictory.items[0].productId, "");
+  assert.equal(contradictory.items[0].errorEvidence, null);
+}
+
 const partial = deriveOzonImportStatus({
   result: {
     items: [

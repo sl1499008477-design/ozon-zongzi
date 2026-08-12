@@ -22,6 +22,7 @@ import {
   projectOzonImportCarrier,
   projectProductionOzonImportErrorEvidence,
 } from "./ozon-category-import-error-policy.mjs";
+import { projectOzonNormalizedImportItems } from "./ozon-import-status.mjs";
 
 export const LISTING_QUEUE = "ozon-product-import-v3";
 export const TERMINAL_SUBMISSION_STATUSES = new Set(["SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED"]);
@@ -2167,27 +2168,10 @@ export async function updateSubmissionItemsV3(rawInput = {}) {
     throw scopeFailure();
   }
   const { accountId, jobId, snapshotId, ozonTaskId, statusVersion } = input;
-  const projectedItems = input.items;
-  if (!Array.isArray(projectedItems)) throw identityFailure();
-  const allowedItemKeys = new Set([
-    "index", "sku", "offerId", "productId", "status", "errors", "classification", "errorEvidence", "response",
-  ]);
-  const allowedStatuses = new Set(["CHECKING", "SUCCEEDED", "FAILED", "SKIPPED", "UNKNOWN_RESULT"]);
+  const projectedItems = projectOzonNormalizedImportItems(input.items);
+  if (!projectedItems) throw contractFailure();
   const offerCounts = new Map();
   for (const item of projectedItems) {
-    if (!item || typeof item !== "object" || Array.isArray(item)
-        || Object.keys(item).some((key) => !allowedItemKeys.has(key))
-        || typeof item.offerId !== "string" || !item.offerId || item.offerId.length > 240
-        || typeof item.status !== "string" || !allowedStatuses.has(item.status)
-        || !Object.hasOwn(item, "productId")) throw contractFailure();
-    const productIdAbsent = item.productId === "" || item.productId === null;
-    const numericProductId = typeof item.productId === "string" && /^[1-9][0-9]{0,15}$/u.test(item.productId)
-      ? Number(item.productId)
-      : 0;
-    const canonicalProductId = Number.isSafeInteger(numericProductId) && numericProductId > 0
-      && String(numericProductId) === item.productId;
-    if ((item.status === "SUCCEEDED" && !canonicalProductId)
-        || (item.status !== "SUCCEEDED" && !productIdAbsent)) throw contractFailure();
     offerCounts.set(item.offerId, (offerCounts.get(item.offerId) || 0) + 1);
   }
   return transaction(async (client) => {
@@ -2242,7 +2226,7 @@ export async function updateSubmissionItemsV3(rawInput = {}) {
       const failed = status === "FAILED";
       const response = Object.freeze({
         schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1",
-        rawResponse: update.response && typeof update.response === "object" ? update.response : {},
+        rawResponse: update.response,
         errorEvidence: evidence,
       });
       nextByTargetId.set(target.id, { target, status, productId, failed, evidence, response });

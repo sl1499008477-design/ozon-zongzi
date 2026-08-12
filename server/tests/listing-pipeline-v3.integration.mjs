@@ -51,6 +51,13 @@ function persistSubmissionItems(jobId, items, scope) {
   return updateSubmissionItemsV3({ ...scope, jobId, items });
 }
 
+function normalizedImportItems(rawItems) {
+  const expectedOfferIds = rawItems.map((item) => item.offer_id);
+  const result = deriveOzonImportStatus({ result: { items: rawItems } }, { expectedOfferIds });
+  assert.equal(result.items.length, rawItems.length);
+  return result.items;
+}
+
 if (!postgresEnabled()) {
   console.log("listing pipeline v3 integration skipped: PostgreSQL is not configured");
   process.exit(0);
@@ -441,17 +448,6 @@ try {
   assert.equal(snapshot.rows[0].items[0].name, "用户修改标题");
   assert.equal(snapshot.rows[0].store_id, storeId);
 
-  const safeEvidence = Object.freeze({
-    schemaVersion: "OZON_IMPORT_ERROR_EVIDENCE_V1",
-    policyVersion: 1,
-    code: "TEST_SAFE_EVIDENCE",
-    field: "description_category_id",
-    attributeId: null,
-    state: "FAILED",
-    offerId: "offer-1",
-    productId: null,
-    classification: "EXPLICIT_CATEGORY_FAILURE",
-  });
   const createdScope = {
     accountId,
     snapshotId: created.job.snapshotId,
@@ -472,10 +468,13 @@ try {
     (id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id)
     VALUES ($1,$2,$3,'offer-1',0,'foreign-source','offer-1','PENDING','')`,
   [foreignScopeItemId, foreignScopeJobId, foreignScopeSnapshotId]);
-  await assert.rejects(persistSubmissionItems(foreignScopeJobId, [{
-    offerId: "offer-1", status: "FAILED", productId: "",
-    response: { message: "cross-account-same-identity-secret" }, errorEvidence: null,
-  }], createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
+  const crossAccountFailureItems = normalizedImportItems([{
+    offer_id: "offer-1", sku: "foreign-source", product_id: 0, status: "failed",
+    errors: [{ code: "UNKNOWN", field: "unknown", message: "cross-account-same-identity-secret" }],
+  }]);
+  await assert.rejects(persistSubmissionItems(
+    foreignScopeJobId, crossAccountFailureItems, createdScope,
+  ), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/cross-account-same-identity-secret/iu.test(error.message));
   assert.deepEqual((await pool.query(
     "SELECT status,product_id FROM submission_items WHERE id=$1", [foreignScopeItemId],
@@ -494,15 +493,14 @@ try {
     response: { message: "legacy-signature-secret" }, errorEvidence: null,
   }]), (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/legacy-signature-secret/iu.test(error.message));
-  await assert.rejects(persistSubmissionItems(created.job.id, [{
-    offerId: "wrong-offer",
-    sku: "source-sku",
-    status: "FAILED",
-    productId: "",
-    errors: ["raw-third-party-secret"],
-    response: { message: "raw-third-party-secret", credential: "secret" },
-    errorEvidence: safeEvidence,
-  }], createdScope), (error) => error?.code === "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"
+  const wrongOfferItems = normalizedImportItems([{
+    offer_id: "wrong-offer", sku: "source-sku", product_id: 0, status: "failed",
+    credential: "secret",
+    errors: [{ code: "UNKNOWN", field: "unknown", message: "raw-third-party-secret" }],
+  }]);
+  await assert.rejects(persistSubmissionItems(
+    created.job.id, wrongOfferItems, createdScope,
+  ), (error) => error?.code === "OZON_IMPORT_OFFER_IDENTITY_MISMATCH"
     && error?.retryable === false && error?.cause === null
     && !/raw-third-party-secret|credential/iu.test(error.message));
   let persistedImportResult = await pool.query(
@@ -510,22 +508,16 @@ try {
     [created.job.id],
   );
   assert.equal(persistedImportResult.rows[0].status, "PENDING");
-  await assert.rejects(persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1", status: "FAILED", productId: "",
-    response: { message: "foreign-scope-secret" }, errorEvidence: null,
-  }], { ...createdScope, accountId: foreignAccountId }),
+  await assert.rejects(persistSubmissionItems(created.job.id, crossAccountFailureItems,
+    { ...createdScope, accountId: foreignAccountId }),
   (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/foreign-scope-secret/iu.test(error.message));
-  await assert.rejects(persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1", status: "FAILED", productId: "",
-    response: { message: "wrong-task-secret" }, errorEvidence: null,
-  }], { ...createdScope, ozonTaskId: `wrong-${createdOzonTaskId}` }),
+  await assert.rejects(persistSubmissionItems(created.job.id, crossAccountFailureItems,
+    { ...createdScope, ozonTaskId: `wrong-${createdOzonTaskId}` }),
   (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/wrong-task-secret/iu.test(error.message));
-  await assert.rejects(persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1", status: "FAILED", productId: "",
-    response: { message: "wrong-snapshot-secret" }, errorEvidence: null,
-  }], { ...createdScope, snapshotId: foreignScopeSnapshotId }),
+  await assert.rejects(persistSubmissionItems(created.job.id, crossAccountFailureItems,
+    { ...createdScope, snapshotId: foreignScopeSnapshotId }),
   (error) => error?.code === "OZON_IMPORT_RESULT_SCOPE_MISMATCH"
     && !/wrong-snapshot-secret/iu.test(error.message));
   const afterForeignScope = await pool.query(
@@ -536,14 +528,12 @@ try {
   );
   assert.deepEqual(afterForeignScope.rows[0], beforeForeignScope.rows[0]);
 
-  await persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1",
-    status: "FAILED",
-    productId: "",
-    errors: ["raw-third-party-secret"],
-    response: { message: "raw-third-party-secret", credential: "secret" },
-    errorEvidence: safeEvidence,
-  }], createdScope);
+  const persistedFailureItems = normalizedImportItems([{
+    offer_id: "offer-1", sku: "source-sku", product_id: 0, status: "failed",
+    message: "raw-third-party-secret", credential: "secret",
+    errors: [{ code: "UNKNOWN", field: "unknown", message: "raw-third-party-secret" }],
+  }]);
+  await persistSubmissionItems(created.job.id, persistedFailureItems, createdScope);
   persistedImportResult = await pool.query(
     "SELECT status,response FROM submission_items WHERE job_id=$1 AND offer_id='offer-1'",
     [created.job.id],
@@ -555,18 +545,18 @@ try {
   const beforeReplayEvents = Number((await pool.query(
     "SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1", [created.job.id],
   )).rows[0].count);
-  await persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1", status: "FAILED", productId: "",
-    response: { message: "idempotent-backend-replay" }, errorEvidence: null,
-  }], createdScope);
+  await persistSubmissionItems(created.job.id, normalizedImportItems([{
+    offer_id: "offer-1", sku: "source-sku", product_id: 0, status: "failed",
+    errors: [{ code: "UNKNOWN", field: "unknown", message: "idempotent-backend-replay" }],
+  }]), createdScope);
   const afterReplayEvents = Number((await pool.query(
     "SELECT COUNT(*)::int AS count FROM submission_events WHERE job_id=$1", [created.job.id],
   )).rows[0].count);
   assert.equal(afterReplayEvents, beforeReplayEvents);
-  await assert.rejects(persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1", status: "CHECKING", productId: "",
-    response: { message: "stale-checking-secret" }, errorEvidence: null,
-  }], createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+  await assert.rejects(persistSubmissionItems(created.job.id, normalizedImportItems([{
+    offer_id: "offer-1", sku: "source-sku", product_id: 0, status: "processing",
+    message: "stale-checking-secret", errors: [],
+  }]), createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
     && error?.retryable === false && error?.cause === null
     && !/stale-checking-secret/iu.test(error.message));
   persistedImportResult = await pool.query(
@@ -575,23 +565,21 @@ try {
   );
   assert.equal(persistedImportResult.rows[0].status, "FAILED");
 
-  await persistSubmissionItems(autoSubmission.job.id, [{
-    offerId: "offer-auto", status: "SUCCEEDED", productId: "991001",
-    response: { product_id: 991001 }, errorEvidence: null,
-  }], { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 });
-  await persistSubmissionItems(autoSubmission.job.id, [{
-    offerId: "offer-auto", status: "SUCCEEDED", productId: "991001",
-    response: { product_id: 991001 }, errorEvidence: null,
-  }], { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 });
+  const successfulAutoItems = normalizedImportItems([{
+    offer_id: "offer-auto", sku: "source-auto", product_id: 991001, status: "imported", errors: [],
+  }]);
+  await persistSubmissionItems(autoSubmission.job.id, successfulAutoItems,
+    { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 });
+  await persistSubmissionItems(autoSubmission.job.id, successfulAutoItems,
+    { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 });
   for (const conflict of [
-    { status: "CHECKING", productId: "" },
-    { status: "FAILED", productId: "" },
-    { status: "SUCCEEDED", productId: "991002" },
+    { offer_id: "offer-auto", product_id: 0, status: "processing", errors: [], message: "terminal-conflict-secret" },
+    { offer_id: "offer-auto", product_id: 0, status: "failed", errors: [{ code: "UNKNOWN", field: "unknown" }], message: "terminal-conflict-secret" },
+    { offer_id: "offer-auto", product_id: 991002, status: "imported", errors: [], message: "terminal-conflict-secret" },
   ]) {
-    await assert.rejects(persistSubmissionItems(autoSubmission.job.id, [{
-      offerId: "offer-auto", ...conflict,
-      response: { message: "terminal-conflict-secret" }, errorEvidence: null,
-    }], { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 }),
+    await assert.rejects(persistSubmissionItems(autoSubmission.job.id,
+      normalizedImportItems([conflict]),
+      { accountId, snapshotId: autoSubmission.job.snapshotId, ozonTaskId: autoOzonTaskId, statusVersion: 1 }),
     (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
       && !/terminal-conflict-secret/iu.test(error.message));
   }
@@ -623,6 +611,84 @@ try {
     ozonTaskId: invalidSuccessTaskId,
     statusVersion: 1,
   };
+  const validClosedItems = normalizedImportItems([
+    {
+      offer_id: "offer-invalid-a", sku: "source-invalid-a", product_id: 0,
+      status: "failed", errors: [{ code: "UNKNOWN", field: "unknown" }],
+    },
+    { offer_id: "offer-invalid-b", sku: "source-invalid-b", product_id: 0, status: "processing", errors: [] },
+  ]);
+  const malformedClosedItems = [];
+  for (const key of [
+    "index", "sku", "offerId", "productId", "status", "errors", "classification", "errorEvidence", "response",
+  ]) {
+    const missing = { ...validClosedItems[0] };
+    delete missing[key];
+    malformedClosedItems.push([missing, validClosedItems[1]]);
+    malformedClosedItems.push([{ ...validClosedItems[0], [key]: undefined }, validClosedItems[1]]);
+  }
+  malformedClosedItems.push(
+    [{ ...validClosedItems[0], unexpected: true }, validClosedItems[1]],
+    [{ ...validClosedItems[0], index: -1 }, validClosedItems[1]],
+    [{ ...validClosedItems[0], index: 1.5 }, validClosedItems[1]],
+    [{ ...validClosedItems[0], sku: 1 }, validClosedItems[1]],
+    [{ ...validClosedItems[0], sku: "s".repeat(241) }, validClosedItems[1]],
+    [{ ...validClosedItems[0], offerId: "offer-invalid-b" }, validClosedItems[1]],
+    [{ ...validClosedItems[0], classification: "SUCCEEDED" }, validClosedItems[1]],
+    [{ ...validClosedItems[0], status: "CHECKING" }, validClosedItems[1]],
+    [{ ...validClosedItems[0], errors: [] }, validClosedItems[1]],
+    [{ ...validClosedItems[0], errorEvidence: { credential: "contract-secret" } }, validClosedItems[1]],
+    [{ ...validClosedItems[0], response: {} }, validClosedItems[1]],
+    [{ ...validClosedItems[0], response: {
+      offer_id: "offer-invalid-a", sku: "source-invalid-a", product_id: 991,
+      status: "imported", errors: [],
+    } }, validClosedItems[1]],
+    [{ ...validClosedItems[0], response: {
+      ...validClosedItems[0].response, offer_id: "response-other-offer",
+    } }, validClosedItems[1]],
+    [{ ...validClosedItems[1], productId: null }, validClosedItems[0]],
+  );
+  const accessorItem = { ...validClosedItems[0] };
+  Object.defineProperty(accessorItem, "response", {
+    enumerable: true,
+    get() { throw new Error("contract-accessor-secret"); },
+  });
+  const cyclicResponse = { ...validClosedItems[0].response };
+  cyclicResponse.self = cyclicResponse;
+  const revoked = Proxy.revocable({ ...validClosedItems[0] }, {});
+  revoked.revoke();
+  malformedClosedItems.push(
+    [accessorItem, validClosedItems[1]],
+    [new Proxy({ ...validClosedItems[0] }, {}), validClosedItems[1]],
+    [revoked.proxy, validClosedItems[1]],
+    [{ ...validClosedItems[0], response: cyclicResponse }, validClosedItems[1]],
+    [{ ...validClosedItems[0], response: { ...validClosedItems[0].response, note: "x".repeat(2_000_001) } }, validClosedItems[1]],
+  );
+  const originalPoolConnect = pool.connect;
+  const originalPoolQuery = pool.query;
+  let malformedDatabaseCalls = 0;
+  pool.connect = function countedConnect(...args) {
+    malformedDatabaseCalls += 1;
+    return originalPoolConnect.apply(this, args);
+  };
+  pool.query = function countedQuery(...args) {
+    malformedDatabaseCalls += 1;
+    return originalPoolQuery.apply(this, args);
+  };
+  try {
+    for (const items of malformedClosedItems) {
+      await assert.rejects(
+        persistSubmissionItems(invalidSuccessSubmission.job.id, items, invalidSuccessScope),
+        (error) => error?.code === "OZON_IMPORT_RESULT_CONTRACT_INVALID"
+          && error?.retryable === false && error?.cause === null
+          && !/contract-(?:secret|accessor)/iu.test(error.message),
+      );
+    }
+  } finally {
+    pool.connect = originalPoolConnect;
+    pool.query = originalPoolQuery;
+  }
+  assert.equal(malformedDatabaseCalls, 0);
   const invalidBefore = await pool.query(
     `SELECT
        (SELECT JSONB_AGG(JSONB_BUILD_OBJECT('offer',offer_id,'status',status,'product',product_id) ORDER BY offer_id)
@@ -634,26 +700,30 @@ try {
     0, -1, 1.5, Number.NaN, undefined, "", " ", "0", "01",
     Number.MAX_SAFE_INTEGER + 1, String(Number.MAX_SAFE_INTEGER + 1), {}, [], null,
   ];
+  const validSuccessForTampering = normalizedImportItems([
+    { offer_id: "offer-invalid-a", sku: "source-invalid-a", product_id: 123, status: "imported", errors: [] },
+    { offer_id: "offer-invalid-b", sku: "source-invalid-b", product_id: 0, status: "processing", errors: [] },
+  ]);
   for (const productId of invalidRepositoryProductIds) {
     const invalidItem = {
-      offerId: "offer-invalid-a", status: "SUCCEEDED", productId, response: {}, errorEvidence: null,
+      ...validSuccessForTampering[0], productId,
     };
     if (productId === undefined) delete invalidItem.productId;
     await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
       invalidItem,
-      { offerId: "offer-invalid-b", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
+      validSuccessForTampering[1],
     ], invalidSuccessScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONTRACT_INVALID"
       && error?.retryable === false && error?.cause === null);
   }
   for (const status of ["CHECKING", "FAILED", "SKIPPED", "UNKNOWN_RESULT"]) {
     await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
-      { offerId: "offer-invalid-a", status, productId: "123", response: {}, errorEvidence: null },
-      { offerId: "offer-invalid-b", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
+      { ...validClosedItems[0], status, productId: "123" },
+      validClosedItems[1],
     ], invalidSuccessScope), { code: "OZON_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
   }
   await assert.rejects(persistSubmissionItems(invalidSuccessSubmission.job.id, [
-    { offerId: "offer-invalid-a", status: "SUCCEEDED", productId: "123", unexpected: true },
-    { offerId: "offer-invalid-b", status: "CHECKING", productId: "" },
+    { ...validSuccessForTampering[0], unexpected: true },
+    validSuccessForTampering[1],
   ], invalidSuccessScope), { code: "OZON_IMPORT_RESULT_CONTRACT_INVALID", retryable: false, cause: null });
   const mixedInvalidSuccess = deriveOzonImportStatus({ result: { items: [
     { offer_id: "offer-invalid-a", status: "imported", product_id: 0 },
@@ -694,24 +764,22 @@ try {
     ozonTaskId: batchOzonTaskId,
     statusVersion: 1,
   };
-  await persistSubmissionItems(batchSubmission.job.id, [
-    { offerId: "offer-batch-a", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
-    { offerId: "offer-batch-b", status: "SUCCEEDED", productId: "991101", response: {}, errorEvidence: null },
-  ], batchScope);
-  const exactMixedReplay = await persistSubmissionItems(batchSubmission.job.id, [
-    { offerId: "offer-batch-a", status: "CHECKING", productId: "", response: {}, errorEvidence: null },
-    { offerId: "offer-batch-b", status: "SUCCEEDED", productId: "991101", response: {}, errorEvidence: null },
-  ], batchScope);
+  const mixedBatchItems = normalizedImportItems([
+    { offer_id: "offer-batch-a", sku: "source-batch-a", product_id: 0, status: "processing", errors: [] },
+    { offer_id: "offer-batch-b", sku: "source-batch-b", product_id: 991101, status: "imported", errors: [] },
+  ]);
+  await persistSubmissionItems(batchSubmission.job.id, mixedBatchItems, batchScope);
+  const exactMixedReplay = await persistSubmissionItems(batchSubmission.job.id, mixedBatchItems, batchScope);
   assert.deepEqual(exactMixedReplay, { applied: false, ignored: false, idempotent: true });
-  const ignoredUnknown = await persistSubmissionItems(batchSubmission.job.id, [
-    { offerId: "offer-batch-a", status: "UNKNOWN_RESULT", productId: "", response: {}, errorEvidence: null },
-    { offerId: "offer-batch-b", status: "SUCCEEDED", productId: "991101", response: {}, errorEvidence: null },
-  ], batchScope);
+  const ignoredUnknown = await persistSubmissionItems(batchSubmission.job.id, normalizedImportItems([
+    { offer_id: "offer-batch-a", sku: "source-batch-a", product_id: 0, status: "unexpected", errors: [] },
+    { offer_id: "offer-batch-b", sku: "source-batch-b", product_id: 991101, status: "imported", errors: [] },
+  ]), batchScope);
   assert.deepEqual(ignoredUnknown, { applied: false, ignored: true, idempotent: false });
-  await assert.rejects(persistSubmissionItems(batchSubmission.job.id, [
-    { offerId: "offer-batch-a", status: "SUCCEEDED", productId: "991102", response: {}, errorEvidence: null },
-    { offerId: "offer-batch-b", status: "FAILED", productId: "", response: {}, errorEvidence: null },
-  ], batchScope), { code: "OZON_IMPORT_RESULT_CONFLICT", retryable: false, cause: null });
+  await assert.rejects(persistSubmissionItems(batchSubmission.job.id, normalizedImportItems([
+    { offer_id: "offer-batch-a", sku: "source-batch-a", product_id: 991102, status: "imported", errors: [] },
+    { offer_id: "offer-batch-b", sku: "source-batch-b", product_id: 0, status: "failed", errors: [{ code: "UNKNOWN", field: "unknown" }] },
+  ]), batchScope), { code: "OZON_IMPORT_RESULT_CONFLICT", retryable: false, cause: null });
   const atomicBatch = await pool.query(
     "SELECT offer_id,status,product_id FROM submission_items WHERE job_id=$1 ORDER BY offer_id",
     [batchSubmission.job.id],
@@ -733,10 +801,10 @@ try {
        'errorEvidence',$2::jsonb) WHERE job_id=$1`,
     [created.job.id, JSON.stringify(historicalEvidence)],
   );
-  await assert.rejects(persistSubmissionItems(created.job.id, [{
-    offerId: "offer-1", status: "FAILED", productId: "",
-    response: { message: "stale-unknown-secret" }, errorEvidence: null,
-  }], createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
+  await assert.rejects(persistSubmissionItems(created.job.id, normalizedImportItems([{
+    offer_id: "offer-1", sku: "source-sku", product_id: 0, status: "failed",
+    errors: [{ code: "UNKNOWN", field: "unknown", message: "stale-unknown-secret" }],
+  }]), createdScope), (error) => error?.code === "OZON_IMPORT_RESULT_CONFLICT"
     && !/stale-unknown-secret/iu.test(error.message));
   const preservedHistoricalEvidence = await pool.query(
     "SELECT response->'errorEvidence' AS evidence FROM submission_items WHERE job_id=$1",

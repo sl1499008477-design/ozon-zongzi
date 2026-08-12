@@ -70,6 +70,19 @@ test("success requires an exact positive safe product id", () => {
   }).classification, "SUCCEEDED");
 });
 
+test("non-success states reject product identity and success rejects error output", () => {
+  for (const item of [
+    { offer_id: "frozen-offer", product_id: 123, status: "processing", errors: [] },
+    { offer_id: "frozen-offer", product_id: 123, status: "failed", errors: [] },
+    { offer_id: "frozen-offer", product_id: 123, status: "skipped", errors: [] },
+    { offer_id: "frozen-offer", product_id: 123, status: "imported", errors: [{ code: "X", field: "x" }] },
+  ]) {
+    assert.deepEqual(productionPolicy.classifyOzonCategoryImportResult({
+      item, expectedOfferId: "frozen-offer",
+    }), { classification: "UNKNOWN_RESULT", errorEvidence: null });
+  }
+});
+
 test("message wording and non-category fields carry no production authority", () => {
   const cases = [
     failedItem({ errors: [{ code: "UNKNOWN", field: "unknown", message: "description_category_id category invalid" }] }),
