@@ -116,11 +116,31 @@ function publicEvidence(record) {
 }
 
 function validateStoredEvidenceRows(state) {
-  if (!Array.isArray(state.collectOzonCategorySourceEvidence)
-    || types.isProxy(state.collectOzonCategorySourceEvidence)) {
+  try {
+    const rows = state.collectOzonCategorySourceEvidence;
+    if (!Array.isArray(rows) || types.isProxy(rows)
+      || Object.getPrototypeOf(rows) !== Array.prototype) throw invalid();
+    const descriptors = Object.getOwnPropertyDescriptors(rows);
+    const lengthDescriptor = descriptors.length;
+    if (!lengthDescriptor || lengthDescriptor.get || lengthDescriptor.set
+      || lengthDescriptor.value !== rows.length || lengthDescriptor.enumerable !== false
+      || lengthDescriptor.configurable !== false || lengthDescriptor.writable !== true) throw invalid();
+    let elements = 0;
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (descriptor.get || descriptor.set) throw invalid();
+      if (key === "length") continue;
+      if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
+        || Number(key) >= rows.length || descriptor.enumerable !== true) throw invalid();
+      elements += 1;
+    }
+    if (elements !== rows.length) throw invalid();
+    for (let index = 0; index < rows.length; index += 1) {
+      normalizeStoredEvidence(descriptors[String(index)].value);
+    }
+  } catch {
     throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
   }
-  for (const record of state.collectOzonCategorySourceEvidence) normalizeStoredEvidence(record);
 }
 
 function publicShared(record) {

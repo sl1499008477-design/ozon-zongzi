@@ -158,7 +158,21 @@ export function enabledLeafCandidates(tree, sourceTypeId = null) {
   }
 }
 
-export function resolveExactType({ tree, sourceTypeId } = {}) {
+function exactTypeInput(input) {
+  const descriptors = dataDescriptors(input);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== 2 || !Object.hasOwn(descriptors, "tree")
+    || !Object.hasOwn(descriptors, "sourceTypeId")
+    || descriptors.tree.enumerable !== true
+    || descriptors.sourceTypeId.enumerable !== true) throw invalidTaxonomy();
+  return {
+    tree: descriptors.tree.value,
+    sourceTypeId: descriptors.sourceTypeId.value,
+  };
+}
+
+export function resolveExactType(input = {}) {
+  const { tree, sourceTypeId } = exactTypeInput(input);
   const normalizedTypeId = positiveId(sourceTypeId);
   if (!normalizedTypeId) return Object.freeze({ kind: "NEEDS_REVIEW", reasonCode: "TYPE_MISSING" });
   const rawCandidates = enabledLeafCandidates(tree, normalizedTypeId);

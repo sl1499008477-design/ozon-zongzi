@@ -165,6 +165,54 @@ test("JSON preload never executes evidence accessors or proxies and rejects cycl
   }
 });
 
+test("JSON evidence array carrier rejects index accessors, proxies, sparse slots, symbols, and prototypes safely", async () => {
+  const valid = { id: "carrier-evidence", ...sourceEvidence() };
+  const fixtures = [];
+
+  const accessor = [valid];
+  Object.defineProperty(accessor, "0", {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error("array-index vendor-secret"); },
+  });
+  fixtures.push(accessor);
+
+  fixtures.push(new Proxy([valid], {
+    get() { throw new Error("array-proxy vendor-secret"); },
+  }));
+
+  const sparse = new Array(1);
+  fixtures.push(sparse);
+
+  const symbol = [valid];
+  symbol[Symbol("vendor-secret")] = valid;
+  fixtures.push(symbol);
+
+  const prototype = [valid];
+  Object.setPrototypeOf(prototype, { inheritedSecret: "vendor-secret" });
+  fixtures.push(prototype);
+
+  for (const rows of fixtures) {
+    const state = initializedState();
+    state.collectOzonCategorySourceEvidence = rows;
+    const { repository } = createJson({ state });
+    for (const operation of [
+      () => repository.readCurrentEvidence({
+        accountId: "account-a", collectItemIds: ["collect-a"],
+      }),
+      () => repository.recordSourceEvidence(sourceEvidence({
+        sourceVersion: "draft:8", productDraftVersion: 8,
+      })),
+    ]) {
+      await assert.rejects(operation(), (error) => (
+        error?.code === "OZON_CATEGORY_PERSISTENCE_FAILED"
+          && !String(error?.message).includes("vendor-secret")
+          && !Object.hasOwn(error, "cause")
+      ));
+    }
+  }
+});
+
 test("evidence replay is idempotent and a conflicting source version fails closed", async () => {
   const { state, repository } = createJson();
   const first = await repository.recordSourceEvidence(sourceEvidence());

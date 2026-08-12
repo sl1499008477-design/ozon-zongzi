@@ -128,3 +128,33 @@ test("taxonomy policy rejects cycles and oversized input with one fixed safe cod
   }];
   assertTaxonomyRejected(() => taxonomyFingerprint(oversizedByIgnoredNodes));
 });
+
+test("resolveExactType closes its wrapper before reading tree or sourceTypeId", () => {
+  const accessor = { sourceTypeId: 94405 };
+  Object.defineProperty(accessor, "tree", {
+    enumerable: true,
+    configurable: true,
+    get() { throw new Error("wrapper getter vendor-secret"); },
+  });
+  assertTaxonomyRejected(() => resolveExactType(accessor));
+
+  const proxy = new Proxy({ tree: translatedTree("Home", "Cup"), sourceTypeId: 94405 }, {
+    get() { throw new Error("wrapper proxy vendor-secret"); },
+  });
+  assertTaxonomyRejected(() => resolveExactType(proxy));
+
+  assertTaxonomyRejected(() => resolveExactType({
+    tree: translatedTree("Home", "Cup"),
+    sourceTypeId: 94405,
+    vendorSecret: "must-not-be-accepted",
+  }));
+
+  const symbol = { tree: translatedTree("Home", "Cup"), sourceTypeId: 94405 };
+  symbol[Symbol("vendor-secret")] = true;
+  assertTaxonomyRejected(() => resolveExactType(symbol));
+
+  const prototype = Object.create({ vendorSecret: true });
+  prototype.tree = translatedTree("Home", "Cup");
+  prototype.sourceTypeId = 94405;
+  assertTaxonomyRejected(() => resolveExactType(prototype));
+});
