@@ -185,6 +185,19 @@ function sameEvidence(left, right) {
     === JSON.stringify(sourceCategoryEvidence(rightEvidence));
 }
 
+function sameObservation(left, right) {
+  if (left?.provenance?.sourceKind !== "OZON_READ_LOOKUP"
+    || right?.provenance?.sourceKind !== "OZON_READ_LOOKUP") return sameEvidence(left, right);
+  return sameEvidence(left, {
+    ...right,
+    capturedAt: left.capturedAt,
+    provenance: {
+      ...right.provenance,
+      capturedAt: left.provenance.capturedAt,
+    },
+  });
+}
+
 function normalizeState(working) {
   delete working.collectCategoryResolutions;
   delete working.collectCategoryResolutionRuntimeCursors;
@@ -410,6 +423,18 @@ function makeEvent({
 
 function recordEvidenceInState(working, evidenceInput, { idFactory }) {
   const evidence = sourceCategoryEvidence(evidenceInput);
+  const existing = working.collectOzonCategorySourceEvidence.find(
+    (row) => sourceKey(row) === sourceKey(evidence),
+  );
+  if (existing) {
+    if (!sameObservation(existing, evidence)) {
+      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
+    }
+    const shared = working.accountOzonSharedCategories.find(
+      (row) => signature(row) === signature(existing),
+    );
+    return { evidence: existing, shared, created: false };
+  }
   if (evidence.provenance.sourceKind === "OZON_READ_LOOKUP") {
     const lookup = {
       id: evidence.rawResponseRef,
@@ -432,19 +457,6 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
     }
     if (!existingLookup) working.collectOzonCategoryLookupEvidence.push(lookup);
   }
-  const existing = working.collectOzonCategorySourceEvidence.find(
-    (row) => sourceKey(row) === sourceKey(evidence),
-  );
-  if (existing) {
-    if (!sameEvidence(existing, evidence)) {
-      throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
-    }
-    const shared = working.accountOzonSharedCategories.find(
-      (row) => signature(row) === signature(existing),
-    );
-    return { evidence: existing, shared, created: false };
-  }
-
   const record = { id: text(idFactory()), ...evidence };
   working.collectOzonCategorySourceEvidence.push(record);
   let shared = working.accountOzonSharedCategories.find(
@@ -747,7 +759,7 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
   if (existingResult.rows[0]) {
     const existing = categoryEvidenceFromRow(existingResult.rows[0]);
     const { id, ...existingEvidence } = existing;
-    if (!sameEvidence(existingEvidence, evidence)) {
+    if (!sameObservation(existingEvidence, evidence)) {
       throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
     }
     const sharedResult = await client.query(

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { types } from "node:util";
 import test from "node:test";
 import {
+  lookupObservationIdentity,
   sharedCategorySelection,
   sourceCategoryEvidence,
 } from "../account-shared-ozon-category-contract.mjs";
@@ -190,13 +191,24 @@ test("source evidence closes the enrichment-cache variant without inventing item
 });
 
 test("source evidence closes exact Ozon lookup provenance without exposing a response body", () => {
-  const rawResponseRef = `ozon-read:product:${HASH}:${HASH}`;
+  const observation = lookupObservationIdentity({
+    collectItemId: "collect-a",
+    triggerProductDraftId: "draft-a",
+    triggerProductDraftVersion: 7,
+    lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+    requestedOzonProductId: 123456789,
+    requestedSourceSku: "SKU-A",
+    matchedOzonProductId: 123456789,
+    matchedSourceSku: "SKU-A",
+    responseHash: HASH,
+  });
+  const rawResponseRef = observation.rawResponseRef;
   const input = evidence({
-    sourceVersion: `lookup:${HASH}`, productDraftId: null, productDraftVersion: null,
+    sourceVersion: observation.sourceVersion, productDraftId: null, productDraftVersion: null,
     rawResponseRef,
     provenance: {
       accountId: "account-a", collectItemId: "collect-a", sourceKind: "OZON_READ_LOOKUP",
-      sourceRecordId: rawResponseRef, rawResponseRef, rawResponseHash: HASH,
+      sourceRecordId: observation.sourceRecordId, rawResponseRef, rawResponseHash: HASH,
       capturedAt: CAPTURED_AT,
       lookupContractVersion: "account-shared-ozon-category-lookup.v1",
       triggerProductDraftId: "draft-a", triggerProductDraftVersion: 7,

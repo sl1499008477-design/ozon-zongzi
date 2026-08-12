@@ -24,8 +24,7 @@ CREATE TABLE collect_ozon_category_lookup_evidence (
   CHECK (requested_ozon_product_id IS NOT NULL OR requested_source_sku IS NOT NULL),
   CHECK (requested_ozon_product_id IS NULL OR requested_ozon_product_id=matched_ozon_product_id),
   CHECK (requested_source_sku IS NULL OR requested_source_sku=matched_source_sku),
-  CHECK (id ~ '^ozon-read:(product|offer):[0-9a-f]{64}:[0-9a-f]{64}$'),
-  CHECK (RIGHT(id,65)=':' || response_hash)
+  CHECK (id ~ '^ozon-read:v1:[0-9a-f]{64}$')
 );
 
 CREATE OR REPLACE FUNCTION reject_collect_ozon_category_lookup_evidence_mutation()
@@ -94,7 +93,7 @@ ALTER TABLE collect_ozon_category_source_evidence
       AND enrichment_source IS NULL AND enrichment_sku IS NULL
       AND enrichment_contract_version IS NULL
       AND lookup_evidence_id=raw_response_ref AND source_record_id=lookup_evidence_id
-      AND source_version='lookup:' || raw_response_hash)
+      AND source_version='lookup:v1:' || SUBSTRING(lookup_evidence_id FROM 14))
   ),
   ADD CONSTRAINT collect_ozon_category_source_evidence_product_raw_fkey
     FOREIGN KEY (account_id,product_raw_response_ref,collect_item_id)

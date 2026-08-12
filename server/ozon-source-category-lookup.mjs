@@ -229,8 +229,6 @@ export function createOzonSourceCategoryLookup({
     const sourceSku = offerIdOf(evidenceItem);
     const rawResponseHash = crypto.createHash("sha256")
       .update(JSON.stringify(evidenceResponse)).digest("hex");
-    const identityHash = crypto.createHash("sha256")
-      .update(`${identity.kind}:${identity.value}`).digest("hex");
     return {
       kind: "RESOLVED",
       result: freeze({
@@ -244,7 +242,6 @@ export function createOzonSourceCategoryLookup({
         matchedSourceSku: sourceSku,
         ...facts,
         rawResponseHash,
-        rawResponseRef: `ozon-read:${identity.kind.toLowerCase()}:${identityHash}:${rawResponseHash}`,
         capturedAt: capturedAt.toISOString(),
       }),
     };

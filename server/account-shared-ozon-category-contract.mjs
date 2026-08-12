@@ -1,7 +1,8 @@
+import crypto from "node:crypto";
 import { types } from "node:util";
 
 const HASH = /^[0-9a-f]{64}$/u;
-const LOOKUP_REF = /^ozon-read:(?:product|offer):[0-9a-f]{64}:[0-9a-f]{64}$/u;
+const LOOKUP_REF = /^ozon-read:v1:[0-9a-f]{64}$/u;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const EVIDENCE_KEYS = Object.freeze([
@@ -88,6 +89,51 @@ function isoInstant(value) {
 function sha256(value) {
   if (typeof value !== "string" || !HASH.test(value)) throw invalid();
   return value;
+}
+
+export function lookupObservationIdentity(input) {
+  const seen = new WeakSet();
+  const keys = [
+    "collectItemId", "triggerProductDraftId", "triggerProductDraftVersion",
+    "lookupContractVersion", "requestedOzonProductId", "requestedSourceSku",
+    "matchedOzonProductId", "matchedSourceSku", "responseHash",
+  ];
+  assertExactDataObject(input, keys, seen);
+  const values = {
+    collectItemId: text(input.collectItemId),
+    triggerProductDraftId: text(input.triggerProductDraftId),
+    triggerProductDraftVersion: positiveInteger(input.triggerProductDraftVersion),
+    lookupContractVersion: text(input.lookupContractVersion, 120),
+    requestedOzonProductId: nullablePositiveInteger(input.requestedOzonProductId),
+    requestedSourceSku: nullableText(input.requestedSourceSku),
+    matchedOzonProductId: positiveInteger(input.matchedOzonProductId),
+    matchedSourceSku: text(input.matchedSourceSku),
+    responseHash: sha256(input.responseHash),
+  };
+  if (values.lookupContractVersion !== "account-shared-ozon-category-lookup.v1"
+    || (!values.requestedOzonProductId && !values.requestedSourceSku)
+    || (values.requestedOzonProductId
+      && values.requestedOzonProductId !== values.matchedOzonProductId)
+    || (values.requestedSourceSku && values.requestedSourceSku !== values.matchedSourceSku)) {
+    throw invalid();
+  }
+  const observationHash = crypto.createHash("sha256").update(JSON.stringify([
+    values.collectItemId,
+    values.triggerProductDraftId,
+    values.triggerProductDraftVersion,
+    values.lookupContractVersion,
+    values.requestedOzonProductId,
+    values.requestedSourceSku,
+    values.matchedOzonProductId,
+    values.matchedSourceSku,
+    values.responseHash,
+  ])).digest("hex");
+  const sourceRecordId = `ozon-read:v1:${observationHash}`;
+  return Object.freeze({
+    sourceRecordId,
+    sourceVersion: `lookup:v1:${observationHash}`,
+    rawResponseRef: sourceRecordId,
+  });
 }
 
 function frozenArray(values) {
@@ -181,6 +227,17 @@ function evidenceProvenance(value, evidence, seen) {
     projected.matchedSourceSku = text(value.matchedSourceSku);
     projected.triggerProductDraftId = text(value.triggerProductDraftId);
     projected.triggerProductDraftVersion = positiveInteger(value.triggerProductDraftVersion);
+    const observation = lookupObservationIdentity({
+      collectItemId: evidence.collectItemId,
+      triggerProductDraftId: projected.triggerProductDraftId,
+      triggerProductDraftVersion: projected.triggerProductDraftVersion,
+      lookupContractVersion: projected.lookupContractVersion,
+      requestedOzonProductId: projected.requestedOzonProductId,
+      requestedSourceSku: projected.requestedSourceSku,
+      matchedOzonProductId: projected.matchedOzonProductId,
+      matchedSourceSku: projected.matchedSourceSku,
+      responseHash: projected.rawResponseHash,
+    });
     if (evidence.collectItemId === null || evidence.productDraftId !== null
       || evidence.productDraftVersion !== null
       || evidence.ozonProductId !== projected.matchedOzonProductId
@@ -190,11 +247,11 @@ function evidenceProvenance(value, evidence, seen) {
         && projected.requestedOzonProductId !== projected.matchedOzonProductId)
       || (projected.requestedSourceSku
         && projected.requestedSourceSku !== projected.matchedSourceSku)
-      || projected.lookupContractVersion !== "account-shared-ozon-category-lookup.v1"
-      || evidence.sourceVersion !== `lookup:${projected.rawResponseHash}`
-      || projected.sourceRecordId !== projected.rawResponseRef
+      || evidence.sourceVersion !== observation.sourceVersion
+      || projected.sourceRecordId !== observation.sourceRecordId
+      || projected.rawResponseRef !== observation.rawResponseRef
       || !LOOKUP_REF.test(projected.rawResponseRef)
-      || !projected.rawResponseRef.endsWith(`:${projected.rawResponseHash}`)) throw invalid();
+    ) throw invalid();
   } else throw invalid();
   return Object.freeze(projected);
 }

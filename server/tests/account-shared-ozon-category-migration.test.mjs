@@ -64,6 +64,8 @@ test("064 adds constrained lookup provenance, canonical pointers, and an append-
   assert.match(compact, /matched_source_sku/i);
   assert.match(compact, /trigger_product_draft_id/i);
   assert.match(compact, /trigger_product_draft_version/i);
+  assert.match(compact, /CHECK \(id ~ '\^ozon-read:v1:\[0-9a-f\]\{64\}\$'\)/i);
+  assert.match(compact, /source_version='lookup:v1:' \|\| SUBSTRING\(lookup_evidence_id FROM 14\)/i);
   assert.match(compact, /FOREIGN KEY \(account_id,lookup_evidence_id,collect_item_id\)/i);
   assert.match(compact, /CREATE TABLE collect_ozon_category_current_sources/i);
   assert.match(compact, /current_draft_id/i);

@@ -9,6 +9,7 @@ import {
   createJsonAccountSharedOzonCategoryRepository,
   createPostgresAccountSharedOzonCategoryRepository,
 } from "../account-shared-ozon-category-repository.mjs";
+import { lookupObservationIdentity } from "../account-shared-ozon-category-contract.mjs";
 import { createAccountSharedOzonCategoryRuntime } from "../account-shared-ozon-category-runtime.mjs";
 import { deleteRemovedAccountScopes } from "../formal-persistence.mjs";
 
@@ -56,23 +57,31 @@ function sourceEvidence(overrides = {}) {
 
 function lookupEvidence({ accountId = "account-a", collectItemId = "collect-a", productId = 123456789,
   sku = "SKU-A", hash = HASH_B, categoryId = 17028702, typeId = 94405,
-  triggerProductDraftId = "draft-a", triggerProductDraftVersion = 7 } = {}) {
-  const identityHash = crypto.createHash("sha256").update(`product:${productId}`).digest("hex");
-  const rawResponseRef = `ozon-read:product:${identityHash}:${hash}`;
+  triggerProductDraftId = "draft-a", triggerProductDraftVersion = 7,
+  capturedAt = CAPTURED_AT } = {}) {
+  const observation = lookupObservationIdentity({
+    collectItemId, triggerProductDraftId, triggerProductDraftVersion,
+    lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+    requestedOzonProductId: productId, requestedSourceSku: sku,
+    matchedOzonProductId: productId, matchedSourceSku: sku,
+    responseHash: hash,
+  });
+  const rawResponseRef = observation.rawResponseRef;
   return sourceEvidence({
-    accountId, collectItemId, sourceVersion: `lookup:${hash}`,
+    accountId, collectItemId, sourceVersion: observation.sourceVersion,
     productDraftId: null, productDraftVersion: null, ozonProductId: productId,
     sourceSku: sku, sourceDescriptionCategoryId: categoryId, sourceTypeId: typeId,
     normalizedPath: [], attributeSummary: [], rawResponseRef, rawResponseHash: hash,
     provenance: {
       accountId, collectItemId, sourceKind: "OZON_READ_LOOKUP",
-      sourceRecordId: rawResponseRef, rawResponseRef, rawResponseHash: hash,
-      capturedAt: CAPTURED_AT,
+      sourceRecordId: observation.sourceRecordId, rawResponseRef, rawResponseHash: hash,
+      capturedAt,
       lookupContractVersion: "account-shared-ozon-category-lookup.v1",
       triggerProductDraftId, triggerProductDraftVersion,
       requestedOzonProductId: productId, requestedSourceSku: sku,
       matchedOzonProductId: productId, matchedSourceSku: sku,
     },
+    capturedAt,
   });
 }
 
@@ -520,6 +529,97 @@ test("JSON lookup replay and stale completion cannot roll a canonical pointer ba
   });
   assert.equal(current[0].id, nextLookup.evidence.id);
   assert.notEqual(current[0].id, nextDraft.evidence.id);
+});
+
+test("JSON exact lookup replay keeps the first observation clock without duplicate evidence", async () => {
+  const state = initializedState();
+  state.caches = { collectBox: [{
+    id: "collect-a", accountId: "account-a", currentDraftId: "draft-a", draftVersion: 7,
+  }] };
+  const { repository } = createJson({ state });
+  await repository.recordSourceEvidence(sourceEvidence());
+
+  const first = await repository.recordSourceEvidence(lookupEvidence());
+  const replay = await repository.recordSourceEvidence(lookupEvidence({
+    capturedAt: "2026-08-12T01:02:04.000Z",
+  }));
+
+  assert.equal(replay.evidence.id, first.evidence.id);
+  assert.equal(replay.evidence.capturedAt, CAPTURED_AT,
+    "an observation replay returns the persisted capture clock");
+  assert.equal(state.collectOzonCategoryLookupEvidence.length, 1);
+  assert.equal(state.collectOzonCategorySourceEvidence.filter(
+    (row) => row.provenance.sourceKind === "OZON_READ_LOOKUP",
+  ).length, 1);
+});
+
+test("JSON same lookup response from a newer trigger draft records and promotes a new observation", async () => {
+  const state = initializedState();
+  state.caches = { collectBox: [{
+    id: "collect-a", accountId: "account-a", currentDraftId: "draft-a", draftVersion: 7,
+  }] };
+  const { repository } = createJson({ state });
+  await repository.recordSourceEvidence(sourceEvidence());
+  const first = await repository.recordSourceEvidence(lookupEvidence());
+
+  state.caches.collectBox[0].draftVersion = 8;
+  await repository.recordSourceEvidence(sourceEvidence({
+    sourceVersion: "draft:8",
+    productDraftVersion: 8,
+  }));
+  const newer = await repository.recordSourceEvidence(lookupEvidence({
+    triggerProductDraftVersion: 8,
+    capturedAt: "2026-08-12T01:02:04.000Z",
+  }));
+
+  assert.notEqual(newer.evidence.id, first.evidence.id);
+  assert.notEqual(newer.evidence.sourceVersion, first.evidence.sourceVersion);
+  assert.notEqual(newer.evidence.provenance.sourceRecordId,
+    first.evidence.provenance.sourceRecordId);
+  assert.equal(state.collectOzonCategoryLookupEvidence.length, 2);
+  assert.equal((await repository.readCurrentEvidence({
+    accountId: "account-a", collectItemIds: ["collect-a"],
+  }))[0].id, newer.evidence.id);
+});
+
+test("JSON same-account items with the same exact lookup response keep item-scoped observations", async () => {
+  const state = initializedState();
+  state.caches = { collectBox: [
+    { id: "collect-a", accountId: "account-a", currentDraftId: "draft-a", draftVersion: 7 },
+    { id: "collect-b", accountId: "account-a", currentDraftId: "draft-b", draftVersion: 7 },
+  ] };
+  const { repository } = createJson({ state });
+  await repository.recordSourceEvidence(sourceEvidence());
+  await repository.recordSourceEvidence(sourceEvidence({
+    collectItemId: "collect-b",
+    productDraftId: "draft-b",
+    rawResponseRef: "raw-b",
+    provenance: {
+      ...sourceEvidence().provenance,
+      collectItemId: "collect-b",
+      sourceRecordId: "draft-b",
+      rawResponseRef: "raw-b",
+    },
+  }));
+
+  const first = await repository.recordSourceEvidence(lookupEvidence());
+  const second = await repository.recordSourceEvidence(lookupEvidence({
+    collectItemId: "collect-b",
+    triggerProductDraftId: "draft-b",
+    capturedAt: "2026-08-12T01:02:04.000Z",
+  }));
+
+  assert.notEqual(second.evidence.id, first.evidence.id);
+  assert.notEqual(second.evidence.provenance.sourceRecordId,
+    first.evidence.provenance.sourceRecordId);
+  assert.equal(state.collectOzonCategoryLookupEvidence.length, 2);
+  const current = await repository.readCurrentEvidence({
+    accountId: "account-a", collectItemIds: ["collect-a", "collect-b"],
+  });
+  assert.deepEqual(new Map(current.map((row) => [row.collectItemId, row.id])), new Map([
+    ["collect-a", first.evidence.id],
+    ["collect-b", second.evidence.id],
+  ]));
 });
 
 test("JSON lookup cannot create a current pointer without its canonical trigger draft", async () => {
@@ -989,23 +1089,51 @@ if (!postgresEnabled) {
         "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_lookup_evidence WHERE account_id=$1",
         [accountId],
       )).rows[0].count, 1);
+      const lookupReplay = await repository.recordSourceEvidence(lookupEvidence({
+        accountId, collectItemId, sku: `SKU-${suffix}`,
+        triggerProductDraftId: draftId, triggerProductDraftVersion: 7,
+        capturedAt: "2026-08-12T01:02:04.000Z",
+      }));
+      assert.equal(lookupReplay.evidence.id, lookup.evidence.id);
+      assert.equal(lookupReplay.evidence.capturedAt, CAPTURED_AT,
+        "PostgreSQL replay returns the persisted observation clock");
+      assert.equal((await scoped.query(
+        "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_lookup_evidence WHERE account_id=$1",
+        [accountId],
+      )).rows[0].count, 1, "same observation replay adds no lookup metadata");
+
+      const secondItemLookup = await repository.recordSourceEvidence(lookupEvidence({
+        accountId, collectItemId: secondCollectItemId, sku: `SKU-${suffix}`,
+        triggerProductDraftId: secondDraftId, triggerProductDraftVersion: 1,
+        capturedAt: "2026-08-12T01:02:04.000Z",
+      }));
+      assert.notEqual(secondItemLookup.evidence.id, lookup.evidence.id);
+      assert.notEqual(secondItemLookup.evidence.provenance.sourceRecordId,
+        lookup.evidence.provenance.sourceRecordId);
+      assert.equal((await repository.readCurrentEvidence({
+        accountId, collectItemIds: [secondCollectItemId],
+      }))[0].id, secondItemLookup.evidence.id,
+      "same account/request/response stays scoped to the second item");
 
       await scoped.query("UPDATE product_drafts SET version=8 WHERE id=$1", [draftId]);
       await repository.recordSourceEvidence(sourceEvidence({
         ...evidenceInput, sourceVersion: "draft:8", productDraftVersion: 8,
       }));
-      const nextLookupHash = crypto.createHash("sha256").update(`next-${suffix}`).digest("hex");
       const lateLookupHash = crypto.createHash("sha256").update(`late-${suffix}`).digest("hex");
       const [nextLookup] = await Promise.all([
         repository.recordSourceEvidence(lookupEvidence({
-          accountId, collectItemId, sku: `SKU-${suffix}`, hash: nextLookupHash,
+          accountId, collectItemId, sku: `SKU-${suffix}`, hash: HASH_B,
           triggerProductDraftId: draftId, triggerProductDraftVersion: 8,
+          capturedAt: "2026-08-12T01:02:05.000Z",
         })),
         repository.recordSourceEvidence(lookupEvidence({
           accountId, collectItemId, sku: `SKU-${suffix}`, hash: lateLookupHash,
           triggerProductDraftId: draftId, triggerProductDraftVersion: 7,
         })),
       ]);
+      assert.notEqual(nextLookup.evidence.id, lookup.evidence.id,
+        "a newer trigger draft creates an independent observation for the same response");
+      assert.notEqual(nextLookup.evidence.sourceVersion, lookup.evidence.sourceVersion);
       await repository.recordSourceEvidence(lookupEvidence({
         accountId, collectItemId, sku: `SKU-${suffix}`,
         triggerProductDraftId: draftId, triggerProductDraftVersion: 7,
@@ -1016,17 +1144,18 @@ if (!postgresEnabled) {
       "replay and late stale lookup cannot roll the PostgreSQL pointer backward");
 
       const rollbackHash = crypto.createHash("sha256").update(`rollback-${suffix}`).digest("hex");
-      const rollbackIdentityHash = crypto.createHash("sha256").update("product:777777").digest("hex");
-      const rollbackRef = `ozon-read:product:${rollbackIdentityHash}:${rollbackHash}`;
+      const rollbackInput = lookupEvidence({
+        accountId, collectItemId, productId: 777777, sku: `SKU-${suffix}`, hash: rollbackHash,
+        triggerProductDraftId: draftId, triggerProductDraftVersion: 8,
+      });
+      const rollbackRef = rollbackInput.rawResponseRef;
       await scoped.query(`CREATE FUNCTION reject_task3_lookup_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN IF NEW.source_record_id='${rollbackRef}' THEN RAISE EXCEPTION 'controlled rollback'; END IF;
         RETURN NEW; END $$`);
       await scoped.query(`CREATE TRIGGER reject_task3_lookup_evidence BEFORE INSERT
         ON collect_ozon_category_source_evidence FOR EACH ROW EXECUTE FUNCTION reject_task3_lookup_evidence()`);
-      await assert.rejects(repository.recordSourceEvidence(lookupEvidence({
-        accountId, collectItemId, productId: 777777, sku: `SKU-${suffix}`, hash: rollbackHash,
-        triggerProductDraftId: draftId, triggerProductDraftVersion: 8,
-      })), assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
+      await assert.rejects(repository.recordSourceEvidence(rollbackInput),
+        assertCode("OZON_CATEGORY_PERSISTENCE_FAILED"));
       assert.equal((await scoped.query(
         "SELECT COUNT(*)::INT AS count FROM collect_ozon_category_lookup_evidence WHERE account_id=$1 AND id=$2",
         [accountId, rollbackRef],
@@ -1174,7 +1303,7 @@ if (!postgresEnabled) {
           (SELECT COUNT(*)::INT FROM account_ozon_shared_categories WHERE account_id=$1) AS shared,
           (SELECT COUNT(*)::INT FROM account_ozon_shared_category_events WHERE account_id=$1) AS events
       `, [accountId])).rows[0];
-      assert.deepEqual(counts, { evidence: 7, shared: 2, events: 4 });
+      assert.deepEqual(counts, { evidence: 8, shared: 2, events: 4 });
       assert.equal(JSON.stringify((await scoped.query(
         "SELECT * FROM account_ozon_shared_categories WHERE account_id=$1",
         [accountId],

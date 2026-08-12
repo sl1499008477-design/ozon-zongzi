@@ -243,3 +243,35 @@ Fresh JSON-focused contract/service/runtime/repository/lookup/public/collection-
 Only `server/account-shared-ozon-category-runtime.mjs`, its focused runtime test, and this report changed. No public collection shape, schema, PostgreSQL adapter, Ozon transport, Task 4+ snapshot/UI, store resolver, wakeup/timer/cursor/notifier, paid AI, or product-write path changed.
 
 The remaining operational boundary is unchanged: exact lookup uses a controlled transport in tests, not real Ozon. A stale lookup may retain immutable audit evidence, but the canonical pointer fence prevents it from becoming current. Roll back this round with `git revert <fix-round-3-commit-sha>`; there is no database rollback because this round has no schema change. Round 2 remains independently revertible with `git revert e73b71ca12a904e342989cd2c3c8f05c48b03c86`.
+
+---
+
+## Fix round 4/5 — item/draft-scoped lookup observation identity
+
+### Root cause and contract correction
+
+Lookup persistence previously derived `rawResponseRef` from only the attempted request identity and response hash, then used `lookup:<responseHash>` as the source version. The lookup metadata carried item and trigger-draft fields, but repository replay/conflict selection happened on the weaker source record/version first. Consequently an identical response collided when it was replayed at a later capture time, triggered by a newer draft, or observed for a second item in the same account.
+
+The closed lookup observation identity now hashes one ordered JSON scalar array containing collect item ID, trigger product-draft ID and positive version, lookup contract version, exact requested product/offer identities, exact matched product/offer identities, and response hash. Account remains an independent repository/database scope. The fixed-length private identifiers are `ozon-read:v1:<sha256>` and `lookup:v1:<sha256>`; neither is included in public collection DTOs. This avoids delimiter ambiguity and makes item, draft, request, response, and contract version load-bearing in both JSON and PostgreSQL source identity.
+
+`capturedAt` is observation metadata rather than an idempotency discriminator. Exact observation replay compares every evidence field except the newly supplied capture clock, returns the already persisted evidence and its original `capturedAt`, and writes neither lookup metadata nor source evidence. A newer trigger draft with the same exact Ozon response creates a distinct immutable observation and may promote only through the existing expected-current/CAS fence. A late older draft still records immutable evidence but cannot become current.
+
+Migration 064 remains unpublished and was amended in place. Its lookup ID and source-version checks now accept only the fixed observation-hash forms; existing account/item/draft foreign keys and account-scoped primary/unique keys remain the database boundary. The source lookup transport no longer invents a persistence identifier before collect item and trigger draft are known; the account-shared service creates the closed observation identity after the exact read succeeds.
+
+### TDD and verification record
+
+Three separate JSON RED tests failed with `OZON_CATEGORY_SOURCE_VERSION_CONFLICT` before production changes:
+
+- same item, same trigger draft, same exact request/response/hash, different `capturedAt`;
+- same item, newer trigger draft/version, same exact request/response/hash;
+- two items in one account with the same SKU/request/response/hash.
+
+GREEN verifies replay returns the first capture clock with one evidence row, the newer draft creates and promotes an independent observation, and both items retain distinct current evidence without cross-item reads. The same three behaviors were exercised through the real PostgreSQL repository after applying migrations through 064.
+
+Fresh combined Task 3 focused, seams, composition E2E, and disposable PostgreSQL 16 verification: **132 passed, 0 failed, 0 skipped**. The brief's focused service/runtime/lookup/enrichment/routes/public-shape command separately passed **83 passed, 0 failed, 0 skipped**. The real PostgreSQL repository/migration/persistence subset separately passed **29 passed, 0 failed, 0 skipped**. Existing cross-account reads and foreign-account evidence remained isolated, and JSON/PostgreSQL late-old-draft tests confirmed no stale promotion.
+
+### Scope, risk, and rollback
+
+This correction changes only the Task 3 lookup contract, service, repository, lookup transport result, unpublished migration 064, focused tests, and this report. No Task 4/UI, real Ozon call, product write, paid AI path, credential persistence, store identity, resolver timer, wakeup, cursor, or notifier was added.
+
+No real Ozon API or production database was exercised; exact response parsing remains covered with controlled transports, and database behavior was verified on a disposable PostgreSQL 16 instance. The observation hash is private provenance, not a public integrity proof or replacement for the existing database account/item/draft constraints. Roll back this round with `git revert <fix-round-4-commit-sha>`; because migration 064 remains unpublished, no new migration number or destructive down-migration is required.

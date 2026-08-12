@@ -133,7 +133,7 @@ test("JSON collection entry persists a private canonical draft pointer before fi
   const confirmed = await runtime.confirmManualCategory({
     actor: { id: "account-entry", role: "admin" },
     collectItemId: state.caches.collectBox[0].id,
-    expectedSourceVersion: `lookup:${resolvedLookup().rawResponseHash}`,
+    expectedSourceVersion: state.collectOzonCategoryCurrentSources[0].sourceVersion,
     descriptionCategoryId: 17028788,
     typeId: 95555,
     taxonomyScope: "OZON:DEFAULT",

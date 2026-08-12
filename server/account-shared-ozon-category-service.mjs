@@ -1,5 +1,8 @@
 import { types } from "node:util";
-import { sourceCategoryEvidence } from "./account-shared-ozon-category-contract.mjs";
+import {
+  lookupObservationIdentity,
+  sourceCategoryEvidence,
+} from "./account-shared-ozon-category-contract.mjs";
 import { TAXONOMY_SCOPE_OZON_DEFAULT } from "./ozon-taxonomy-category-policy.mjs";
 
 const SOURCE_KEYS = Object.freeze([
@@ -83,11 +86,21 @@ function lookupEvidenceInput(base, result) {
   const accountId = text(base.accountId);
   const collectItemId = text(base.collectItemId);
   const capturedAt = text(result.capturedAt);
-  const rawResponseRef = text(result.rawResponseRef);
   const rawResponseHash = text(result.rawResponseHash);
+  const observation = lookupObservationIdentity({
+    collectItemId,
+    triggerProductDraftId: text(base.productDraftId),
+    triggerProductDraftVersion: base.productDraftVersion,
+    lookupContractVersion: result.lookupContractVersion,
+    requestedOzonProductId: result.requestedOzonProductId,
+    requestedSourceSku: result.requestedSourceSku,
+    matchedOzonProductId: result.matchedOzonProductId,
+    matchedSourceSku: result.matchedSourceSku,
+    responseHash: rawResponseHash,
+  });
   return sourceCategoryEvidence({
     ...base,
-    sourceVersion: `lookup:${rawResponseHash}`,
+    sourceVersion: observation.sourceVersion,
     productDraftId: null,
     productDraftVersion: null,
     ozonProductId: result.ozonProductId,
@@ -98,14 +111,14 @@ function lookupEvidenceInput(base, result) {
     normalizedPath: result.normalizedPath,
     attributeSummary: result.attributeSummary,
     capturedAt,
-    rawResponseRef,
+    rawResponseRef: observation.rawResponseRef,
     rawResponseHash,
     provenance: {
       accountId,
       collectItemId,
       sourceKind: "OZON_READ_LOOKUP",
-      sourceRecordId: rawResponseRef,
-      rawResponseRef,
+      sourceRecordId: observation.sourceRecordId,
+      rawResponseRef: observation.rawResponseRef,
       rawResponseHash,
       capturedAt,
       lookupContractVersion: result.lookupContractVersion,
