@@ -999,6 +999,7 @@ async function mirrorStores(client, state = {}) {
       : text(accounts.find((account) => account?.role === "admin")?.id || accounts[0]?.id, 240)
   );
   const rawStores = Array.isArray(state.stores) ? state.stores : [];
+  let persistedStateChanged = false;
   const storeIds = rawStores.map((store) => text(store?.id, 240)).filter(Boolean);
   const existingOwners = new Map();
   if (storeIds.length) {
@@ -1043,7 +1044,10 @@ async function mirrorStores(client, state = {}) {
     // loadPersistedState mirrors before index.mjs normalizes the state. Keep
     // the authoritative owner on that same in-memory object so a later login
     // save cannot reassign a legacy store to whichever account is current.
-    if (store && typeof store === "object") store.ownerAccountId = ownerAccountId;
+    if (store && typeof store === "object") {
+      if (store.ownerAccountId !== ownerAccountId) persistedStateChanged = true;
+      store.ownerAccountId = ownerAccountId;
+    }
     return { ...store, ownerAccountId };
   });
   const ownerAccountIds = [...new Set(stores.map((store) => store.ownerAccountId).filter(Boolean))];
@@ -1137,6 +1141,7 @@ async function mirrorStores(client, state = {}) {
       );
     }
   }
+  return { persistedStateChanged };
 }
 
 async function mirrorFiles(client, state = {}) {
@@ -1641,7 +1646,7 @@ export async function mirrorStateToRelationalTablesInTransaction(client, state =
   const deletionResult = await deleteRemovedAccountScopes(client, state);
   await mirrorAccounts(client, state);
   await mirrorCollectorAuthState(client, state);
-  await mirrorStores(client, state);
+  const storeResult = await mirrorStores(client, state);
   await mirrorFiles(client, state);
   const warehouseIdsByStore = await mirrorWarehouses(client, state);
   const productSnapshot = await mirrorProducts(client, state);
@@ -1655,7 +1660,11 @@ export async function mirrorStateToRelationalTablesInTransaction(client, state =
   await mirrorOrders(client, state);
   await mirrorJobs(client, state);
   await mirrorAuditEvents(client, state);
-  return deletionResult;
+  return {
+    ...deletionResult,
+    persistedStateChanged: deletionResult.persistedStateChanged
+      || storeResult.persistedStateChanged,
+  };
 }
 
 export async function mirrorStateToRelationalTables(pool, state = {}) {

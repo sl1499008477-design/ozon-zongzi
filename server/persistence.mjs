@@ -54,6 +54,16 @@ export function normalizeRetiredCategoryState(state = {}) {
 
 function commitNormalizedState(target, normalized) {
   for (const key of RETIRED_CATEGORY_STATE_KEYS) delete target[key];
+  const targetStoresById = new Map(
+    (Array.isArray(target.stores) ? target.stores : [])
+      .filter((store) => store && typeof store === "object")
+      .map((store) => [String(store.id || ""), store]),
+  );
+  for (const store of Array.isArray(normalized.stores) ? normalized.stores : []) {
+    if (!store || typeof store !== "object" || !Object.hasOwn(store, "ownerAccountId")) continue;
+    const targetStore = targetStoresById.get(String(store.id || ""));
+    if (targetStore) targetStore.ownerAccountId = store.ownerAccountId;
+  }
   for (const key of ["auditEvents"]) {
     if (Object.hasOwn(normalized, key)) target[key] = normalized[key];
   }
@@ -232,6 +242,12 @@ export async function loadPersistedState({ dataFile }) {
         `,
         [JSON.stringify(protectedState), STATE_ROW_ID, version],
       );
+      if (update.rowCount !== 1) {
+        const error = new Error("本地状态已被其他操作更新，请刷新后重试");
+        error.code = "LOCAL_STATE_VERSION_CONFLICT";
+        error.status = 409;
+        throw error;
+      }
       version = Number(update.rows[0]?.version || version);
     }
     Object.defineProperty(state, "__storageVersion", {
