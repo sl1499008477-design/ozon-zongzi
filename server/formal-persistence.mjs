@@ -599,7 +599,9 @@ function overwriteAccountDeletionCollectorCounts(
     deletedCollectorSessionCount,
     deletedCollectorOzonEnrichmentCacheCount,
     deletedCollectorOzonEnrichmentJobCount,
-    deletedCollectCategoryResolutionCount,
+    deletedAccountOzonSharedCategoryEventCount,
+    deletedAccountOzonSharedCategoryCount,
+    deletedCollectOzonCategorySourceEvidenceCount,
   },
 ) {
   const auditEvent = (Array.isArray(state.auditEvents) ? state.auditEvents : []).find((event) =>
@@ -617,9 +619,27 @@ function overwriteAccountDeletionCollectorCounts(
     Math.max(0, Number(deletedCollectorOzonEnrichmentCacheCount) || 0);
   auditEvent.metadata.deletedCollectorOzonEnrichmentJobCount =
     Math.max(0, Number(deletedCollectorOzonEnrichmentJobCount) || 0);
-  auditEvent.metadata.deletedCollectCategoryResolutionCount =
-    Math.max(0, Number(deletedCollectCategoryResolutionCount) || 0);
+  auditEvent.metadata.deletedAccountOzonSharedCategoryEventCount =
+    Math.max(0, Number(deletedAccountOzonSharedCategoryEventCount) || 0);
+  auditEvent.metadata.deletedAccountOzonSharedCategoryCount =
+    Math.max(0, Number(deletedAccountOzonSharedCategoryCount) || 0);
+  auditEvent.metadata.deletedCollectOzonCategorySourceEvidenceCount =
+    Math.max(0, Number(deletedCollectOzonCategorySourceEvidenceCount) || 0);
+  delete auditEvent.metadata.deletedCollectCategoryResolutionCount;
   return true;
+}
+
+export function discardRetiredCollectCategoryLocalState(state = {}) {
+  let changed = false;
+  for (const key of [
+    "collectCategoryResolutions",
+    "collectCategoryResolutionRuntimeCursors",
+  ]) {
+    if (!Object.hasOwn(state, key)) continue;
+    delete state[key];
+    changed = true;
+  }
+  return changed;
 }
 
 export async function deleteRemovedAccountScopes(client, state = {}) {
@@ -642,10 +662,20 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
       error.code = "ACCOUNT_NOT_FOUND";
       throw error;
     }
-    const deletedCollectCategoryResolutions = await client.query(
-      "DELETE FROM collect_category_resolutions WHERE account_id=$1",
+    const categoryCounts = await client.query(
+      `SELECT
+         (SELECT COUNT(*)::INT
+            FROM account_ozon_shared_category_events
+           WHERE account_id=$1) AS deleted_account_ozon_shared_category_event_count,
+         (SELECT COUNT(*)::INT
+            FROM account_ozon_shared_categories
+           WHERE account_id=$1) AS deleted_account_ozon_shared_category_count,
+         (SELECT COUNT(*)::INT
+            FROM collect_ozon_category_source_evidence
+           WHERE account_id=$1) AS deleted_collect_ozon_category_source_evidence_count`,
       [accountId],
     );
+    const categoryCount = categoryCounts.rows?.[0] || {};
     const deletedCollectorOzonEnrichmentJobs = await client.query(
       "DELETE FROM collector_ozon_enrichment_jobs WHERE account_id=$1",
       [accountId],
@@ -672,8 +702,12 @@ export async function deleteRemovedAccountScopes(client, state = {}) {
           deletedCollectorOzonEnrichmentCache.rowCount,
         deletedCollectorOzonEnrichmentJobCount:
           deletedCollectorOzonEnrichmentJobs.rowCount,
-        deletedCollectCategoryResolutionCount:
-          deletedCollectCategoryResolutions.rowCount,
+        deletedAccountOzonSharedCategoryEventCount:
+          categoryCount.deleted_account_ozon_shared_category_event_count,
+        deletedAccountOzonSharedCategoryCount:
+          categoryCount.deleted_account_ozon_shared_category_count,
+        deletedCollectOzonCategorySourceEvidenceCount:
+          categoryCount.deleted_collect_ozon_category_source_evidence_count,
       },
     ) || persistedStateChanged;
 
@@ -1617,6 +1651,7 @@ export async function hydrateStoreCatalogFromRelationalTables(pool, state = {}) 
 }
 
 export async function mirrorStateToRelationalTablesInTransaction(client, state = {}) {
+  const retiredCategoryStateChanged = discardRetiredCollectCategoryLocalState(state);
   const deletionResult = await deleteRemovedAccountScopes(client, state);
   await mirrorAccounts(client, state);
   await mirrorCollectorAuthState(client, state);
@@ -1634,7 +1669,11 @@ export async function mirrorStateToRelationalTablesInTransaction(client, state =
   await mirrorOrders(client, state);
   await mirrorJobs(client, state);
   await mirrorAuditEvents(client, state);
-  return deletionResult;
+  return {
+    ...deletionResult,
+    persistedStateChanged:
+      retiredCategoryStateChanged || deletionResult.persistedStateChanged,
+  };
 }
 
 export async function mirrorStateToRelationalTables(pool, state = {}) {

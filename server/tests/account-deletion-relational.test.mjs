@@ -14,9 +14,17 @@ function statefulRelationalClient() {
       { id: "job-target", account_id: "account-target", collect_item_id: "collect-target" },
       { id: "job-other", account_id: "account-other", collect_item_id: "collect-other" },
     ],
-    collect_category_resolutions: [
-      { id: "resolution-target", account_id: "account-target", collect_item_id: "collect-target" },
-      { id: "resolution-other", account_id: "account-other", collect_item_id: "collect-other" },
+    collect_ozon_category_source_evidence: [
+      { id: "evidence-target", account_id: "account-target", collect_item_id: "collect-target" },
+      { id: "evidence-other", account_id: "account-other", collect_item_id: "collect-other" },
+    ],
+    account_ozon_shared_categories: [
+      { id: "shared-target", account_id: "account-target", source_evidence_id: "evidence-target" },
+      { id: "shared-other", account_id: "account-other", source_evidence_id: "evidence-other" },
+    ],
+    account_ozon_shared_category_events: [
+      { id: "event-target", account_id: "account-target", shared_category_id: "shared-target" },
+      { id: "event-other", account_id: "account-other", shared_category_id: "shared-other" },
     ],
     collector_auth_tickets: [
       { id: "ticket-target", account_id: "account-target" },
@@ -39,7 +47,20 @@ function statefulRelationalClient() {
       }
       if (normalized.startsWith("SELECT id FROM stores")) return { rows: [], rowCount: 0 };
       if (normalized.startsWith("SELECT data_collection_store_id")) return { rows: [], rowCount: 0 };
-      const scopedDelete = normalized.match(/^DELETE FROM (collect_category_resolutions|collector_ozon_enrichment_jobs|collector_ozon_enrichment_cache|collector_auth_tickets|collector_sessions) WHERE account_id=\$1$/);
+      if (normalized.startsWith("SELECT (SELECT COUNT(*)::INT FROM account_ozon_shared_category_events")) {
+        return {
+          rows: [{
+            deleted_account_ozon_shared_category_event_count:
+              rows.account_ozon_shared_category_events.filter((record) => record.account_id === params[0]).length,
+            deleted_account_ozon_shared_category_count:
+              rows.account_ozon_shared_categories.filter((record) => record.account_id === params[0]).length,
+            deleted_collect_ozon_category_source_evidence_count:
+              rows.collect_ozon_category_source_evidence.filter((record) => record.account_id === params[0]).length,
+          }],
+          rowCount: 1,
+        };
+      }
+      const scopedDelete = normalized.match(/^DELETE FROM (collector_ozon_enrichment_jobs|collector_ozon_enrichment_cache|collector_auth_tickets|collector_sessions) WHERE account_id=\$1$/);
       if (scopedDelete) {
         const table = scopedDelete[1];
         const before = rows[table].length;
@@ -49,6 +70,13 @@ function statefulRelationalClient() {
       if (normalized === "DELETE FROM accounts WHERE id=$1") {
         const before = rows.accounts.length;
         rows.accounts = rows.accounts.filter((record) => record.id !== params[0]);
+        for (const table of [
+          "account_ozon_shared_category_events",
+          "account_ozon_shared_categories",
+          "collect_ozon_category_source_evidence",
+        ]) {
+          rows[table] = rows[table].filter((record) => record.account_id !== params[0]);
+        }
         return { rows: [], rowCount: before - rows.accounts.length };
       }
       return { rows: [], rowCount: 0 };
@@ -66,7 +94,9 @@ function deletionState() {
         deletedCollectorSessionCount: 8,
         deletedCollectorOzonEnrichmentCacheCount: 7,
         deletedCollectorOzonEnrichmentJobCount: 6,
-        deletedCollectCategoryResolutionCount: 5,
+        deletedAccountOzonSharedCategoryEventCount: 5,
+        deletedAccountOzonSharedCategoryCount: 4,
+        deletedCollectOzonCategorySourceEvidenceCount: 3,
       },
     }],
   };
@@ -101,7 +131,8 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   const collectorSessionDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_sessions"));
   const enrichmentCacheDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_ozon_enrichment_cache"));
   const enrichmentJobDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collector_ozon_enrichment_jobs"));
-  const categoryResolutionDeleteIndex = sql.findIndex((statement) => statement.startsWith("DELETE FROM collect_category_resolutions"));
+  const categoryCountIndex = sql.findIndex((statement) =>
+    statement.startsWith("SELECT (SELECT COUNT(*)::INT FROM account_ozon_shared_category_events"));
   const accountLockIndex = sql.findIndex((statement) =>
     statement.startsWith("SELECT id FROM accounts") && statement.endsWith("FOR UPDATE"));
 
@@ -117,15 +148,20 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   assert.ok(enrichmentJobDeleteIndex > accountLockIndex);
   assert.ok(accountDeleteIndex > enrichmentCacheDeleteIndex);
   assert.ok(accountDeleteIndex > enrichmentJobDeleteIndex);
-  assert.ok(categoryResolutionDeleteIndex > accountLockIndex);
-  assert.ok(accountDeleteIndex > categoryResolutionDeleteIndex);
+  assert.ok(categoryCountIndex > accountLockIndex);
+  assert.ok(accountDeleteIndex > categoryCountIndex);
+  assert.equal(sql.some((statement) => statement.includes("collect_category_resolutions")), false);
+  assert.equal(sql.some((statement) => statement.startsWith("DELETE FROM account_ozon_shared_")), false);
+  assert.equal(sql.some((statement) => statement.startsWith("DELETE FROM collect_ozon_category_source_evidence")), false);
   assert.equal(sql.some((statement) => statement.includes("DELETE FROM audit_events")), false);
   assert.deepEqual(state.auditEvents[0].metadata, {
     deletedCollectorAuthTicketCount: 1,
     deletedCollectorSessionCount: 1,
     deletedCollectorOzonEnrichmentCacheCount: 1,
     deletedCollectorOzonEnrichmentJobCount: 1,
-    deletedCollectCategoryResolutionCount: 1,
+    deletedAccountOzonSharedCategoryEventCount: 1,
+    deletedAccountOzonSharedCategoryCount: 1,
+    deletedCollectOzonCategorySourceEvidenceCount: 1,
   });
   assert.deepEqual(client.rows.accounts, [{ id: "account-other" }]);
   assert.deepEqual(client.rows.collector_ozon_enrichment_cache, [
@@ -134,8 +170,14 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
   assert.deepEqual(client.rows.collector_ozon_enrichment_jobs, [
     { id: "job-other", account_id: "account-other", collect_item_id: "collect-other" },
   ]);
-  assert.deepEqual(client.rows.collect_category_resolutions, [
-    { id: "resolution-other", account_id: "account-other", collect_item_id: "collect-other" },
+  assert.deepEqual(client.rows.collect_ozon_category_source_evidence, [
+    { id: "evidence-other", account_id: "account-other", collect_item_id: "collect-other" },
+  ]);
+  assert.deepEqual(client.rows.account_ozon_shared_categories, [
+    { id: "shared-other", account_id: "account-other", source_evidence_id: "evidence-other" },
+  ]);
+  assert.deepEqual(client.rows.account_ozon_shared_category_events, [
+    { id: "event-other", account_id: "account-other", shared_category_id: "shared-other" },
   ]);
   assert.deepEqual(client.rows.collector_auth_tickets, [
     { id: "ticket-other", account_id: "account-other" },
@@ -156,7 +198,9 @@ test("deleteRemovedAccountScopes removes only A, keeps B, and consumes the marke
     deletedCollectorSessionCount: 1,
     deletedCollectorOzonEnrichmentCacheCount: 1,
     deletedCollectorOzonEnrichmentJobCount: 1,
-    deletedCollectCategoryResolutionCount: 1,
+    deletedAccountOzonSharedCategoryEventCount: 1,
+    deletedAccountOzonSharedCategoryCount: 1,
+    deletedCollectOzonCategorySourceEvidenceCount: 1,
   });
 });
 
