@@ -396,13 +396,28 @@ BEGIN
             ] IS DISTINCT FROM corrected_item.value - ARRAY[
               'description_category_id','descriptionCategoryId','type_id','typeId','attributes'
             ]
-            OR JSONB_TYPEOF(corrected_item.value->'description_category_id')<>'number'
-            OR NOT ((corrected_item.value->>'description_category_id') ~ '^[1-9][0-9]*$')
-            OR (corrected_item.value->>'description_category_id')::NUMERIC
-              <> replacement.current_description_category_id
-            OR JSONB_TYPEOF(corrected_item.value->'type_id')<>'number'
-            OR NOT ((corrected_item.value->>'type_id') ~ '^[1-9][0-9]*$')
-            OR (corrected_item.value->>'type_id')::NUMERIC <> replacement.current_type_id
+            OR corrected_item.value ? 'descriptionCategoryId'
+            OR corrected_item.value ? 'typeId'
+            OR CASE
+              WHEN JSONB_TYPEOF(corrected_item.value->'description_category_id')
+                IS DISTINCT FROM 'number' THEN TRUE
+              WHEN LENGTH(corrected_item.value->>'description_category_id')>16
+                OR NOT ((corrected_item.value->>'description_category_id') ~ '^[1-9][0-9]*$')
+                THEN TRUE
+              ELSE (corrected_item.value->>'description_category_id')::NUMERIC
+                  > 9007199254740991::NUMERIC
+                OR (corrected_item.value->>'description_category_id')::NUMERIC
+                  <> replacement.current_description_category_id
+            END
+            OR CASE
+              WHEN JSONB_TYPEOF(corrected_item.value->'type_id') IS DISTINCT FROM 'number'
+                THEN TRUE
+              WHEN LENGTH(corrected_item.value->>'type_id')>16
+                OR NOT ((corrected_item.value->>'type_id') ~ '^[1-9][0-9]*$')
+                THEN TRUE
+              ELSE (corrected_item.value->>'type_id')::NUMERIC > 9007199254740991::NUMERIC
+                OR (corrected_item.value->>'type_id')::NUMERIC <> replacement.current_type_id
+            END
             OR JSONB_TYPEOF(corrected_item.value->'attributes') IS DISTINCT FROM 'array'
       )
     THEN

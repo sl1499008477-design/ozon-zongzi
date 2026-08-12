@@ -293,6 +293,21 @@ if (!enabled) {
         SET status='MATCHED',corrected_items=$2::JSONB,corrected_items_hash=$3,
             replacement_shared_category_id=$4,replacement_shared_category_version=$5,
             updated_at='2026-08-13T00:00:00.750Z' WHERE id=$1`;
+      const without = (object, key) => Object.fromEntries(
+        Object.entries(object).filter(([candidate]) => candidate !== key),
+      );
+      const invalidCategoryIdentities = [
+        without(corrected[0], "description_category_id"),
+        without(corrected[0], "type_id"),
+        ...[null, "30", 0, -1, 1.5, 9_007_199_254_740_992]
+          .map((value) => ({ ...corrected[0], description_category_id: value })),
+        ...[null, "40", 0, -1, 1.5, 9_007_199_254_740_992]
+          .map((value) => ({ ...corrected[0], type_id: value })),
+        { ...corrected[0], descriptionCategoryId: 30 },
+        { ...corrected[0], descriptionCategoryId: 31 },
+        { ...corrected[0], typeId: 40 },
+        { ...corrected[0], typeId: 41 },
+      ];
       for (const [items, hash, replacementId, version] of [
         [{ forged: true }, "a".repeat(64), ids.shared, 2],
         [42, "a".repeat(64), ids.shared, 2],
@@ -305,6 +320,7 @@ if (!enabled) {
           canonicalSha([Object.fromEntries(Object.entries(corrected[0]).filter(([key]) => key !== "attributes"))]), ids.shared, 2],
         [[{ ...corrected[0], attributes: null }], canonicalSha([{ ...corrected[0], attributes: null }]), ids.shared, 2],
         [[{ ...corrected[0], attributes: {} }], canonicalSha([{ ...corrected[0], attributes: {} }]), ids.shared, 2],
+        ...invalidCategoryIdentities.map((item) => [[item], canonicalSha([item]), ids.shared, 2]),
       ]) {
         await assertCheckRejected(client, directMatchSql, [
           attempt.attemptId, JSON.stringify(items), hash, replacementId, version,
