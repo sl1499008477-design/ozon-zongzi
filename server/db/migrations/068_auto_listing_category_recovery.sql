@@ -8,6 +8,20 @@ CREATE UNIQUE INDEX submission_jobs_account_id_id_snapshot_id_key
 CREATE UNIQUE INDEX submission_items_job_snapshot_id_offer_key
   ON submission_items(job_id,snapshot_id,id,offer_id);
 
+CREATE OR REPLACE FUNCTION guard_submission_snapshot_category_recovery_basis()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.items IS DISTINCT FROM OLD.items OR NEW.snapshot_hash IS DISTINCT FROM OLD.snapshot_hash THEN
+    RAISE EXCEPTION 'submission snapshot recovery basis is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER submission_snapshot_category_recovery_basis
+BEFORE UPDATE OF items,snapshot_hash ON submission_snapshots
+FOR EACH ROW EXECUTE FUNCTION guard_submission_snapshot_category_recovery_basis();
+
 CREATE TABLE submission_category_error_evidence (
   id TEXT PRIMARY KEY CHECK (NULLIF(BTRIM(id),'') IS NOT NULL AND LENGTH(id) <= 240),
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -142,7 +156,9 @@ CREATE TABLE submission_category_recovery_attempts (
     (status='SUCCEEDED' AND corrected_items IS NOT NULL
       AND retry_ozon_task_id IS NOT NULL AND safe_review_code='' AND completed_at IS NOT NULL)
     OR
-    (status='NEEDS_REVIEW' AND NULLIF(BTRIM(safe_review_code),'') IS NOT NULL
+    (status='NEEDS_REVIEW' AND corrected_items IS NULL AND corrected_items_hash IS NULL
+      AND replacement_shared_category_id IS NULL AND replacement_shared_category_version IS NULL
+      AND retry_ozon_task_id IS NULL AND NULLIF(BTRIM(safe_review_code),'') IS NOT NULL
       AND completed_at IS NOT NULL)
   )
 );
@@ -247,8 +263,28 @@ CREATE TRIGGER submission_category_recovery_attempt_insert
 BEFORE INSERT ON submission_category_recovery_attempts
 FOR EACH ROW EXECUTE FUNCTION guard_submission_category_recovery_attempt_insert();
 
+CREATE OR REPLACE FUNCTION canonical_submission_category_recovery_json(value JSONB)
+RETURNS TEXT LANGUAGE SQL IMMUTABLE STRICT AS $$
+  SELECT CASE jsonb_typeof(value)
+    WHEN 'object' THEN COALESCE((
+      SELECT '{' || STRING_AGG(TO_JSONB(entry.key)::TEXT || ':'
+        || canonical_submission_category_recovery_json(entry.value), ',' ORDER BY entry.key) || '}'
+        FROM JSONB_EACH(value) AS entry
+    ), '{}')
+    WHEN 'array' THEN COALESCE((
+      SELECT '[' || STRING_AGG(canonical_submission_category_recovery_json(entry.value), ','
+        ORDER BY entry.ordinality) || ']'
+        FROM JSONB_ARRAY_ELEMENTS(value) WITH ORDINALITY AS entry(value,ordinality)
+    ), '[]')
+    ELSE value::TEXT
+  END;
+$$;
+
 CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_transition()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  triggering_evidence submission_category_error_evidence%ROWTYPE;
+  replacement account_ozon_shared_categories%ROWTYPE;
 BEGIN
   IF TG_OP='DELETE' AND (
     NOT EXISTS (SELECT 1 FROM accounts WHERE id=OLD.account_id)
@@ -268,6 +304,45 @@ BEGIN
   ) THEN
     RETURN OLD;
   END IF;
+  IF OLD.status='CLAIMED' AND NEW.status='MATCHED' THEN
+    SELECT * INTO triggering_evidence
+      FROM submission_category_error_evidence
+     WHERE account_id=OLD.account_id AND id=OLD.triggering_error_evidence_id;
+    SELECT * INTO replacement
+      FROM account_ozon_shared_categories
+     WHERE account_id=OLD.account_id AND id=NEW.replacement_shared_category_id
+       AND version=NEW.replacement_shared_category_version AND status='ACTIVE'
+       AND source_evidence_id=OLD.source_evidence_id;
+    IF triggering_evidence.id IS NULL OR replacement.id IS NULL
+      OR NEW.corrected_items_hash IS DISTINCT FROM ENCODE(SHA256(CONVERT_TO(
+        canonical_submission_category_recovery_json(NEW.corrected_items),'UTF8')), 'hex')
+      OR JSONB_ARRAY_LENGTH(NEW.corrected_items) <> JSONB_ARRAY_LENGTH(triggering_evidence.original_items)
+      OR EXISTS (
+        SELECT 1
+          FROM JSONB_ARRAY_ELEMENTS(triggering_evidence.original_items) WITH ORDINALITY AS original_item(value,ordinality)
+          FULL JOIN JSONB_ARRAY_ELEMENTS(NEW.corrected_items) WITH ORDINALITY AS corrected_item(value,ordinality)
+            USING (ordinality)
+         WHERE JSONB_TYPEOF(original_item.value)<>'object'
+            OR JSONB_TYPEOF(corrected_item.value)<>'object'
+            OR original_item.value - ARRAY[
+              'description_category_id','descriptionCategoryId','type_id','typeId','attributes'
+            ] IS DISTINCT FROM corrected_item.value - ARRAY[
+              'description_category_id','descriptionCategoryId','type_id','typeId','attributes'
+            ]
+            OR JSONB_TYPEOF(corrected_item.value->'description_category_id')<>'number'
+            OR NOT ((corrected_item.value->>'description_category_id') ~ '^[1-9][0-9]*$')
+            OR (corrected_item.value->>'description_category_id')::NUMERIC
+              <> replacement.current_description_category_id
+            OR JSONB_TYPEOF(corrected_item.value->'type_id')<>'number'
+            OR NOT ((corrected_item.value->>'type_id') ~ '^[1-9][0-9]*$')
+            OR (corrected_item.value->>'type_id')::NUMERIC <> replacement.current_type_id
+            OR JSONB_TYPEOF(corrected_item.value->'attributes')<>'array'
+      )
+    THEN
+      RAISE EXCEPTION 'invalid matched submission category recovery correction'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
   IF TG_OP='DELETE'
     OR NEW.id IS DISTINCT FROM OLD.id
     OR NEW.account_id IS DISTINCT FROM OLD.account_id
@@ -282,13 +357,20 @@ BEGIN
     OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
     OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at
     OR NEW.updated_at <= OLD.updated_at
-    OR (OLD.corrected_items IS NOT NULL AND NEW.corrected_items IS DISTINCT FROM OLD.corrected_items)
-    OR (OLD.corrected_items_hash IS NOT NULL AND NEW.corrected_items_hash IS DISTINCT FROM OLD.corrected_items_hash)
+    OR (NEW.status<>'NEEDS_REVIEW' AND OLD.corrected_items IS NOT NULL
+      AND NEW.corrected_items IS DISTINCT FROM OLD.corrected_items)
+    OR (NEW.status<>'NEEDS_REVIEW' AND OLD.corrected_items_hash IS NOT NULL
+      AND NEW.corrected_items_hash IS DISTINCT FROM OLD.corrected_items_hash)
     OR (OLD.replacement_shared_category_id IS NOT NULL
+      AND NEW.status<>'NEEDS_REVIEW'
       AND NEW.replacement_shared_category_id IS DISTINCT FROM OLD.replacement_shared_category_id)
     OR (OLD.replacement_shared_category_version IS NOT NULL
+      AND NEW.status<>'NEEDS_REVIEW'
       AND NEW.replacement_shared_category_version IS DISTINCT FROM OLD.replacement_shared_category_version)
-    OR (OLD.retry_ozon_task_id IS NOT NULL AND NEW.retry_ozon_task_id IS DISTINCT FROM OLD.retry_ozon_task_id)
+    OR (OLD.retry_ozon_task_id IS NOT NULL AND NEW.status<>'NEEDS_REVIEW'
+      AND NEW.retry_ozon_task_id IS DISTINCT FROM OLD.retry_ozon_task_id)
+    OR (OLD.retry_ozon_task_id IS NULL AND NEW.retry_ozon_task_id IS NOT NULL
+      AND NEW.status<>'RETRY_ACCEPTED')
     OR (OLD.status='CLAIMED' AND NEW.status='NEEDS_REVIEW' AND (
       NEW.corrected_items IS NOT NULL
       OR NEW.corrected_items_hash IS NOT NULL

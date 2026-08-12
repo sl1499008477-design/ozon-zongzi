@@ -80,6 +80,22 @@ function attemptDto(row, extras = {}) {
   return Object.freeze({ attemptId: row.id, status: row.status, ...extras });
 }
 
+function matchedAttemptDto(row) {
+  return Object.freeze({
+    attemptId: row.id,
+    status: row.status,
+    replacementSharedCategoryId: row.replacement_shared_category_id,
+    replacementSharedCategoryVersion: Number(row.replacement_shared_category_version),
+    correctedItemsHash: row.corrected_items_hash,
+  });
+}
+
+function retryAttemptDto(row) {
+  return Object.freeze({
+    attemptId: row.id, status: row.status, retryOzonTaskId: row.retry_ozon_task_id,
+  });
+}
+
 async function transaction(pool, work) {
   let client;
   try {
@@ -193,6 +209,20 @@ function parseBasis(row) {
     offers,
     frozenItems: items,
     safeEvidence: evidence,
+    sharedCategory: Object.freeze({
+      accountId: row.shared_account_id,
+      sourceDescriptionCategoryId: Number(row.shared_source_description_category_id),
+      sourceTypeId: Number(row.shared_source_type_id),
+      taxonomyScope: row.shared_taxonomy_scope,
+      currentDescriptionCategoryId: Number(row.shared_current_description_category_id),
+      currentTypeId: Number(row.shared_current_type_id),
+      status: row.shared_status,
+      source: row.shared_source,
+      taxonomyFingerprint: row.shared_taxonomy_fingerprint,
+      version: Number(row.shared_version),
+      evidenceId: row.shared_evidence_id,
+      validatedAt: row.shared_validated_at === null ? null : new Date(row.shared_validated_at).toISOString(),
+    }),
     existingAttempt: row.attempt_id === null ? null
       : Object.freeze({ attemptId: row.attempt_id, status: row.attempt_status }),
   });
@@ -223,7 +253,17 @@ export function createAutoListingCategoryRecoveryPostgres({
       const input = loadCommand(raw);
       return transaction(pool, async (client) => {
         const rows = (await client.query(
-          `SELECT evidence.*,attempt.id AS attempt_id,attempt.status AS attempt_status
+          `SELECT evidence.*,attempt.id AS attempt_id,attempt.status AS attempt_status,
+                  shared.account_id AS shared_account_id,
+                  shared.source_description_category_id AS shared_source_description_category_id,
+                  shared.source_type_id AS shared_source_type_id,
+                  shared.taxonomy_scope AS shared_taxonomy_scope,
+                  shared.current_description_category_id AS shared_current_description_category_id,
+                  shared.current_type_id AS shared_current_type_id,
+                  shared.status AS shared_status,shared.source AS shared_source,
+                  shared.taxonomy_fingerprint AS shared_taxonomy_fingerprint,
+                  shared.version AS shared_version,shared.source_evidence_id AS shared_evidence_id,
+                  shared.validated_at AS shared_validated_at
              FROM submission_category_error_evidence AS evidence
              JOIN submission_jobs AS job
                ON job.account_id=evidence.account_id AND job.id=evidence.submission_job_id
@@ -231,6 +271,7 @@ export function createAutoListingCategoryRecoveryPostgres({
              JOIN submission_snapshots AS snapshot
                ON snapshot.account_id=evidence.account_id AND snapshot.id=evidence.submission_snapshot_id
               AND snapshot.snapshot_hash=evidence.original_snapshot_hash
+              AND snapshot.items=evidence.original_items
              JOIN collect_ozon_category_source_evidence AS source
                ON source.account_id=evidence.account_id AND source.id=evidence.source_evidence_id
              JOIN account_ozon_shared_categories AS shared
@@ -296,6 +337,7 @@ export function createAutoListingCategoryRecoveryPostgres({
              JOIN submission_snapshots AS snapshot
                ON snapshot.account_id=evidence.account_id AND snapshot.id=evidence.submission_snapshot_id
               AND snapshot.snapshot_hash=evidence.original_snapshot_hash
+              AND snapshot.items=evidence.original_items
              JOIN account_ozon_shared_categories AS shared
                ON shared.account_id=evidence.account_id AND shared.id=evidence.old_shared_category_id
               AND shared.source_evidence_id=evidence.source_evidence_id
@@ -391,7 +433,7 @@ export function createAutoListingCategoryRecoveryPostgres({
           }
           row = existing;
         }
-        return attemptDto(row);
+        return matchedAttemptDto(row);
       });
     },
 
@@ -403,7 +445,9 @@ export function createAutoListingCategoryRecoveryPostgres({
     async markCategoryRecoveryRetryAccepted(raw) {
       const input = transitionBase(raw, ["retryOzonTaskId"]);
       identifier(input.retryOzonTaskId);
-      return transitionStatus(pool, input, "RETRY_ACCEPTED", { retryOzonTaskId: input.retryOzonTaskId });
+      return transitionStatus(pool, input, "RETRY_ACCEPTED", {
+        retryOzonTaskId: input.retryOzonTaskId, project: retryAttemptDto,
+      });
     },
 
     async completeCategoryRecovery(raw) {
@@ -411,6 +455,7 @@ export function createAutoListingCategoryRecoveryPostgres({
       identifier(input.retryOzonTaskId);
       return transitionStatus(pool, input, "SUCCEEDED", {
         requireRetryOzonTaskId: input.retryOzonTaskId, completedAt: input.transitionedAt,
+        project: retryAttemptDto,
       });
     },
 
@@ -436,7 +481,12 @@ export function createAutoListingCategoryRecoveryPostgres({
               WHERE account_id=$1 AND submission_job_id=$2 FOR UPDATE`,
             [input.accountId, input.jobId],
           )).rows[0];
-          if (existing) throw conflict();
+          if (existing) {
+            const identity = { ...input, attemptId: existing.id };
+            if (!exactAttemptIdentity(existing, identity) || existing.status !== "NEEDS_REVIEW"
+              || existing.safe_review_code !== input.safeReviewCode) throw conflict();
+            return attemptDto(existing);
+          }
           targetAttemptId = identifier(idFactory());
           const claimed = (await client.query(
             `INSERT INTO submission_category_recovery_attempts(
@@ -461,7 +511,9 @@ export function createAutoListingCategoryRecoveryPostgres({
         const identity = { ...input, attemptId: targetAttemptId };
         let row = (await client.query(
           `UPDATE submission_category_recovery_attempts
-              SET status='NEEDS_REVIEW',safe_review_code=$11,completed_at=$12,
+              SET status='NEEDS_REVIEW',corrected_items=NULL,corrected_items_hash=NULL,
+                  replacement_shared_category_id=NULL,replacement_shared_category_version=NULL,
+                  retry_ozon_task_id=NULL,safe_review_code=$11,completed_at=$12,
                   updated_at=GREATEST($12::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
             WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
               AND triggering_error_evidence_id=$4 AND id=$5 AND source_evidence_id=$6
@@ -522,6 +574,6 @@ async function transitionStatus(pool, input, toStatus, extras = {}) {
       if (!exactAttemptIdentity(existing, input) || !allowedReplay) throw conflict();
       row = existing;
     }
-    return attemptDto(row);
+    return (extras.project || attemptDto)(row);
   });
 }

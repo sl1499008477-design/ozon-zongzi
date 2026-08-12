@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import { projectOzonImportCarrier } from "./ozon-category-import-error-policy.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+const HASH = /^[0-9a-f]{64}$/u;
+const SHARED_KEYS = [
+  "accountId", "sourceDescriptionCategoryId", "sourceTypeId", "taxonomyScope",
+  "currentDescriptionCategoryId", "currentTypeId", "status", "source",
+  "taxonomyFingerprint", "version", "evidenceId", "validatedAt",
+];
 const IMMUTABLE_EXCEPT = new Set([
   "description_category_id", "descriptionCategoryId", "type_id", "typeId", "attributes",
 ]);
@@ -35,6 +41,53 @@ function command(raw) {
   return value;
 }
 
+function positive(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function sharedCategory(raw) {
+  const value = exact(raw, SHARED_KEYS);
+  if (!value || !safeId(value.accountId) || !positive(value.sourceDescriptionCategoryId)
+    || !positive(value.sourceTypeId) || value.taxonomyScope !== "OZON:DEFAULT"
+    || !positive(value.currentDescriptionCategoryId) || !positive(value.currentTypeId)
+    || !["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"].includes(value.status)
+    || !["SOURCE_DIRECT", "OZON_REFRESH", "MANUAL"].includes(value.source)
+    || (value.taxonomyFingerprint !== null
+      && (typeof value.taxonomyFingerprint !== "string" || !HASH.test(value.taxonomyFingerprint)))
+    || !positive(value.version) || !safeId(value.evidenceId)
+    || (value.validatedAt !== null && (typeof value.validatedAt !== "string"
+      || Number.isNaN(Date.parse(value.validatedAt))
+      || new Date(value.validatedAt).toISOString() !== value.validatedAt))
+    || (value.taxonomyFingerprint === null) !== (value.validatedAt === null)
+    || (value.source === "SOURCE_DIRECT" && value.taxonomyFingerprint !== null)
+    || (value.source !== "SOURCE_DIRECT" && value.taxonomyFingerprint === null)) return null;
+  return value;
+}
+
+function sharedTransition(raw, previous, expected) {
+  const value = sharedCategory(raw);
+  if (!value) return null;
+  const projected = { ...previous, ...expected };
+  return SHARED_KEYS.every((key) => value[key] === projected[key]) ? value : null;
+}
+
+function attemptResult(raw, keys, expected) {
+  const value = exact(raw, keys);
+  if (!value || !safeId(value.attemptId)
+    || Object.entries(expected).some(([key, expectedValue]) => value[key] !== expectedValue)) return null;
+  return value;
+}
+
+function claimResult(raw) {
+  const value = exact(raw, ["attemptId", "status", "claimed"]);
+  if (!value || !safeId(value.attemptId) || typeof value.claimed !== "boolean"
+    || (value.claimed && value.status !== "CLAIMED")
+    || (!value.claimed && ![
+      "CLAIMED", "MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED", "SUCCEEDED", "NEEDS_REVIEW",
+    ].includes(value.status))) return null;
+  return value;
+}
+
 function evidence(value, basis) {
   const result = exact(value, [
     "schemaVersion", "policyVersion", "errorCode", "field", "attributeId", "state",
@@ -54,7 +107,7 @@ function recoveryBasis(raw, request) {
     "accountId", "jobId", "snapshotId", "evidenceId", "policyVersion", "classification",
     "productId", "originalOzonTaskId", "sourceEvidenceId", "oldSharedCategoryId",
     "oldSharedCategoryVersion", "offers", "frozenItems", "safeEvidence",
-    "existingAttempt",
+    "existingAttempt", "sharedCategory",
   ]);
   if (!value || value.accountId !== request.accountId || value.jobId !== request.jobId
     || value.evidenceId !== request.evidenceId || !safeId(value.snapshotId)
@@ -65,6 +118,10 @@ function recoveryBasis(raw, request) {
     || !Array.isArray(value.offers) || value.offers.length < 1 || value.offers.length > 100
     || !Array.isArray(value.frozenItems) || value.frozenItems.length !== value.offers.length
     || !evidence(value.safeEvidence, value)) return null;
+  const shared = sharedCategory(value.sharedCategory);
+  if (!shared || shared.accountId !== value.accountId
+    || shared.evidenceId !== value.sourceEvidenceId
+    || shared.version !== value.oldSharedCategoryVersion || shared.status !== "ACTIVE") return null;
   if (value.existingAttempt !== null) {
     const existing = exact(value.existingAttempt, ["attemptId", "status"]);
     if (!existing || !safeId(existing.attemptId)
@@ -163,7 +220,9 @@ export function createAutoListingCategoryRecoveryService({
   return Object.freeze({
     async recover(rawRequest) {
       const request = command(rawRequest);
-      const basis = recoveryBasis(await repository.loadCategoryRecoveryBasis(request), request);
+      const basis = recoveryBasis(await repository.loadCategoryRecoveryBasis({
+        accountId: request.accountId, jobId: request.jobId, evidenceId: request.evidenceId,
+      }), request);
       if (!basis) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_NOT_ELIGIBLE", 409);
       if (basis.existingAttempt !== null) {
         return Object.freeze({
@@ -186,13 +245,14 @@ export function createAutoListingCategoryRecoveryService({
       }
       let attempt;
       try {
-        attempt = await repository.claimCategoryRecovery({
+        attempt = claimResult(await repository.claimCategoryRecovery({
           accountId: request.accountId, jobId: request.jobId, snapshotId: basis.snapshotId,
           evidenceId: request.evidenceId, sourceEvidenceId: basis.sourceEvidenceId,
           oldSharedCategoryId: basis.oldSharedCategoryId,
           oldSharedCategoryVersion: basis.oldSharedCategoryVersion,
           originalOzonTaskId: basis.originalOzonTaskId, correlationId: request.correlationId,
-        });
+        }));
+        if (!attempt) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_PORT_INVALID", 409);
       } catch {
         return safeReview(repository, basis, request, null,
           "AUTO_LISTING_CATEGORY_RECOVERY_ALREADY_ATTEMPTED", now);
@@ -202,20 +262,24 @@ export function createAutoListingCategoryRecoveryService({
       }
       let invalidated = false;
       let currentSharedCategoryVersion = basis.oldSharedCategoryVersion;
+      let currentSharedCategory = basis.sharedCategory;
       let reviewCode = "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE";
       try {
-        const invalidation = await invalidateSharedCategory({
+        const invalidatedAt = now();
+        const invalidation = sharedTransition(await invalidateSharedCategory({
           accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
           expectedVersion: basis.oldSharedCategoryVersion,
-          safeFailureCode: basis.safeEvidence.errorCode, transitionedAt: now(),
+          safeFailureCode: "OZON_CATEGORY_INVALIDATED", transitionedAt: invalidatedAt,
+        }), currentSharedCategory, {
+          accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
+          status: "INVALIDATED", version: basis.oldSharedCategoryVersion + 1,
         });
-        if (!invalidation || invalidation.status !== "INVALIDATED"
-          || !Number.isSafeInteger(invalidation.version)
-          || invalidation.version <= basis.oldSharedCategoryVersion) {
+        if (!invalidation) {
           throw failure("AUTO_LISTING_CATEGORY_RECOVERY_INVALIDATION_INVALID", 409);
         }
         invalidated = true;
         currentSharedCategoryVersion = invalidation.version;
+        currentSharedCategory = invalidation;
         const category = await refreshCategory({
           accountId: request.accountId, sourceEvidenceId: basis.sourceEvidenceId,
           taxonomyScope: "OZON:DEFAULT",
@@ -237,30 +301,43 @@ export function createAutoListingCategoryRecoveryService({
           reviewCode = "AUTO_LISTING_CATEGORY_RECOVERY_CORRECTION_INVALID";
           throw failure(reviewCode, 409);
         }
-        const replacement = await activateRefreshedCategory({
+        const validatedAt = now();
+        const replacement = sharedTransition(await activateRefreshedCategory({
           accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
           expectedVersion: currentSharedCategoryVersion,
           currentDescriptionCategoryId: category.descriptionCategoryId,
           currentTypeId: category.typeId, taxonomyFingerprint: category.taxonomyFingerprint,
-          validatedAt: now(),
+          validatedAt,
+        }), currentSharedCategory, {
+          accountId: request.accountId, currentDescriptionCategoryId: category.descriptionCategoryId,
+          currentTypeId: category.typeId, status: "ACTIVE", source: "OZON_REFRESH",
+          taxonomyFingerprint: category.taxonomyFingerprint,
+          version: currentSharedCategoryVersion + 1, evidenceId: basis.sourceEvidenceId, validatedAt,
         });
-        if (!replacement || !safeId(replacement.id) || !Number.isSafeInteger(replacement.version)
-          || replacement.version <= currentSharedCategoryVersion || replacement.status !== "ACTIVE") {
+        if (!replacement) {
           reviewCode = "AUTO_LISTING_CATEGORY_RECOVERY_ACTIVATION_INVALID";
           throw failure(reviewCode, 409);
         }
         currentSharedCategoryVersion = replacement.version;
+        currentSharedCategory = replacement;
         const correctedItemsHash = stableHash(correctedItems);
-        await repository.saveCategoryRecoveryMatch({
+        const matched = attemptResult(await repository.saveCategoryRecoveryMatch({
           ...transitionIdentity(basis, request, attempt.attemptId), expectedStatus: "CLAIMED",
-          replacementSharedCategoryId: replacement.id,
+          replacementSharedCategoryId: basis.oldSharedCategoryId,
           replacementSharedCategoryVersion: replacement.version,
           correctedItems, correctedItemsHash, transitionedAt: now(),
+        }), ["attemptId", "status", "replacementSharedCategoryId",
+          "replacementSharedCategoryVersion", "correctedItemsHash"], {
+          attemptId: attempt.attemptId, status: "MATCHED",
+          replacementSharedCategoryId: basis.oldSharedCategoryId,
+          replacementSharedCategoryVersion: replacement.version, correctedItemsHash,
         });
-        const pending = await repository.markCategoryRecoveryRetryPending({
+        if (!matched) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_PORT_INVALID", 409);
+        const pending = attemptResult(await repository.markCategoryRecoveryRetryPending({
           ...transitionIdentity(basis, request, attempt.attemptId), expectedStatus: "MATCHED",
           transitionedAt: now(),
-        });
+        }), ["attemptId", "status"], { attemptId: attempt.attemptId, status: "RETRY_PENDING" });
+        if (!pending) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_PORT_INVALID", 409);
         try {
           await scheduleRetry({
             accountId: request.accountId, jobId: request.jobId, snapshotId: basis.snapshotId,
@@ -272,11 +349,16 @@ export function createAutoListingCategoryRecoveryService({
       let failClosed = false;
       if (invalidated) {
         try {
-          await markSharedNeedsReview({
+          const reviewedAt = now();
+          const sharedReview = sharedTransition(await markSharedNeedsReview({
             accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
             expectedVersion: currentSharedCategoryVersion,
-            safeFailureCode: reviewCode, transitionedAt: now(),
+            safeFailureCode: "OZON_CATEGORY_NEEDS_REVIEW", transitionedAt: reviewedAt,
+          }), currentSharedCategory, {
+            accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
+            status: "NEEDS_REVIEW", version: currentSharedCategoryVersion + 1,
           });
+          if (!sharedReview) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_PORT_INVALID", 409);
         } catch { failClosed = true; }
       }
       let reviewed;

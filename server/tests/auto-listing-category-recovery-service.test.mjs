@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAutoListingCategoryRecoveryService } from "../auto-listing-category-recovery-service.mjs";
 
+function sharedCategory(overrides = {}) {
+  return Object.freeze({
+    accountId: "account-a", sourceDescriptionCategoryId: 10, sourceTypeId: 20,
+    taxonomyScope: "OZON:DEFAULT", currentDescriptionCategoryId: 10, currentTypeId: 20,
+    status: "ACTIVE", source: "SOURCE_DIRECT", taxonomyFingerprint: null,
+    version: 4, evidenceId: "source-a", validatedAt: null, ...overrides,
+  });
+}
+
 function basis() {
   return Object.freeze({
     accountId: "account-a", jobId: "job-a", snapshotId: "snapshot-a", evidenceId: "error-a",
@@ -14,6 +23,7 @@ function basis() {
       field: "description_category_id", attributeId: null, state: "FAILED",
       offerId: "offer-a", productId: null, classification: "EXPLICIT_CATEGORY_FAILURE",
     }),
+    sharedCategory: sharedCategory(),
     existingAttempt: null,
     offers: Object.freeze([Object.freeze({ offerId: "offer-a", sku: "sku-a" })]),
     frozenItems: Object.freeze([Object.freeze({
@@ -29,11 +39,17 @@ function basis() {
 
 function harness(overrides = {}) {
   const calls = [];
+  let shared = sharedCategory();
   const { repository: repositoryOverrides = {}, ...serviceOverrides } = overrides;
   const repository = {
     loadCategoryRecoveryBasis: async (input) => { calls.push("load"); return basis(); },
     claimCategoryRecovery: async () => { calls.push("claim"); return { attemptId: "attempt-a", status: "CLAIMED", claimed: true }; },
-    saveCategoryRecoveryMatch: async () => { calls.push("save-match"); return { attemptId: "attempt-a", status: "MATCHED" }; },
+    saveCategoryRecoveryMatch: async (input) => { calls.push("save-match"); return {
+      attemptId: "attempt-a", status: "MATCHED",
+      replacementSharedCategoryId: input.replacementSharedCategoryId,
+      replacementSharedCategoryVersion: input.replacementSharedCategoryVersion,
+      correctedItemsHash: input.correctedItemsHash,
+    }; },
     markCategoryRecoveryRetryPending: async () => { calls.push("retry-pending"); return { attemptId: "attempt-a", status: "RETRY_PENDING" }; },
     requireCategoryRecoveryReview: async () => { calls.push("review"); return { attemptId: "attempt-a", status: "NEEDS_REVIEW" }; },
     ...repositoryOverrides,
@@ -42,7 +58,11 @@ function harness(overrides = {}) {
     repository,
     loadOperatingStoreAccess: async () => { calls.push("access"); return { clientId: "client", apiKey: "key" }; },
     confirmOfferAbsent: async () => { calls.push("absence"); return { status: "ABSENT", code: "ABSENT" }; },
-    invalidateSharedCategory: async () => { calls.push("invalidate"); return { status: "INVALIDATED", version: 5 }; },
+    invalidateSharedCategory: async () => {
+      calls.push("invalidate");
+      shared = sharedCategory({ ...shared, status: "INVALIDATED", version: shared.version + 1 });
+      return shared;
+    },
     refreshCategory: async () => { calls.push("refresh"); return {
       kind: "UNIQUE_MATCH", descriptionCategoryId: 30, typeId: 40,
       taxonomyFingerprint: "a".repeat(64), metadata: { attributes: [] },
@@ -50,8 +70,19 @@ function harness(overrides = {}) {
     rebuildItems: async ({ originalItems }) => { calls.push("rebuild"); return originalItems.map((item) => ({
       ...item, description_category_id: 30, type_id: 40, attributes: [],
     })); },
-    activateRefreshedCategory: async () => { calls.push("activate"); return { id: "shared-a", version: 6, status: "ACTIVE" }; },
-    markSharedNeedsReview: async () => { calls.push("shared-review"); return { status: "NEEDS_REVIEW" }; },
+    activateRefreshedCategory: async (input) => {
+      calls.push("activate");
+      shared = sharedCategory({ ...shared, currentDescriptionCategoryId: input.currentDescriptionCategoryId,
+        currentTypeId: input.currentTypeId, status: "ACTIVE", source: "OZON_REFRESH",
+        taxonomyFingerprint: input.taxonomyFingerprint, version: shared.version + 1,
+        validatedAt: input.validatedAt });
+      return shared;
+    },
+    markSharedNeedsReview: async () => {
+      calls.push("shared-review");
+      shared = sharedCategory({ ...shared, status: "NEEDS_REVIEW", version: shared.version + 1 });
+      return shared;
+    },
     scheduleRetry: async () => { calls.push("schedule"); return { scheduled: true }; },
     now: () => "2026-08-13T00:00:00.000Z",
     ...serviceOverrides,
@@ -115,7 +146,11 @@ test("a failure after activation marks the actual activated version and the exac
     markSharedNeedsReview: async (input) => {
       calls.push("shared-review");
       sharedReview = input;
-      return { status: "NEEDS_REVIEW" };
+      return sharedCategory({
+        currentDescriptionCategoryId: 30, currentTypeId: 40, status: "NEEDS_REVIEW",
+        source: "OZON_REFRESH", taxonomyFingerprint: "a".repeat(64), version: 7,
+        validatedAt: "2026-08-13T00:00:00.000Z",
+      });
     },
   });
   assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
@@ -131,12 +166,12 @@ test("a stale activation response cannot masquerade as the activated version", a
   const { service, calls } = harness({
     activateRefreshedCategory: async () => {
       calls.push("activate");
-      return { id: "shared-a", version: 5, status: "ACTIVE" };
+      return sharedCategory({ status: "ACTIVE", version: 5 });
     },
     markSharedNeedsReview: async (input) => {
       calls.push("shared-review");
       sharedReview = input;
-      return { status: "NEEDS_REVIEW" };
+      return sharedCategory({ status: "NEEDS_REVIEW", version: 6 });
     },
   });
   assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
@@ -159,6 +194,74 @@ test("shared review write failure is not swallowed after activation and attempt 
     return true;
   });
   assert.deepEqual(calls.slice(-3), ["save-match", "shared-review", "review"]);
+});
+
+test("mismatched port result identities fail closed before retry scheduling", async () => {
+  const cases = [
+    {
+      invalidateSharedCategory: async () => sharedCategory({
+        status: "INVALIDATED", version: 5, evidenceId: "source-wrong",
+      }),
+    },
+    {
+      activateRefreshedCategory: async () => ({
+        ...sharedCategory({
+          currentDescriptionCategoryId: 30, currentTypeId: 40, status: "ACTIVE",
+          source: "OZON_REFRESH", taxonomyFingerprint: "a".repeat(64), version: 6,
+          validatedAt: "2026-08-13T00:00:00.000Z",
+        }),
+        extra: "forged",
+      }),
+    },
+    {
+      repository: {
+        saveCategoryRecoveryMatch: async () => ({
+          attemptId: "attempt-a", status: "MATCHED", replacementSharedCategoryId: "shared-a",
+          replacementSharedCategoryVersion: 6, correctedItemsHash: "f".repeat(64),
+        }),
+      },
+    },
+    {
+      repository: {
+        markCategoryRecoveryRetryPending: async () => ({ attemptId: "attempt-wrong", status: "RETRY_PENDING" }),
+      },
+    },
+  ];
+  for (const overrides of cases) {
+    const { service, calls } = harness(overrides);
+    assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+    assert.equal(calls.includes("schedule"), false);
+    assert.equal(calls.at(-1), "review");
+  }
+});
+
+test("hostile shared DTOs are not executed and invalid review DTOs expose one fixed failure", async () => {
+  let executed = false;
+  const hostile = sharedCategory({
+    currentDescriptionCategoryId: 30, currentTypeId: 40, status: "ACTIVE",
+    source: "OZON_REFRESH", taxonomyFingerprint: "a".repeat(64), version: 6,
+    validatedAt: "2026-08-13T00:00:00.000Z",
+  });
+  const descriptors = Object.getOwnPropertyDescriptors(hostile);
+  descriptors.status = { enumerable: true, configurable: true, get() { executed = true; return "ACTIVE"; } };
+  const accessorDto = Object.defineProperties({}, descriptors);
+  const first = harness({ activateRefreshedCategory: async () => accessorDto });
+  assert.deepEqual(await first.service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+  assert.equal(executed, false);
+  assert.equal(first.calls.includes("schedule"), false);
+
+  const second = harness({
+    repository: { saveCategoryRecoveryMatch: async () => { throw new Error("raw-secret"); } },
+    markSharedNeedsReview: async () => sharedCategory({ status: "NEEDS_REVIEW", version: 999 }),
+  });
+  await assert.rejects(second.service.recover(request), (error) => {
+    assert.equal(error.code, "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE");
+    assert.equal(error.cause, null);
+    assert.doesNotMatch(error.message, /raw|secret/u);
+    return true;
+  });
+  assert.equal(second.calls.includes("schedule"), false);
+  assert.equal(second.calls.at(-1), "review");
 });
 
 test("correction cannot alter frozen price/currency/content/media/store/warehouse/stock identity", async () => {
