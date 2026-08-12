@@ -626,7 +626,8 @@ test("category preparation lease uses one dedicated PostgreSQL session, sorted a
       if (/pg_advisory_lock/u.test(sql)) return { rows: [{ locked: null }] };
       if (/auto-listing-category-preparation-lease-fence/u.test(sql)) return { rows: [{ collect_item_id: params[1] }] };
       if (/UPDATE auto_listing_category_preparation_leases/u.test(sql)) {
-        return { rows: [{ id: "lease-a" }] };
+        return { rows: [{ id: "lease-a", state: "RELEASED", outcome: params[3],
+          finalized_job_id: null, replayed_job_id: null }] };
       }
       return { rows: [] };
     },
@@ -654,10 +655,58 @@ test("category preparation lease uses one dedicated PostgreSQL session, sorted a
   assert.equal(calls.filter(({ sql }) => /auto-listing-category-preparation-lease-fence/u.test(sql)).length, 2);
   assert.equal(calls.some(({ sql }) => /INSERT INTO auto_listing_category_preparation_leases/u.test(sql)), true);
   await repository.releaseCategoryPreparationLease({
-    accountId: "account-a", leaseId: lease.leaseId, outcome: "COMMITTED",
+    accountId: "account-a", leaseId: lease.leaseId, outcome: "FAILED",
   });
   assert.equal(calls.some(({ sql }) => /pg_advisory_unlock_all/u.test(sql)), true);
   assert.equal(calls.at(-1).sql, "RELEASE");
+});
+
+test("category lease release is persistently idempotent only for the exact replay outcome and job", async () => {
+  const calls = [];
+  let terminal = null;
+  const client = {
+    async query(sql, params = []) {
+      calls.push({ sql: String(sql), params });
+      if (/pg_backend_pid/u.test(sql)) return { rows: [{ pid: 4242, backend_started_at: "2026-08-12 00:00:00.123456+00" }] };
+      if (/account_ozon_shared_category_lease_key/u.test(sql) && !/pg_advisory_lock/u.test(sql)) {
+        return { rows: [{ collect_item_id: params[1], shared_category_id: params[3], lock_key: "1" }] };
+      }
+      if (/pg_advisory_lock/u.test(sql)) return { rows: [{ locked: null }] };
+      if (/auto-listing-category-preparation-lease-fence/u.test(sql)) return { rows: [{ id: "shared-a" }] };
+      if (/UPDATE auto_listing_category_preparation_leases/u.test(sql)) {
+        terminal = { state: "RELEASED", outcome: params[3], replayed_job_id: params[4] || null,
+          finalized_job_id: null };
+        return { rows: [{ id: "lease-a", ...terminal }] };
+      }
+      return { rows: [] };
+    },
+    release() {}, on() {}, off() {},
+  };
+  const pool = {
+    connect: async () => client,
+    async query(sql) {
+      calls.push({ sql: String(sql), params: [] });
+      return { rows: terminal ? [{ id: "lease-a", ...terminal }] : [] };
+    },
+  };
+  const repository = createAutoListingRepository({ pool, idFactory: () => "lease-a" });
+  await repository.acquireCategoryPreparationLease({ accountId: "account-a", items: [{
+    collectItemId: "collect-a", evidenceId: "evidence-a", sharedCategoryId: "shared-a",
+    sharedCategoryVersion: 1, sourceDescriptionCategoryId: 123, sourceTypeId: 456,
+    descriptionCategoryId: 789, typeId: 999, taxonomyScope: "OZON:DEFAULT",
+    taxonomyFingerprint: "", provenance: "MANUAL",
+  }] });
+  const exact = { accountId: "account-a", leaseId: "lease-a", outcome: "REPLAYED", jobId: "winner-job" };
+  await repository.releaseCategoryPreparationLease(exact);
+  await assert.doesNotReject(repository.releaseCategoryPreparationLease(exact));
+  await assert.rejects(repository.releaseCategoryPreparationLease({ ...exact, outcome: "COMMITTED" }), {
+    code: "AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE",
+  });
+  await assert.rejects(repository.releaseCategoryPreparationLease({ ...exact, jobId: "other-job" }), {
+    code: "AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE",
+  });
+  assert.equal(terminal.outcome, "REPLAYED");
+  assert.equal(terminal.replayed_job_id, "winner-job");
 });
 
 test("loads Collect Box source rows with versioned draft and raw identities", async () => {

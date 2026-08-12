@@ -582,7 +582,21 @@ test("orders replay, store/currency, shared category, warehouse, then paid graph
   assert.equal(repository.calls.find(([name]) => name === "createJobGraph")[1].categoryPreparationSignal,
     repository.categoryLeaseController.signal);
   assert.deepEqual(repository.calls.find(([name]) => name === "releaseCategoryPreparationLease")[1], {
-    accountId: "account-a", leaseId: "category-lease-a", outcome: "COMMITTED",
+    accountId: "account-a", leaseId: "category-lease-a", outcome: "COMMITTED", jobId: "job-1",
+  });
+});
+
+test("an idempotency-race replay releases its own lease as REPLAYED and binds the winner job", async () => {
+  const repository = fakeRepository({ existing: {
+    id: "winner-job", accountId: "account-a", sourceType: "COLLECT_BOX",
+    status: "CREATED", items: [],
+  } });
+  await createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "concurrent-replay",
+    correlationId: "corr", config,
+  });
+  assert.deepEqual(repository.calls.find(([name]) => name === "releaseCategoryPreparationLease")[1], {
+    accountId: "account-a", leaseId: "category-lease-a", outcome: "REPLAYED", jobId: "winner-job",
   });
 });
 

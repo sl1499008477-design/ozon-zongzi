@@ -21,6 +21,10 @@ const graphHandoffMigrationUrl = new URL(
   "../db/migrations/066_auto_listing_category_graph_handoff.sql",
   import.meta.url,
 );
+const replayLeaseMigrationUrl = new URL(
+  "../db/migrations/067_auto_listing_category_lease_replay.sql",
+  import.meta.url,
+);
 
 function normalizedSql(sql) {
   return String(sql).replace(/\s+/g, " ").trim();
@@ -114,6 +118,19 @@ test("066 binds graph commit to one lease and rejects an expired deferred commit
   assert.match(compact, /FOREIGN KEY \(account_id,finalized_job_id\)/i);
   assert.match(compact, /FROM pg_locks held_lock/i);
   assert.match(compact, /held_lock\.mode='ShareLock'/i);
+});
+
+test("067 closes committed and replayed lease outcomes around one exact job", async () => {
+  const compact = normalizedSql(await readFile(replayLeaseMigrationUrl, "utf8"));
+  assert.match(compact, /ADD COLUMN replayed_job_id TEXT/i);
+  assert.match(compact, /outcome IN \('COMMITTED','REPLAYED','FAILED','CONFLICT','TIMEOUT','CRASHED'\)/i);
+  assert.match(compact, /COALESCE\(outcome='COMMITTED',FALSE\).*finalized_job_id IS NOT NULL/is);
+  assert.match(compact, /COALESCE\(outcome='REPLAYED',FALSE\).*replayed_job_id IS NOT NULL/is);
+  assert.match(compact, /FOREIGN KEY \(account_id,replayed_job_id\)/i);
+  assert.match(compact, /category_preparation_lease_id=lease_row\.id/i);
+  assert.match(compact, /category_preparation_lease_id<>lease_row\.id/i);
+  assert.match(compact, /category_preparation_lease_id IS DISTINCT FROM lease_row\.id/i);
+  assert.match(compact, /DEFERRABLE INITIALLY DEFERRED/i);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {

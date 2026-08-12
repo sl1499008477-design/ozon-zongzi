@@ -300,6 +300,53 @@ function categoryGraphFenceBarrier(scopedPool, timeoutMs = 5_000) {
   };
 }
 
+function twoConnectionJobReplayBarrier(scopedPool, timeoutMs = 5_000) {
+  let arrivals = 0;
+  let settled = false;
+  let rejectArrival;
+  let resolveArrival;
+  let resolveProceed;
+  const bothArrived = new Promise((resolve, reject) => {
+    resolveArrival = resolve;
+    rejectArrival = reject;
+  });
+  bothArrived.catch(() => {});
+  const proceed = new Promise((resolve) => { resolveProceed = resolve; });
+  const timeout = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    rejectArrival(new Error(`job replay barrier timed out after ${timeoutMs}ms (arrivals=${arrivals})`));
+    resolveProceed();
+  }, timeoutMs);
+  return {
+    query: (...args) => scopedPool.query(...args),
+    waitForBoth: () => bothArrived,
+    release() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveProceed();
+    },
+    async connect() {
+      const connection = await scopedPool.connect();
+      return {
+        async query(sql, params) {
+          const result = await connection.query(sql, params);
+          if (/SELECT id FROM auto_listing_jobs WHERE account_id=\$1 AND idempotency_key=\$2 FOR UPDATE/u.test(sql)) {
+            arrivals += 1;
+            if (arrivals === 2) resolveArrival();
+            await proceed;
+          }
+          return result;
+        },
+        release: (error) => connection.release(error),
+        on: (...args) => connection.on?.(...args),
+        off: (...args) => connection.off?.(...args),
+      };
+    },
+  };
+}
+
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function waitForBackendLock({ observer, backendPid, marker, timeoutMs = 5_000, pollMs = 25 } = {}) {
@@ -504,6 +551,50 @@ if (!enabled) {
     skip: "requires AUTO_LISTING_POSTGRES_TESTS=1 and SONLI_MIGRATION_TEST_DATABASE_URL",
   }, () => {});
 } else {
+  test("PostgreSQL 067 safely repairs an old COMMITTED lease without a job binding", { timeout: 20_000 }, async () => {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: databaseUrl });
+    const client = await pool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const schemaSql = quoteIdentifier(`auto_listing_task4_067_upgrade_${suffix}`);
+    try {
+      await client.query(`CREATE SCHEMA ${schemaSql}`);
+      await client.query(`SET search_path TO ${schemaSql}, public`);
+      const migrations = (await readdir(migrationsDir))
+        .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && file < "067_").sort();
+      for (const migration of migrations) {
+        await client.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+      }
+      const accountId = `account-upgrade-${suffix}`;
+      await client.query(
+        "INSERT INTO accounts (id,username,display_name,role,status) VALUES ($1,$2,$2,'admin','active')",
+        [accountId, `user-${accountId}`],
+      );
+      await client.query(
+        `INSERT INTO auto_listing_category_preparation_leases (
+           id,account_id,holder_backend_pid,holder_backend_started_at,state,
+           acquired_at,expires_at,released_at,outcome
+         ) VALUES ('old-response-loss',$1,pg_backend_pid(),
+           (SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid()),
+           'RELEASED',NOW()-INTERVAL '2 minutes',NOW()-INTERVAL '1 minute',NOW(),'COMMITTED')`,
+        [accountId],
+      );
+      await client.query(await readFile(
+        path.join(migrationsDir, "067_auto_listing_category_lease_replay.sql"), "utf8",
+      ));
+      assert.deepEqual((await client.query(
+        `SELECT state,outcome,finalized_job_id,replayed_job_id
+           FROM auto_listing_category_preparation_leases WHERE account_id=$1 AND id='old-response-loss'`,
+        [accountId],
+      )).rows[0], { state: "RELEASED", outcome: "FAILED", finalized_job_id: null, replayed_job_id: null });
+    } finally {
+      await client.query("RESET search_path").catch(() => {});
+      await client.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`).catch(() => {});
+      client.release();
+      await pool.end();
+    }
+  });
+
   test("PostgreSQL repository rolls back graphs, scopes replays, preserves snapshots and orders events", { timeout: 20_000 }, async () => {
     const { Pool, Client } = await import("pg");
     const pool = new Pool({ connectionString: databaseUrl });
@@ -837,6 +928,109 @@ if (!enabled) {
         "SELECT count(*)::int AS count FROM auto_listing_source_snapshots WHERE account_id=$1 AND source_record_id='collect-race-same'",
         [accountA],
       )).rows[0].count), 1);
+
+      const replayRace = graph(accountA, "race-same-idempotency", "race-same-idempotency");
+      await registerGraphSources(client, replayRace);
+      const replayRaceSource = (await repository.loadCollectSources({
+        accountId: accountA, collectItemIds: [replayRace.items[0].sourceRecordId],
+      }))[0];
+      bindGraphToSharedVersion(replayRace, replayRaceSource.sharedCategory.version);
+      const replayLeaseItem = {
+        collectItemId: replayRaceSource.id,
+        evidenceId: replayRaceSource.categoryEvidence.id,
+        sharedCategoryId: replayRaceSource.sharedCategory.id,
+        sharedCategoryVersion: replayRaceSource.sharedCategory.version,
+        sourceDescriptionCategoryId: replayRaceSource.categoryEvidence.sourceDescriptionCategoryId,
+        sourceTypeId: replayRaceSource.categoryEvidence.sourceTypeId,
+        descriptionCategoryId: replayRaceSource.sharedCategory.currentDescriptionCategoryId,
+        typeId: replayRaceSource.sharedCategory.currentTypeId,
+        taxonomyScope: replayRaceSource.sharedCategory.taxonomyScope,
+        taxonomyFingerprint: replayRaceSource.sharedCategory.taxonomyFingerprint || "",
+        provenance: replayRaceSource.sharedCategory.source,
+      };
+      const replayBarrier = twoConnectionJobReplayBarrier(scopedPool);
+      const replayRaceRepository = createAutoListingRepository({ pool: replayBarrier });
+      const [firstLease, secondLease] = await Promise.all([
+        replayRaceRepository.acquireCategoryPreparationLease({ accountId: accountA, items: [replayLeaseItem] }),
+        replayRaceRepository.acquireCategoryPreparationLease({ accountId: accountA, items: [replayLeaseItem] }),
+      ]);
+      const replayGraphs = [firstLease, secondLease].map((lease) => ({
+        ...structuredClone(replayRace),
+        categoryPreparationLeaseId: lease.leaseId,
+        categoryPreparationSignal: lease.signal,
+      }));
+      const replayCreations = replayGraphs.map((input) => replayRaceRepository.createJobGraph(input));
+      try {
+        await replayBarrier.waitForBoth();
+        replayBarrier.release();
+        const replayResults = await Promise.all(replayCreations);
+        const winnerIndex = replayResults.findIndex((result) => result.duplicate !== true);
+        const loserIndex = replayResults.findIndex((result) => result.duplicate === true);
+        assert.notEqual(winnerIndex, -1);
+        assert.notEqual(loserIndex, -1);
+        assert.equal(replayResults[winnerIndex].id, replayResults[loserIndex].id);
+        const winnerLease = [firstLease, secondLease][winnerIndex];
+        const loserLease = [firstLease, secondLease][loserIndex];
+        const winnerJobId = replayResults[winnerIndex].id;
+        const committedRelease = {
+          accountId: accountA, leaseId: winnerLease.leaseId, outcome: "COMMITTED", jobId: winnerJobId,
+        };
+        await replayRaceRepository.releaseCategoryPreparationLease(committedRelease);
+        await assert.doesNotReject(replayRaceRepository.releaseCategoryPreparationLease(committedRelease));
+        const replayRelease = {
+          accountId: accountA, leaseId: loserLease.leaseId, outcome: "REPLAYED", jobId: winnerJobId,
+        };
+        await replayRaceRepository.releaseCategoryPreparationLease(replayRelease);
+        await assert.doesNotReject(replayRaceRepository.releaseCategoryPreparationLease(replayRelease));
+        await assert.rejects(replayRaceRepository.releaseCategoryPreparationLease({
+          ...replayRelease, outcome: "COMMITTED",
+        }), { code: "AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE" });
+        await assert.rejects(replayRaceRepository.releaseCategoryPreparationLease({
+          ...replayRelease, jobId: created.id,
+        }), { code: "AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE" });
+        const leaseRows = (await client.query(
+          `SELECT id,outcome,finalized_job_id,replayed_job_id
+             FROM auto_listing_category_preparation_leases
+            WHERE account_id=$1 AND id=ANY($2::text[]) ORDER BY id`,
+          [accountA, [winnerLease.leaseId, loserLease.leaseId]],
+        )).rows;
+        const committedLease = leaseRows.find((row) => row.id === winnerLease.leaseId);
+        const replayedLease = leaseRows.find((row) => row.id === loserLease.leaseId);
+        assert.deepEqual({ outcome: committedLease.outcome, finalizedJobId: committedLease.finalized_job_id,
+          replayedJobId: committedLease.replayed_job_id },
+        { outcome: "COMMITTED", finalizedJobId: winnerJobId, replayedJobId: null });
+        assert.deepEqual({ outcome: replayedLease.outcome, finalizedJobId: replayedLease.finalized_job_id,
+          replayedJobId: replayedLease.replayed_job_id },
+        { outcome: "REPLAYED", finalizedJobId: null, replayedJobId: winnerJobId });
+        assert.equal(Number((await client.query(
+          `SELECT count(*)::int AS count FROM auto_listing_category_preparation_leases
+            WHERE account_id=$1 AND outcome='COMMITTED' AND finalized_job_id IS NULL`,
+          [accountA],
+        )).rows[0].count), 0);
+        assert.equal(Number((await client.query(
+          "SELECT count(*)::int AS count FROM auto_listing_jobs WHERE account_id=$1 AND idempotency_key=$2",
+          [accountA, replayRace.idempotencyKey],
+        )).rows[0].count), 1);
+        assert.equal((await client.query(
+          "SELECT category_preparation_lease_id FROM auto_listing_jobs WHERE account_id=$1 AND id=$2",
+          [accountA, winnerJobId],
+        )).rows[0].category_preparation_lease_id, winnerLease.leaseId);
+        for (const forbiddenLeaseId of [null, loserLease.leaseId]) {
+          await client.query("BEGIN");
+          try {
+            await client.query(
+              "UPDATE auto_listing_jobs SET category_preparation_lease_id=$1 WHERE account_id=$2 AND id=$3",
+              [forbiddenLeaseId, accountA, winnerJobId],
+            );
+            await assert.rejects(client.query("SET CONSTRAINTS ALL IMMEDIATE"), (error) => error?.code === "23514");
+          } finally {
+            await client.query("ROLLBACK");
+          }
+        }
+      } finally {
+        replayBarrier.release();
+        await Promise.allSettled(replayCreations);
+      }
 
       const conflictLeft = graph(accountA, "race-conflict-left", "race-conflict");
       const conflictRight = withChangedSourceHash(graph(accountA, "race-conflict-right", "race-conflict"));

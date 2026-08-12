@@ -1188,15 +1188,33 @@ export function createAutoListingRepository({
       }
     },
 
-    async releaseCategoryPreparationLease({ accountId, leaseId, outcome } = {}) {
+    async releaseCategoryPreparationLease({ accountId, leaseId, outcome, jobId } = {}) {
       const scope = requiredAccountId(accountId);
       const id = requiredText(leaseId);
-      if (!["COMMITTED", "FAILED", "CONFLICT", "TIMEOUT"].includes(outcome)) {
+      if (!["COMMITTED", "REPLAYED", "FAILED", "CONFLICT", "TIMEOUT"].includes(outcome)) {
         throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
       }
+      const jobBoundOutcome = outcome === "COMMITTED" || outcome === "REPLAYED";
+      const boundJobId = jobBoundOutcome ? requiredText(jobId) : null;
+      if (!jobBoundOutcome && jobId != null) throw repositoryError("AUTO_LISTING_REPOSITORY_INVALID");
+      const expectedState = outcome === "TIMEOUT" ? "EXPIRED" : "RELEASED";
+      const terminalMatches = (row) => Boolean(row)
+        && row.state === expectedState
+        && row.outcome === outcome
+        && (outcome === "COMMITTED" ? row.finalized_job_id === boundJobId : row.finalized_job_id == null)
+        && (outcome === "REPLAYED" ? row.replayed_job_id === boundJobId : row.replayed_job_id == null);
+      const readTerminal = async (queryable) => (await queryable.query(
+        `SELECT id,state,outcome,finalized_job_id,replayed_job_id
+           FROM auto_listing_category_preparation_leases
+          WHERE account_id=$1 AND id=$2`,
+        [scope, id],
+      )).rows[0];
       const mapKey = categoryLeaseMapKey(scope, id);
       const held = activeCategoryLeases.get(mapKey);
-      if (!held || held.accountId !== scope) throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+      if (!held || held.accountId !== scope) {
+        if (terminalMatches(await readTerminal(pool))) return Object.freeze({ released: true });
+        throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
+      }
       activeCategoryLeases.delete(mapKey);
       clearTimeout(held.timer);
       let failed = null;
@@ -1204,21 +1222,31 @@ export function createAutoListingRepository({
         const updated = await held.client.query(
           `UPDATE auto_listing_category_preparation_leases
               SET state=CASE WHEN $4='TIMEOUT' THEN 'EXPIRED' ELSE 'RELEASED' END,
-                  outcome=$4,released_at=clock_timestamp(),updated_at=clock_timestamp()
+                  outcome=$4,
+                  finalized_job_id=CASE WHEN $4='COMMITTED' THEN $5 ELSE NULL END,
+                  replayed_job_id=CASE WHEN $4='REPLAYED' THEN $5 ELSE NULL END,
+                  released_at=clock_timestamp(),updated_at=clock_timestamp()
             WHERE account_id=$1 AND id=$2 AND holder_backend_pid=$3 AND state='ACTIVE'
-            RETURNING id`,
-          [scope, id, held.backendPid, outcome],
+              AND (
+                ($4='COMMITTED' AND EXISTS (
+                  SELECT 1 FROM auto_listing_jobs job
+                   WHERE job.account_id=$1 AND job.id=$5
+                     AND job.category_preparation_lease_id=$2
+                ))
+                OR ($4='REPLAYED' AND EXISTS (
+                  SELECT 1 FROM auto_listing_jobs job
+                   WHERE job.account_id=$1 AND job.id=$5
+                     AND job.category_preparation_lease_id IS NOT NULL
+                     AND job.category_preparation_lease_id<>$2
+                ))
+                OR ($4 IN ('FAILED','CONFLICT','TIMEOUT') AND $5 IS NULL)
+              )
+            RETURNING id,state,outcome,finalized_job_id,replayed_job_id`,
+          [scope, id, held.backendPid, outcome, boundJobId],
         );
-        if (updated.rows.length !== 1) {
-          const finalized = await held.client.query(
-            `SELECT id FROM auto_listing_category_preparation_leases
-              WHERE account_id=$1 AND id=$2 AND holder_backend_pid=$3
-                AND state='RELEASED' AND outcome='COMMITTED' AND finalized_job_id IS NOT NULL`,
-            [scope, id, held.backendPid],
-          );
-          if (outcome !== "COMMITTED" || finalized.rows.length !== 1) {
-            throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
-          }
+        const terminal = updated.rows[0] || await readTerminal(held.client);
+        if (!terminalMatches(terminal)) {
+          throw repositoryError("AUTO_LISTING_CATEGORY_LEASE_NOT_ACTIVE", 409);
         }
       } catch (caught) {
         failed = caught;

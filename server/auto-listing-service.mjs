@@ -333,6 +333,7 @@ export function createAutoListingService({
       items: sources.map(categoryAuthorizationFromSource),
     });
     let leaseOutcome = "FAILED";
+    let leaseJobId = null;
     let primaryError = null;
     try {
       const signal = categoryLeaseSignal(categoryLease.signal);
@@ -426,7 +427,9 @@ export function createAutoListingService({
         warehouseValidation,
         items: preparedItems,
       });
-      leaseOutcome = "COMMITTED";
+      leaseJobId = text(created?.id);
+      if (!leaseJobId) throw error("AUTO_LISTING_REPOSITORY_INVALID", 500);
+      leaseOutcome = created?.duplicate === true ? "REPLAYED" : "COMMITTED";
       return safeJob(created);
     } catch (caught) {
       primaryError = caught;
@@ -441,6 +444,7 @@ export function createAutoListingService({
       try {
         await storage.releaseCategoryPreparationLease({
           accountId, leaseId: categoryLease.leaseId, outcome: leaseOutcome,
+          ...(leaseJobId ? { jobId: leaseJobId } : {}),
         });
       } catch (releaseError) {
         if (!primaryError) throw releaseError;
