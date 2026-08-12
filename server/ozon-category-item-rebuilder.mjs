@@ -47,32 +47,43 @@ function positiveId(value) {
 }
 
 function dataObject(value, allowedKeys = null, exactKeys = null, errorFactory = sourceCategoryFailure) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
-    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw errorFactory();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some((key) => typeof key !== "string" || DANGEROUS_KEYS.has(key)
-    || descriptors[key].get || descriptors[key].set || descriptors[key].enumerable !== true
-    || (allowedKeys && !allowedKeys.has(key)))) throw errorFactory();
-  if (exactKeys && (keys.length !== exactKeys.size
-    || [...exactKeys].some((key) => !Object.hasOwn(descriptors, key)))) throw errorFactory();
-  return descriptors;
+  if (!value || typeof value !== "object" || types.isProxy(value)) throw errorFactory();
+  try {
+    if (Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw errorFactory();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== "string" || DANGEROUS_KEYS.has(key)
+      || descriptors[key].get || descriptors[key].set || descriptors[key].enumerable !== true
+      || (allowedKeys && !allowedKeys.has(key)))) throw errorFactory();
+    if (exactKeys && (keys.length !== exactKeys.size
+      || [...exactKeys].some((key) => !Object.hasOwn(descriptors, key)))) throw errorFactory();
+    return descriptors;
+  } catch {
+    throw errorFactory();
+  }
 }
 
 function dataArray(value, maximum, errorFactory = sourceCategoryFailure) {
-  if (!Array.isArray(value) || types.isProxy(value) || value.length > maximum) throw errorFactory();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  let count = 0;
-  for (const key of Reflect.ownKeys(descriptors)) {
-    const descriptor = descriptors[key];
-    if (descriptor.get || descriptor.set) throw errorFactory();
-    if (key === "length") continue;
-    if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
-      || Number(key) >= value.length || descriptor.enumerable !== true) throw errorFactory();
-    count += 1;
+  if (!value || typeof value !== "object" || types.isProxy(value)) throw errorFactory();
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+      || value.length > maximum) throw errorFactory();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    let count = 0;
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (descriptor.get || descriptor.set) throw errorFactory();
+      if (key === "length") continue;
+      if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/u.test(key)
+        || Number(key) >= value.length || descriptor.enumerable !== true) throw errorFactory();
+      count += 1;
+    }
+    if (count !== value.length) throw errorFactory();
+    return descriptors;
+  } catch {
+    throw errorFactory();
   }
-  if (count !== value.length) throw errorFactory();
-  return descriptors;
 }
 
 function descriptorValue(descriptors, key) {
@@ -132,7 +143,8 @@ export function projectOzonCategorySourceData(value) {
 }
 
 function normalizeValue(value, errorFactory = attributesFailure) {
-  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) {
+  if (value !== null && typeof value === "object" && types.isProxy(value)) throw errorFactory();
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     const text = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
     if (!text) throw errorFactory();
     return { value: text };
@@ -269,7 +281,7 @@ function normalizedContract(input) {
     const rawDictionaryValues = descriptorValue(descriptor, "dictionaryValues");
     if (!id || (complexIdValue != null && complexIdValue !== 0 && complexIdValue !== "0" && !complexId)
       || typeof required !== "boolean"
-      || (dictionaryIdValue != null && !dictionaryId) || !Array.isArray(rawDictionaryValues)
+      || (dictionaryIdValue != null && !dictionaryId)
       || attributes.has(`${complexId}:${id}`)) throw attributesFailure();
     const dictionaryDescriptors = dataArray(rawDictionaryValues, MAX_VALUES, dictionaryFailure);
     const dictionaryValues = new Map();

@@ -235,6 +235,48 @@ test("rejects hostile carriers without executing accessors and returns only safe
   assert.equal(coercions, 0);
 });
 
+test("maps transparent and revoked proxies at every rebuild contract layer to fixed safe failures", async (t) => {
+  const contract = () => ({
+    originalItems: [originalItem()],
+    sourceEvidenceAttributes: [[{ id: 200, values: [{ value: "source" }] }]],
+    replacementCategory: { ...replacementCategory },
+    currentCategoryMetadata: structuredClone(currentCategoryMetadata),
+  });
+  const proxy = (value, revoked) => {
+    if (!revoked) return new Proxy(value, {});
+    const pair = Proxy.revocable(value, {});
+    pair.revoke();
+    return pair.proxy;
+  };
+  const cases = [
+    ["originalItems", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", (input, wrap) => { input.originalItems = wrap(input.originalItems); }],
+    ["original item", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", (input, wrap) => { input.originalItems[0] = wrap(input.originalItems[0]); }],
+    ["replacement", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", (input, wrap) => { input.replacementCategory = wrap(input.replacementCategory); }],
+    ["source outer", "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", (input, wrap) => { input.sourceEvidenceAttributes = wrap(input.sourceEvidenceAttributes); }],
+    ["source group", "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", (input, wrap) => { input.sourceEvidenceAttributes[0] = wrap(input.sourceEvidenceAttributes[0]); }],
+    ["source attribute", "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", (input, wrap) => { input.sourceEvidenceAttributes[0][0] = wrap(input.sourceEvidenceAttributes[0][0]); }],
+    ["source values", "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", (input, wrap) => { input.sourceEvidenceAttributes[0][0].values = wrap(input.sourceEvidenceAttributes[0][0].values); }],
+    ["source value", "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", (input, wrap) => { input.sourceEvidenceAttributes[0][0].values[0] = wrap(input.sourceEvidenceAttributes[0][0].values[0]); }],
+    ["metadata", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", (input, wrap) => { input.currentCategoryMetadata = wrap(input.currentCategoryMetadata); }],
+    ["metadata attributes", "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED", (input, wrap) => { input.currentCategoryMetadata.attributes = wrap(input.currentCategoryMetadata.attributes); }],
+    ["metadata attribute", "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE", (input, wrap) => { input.currentCategoryMetadata.attributes[0] = wrap(input.currentCategoryMetadata.attributes[0]); }],
+    ["dictionary values", "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", (input, wrap) => { input.currentCategoryMetadata.attributes[0].dictionaryValues = wrap(input.currentCategoryMetadata.attributes[0].dictionaryValues); }],
+    ["dictionary option", "AUTO_LISTING_CATEGORY_DICTIONARY_UNRESOLVED", (input, wrap) => { input.currentCategoryMetadata.attributes[0].dictionaryValues[0] = wrap(input.currentCategoryMetadata.attributes[0].dictionaryValues[0]); }],
+  ];
+  for (const [name, expectedCode, mutate] of cases) {
+    for (const revoked of [false, true]) {
+      await t.test(`${revoked ? "revoked" : "transparent"} ${name}`, () => {
+        const input = contract();
+        mutate(input, (value) => proxy(value, revoked));
+        assert.throws(() => rebuildOzonItemsForCategory(input), (error) =>
+          error?.code === expectedCode && error.cause === null
+          && error.retryable === false && error.message === expectedCode
+          && !JSON.stringify(error).includes("secret"));
+      });
+    }
+  }
+});
+
 test("rejects explicit invalid source attribute IDs instead of folding them into the simple key", () => {
   for (const attribute of [
     { id: 200, complex_id: -1, values: [{ value: "invalid complex id" }] },

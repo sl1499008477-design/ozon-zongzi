@@ -368,6 +368,11 @@ test("rejects hostile raw listing evidence before category, dictionary, or norma
       }],
     },
   });
+  const customArray = (values) => {
+    const array = [...values];
+    Object.setPrototypeOf(array, Object.create(Array.prototype));
+    return array;
+  };
   const proxyCases = [];
   for (const revoked of [false, true]) {
     const wrap = (value) => {
@@ -480,6 +485,26 @@ test("rejects hostile raw listing evidence before category, dictionary, or norma
       build() {
         const item = baseItem();
         item._sourceVariant.attributes.extra = secret;
+        return [item];
+      },
+    },
+    {
+      name: "custom prototype outer items array",
+      build() { return customArray([baseItem()]); },
+    },
+    {
+      name: "custom prototype attributes array",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes = customArray(item._sourceVariant.attributes);
+        return [item];
+      },
+    },
+    {
+      name: "custom prototype values array",
+      build() {
+        const item = baseItem();
+        item._sourceVariant.attributes[0].values = customArray(item._sourceVariant.attributes[0].values);
         return [item];
       },
     },
@@ -604,6 +629,51 @@ test("rejects hostile source evidence before invoking even the pure raw-item bui
     && !JSON.stringify(error).includes("source-evidence-secret"));
   assert.equal(getterReads, 0);
   assert.deepEqual(calls, { access: 0, build: 0, attributes: 0, dictionary: 0, normalize: 0 });
+});
+
+test("rejects custom-prototype raw source arrays before invoking any dependency", async (t) => {
+  const customArray = (values) => {
+    const array = [...values];
+    Object.setPrototypeOf(array, Object.create(Array.prototype));
+    return array;
+  };
+  for (const location of ["variants", "attributes", "values"]) {
+    await t.test(location, async () => {
+      const itemSource = source();
+      const variants = itemSource.collectItem.listingDraft.variants;
+      variants[0]._sourceVariant = {
+        attributes: [{ id: 85, values: [{ value: "Нет бренда", dictionary_value_id: 126745801 }] }],
+      };
+      if (location === "variants") itemSource.collectItem.listingDraft.variants = customArray(variants);
+      if (location === "attributes") {
+        variants[0]._sourceVariant.attributes = customArray(variants[0]._sourceVariant.attributes);
+      }
+      if (location === "values") {
+        variants[0]._sourceVariant.attributes[0].values = customArray(
+          variants[0]._sourceVariant.attributes[0].values,
+        );
+      }
+      const calls = { access: 0, build: 0, attributes: 0, dictionary: 0, normalize: 0 };
+      const deps = dependencies({
+        async loadStoreAccess() { calls.access += 1; throw new Error("must not load credentials"); },
+        buildRawItems() { calls.build += 1; return []; },
+        categoryService: {
+          async getCategoryAttributes() { calls.attributes += 1; return { items: [] }; },
+          async getCategoryAttributeValues() { calls.dictionary += 1; return { items: [] }; },
+        },
+        async normalizeItems() { calls.normalize += 1; return { items: [] }; },
+      });
+      await assert.rejects(createAutoListingListingBasePreparer(deps)({
+        accountId: "account-a", source: itemSource,
+        targetStore: { id: "store-a", ownerAccountId: "account-a" },
+        targetCategory: frozenTargetCategory(),
+        pricingEvidence: { currency: "RUB", blackKopecks: "10000", greenKopecks: "8000" },
+      }), (error) => error?.code === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+        && error.message === "AUTO_LISTING_CATEGORY_ATTRIBUTES_INCOMPLETE"
+        && error.cause === null && !JSON.stringify(error).includes("secret"));
+      assert.deepEqual(calls, { access: 0, build: 0, attributes: 0, dictionary: 0, normalize: 0 });
+    });
+  }
 });
 
 test("uses immutable raw source evidence over normalized old upload attributes for the exact variant", async () => {
