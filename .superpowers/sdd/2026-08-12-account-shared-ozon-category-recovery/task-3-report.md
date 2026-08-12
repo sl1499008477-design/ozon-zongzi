@@ -212,3 +212,34 @@ Rollback this round with `git revert <fix-round-2-commit-sha>`. Because migratio
 - Confirmed direct audit/evidence mutation still fails while exact parents exist, while formal parent cleanup cascades in one transaction.
 - Confirmed recursive freezing applies at the final public boundary and does not freeze caller-owned nested containers.
 - Confirmed no production import or call to the retired store resolver/wakeup/timer/cursor/notifier/compatibility paths was restored.
+
+---
+
+## Fix round 3/5 — JSON first-lookup canonical draft pointer
+
+### Root cause and correction
+
+The real `createJsonAccountScopedCollectionHandler` persists a collection item with `draftVersion` but intentionally no public `currentDraftId`. For a missing-category result, the runtime previously called exact lookup without first creating the private PRODUCT_DRAFT current-source pointer. Round 2's lookup CAS therefore correctly refused to promote the resolved lookup: lookup evidence and an ACTIVE shared row existed, but the pointer array and refreshed item read were empty, so administrator confirmation could not find a current source.
+
+The JSON runtime now establishes a private canonical PRODUCT_DRAFT pointer inside the caller-owned state transaction, before source evidence or exact lookup is recorded. The pointer carries account/item, draft identity, and draft version in `collectOzonCategoryCurrentSources`; it is never copied onto the collection item or public response. It is created only when the caller-owned collection item's canonical `draftVersion` equals the prepared version. A newer pointer cannot be replaced by an older completion, and same-draft replay leaves an already-promoted lookup pointer unchanged. If matching immutable product evidence already exists, the private pointer references it; otherwise the lookup CAS replaces the temporary product pointer atomically when resolution succeeds.
+
+### TDD record and verification
+
+Entry-level RED used the real JSON collection handler and runtime with a controlled exact lookup. It reproduced the reviewed state exactly: HTTP collection succeeded and the shared row was ACTIVE, while `collectOzonCategoryCurrentSources.length` and refreshed rows were both zero. No production change preceded that failure.
+
+GREEN adds coverage that:
+
+- first missing-ID lookup is ACTIVE immediately and remains ACTIVE after `readForItems` refresh;
+- administrator confirmation can transition that refreshed lookup source to MANUAL;
+- the private pointer and lookup evidence roll back with the collection result when the single `saveState` fails;
+- exact same-draft replay does not downgrade the lookup pointer;
+- a newer draft/lookup wins and a late old-draft completion cannot replace it;
+- neither `currentDraftId` nor `productDraftId` is added to the collection item or public response.
+
+Fresh JSON-focused contract/service/runtime/repository/lookup/public/collection-ingress/composed-E2E verification: 91 tests, 89 passed, 0 failed, with two expected PostgreSQL-only branches skipped because no database variables were supplied. `git diff --check` passed. No SQL or migration changed in this round, so the round-2 disposable PostgreSQL evidence remains applicable: 24 passed, 0 failed, 0 skipped.
+
+### Scope, risk, and rollback
+
+Only `server/account-shared-ozon-category-runtime.mjs`, its focused runtime test, and this report changed. No public collection shape, schema, PostgreSQL adapter, Ozon transport, Task 4+ snapshot/UI, store resolver, wakeup/timer/cursor/notifier, paid AI, or product-write path changed.
+
+The remaining operational boundary is unchanged: exact lookup uses a controlled transport in tests, not real Ozon. A stale lookup may retain immutable audit evidence, but the canonical pointer fence prevents it from becoming current. Roll back this round with `git revert <fix-round-3-commit-sha>`; there is no database rollback because this round has no schema change. Round 2 remains independently revertible with `git revert e73b71ca12a904e342989cd2c3c8f05c48b03c86`.

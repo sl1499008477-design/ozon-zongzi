@@ -112,6 +112,52 @@ function findJsonItem(state, accountId, collectItemId) {
     && item?.deletedAt == null && String(item?.status || "") !== "DELETED") || null;
 }
 
+function jsonPointerDraftVersion(state, pointer) {
+  if (pointer?.sourceKind === "PRODUCT_DRAFT") {
+    const version = Number(pointer.productDraftVersion
+      ?? String(pointer.sourceVersion || "").replace(/^draft:/, ""));
+    return Number.isSafeInteger(version) && version > 0 ? version : null;
+  }
+  if (pointer?.sourceKind !== "OZON_READ_LOOKUP") return null;
+  const evidence = (Array.isArray(state.collectOzonCategorySourceEvidence)
+    ? state.collectOzonCategorySourceEvidence : []).find((row) =>
+    row?.accountId === pointer.accountId && row?.id === pointer.evidenceId);
+  const version = Number(evidence?.provenance?.triggerProductDraftVersion);
+  return Number.isSafeInteger(version) && version > 0 ? version : null;
+}
+
+function establishJsonCanonicalDraftPointer(state, prepared) {
+  const item = findJsonItem(state, prepared.accountId, prepared.collectItemId);
+  const itemDraftVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
+  if (itemDraftVersion !== prepared.productDraftVersion) return;
+  state.collectOzonCategoryCurrentSources = Array.isArray(state.collectOzonCategoryCurrentSources)
+    ? state.collectOzonCategoryCurrentSources : [];
+  const index = state.collectOzonCategoryCurrentSources.findIndex((row) =>
+    row?.accountId === prepared.accountId && row?.collectItemId === prepared.collectItemId);
+  const current = state.collectOzonCategoryCurrentSources[index];
+  const currentDraftVersion = jsonPointerDraftVersion(state, current);
+  if (currentDraftVersion !== null && currentDraftVersion >= prepared.productDraftVersion) return;
+  const existingEvidence = (Array.isArray(state.collectOzonCategorySourceEvidence)
+    ? state.collectOzonCategorySourceEvidence : []).find((row) =>
+    row?.accountId === prepared.accountId
+      && row?.collectItemId === prepared.collectItemId
+      && row?.provenance?.sourceKind === "PRODUCT_DRAFT"
+      && row?.productDraftId === prepared.productDraftId
+      && row?.productDraftVersion === prepared.productDraftVersion);
+  const pointer = {
+    accountId: prepared.accountId,
+    collectItemId: prepared.collectItemId,
+    evidenceId: existingEvidence?.id ?? null,
+    sourceKind: "PRODUCT_DRAFT",
+    sourceRecordId: prepared.productDraftId,
+    sourceVersion: `draft:${prepared.productDraftVersion}`,
+    productDraftId: prepared.productDraftId,
+    productDraftVersion: prepared.productDraftVersion,
+  };
+  if (index < 0) state.collectOzonCategoryCurrentSources.push(pointer);
+  else state.collectOzonCategoryCurrentSources[index] = pointer;
+}
+
 function lookupCredentialInState(state, accountId) {
   const storeId = String(state?.currentStoreIdsByAccount?.[accountId] || "");
   if (!storeId) return null;
@@ -274,6 +320,7 @@ export function createAccountSharedOzonCategoryRuntime({
   async function recordCollectionResult(input = {}) {
     const execute = async (state, persist) => {
       const prepared = recordInput(input);
+      establishJsonCanonicalDraftPointer(state, prepared);
       const { service } = jsonPorts(state);
       const result = prepared.sourceDescriptionCategoryId && prepared.sourceTypeId
         ? await service.recordCollectionSource(prepared)

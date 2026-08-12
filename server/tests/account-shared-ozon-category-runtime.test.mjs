@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
+import { createJsonAccountScopedCollectionHandler } from "../account-scoped-collection-routes.mjs";
 import { createJsonStateTransactionBoundary } from "../json-state-transaction.mjs";
 import { createAccountSharedOzonCategoryRuntime } from "../account-shared-ozon-category-runtime.mjs";
 
@@ -45,6 +46,161 @@ function createRuntimeHarness(overrides = {}) {
   });
   return { runtime, state, saves: () => saves };
 }
+
+function resolvedLookup(hashSeed = "entry-lookup") {
+  const lookupHash = crypto.createHash("sha256").update(hashSeed).digest("hex");
+  const identityHash = crypto.createHash("sha256").update("offer:offer-entry").digest("hex");
+  return Object.freeze({
+    status: "RESOLVED", ozonProductId: 10001, sourceSku: "offer-entry",
+    lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+    requestedOzonProductId: null, requestedSourceSku: "offer-entry",
+    matchedOzonProductId: 10001, matchedSourceSku: "offer-entry",
+    sourceDescriptionCategoryId: 17028702, sourceTypeId: 94405,
+    normalizedPath: Object.freeze(["家居", "杯子"]), attributeSummary: Object.freeze([]),
+    rawResponseRef: `ozon-read:offer:${identityHash}:${lookupHash}`,
+    rawResponseHash: lookupHash,
+    capturedAt: NOW,
+  });
+}
+
+function createCollectionEntryHarness({ failSave = false } = {}) {
+  const state = { caches: { collectBox: [] }, collectRequests: [] };
+  const response = {};
+  const transaction = createJsonStateTransactionBoundary({ enabled: () => true });
+  let nextId = 0;
+  const runtime = createAccountSharedOzonCategoryRuntime({
+    loadState: async () => structuredClone(state),
+    saveState: async () => {},
+    stateTransaction: transaction,
+    persistenceMode: () => "json",
+    sourceLookup: { async lookup() { return resolvedLookup(); } },
+    now: () => new Date(NOW),
+    randomUUID: () => `entry-id-${++nextId}`,
+  });
+  const handler = createJsonAccountScopedCollectionHandler({
+    authenticate: async () => ({ id: "account-entry" }),
+    readJson: async () => ({
+      sourceSku: "offer-entry", requestId: "request-entry", capturedAt: NOW,
+      payload: { sku: "offer-entry", name: "Entry lookup", draftVersion: 1 },
+    }),
+    normalizeItem: (item) => ({ ...item, draftVersion: 1 }),
+    loadState: async () => structuredClone(state),
+    saveState: async (working) => {
+      if (failSave) throw new Error("controlled entry save failure");
+      const saved = structuredClone(working);
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, saved);
+    },
+    stateTransaction: transaction,
+    enqueueForCollect: async () => {},
+    completeLinkedJobsFromCollectEvidence: async () => {},
+    sendJson: (_res, status, body) => Object.assign(response, { status, body }),
+    sendError: (_res, status, message, code) => Object.assign(response, {
+      status, body: { ok: false, message, code },
+    }),
+    countAccountItems: (working, account) => working.caches.collectBox
+      .filter((item) => item.accountId === account.id),
+    categoryEvidencePort: runtime,
+    now: () => new Date(NOW),
+  });
+  return {
+    state, response, runtime,
+    invoke: () => handler(
+      { method: "POST" }, {}, new URL("http://local/sources/ozon/collect"), state,
+    ),
+  };
+}
+
+test("JSON collection entry persists a private canonical draft pointer before first exact lookup", async () => {
+  const { state, response, runtime, invoke } = createCollectionEntryHarness();
+
+  await invoke();
+
+  assert.equal(response.status, 200);
+  assert.equal(Object.hasOwn(state.caches.collectBox[0], "currentDraftId"), false,
+    "private draft identity does not change the collection item/public shape");
+  assert.equal(Object.hasOwn(state.caches.collectBox[0], "productDraftId"), false);
+  assert.equal(/currentDraftId|productDraftId/.test(JSON.stringify(response.body)), false);
+  assert.equal(state.accountOzonSharedCategories[0].status, "ACTIVE",
+    "the exact lookup resolves immediately inside the collection transaction");
+  assert.equal(state.collectOzonCategoryCurrentSources.length, 1);
+  const refreshed = await runtime.readForItems({
+    accountId: "account-entry", collectItemIds: [state.caches.collectBox[0].id],
+  });
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0].categoryResolution.status, "ACTIVE");
+
+  const confirmed = await runtime.confirmManualCategory({
+    actor: { id: "account-entry", role: "admin" },
+    collectItemId: state.caches.collectBox[0].id,
+    expectedSourceVersion: `lookup:${resolvedLookup().rawResponseHash}`,
+    descriptionCategoryId: 17028788,
+    typeId: 95555,
+    taxonomyScope: "OZON:DEFAULT",
+    idempotencyKey: "entry-manual-confirmation",
+    correlationId: "entry-manual-correlation",
+  });
+  assert.equal(confirmed.categoryResolution.source, "MANUAL");
+});
+
+test("JSON collection entry rolls back private pointer and lookup evidence when its single save fails", async () => {
+  const { state, response, invoke } = createCollectionEntryHarness({ failSave: true });
+  const before = structuredClone(state);
+
+  await invoke();
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(state, before);
+  assert.equal(Object.hasOwn(state, "collectOzonCategoryCurrentSources"), false);
+  assert.equal(Object.hasOwn(state, "collectOzonCategorySourceEvidence"), false);
+});
+
+test("JSON caller-owned lookup replay and stale draft cannot replace a newer private pointer", async () => {
+  const state = {
+    caches: { collectBox: [{ ...collectedItem(), listingDraft: {}, draftVersion: 1 }] },
+  };
+  let lookupNumber = 0;
+  const lookupSeeds = ["lookup-1", "lookup-1", "lookup-2", "lookup-stale"];
+  const runtime = createAccountSharedOzonCategoryRuntime({
+    loadState: async () => state,
+    saveState: async () => {},
+    stateTransaction: createJsonStateTransactionBoundary({ enabled: () => true }),
+    persistenceMode: () => "json",
+    sourceLookup: { async lookup() {
+      const result = resolvedLookup(lookupSeeds[lookupNumber]);
+      lookupNumber += 1;
+      return result;
+    } },
+    now: () => new Date(NOW),
+    randomUUID: (() => { let id = 0; return () => `stale-id-${++id}`; })(),
+  });
+  const input = {
+    state, accountId: "account-a", collectItemId: "collect-a", item: state.caches.collectBox[0],
+    productDraftId: "draft:collect-a", productDraftVersion: 1, sourceVersion: "draft:1",
+    rawResponseRef: "raw-a", rawResponseHash: crypto.createHash("sha256").update("raw-a").digest("hex"),
+    capturedAt: NOW,
+  };
+  const first = await runtime.recordCollectionResult(input);
+  assert.equal(first.categoryResolution.status, "ACTIVE");
+  const firstPointer = structuredClone(state.collectOzonCategoryCurrentSources[0]);
+
+  await runtime.recordCollectionResult(input);
+  assert.deepEqual(state.collectOzonCategoryCurrentSources[0], firstPointer,
+    "same-draft replay does not downgrade a lookup pointer to PRODUCT_DRAFT");
+
+  state.caches.collectBox[0].draftVersion = 2;
+  const current = await runtime.recordCollectionResult({
+    ...input, item: state.caches.collectBox[0], productDraftVersion: 2, sourceVersion: "draft:2",
+    rawResponseHash: crypto.createHash("sha256").update("raw-b").digest("hex"),
+  });
+  assert.equal(current.categoryResolution.status, "ACTIVE");
+  const currentPointer = structuredClone(state.collectOzonCategoryCurrentSources[0]);
+  assert.notDeepEqual(currentPointer, firstPointer);
+
+  await runtime.recordCollectionResult(input);
+  assert.deepEqual(state.collectOzonCategoryCurrentSources[0], currentPointer,
+    "an old draft completion cannot overwrite the newer lookup pointer");
+});
 
 test("missing source IDs use only an ephemeral account-owned credential for exact read lookup", async () => {
   const lookupContexts = [];
