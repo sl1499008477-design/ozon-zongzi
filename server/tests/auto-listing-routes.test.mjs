@@ -403,13 +403,13 @@ for (const [code, status, message] of [
 
 test("known service and authentication failures keep safe status, code, and bounded item details", async () => {
   const cases = [
-    [404, "TARGET_STORE_NOT_FOUND"],
-    [409, "TARGET_STORE_DISABLED"],
-    [409, "TARGET_STORE_CREDENTIALS_REQUIRED"],
-    [422, "LISTING_WAREHOUSE_NOT_ELIGIBLE"],
-    [409, "AUTO_LISTING_SOURCE_VERSION_CONFLICT"],
+    [404, "TARGET_STORE_NOT_FOUND", "自动上架请求处理失败"],
+    [409, "TARGET_STORE_DISABLED", "自动上架请求处理失败"],
+    [409, "TARGET_STORE_CREDENTIALS_REQUIRED", "自动上架请求处理失败"],
+    [422, "LISTING_WAREHOUSE_NOT_ELIGIBLE", "自动上架请求处理失败"],
+    [409, "AUTO_LISTING_SOURCE_VERSION_CONFLICT", "来源资料版本已变化，请刷新后重试"],
   ];
-  for (const [status, code] of cases) {
+  for (const [status, code, message] of cases) {
     const local = harness({ runtime: { getService: async () => ({
       createAutoListingJob: async () => {
         throw Object.assign(new Error("account_b secret raw response"), {
@@ -425,7 +425,7 @@ test("known service and authentication failures keep safe status, code, and boun
       payload: {
         ok: false,
         code,
-        message: "自动上架请求处理失败",
+        message,
         correlationId: "corr_1",
         items: [{ itemId: "item_1", status: "BLOCKED", failureCode: "SOURCE_INVALID" }],
       },
@@ -443,12 +443,12 @@ test("known service and authentication failures keep safe status, code, and boun
 
 test("service status never overrides the closed public error map or impersonates authentication", async () => {
   const cases = [
-    ["TARGET_STORE_NOT_FOUND", 401, 404, "TARGET_STORE_NOT_FOUND"],
-    ["AUTO_LISTING_SOURCE_VERSION_CONFLICT", 403, 409, "AUTO_LISTING_SOURCE_VERSION_CONFLICT"],
-    ["UNKNOWN_SERVICE_FAILURE", 401, 500, "AUTO_LISTING_INTERNAL_ERROR"],
-    ["UNKNOWN_SERVICE_FAILURE", 403, 500, "AUTO_LISTING_INTERNAL_ERROR"],
+    ["TARGET_STORE_NOT_FOUND", 401, 404, "TARGET_STORE_NOT_FOUND", "自动上架请求处理失败"],
+    ["AUTO_LISTING_SOURCE_VERSION_CONFLICT", 403, 409, "AUTO_LISTING_SOURCE_VERSION_CONFLICT", "来源资料版本已变化，请刷新后重试"],
+    ["UNKNOWN_SERVICE_FAILURE", 401, 500, "AUTO_LISTING_INTERNAL_ERROR", "自动上架请求处理失败"],
+    ["UNKNOWN_SERVICE_FAILURE", 403, 500, "AUTO_LISTING_INTERNAL_ERROR", "自动上架请求处理失败"],
   ];
-  for (const [code, thrownStatus, status, expectedCode] of cases) {
+  for (const [code, thrownStatus, status, expectedCode, message] of cases) {
     const local = harness({ runtime: { getService: async () => ({
       createAutoListingJob: async () => {
         throw Object.assign(new Error("untrusted status"), { code, status: thrownStatus });
@@ -457,7 +457,7 @@ test("service status never overrides the closed public error map or impersonates
     await local.handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
     assert.deepEqual(local.replies[0], {
       status,
-      payload: { ok: false, code: expectedCode, message: "自动上架请求处理失败", correlationId: "corr_1" },
+      payload: { ok: false, code: expectedCode, message, correlationId: "corr_1" },
     });
   }
 });

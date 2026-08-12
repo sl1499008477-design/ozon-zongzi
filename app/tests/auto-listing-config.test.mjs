@@ -213,6 +213,16 @@ test("task creation explains missing published strategy and REVIEW upload policy
     "尚未发布自动上架 REVIEW 上传策略，请先由管理员发布策略");
 });
 
+test("task creation explains source version conflicts without exposing backend text", () => {
+  assert.equal(
+    autoListingTaskErrorMessage({
+      code: "AUTO_LISTING_SOURCE_VERSION_CONFLICT",
+      message: "untrusted raw backend text",
+    }),
+    "来源资料版本已变化，请刷新后重试",
+  );
+});
+
 test("reads a bounded workbook once and returns only request-safe metadata", async () => {
   const bytes = Uint8Array.from([0, 1, 2, 3]);
   let reads = 0;

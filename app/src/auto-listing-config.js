@@ -240,6 +240,7 @@ export function autoListingWarehouseOptions({
 }
 
 const AUTO_LISTING_RFBS_ERROR_MESSAGES = Object.freeze({
+  AUTO_LISTING_SOURCE_VERSION_CONFLICT: "来源资料版本已变化，请刷新后重试",
   RFBS_WAREHOUSE_NOT_FOUND: "未在当前店铺找到该 RFBS 仓库，请同步仓库后重试",
   RFBS_WAREHOUSE_DISABLED: "该 RFBS 仓库当前不可用，请在 Ozon 启用或改选其他仓库",
   RFBS_WAREHOUSE_SCOPE_MISMATCH: "仓库与当前店铺不匹配，请重新选择店铺和仓库",

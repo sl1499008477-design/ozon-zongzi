@@ -199,6 +199,7 @@ function safeErrorItems(value) {
 
 function messageFor(code) {
   if (code === "AUTO_LISTING_DISABLED") return "自动上架功能暂未启用";
+  if (code === "AUTO_LISTING_SOURCE_VERSION_CONFLICT") return "来源资料版本已变化，请刷新后重试";
   if (code === "AUTO_LISTING_JOB_NOT_FOUND") return "自动上架任务不存在";
   if (code === "PERMISSION_FORBIDDEN") return "没有该操作权限";
   if (code === "AUTO_LISTING_REQUEST_INVALID") return "自动上架请求无效";
