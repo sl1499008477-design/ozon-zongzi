@@ -354,6 +354,34 @@ if (!enabled) {
       assert.equal((await client.query(
         "SELECT to_regclass('account_ozon_category_confirmation_audit') AS name",
       )).rows[0].name, "account_ozon_category_confirmation_audit");
+
+      const cleanupEvidence = (await client.query(
+        `SELECT id,collect_item_id,source_version
+           FROM collect_ozon_category_source_evidence
+          WHERE account_id=$1 AND collect_item_id IS NOT NULL ORDER BY id LIMIT 1`,
+        [accountA],
+      )).rows[0];
+      const cleanupAuditId = `cleanup-audit-${suffix}`;
+      await client.query(
+        `INSERT INTO account_ozon_category_confirmation_audit
+          (id,account_id,collect_item_id,source_evidence_id,expected_source_version,
+           selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
+           correlation_id,idempotency_key,request_hash,result_json,confirmed_at)
+         VALUES ($1,$2,$3,$4,$5,111111,222222,'OZON:DEFAULT',$2,$6,$7,$8,'{}'::jsonb,NOW())`,
+        [cleanupAuditId, accountA, cleanupEvidence.collect_item_id, cleanupEvidence.id,
+          cleanupEvidence.source_version, `cleanup-correlation-${suffix}`,
+          `cleanup-idempotency-${suffix}`, sha(`cleanup-request-${suffix}`)],
+      );
+      assert.equal(await rejectedCode(() => client.query(
+        "DELETE FROM account_ozon_category_confirmation_audit WHERE id=$1",
+        [cleanupAuditId],
+      )), "23514", "direct ledger deletion remains forbidden while every parent exists");
+      await client.query("DELETE FROM collect_items WHERE account_id=$1 AND id=$2",
+        [accountA, cleanupEvidence.collect_item_id]);
+      assert.equal((await client.query(
+        "SELECT COUNT(*)::INT AS count FROM account_ozon_category_confirmation_audit WHERE id=$1",
+        [cleanupAuditId],
+      )).rows[0].count, 0, "formal item cleanup cascades its confirmation ledger");
     } finally {
       await client.query(`DROP SCHEMA IF EXISTS ${q(schema)} CASCADE`);
       client.release();

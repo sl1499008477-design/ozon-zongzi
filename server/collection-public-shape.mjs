@@ -8,6 +8,13 @@ function canonicalPathKey(key) {
   return String(key || "").replace(/[_-]/g, "").toLowerCase();
 }
 
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const nested of Object.values(value)) deepFreeze(nested, seen);
+  return Object.freeze(value);
+}
+
 function isListingTargetClientId(path, key) {
   return canonicalPathKey(key) === "clientid"
     && path.length === 2
@@ -19,6 +26,7 @@ function withoutPublicCollectionScope(value, path = []) {
   if (Array.isArray(value)) {
     return value.map((nested, index) => withoutPublicCollectionScope(nested, [...path, index]));
   }
+  if (value instanceof Date) return new Date(value.getTime());
   if (!value || typeof value !== "object") return value;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return value;
@@ -198,7 +206,7 @@ export function publicCategoryResolutionSummary(record = {}) {
   if (!["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"].includes(status)
     || taxonomyScope !== "OZON:DEFAULT") return null;
   const guidance = categoryResolutionGuidance(status);
-  return {
+  return deepFreeze({
     status,
     taxonomyScope,
     sourceDescriptionCategoryId: positiveIdentifier(record.sourceDescriptionCategoryId),
@@ -211,7 +219,7 @@ export function publicCategoryResolutionSummary(record = {}) {
     validatedAt: publicInstant(record.validatedAt),
     action: guidance.action,
     message: guidance.message,
-  };
+  });
 }
 
 export function publicCollectionItem(item = {}, {
@@ -254,7 +262,7 @@ export function publicCollectionItem(item = {}, {
       ...(dataCollectionStoreId ? { dataCollectionStoreId } : {}),
     };
   }
-  return projectedResult;
+  return deepFreeze(projectedResult);
 }
 
 export function publicPersistedCollectionItem(item = {}, { categoryResolution = null } = {}) {

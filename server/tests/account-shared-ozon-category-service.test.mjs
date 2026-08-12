@@ -146,6 +146,9 @@ test("missing IDs use one exact read lookup before review and only resolved fact
   assert.equal(resolvedHarness.state.collectOzonCategorySourceEvidence[0].provenance.sourceKind,
     "OZON_READ_LOOKUP");
   assert.equal(resolvedHarness.state.collectOzonCategoryLookupEvidence.length, 1);
+  assert.equal(resolvedHarness.state.collectOzonCategoryLookupEvidence[0].triggerProductDraftId,
+    "draft-a");
+  assert.equal(resolvedHarness.state.collectOzonCategoryLookupEvidence[0].triggerProductDraftVersion, 1);
   assert.equal(JSON.stringify(resolved).includes("ozon-read:"), false);
   assert.equal(Object.isFrozen(resolved), true);
   assert.equal(Object.isFrozen(resolved.categoryResolution), true);

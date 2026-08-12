@@ -172,6 +172,32 @@ test("persisted collection shape restores only complete variant target markers",
     publicItem.listingDraft.variants[1].categoryResolution.target.storeId,
     undefined,
   );
+  assert.equal(Object.isFrozen(publicItem), true);
+  assert.equal(Object.isFrozen(publicItem.listingDraft), true);
+  assert.equal(Object.isFrozen(publicItem.listingDraft.variants), true);
+  assert.equal(Object.isFrozen(publicItem.listingDraft.variants[0]), true);
+  assert.equal(Object.isFrozen(
+    publicItem.listingDraft.variants[0].categoryResolution.target,
+  ), true);
+});
+
+test("public collection and persisted item projections recursively freeze every DTO container", () => {
+  const input = {
+    id: "deep-freeze",
+    payload: { rows: [{ labels: ["one", "two"] }] },
+  };
+  const direct = publicCollectionItem(input);
+  const persisted = publicPersistedCollectionItem(input);
+  for (const item of [direct, persisted]) {
+    assert.deepEqual(Object.keys(item), ["id", "payload"]);
+    assert.equal(Object.isFrozen(item), true);
+    assert.equal(Object.isFrozen(item.payload), true);
+    assert.equal(Object.isFrozen(item.payload.rows), true);
+    assert.equal(Object.isFrozen(item.payload.rows[0]), true);
+    assert.equal(Object.isFrozen(item.payload.rows[0].labels), true);
+  }
+  assert.equal(Object.isFrozen(input), false, "projection does not freeze caller-owned input");
+  assert.equal(Object.isFrozen(input.payload), false);
 });
 
 test("persisted Ozon projection separates historical source aliases from explicit draft targets", () => {
@@ -264,7 +290,8 @@ test("projects an account-scoped category record as a stable public summary", ()
     failure_detail_safe: "database column must not be public",
   };
 
-  assert.deepEqual(publicCategoryResolutionSummary(record), {
+  const summary = publicCategoryResolutionSummary(record);
+  assert.deepEqual(summary, {
     status: "ACTIVE",
     taxonomyScope: "OZON:DEFAULT",
     sourceDescriptionCategoryId: 17_033_604,
@@ -277,6 +304,7 @@ test("projects an account-scoped category record as a stable public summary", ()
     action: "NONE",
     message: "使用采集类目准备上架",
   });
+  assert.equal(Object.isFrozen(summary), true);
 
   const item = publicCollectionItem({
     id: "collect-public-summary",

@@ -11,12 +11,16 @@ CREATE TABLE collect_ozon_category_lookup_evidence (
   matched_ozon_product_id BIGINT NOT NULL CHECK (matched_ozon_product_id > 0),
   matched_source_sku TEXT NOT NULL CHECK (NULLIF(BTRIM(matched_source_sku),'') IS NOT NULL),
   lookup_contract_version TEXT NOT NULL CHECK (lookup_contract_version='account-shared-ozon-category-lookup.v1'),
+  trigger_product_draft_id TEXT NOT NULL,
+  trigger_product_draft_version INTEGER NOT NULL CHECK (trigger_product_draft_version > 0),
   response_hash TEXT NOT NULL CHECK (response_hash ~ '^[0-9a-f]{64}$'),
   captured_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (account_id,id),
   UNIQUE (account_id,id,collect_item_id),
   FOREIGN KEY (account_id,collect_item_id) REFERENCES collect_items(account_id,id) ON DELETE CASCADE,
+  FOREIGN KEY (collect_item_id,trigger_product_draft_id)
+    REFERENCES product_drafts(collect_item_id,id) ON DELETE CASCADE,
   CHECK (requested_ozon_product_id IS NOT NULL OR requested_source_sku IS NOT NULL),
   CHECK (requested_ozon_product_id IS NULL OR requested_ozon_product_id=matched_ozon_product_id),
   CHECK (requested_source_sku IS NULL OR requested_source_sku=matched_source_sku),
@@ -158,7 +162,16 @@ CREATE TABLE account_ozon_category_confirmation_audit (
 CREATE OR REPLACE FUNCTION reject_account_ozon_category_confirmation_audit_mutation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP='DELETE' AND NOT EXISTS (SELECT 1 FROM accounts WHERE id=OLD.account_id) THEN
+  IF TG_OP='DELETE' AND (
+    NOT EXISTS (SELECT 1 FROM accounts WHERE id=OLD.account_id)
+    OR NOT EXISTS (
+      SELECT 1 FROM collect_items WHERE account_id=OLD.account_id AND id=OLD.collect_item_id
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM collect_ozon_category_source_evidence
+       WHERE account_id=OLD.account_id AND id=OLD.source_evidence_id
+    )
+  ) THEN
     RETURN OLD;
   END IF;
   RAISE EXCEPTION 'Ozon category confirmation audit is append only' USING ERRCODE='23514';
@@ -174,6 +187,9 @@ RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP='DELETE' AND (
     NOT EXISTS (SELECT 1 FROM accounts WHERE id=OLD.account_id)
+    OR (OLD.collect_item_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM collect_items WHERE account_id=OLD.account_id AND id=OLD.collect_item_id
+    ))
     OR (OLD.source_kind='PRODUCT_DRAFT' AND NOT EXISTS (
       SELECT 1 FROM product_drafts WHERE id=OLD.product_draft_id
     ))

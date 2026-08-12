@@ -26,6 +26,7 @@ const ENRICHMENT_PROVENANCE_KEYS = Object.freeze([
 const LOOKUP_PROVENANCE_KEYS = Object.freeze([
   ...PROVENANCE_BASE_KEYS, "lookupContractVersion", "requestedOzonProductId",
   "requestedSourceSku", "matchedOzonProductId", "matchedSourceSku",
+  "triggerProductDraftId", "triggerProductDraftVersion",
 ]);
 const ATTRIBUTE_KEYS = new Set(["key", "value", "dictionaryValueId"]);
 const SHARED_STATUSES = new Set(["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"]);
@@ -178,6 +179,8 @@ function evidenceProvenance(value, evidence, seen) {
     projected.requestedSourceSku = nullableText(value.requestedSourceSku);
     projected.matchedOzonProductId = positiveInteger(value.matchedOzonProductId);
     projected.matchedSourceSku = text(value.matchedSourceSku);
+    projected.triggerProductDraftId = text(value.triggerProductDraftId);
+    projected.triggerProductDraftVersion = positiveInteger(value.triggerProductDraftVersion);
     if (evidence.collectItemId === null || evidence.productDraftId !== null
       || evidence.productDraftVersion !== null
       || evidence.ozonProductId !== projected.matchedOzonProductId

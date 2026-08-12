@@ -62,11 +62,15 @@ test("064 adds constrained lookup provenance, canonical pointers, and an append-
   assert.match(compact, /requested_source_sku/i);
   assert.match(compact, /matched_ozon_product_id/i);
   assert.match(compact, /matched_source_sku/i);
+  assert.match(compact, /trigger_product_draft_id/i);
+  assert.match(compact, /trigger_product_draft_version/i);
   assert.match(compact, /FOREIGN KEY \(account_id,lookup_evidence_id,collect_item_id\)/i);
   assert.match(compact, /CREATE TABLE collect_ozon_category_current_sources/i);
   assert.match(compact, /current_draft_id/i);
   assert.match(compact, /CREATE TABLE account_ozon_category_confirmation_audit/i);
   assert.match(compact, /append_only/i);
+  assert.match(compact, /NOT EXISTS \(\s*SELECT 1 FROM collect_items WHERE account_id=OLD\.account_id AND id=OLD\.collect_item_id\s*\)/i);
+  assert.match(compact, /NOT EXISTS \(\s*SELECT 1 FROM collect_ozon_category_source_evidence WHERE account_id=OLD\.account_id AND id=OLD\.source_evidence_id\s*\)/i);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {

@@ -113,6 +113,8 @@ function lookupEvidenceInput(base, result) {
       requestedSourceSku: result.requestedSourceSku,
       matchedOzonProductId: result.matchedOzonProductId,
       matchedSourceSku: result.matchedSourceSku,
+      triggerProductDraftId: text(base.productDraftId),
+      triggerProductDraftVersion: base.productDraftVersion,
     },
   });
 }

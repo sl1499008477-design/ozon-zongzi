@@ -215,6 +215,7 @@ function normalizeState(working) {
         && String(row?.id || "") === evidence.collectItemId);
     const draftId = item?.currentDraftId ?? item?.current_draft_id ?? null;
     const draftVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
+    if (evidence.provenance.sourceKind === "OZON_READ_LOOKUP") continue;
     if (evidence.provenance.sourceKind === "PRODUCT_DRAFT"
       && ((draftId !== null && String(draftId) !== evidence.productDraftId)
         || (draftVersion > 0 && draftVersion !== evidence.productDraftVersion))) continue;
@@ -419,6 +420,8 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
       matchedOzonProductId: evidence.provenance.matchedOzonProductId,
       matchedSourceSku: evidence.provenance.matchedSourceSku,
       lookupContractVersion: evidence.provenance.lookupContractVersion,
+      triggerProductDraftId: evidence.provenance.triggerProductDraftId,
+      triggerProductDraftVersion: evidence.provenance.triggerProductDraftVersion,
       responseHash: evidence.rawResponseHash,
       capturedAt: evidence.capturedAt,
     };
@@ -439,7 +442,6 @@ function recordEvidenceInState(working, evidenceInput, { idFactory }) {
     const shared = working.accountOzonSharedCategories.find(
       (row) => signature(row) === signature(existing),
     );
-    setCurrentSourceInState(working, existing);
     return { evidence: existing, shared, created: false };
   }
 
@@ -502,6 +504,26 @@ function setCurrentSourceInState(working, evidence) {
   };
   const index = working.collectOzonCategoryCurrentSources.findIndex((row) =>
     row.accountId === pointer.accountId && row.collectItemId === pointer.collectItemId);
+  if (evidence.provenance.sourceKind === "OZON_READ_LOOKUP") {
+    if (index < 0) {
+      const item = (Array.isArray(working?.caches?.collectBox) ? working.caches.collectBox : [])
+        .find((row) => String(row?.accountId || "") === evidence.accountId
+          && String(row?.id || "") === evidence.collectItemId);
+      const draftId = item?.currentDraftId ?? item?.current_draft_id ?? null;
+      const draftVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
+      if (draftId === null || String(draftId) !== evidence.provenance.triggerProductDraftId
+        || draftVersion !== evidence.provenance.triggerProductDraftVersion) return;
+      working.collectOzonCategoryCurrentSources.push(pointer);
+      return;
+    }
+    const current = working.collectOzonCategoryCurrentSources[index];
+    if (current.sourceKind !== "PRODUCT_DRAFT"
+      || current.sourceRecordId !== evidence.provenance.triggerProductDraftId
+      || ![String(evidence.provenance.triggerProductDraftVersion),
+        `draft:${evidence.provenance.triggerProductDraftVersion}`].includes(current.sourceVersion)) return;
+    working.collectOzonCategoryCurrentSources[index] = pointer;
+    return;
+  }
   if (index < 0) working.collectOzonCategoryCurrentSources.push(pointer);
   else working.collectOzonCategoryCurrentSources[index] = pointer;
 }
@@ -734,7 +756,6 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
           AND source_type_id=$3 AND taxonomy_scope=$4`,
       [evidence.accountId, evidence.sourceDescriptionCategoryId, evidence.sourceTypeId, evidence.taxonomyScope],
     );
-    await setCurrentSourcePostgres(client, existing);
     return { evidence: existing, shared: mapSharedRow(sharedResult.rows[0]), created: false };
   }
 
@@ -745,14 +766,17 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
     await client.query(
       `INSERT INTO collect_ozon_category_lookup_evidence
         (id,account_id,collect_item_id,requested_ozon_product_id,requested_source_sku,
-         matched_ozon_product_id,matched_source_sku,lookup_contract_version,response_hash,
+         matched_ozon_product_id,matched_source_sku,lookup_contract_version,
+         trigger_product_draft_id,trigger_product_draft_version,response_hash,
          captured_at,created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
        ON CONFLICT (account_id,id) DO NOTHING`,
       [evidence.rawResponseRef, evidence.accountId, evidence.collectItemId,
         evidence.provenance.requestedOzonProductId, evidence.provenance.requestedSourceSku,
         evidence.provenance.matchedOzonProductId, evidence.provenance.matchedSourceSku,
-        evidence.provenance.lookupContractVersion, evidence.rawResponseHash, evidence.capturedAt],
+        evidence.provenance.lookupContractVersion, evidence.provenance.triggerProductDraftId,
+        evidence.provenance.triggerProductDraftVersion, evidence.rawResponseHash,
+        evidence.capturedAt],
     );
     const lookupRow = (await client.query(
       `SELECT * FROM collect_ozon_category_lookup_evidence
@@ -762,11 +786,14 @@ async function recordEvidencePostgres(client, evidenceInput, { idFactory }) {
     const expectedLookup = [evidence.collectItemId, evidence.provenance.requestedOzonProductId,
       evidence.provenance.requestedSourceSku, evidence.provenance.matchedOzonProductId,
       evidence.provenance.matchedSourceSku, evidence.provenance.lookupContractVersion,
+      evidence.provenance.triggerProductDraftId, evidence.provenance.triggerProductDraftVersion,
       evidence.rawResponseHash, evidence.capturedAt];
     const actualLookup = lookupRow ? [lookupRow.collect_item_id,
       lookupRow.requested_ozon_product_id === null ? null : Number(lookupRow.requested_ozon_product_id),
       lookupRow.requested_source_sku, Number(lookupRow.matched_ozon_product_id),
-      lookupRow.matched_source_sku, lookupRow.lookup_contract_version, lookupRow.response_hash,
+      lookupRow.matched_source_sku, lookupRow.lookup_contract_version,
+      lookupRow.trigger_product_draft_id, Number(lookupRow.trigger_product_draft_version),
+      lookupRow.response_hash,
       new Date(lookupRow.captured_at).toISOString()] : [];
     if (JSON.stringify(actualLookup) !== JSON.stringify(expectedLookup)) {
       throw repositoryError("OZON_CATEGORY_SOURCE_VERSION_CONFLICT", 409);
@@ -856,6 +883,30 @@ async function setCurrentSourcePostgres(client, evidence) {
         evidence.productDraftVersion],
     )).rows[0];
     if (!current) return;
+  }
+  if (evidence.provenance.sourceKind === "OZON_READ_LOOKUP") {
+    await client.query(
+      `INSERT INTO collect_ozon_category_current_sources
+        (account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,
+         source_version,updated_at)
+       SELECT $1,$2,$3,$4,$5,$6,$7
+         FROM collect_items AS item
+         JOIN product_drafts AS draft
+           ON draft.id=item.current_draft_id AND draft.collect_item_id=item.id
+        WHERE item.account_id=$1 AND item.id=$2 AND draft.id=$8 AND draft.version=$9
+       ON CONFLICT (account_id,collect_item_id) DO UPDATE SET
+         source_evidence_id=EXCLUDED.source_evidence_id,source_kind=EXCLUDED.source_kind,
+         source_record_id=EXCLUDED.source_record_id,source_version=EXCLUDED.source_version,
+         updated_at=EXCLUDED.updated_at
+       WHERE collect_ozon_category_current_sources.source_kind='PRODUCT_DRAFT'
+         AND collect_ozon_category_current_sources.source_record_id=$8
+         AND collect_ozon_category_current_sources.source_version IN ($9::TEXT,'draft:' || $9::TEXT)`,
+      [evidence.accountId, evidence.collectItemId, evidence.id, evidence.provenance.sourceKind,
+        evidence.provenance.sourceRecordId, evidence.sourceVersion, evidence.capturedAt,
+        evidence.provenance.triggerProductDraftId,
+        evidence.provenance.triggerProductDraftVersion],
+    );
+    return;
   }
   await client.query(
     `INSERT INTO collect_ozon_category_current_sources

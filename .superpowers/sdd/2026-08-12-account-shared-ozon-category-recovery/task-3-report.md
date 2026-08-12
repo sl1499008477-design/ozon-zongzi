@@ -167,3 +167,48 @@ Rollback this correction with `git revert <fix-round-1-commit-sha>`. Migration 0
 - Confirmed all account/item/evidence/lookup/confirmation queries include account scope.
 - Confirmed failure responses remain fixed safe codes and messages without raw vendor, secret, SQL, or transport detail.
 - Confirmed no later recovery snapshot, UI, paid AI, or product-write path was modified.
+
+---
+
+## Fix round 2/5 — stale lookup fencing, cleanup cascades, and final DTO freezing
+
+### Contract and schema corrections
+
+- `OZON_READ_LOOKUP` provenance now binds the exact canonical product draft that triggered the read with closed `triggerProductDraftId` and positive `triggerProductDraftVersion` fields. Migration 064 stores the pair and constrains it to the same collect item through a composite product-draft foreign key. Raw lookup bodies remain outside both persistence and public DTOs.
+- Lookup pointer promotion is expected-current/CAS rather than last-writer-wins. A new lookup may replace only the exact triggering `PRODUCT_DRAFT` pointer; creating a pointer requires the collect item's current draft ID and version to match. Exact evidence replay is a pure idempotent return, and a late result from an older draft cannot replace a newer draft or lookup pointer. JSON and PostgreSQL implement the same rule.
+- The append-only confirmation ledger still rejects direct UPDATE/DELETE with SQLSTATE `23514`. Its delete trigger now permits only FK cleanup after the exact parent account, account/item, or account/source-evidence row is no longer visible. The source-evidence guard has the matching collect-item cleanup exception so the formal account-erasure transaction can complete; direct evidence deletion while its parents exist remains forbidden.
+- Final public collection summary, item, and persisted-item projections are recursively frozen, including nested arrays and listing-target objects. Projection-owned `Date` instances are cloned before freezing so caller input is not mutated.
+
+Migration 064 remains unpublished and was amended in place; no new migration number was consumed. The later recovery migration remains reserved as 065. No Task 4+ snapshot or UI contract changed.
+
+### TDD correction record
+
+RED was recorded separately before each minimal implementation:
+
+- JSON replay/stale-completion fixtures demonstrated an old lookup could restore a superseded pointer; a missing-canonical-draft fixture demonstrated an unbound lookup could create one.
+- Real PostgreSQL reproduced direct confirmation-ledger deletion as `23514` and initially showed that an unconditional append-only trigger also blocked the intended FK cascade during formal account cleanup.
+- Public-shape assertions demonstrated that final summary/item/persisted containers and their nested values remained mutable.
+
+GREEN verification with the bundled absolute Node runtime:
+
+- combined focused contract, migration, runtime, service, exact-lookup, repository, public-shape, account-deletion, and real PostgreSQL integration suites: 64 passed, 0 failed, 0 skipped;
+- real PostgreSQL migration and repository subset: 24 passed, 0 failed, 0 skipped;
+- `git diff --check` passed.
+
+The PostgreSQL fixtures cover 063→064 migration, trigger-draft persistence, exact old-evidence replay, late stale lookup completion, CAS promotion to a newer lookup, provenance rollback when evidence insertion fails, cross-account isolation, direct-ledger-delete rejection, collect-item cascade, and the production formal account-erasure entry point inside a transaction. All Ozon reads still use controlled transports; no real platform call occurred.
+
+### Files, entry paths, and rollback
+
+This correction changes only the existing Task 3 contract, repository, service, public projection, unpublished migration 064, and their focused tests. It adds no resolver, scheduler, wakeup, timer, cursor, notifier, store identity, compatibility entry, paid AI path, product write, later snapshot, or UI dependency. Formal cleanup coverage calls the existing `deleteRemovedAccountScopes` entry inside its required outer transaction.
+
+Rollback this round with `git revert <fix-round-2-commit-sha>`. Because migration 064 remains additive and unpublished, deployment rollback should revert application reads first and retain evidence/audit tables if it has nevertheless been applied; no destructive down-migration is supplied. Fix round 1 can separately be reverted with `git revert 2f87e4e68796840966df4cf0e1aafc15e6f3df86`.
+
+### Remaining risks and self-review
+
+- No real Ozon API, production database, paid AI, or product mutation was exercised. Controlled lookup transport and disposable PostgreSQL 16 are the verified boundary.
+- The lookup CAS deliberately leaves immutable evidence recorded when its trigger draft is already stale; it does not expose or promote that evidence as current. Operational retention/partitioning remains outside Task 3.
+- Confirmed lookup trigger fields are closed, immutable, tenant/item constrained, excluded from public DTOs, and never derived from a response clock.
+- Confirmed replay returns without any pointer write and both adapters reject pointer creation when the canonical trigger draft is absent.
+- Confirmed direct audit/evidence mutation still fails while exact parents exist, while formal parent cleanup cascades in one transaction.
+- Confirmed recursive freezing applies at the final public boundary and does not freeze caller-owned nested containers.
+- Confirmed no production import or call to the retired store resolver/wakeup/timer/cursor/notifier/compatibility paths was restored.

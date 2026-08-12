@@ -199,6 +199,7 @@ test("source evidence closes exact Ozon lookup provenance without exposing a res
       sourceRecordId: rawResponseRef, rawResponseRef, rawResponseHash: HASH,
       capturedAt: CAPTURED_AT,
       lookupContractVersion: "account-shared-ozon-category-lookup.v1",
+      triggerProductDraftId: "draft-a", triggerProductDraftVersion: 7,
       requestedOzonProductId: 123456789, requestedSourceSku: "SKU-A",
       matchedOzonProductId: 123456789, matchedSourceSku: "SKU-A",
     },
@@ -208,6 +209,7 @@ test("source evidence closes exact Ozon lookup provenance without exposing a res
     "accountId", "collectItemId", "sourceKind", "sourceRecordId", "rawResponseRef",
     "rawResponseHash", "capturedAt", "lookupContractVersion", "requestedOzonProductId",
     "requestedSourceSku", "matchedOzonProductId", "matchedSourceSku",
+    "triggerProductDraftId", "triggerProductDraftVersion",
   ]);
   assert.equal(JSON.stringify(result).includes("responseBody"), false);
   assert.equal(Object.isFrozen(result.provenance), true);
