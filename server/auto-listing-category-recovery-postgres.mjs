@@ -123,13 +123,33 @@ function claimCommand(raw) {
   return value;
 }
 
-function transitionBase(raw, keys) {
-  const value = exact(raw, keys);
-  identifier(value.accountId);
-  identifier(value.attemptId);
+const TRANSITION_IDENTITY_KEYS = [
+  "accountId", "jobId", "snapshotId", "evidenceId", "attemptId", "sourceEvidenceId",
+  "oldSharedCategoryId", "oldSharedCategoryVersion", "originalOzonTaskId", "correlationId",
+];
+
+function transitionBase(raw, extraKeys = []) {
+  const value = exact(raw, [...TRANSITION_IDENTITY_KEYS, "expectedStatus", ...extraKeys, "transitionedAt"]);
+  for (const key of TRANSITION_IDENTITY_KEYS.filter((key) => key !== "oldSharedCategoryVersion")) {
+    identifier(value[key]);
+  }
+  positive(value.oldSharedCategoryVersion);
   identifier(value.expectedStatus);
   instant(value.transitionedAt);
   return value;
+}
+
+function exactAttemptIdentity(row, input) {
+  return row?.account_id === input.accountId
+    && row.submission_job_id === input.jobId
+    && row.submission_snapshot_id === input.snapshotId
+    && row.triggering_error_evidence_id === input.evidenceId
+    && row.id === input.attemptId
+    && row.source_evidence_id === input.sourceEvidenceId
+    && row.old_shared_category_id === input.oldSharedCategoryId
+    && Number(row.old_shared_category_version) === input.oldSharedCategoryVersion
+    && row.original_ozon_task_id === input.originalOzonTaskId
+    && row.correlation_id === input.correlationId;
 }
 
 function safeEvidence(value) {
@@ -325,8 +345,8 @@ export function createAutoListingCategoryRecoveryPostgres({
 
     async saveCategoryRecoveryMatch(raw) {
       const input = transitionBase(raw, [
-        "accountId", "attemptId", "expectedStatus", "replacementSharedCategoryId",
-        "replacementSharedCategoryVersion", "correctedItems", "correctedItemsHash", "transitionedAt",
+        "replacementSharedCategoryId", "replacementSharedCategoryVersion",
+        "correctedItems", "correctedItemsHash",
       ]);
       identifier(input.replacementSharedCategoryId);
       positive(input.replacementSharedCategoryVersion);
@@ -336,16 +356,23 @@ export function createAutoListingCategoryRecoveryPostgres({
       return transaction(pool, async (client) => {
         let row = (await client.query(
           `UPDATE submission_category_recovery_attempts AS attempt
-              SET status='MATCHED',corrected_items=$4::JSONB,corrected_items_hash=$5,
-                  replacement_shared_category_id=$6,replacement_shared_category_version=$7,
-                  updated_at=GREATEST($8::TIMESTAMPTZ,attempt.updated_at+INTERVAL '1 microsecond')
+              SET status='MATCHED',corrected_items=$12::JSONB,corrected_items_hash=$13,
+                  replacement_shared_category_id=$14,replacement_shared_category_version=$15,
+                  updated_at=GREATEST($16::TIMESTAMPTZ,attempt.updated_at+INTERVAL '1 microsecond')
              FROM account_ozon_shared_categories AS shared
-            WHERE attempt.account_id=$1 AND attempt.id=$2 AND attempt.status=$3
-              AND shared.account_id=attempt.account_id AND shared.id=$6
-              AND shared.version=$7 AND shared.status='ACTIVE'
+            WHERE attempt.account_id=$1 AND attempt.submission_job_id=$2
+              AND attempt.submission_snapshot_id=$3 AND attempt.triggering_error_evidence_id=$4
+              AND attempt.id=$5 AND attempt.source_evidence_id=$6
+              AND attempt.old_shared_category_id=$7 AND attempt.old_shared_category_version=$8
+              AND attempt.original_ozon_task_id=$9 AND attempt.correlation_id=$10
+              AND attempt.status=$11
+              AND shared.account_id=attempt.account_id AND shared.id=$14
+              AND shared.version=$15 AND shared.status='ACTIVE'
               AND shared.source_evidence_id=attempt.source_evidence_id
            RETURNING attempt.*`,
-          [input.accountId, input.attemptId, input.expectedStatus, JSON.stringify(items),
+          [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
+            input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+            input.originalOzonTaskId, input.correlationId, input.expectedStatus, JSON.stringify(items),
             input.correctedItemsHash, input.replacementSharedCategoryId,
             input.replacementSharedCategoryVersion, input.transitionedAt],
         )).rows[0];
@@ -354,7 +381,8 @@ export function createAutoListingCategoryRecoveryPostgres({
             "SELECT * FROM submission_category_recovery_attempts WHERE account_id=$1 AND id=$2 FOR SHARE",
             [input.accountId, input.attemptId],
           )).rows[0];
-          if (!existing || !["MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED", "SUCCEEDED"].includes(existing.status)
+          if (!exactAttemptIdentity(existing, input)
+            || !["MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED", "SUCCEEDED"].includes(existing.status)
             || existing.corrected_items_hash !== input.correctedItemsHash
             || stableHash(projectOzonImportCarrier(existing.corrected_items)) !== input.correctedItemsHash
             || existing.replacement_shared_category_id !== input.replacementSharedCategoryId
@@ -368,22 +396,18 @@ export function createAutoListingCategoryRecoveryPostgres({
     },
 
     async markCategoryRecoveryRetryPending(raw) {
-      const input = transitionBase(raw, ["accountId", "attemptId", "expectedStatus", "transitionedAt"]);
+      const input = transitionBase(raw);
       return transitionStatus(pool, input, "RETRY_PENDING");
     },
 
     async markCategoryRecoveryRetryAccepted(raw) {
-      const input = transitionBase(raw, [
-        "accountId", "attemptId", "expectedStatus", "retryOzonTaskId", "transitionedAt",
-      ]);
+      const input = transitionBase(raw, ["retryOzonTaskId"]);
       identifier(input.retryOzonTaskId);
       return transitionStatus(pool, input, "RETRY_ACCEPTED", { retryOzonTaskId: input.retryOzonTaskId });
     },
 
     async completeCategoryRecovery(raw) {
-      const input = transitionBase(raw, [
-        "accountId", "attemptId", "expectedStatus", "retryOzonTaskId", "transitionedAt",
-      ]);
+      const input = transitionBase(raw, ["retryOzonTaskId"]);
       identifier(input.retryOzonTaskId);
       return transitionStatus(pool, input, "SUCCEEDED", {
         requireRetryOzonTaskId: input.retryOzonTaskId, completedAt: input.transitionedAt,
@@ -405,58 +429,58 @@ export function createAutoListingCategoryRecoveryPostgres({
       return transaction(pool, async (client) => {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
           [`${input.accountId}\u001f${input.jobId}`]);
-        let row;
+        let targetAttemptId = input.attemptId;
         if (input.attemptId === null) {
           const existing = (await client.query(
             `SELECT * FROM submission_category_recovery_attempts
               WHERE account_id=$1 AND submission_job_id=$2 FOR UPDATE`,
             [input.accountId, input.jobId],
           )).rows[0];
-          if (existing?.status === "NEEDS_REVIEW") return attemptDto(existing);
-          if (existing && ["CLAIMED", "MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED"].includes(existing.status)) {
-            row = (await client.query(
-              `UPDATE submission_category_recovery_attempts
-                  SET status='NEEDS_REVIEW',safe_review_code=$3,completed_at=$4,
-                      updated_at=GREATEST($4::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
-                WHERE account_id=$1 AND id=$2 RETURNING *`,
-              [input.accountId, existing.id, input.safeReviewCode, input.transitionedAt],
-            )).rows[0];
-          } else if (existing) {
-            throw conflict();
-          }
-        }
-        if (input.attemptId === null && !row) {
-          const attemptId = identifier(idFactory());
-          row = (await client.query(
+          if (existing) throw conflict();
+          targetAttemptId = identifier(idFactory());
+          const claimed = (await client.query(
             `INSERT INTO submission_category_recovery_attempts(
                id,account_id,submission_job_id,submission_snapshot_id,triggering_error_evidence_id,
                source_evidence_id,old_shared_category_id,old_shared_category_version,
-               original_ozon_task_id,original_snapshot_hash,status,safe_review_code,correlation_id,
-               claimed_at,updated_at,completed_at)
+               original_ozon_task_id,original_snapshot_hash,status,correlation_id,claimed_at,updated_at)
              SELECT $1,evidence.account_id,evidence.submission_job_id,evidence.submission_snapshot_id,evidence.id,
                     evidence.source_evidence_id,evidence.old_shared_category_id,evidence.old_shared_category_version,
-                    evidence.original_ozon_task_id,evidence.original_snapshot_hash,'NEEDS_REVIEW',$10,$9,$11,$11,$11
+                    evidence.original_ozon_task_id,evidence.original_snapshot_hash,'CLAIMED',$10,$11,$11
                FROM submission_category_error_evidence AS evidence
               WHERE evidence.account_id=$2 AND evidence.submission_job_id=$3
                 AND evidence.submission_snapshot_id=$4 AND evidence.id=$5
                 AND evidence.source_evidence_id=$6 AND evidence.old_shared_category_id=$7
                 AND evidence.old_shared_category_version=$8 AND evidence.original_ozon_task_id=$9
              ON CONFLICT (account_id,submission_job_id) DO NOTHING RETURNING *`,
-            [attemptId, input.accountId, input.jobId, input.snapshotId, input.evidenceId,
+            [targetAttemptId, input.accountId, input.jobId, input.snapshotId, input.evidenceId,
               input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
-              input.originalOzonTaskId, input.safeReviewCode, input.transitionedAt],
+              input.originalOzonTaskId, input.correlationId, input.transitionedAt],
           )).rows[0];
-        } else if (input.attemptId !== null) {
-          row = (await client.query(
-            `UPDATE submission_category_recovery_attempts
-                SET status='NEEDS_REVIEW',safe_review_code=$3,completed_at=$4,
-                    updated_at=GREATEST($4::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
-              WHERE account_id=$1 AND id=$2
-                AND status IN ('CLAIMED','MATCHED','RETRY_PENDING','RETRY_ACCEPTED') RETURNING *`,
-            [input.accountId, input.attemptId, input.safeReviewCode, input.transitionedAt],
-          )).rows[0];
+          if (!claimed) throw conflict();
         }
-        if (!row) throw conflict();
+        const identity = { ...input, attemptId: targetAttemptId };
+        let row = (await client.query(
+          `UPDATE submission_category_recovery_attempts
+              SET status='NEEDS_REVIEW',safe_review_code=$11,completed_at=$12,
+                  updated_at=GREATEST($12::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
+            WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
+              AND triggering_error_evidence_id=$4 AND id=$5 AND source_evidence_id=$6
+              AND old_shared_category_id=$7 AND old_shared_category_version=$8
+              AND original_ozon_task_id=$9 AND correlation_id=$10
+              AND status IN ('CLAIMED','MATCHED','RETRY_PENDING','RETRY_ACCEPTED') RETURNING *`,
+          [input.accountId, input.jobId, input.snapshotId, input.evidenceId, targetAttemptId,
+            input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+            input.originalOzonTaskId, input.correlationId, input.safeReviewCode, input.transitionedAt],
+        )).rows[0];
+        if (!row) {
+          const existing = (await client.query(
+            "SELECT * FROM submission_category_recovery_attempts WHERE account_id=$1 AND id=$2 FOR SHARE",
+            [input.accountId, targetAttemptId],
+          )).rows[0];
+          if (!exactAttemptIdentity(existing, identity) || existing.status !== "NEEDS_REVIEW"
+            || existing.safe_review_code !== input.safeReviewCode) throw conflict();
+          row = existing;
+        }
         return attemptDto(row);
       });
     },
@@ -467,14 +491,19 @@ async function transitionStatus(pool, input, toStatus, extras = {}) {
   return transaction(pool, async (client) => {
     let row = (await client.query(
       `UPDATE submission_category_recovery_attempts
-          SET status=$4,
-              retry_ozon_task_id=CASE WHEN $5::TEXT IS NULL THEN retry_ozon_task_id ELSE $5 END,
-              completed_at=CASE WHEN $6::TIMESTAMPTZ IS NULL THEN completed_at ELSE $6 END,
-              updated_at=GREATEST($7::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
-        WHERE account_id=$1 AND id=$2 AND status=$3
-          AND ($8::TEXT IS NULL OR retry_ozon_task_id=$8)
+          SET status=$12,
+              retry_ozon_task_id=CASE WHEN $13::TEXT IS NULL THEN retry_ozon_task_id ELSE $13 END,
+              completed_at=CASE WHEN $14::TIMESTAMPTZ IS NULL THEN completed_at ELSE $14 END,
+              updated_at=GREATEST($15::TIMESTAMPTZ,updated_at+INTERVAL '1 microsecond')
+        WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
+          AND triggering_error_evidence_id=$4 AND id=$5 AND source_evidence_id=$6
+          AND old_shared_category_id=$7 AND old_shared_category_version=$8
+          AND original_ozon_task_id=$9 AND correlation_id=$10 AND status=$11
+          AND ($16::TEXT IS NULL OR retry_ozon_task_id=$16)
         RETURNING *`,
-      [input.accountId, input.attemptId, input.expectedStatus, toStatus,
+      [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
+        input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+        input.originalOzonTaskId, input.correlationId, input.expectedStatus, toStatus,
         extras.retryOzonTaskId || null, extras.completedAt || null, input.transitionedAt,
         extras.requireRetryOzonTaskId || null],
     )).rows[0];
@@ -490,7 +519,7 @@ async function transitionStatus(pool, input, toStatus, extras = {}) {
             && existing.retry_ozon_task_id === extras.retryOzonTaskId
           : toStatus === "SUCCEEDED" && existing?.status === "SUCCEEDED"
             && existing.retry_ozon_task_id === extras.requireRetryOzonTaskId;
-      if (!allowedReplay) throw conflict();
+      if (!exactAttemptIdentity(existing, input) || !allowedReplay) throw conflict();
       row = existing;
     }
     return attemptDto(row);

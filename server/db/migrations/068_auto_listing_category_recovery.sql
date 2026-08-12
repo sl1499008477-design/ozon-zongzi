@@ -150,26 +150,44 @@ CREATE TABLE submission_category_recovery_attempts (
 CREATE INDEX submission_category_recovery_attempts_read_idx
   ON submission_category_recovery_attempts(account_id,status,updated_at,id);
 
-CREATE OR REPLACE FUNCTION verify_submission_category_error_evidence_original_task()
+CREATE OR REPLACE FUNCTION verify_submission_category_error_evidence_basis()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM submission_jobs AS job
+    SELECT 1
+      FROM submission_jobs AS job
+      JOIN submission_snapshots AS snapshot
+        ON snapshot.account_id=job.account_id AND snapshot.id=job.snapshot_id
+      JOIN submission_items AS item
+        ON item.job_id=job.id AND item.snapshot_id=job.snapshot_id
+       AND item.id=NEW.submission_item_id AND item.offer_id=NEW.offer_id
+      JOIN collect_ozon_category_source_evidence AS source
+        ON source.account_id=job.account_id AND source.id=NEW.source_evidence_id
+      JOIN account_ozon_shared_categories AS shared
+        ON shared.account_id=job.account_id AND shared.id=NEW.old_shared_category_id
+       AND shared.source_evidence_id=source.id
      WHERE job.account_id=NEW.account_id AND job.id=NEW.submission_job_id
        AND job.snapshot_id=NEW.submission_snapshot_id
        AND job.ozon_task_id=NEW.original_ozon_task_id
        AND job.status='FAILED'
+       AND snapshot.snapshot_hash=NEW.original_snapshot_hash
+       AND snapshot.items=NEW.original_items
+       AND item.status='FAILED'
+       AND NULLIF(BTRIM(item.product_id),'') IS NULL
+       AND item.response->'errorEvidence'=NEW.safe_evidence
+       AND shared.version=NEW.old_shared_category_version
+       AND shared.status='ACTIVE'
   ) THEN
-    RAISE EXCEPTION 'submission category evidence original task is not current terminal failure'
+    RAISE EXCEPTION 'submission category evidence basis is not the exact current terminal failure'
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER submission_category_error_evidence_original_task
+CREATE TRIGGER submission_category_error_evidence_basis
 BEFORE INSERT ON submission_category_error_evidence
-FOR EACH ROW EXECUTE FUNCTION verify_submission_category_error_evidence_original_task();
+FOR EACH ROW EXECUTE FUNCTION verify_submission_category_error_evidence_basis();
 
 CREATE OR REPLACE FUNCTION reject_submission_category_error_evidence_mutation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -192,6 +210,42 @@ $$;
 CREATE TRIGGER submission_category_error_evidence_append_only
 BEFORE UPDATE OR DELETE ON submission_category_error_evidence
 FOR EACH ROW EXECUTE FUNCTION reject_submission_category_error_evidence_mutation();
+
+CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_insert()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.status<>'CLAIMED'
+    OR NEW.corrected_items IS NOT NULL
+    OR NEW.corrected_items_hash IS NOT NULL
+    OR NEW.replacement_shared_category_id IS NOT NULL
+    OR NEW.replacement_shared_category_version IS NOT NULL
+    OR NEW.retry_ozon_task_id IS NOT NULL
+    OR NEW.safe_review_code<>''
+    OR NEW.completed_at IS NOT NULL
+    OR NEW.updated_at IS DISTINCT FROM NEW.claimed_at
+    OR NOT EXISTS (
+      SELECT 1 FROM submission_category_error_evidence AS evidence
+       WHERE evidence.account_id=NEW.account_id
+         AND evidence.submission_job_id=NEW.submission_job_id
+         AND evidence.submission_snapshot_id=NEW.submission_snapshot_id
+         AND evidence.id=NEW.triggering_error_evidence_id
+         AND evidence.source_evidence_id=NEW.source_evidence_id
+         AND evidence.old_shared_category_id=NEW.old_shared_category_id
+         AND evidence.old_shared_category_version=NEW.old_shared_category_version
+         AND evidence.original_ozon_task_id=NEW.original_ozon_task_id
+         AND evidence.original_snapshot_hash=NEW.original_snapshot_hash
+    )
+  THEN
+    RAISE EXCEPTION 'invalid initial submission category recovery attempt'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER submission_category_recovery_attempt_insert
+BEFORE INSERT ON submission_category_recovery_attempts
+FOR EACH ROW EXECUTE FUNCTION guard_submission_category_recovery_attempt_insert();
 
 CREATE OR REPLACE FUNCTION guard_submission_category_recovery_attempt_transition()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -235,6 +289,12 @@ BEGIN
     OR (OLD.replacement_shared_category_version IS NOT NULL
       AND NEW.replacement_shared_category_version IS DISTINCT FROM OLD.replacement_shared_category_version)
     OR (OLD.retry_ozon_task_id IS NOT NULL AND NEW.retry_ozon_task_id IS DISTINCT FROM OLD.retry_ozon_task_id)
+    OR (OLD.status='CLAIMED' AND NEW.status='NEEDS_REVIEW' AND (
+      NEW.corrected_items IS NOT NULL
+      OR NEW.corrected_items_hash IS NOT NULL
+      OR NEW.replacement_shared_category_id IS NOT NULL
+      OR NEW.replacement_shared_category_version IS NOT NULL
+    ))
     OR NOT (
       (OLD.status='CLAIMED' AND NEW.status IN ('MATCHED','NEEDS_REVIEW'))
       OR (OLD.status='MATCHED' AND NEW.status IN ('RETRY_PENDING','NEEDS_REVIEW'))

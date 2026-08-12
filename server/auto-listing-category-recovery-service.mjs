@@ -128,6 +128,21 @@ async function safeReview(repository, basis, request, attemptId, code, now) {
   return Object.freeze({ attemptId: result.attemptId, status: "NEEDS_REVIEW" });
 }
 
+function transitionIdentity(basis, request, attemptId) {
+  return {
+    accountId: request.accountId,
+    jobId: request.jobId,
+    snapshotId: basis.snapshotId,
+    evidenceId: request.evidenceId,
+    attemptId,
+    sourceEvidenceId: basis.sourceEvidenceId,
+    oldSharedCategoryId: basis.oldSharedCategoryId,
+    oldSharedCategoryVersion: basis.oldSharedCategoryVersion,
+    originalOzonTaskId: basis.originalOzonTaskId,
+    correlationId: request.correlationId,
+  };
+}
+
 export function createAutoListingCategoryRecoveryService({
   repository,
   loadOperatingStoreAccess,
@@ -186,14 +201,21 @@ export function createAutoListingCategoryRecoveryService({
         return Object.freeze({ attemptId: attempt.attemptId, status: attempt.status });
       }
       let invalidated = false;
+      let currentSharedCategoryVersion = basis.oldSharedCategoryVersion;
       let reviewCode = "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE";
       try {
-        await invalidateSharedCategory({
+        const invalidation = await invalidateSharedCategory({
           accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
           expectedVersion: basis.oldSharedCategoryVersion,
           safeFailureCode: basis.safeEvidence.errorCode, transitionedAt: now(),
         });
+        if (!invalidation || invalidation.status !== "INVALIDATED"
+          || !Number.isSafeInteger(invalidation.version)
+          || invalidation.version <= basis.oldSharedCategoryVersion) {
+          throw failure("AUTO_LISTING_CATEGORY_RECOVERY_INVALIDATION_INVALID", 409);
+        }
         invalidated = true;
+        currentSharedCategoryVersion = invalidation.version;
         const category = await refreshCategory({
           accountId: request.accountId, sourceEvidenceId: basis.sourceEvidenceId,
           taxonomyScope: "OZON:DEFAULT",
@@ -217,25 +239,26 @@ export function createAutoListingCategoryRecoveryService({
         }
         const replacement = await activateRefreshedCategory({
           accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
-          expectedVersion: basis.oldSharedCategoryVersion + 1,
+          expectedVersion: currentSharedCategoryVersion,
           currentDescriptionCategoryId: category.descriptionCategoryId,
           currentTypeId: category.typeId, taxonomyFingerprint: category.taxonomyFingerprint,
           validatedAt: now(),
         });
         if (!replacement || !safeId(replacement.id) || !Number.isSafeInteger(replacement.version)
-          || replacement.version < 1 || replacement.status !== "ACTIVE") {
+          || replacement.version <= currentSharedCategoryVersion || replacement.status !== "ACTIVE") {
           reviewCode = "AUTO_LISTING_CATEGORY_RECOVERY_ACTIVATION_INVALID";
           throw failure(reviewCode, 409);
         }
+        currentSharedCategoryVersion = replacement.version;
         const correctedItemsHash = stableHash(correctedItems);
         await repository.saveCategoryRecoveryMatch({
-          accountId: request.accountId, attemptId: attempt.attemptId, expectedStatus: "CLAIMED",
+          ...transitionIdentity(basis, request, attempt.attemptId), expectedStatus: "CLAIMED",
           replacementSharedCategoryId: replacement.id,
           replacementSharedCategoryVersion: replacement.version,
           correctedItems, correctedItemsHash, transitionedAt: now(),
         });
         const pending = await repository.markCategoryRecoveryRetryPending({
-          accountId: request.accountId, attemptId: attempt.attemptId, expectedStatus: "MATCHED",
+          ...transitionIdentity(basis, request, attempt.attemptId), expectedStatus: "MATCHED",
           transitionedAt: now(),
         });
         try {
@@ -246,21 +269,25 @@ export function createAutoListingCategoryRecoveryService({
         } catch {}
         return Object.freeze({ attemptId: pending.attemptId, status: "RETRY_PENDING" });
       } catch {}
+      let failClosed = false;
       if (invalidated) {
         try {
           await markSharedNeedsReview({
             accountId: request.accountId, evidenceId: basis.sourceEvidenceId,
-            expectedVersion: basis.oldSharedCategoryVersion + 1,
+            expectedVersion: currentSharedCategoryVersion,
             safeFailureCode: reviewCode, transitionedAt: now(),
           });
-        } catch {}
+        } catch { failClosed = true; }
       }
+      let reviewed;
       try {
-        return await safeReview(repository, basis, request, attempt.attemptId,
+        reviewed = await safeReview(repository, basis, request, attempt.attemptId,
           reviewCode, now);
       } catch {
-        throw failure("AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE", 409);
+        failClosed = true;
       }
+      if (failClosed) throw failure("AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE", 409);
+      return reviewed;
     },
   });
 }

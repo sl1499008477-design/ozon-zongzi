@@ -100,6 +100,67 @@ test("stale/ambiguous/missing-attribute failures stop with review before schedul
   }
 });
 
+test("a failure after activation marks the actual activated version and the exact attempt for review", async () => {
+  let sharedReview;
+  let attemptReview;
+  const { service, calls } = harness({
+    repository: {
+      saveCategoryRecoveryMatch: async () => { calls.push("save-match"); throw new Error("db-secret"); },
+      requireCategoryRecoveryReview: async (input) => {
+        calls.push("review");
+        attemptReview = input;
+        return { attemptId: "attempt-a", status: "NEEDS_REVIEW" };
+      },
+    },
+    markSharedNeedsReview: async (input) => {
+      calls.push("shared-review");
+      sharedReview = input;
+      return { status: "NEEDS_REVIEW" };
+    },
+  });
+  assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+  assert.equal(sharedReview.expectedVersion, 6);
+  assert.equal(attemptReview.attemptId, "attempt-a");
+  assert.equal(attemptReview.sourceEvidenceId, "source-a");
+  assert.equal(attemptReview.oldSharedCategoryVersion, 4);
+  assert.deepEqual(calls.slice(-3), ["save-match", "shared-review", "review"]);
+});
+
+test("a stale activation response cannot masquerade as the activated version", async () => {
+  let sharedReview;
+  const { service, calls } = harness({
+    activateRefreshedCategory: async () => {
+      calls.push("activate");
+      return { id: "shared-a", version: 5, status: "ACTIVE" };
+    },
+    markSharedNeedsReview: async (input) => {
+      calls.push("shared-review");
+      sharedReview = input;
+      return { status: "NEEDS_REVIEW" };
+    },
+  });
+  assert.deepEqual(await service.recover(request), { attemptId: "attempt-a", status: "NEEDS_REVIEW" });
+  assert.equal(sharedReview.expectedVersion, 5);
+  assert.equal(calls.includes("save-match"), false);
+  assert.equal(calls.at(-1), "review");
+});
+
+test("shared review write failure is not swallowed after activation and attempt review is still attempted", async () => {
+  const { service, calls } = harness({
+    repository: {
+      saveCategoryRecoveryMatch: async () => { calls.push("save-match"); throw new Error("db-secret"); },
+    },
+    markSharedNeedsReview: async () => { calls.push("shared-review"); throw new Error("shared-secret"); },
+  });
+  await assert.rejects(service.recover(request), (error) => {
+    assert.equal(error.code, "AUTO_LISTING_CATEGORY_RECOVERY_INCOMPLETE");
+    assert.equal(error.cause, null);
+    assert.doesNotMatch(error.message, /secret/u);
+    return true;
+  });
+  assert.deepEqual(calls.slice(-3), ["save-match", "shared-review", "review"]);
+});
+
 test("correction cannot alter frozen price/currency/content/media/store/warehouse/stock identity", async () => {
   const { service, calls } = harness({
     rebuildItems: async ({ originalItems }) => originalItems.map((item) => ({ ...item, currency_code: "CNY" })),
