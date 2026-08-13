@@ -137,12 +137,32 @@ test("validated target metadata excludes every credential field", () => {
 
   assert.deepEqual(target, {
     id: "store-a",
+    ownerAccountId: "acct-a",
     label: "Store A",
     clientId: "client-a",
     currencyCode: "RUB",
     validatedAt: "2026-07-29T00:00:00.000Z",
   });
   assert.doesNotMatch(JSON.stringify(target), /plain-secret|ciphertext|apiKey|credential|authTag|iv/);
+});
+
+test("validated target rejects malicious carriers without executing accessors or coercion", () => {
+  let calls = 0;
+  const accessor = { id: "store-a", status: "active", clientId: "client-a", credentialsSaved: true };
+  Object.defineProperty(accessor, "ownerAccountId", { enumerable: true, get() {
+    calls += 1;
+    throw new Error("must not execute");
+  } });
+  const coercibleOwner = { toString() { calls += 1; return "acct-a"; } };
+  for (const store of [accessor, new Proxy({ id: "store-a", ownerAccountId: "acct-a" }, {
+    get() { calls += 1; throw new Error("must not execute"); },
+  }), { id: "store-a", ownerAccountId: coercibleOwner, status: "active",
+    clientId: "client-a", credentialsSaved: true }]) {
+    assert.throws(() => validateTargetStoreRecord({
+      accountId: "acct-a", targetStoreId: "store-a", store,
+    }), { status: 404, code: "TARGET_STORE_NOT_FOUND" });
+  }
+  assert.equal(calls, 0);
 });
 
 test("frozen replay conflicts preserve the existing listing state", () => {
@@ -199,6 +219,7 @@ test("local listing target resolution returns the full store separately from saf
   assert.equal(resolved.store, store);
   assert.deepEqual(resolved.target, {
     id: "store-a",
+    ownerAccountId: "acct-a",
     label: "Store A",
     clientId: "client-a",
     currencyCode: "RUB",

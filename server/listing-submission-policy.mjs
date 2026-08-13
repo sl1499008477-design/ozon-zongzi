@@ -1,3 +1,5 @@
+import { types as utilTypes } from "node:util";
+
 function policyError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
@@ -9,6 +11,28 @@ export function markListingReplayPreflightError(error) {
 
 function clean(value) {
   return String(value || "").trim();
+}
+
+function safeStoreCarrier(store) {
+  try {
+    if (!store || typeof store !== "object" || Array.isArray(store) || utilTypes.isProxy(store)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(store))) return null;
+    const keys = Reflect.ownKeys(store);
+    const descriptors = Object.getOwnPropertyDescriptors(store);
+    if (keys.some((key) => typeof key !== "string" || !Object.hasOwn(descriptors[key], "value"))) return null;
+    const value = (camel, snake = camel) => descriptors[camel]?.value ?? descriptors[snake]?.value;
+    const projected = {
+      id: value("id"), ownerAccountId: value("ownerAccountId", "owner_account_id"),
+      label: value("label"), companyName: value("companyName", "company_name"),
+      clientId: value("clientId", "client_id"), currencyCode: value("currencyCode", "currency_code"),
+      currency: value("currency"), status: value("status"),
+      credentialsSaved: value("credentialsSaved", "credentials_saved"),
+    };
+    if (["id", "ownerAccountId", "label", "companyName", "clientId", "currencyCode", "currency", "status"]
+      .some((key) => projected[key] !== undefined && typeof projected[key] !== "string")
+      || (projected.credentialsSaved !== undefined && typeof projected.credentialsSaved !== "boolean")) return null;
+    return projected;
+  } catch { return null; }
 }
 
 export function assertListingPreparationInput({
@@ -45,26 +69,28 @@ export function validateTargetStoreRecord({
   requireCredentials = true,
   validatedAt = new Date().toISOString(),
 } = {}) {
-  const ownerAccountId = clean(store?.ownerAccountId || store?.owner_account_id);
+  const safeStore = safeStoreCarrier(store);
+  const ownerAccountId = clean(safeStore?.ownerAccountId);
   if (
-    !store
-    || clean(store.id) !== clean(targetStoreId)
+    !safeStore
+    || clean(safeStore.id) !== clean(targetStoreId)
     || ownerAccountId !== clean(accountId)
   ) {
     throw policyError("目标经营店铺不存在或不可用", 404, "TARGET_STORE_NOT_FOUND");
   }
-  if (clean(store.status).toLowerCase() === "disabled") {
+  if (clean(safeStore.status).toLowerCase() === "disabled") {
     throw policyError("目标经营店铺已停用", 409, "TARGET_STORE_DISABLED");
   }
-  const credentialsSaved = store.credentialsSaved === true || store.credentials_saved === true;
-  if (requireCredentials && (!clean(store.clientId || store.client_id) || !credentialsSaved)) {
+  const credentialsSaved = safeStore.credentialsSaved === true;
+  if (requireCredentials && (!clean(safeStore.clientId) || !credentialsSaved)) {
     throw policyError("目标经营店铺缺少可用凭据", 409, "TARGET_STORE_CREDENTIALS_REQUIRED");
   }
   return {
-    id: clean(store.id),
-    label: clean(store.label || store.companyName || store.company_name),
-    clientId: clean(store.clientId || store.client_id),
-    currencyCode: clean(store.currencyCode || store.currency_code || store.currency),
+    id: clean(safeStore.id),
+    ownerAccountId,
+    label: clean(safeStore.label || safeStore.companyName),
+    clientId: clean(safeStore.clientId),
+    currencyCode: clean(safeStore.currencyCode || safeStore.currency),
     validatedAt: new Date(validatedAt).toISOString(),
   };
 }
