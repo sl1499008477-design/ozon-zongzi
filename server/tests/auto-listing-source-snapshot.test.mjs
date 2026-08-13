@@ -309,6 +309,56 @@ test("preserves numeric source price facts and hashes their JSON type", () => {
   assert.notEqual(numeric.snapshotHash, strings.snapshotHash);
 });
 
+test("converts collected decimal CNY prices to exact minor units", () => {
+  const draft = structuredClone(collectItem().listingDraft);
+  delete draft.blackKopecks;
+  delete draft.greenKopecks;
+  draft.currency = "";
+  draft.variants = [];
+
+  const captured = buildAutoListingSourceSnapshot(source({
+    targetStoreCurrency: "CNY",
+    collectItem: collectItem({
+      blackPrice: "471.05",
+      blackPriceCurrency: "CNY",
+      greenPrice: "434.01",
+      greenPriceCurrency: "CNY",
+      price: "471.05",
+      priceCurrency: "CNY",
+      listingDraft: draft,
+    }),
+  }));
+
+  assert.deepEqual(captured.snapshot.priceEvidence, {
+    blackKopecks: "47105",
+    greenKopecks: "43401",
+    currency: "CNY",
+    currencySource: "SOURCE",
+  });
+  assert.deepEqual(captured.snapshot.variants[0].priceEvidence, captured.snapshot.priceEvidence);
+});
+
+test("rejects collected decimal prices that cannot be represented exactly", () => {
+  const collected = (blackPrice) => {
+    const draft = structuredClone(collectItem().listingDraft);
+    delete draft.blackKopecks;
+    delete draft.greenKopecks;
+    draft.currency = "CNY";
+    draft.variants = [];
+    return source({
+      targetStoreCurrency: "CNY",
+      collectItem: collectItem({ blackPrice, blackPriceCurrency: "CNY", listingDraft: draft }),
+    });
+  };
+
+  assert.throws(() => buildAutoListingSourceSnapshot(collected("471.051")), {
+    code: "AUTO_LISTING_SOURCE_INVALID",
+  });
+  assert.throws(() => buildAutoListingSourceSnapshot(collected("99999999999999999.99")), {
+    code: "AUTO_LISTING_SOURCE_INVALID",
+  });
+});
+
 test("uses the exact target store currency only when source currency is missing", () => {
   const draft = structuredClone(collectItem().listingDraft);
   delete draft.currency;

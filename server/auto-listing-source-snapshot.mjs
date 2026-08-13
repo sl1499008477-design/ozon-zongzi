@@ -12,6 +12,7 @@ const BLOCKED_EVIDENCE_KEYS = [
   "rawResponseHash", "rawResponseRef", "sourceRecordId", "sourceType", "sourceVersion", "version",
 ];
 const BLOCKED_EVIDENCE_KIND = "AUTO_LISTING_BLOCKED_SOURCE_EVIDENCE";
+const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
 const BLOCKED_SOURCE_FAILURE_CODES = new Set([
   "AUTO_LISTING_SOURCE_CATEGORY_REQUIRED",
   "AUTO_LISTING_SOURCE_SKU_REQUIRED",
@@ -123,12 +124,24 @@ function priceEvidence(record, fallback, collectItem, currencyContext) {
     record?.currency,
     record?.currencyCode,
     record?.currency_code,
+    record?.blackPriceCurrency,
+    record?.black_price_currency,
+    record?.priceCurrency,
+    record?.price_currency,
     fallback?.currency,
     fallback?.currencyCode,
     fallback?.currency_code,
+    fallback?.blackPriceCurrency,
+    fallback?.black_price_currency,
+    fallback?.priceCurrency,
+    fallback?.price_currency,
     collectItem.currency,
     collectItem.currencyCode,
     collectItem.currency_code,
+    collectItem.blackPriceCurrency,
+    collectItem.black_price_currency,
+    collectItem.priceCurrency,
+    collectItem.price_currency,
     "",
   );
   const { currency, currencySource } = resolveAutoListingPriceCurrency({
@@ -144,9 +157,34 @@ function priceEvidence(record, fallback, collectItem, currencyContext) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
     throw sourceError("AUTO_LISTING_SOURCE_INVALID");
   };
+  const minorUnits = (...values) => {
+    const value = values.find((candidate) => candidate !== undefined && candidate !== null && candidate !== "");
+    if (value === undefined) return "";
+    if (typeof value !== "string" && !(typeof value === "number" && Number.isFinite(value))) {
+      throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+    }
+    const decimal = String(value).trim();
+    const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/u.exec(decimal);
+    if (!match) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+    const result = BigInt(match[1]) * 100n + BigInt((match[2] || "").padEnd(2, "0") || "0");
+    if (result > POSTGRES_BIGINT_MAX) throw sourceError("AUTO_LISTING_SOURCE_INVALID");
+    return String(result);
+  };
+  const explicitBlack = fact(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks,
+    fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, "");
+  const explicitGreen = fact(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks,
+    fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, "");
   return {
-    blackKopecks: fact(record?.blackKopecks, record?.black_kopecks, record?.blackPriceKopecks, fallback?.blackKopecks, fallback?.black_kopecks, fallback?.blackPriceKopecks, ""),
-    greenKopecks: fact(record?.greenKopecks, record?.green_kopecks, record?.greenPriceKopecks, fallback?.greenKopecks, fallback?.green_kopecks, fallback?.greenPriceKopecks, ""),
+    blackKopecks: explicitBlack === "" ? minorUnits(
+      record?.blackPrice, record?.black_price, record?.marketingPrice, record?.marketing_price, record?.price,
+      fallback?.blackPrice, fallback?.black_price, fallback?.marketingPrice, fallback?.marketing_price, fallback?.price,
+      collectItem.blackPrice, collectItem.black_price, collectItem.marketingPrice, collectItem.marketing_price, collectItem.price,
+    ) : explicitBlack,
+    greenKopecks: explicitGreen === "" ? minorUnits(
+      record?.greenPrice, record?.green_price, record?.walletPrice, record?.wallet_price,
+      fallback?.greenPrice, fallback?.green_price, fallback?.walletPrice, fallback?.wallet_price,
+      collectItem.greenPrice, collectItem.green_price, collectItem.walletPrice, collectItem.wallet_price,
+    ) : explicitGreen,
     currency,
     currencySource,
   };
