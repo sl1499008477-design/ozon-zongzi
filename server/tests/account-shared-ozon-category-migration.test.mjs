@@ -25,6 +25,10 @@ const replayLeaseMigrationUrl = new URL(
   "../db/migrations/067_auto_listing_category_lease_replay.sql",
   import.meta.url,
 );
+const manualConfirmationMigrationUrl = new URL(
+  "../db/migrations/070_account_shared_ozon_category_manual_confirmation_evidence.sql",
+  import.meta.url,
+);
 
 function normalizedSql(sql) {
   return String(sql).replace(/\s+/g, " ").trim();
@@ -131,6 +135,21 @@ test("067 closes committed and replayed lease outcomes around one exact job", as
   assert.match(compact, /category_preparation_lease_id<>lease_row\.id/i);
   assert.match(compact, /category_preparation_lease_id IS DISTINCT FROM lease_row\.id/i);
   assert.match(compact, /DEFERRABLE INITIALLY DEFERRED/i);
+});
+
+test("070 adds tenant-bound append-only manual confirmation provenance", async () => {
+  const compact = normalizedSql(await readFile(manualConfirmationMigrationUrl, "utf8"));
+  assert.match(compact, /CREATE TABLE collect_ozon_category_manual_confirmation_evidence/i);
+  assert.match(compact, /MANUAL_CONFIRMATION/i);
+  assert.match(compact, /manual-confirmation:v1:\[0-9a-f\]\{64\}/i);
+  assert.match(compact, /UNIQUE \(account_id,idempotency_key\)/i);
+  assert.match(compact, /FOREIGN KEY \(account_id,collect_item_id\).*collect_items\(account_id,id\)/i);
+  assert.match(compact, /FOREIGN KEY \(collect_item_id,trigger_product_draft_id,trigger_product_draft_version\).*product_drafts\(collect_item_id,id,version\)/i);
+  assert.match(compact, /FOREIGN KEY \(account_id,source_evidence_id,collect_item_id,source_kind,source_record_id,source_version\)/i);
+  assert.match(compact, /manual_confirmation_evidence_id/i);
+  assert.match(compact, /append_only/i);
+  assert.match(compact, /ERRCODE='23514'/i);
+  assert.doesNotMatch(compact, /api_key|credential|vendor_payload|raw_request/i);
 });
 
 test("063 guards current transitions, freezes evidence/events, and removes only retired category tables", async () => {

@@ -63,17 +63,21 @@ function resolvedLookup(hashSeed = "entry-lookup") {
   });
 }
 
-function createCollectionEntryHarness({ failSave = false } = {}) {
+function createCollectionEntryHarness({ failSave = false, lookupResult = resolvedLookup() } = {}) {
   const state = { caches: { collectBox: [] }, collectRequests: [] };
   const response = {};
   const transaction = createJsonStateTransactionBoundary({ enabled: () => true });
   let nextId = 0;
   const runtime = createAccountSharedOzonCategoryRuntime({
-    loadState: async () => structuredClone(state),
-    saveState: async () => {},
+    loadState: async () => state,
+    saveState: async (working) => {
+      const saved = structuredClone(working);
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, saved);
+    },
     stateTransaction: transaction,
     persistenceMode: () => "json",
-    sourceLookup: { async lookup() { return resolvedLookup(); } },
+    sourceLookup: { async lookup() { return lookupResult; } },
     now: () => new Date(NOW),
     randomUUID: () => `entry-id-${++nextId}`,
   });
@@ -111,6 +115,80 @@ function createCollectionEntryHarness({ failSave = false } = {}) {
   };
 }
 
+test("unresolved collection can be manually confirmed with immutable provenance and reused", async () => {
+  const { state, response, runtime, invoke } = createCollectionEntryHarness({
+    lookupResult: Object.freeze({ status: "UNRESOLVED" }),
+  });
+
+  await invoke();
+
+  assert.equal(response.status, 200);
+  assert.equal((state.collectOzonCategorySourceEvidence ?? []).length, 0);
+  assert.equal((state.accountOzonSharedCategories ?? []).length, 0);
+  assert.equal(state.collectOzonCategoryCurrentSources.length, 1);
+  const pointerBefore = structuredClone(state.collectOzonCategoryCurrentSources[0]);
+
+  const request = {
+    actor: { id: "account-entry", role: "admin" },
+    collectItemId: state.caches.collectBox[0].id,
+    expectedSourceVersion: pointerBefore.sourceVersion,
+    descriptionCategoryId: 17028788,
+    typeId: 95555,
+    taxonomyScope: "OZON:DEFAULT",
+    idempotencyKey: "unresolved-manual-confirmation",
+    correlationId: "unresolved-manual-correlation",
+  };
+  const routeResponse = {};
+  const handler = runtime.createHttpHandler({
+    authenticate: async () => request.actor,
+    readJson: async () => Object.fromEntries(Object.entries(request)
+      .filter(([key]) => key !== "actor")),
+    sendJson: (_res, status, body) => Object.assign(routeResponse, { status, body }),
+  });
+  assert.equal(await handler({ method: "POST" }, {},
+    new URL("http://local/ozon/category-confirmations")), true);
+  assert.equal(routeResponse.status, 200);
+  const confirmed = routeResponse.body.data;
+  const replay = await runtime.confirmManualCategory(request);
+
+  assert.deepEqual(replay, confirmed);
+  assert.equal(confirmed.categoryResolution.source, "MANUAL");
+  assert.equal(confirmed.categoryResolution.version, 1);
+  assert.equal(state.collectOzonCategorySourceEvidence.length, 1);
+  const manual = state.collectOzonCategorySourceEvidence[0];
+  assert.equal(manual.provenance.sourceKind, "MANUAL_CONFIRMATION");
+  assert.equal(manual.provenance.triggerProductDraftId, pointerBefore.sourceRecordId);
+  assert.equal(manual.provenance.triggerProductDraftVersion, 1);
+  assert.equal(manual.provenance.actorId, "account-entry");
+  assert.equal(manual.provenance.correlationId, request.correlationId);
+  assert.equal(manual.provenance.idempotencyKey, request.idempotencyKey);
+  assert.equal(state.collectOzonCategoryCurrentSources[0].evidenceId, manual.id);
+  assert.equal(state.collectOzonCategoryCurrentSources[0].sourceKind, "MANUAL_CONFIRMATION");
+  assert.equal(state.accountOzonCategoryConfirmations[0].sourceEvidenceId, manual.id);
+  assert.equal(state.accountOzonCategoryConfirmations.length, 1);
+  assert.equal(state.accountOzonSharedCategoryEvents.length, 1);
+
+  const secondItem = collectedItem();
+  secondItem.id = "collect-second-store";
+  secondItem.accountId = "account-entry";
+  secondItem.sourceSku = "offer-second-store";
+  secondItem.draftVersion = 1;
+  secondItem.listingDraft.sourceCategory.descriptionCategoryId = 17028788;
+  secondItem.listingDraft.sourceCategory.typeIdCandidate = 95555;
+  state.caches.collectBox.push(secondItem);
+  const reused = await runtime.recordCollectionResult({
+    state, accountId: "account-entry", collectItemId: secondItem.id, item: secondItem,
+    productDraftId: "draft-second-store", productDraftVersion: 1,
+    sourceVersion: "draft:1", rawResponseRef: "raw-second-store",
+    rawResponseHash: crypto.createHash("sha256").update("raw-second-store").digest("hex"),
+    capturedAt: NOW,
+  });
+  assert.equal(reused.categoryResolution.source, "MANUAL",
+    "the same account reuses the selection without store-specific matching");
+  assert.equal(state.accountOzonSharedCategories.find((row) =>
+    row.sourceDescriptionCategoryId === 17028788 && row.sourceTypeId === 95555).evidenceId, manual.id);
+});
+
 test("JSON collection entry persists a private canonical draft pointer before first exact lookup", async () => {
   const { state, response, runtime, invoke } = createCollectionEntryHarness();
 
@@ -133,7 +211,7 @@ test("JSON collection entry persists a private canonical draft pointer before fi
   const confirmed = await runtime.confirmManualCategory({
     actor: { id: "account-entry", role: "admin" },
     collectItemId: state.caches.collectBox[0].id,
-    expectedSourceVersion: state.collectOzonCategoryCurrentSources[0].sourceVersion,
+    expectedSourceVersion: "draft:1",
     descriptionCategoryId: 17028788,
     typeId: 95555,
     taxonomyScope: "OZON:DEFAULT",
@@ -308,10 +386,12 @@ test("administrator confirmation is closed, account/version scoped, idempotent, 
   assert.deepEqual(replay, first);
   assert.equal(state.accountOzonCategoryConfirmations.length, 1);
   assert.equal(state.accountOzonSharedCategoryEvents.length, 2);
-  assert.equal(state.collectOzonCategorySourceEvidence.length, 1,
-    "manual authority never forges a source fact");
+  assert.equal(state.collectOzonCategorySourceEvidence.length, 2,
+    "manual authority appends a distinct immutable confirmation observation");
+  assert.equal(state.collectOzonCategorySourceEvidence.at(-1).provenance.sourceKind,
+    "MANUAL_CONFIRMATION");
   assert.equal(state.accountOzonSharedCategories[0].evidenceId,
-    state.collectOzonCategorySourceEvidence[0].id);
+    state.collectOzonCategorySourceEvidence[1].id);
   assert.deepEqual(state.accountOzonCategoryConfirmations[0].actor, {
     id: "account-a", role: "admin",
   });
@@ -325,8 +405,8 @@ test("administrator confirmation is closed, account/version scoped, idempotent, 
     correlationId: "correlation-correction",
   });
   assert.equal(corrected.categoryResolution.currentDescriptionCategoryId, 17028788);
-  assert.equal(corrected.categoryResolution.version, 3);
-  assert.equal(state.collectOzonCategorySourceEvidence.length, 1);
+  assert.equal(corrected.categoryResolution.version, 1);
+  assert.equal(state.collectOzonCategorySourceEvidence.length, 3);
 
   for (const invalid of [
     { ...request, actor: { id: "account-a", role: "user" } },
@@ -413,6 +493,9 @@ test("PostgreSQL administrator confirmation keeps transition, audit, and idempot
     async query(sql, params = []) {
       queries.push({ sql: String(sql), params });
       if (String(sql).includes("FROM account_ozon_category_confirmation_audit")) return { rows: [] };
+      if (String(sql).includes("FROM collect_ozon_category_manual_confirmation_evidence")) {
+        return { rows: [{ id: "manual-confirmation:v1:" + "a".repeat(64) }] };
+      }
       if (String(sql).includes("INSERT INTO account_ozon_category_confirmation_audit")) {
         return { rowCount: 1, rows: [{ id: params[0] }] };
       }
@@ -448,7 +531,12 @@ test("PostgreSQL administrator confirmation keeps transition, audit, and idempot
   });
   assert.equal(result.categoryResolution.source, "MANUAL");
   assert.equal(confirmationCalls, 1);
-  assert.equal(confirmationInput.evidenceId, "evidence-a");
+  assert.equal(confirmationInput.collectItemId, "collect-a");
+  assert.equal(confirmationInput.expectedSourceVersion, "draft:1");
+  assert.equal(confirmationInput.actorId, "account-a");
+  assert.equal(confirmationInput.correlationId, "correlation-id");
+  assert.equal(confirmationInput.idempotencyKey, "category-confirmation-id");
+  assert.match(confirmationInput.requestHash, /^[0-9a-f]{64}$/u);
   assert.equal(Object.hasOwn(confirmationInput, "evidence"), false);
   assert.equal(queries[0].sql, "BEGIN");
   assert.ok(queries.some(({ sql }) => sql.includes("pg_advisory_xact_lock")));

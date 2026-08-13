@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { types } from "node:util";
 import {
+  manualConfirmationObservationIdentity,
   sharedCategorySelection,
   sourceCategoryEvidence,
 } from "./account-shared-ozon-category-contract.mjs";
@@ -216,6 +217,9 @@ function normalizeState(working) {
   if (!Array.isArray(working.collectOzonCategoryCurrentSources)) {
     working.collectOzonCategoryCurrentSources = [];
   }
+  if (!Array.isArray(working.collectOzonCategoryManualConfirmationEvidence)) {
+    working.collectOzonCategoryManualConfirmationEvidence = [];
+  }
   const pointedItems = new Set(working.collectOzonCategoryCurrentSources
     .map((row) => `${row.accountId}\u0001${row.collectItemId}`));
   const backfill = new Map();
@@ -252,7 +256,8 @@ function stateNeedsMigration(state) {
     || !Array.isArray(state.accountOzonSharedCategories)
     || !Array.isArray(state.accountOzonSharedCategoryEvents)
     || !Array.isArray(state.collectOzonCategoryLookupEvidence)
-    || !Array.isArray(state.collectOzonCategoryCurrentSources);
+    || !Array.isArray(state.collectOzonCategoryCurrentSources)
+    || !Array.isArray(state.collectOzonCategoryManualConfirmationEvidence);
 }
 
 function commitState(target, working) {
@@ -263,6 +268,7 @@ function commitState(target, working) {
   target.accountOzonSharedCategoryEvents = working.accountOzonSharedCategoryEvents;
   target.collectOzonCategoryLookupEvidence = working.collectOzonCategoryLookupEvidence;
   target.collectOzonCategoryCurrentSources = working.collectOzonCategoryCurrentSources;
+  target.collectOzonCategoryManualConfirmationEvidence = working.collectOzonCategoryManualConfirmationEvidence;
 }
 
 function enqueueState(state, operation) {
@@ -286,6 +292,82 @@ function transitionBase(input, extraKeys = []) {
     evidenceId: text(input.evidenceId),
     expectedVersion: positiveInteger(input.expectedVersion),
   };
+}
+
+function manualConfirmationInput(input) {
+  const keys = [
+    "accountId", "collectItemId", "expectedSourceVersion",
+    "currentDescriptionCategoryId", "currentTypeId", "taxonomyFingerprint",
+    "validatedAt", "actorId", "correlationId", "idempotencyKey", "requestHash",
+  ];
+  exactObject(input, keys);
+  const result = {
+    accountId: text(input.accountId),
+    collectItemId: text(input.collectItemId),
+    expectedSourceVersion: text(input.expectedSourceVersion),
+    currentDescriptionCategoryId: positiveInteger(input.currentDescriptionCategoryId),
+    currentTypeId: positiveInteger(input.currentTypeId),
+    taxonomyFingerprint: sha256(input.taxonomyFingerprint),
+    validatedAt: isoInstant(input.validatedAt),
+    actorId: text(input.actorId),
+    correlationId: text(input.correlationId),
+    idempotencyKey: text(input.idempotencyKey),
+    requestHash: sha256(input.requestHash),
+  };
+  if (result.actorId !== result.accountId) throw invalid();
+  return result;
+}
+
+function manualEvidence(input, draftId, draftVersion) {
+  const identity = manualConfirmationObservationIdentity({
+    accountId: input.accountId,
+    collectItemId: input.collectItemId,
+    triggerProductDraftId: draftId,
+    triggerProductDraftVersion: draftVersion,
+    selectedDescriptionCategoryId: input.currentDescriptionCategoryId,
+    selectedTypeId: input.currentTypeId,
+    taxonomyScope: "OZON:DEFAULT",
+    actorId: input.actorId,
+    capturedAt: input.validatedAt,
+    correlationId: input.correlationId,
+    idempotencyKey: input.idempotencyKey,
+    requestHash: input.requestHash,
+  });
+  return sourceCategoryEvidence({
+    accountId: input.accountId,
+    collectItemId: input.collectItemId,
+    sourceVersion: identity.sourceVersion,
+    productDraftId: null,
+    productDraftVersion: null,
+    ozonProductId: null,
+    sourceSku: null,
+    taxonomyScope: "OZON:DEFAULT",
+    sourceDescriptionCategoryId: input.currentDescriptionCategoryId,
+    sourceTypeId: input.currentTypeId,
+    normalizedPath: [],
+    attributeSummary: [],
+    provenance: {
+      accountId: input.accountId,
+      collectItemId: input.collectItemId,
+      sourceKind: "MANUAL_CONFIRMATION",
+      sourceRecordId: identity.sourceRecordId,
+      rawResponseRef: identity.rawResponseRef,
+      rawResponseHash: input.requestHash,
+      capturedAt: input.validatedAt,
+      confirmationContractVersion: "account-shared-ozon-category-manual-confirmation.v1",
+      triggerProductDraftId: draftId,
+      triggerProductDraftVersion: draftVersion,
+      selectedDescriptionCategoryId: input.currentDescriptionCategoryId,
+      selectedTypeId: input.currentTypeId,
+      taxonomyScope: "OZON:DEFAULT",
+      actorId: input.actorId,
+      correlationId: input.correlationId,
+      idempotencyKey: input.idempotencyKey,
+    },
+    capturedAt: input.validatedAt,
+    rawResponseRef: identity.rawResponseRef,
+    rawResponseHash: input.requestHash,
+  });
 }
 
 function rowNumber(value) {
@@ -377,6 +459,11 @@ function categoryEvidenceFromRow(row) {
         },
       }),
     };
+  }
+  if (sourceKind === "MANUAL_CONFIRMATION") {
+    const categoryEvidence = row.provenance?.categoryEvidence;
+    if (!categoryEvidence) throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+    return { id: text(row.id), ...sourceCategoryEvidence(categoryEvidence) };
   }
   throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
 }
@@ -585,6 +672,97 @@ function transitionInState(working, {
   return shared;
 }
 
+function confirmManualInState(working, input, { idFactory }) {
+  const existingObservation = working.collectOzonCategoryManualConfirmationEvidence.find((row) =>
+    row.accountId === input.accountId && row.idempotencyKey === input.idempotencyKey);
+  if (existingObservation) {
+    if (existingObservation.requestHash !== input.requestHash) {
+      throw repositoryError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+    }
+    const shared = working.accountOzonSharedCategories.find((row) =>
+      row.accountId === input.accountId && row.evidenceId === existingObservation.sourceEvidenceId);
+    if (!shared) throw repositoryError("OZON_CATEGORY_PERSISTENCE_FAILED", 500);
+    return shared;
+  }
+  const item = (Array.isArray(working?.caches?.collectBox) ? working.caches.collectBox : [])
+    .find((row) => String(row?.accountId || "") === input.accountId
+      && String(row?.id || "") === input.collectItemId
+      && row?.deletedAt == null && String(row?.status || "") !== "DELETED");
+  const pointer = working.collectOzonCategoryCurrentSources.find((row) =>
+    row.accountId === input.accountId && row.collectItemId === input.collectItemId);
+  const pointedEvidence = pointer?.evidenceId
+    ? working.collectOzonCategorySourceEvidence.find((row) =>
+      row.accountId === input.accountId && row.id === pointer.evidenceId) : null;
+  const draftVersion = Number(item?.draftVersion ?? item?.draft_version ?? 0);
+  const draftId = item?.currentDraftId ?? item?.current_draft_id
+    ?? pointedEvidence?.provenance?.triggerProductDraftId
+    ?? (pointer?.sourceKind === "PRODUCT_DRAFT" ? pointer.sourceRecordId : null);
+  if (!item || !pointer || !draftId || !Number.isSafeInteger(draftVersion) || draftVersion <= 0
+    || input.expectedSourceVersion !== `draft:${draftVersion}`
+    || (pointer.sourceKind === "PRODUCT_DRAFT"
+      && (pointer.sourceRecordId !== String(draftId)
+        || ![String(draftVersion), `draft:${draftVersion}`].includes(pointer.sourceVersion)))
+    || (pointedEvidence?.provenance?.triggerProductDraftVersion
+      && pointedEvidence.provenance.triggerProductDraftVersion !== draftVersion)) {
+    throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+  }
+  const evidence = manualEvidence(input, String(draftId), draftVersion);
+  const evidenceRecord = { id: text(idFactory()), ...evidence };
+  working.collectOzonCategorySourceEvidence.push(evidenceRecord);
+  const observation = {
+    id: evidence.rawResponseRef,
+    accountId: input.accountId,
+    collectItemId: input.collectItemId,
+    sourceEvidenceId: evidenceRecord.id,
+    triggerProductDraftId: String(draftId),
+    triggerProductDraftVersion: draftVersion,
+    selectedDescriptionCategoryId: input.currentDescriptionCategoryId,
+    selectedTypeId: input.currentTypeId,
+    taxonomyScope: "OZON:DEFAULT",
+    actorId: input.actorId,
+    capturedAt: input.validatedAt,
+    correlationId: input.correlationId,
+    idempotencyKey: input.idempotencyKey,
+    requestHash: input.requestHash,
+  };
+  working.collectOzonCategoryManualConfirmationEvidence.push(observation);
+  let shared = working.accountOzonSharedCategories.find((row) => signature(row) === signature(evidence));
+  const previous = shared ? clone(shared) : null;
+  if (!shared) {
+    shared = {
+      id: text(idFactory()), accountId: input.accountId,
+      sourceDescriptionCategoryId: input.currentDescriptionCategoryId,
+      sourceTypeId: input.currentTypeId, taxonomyScope: "OZON:DEFAULT",
+      currentDescriptionCategoryId: input.currentDescriptionCategoryId,
+      currentTypeId: input.currentTypeId, status: "ACTIVE", source: "MANUAL",
+      taxonomyFingerprint: input.taxonomyFingerprint, safeFailureCode: "", version: 1,
+      evidenceId: evidenceRecord.id, validatedAt: input.validatedAt,
+      createdAt: input.validatedAt, updatedAt: input.validatedAt,
+    };
+    working.accountOzonSharedCategories.push(shared);
+  } else {
+    Object.assign(shared, {
+      currentDescriptionCategoryId: input.currentDescriptionCategoryId,
+      currentTypeId: input.currentTypeId, status: "ACTIVE", source: "MANUAL",
+      taxonomyFingerprint: input.taxonomyFingerprint, safeFailureCode: "",
+      version: shared.version + 1, evidenceId: evidenceRecord.id,
+      validatedAt: input.validatedAt, updatedAt: input.validatedAt,
+    });
+  }
+  working.accountOzonSharedCategoryEvents.push(makeEvent({
+    idFactory, shared, evidenceId: evidenceRecord.id,
+    eventType: "MANUAL_CATEGORY_CONFIRMED", previous,
+    createdAt: input.validatedAt, sourceEvidence: evidenceRecord,
+  }));
+  const pointerIndex = working.collectOzonCategoryCurrentSources.indexOf(pointer);
+  working.collectOzonCategoryCurrentSources[pointerIndex] = {
+    accountId: input.accountId, collectItemId: input.collectItemId,
+    evidenceId: evidenceRecord.id, sourceKind: "MANUAL_CONFIRMATION",
+    sourceRecordId: evidence.provenance.sourceRecordId, sourceVersion: evidence.sourceVersion,
+  };
+  return shared;
+}
+
 export function createJsonAccountSharedOzonCategoryRepository({
   state,
   persist = async () => {},
@@ -680,32 +858,8 @@ export function createJsonAccountSharedOzonCategoryRepository({
     },
 
     async confirmManualCategory(input) {
-      exactObject(input, [
-        "accountId", "evidenceId", "expectedVersion", "currentDescriptionCategoryId",
-        "currentTypeId", "taxonomyFingerprint", "validatedAt",
-      ]);
-      const accountId = text(input.accountId);
-      const evidenceId = text(input.evidenceId);
-      const expectedVersion = positiveInteger(input.expectedVersion);
-      const validatedAt = isoInstant(input.validatedAt);
-      const desired = {
-        currentDescriptionCategoryId: positiveInteger(input.currentDescriptionCategoryId),
-        currentTypeId: positiveInteger(input.currentTypeId),
-        status: "ACTIVE",
-        source: "MANUAL",
-        taxonomyFingerprint: sha256(input.taxonomyFingerprint),
-        safeFailureCode: "",
-        validatedAt,
-      };
-      const result = await write((working) => transitionInState(working, {
-          accountId,
-          evidenceId,
-          expectedVersion,
-          desired,
-          eventType: "MANUAL_CATEGORY_CONFIRMED",
-          transitionedAt: validatedAt,
-          idFactory,
-        }));
+      const prepared = manualConfirmationInput(input);
+      const result = await write((working) => confirmManualInState(working, prepared, { idFactory }));
       return publicShared(result);
     },
 
@@ -995,6 +1149,176 @@ async function transitionPostgres(client, {
   return mapSharedRow(updated);
 }
 
+async function confirmManualPostgres(client, input, { idFactory }) {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+    `manual-confirmation:${input.accountId}:${input.collectItemId}:${input.idempotencyKey}`,
+  ]);
+  const replay = (await client.query(
+    `SELECT observation.request_hash,evidence.source_description_category_id,
+            evidence.source_type_id,evidence.taxonomy_scope,shared.*
+       FROM collect_ozon_category_manual_confirmation_evidence AS observation
+       JOIN collect_ozon_category_source_evidence AS evidence
+         ON evidence.account_id=observation.account_id
+        AND evidence.id=observation.source_evidence_id
+       JOIN account_ozon_shared_categories AS shared
+         ON shared.account_id=evidence.account_id
+        AND shared.source_description_category_id=evidence.source_description_category_id
+        AND shared.source_type_id=evidence.source_type_id
+        AND shared.taxonomy_scope=evidence.taxonomy_scope
+      WHERE observation.account_id=$1 AND observation.idempotency_key=$2
+      FOR UPDATE OF observation,shared`,
+    [input.accountId, input.idempotencyKey],
+  )).rows[0];
+  if (replay) {
+    if (replay.request_hash !== input.requestHash) {
+      throw repositoryError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);
+    }
+    return mapSharedRow(replay);
+  }
+  const basis = (await client.query(
+    `SELECT item.current_draft_id,draft.version AS current_draft_version
+       FROM collect_items AS item
+       JOIN product_drafts AS draft
+         ON draft.collect_item_id=item.id AND draft.id=item.current_draft_id
+      WHERE item.account_id=$1 AND item.id=$2 AND item.deleted_at IS NULL
+      FOR UPDATE OF item,draft`,
+    [input.accountId, input.collectItemId],
+  )).rows[0];
+  const draftVersion = Number(basis?.current_draft_version);
+  if (!basis || !Number.isSafeInteger(draftVersion) || draftVersion <= 0
+    || input.expectedSourceVersion !== `draft:${draftVersion}`) {
+    throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+  }
+  const current = (await client.query(
+    `SELECT pointer.*,evidence.provenance
+       FROM collect_ozon_category_current_sources AS pointer
+       JOIN collect_ozon_category_source_evidence AS evidence
+         ON evidence.account_id=pointer.account_id AND evidence.id=pointer.source_evidence_id
+      WHERE pointer.account_id=$1 AND pointer.collect_item_id=$2 FOR UPDATE OF pointer`,
+    [input.accountId, input.collectItemId],
+  )).rows[0] ?? null;
+  if (current) {
+    const triggerDraftId = current.source_kind === "PRODUCT_DRAFT"
+      ? current.source_record_id
+      : current.provenance?.categoryEvidence?.provenance?.triggerProductDraftId;
+    const triggerDraftVersion = current.source_kind === "PRODUCT_DRAFT"
+      ? Number(String(current.source_version).replace(/^draft:/u, ""))
+      : Number(current.provenance?.categoryEvidence?.provenance?.triggerProductDraftVersion);
+    if (triggerDraftId !== basis.current_draft_id || triggerDraftVersion !== draftVersion) {
+      throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+    }
+  }
+  const evidence = manualEvidence(input, basis.current_draft_id, draftVersion);
+  const evidenceId = text(idFactory());
+  const evidenceRow = (await client.query(
+    `INSERT INTO collect_ozon_category_source_evidence
+      (id,account_id,source_kind,source_record_id,source_version,collect_item_id,
+       product_draft_id,enrichment_source,enrichment_sku,enrichment_contract_version,
+       source_description_category_id,source_type_id,taxonomy_scope,captured_at,
+       raw_response_hash,raw_response_ref,product_raw_response_ref,lookup_evidence_id,
+       provenance,created_at)
+     VALUES ($1,$2,'MANUAL_CONFIRMATION',$3,$4,$5,NULL,NULL,NULL,NULL,$6,$7,$8,$9,$10,$11,
+             NULL,NULL,$12::jsonb,$9)
+     RETURNING *`,
+    [evidenceId, input.accountId, evidence.provenance.sourceRecordId, evidence.sourceVersion,
+      input.collectItemId, input.currentDescriptionCategoryId, input.currentTypeId,
+      evidence.taxonomyScope, input.validatedAt, input.requestHash, evidence.rawResponseRef,
+      JSON.stringify({ ...evidence.provenance, categoryEvidence: evidence })],
+  )).rows[0];
+  await client.query(
+    `INSERT INTO collect_ozon_category_manual_confirmation_evidence
+      (id,account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,
+       source_version,trigger_product_draft_id,trigger_product_draft_version,
+       selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
+       confirmation_contract_version,correlation_id,idempotency_key,request_hash,captured_at,created_at)
+     VALUES ($1,$2,$3,$4,'MANUAL_CONFIRMATION',$1,$1,$5,$6,$7,$8,'OZON:DEFAULT',$2,
+             'account-shared-ozon-category-manual-confirmation.v1',$9,$10,$11,$12,$12)`,
+    [evidence.rawResponseRef, input.accountId, input.collectItemId, evidenceId,
+      basis.current_draft_id, draftVersion, input.currentDescriptionCategoryId,
+      input.currentTypeId, input.correlationId, input.idempotencyKey,
+      input.requestHash, input.validatedAt],
+  );
+  let sharedRow = (await client.query(
+    `SELECT * FROM account_ozon_shared_categories
+      WHERE account_id=$1 AND source_description_category_id=$2
+        AND source_type_id=$3 AND taxonomy_scope='OZON:DEFAULT' FOR UPDATE`,
+    [input.accountId, input.currentDescriptionCategoryId, input.currentTypeId],
+  )).rows[0];
+  if (sharedRow) {
+    const previous = mapSharedRow(sharedRow);
+    sharedRow = (await client.query(
+      `UPDATE account_ozon_shared_categories
+          SET current_description_category_id=$2,current_type_id=$3,status='ACTIVE',source='MANUAL',
+              taxonomy_fingerprint=$4,safe_failure_code='',source_evidence_id=$5,
+              validated_at=$6,version=version+1,
+              updated_at=GREATEST($6::timestamptz,updated_at+INTERVAL '1 millisecond')
+        WHERE account_id=$1 AND id=$7 RETURNING *`,
+      [input.accountId, input.currentDescriptionCategoryId, input.currentTypeId,
+        input.taxonomyFingerprint, evidenceId, input.validatedAt, sharedRow.id],
+    )).rows[0];
+    await client.query(
+      `INSERT INTO account_ozon_shared_category_events
+        (id,account_id,shared_category_id,source_evidence_id,event_type,from_status,
+         to_status,from_version,to_version,taxonomy_fingerprint,provenance,created_at)
+       VALUES ($1,$2,$3,$4,'MANUAL_CATEGORY_CONFIRMED',$5,'ACTIVE',$6,$7,$8,$9::jsonb,$10)`,
+      [text(idFactory()), input.accountId, sharedRow.id, evidenceId, previous.status,
+        previous.version, Number(sharedRow.version), input.taxonomyFingerprint,
+        JSON.stringify({ sharedCategoryId: sharedRow.id, sourceEvidenceId: evidenceId,
+          fromVersion: previous.version, toVersion: Number(sharedRow.version),
+          sourceRecordId: evidence.provenance.sourceRecordId, sourceVersion: evidence.sourceVersion,
+          correlationId: input.correlationId, idempotencyKey: input.idempotencyKey,
+          capturedAt: input.validatedAt }), input.validatedAt],
+    );
+  } else {
+    sharedRow = (await client.query(
+      `INSERT INTO account_ozon_shared_categories
+        (id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+         current_description_category_id,current_type_id,status,source,version,
+         taxonomy_fingerprint,safe_failure_code,source_evidence_id,validated_at,
+         next_refresh_at,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'OZON:DEFAULT',$3,$4,'ACTIVE','MANUAL',1,$5,'',$6,$7,NULL,$7,$7)
+       RETURNING *`,
+      [text(idFactory()), input.accountId, input.currentDescriptionCategoryId,
+        input.currentTypeId, input.taxonomyFingerprint, evidenceId, input.validatedAt],
+    )).rows[0];
+    await client.query(
+      `INSERT INTO account_ozon_shared_category_events
+        (id,account_id,shared_category_id,source_evidence_id,event_type,from_status,
+         to_status,from_version,to_version,taxonomy_fingerprint,provenance,created_at)
+       VALUES ($1,$2,$3,$4,'MANUAL_CATEGORY_CONFIRMED',NULL,'ACTIVE',NULL,1,$5,$6::jsonb,$7)`,
+      [text(idFactory()), input.accountId, sharedRow.id, evidenceId, input.taxonomyFingerprint,
+        JSON.stringify({ sharedCategoryId: sharedRow.id, sourceEvidenceId: evidenceId,
+          sourceRecordId: evidence.provenance.sourceRecordId, sourceVersion: evidence.sourceVersion,
+          correlationId: input.correlationId, idempotencyKey: input.idempotencyKey,
+          capturedAt: input.validatedAt }), input.validatedAt],
+    );
+  }
+  const pointerParams = [input.accountId, input.collectItemId, evidenceId,
+    evidence.provenance.sourceRecordId, evidence.sourceVersion, input.validatedAt];
+  if (current) {
+    const updated = await client.query(
+      `UPDATE collect_ozon_category_current_sources
+          SET source_evidence_id=$3,source_kind='MANUAL_CONFIRMATION',source_record_id=$4,
+              source_version=$5,updated_at=$6
+        WHERE account_id=$1 AND collect_item_id=$2 AND source_evidence_id=$7
+          AND source_kind=$8 AND source_record_id=$9 AND source_version=$10`,
+      [...pointerParams, current.source_evidence_id, current.source_kind,
+        current.source_record_id, current.source_version],
+    );
+    if (updated.rowCount !== 1) throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+  } else {
+    const inserted = await client.query(
+      `INSERT INTO collect_ozon_category_current_sources
+        (account_id,collect_item_id,source_evidence_id,source_kind,source_record_id,source_version,updated_at)
+       VALUES ($1,$2,$3,'MANUAL_CONFIRMATION',$4,$5,$6) ON CONFLICT DO NOTHING`,
+      pointerParams,
+    );
+    if (inserted.rowCount !== 1) throw repositoryError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
+  }
+  categoryEvidenceFromRow(evidenceRow);
+  return mapSharedRow(sharedRow);
+}
+
 export function createPostgresAccountSharedOzonCategoryRepository({
   pool,
   idFactory = randomUUID,
@@ -1088,30 +1412,8 @@ export function createPostgresAccountSharedOzonCategoryRepository({
     },
 
     async confirmManualCategory(input) {
-      exactObject(input, [
-        "accountId", "evidenceId", "expectedVersion", "currentDescriptionCategoryId",
-        "currentTypeId", "taxonomyFingerprint", "validatedAt",
-      ]);
-      const accountId = text(input.accountId);
-      const evidenceId = text(input.evidenceId);
-      const expectedVersion = positiveInteger(input.expectedVersion);
-      const validatedAt = isoInstant(input.validatedAt);
-      const desired = {
-        currentDescriptionCategoryId: positiveInteger(input.currentDescriptionCategoryId),
-        currentTypeId: positiveInteger(input.currentTypeId),
-        status: "ACTIVE",
-        source: "MANUAL",
-        taxonomyFingerprint: sha256(input.taxonomyFingerprint),
-        safeFailureCode: "",
-        validatedAt,
-      };
-      const result = await runWrite((client) => transitionPostgres(client, {
-          accountId,
-          evidenceId,
-          expectedVersion,
-          desired,
-          transitionedAt: validatedAt,
-        }));
+      const prepared = manualConfirmationInput(input);
+      const result = await runWrite((client) => confirmManualPostgres(client, prepared, { idFactory }));
       return publicShared(result);
     },
 

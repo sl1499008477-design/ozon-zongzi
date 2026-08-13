@@ -23,6 +23,7 @@ const CATEGORY_STATE_KEYS = Object.freeze([
   "accountOzonCategoryConfirmations",
   "collectOzonCategoryLookupEvidence",
   "collectOzonCategoryCurrentSources",
+  "collectOzonCategoryManualConfirmationEvidence",
 ]);
 
 function runtimeError(code, status = 400) {
@@ -225,22 +226,6 @@ function confirmationEventId(input) {
     .update(`${input.actor.id}\u0000${input.idempotencyKey}`).digest("hex")}`;
 }
 
-function manualConfirmation(input, source, shared) {
-  if (!source || source.accountId !== input.actor.id
-    || source.collectItemId !== input.collectItemId
-    || source.sourceVersion !== input.expectedSourceVersion) {
-    throw runtimeError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
-  }
-  const expectedVersion = shared?.version;
-  if (!expectedVersion) throw runtimeError("OZON_CATEGORY_CONFIRMATION_STATE_CONFLICT", 409);
-  return {
-    evidenceId: source.id,
-    expectedVersion,
-    taxonomyFingerprint: crypto.createHash("sha256")
-      .update(`${input.taxonomyScope}:${input.descriptionCategoryId}:${input.typeId}`).digest("hex"),
-  };
-}
-
 function replayConfirmation(metadata, input, requestHash) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)
     || metadata.requestHash !== requestHash) {
@@ -421,29 +406,21 @@ export function createAccountSharedOzonCategoryRuntime({
     const item = findJsonItem(state, input.actor.id, input.collectItemId);
     if (!item) throw runtimeError("OZON_CATEGORY_CONFIRMATION_ITEM_NOT_FOUND", 404);
     const { repository } = jsonPorts(state);
-    const current = await repository.readCurrentEvidence({
-      accountId: input.actor.id, collectItemIds: [input.collectItemId],
-    });
-    const source = current[0];
-    if (!source || source.sourceVersion !== input.expectedSourceVersion) {
-      throw runtimeError("OZON_CATEGORY_CONFIRMATION_SOURCE_VERSION_CONFLICT", 409);
-    }
-    const sharedRows = await repository.readSharedForEvidence({
-      accountId: input.actor.id, evidenceIds: [source.id],
-    });
     const confirmedAt = new Date(now());
     if (Number.isNaN(confirmedAt.getTime())) throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
-    const prepared = manualConfirmation(
-      input, source, sharedRows[0],
-    );
     const shared = await repository.confirmManualCategory({
       accountId: input.actor.id,
-      evidenceId: prepared.evidenceId,
-      expectedVersion: prepared.expectedVersion,
+      collectItemId: input.collectItemId,
+      expectedSourceVersion: input.expectedSourceVersion,
       currentDescriptionCategoryId: input.descriptionCategoryId,
       currentTypeId: input.typeId,
-      taxonomyFingerprint: prepared.taxonomyFingerprint,
+      taxonomyFingerprint: crypto.createHash("sha256")
+        .update(`${input.taxonomyScope}:${input.descriptionCategoryId}:${input.typeId}`).digest("hex"),
       validatedAt: confirmedAt.toISOString(),
+      actorId: input.actor.id,
+      correlationId: input.correlationId,
+      idempotencyKey: input.idempotencyKey,
+      requestHash,
     });
     const result = deepFreeze({
       collectItemId: input.collectItemId,
@@ -459,6 +436,9 @@ export function createAccountSharedOzonCategoryRuntime({
       idempotencyKey: input.idempotencyKey,
       correlationId: input.correlationId,
       requestHash,
+      sourceEvidenceId: shared.evidenceId,
+      manualConfirmationEvidenceId: state.collectOzonCategoryManualConfirmationEvidence.find((row) =>
+        row.sourceEvidenceId === shared.evidenceId)?.id,
       actor: structuredClone(input.actor),
       confirmedAt: confirmedAt.toISOString(),
       result: structuredClone(result),
@@ -505,45 +485,47 @@ export function createAccountSharedOzonCategoryRuntime({
           : createPostgresAccountSharedOzonCategoryRepository({
               pool: client, transactionOwner: "caller", idFactory: randomUUID, now,
             });
-        const current = await repository.readCurrentEvidence({
-          accountId: normalized.actor.id, collectItemIds: [normalized.collectItemId],
-        });
-        const source = current[0];
-        if (!source) throw runtimeError("OZON_CATEGORY_CONFIRMATION_ITEM_NOT_FOUND", 404);
-        const sharedRows = await repository.readSharedForEvidence({
-          accountId: normalized.actor.id, evidenceIds: [source.id],
-        });
         const confirmedAt = new Date(now());
         if (Number.isNaN(confirmedAt.getTime())) {
           throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
         }
-        const prepared = manualConfirmation(
-          normalized, source, sharedRows[0],
-        );
         const shared = await repository.confirmManualCategory({
           accountId: normalized.actor.id,
-          evidenceId: prepared.evidenceId,
-          expectedVersion: prepared.expectedVersion,
+          collectItemId: normalized.collectItemId,
+          expectedSourceVersion: normalized.expectedSourceVersion,
           currentDescriptionCategoryId: normalized.descriptionCategoryId,
           currentTypeId: normalized.typeId,
-          taxonomyFingerprint: prepared.taxonomyFingerprint,
+          taxonomyFingerprint: crypto.createHash("sha256")
+            .update(`${normalized.taxonomyScope}:${normalized.descriptionCategoryId}:${normalized.typeId}`)
+            .digest("hex"),
           validatedAt: confirmedAt.toISOString(),
+          actorId: normalized.actor.id,
+          correlationId: normalized.correlationId,
+          idempotencyKey: normalized.idempotencyKey,
+          requestHash,
         });
         const result = deepFreeze({
           collectItemId: normalized.collectItemId,
           categoryResolution: publicAccountSharedCategorySelection(shared),
         });
+        const manualObservation = (await client.query(
+          `SELECT id FROM collect_ozon_category_manual_confirmation_evidence
+            WHERE account_id=$1 AND source_evidence_id=$2`,
+          [normalized.actor.id, shared.evidenceId],
+        )).rows[0];
+        if (!manualObservation) throw runtimeError("OZON_CATEGORY_CONFIRMATION_FAILED", 500);
         const insertedConfirmation = await client.query(
           `INSERT INTO account_ozon_category_confirmation_audit (
              id,account_id,collect_item_id,source_evidence_id,expected_source_version,
              selected_description_category_id,selected_type_id,taxonomy_scope,actor_id,
-             correlation_id,idempotency_key,request_hash,result_json,confirmed_at,created_at
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$2,$9,$10,$11,$12::jsonb,$13,$13)
+             correlation_id,idempotency_key,request_hash,result_json,confirmed_at,created_at,
+             manual_confirmation_evidence_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$2,$9,$10,$11,$12::jsonb,$13,$13,$14)
            ON CONFLICT (account_id,idempotency_key) DO NOTHING RETURNING id`,
-          [eventId, normalized.actor.id, normalized.collectItemId, source.id,
+          [eventId, normalized.actor.id, normalized.collectItemId, shared.evidenceId,
             normalized.expectedSourceVersion, normalized.descriptionCategoryId, normalized.typeId,
             normalized.taxonomyScope, normalized.correlationId, normalized.idempotencyKey,
-            requestHash, JSON.stringify(result), confirmedAt.toISOString()],
+            requestHash, JSON.stringify(result), confirmedAt.toISOString(), manualObservation.id],
         );
         if (insertedConfirmation.rowCount !== 1) {
           throw runtimeError("OZON_CATEGORY_CONFIRMATION_IDEMPOTENCY_CONFLICT", 409);

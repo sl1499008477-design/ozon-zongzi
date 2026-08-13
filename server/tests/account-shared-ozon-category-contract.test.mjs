@@ -3,6 +3,7 @@ import { types } from "node:util";
 import test from "node:test";
 import {
   lookupObservationIdentity,
+  manualConfirmationObservationIdentity,
   sharedCategorySelection,
   sourceCategoryEvidence,
 } from "../account-shared-ozon-category-contract.mjs";
@@ -229,6 +230,44 @@ test("source evidence closes exact Ozon lookup provenance without exposing a res
     ...input,
     provenance: { ...input.provenance, matchedSourceSku: "OTHER" },
   }));
+});
+
+test("manual confirmation evidence has a closed provenance identity distinct from source facts", () => {
+  const identity = manualConfirmationObservationIdentity({
+    accountId: "account-a", collectItemId: "collect-a",
+    triggerProductDraftId: "draft-a", triggerProductDraftVersion: 7,
+    selectedDescriptionCategoryId: 17028788, selectedTypeId: 95555,
+    taxonomyScope: "OZON:DEFAULT", actorId: "account-a",
+    capturedAt: CAPTURED_AT, correlationId: "correlation-a",
+    idempotencyKey: "idempotency-a", requestHash: HASH,
+  });
+  const result = sourceCategoryEvidence(evidence({
+    sourceVersion: identity.sourceVersion,
+    productDraftId: null, productDraftVersion: null,
+    ozonProductId: null, sourceSku: null,
+    sourceDescriptionCategoryId: 17028788, sourceTypeId: 95555,
+    normalizedPath: [], attributeSummary: [],
+    provenance: {
+      accountId: "account-a", collectItemId: "collect-a",
+      sourceKind: "MANUAL_CONFIRMATION", sourceRecordId: identity.sourceRecordId,
+      rawResponseRef: identity.rawResponseRef, rawResponseHash: HASH,
+      capturedAt: CAPTURED_AT,
+      confirmationContractVersion: "account-shared-ozon-category-manual-confirmation.v1",
+      triggerProductDraftId: "draft-a", triggerProductDraftVersion: 7,
+      selectedDescriptionCategoryId: 17028788, selectedTypeId: 95555,
+      taxonomyScope: "OZON:DEFAULT", actorId: "account-a",
+      correlationId: "correlation-a", idempotencyKey: "idempotency-a",
+    },
+    capturedAt: CAPTURED_AT,
+    rawResponseRef: identity.rawResponseRef, rawResponseHash: HASH,
+  }));
+
+  assert.equal(result.provenance.sourceKind, "MANUAL_CONFIRMATION");
+  assert.match(result.rawResponseRef, /^manual-confirmation:v1:[0-9a-f]{64}$/u);
+  assert.equal(result.sourceVersion, result.rawResponseRef);
+  assert.equal(result.productDraftId, null);
+  assert.equal(result.ozonProductId, null);
+  assert.equal(Object.isFrozen(result.provenance), true);
 });
 
 test("shared selection is closed, immutable, account-shared, and preserves unvalidated source-direct state", () => {

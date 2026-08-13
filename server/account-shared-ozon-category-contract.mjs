@@ -3,6 +3,7 @@ import { types } from "node:util";
 
 const HASH = /^[0-9a-f]{64}$/u;
 const LOOKUP_REF = /^ozon-read:v1:[0-9a-f]{64}$/u;
+const MANUAL_CONFIRMATION_REF = /^manual-confirmation:v1:[0-9a-f]{64}$/u;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const EVIDENCE_KEYS = Object.freeze([
@@ -28,6 +29,11 @@ const LOOKUP_PROVENANCE_KEYS = Object.freeze([
   ...PROVENANCE_BASE_KEYS, "lookupContractVersion", "requestedOzonProductId",
   "requestedSourceSku", "matchedOzonProductId", "matchedSourceSku",
   "triggerProductDraftId", "triggerProductDraftVersion",
+]);
+const MANUAL_CONFIRMATION_PROVENANCE_KEYS = Object.freeze([
+  ...PROVENANCE_BASE_KEYS, "confirmationContractVersion", "triggerProductDraftId",
+  "triggerProductDraftVersion", "selectedDescriptionCategoryId", "selectedTypeId",
+  "taxonomyScope", "actorId", "correlationId", "idempotencyKey",
 ]);
 const ATTRIBUTE_KEYS = new Set(["key", "value", "dictionaryValueId"]);
 const SHARED_STATUSES = new Set(["ACTIVE", "INVALIDATED", "NEEDS_REVIEW"]);
@@ -136,6 +142,39 @@ export function lookupObservationIdentity(input) {
   });
 }
 
+export function manualConfirmationObservationIdentity(input) {
+  const seen = new WeakSet();
+  const keys = [
+    "accountId", "collectItemId", "triggerProductDraftId", "triggerProductDraftVersion",
+    "selectedDescriptionCategoryId", "selectedTypeId", "taxonomyScope", "actorId",
+    "capturedAt", "correlationId", "idempotencyKey", "requestHash",
+  ];
+  assertExactDataObject(input, keys, seen);
+  const values = {
+    accountId: text(input.accountId),
+    collectItemId: text(input.collectItemId),
+    triggerProductDraftId: text(input.triggerProductDraftId),
+    triggerProductDraftVersion: positiveInteger(input.triggerProductDraftVersion),
+    selectedDescriptionCategoryId: positiveInteger(input.selectedDescriptionCategoryId),
+    selectedTypeId: positiveInteger(input.selectedTypeId),
+    taxonomyScope: text(input.taxonomyScope, 80),
+    actorId: text(input.actorId),
+    capturedAt: isoInstant(input.capturedAt),
+    correlationId: text(input.correlationId),
+    idempotencyKey: text(input.idempotencyKey),
+    requestHash: sha256(input.requestHash),
+  };
+  if (values.taxonomyScope !== "OZON:DEFAULT" || values.actorId !== values.accountId) throw invalid();
+  const observationHash = crypto.createHash("sha256").update(JSON.stringify([
+    values.accountId, values.collectItemId, values.triggerProductDraftId,
+    values.triggerProductDraftVersion, values.selectedDescriptionCategoryId,
+    values.selectedTypeId, values.taxonomyScope, values.actorId, values.capturedAt,
+    values.correlationId, values.idempotencyKey, values.requestHash,
+  ])).digest("hex");
+  const sourceRecordId = `manual-confirmation:v1:${observationHash}`;
+  return Object.freeze({ sourceRecordId, sourceVersion: sourceRecordId, rawResponseRef: sourceRecordId });
+}
+
 function frozenArray(values) {
   return Object.freeze(values);
 }
@@ -187,11 +226,14 @@ function attributeSummary(value, seen) {
 function evidenceProvenance(value, evidence, seen) {
   const descriptors = assertDataObject(value, new Set([
     ...ENRICHMENT_PROVENANCE_KEYS, ...LOOKUP_PROVENANCE_KEYS,
+    ...MANUAL_CONFIRMATION_PROVENANCE_KEYS,
   ]), seen);
   const sourceKind = descriptors.sourceKind?.value;
   const keys = sourceKind === "ENRICHMENT_CACHE"
     ? ENRICHMENT_PROVENANCE_KEYS
-    : sourceKind === "OZON_READ_LOOKUP" ? LOOKUP_PROVENANCE_KEYS : PROVENANCE_BASE_KEYS;
+    : sourceKind === "OZON_READ_LOOKUP" ? LOOKUP_PROVENANCE_KEYS
+      : sourceKind === "MANUAL_CONFIRMATION" ? MANUAL_CONFIRMATION_PROVENANCE_KEYS
+        : PROVENANCE_BASE_KEYS;
   if (Object.keys(descriptors).length !== keys.length
     || keys.some((key) => !Object.hasOwn(descriptors, key))) throw invalid();
   const projected = {
@@ -252,6 +294,43 @@ function evidenceProvenance(value, evidence, seen) {
       || projected.rawResponseRef !== observation.rawResponseRef
       || !LOOKUP_REF.test(projected.rawResponseRef)
     ) throw invalid();
+  } else if (projected.sourceKind === "MANUAL_CONFIRMATION") {
+    projected.confirmationContractVersion = text(value.confirmationContractVersion, 120);
+    projected.triggerProductDraftId = text(value.triggerProductDraftId);
+    projected.triggerProductDraftVersion = positiveInteger(value.triggerProductDraftVersion);
+    projected.selectedDescriptionCategoryId = positiveInteger(value.selectedDescriptionCategoryId);
+    projected.selectedTypeId = positiveInteger(value.selectedTypeId);
+    projected.taxonomyScope = text(value.taxonomyScope, 80);
+    projected.actorId = text(value.actorId);
+    projected.correlationId = text(value.correlationId);
+    projected.idempotencyKey = text(value.idempotencyKey);
+    const observation = manualConfirmationObservationIdentity({
+      accountId: evidence.accountId,
+      collectItemId: evidence.collectItemId,
+      triggerProductDraftId: projected.triggerProductDraftId,
+      triggerProductDraftVersion: projected.triggerProductDraftVersion,
+      selectedDescriptionCategoryId: projected.selectedDescriptionCategoryId,
+      selectedTypeId: projected.selectedTypeId,
+      taxonomyScope: projected.taxonomyScope,
+      actorId: projected.actorId,
+      capturedAt: projected.capturedAt,
+      correlationId: projected.correlationId,
+      idempotencyKey: projected.idempotencyKey,
+      requestHash: projected.rawResponseHash,
+    });
+    if (projected.confirmationContractVersion
+        !== "account-shared-ozon-category-manual-confirmation.v1"
+      || evidence.collectItemId === null || evidence.productDraftId !== null
+      || evidence.productDraftVersion !== null || evidence.ozonProductId !== null
+      || evidence.sourceSku !== null || evidence.normalizedPath.length !== 0
+      || evidence.attributeSummary.length !== 0
+      || evidence.sourceDescriptionCategoryId !== projected.selectedDescriptionCategoryId
+      || evidence.sourceTypeId !== projected.selectedTypeId
+      || evidence.taxonomyScope !== projected.taxonomyScope
+      || evidence.sourceVersion !== observation.sourceVersion
+      || projected.sourceRecordId !== observation.sourceRecordId
+      || projected.rawResponseRef !== observation.rawResponseRef
+      || !MANUAL_CONFIRMATION_REF.test(projected.rawResponseRef)) throw invalid();
   } else throw invalid();
   return Object.freeze(projected);
 }
