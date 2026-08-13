@@ -29,12 +29,12 @@ const work = (overrides = {}) => ({
 
 const failed = (overrides = {}) => ({
   done: true, status: "FAILED", success: 0, failed: 1, skipped: 0,
-  items: [{ offerId: "offer-a", productId: null, status: "FAILED",
+  items: [{ offerId: "offer-a", productId: "", status: "FAILED",
     classification: "EXPLICIT_CATEGORY_FAILURE", errorEvidence: explicitEvidence() }],
   ...overrides,
 });
 
-function harness() {
+function harness({ persistFailure = null } = {}) {
   const calls = [];
   const controller = createListingWorkerCategoryRecoveryController({
     async beginCategoryRecovery(input) {
@@ -48,6 +48,11 @@ function harness() {
         attemptId: "attempt-a", correlationId: input.correlationId,
       }]);
       return { attemptId: "attempt-a", status: "RETRY_PENDING" };
+    },
+    async persistRetryResults(input) {
+      calls.push(["child-results", input]);
+      if (persistFailure) throw persistFailure;
+      return { attemptId: "attempt-a", status: "RECORDED", count: input.items.length };
     },
     async markRetryAccepted(input) {
       calls.push(["accepted", input]);
@@ -99,7 +104,8 @@ test("retry acceptance preserves original task identity and success completes be
   const continuation = [];
   await completeListingCategoryRetryAndContinue({
     work: retryWork,
-    statusInfo: { done: true, status: "SUCCEEDED", success: 1, failed: 0, skipped: 0 },
+    statusInfo: { done: true, status: "SUCCEEDED", success: 1, failed: 0, skipped: 0,
+      items: [{ offerId: "offer-a", status: "SUCCEEDED", productId: "101" }] },
     controller,
     continueImport: async (continuedWork, continuedStatus) => {
       continuation.push("PRE_STOCK", "RFBS", "STOCK");
@@ -107,8 +113,9 @@ test("retry acceptance preserves original task identity and success completes be
       assert.equal(continuedStatus.status, "SUCCEEDED");
     },
   });
-  assert.deepEqual(calls.map(([name]) => name), ["accepted", "complete"]);
-  assert.equal(calls[1][1].retryOzonTaskId, "task-retry");
+  assert.deepEqual(calls.map(([name]) => name), ["accepted", "child-results", "complete"]);
+  assert.deepEqual(calls[1][1].items, [{ offerId: "offer-a", status: "SUCCEEDED", productId: "101" }]);
+  assert.equal(calls[2][1].retryOzonTaskId, "task-retry");
   assert.deepEqual(continuation, ["PRE_STOCK", "RFBS", "STOCK"]);
 });
 
@@ -123,7 +130,25 @@ test("a second category failure is reviewed and never schedules a third import",
   assert.deepEqual(await controller.handleTerminal({
     work: work({ ozon_task_id: "task-retry", categoryRecovery: recovery }), statusInfo: failed(),
   }), { handled: true, attemptId: "attempt-a", status: "NEEDS_REVIEW" });
-  assert.deepEqual(calls.map(([name]) => name), ["review"]);
+  assert.deepEqual(calls.map(([name]) => name), ["child-results", "review"]);
+  assert.deepEqual(calls[0][1].items, [{ offerId: "offer-a", status: "FAILED", productId: null }]);
+});
+
+test("a conflicting retry child result stops before review or another import", async () => {
+  const conflict = Object.assign(new Error("conflict"), {
+    code: "LISTING_CATEGORY_RECOVERY_RESULT_CONFLICT",
+  });
+  const { calls, controller } = harness({ persistFailure: conflict });
+  const recovery = {
+    attemptId: "attempt-a", status: "RETRY_ACCEPTED", evidenceId: "evidence-a",
+    sourceEvidenceId: "source-a", oldSharedCategoryId: "shared-a", oldSharedCategoryVersion: 1,
+    replacementSharedCategoryId: "shared-a", replacementSharedCategoryVersion: 3,
+    originalOzonTaskId: "task-original", retryOzonTaskId: "task-retry", correlationId: "corr-a",
+  };
+  await assert.rejects(controller.handleTerminal({
+    work: work({ ozon_task_id: "task-retry", categoryRecovery: recovery }), statusInfo: failed(),
+  }), { code: "LISTING_CATEGORY_RECOVERY_RESULT_CONFLICT" });
+  assert.deepEqual(calls.map(([name]) => name), ["child-results"]);
 });
 
 test("response loss after the original or category retry import always reconciles without another retry", () => {

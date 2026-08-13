@@ -294,13 +294,24 @@ export function createPostgresAutoListingSubmissionReconciliationRepository(opti
     if (result?.rowCount !== 1) throw notFound();
     const row = result.rows[0];
     const items = await safeQuery(client,
-      `SELECT item.offer_id,item.status,item.product_id,item.error_code
+      `SELECT item.offer_id,
+              CASE WHEN child.id IS NULL THEN item.status ELSE child.status END AS status,
+              CASE WHEN child.id IS NULL THEN item.product_id ELSE child.product_id END AS product_id,
+              CASE WHEN child.id IS NULL THEN item.error_code ELSE NULL END AS error_code
          FROM submission_items AS item
          JOIN submission_jobs AS submission ON submission.id=item.job_id
+         LEFT JOIN submission_category_recovery_item_results AS child
+           ON child.account_id=submission.account_id
+          AND child.submission_job_id=submission.id
+          AND child.submission_snapshot_id=submission.snapshot_id
+          AND child.recovery_attempt_id=$3
+          AND child.retry_ozon_task_id=$4
+          AND child.submission_item_id=item.id
+          AND child.offer_id=item.offer_id
         WHERE submission.account_id=$1 AND submission.id=$2
         ORDER BY item.sort_order,item.id
         LIMIT 101`,
-      [input.accountId, row.submission_job_id]);
+      [input.accountId, row.submission_job_id, row.recovery_attempt_id, row.recovery_retry_ozon_task_id]);
     return Object.freeze({
       accountId: row.account_id, jobId: row.job_id, itemId: row.item_id,
       itemStatus: row.item_status, itemStatusVersion: Number(row.item_status_version),

@@ -3,6 +3,7 @@ import { assertProductionConfiguration } from "./runtime-config.mjs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { types as utilTypes } from "node:util";
 import { callOzonSellerApi } from "./ozon-client.mjs";
 import { deriveOzonImportStatus } from "./ozon-import-status.mjs";
 import { resolveSubmissionFailureDisposition } from "./listing-submission-policy.mjs";
@@ -19,6 +20,7 @@ import {
   loadSubmissionWorkV3,
   markSubmissionCategoryRetryAcceptedV3,
   patchLegacyCollectStatusV3,
+  persistSubmissionCategoryRetryResultsV3,
   readStoreCredentialV3,
   recoverStaleSubmissionJobsV3,
   releaseSubmissionLockV3,
@@ -56,34 +58,81 @@ function explicitCategoryTerminal(statusInfo) {
     && statusInfo.success === 0 && statusInfo.skipped === 0
     && Number.isSafeInteger(statusInfo.failed) && statusInfo.failed > 0
     && Array.isArray(statusInfo.items) && statusInfo.items.length === statusInfo.failed
-    && statusInfo.items.every((item) => item?.status === "FAILED" && item.productId === null
+    && statusInfo.items.every((item) => item?.status === "FAILED"
+      && (item.productId === null || item.productId === "")
       && item.classification === "EXPLICIT_CATEGORY_FAILURE"
       && item.errorEvidence?.classification === "EXPLICIT_CATEGORY_FAILURE"
       && item.errorEvidence.productId === null && item.errorEvidence.offerId === item.offerId);
 }
 
+function retryTerminalItems(statusInfo) {
+  if (!statusInfo || typeof statusInfo !== "object" || utilTypes.isProxy(statusInfo)
+    || statusInfo.done !== true || !["SUCCEEDED", "FAILED", "PARTIAL_SUCCESS"].includes(statusInfo.status)
+    || !Array.isArray(statusInfo.items) || utilTypes.isProxy(statusInfo.items)
+    || statusInfo.items.length < 1 || statusInfo.items.length > 100) return null;
+  const items = [];
+  const offers = new Set();
+  for (const item of statusInfo.items) {
+    if (!item || typeof item !== "object" || utilTypes.isProxy(item) || Array.isArray(item)) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(item);
+    if (!["offerId", "status", "productId"].every((key) => descriptors[key]?.enumerable === true
+      && Object.hasOwn(descriptors[key], "value"))) return null;
+    const offerId = descriptors.offerId.value;
+    const status = descriptors.status.value;
+    const rawProductId = descriptors.productId.value;
+    const productId = rawProductId === null || rawProductId === "" ? null : rawProductId;
+    if (typeof offerId !== "string" || !offerId || offerId.length > 240 || offers.has(offerId)
+      || !["SUCCEEDED", "FAILED", "SKIPPED"].includes(status)
+      || (status === "SUCCEEDED" && (typeof productId !== "string"
+        || !/^[1-9][0-9]{0,15}$/u.test(productId) || !Number.isSafeInteger(Number(productId))))
+      || (status !== "SUCCEEDED" && productId !== null)) return null;
+    offers.add(offerId);
+    items.push(Object.freeze({ offerId, status, productId }));
+  }
+  return Object.freeze(items);
+}
+
 export function createListingWorkerCategoryRecoveryController({
   beginCategoryRecovery,
   recoverCategory,
+  persistRetryResults,
   markRetryAccepted,
   completeRecovery,
   requireRecoveryReview,
 } = {}) {
-  if ([beginCategoryRecovery, recoverCategory, markRetryAccepted,
+  if ([beginCategoryRecovery, recoverCategory, persistRetryResults, markRetryAccepted,
     completeRecovery, requireRecoveryReview].some((port) => typeof port !== "function")) {
     throw new TypeError("listing category recovery ports are required");
   }
+  async function persistRetryTerminal({ work, statusInfo } = {}) {
+    const identity = categoryRecoveryIdentity(work);
+    const retryOzonTaskId = work?.categoryRecovery?.retryOzonTaskId;
+    const items = retryTerminalItems(statusInfo);
+    if (!identity || work.categoryRecovery.status !== "RETRY_ACCEPTED"
+      || typeof retryOzonTaskId !== "string" || !retryOzonTaskId
+      || work.ozon_task_id !== retryOzonTaskId || !items) {
+      throw Object.assign(new Error("类目恢复子结果身份无效"), {
+        code: "LISTING_CATEGORY_RECOVERY_RESULT_INVALID",
+      });
+    }
+    return persistRetryResults({
+      accountId: identity.accountId, jobId: identity.jobId, snapshotId: identity.snapshotId,
+      attemptId: identity.attemptId, retryOzonTaskId, items,
+    });
+  }
   return Object.freeze({
     async handleTerminal({ work, statusInfo } = {}) {
-      if (!explicitCategoryTerminal(statusInfo)) return Object.freeze({ handled: false });
       const existing = categoryRecoveryIdentity(work);
       if (existing) {
-        if (work.categoryRecovery.status !== "RETRY_ACCEPTED") return Object.freeze({ handled: false });
+        if (work.categoryRecovery.status !== "RETRY_ACCEPTED" || statusInfo?.done !== true
+          || statusInfo.status === "SUCCEEDED") return Object.freeze({ handled: false });
+        await persistRetryTerminal({ work, statusInfo });
         const reviewed = await requireRecoveryReview({
           ...existing, safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED",
         });
         return Object.freeze({ handled: true, attemptId: reviewed.attemptId, status: "NEEDS_REVIEW" });
       }
+      if (!explicitCategoryTerminal(statusInfo)) return Object.freeze({ handled: false });
       const command = {
         accountId: work?.account_id, jobId: work?.id, snapshotId: work?.snapshot_id,
         originalOzonTaskId: work?.ozon_task_id, statusVersion: Number(work?.status_version),
@@ -124,6 +173,7 @@ export function createListingWorkerCategoryRecoveryController({
       }
       return completeRecovery({ ...identity, retryOzonTaskId });
     },
+    persistRetryTerminal,
   });
 }
 
@@ -134,6 +184,7 @@ const productionCategoryRecoveryController = createListingWorkerCategoryRecovery
       code: "AUTO_LISTING_CATEGORY_RECOVERY_POLICY_DISABLED", status: 409, retryable: false,
     });
   },
+  persistRetryResults: persistSubmissionCategoryRetryResultsV3,
   markRetryAccepted: markSubmissionCategoryRetryAcceptedV3,
   completeRecovery: completeSubmissionCategoryRecoveryV3,
   requireRecoveryReview: requireSubmissionCategoryRecoveryReviewV3,
@@ -151,6 +202,7 @@ export async function completeListingCategoryRetryAndContinue({
       code: "LISTING_CATEGORY_RECOVERY_CONTINUATION_INVALID",
     });
   }
+  await controller.persistRetryTerminal({ work, statusInfo });
   await controller.completeRetry({ work });
   return continueImport(work, statusInfo);
 }
@@ -349,14 +401,16 @@ async function processCheck(jobId) {
       expectedOfferIds: (Array.isArray(work.effectiveItems) ? work.effectiveItems : [])
         .map((item) => String(item?.offer_id || "")),
     });
-    await updateSubmissionItemsV3({
-      accountId: work.account_id,
-      jobId,
-      snapshotId: work.snapshot_id,
-      ozonTaskId: work.ozon_task_id,
-      statusVersion: Number(work.status_version),
-      items: statusInfo.items,
-    });
+    if (work.categoryRecovery?.status !== "RETRY_ACCEPTED") {
+      await updateSubmissionItemsV3({
+        accountId: work.account_id,
+        jobId,
+        snapshotId: work.snapshot_id,
+        ozonTaskId: work.ozon_task_id,
+        statusVersion: Number(work.status_version),
+        items: statusInfo.items,
+      });
+    }
     if (statusInfo.done) {
       if (statusInfo.status === "SUCCEEDED" && work.categoryRecovery?.status === "RETRY_ACCEPTED") {
         await completeListingCategoryRetryAndContinue({

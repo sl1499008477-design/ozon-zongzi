@@ -25,6 +25,16 @@ Only the ten Task 8 implementation/test paths are in product scope:
 
 This brief, the Task 8 report, and the SDD ledger are implementation evidence, not expanded production scope. If the production composition requires another port or file, implementation stops and reports the boundary before any expansion.
 
+### Review-approved fix-round-1 scope expansion
+
+The initial Task 8 implementation reused `submission_items` for retry results. That violates Task 6/7 provenance because those rows contain the original failed import result and exact category error evidence required by migration 068. The review therefore explicitly expands the boundary only to:
+
+- create `server/db/migrations/069_submission_category_recovery_item_results.sql`;
+- extend the existing migration contract test and the existing Task 8 listing-pipeline/PostgreSQL test needed to exercise the new production port;
+- advance the existing Task 7 PostgreSQL migration runner's terminal migration assertion from 068 to 069; its Task 7 behavior assertions remain unchanged.
+
+Migration 069 stores child retry item results under the complete account/job/snapshot/attempt/retry-task/item/offer identity. It does not alter migration 068, the original `submission_items`, the original error evidence, or the one-attempt rule. Retry child results are append-only, terminal-monotonic and idempotent; only the exact `RETRY_ACCEPTED` attempt may first write them. Recovery completion/review must derive their decision from this exact child result set.
+
 ## Closed worker behavior
 
 - Only the first terminal, all-item allowlisted category failure with every `productId` absent may enter Task 7 recovery. Partial success, any product identity, still-processing, unknown, ordinary/non-category failure, response loss, or offer `PRESENT/UNKNOWN` causes zero category refresh.

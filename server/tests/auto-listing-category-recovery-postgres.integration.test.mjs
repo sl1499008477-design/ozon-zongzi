@@ -37,7 +37,7 @@ const recoveryMetadata = Object.freeze({
 
 async function applyAll(client) {
   const files = (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
-  assert.equal(files.at(-1), "068_auto_listing_category_recovery.sql");
+  assert.equal(files.at(-1), "069_submission_category_recovery_item_results.sql");
   for (const file of files) await client.query(await readFile(path.join(migrationsDir, file), "utf8"));
 }
 
@@ -111,10 +111,18 @@ async function assertCheckRejected(client, sql, params) {
   await assert.rejects(client.query(sql, params), (error) => error.code === "23514");
 }
 
+async function insertSuccessfulRetryChild(client, schema, ids, attemptId, retryOzonTaskId) {
+  await client.query(`INSERT INTO ${q(schema)}.submission_category_recovery_item_results(
+    id,account_id,submission_job_id,submission_snapshot_id,recovery_attempt_id,
+    retry_ozon_task_id,submission_item_id,offer_id,status,product_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,'offer-a','SUCCEEDED','101')`,
+  [`${attemptId}-result`, ids.account, ids.job, ids.snapshot, attemptId, retryOzonTaskId, ids.item]);
+}
+
 if (!enabled) {
   test("Task 7 recovery PostgreSQL requires a disposable database", { skip: "requires disposable PG16" }, () => {});
 } else {
-  test("001-068 persists one exact tenant-bound recovery and enforces immutable transitions", { timeout: 120_000 }, async () => {
+  test("001-069 persists one exact tenant-bound recovery and enforces immutable transitions", { timeout: 120_000 }, async () => {
     const pool = new Pool({ connectionString: databaseUrl });
     const client = await pool.connect();
     const suffix = crypto.randomUUID().replaceAll("-", "");
@@ -501,6 +509,7 @@ if (!enabled) {
       await client.query(`UPDATE ${q(schema)}.submission_jobs
         SET ozon_task_id='task-retry',status='CHECKING' WHERE account_id=$1 AND id=$2`,
       [ids.account, ids.job]);
+      await insertSuccessfulRetryChild(client, schema, ids, attempt.attemptId, "task-retry");
       const completeInput = {
         ...claimInput, attemptId: attempt.attemptId, expectedStatus: "RETRY_ACCEPTED",
         retryOzonTaskId: "task-retry", transitionedAt: "2026-08-13T00:00:04.000Z",
@@ -663,6 +672,15 @@ if (!enabled) {
             ...identity, expectedStatus: "RETRY_PENDING", retryOzonTaskId: expectedRetry,
             transitionedAt: "2026-08-13T00:01:03.000Z",
           });
+          await client.query(`UPDATE ${q(schema)}.submission_jobs
+            SET ozon_task_id=$1,status='CHECKING' WHERE account_id=$2 AND id=$3`,
+          [expectedRetry, postIds.account, postIds.job]);
+          await client.query(`INSERT INTO ${q(schema)}.submission_category_recovery_item_results(
+            id,account_id,submission_job_id,submission_snapshot_id,recovery_attempt_id,
+            retry_ozon_task_id,submission_item_id,offer_id,status,product_id)
+            VALUES($1,$2,$3,$4,$5,$6,$7,'offer-a','FAILED',NULL)`,
+          [`${postAttempt.attemptId}-result`, postIds.account, postIds.job, postIds.snapshot,
+            postAttempt.attemptId, expectedRetry, postIds.item]);
         }
         await assertCheckRejected(client,
           `UPDATE ${q(schema)}.submission_category_recovery_attempts
@@ -853,6 +871,10 @@ if (!enabled) {
         attemptId: `recovery-${suffix}`, status: "RETRY_ACCEPTED",
       });
       assert.equal(externalCalls, afterFirst);
+      await client.query(`UPDATE ${q(schema)}.submission_jobs
+        SET ozon_task_id='task-retry',status='CHECKING' WHERE account_id=$1 AND id=$2`,
+      [ids.account, ids.job]);
+      await insertSuccessfulRetryChild(client, schema, ids, `recovery-${suffix}`, "task-retry");
       await recoveryRepository.completeCategoryRecovery({
         ...identity, expectedStatus: "RETRY_ACCEPTED", retryOzonTaskId: "task-retry",
         transitionedAt: "2026-08-13T01:00:02.000Z",

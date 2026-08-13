@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationPath = path.join(here, "../db/migrations/068_auto_listing_category_recovery.sql");
+const childResultsMigrationPath = path.join(
+  here, "../db/migrations/069_submission_category_recovery_item_results.sql",
+);
 
 test("068 creates tenant-bound category error evidence and one recovery attempt", async () => {
   const sql = await readFile(migrationPath, "utf8");
@@ -39,4 +42,17 @@ test("068 guards append-only evidence and the closed attempt transition lattice"
   assert.match(sql, /ERRCODE\s*=\s*'23514'/g);
   assert.match(sql, /OLD\.corrected_items IS NOT NULL.*NEW\.corrected_items IS DISTINCT FROM OLD\.corrected_items/s);
   assert.match(sql, /OLD\.retry_ozon_task_id IS NOT NULL.*NEW\.retry_ozon_task_id IS DISTINCT FROM OLD\.retry_ozon_task_id/s);
+});
+
+test("069 preserves original failures and gates exact append-only retry child results", async () => {
+  const sql = await readFile(childResultsMigrationPath, "utf8");
+  assert.match(sql, /CREATE TABLE submission_category_recovery_item_results/);
+  assert.match(sql, /account_id,submission_job_id,submission_snapshot_id,recovery_attempt_id/);
+  assert.match(sql, /retry_ozon_task_id,submission_item_id,offer_id/);
+  assert.match(sql, /attempt\.status='RETRY_ACCEPTED'/);
+  assert.match(sql, /original_item\.status='FAILED'/);
+  assert.match(sql, /submission category recovery item results are append only/);
+  assert.match(sql, /submission_category_recovery_attempt_result_gate/);
+  assert.match(sql, /NEW\.status IN \('SUCCEEDED','NEEDS_REVIEW'\)/);
+  assert.match(sql, /ERRCODE\s*=\s*'23514'/g);
 });

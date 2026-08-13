@@ -126,6 +126,54 @@ test("reconciliation carries only safe category recovery identity on the origina
   assert.doesNotMatch(JSON.stringify(applied), /corrected_items|rawResponse|apiKey/iu);
 });
 
+test("reconciliation rejects hostile or inconsistent recovery audit DTOs without executing them", async () => {
+  let reads = 0;
+  const getter = Object.create(null);
+  for (const [key, value] of Object.entries({
+    attemptId: "attempt-a", status: "SUCCEEDED", originalOzonTaskId: "task-original",
+    retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 1,
+    replacementSharedCategoryVersion: 3,
+  })) {
+    Object.defineProperty(getter, key, key === "attemptId" ? {
+      enumerable: true, get() { reads += 1; throw new Error("must not execute"); },
+    } : { enumerable: true, value });
+  }
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  for (const categoryRecovery of [getter, new Proxy({}, {
+    get() { reads += 1; throw new Error("must not execute"); },
+  }), revoked.proxy, {
+    attemptId: "attempt-a", status: "MATCHED", originalOzonTaskId: "task-original",
+    retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 3,
+    replacementSharedCategoryVersion: 3,
+  }, {
+    attemptId: "attempt-a", status: "SUCCEEDED", originalOzonTaskId: "task-original",
+    retryOzonTaskId: "another-task", oldSharedCategoryVersion: 1,
+    replacementSharedCategoryVersion: 3,
+  }]) {
+    const calls = [];
+    const reconciler = createAutoListingSubmissionReconciler({ repository: {
+      async loadReconciliationEvidence() {
+        return {
+          accountId: "account-a", jobId: "job-a", itemId: "item-a", itemStatus: "UPLOADING",
+          itemStatusVersion: 8, submissionLinkId: "link-a", submissionLinkStatus: "SUBMITTED",
+          submissionJobId: "submission-a", submission: {
+            id: "submission-a", accountId: "account-a", status: "SUCCEEDED",
+            ozonTaskId: "task-retry", successCount: 1, failedCount: 0, skippedCount: 0,
+            resultSummary: {}, items: [], categoryRecovery,
+          },
+        };
+      },
+      async applyReconciliation(input) { calls.push(input); return input; },
+    } });
+    await assert.rejects(reconciler.reconcile(request), {
+      code: "AUTO_LISTING_RECONCILE_EVIDENCE_INVALID",
+    });
+    assert.deepEqual(calls, []);
+  }
+  assert.equal(reads, 0);
+});
+
 test("partial success and uncertain reconciliation block resubmission instead of creating another product", async () => {
   for (const [status, failureCode] of [
     ["PARTIAL_SUCCESS", "OZON_PARTIAL_SUCCESS_REQUIRES_REVIEW"],

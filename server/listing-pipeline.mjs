@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types as utilTypes } from "node:util";
 import {
   assertOzonListingReady,
   buildOzonEnrichmentSummary,
@@ -1968,6 +1969,125 @@ export async function scheduleSubmissionCategoryRetryV3({
         json({ submissionJobId: jobId, action: "submit" }), `${jobId}:category-retry:${attemptId}`],
     );
     return updated.rows[0];
+  });
+}
+
+function categoryRetryResultCommand(raw) {
+  const failure = () => Object.assign(new Error("类目恢复子结果无效"), {
+    code: "LISTING_CATEGORY_RECOVERY_RESULT_INVALID", status: 409,
+  });
+  const keys = ["accountId", "jobId", "snapshotId", "attemptId", "retryOzonTaskId", "items"];
+  try {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || utilTypes.isProxy(raw)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) throw failure();
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    if (Reflect.ownKeys(raw).length !== keys.length || keys.some((key) =>
+      descriptors[key]?.enumerable !== true || !Object.hasOwn(descriptors[key], "value"))) throw failure();
+    const projected = Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
+    const safeId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
+    if ([projected.accountId, projected.jobId, projected.snapshotId, projected.attemptId,
+      projected.retryOzonTaskId].some((value) => typeof value !== "string" || !safeId.test(value))
+      || !Array.isArray(projected.items) || utilTypes.isProxy(projected.items)
+      || Object.getPrototypeOf(projected.items) !== Array.prototype
+      || projected.items.length < 1 || projected.items.length > 100) throw failure();
+    const offers = new Set();
+    const items = projected.items.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item) || utilTypes.isProxy(item)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(item))) throw failure();
+      const itemKeys = ["offerId", "status", "productId"];
+      const itemDescriptors = Object.getOwnPropertyDescriptors(item);
+      if (Reflect.ownKeys(item).length !== itemKeys.length || itemKeys.some((key) =>
+        itemDescriptors[key]?.enumerable !== true
+        || !Object.hasOwn(itemDescriptors[key], "value"))) throw failure();
+      const value = Object.fromEntries(itemKeys.map((key) => [key, itemDescriptors[key].value]));
+      if (typeof value.offerId !== "string" || value.offerId.length < 1 || value.offerId.length > 240
+        || value.offerId.trim() !== value.offerId || offers.has(value.offerId)
+        || !["SUCCEEDED", "FAILED", "SKIPPED"].includes(value.status)
+        || (value.status === "SUCCEEDED" && (typeof value.productId !== "string"
+          || !/^[1-9][0-9]{0,15}$/u.test(value.productId)
+          || !Number.isSafeInteger(Number(value.productId))))
+        || (value.status !== "SUCCEEDED" && value.productId !== null)) throw failure();
+      offers.add(value.offerId);
+      return Object.freeze(value);
+    });
+    return Object.freeze({ ...projected, items: Object.freeze(items) });
+  } catch (error) {
+    if (error?.code === "LISTING_CATEGORY_RECOVERY_RESULT_INVALID") throw error;
+    throw failure();
+  }
+}
+
+export async function persistSubmissionCategoryRetryResultsV3(raw) {
+  const input = categoryRetryResultCommand(raw);
+  const conflict = () => Object.assign(new Error("类目恢复子结果冲突"), {
+    code: "LISTING_CATEGORY_RECOVERY_RESULT_CONFLICT", status: 409,
+  });
+  return transaction(async (client) => {
+    const basis = await client.query(
+      `SELECT attempt.status AS attempt_status,job.status AS job_status,
+              original_item.id AS submission_item_id,original_item.offer_id
+         FROM submission_category_recovery_attempts AS attempt
+         JOIN submission_jobs AS job
+           ON job.account_id=attempt.account_id AND job.id=attempt.submission_job_id
+          AND job.snapshot_id=attempt.submission_snapshot_id
+         JOIN submission_items AS original_item
+           ON original_item.job_id=attempt.submission_job_id
+          AND original_item.snapshot_id=attempt.submission_snapshot_id
+        WHERE attempt.account_id=$1 AND attempt.submission_job_id=$2
+          AND attempt.submission_snapshot_id=$3 AND attempt.id=$4
+          AND attempt.retry_ozon_task_id=$5 AND job.ozon_task_id=$5
+          AND attempt.status IN ('RETRY_ACCEPTED','SUCCEEDED','NEEDS_REVIEW')
+          AND original_item.status='FAILED' AND NULLIF(BTRIM(original_item.product_id),'') IS NULL
+          AND EXISTS (
+            SELECT 1 FROM JSONB_ARRAY_ELEMENTS(attempt.corrected_items) AS corrected(value)
+             WHERE COALESCE(corrected.value->>'offer_id',corrected.value->>'offerId')=original_item.offer_id
+          )
+        ORDER BY original_item.sort_order,original_item.id
+        FOR UPDATE OF attempt,job,original_item`,
+      [input.accountId, input.jobId, input.snapshotId, input.attemptId, input.retryOzonTaskId],
+    );
+    if (basis.rowCount !== input.items.length) throw conflict();
+    const originalByOffer = new Map(basis.rows.map((row) => [row.offer_id, row]));
+    if (input.items.some((item) => !originalByOffer.has(item.offerId))) throw conflict();
+    const existing = await client.query(
+      `SELECT submission_item_id,offer_id,status,product_id
+         FROM submission_category_recovery_item_results
+        WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
+          AND recovery_attempt_id=$4 AND retry_ozon_task_id=$5
+        ORDER BY submission_item_id`,
+      [input.accountId, input.jobId, input.snapshotId, input.attemptId, input.retryOzonTaskId],
+    );
+    if (existing.rowCount) {
+      if (existing.rowCount !== input.items.length) throw conflict();
+      const existingByOffer = new Map(existing.rows.map((row) => [row.offer_id, row]));
+      if (input.items.some((item) => {
+        const row = existingByOffer.get(item.offerId);
+        return !row || row.submission_item_id !== originalByOffer.get(item.offerId)?.submission_item_id
+          || row.status !== item.status || (row.product_id ?? null) !== item.productId;
+      })) throw conflict();
+      return Object.freeze({ attemptId: input.attemptId, status: "RECORDED",
+        count: input.items.length, idempotent: true });
+    }
+    if (basis.rows.some((row) => row.attempt_status !== "RETRY_ACCEPTED" || row.job_status !== "CHECKING")) {
+      throw conflict();
+    }
+    for (const item of input.items) {
+      const original = originalByOffer.get(item.offerId);
+      const inserted = await client.query(
+        `INSERT INTO submission_category_recovery_item_results(
+           id,account_id,submission_job_id,submission_snapshot_id,recovery_attempt_id,
+           retry_ozon_task_id,submission_item_id,offer_id,status,product_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         RETURNING id`,
+        [stableId("category-retry-item", input.accountId, input.jobId, input.attemptId,
+          input.retryOzonTaskId, original.submission_item_id), input.accountId, input.jobId,
+        input.snapshotId, input.attemptId, input.retryOzonTaskId, original.submission_item_id,
+        item.offerId, item.status, item.productId],
+      );
+      if (inserted.rowCount !== 1) throw conflict();
+    }
+    return Object.freeze({ attemptId: input.attemptId, status: "RECORDED",
+      count: input.items.length, idempotent: false });
   });
 }
 

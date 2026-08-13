@@ -1,3 +1,5 @@
+import { types as utilTypes } from "node:util";
+
 const REQUEST_KEYS = new Set(["accountId", "itemId", "submissionLinkId", "correlationId"]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
@@ -67,14 +69,61 @@ function safeCategoryRecovery(value) {
   if (value === null || value === undefined) return null;
   const keys = ["attemptId", "status", "originalOzonTaskId", "retryOzonTaskId",
     "oldSharedCategoryVersion", "replacementSharedCategoryVersion"];
-  if (!plain(value) || Reflect.ownKeys(value).length !== keys.length
-    || !keys.every((key) => Object.hasOwn(value, key))
-    || !SAFE_ID.test(value.attemptId || "") || !SAFE_CODE.test(value.status || "")
-    || !SAFE_ID.test(value.originalOzonTaskId || "") || !SAFE_ID.test(value.retryOzonTaskId || "")
-    || !Number.isSafeInteger(value.oldSharedCategoryVersion) || value.oldSharedCategoryVersion < 1
-    || !Number.isSafeInteger(value.replacementSharedCategoryVersion)
-    || value.replacementSharedCategoryVersion < 1) return null;
-  return Object.freeze(Object.fromEntries(keys.map((key) => [key, value[key]])));
+  try {
+    if (utilTypes.isProxy(value) || !plain(value)) throw new Error("invalid recovery DTO");
+    const ownKeys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (ownKeys.length !== keys.length || ownKeys.some((key) => typeof key !== "string"
+      || !keys.includes(key) || descriptors[key]?.enumerable !== true
+      || !Object.hasOwn(descriptors[key], "value"))) throw new Error("invalid recovery DTO");
+    const projected = Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
+    if (!SAFE_ID.test(projected.attemptId || "")
+      || !["SUCCEEDED", "NEEDS_REVIEW"].includes(projected.status)
+      || !SAFE_ID.test(projected.originalOzonTaskId || "")
+      || !SAFE_ID.test(projected.retryOzonTaskId || "")
+      || projected.originalOzonTaskId === projected.retryOzonTaskId
+      || !Number.isSafeInteger(projected.oldSharedCategoryVersion)
+      || projected.oldSharedCategoryVersion < 1
+      || !Number.isSafeInteger(projected.replacementSharedCategoryVersion)
+      || projected.replacementSharedCategoryVersion <= projected.oldSharedCategoryVersion) {
+      throw new Error("invalid recovery DTO");
+    }
+    return Object.freeze(projected);
+  } catch {
+    throw reconcileError("AUTO_LISTING_RECONCILE_EVIDENCE_INVALID", 409);
+  }
+}
+
+function submissionCategoryRecovery(submission) {
+  try {
+    if (utilTypes.isProxy(submission) || !plain(submission)) {
+      throw new Error("invalid submission DTO");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(submission, "categoryRecovery");
+    if (!descriptor) return null;
+    if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+      throw new Error("invalid recovery descriptor");
+    }
+    const recovery = safeCategoryRecovery(descriptor.value);
+    if (recovery === null) return null;
+    const taskDescriptor = Object.getOwnPropertyDescriptor(submission, "ozonTaskId")
+      || Object.getOwnPropertyDescriptor(submission, "ozon_task_id");
+    const statusDescriptor = Object.getOwnPropertyDescriptor(submission, "status");
+    const taskId = taskDescriptor && Object.hasOwn(taskDescriptor, "value")
+      ? taskDescriptor.value : null;
+    const submissionStatus = statusDescriptor && Object.hasOwn(statusDescriptor, "value")
+      ? statusDescriptor.value : null;
+    const statusConsistent = recovery.status === "SUCCEEDED"
+      ? ["CHECKING", "RECONCILING", "SUCCEEDED", "PARTIAL_SUCCESS"].includes(submissionStatus)
+      : ["CHECKING", "RECONCILING", "FAILED", "PARTIAL_SUCCESS"].includes(submissionStatus);
+    if (recovery.retryOzonTaskId !== taskId || !statusConsistent) {
+      throw new Error("inconsistent recovery DTO");
+    }
+    return recovery;
+  } catch (error) {
+    if (error?.code === "AUTO_LISTING_RECONCILE_EVIDENCE_INVALID") throw error;
+    throw reconcileError("AUTO_LISTING_RECONCILE_EVIDENCE_INVALID", 409);
+  }
 }
 
 function summary(submission) {
@@ -89,7 +138,7 @@ function summary(submission) {
       stockCount: integer(result.stockCount),
     }),
     variants: Object.freeze(safeVariants(submission?.items)),
-    categoryRecovery: safeCategoryRecovery(submission?.categoryRecovery),
+    categoryRecovery: submissionCategoryRecovery(submission),
   });
 }
 

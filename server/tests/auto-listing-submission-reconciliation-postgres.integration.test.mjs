@@ -27,7 +27,7 @@ function stableHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
 
-function categoryEvidence() {
+function categoryEvidence(offerId = "offer-a") {
   return {
     schemaVersion: "OZON_CATEGORY_IMPORT_ERROR_EVIDENCE_V1",
     policyVersion: "ozon-category-policy.v2",
@@ -35,7 +35,7 @@ function categoryEvidence() {
     field: "description_category_id",
     attributeId: null,
     state: "FAILED",
-    offerId: "offer-a",
+    offerId,
     productId: null,
     classification: "EXPLICIT_CATEGORY_FAILURE",
   };
@@ -54,6 +54,7 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
   const accountA = `account-a-${suffix}`;
   const accountB = `account-b-${suffix}`;
   const h = "a".repeat(64);
+  const h2 = "c".repeat(64);
   try {
     await owner.query(`CREATE SCHEMA ${schemaSql}`);
     await owner.query(`SET search_path TO ${schemaSql},public`);
@@ -250,11 +251,184 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
     });
     await owner.query(`UPDATE submission_jobs SET status='CHECKING'
       WHERE account_id=$1 AND id='submission-a'`, [accountA]);
+    await assert.rejects(owner.query(`UPDATE submission_category_recovery_attempts SET
+      status='SUCCEEDED',completed_at=NOW(),updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 microsecond')
+      WHERE account_id=$1 AND id='category-attempt-a'`, [accountA]), (error) => error?.code === "23514");
+    const successChildCommand = {
+      accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",
+      attemptId: "category-attempt-a", retryOzonTaskId: "ozon-task-retry",
+      items: [{ offerId: "offer-a", status: "SUCCEEDED", productId: "101" }],
+    };
+    for (const mutation of [
+      { accountId: accountB }, { jobId: "submission-other" },
+      { snapshotId: "submission-snapshot-other" }, { attemptId: "category-attempt-other" },
+      { retryOzonTaskId: "ozon-task-other" },
+      { items: [{ offerId: "offer-other", status: "SUCCEEDED", productId: "101" }] },
+      { items: [{ offerId: "商品 SKU", status: "SUCCEEDED", productId: "101" }] },
+    ]) {
+      await assert.rejects(pipeline.persistSubmissionCategoryRetryResultsV3({
+        ...successChildCommand, ...mutation,
+      }), { code: "LISTING_CATEGORY_RECOVERY_RESULT_CONFLICT" });
+    }
+    assert.equal((await owner.query(
+      "SELECT count(*)::int AS count FROM submission_category_recovery_item_results",
+    )).rows[0].count, 0);
+    assert.deepEqual(await pipeline.persistSubmissionCategoryRetryResultsV3(successChildCommand), {
+      attemptId: "category-attempt-a", status: "RECORDED", count: 1, idempotent: false,
+    });
+    assert.deepEqual(await pipeline.persistSubmissionCategoryRetryResultsV3(successChildCommand), {
+      attemptId: "category-attempt-a", status: "RECORDED", count: 1, idempotent: true,
+    });
+    await assert.rejects(pipeline.persistSubmissionCategoryRetryResultsV3({
+      ...successChildCommand,
+      items: [{ offerId: "offer-a", status: "SUCCEEDED", productId: "102" }],
+    }), { code: "LISTING_CATEGORY_RECOVERY_RESULT_CONFLICT" });
     assert.deepEqual(await pipeline.completeSubmissionCategoryRecoveryV3(recoveryIdentity), {
       attemptId: "category-attempt-a", status: "SUCCEEDED", retryOzonTaskId: "ozon-task-retry",
     });
-    await owner.query(`UPDATE submission_items SET status='SUCCEEDED',product_id='product-a'
-      WHERE job_id='submission-a' AND id='submission-item-a'`);
+    assert.deepEqual(await pipeline.persistSubmissionCategoryRetryResultsV3(successChildCommand), {
+      attemptId: "category-attempt-a", status: "RECORDED", count: 1, idempotent: true,
+    });
+    await assert.rejects(owner.query(`UPDATE submission_category_recovery_item_results
+      SET product_id='103' WHERE recovery_attempt_id='category-attempt-a'`),
+    (error) => error?.code === "23514");
+    await assert.rejects(owner.query(`DELETE FROM submission_category_recovery_item_results
+      WHERE recovery_attempt_id='category-attempt-a'`), (error) => error?.code === "23514");
+    assert.deepEqual((await owner.query(`SELECT status,product_id,
+      response->'errorEvidence'->>'classification' AS classification
+      FROM submission_items WHERE job_id='submission-a' AND id='submission-item-a'`)).rows[0], {
+      status: "FAILED", product_id: "", classification: "EXPLICIT_CATEGORY_FAILURE",
+    });
+
+    const failedOriginalItems = [{
+      offer_id: "offer-fail", sku: "sku-fail", description_category_id: 50, type_id: 60,
+      attributes: [], price: "2", currency_code: "RUB",
+    }];
+    await owner.query(`INSERT INTO collect_items(id,account_id,source_sku,summary)
+      VALUES('collect-fail',$1,'sku-fail','{}'::jsonb)`, [accountA]);
+    await owner.query(`INSERT INTO collect_raw_payloads(
+      id,collect_item_id,account_id,source_sku,payload_hash,payload,collected_at)
+      VALUES('raw-fail','collect-fail',$1,'sku-fail','raw-hash-fail','{}'::jsonb,NOW())`, [accountA]);
+    await owner.query(`INSERT INTO product_drafts(
+      id,collect_item_id,source_payload_id,version,data_hash,data)
+      VALUES('draft-fail','collect-fail','raw-fail',1,$1,'{}'::jsonb)`, [h2]);
+    await owner.query(`INSERT INTO collect_ozon_category_source_evidence(
+      id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+      source_description_category_id,source_type_id,taxonomy_scope,captured_at,raw_response_hash,
+      raw_response_ref,product_raw_response_ref,provenance)
+      VALUES('category-source-fail',$1,'PRODUCT_DRAFT','draft-fail','1','collect-fail','draft-fail',
+        50,60,'OZON:DEFAULT',NOW(),$2,'raw-fail','raw-fail','{}'::jsonb)`, [accountA, h2]);
+    await owner.query(`INSERT INTO account_ozon_shared_categories(
+      id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+      current_description_category_id,current_type_id,status,source,version,source_evidence_id,
+      created_at,updated_at)
+      VALUES('category-shared-fail',$1,50,60,'OZON:DEFAULT',50,60,'ACTIVE','SOURCE_DIRECT',1,
+        'category-source-fail','2026-08-13T01:00:00.000Z','2026-08-13T01:00:00.000Z')`, [accountA]);
+    await owner.query(`INSERT INTO submission_snapshots(
+      id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,
+      snapshot_hash,item_count,items,stocks)
+      VALUES('submission-snapshot-fail','collect-fail','draft-fail',1,$1,'store-a',
+        'snapshot-key-fail',$2,1,$3::jsonb,'[]'::jsonb)`,
+    [accountA, h2, JSON.stringify(failedOriginalItems)]);
+    await owner.query(`INSERT INTO submission_jobs(
+      id,snapshot_id,collect_item_id,account_id,store_id,status,correlation_id,item_count,ozon_task_id)
+      VALUES('submission-fail','submission-snapshot-fail','collect-fail',$1,'store-a','FAILED',
+        'submission-correlation-fail',1,'ozon-task-original-fail')`, [accountA]);
+    await owner.query(`INSERT INTO submission_items(
+      id,job_id,snapshot_id,variant_key,offer_id,sku,status,product_id,response)
+      VALUES('submission-item-fail','submission-fail','submission-snapshot-fail','variant-fail',
+        'offer-fail','sku-fail','FAILED','',$1::jsonb)`, [JSON.stringify({
+      schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {},
+      errorEvidence: categoryEvidence("offer-fail"),
+    })]);
+    await owner.query(`INSERT INTO submission_category_error_evidence(
+      id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,
+      original_ozon_task_id,original_snapshot_hash,original_items,source_evidence_id,
+      old_shared_category_id,old_shared_category_version,classifier_policy_version,safe_evidence)
+      VALUES('category-error-fail',$1,'submission-fail','submission-snapshot-fail',
+        'submission-item-fail','offer-fail','ozon-task-original-fail',$2,$3::jsonb,
+        'category-source-fail','category-shared-fail',1,'ozon-category-policy.v2',$4::jsonb)`,
+    [accountA, h2, JSON.stringify(failedOriginalItems), JSON.stringify(categoryEvidence("offer-fail"))]);
+    await owner.query(`INSERT INTO submission_category_recovery_attempts(
+      id,account_id,submission_job_id,submission_snapshot_id,triggering_error_evidence_id,
+      source_evidence_id,old_shared_category_id,old_shared_category_version,original_ozon_task_id,
+      original_snapshot_hash,status,correlation_id,claimed_at,updated_at)
+      VALUES('category-attempt-fail',$1,'submission-fail','submission-snapshot-fail',
+        'category-error-fail','category-source-fail','category-shared-fail',1,
+        'ozon-task-original-fail',$2,'CLAIMED','submission-correlation-fail',
+        '2026-08-13T01:00:01.000Z','2026-08-13T01:00:01.000Z')`, [accountA, h2]);
+    await owner.query(`UPDATE account_ozon_shared_categories SET
+      status='INVALIDATED',version=2,safe_failure_code='OZON_CATEGORY_INVALIDATED',
+      updated_at='2026-08-13T01:00:02.000Z'
+      WHERE account_id=$1 AND id='category-shared-fail'`, [accountA]);
+    await owner.query(`UPDATE account_ozon_shared_categories SET
+      current_description_category_id=70,current_type_id=80,status='ACTIVE',source='OZON_REFRESH',
+      version=3,taxonomy_fingerprint=$2,safe_failure_code='',validated_at='2026-08-13T01:00:03.000Z',
+      updated_at='2026-08-13T01:00:03.000Z'
+      WHERE account_id=$1 AND id='category-shared-fail'`, [accountA, "d".repeat(64)]);
+    const failedCorrectedItems = [{ ...failedOriginalItems[0], description_category_id: 70,
+      type_id: 80, attributes: [{ complex_id: 0, id: 1, values: [{ value: "required" }] }] }];
+    const failedCorrectedHash = stableHash(failedCorrectedItems);
+    await owner.query(`UPDATE submission_category_recovery_attempts SET
+      status='MATCHED',corrected_items=$2::jsonb,corrected_items_hash=$3,
+      replacement_shared_category_id='category-shared-fail',replacement_shared_category_version=3,
+      replacement_category_metadata=$4::jsonb,updated_at='2026-08-13T01:00:04.000Z'
+      WHERE account_id=$1 AND id='category-attempt-fail'`,
+    [accountA, JSON.stringify(failedCorrectedItems), failedCorrectedHash, JSON.stringify({
+      descriptionCategoryId: 70, typeId: 80, attributes: [
+        { id: 1, complexId: 0, required: true, dictionaryId: null, dictionaryValues: [] },
+      ],
+    })]);
+    await owner.query(`UPDATE submission_category_recovery_attempts SET
+      status='RETRY_PENDING',updated_at='2026-08-13T01:00:05.000Z'
+      WHERE account_id=$1 AND id='category-attempt-fail'`, [accountA]);
+    await pipeline.scheduleSubmissionCategoryRetryV3({
+      accountId: accountA, jobId: "submission-fail", snapshotId: "submission-snapshot-fail",
+      attemptId: "category-attempt-fail", correctedItemsHash: failedCorrectedHash,
+      correlationId: "submission-correlation-fail",
+    });
+    await owner.query(`UPDATE submission_jobs SET status='SUBMITTING'
+      WHERE account_id=$1 AND id='submission-fail'`, [accountA]);
+    const failedRecoveryIdentity = {
+      accountId: accountA, jobId: "submission-fail", snapshotId: "submission-snapshot-fail",
+      evidenceId: "category-error-fail", attemptId: "category-attempt-fail",
+      sourceEvidenceId: "category-source-fail", oldSharedCategoryId: "category-shared-fail",
+      oldSharedCategoryVersion: 1, originalOzonTaskId: "ozon-task-original-fail",
+      correlationId: "submission-correlation-fail", retryOzonTaskId: "ozon-task-retry-fail",
+    };
+    await pipeline.markSubmissionCategoryRetryAcceptedV3(failedRecoveryIdentity);
+    await owner.query(`UPDATE submission_jobs SET status='CHECKING'
+      WHERE account_id=$1 AND id='submission-fail'`, [accountA]);
+    await assert.rejects(owner.query(`UPDATE submission_category_recovery_attempts SET
+      status='NEEDS_REVIEW',safe_review_code='AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED',
+      completed_at=NOW(),updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 microsecond')
+      WHERE account_id=$1 AND id='category-attempt-fail'`, [accountA]),
+    (error) => error?.code === "23514");
+    await pipeline.persistSubmissionCategoryRetryResultsV3({
+      accountId: accountA, jobId: "submission-fail", snapshotId: "submission-snapshot-fail",
+      attemptId: "category-attempt-fail", retryOzonTaskId: "ozon-task-retry-fail",
+      items: [{ offerId: "offer-fail", status: "FAILED", productId: null }],
+    });
+    assert.deepEqual(await pipeline.requireSubmissionCategoryRecoveryReviewV3(failedRecoveryIdentity), {
+      attemptId: "category-attempt-fail", status: "NEEDS_REVIEW",
+      retryOzonTaskId: "ozon-task-retry-fail",
+    });
+    assert.deepEqual(await pipeline.persistSubmissionCategoryRetryResultsV3({
+      accountId: accountA, jobId: "submission-fail", snapshotId: "submission-snapshot-fail",
+      attemptId: "category-attempt-fail", retryOzonTaskId: "ozon-task-retry-fail",
+      items: [{ offerId: "offer-fail", status: "FAILED", productId: null }],
+    }), { attemptId: "category-attempt-fail", status: "RECORDED", count: 1, idempotent: true });
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_items WHERE id='submission-item-fail') AS original_status,
+      (SELECT status FROM submission_category_recovery_item_results
+        WHERE recovery_attempt_id='category-attempt-fail') AS retry_status,
+      (SELECT status FROM submission_category_recovery_attempts
+        WHERE id='category-attempt-fail') AS attempt_status,
+      (SELECT count(*)::int FROM outbox_events
+        WHERE aggregate_id='submission-fail' AND event_type='listing.submit.requested') AS imports`
+    )).rows[0], {
+      original_status: "FAILED", retry_status: "FAILED", attempt_status: "NEEDS_REVIEW", imports: 1,
+    });
     await owner.query(
       `INSERT INTO auto_listing_submission_links
         (id,account_id,job_id,auto_listing_item_id,listing_base_id,active_plan_id,target_store_id,
@@ -424,18 +598,22 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       accountId: accountA, itemId: "item-a", submissionLinkId: "link-a", correlationId: "reconcile-success-a",
     });
     assert.equal(result.status, "SUCCEEDED");
-    const categoryRecoveryAudit = (await owner.query(
-      `SELECT details->'summary'->'categoryRecovery' AS recovery
+    const categoryRecoveryResultAudit = (await owner.query(
+      `SELECT details->'summary'->'categoryRecovery' AS recovery,
+              details->'summary'->'variants' AS variants
          FROM auto_listing_events
         WHERE account_id=$1 AND item_id='item-a' AND correlation_id='reconcile-success-a'
           AND event_type='OZON_SUBMISSION_RECONCILED'`, [accountA],
-    )).rows[0]?.recovery;
-    assert.deepEqual(categoryRecoveryAudit, {
+    )).rows[0];
+    assert.deepEqual(categoryRecoveryResultAudit?.recovery, {
       attemptId: "category-attempt-a", status: "SUCCEEDED",
       originalOzonTaskId: "ozon-task-original", retryOzonTaskId: "ozon-task-retry",
       oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: 3,
     });
-    assert.doesNotMatch(JSON.stringify(categoryRecoveryAudit), /corrected|raw|apiKey/iu);
+    assert.deepEqual(categoryRecoveryResultAudit?.variants, [{
+      offerId: "offer-a", status: "SUCCEEDED", productId: "101", errorCode: null,
+    }]);
+    assert.doesNotMatch(JSON.stringify(categoryRecoveryResultAudit), /corrected|raw|apiKey/iu);
     await repository.completeLease({
       accountId: accountA, taskId: recovered.taskId, leaseToken: recovered.leaseToken,
       correlationId: `${recovered.taskId}:2`, evidence: { itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED" },
