@@ -181,7 +181,14 @@ const CONTEXT_SQL = `
     terminal.publication_policy_hash AS terminal_publication_policy_hash,
     terminal.media_evidence_hash AS terminal_media_evidence_hash,
     terminal.submission_snapshot_id AS terminal_submission_snapshot_id,
-    terminal.submission_job_id AS terminal_submission_job_id
+    terminal.submission_job_id AS terminal_submission_job_id,
+    terminal_recovery.id AS terminal_recovery_attempt_id,
+    terminal_recovery.status AS terminal_recovery_status,
+    terminal_recovery.original_ozon_task_id AS terminal_recovery_original_ozon_task_id,
+    terminal_recovery.retry_ozon_task_id AS terminal_recovery_retry_ozon_task_id,
+    terminal_recovery.old_shared_category_version AS terminal_recovery_old_shared_category_version,
+    terminal_recovery.replacement_shared_category_version
+      AS terminal_recovery_replacement_shared_category_version
   FROM auto_listing_job_items AS item
   JOIN auto_listing_jobs AS job ON job.account_id=item.account_id AND job.id=item.job_id
   JOIN auto_listing_source_snapshots AS source ON source.account_id=item.account_id AND source.id=item.snapshot_id
@@ -198,6 +205,10 @@ const CONTEXT_SQL = `
   LEFT JOIN auto_listing_submission_links AS terminal
     ON terminal.account_id=item.account_id AND terminal.auto_listing_item_id=item.id
    AND terminal.status IN ('SUBMITTED','RECONCILING','SUCCEEDED')
+  LEFT JOIN submission_category_recovery_attempts AS terminal_recovery
+    ON terminal_recovery.account_id=terminal.account_id
+   AND terminal_recovery.submission_job_id=terminal.submission_job_id
+   AND terminal_recovery.submission_snapshot_id=terminal.submission_snapshot_id
   JOIN collect_items AS collect ON collect.account_id=item.account_id AND collect.id=base.collect_item_id
     AND collect.deleted_at IS NULL
   JOIN product_drafts AS draft ON draft.id=collect.current_draft_id AND draft.collect_item_id=collect.id
@@ -298,6 +309,15 @@ function contextFrom(row, assets, rich, warehouses, publications = []) {
       mediaEvidenceHash: row.terminal_media_evidence_hash,
       submissionSnapshotId: row.terminal_submission_snapshot_id,
       submissionJobId: row.terminal_submission_job_id,
+      categoryRecovery: row.terminal_recovery_attempt_id ? {
+        attemptId: row.terminal_recovery_attempt_id,
+        status: row.terminal_recovery_status,
+        originalOzonTaskId: row.terminal_recovery_original_ozon_task_id,
+        retryOzonTaskId: row.terminal_recovery_retry_ozon_task_id,
+        oldSharedCategoryVersion: Number(row.terminal_recovery_old_shared_category_version),
+        replacementSharedCategoryVersion:
+          Number(row.terminal_recovery_replacement_shared_category_version),
+      } : null,
     } : null,
     acceptedRichContent: rich.map((entry) => ({
       accountId: entry.account_id, jobId: entry.job_id, itemId: entry.item_id, planId: entry.plan_id,

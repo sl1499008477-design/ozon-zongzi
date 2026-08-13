@@ -1,12 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertCategoryRecoverySubmissionTransition,
   assertListingPreparationInput,
   resolveLocalListingTarget,
   resolveListingPreparationReplay,
   resolveSubmissionFailureDisposition,
   validateTargetStoreRecord,
 } from "../listing-submission-policy.mjs";
+
+test("only the dedicated category transaction admits the amended two-stage retry lattice", () => {
+  assert.equal(assertCategoryRecoverySubmissionTransition({
+    fromStatus: "CHECKING", toStatus: "FAILED", categoryRecoveryTransaction: true,
+  }), true);
+  assert.equal(assertCategoryRecoverySubmissionTransition({
+    fromStatus: "FAILED", toStatus: "RETRY_PENDING", categoryRecoveryTransaction: true,
+  }), true);
+  for (const input of [
+    { fromStatus: "CHECKING", toStatus: "RETRY_PENDING", categoryRecoveryTransaction: true },
+    { fromStatus: "FAILED", toStatus: "RETRY_PENDING", categoryRecoveryTransaction: false },
+    { fromStatus: "CHECKING", toStatus: "FAILED", categoryRecoveryTransaction: false },
+  ]) {
+    assert.throws(() => assertCategoryRecoverySubmissionTransition(input), {
+      code: "LISTING_CATEGORY_RECOVERY_TRANSITION_FORBIDDEN",
+    });
+  }
+});
 
 test("submission uncertainty is reconciled instead of retried", () => {
   assert.equal(resolveSubmissionFailureDisposition({ status: 503 }), "RECONCILING");

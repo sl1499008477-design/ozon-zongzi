@@ -15,6 +15,32 @@ const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 
 function quote(value) { return `"${value.replaceAll('"', '""')}"`; }
 
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
+  );
+  return value;
+}
+
+function stableHash(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+}
+
+function categoryEvidence() {
+  return {
+    schemaVersion: "OZON_CATEGORY_IMPORT_ERROR_EVIDENCE_V1",
+    policyVersion: "ozon-category-policy.v2",
+    errorCode: "CATEGORY_INVALID",
+    field: "description_category_id",
+    attributeId: null,
+    state: "FAILED",
+    offerId: "offer-a",
+    productId: null,
+    classification: "EXPLICIT_CATEGORY_FAILURE",
+  };
+}
+
 test("durable reconciliation survives an expired lease and applies one tenant-scoped terminal result", {
   skip: !enabled,
   timeout: 60_000,
@@ -31,8 +57,16 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
   try {
     await owner.query(`CREATE SCHEMA ${schemaSql}`);
     await owner.query(`SET search_path TO ${schemaSql},public`);
-    for (const migration of (await readdir(migrationsDir)).filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort()) {
+    const migrationFiles = (await readdir(migrationsDir))
+      .filter((file) => /^\d{3}_.+\.sql$/u.test(file)).sort();
+    for (const migration of migrationFiles) {
       await owner.query(await readFile(path.join(migrationsDir, migration), "utf8"));
+    }
+    await owner.query(`CREATE TABLE IF NOT EXISTS schema_migrations(
+      version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    for (const migration of migrationFiles) {
+      await owner.query("INSERT INTO schema_migrations(version) VALUES($1) ON CONFLICT DO NOTHING",
+        [migration.replace(/\.sql$/u, "")]);
     }
     for (const accountId of [accountA, accountB]) {
       await owner.query(
@@ -115,24 +149,112 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
          '[]'::jsonb,jsonb_build_object('currency','RUB','evidenceHash',$2::text),FALSE,
          'AUTO_LISTING_LISTING_BASE_V1',$2,'V1','V1','V1')`, [accountA, h],
     );
+    const originalCategoryItems = [{
+      offer_id: "offer-a", sku: "sku-a", description_category_id: 10, type_id: 20,
+      attributes: [], price: "1", currency_code: "RUB",
+    }];
     await owner.query(
       `INSERT INTO submission_snapshots
         (id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,
          snapshot_hash,item_count,items,stocks)
        VALUES ('submission-snapshot-a','collect-a','draft-a',1,$1,'store-a','snapshot-key-a',$2,1,
-         '[]'::jsonb,'[]'::jsonb)`, [accountA, h],
+         $3::jsonb,'[]'::jsonb)`, [accountA, h, JSON.stringify(originalCategoryItems)],
     );
     await owner.query(
       `INSERT INTO submission_jobs
         (id,snapshot_id,collect_item_id,account_id,store_id,status,correlation_id,item_count,ozon_task_id)
-       VALUES ('submission-a','submission-snapshot-a','collect-a',$1,'store-a','CHECKING',
-         'submission-correlation-a',1,'ozon-task-a')`, [accountA],
+       VALUES ('submission-a','submission-snapshot-a','collect-a',$1,'store-a','FAILED',
+         'submission-correlation-a',1,'ozon-task-original')`, [accountA],
     );
     await owner.query(
       `INSERT INTO submission_items
-        (id,job_id,snapshot_id,variant_key,offer_id,status,product_id)
-       VALUES ('submission-item-a','submission-a','submission-snapshot-a','variant-a','offer-a','SUCCESS','product-a')`,
+        (id,job_id,snapshot_id,variant_key,offer_id,sku,status,product_id,response)
+       VALUES ('submission-item-a','submission-a','submission-snapshot-a','variant-a','offer-a','sku-a',
+         'FAILED','',$1::jsonb)`, [JSON.stringify({
+        schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {},
+        errorEvidence: categoryEvidence(),
+      })],
     );
+    await owner.query(`INSERT INTO collect_ozon_category_source_evidence(
+      id,account_id,source_kind,source_record_id,source_version,collect_item_id,product_draft_id,
+      source_description_category_id,source_type_id,taxonomy_scope,captured_at,raw_response_hash,
+      raw_response_ref,product_raw_response_ref,provenance)
+      VALUES('category-source-a',$1,'PRODUCT_DRAFT','draft-a','1','collect-a','draft-a',
+        10,20,'OZON:DEFAULT',NOW(),$2,'raw-a','raw-a','{}'::jsonb)`, [accountA, h]);
+    await owner.query(`INSERT INTO account_ozon_shared_categories(
+      id,account_id,source_description_category_id,source_type_id,taxonomy_scope,
+      current_description_category_id,current_type_id,status,source,version,source_evidence_id,
+      created_at,updated_at)
+      VALUES('category-shared-a',$1,10,20,'OZON:DEFAULT',10,20,'ACTIVE','SOURCE_DIRECT',1,
+        'category-source-a','2026-08-13T00:00:00.000Z','2026-08-13T00:00:00.000Z')`, [accountA]);
+    await owner.query(`INSERT INTO submission_category_error_evidence(
+      id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,
+      original_ozon_task_id,original_snapshot_hash,original_items,source_evidence_id,
+      old_shared_category_id,old_shared_category_version,classifier_policy_version,safe_evidence)
+      VALUES('category-error-a',$1,'submission-a','submission-snapshot-a','submission-item-a','offer-a',
+        'ozon-task-original',$2,$3::jsonb,'category-source-a','category-shared-a',1,
+        'ozon-category-policy.v2',$4::jsonb)`,
+    [accountA, h, JSON.stringify(originalCategoryItems), JSON.stringify(categoryEvidence())]);
+    await owner.query(`INSERT INTO submission_category_recovery_attempts(
+      id,account_id,submission_job_id,submission_snapshot_id,triggering_error_evidence_id,
+      source_evidence_id,old_shared_category_id,old_shared_category_version,original_ozon_task_id,
+      original_snapshot_hash,status,correlation_id,claimed_at,updated_at)
+      VALUES('category-attempt-a',$1,'submission-a','submission-snapshot-a','category-error-a',
+        'category-source-a','category-shared-a',1,'ozon-task-original',$2,'CLAIMED',
+        'submission-correlation-a','2026-08-13T00:00:01.000Z','2026-08-13T00:00:01.000Z')`,
+    [accountA, h]);
+    await owner.query(`UPDATE account_ozon_shared_categories
+      SET status='INVALIDATED',version=2,safe_failure_code='OZON_CATEGORY_INVALIDATED',
+          updated_at='2026-08-13T00:00:02.000Z'
+      WHERE account_id=$1 AND id='category-shared-a'`, [accountA]);
+    await owner.query(`UPDATE account_ozon_shared_categories
+      SET current_description_category_id=30,current_type_id=40,status='ACTIVE',source='OZON_REFRESH',
+          version=3,taxonomy_fingerprint=$2,safe_failure_code='',validated_at='2026-08-13T00:00:03.000Z',
+          updated_at='2026-08-13T00:00:03.000Z'
+      WHERE account_id=$1 AND id='category-shared-a'`, [accountA, "b".repeat(64)]);
+    const correctedCategoryItems = [{ ...originalCategoryItems[0], description_category_id: 30,
+      type_id: 40, attributes: [{ complex_id: 0, id: 1, values: [{ value: "required" }] }] }];
+    const categoryMetadata = { descriptionCategoryId: 30, typeId: 40, attributes: [
+      { id: 1, complexId: 0, required: true, dictionaryId: null, dictionaryValues: [] },
+    ] };
+    const correctedHash = stableHash(correctedCategoryItems);
+    await owner.query(`UPDATE submission_category_recovery_attempts
+      SET status='MATCHED',corrected_items=$2::jsonb,corrected_items_hash=$3,
+          replacement_shared_category_id='category-shared-a',replacement_shared_category_version=3,
+          replacement_category_metadata=$4::jsonb,updated_at='2026-08-13T00:00:04.000Z'
+      WHERE account_id=$1 AND id='category-attempt-a'`,
+    [accountA, JSON.stringify(correctedCategoryItems), correctedHash, JSON.stringify(categoryMetadata)]);
+    await owner.query(`UPDATE submission_category_recovery_attempts
+      SET status='RETRY_PENDING',updated_at='2026-08-13T00:00:05.000Z'
+      WHERE account_id=$1 AND id='category-attempt-a'`, [accountA]);
+    const pipelineUrl = new URL(databaseUrl);
+    pipelineUrl.searchParams.set("options", `-c search_path=${schema},public`);
+    process.env.DATABASE_URL = pipelineUrl.toString();
+    const pipeline = await import(`../listing-pipeline.mjs?task8=${suffix}`);
+    assert.equal((await pipeline.scheduleSubmissionCategoryRetryV3({
+      accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",
+      attemptId: "category-attempt-a", correctedItemsHash: correctedHash,
+      correlationId: "submission-correlation-a",
+    })).status, "RETRY_PENDING");
+    await owner.query(`UPDATE submission_jobs SET status='SUBMITTING'
+      WHERE account_id=$1 AND id='submission-a'`, [accountA]);
+    const recoveryIdentity = {
+      accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",
+      evidenceId: "category-error-a", attemptId: "category-attempt-a",
+      sourceEvidenceId: "category-source-a", oldSharedCategoryId: "category-shared-a",
+      oldSharedCategoryVersion: 1, originalOzonTaskId: "ozon-task-original",
+      correlationId: "submission-correlation-a", retryOzonTaskId: "ozon-task-retry",
+    };
+    assert.deepEqual(await pipeline.markSubmissionCategoryRetryAcceptedV3(recoveryIdentity), {
+      attemptId: "category-attempt-a", status: "RETRY_ACCEPTED", retryOzonTaskId: "ozon-task-retry",
+    });
+    await owner.query(`UPDATE submission_jobs SET status='CHECKING'
+      WHERE account_id=$1 AND id='submission-a'`, [accountA]);
+    assert.deepEqual(await pipeline.completeSubmissionCategoryRecoveryV3(recoveryIdentity), {
+      attemptId: "category-attempt-a", status: "SUCCEEDED", retryOzonTaskId: "ozon-task-retry",
+    });
+    await owner.query(`UPDATE submission_items SET status='SUCCEEDED',product_id='product-a'
+      WHERE job_id='submission-a' AND id='submission-item-a'`);
     await owner.query(
       `INSERT INTO auto_listing_submission_links
         (id,account_id,job_id,auto_listing_item_id,listing_base_id,active_plan_id,target_store_id,
@@ -302,6 +424,18 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       accountId: accountA, itemId: "item-a", submissionLinkId: "link-a", correlationId: "reconcile-success-a",
     });
     assert.equal(result.status, "SUCCEEDED");
+    const categoryRecoveryAudit = (await owner.query(
+      `SELECT details->'summary'->'categoryRecovery' AS recovery
+         FROM auto_listing_events
+        WHERE account_id=$1 AND item_id='item-a' AND correlation_id='reconcile-success-a'
+          AND event_type='OZON_SUBMISSION_RECONCILED'`, [accountA],
+    )).rows[0]?.recovery;
+    assert.deepEqual(categoryRecoveryAudit, {
+      attemptId: "category-attempt-a", status: "SUCCEEDED",
+      originalOzonTaskId: "ozon-task-original", retryOzonTaskId: "ozon-task-retry",
+      oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: 3,
+    });
+    assert.doesNotMatch(JSON.stringify(categoryRecoveryAudit), /corrected|raw|apiKey/iu);
     await repository.completeLease({
       accountId: accountA, taskId: recovered.taskId, leaseToken: recovered.leaseToken,
       correlationId: `${recovered.taskId}:2`, evidence: { itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED" },
@@ -434,6 +568,11 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       last_error_code: "AUTO_LISTING_RECONCILE_ATTEMPT_LIMIT_REACHED", dead_events: 1,
     });
   } finally {
+    delete process.env.DATABASE_URL;
+    try {
+      const { closePostgresPool } = await import("../db/connection.mjs");
+      await closePostgresPool();
+    } catch {}
     try { await owner.query("RESET search_path"); } catch {}
     try { await owner.query(`DROP SCHEMA IF EXISTS ${schemaSql} CASCADE`); } catch {}
     owner.release();

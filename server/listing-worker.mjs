@@ -10,15 +10,19 @@ import { authorizeListingRfbsWritePhase } from "./listing-rfbs-write-authorizati
 import { dispatchListingOutboxOnce, getListingBoss, stopListingBoss } from "./listing-queue.mjs";
 import {
   LISTING_QUEUE,
+  beginSubmissionCategoryRecoveryV3,
   claimSubmissionJobV3,
+  completeSubmissionCategoryRecoveryV3,
   enqueueSubmissionActionV3,
   incrementSubmissionStatusCheckV3,
   listingPipelineEnabled,
   loadSubmissionWorkV3,
+  markSubmissionCategoryRetryAcceptedV3,
   patchLegacyCollectStatusV3,
   readStoreCredentialV3,
   recoverStaleSubmissionJobsV3,
   releaseSubmissionLockV3,
+  requireSubmissionCategoryRecoveryReviewV3,
   transitionSubmissionJobV3,
   updateSubmissionItemsV3,
 } from "./listing-pipeline.mjs";
@@ -29,6 +33,132 @@ const maxStatusChecks = Number(process.env.LISTING_MAX_STATUS_CHECKS || 240);
 let relayTimer = null;
 let watchdogTimer = null;
 let stopping = false;
+
+function categoryRecoveryIdentity(work) {
+  const recovery = work?.categoryRecovery;
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) return null;
+  const values = {
+    accountId: work.account_id, jobId: work.id, snapshotId: work.snapshot_id,
+    evidenceId: recovery.evidenceId, attemptId: recovery.attemptId,
+    sourceEvidenceId: recovery.sourceEvidenceId,
+    oldSharedCategoryId: recovery.oldSharedCategoryId,
+    oldSharedCategoryVersion: recovery.oldSharedCategoryVersion,
+    originalOzonTaskId: recovery.originalOzonTaskId,
+    correlationId: recovery.correlationId,
+  };
+  if (Object.entries(values).some(([key, value]) => key === "oldSharedCategoryVersion"
+    ? !Number.isSafeInteger(value) || value < 1 : typeof value !== "string" || !value)) return null;
+  return values;
+}
+
+function explicitCategoryTerminal(statusInfo) {
+  return statusInfo?.done === true && statusInfo.status === "FAILED"
+    && statusInfo.success === 0 && statusInfo.skipped === 0
+    && Number.isSafeInteger(statusInfo.failed) && statusInfo.failed > 0
+    && Array.isArray(statusInfo.items) && statusInfo.items.length === statusInfo.failed
+    && statusInfo.items.every((item) => item?.status === "FAILED" && item.productId === null
+      && item.classification === "EXPLICIT_CATEGORY_FAILURE"
+      && item.errorEvidence?.classification === "EXPLICIT_CATEGORY_FAILURE"
+      && item.errorEvidence.productId === null && item.errorEvidence.offerId === item.offerId);
+}
+
+export function createListingWorkerCategoryRecoveryController({
+  beginCategoryRecovery,
+  recoverCategory,
+  markRetryAccepted,
+  completeRecovery,
+  requireRecoveryReview,
+} = {}) {
+  if ([beginCategoryRecovery, recoverCategory, markRetryAccepted,
+    completeRecovery, requireRecoveryReview].some((port) => typeof port !== "function")) {
+    throw new TypeError("listing category recovery ports are required");
+  }
+  return Object.freeze({
+    async handleTerminal({ work, statusInfo } = {}) {
+      if (!explicitCategoryTerminal(statusInfo)) return Object.freeze({ handled: false });
+      const existing = categoryRecoveryIdentity(work);
+      if (existing) {
+        if (work.categoryRecovery.status !== "RETRY_ACCEPTED") return Object.freeze({ handled: false });
+        const reviewed = await requireRecoveryReview({
+          ...existing, safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED",
+        });
+        return Object.freeze({ handled: true, attemptId: reviewed.attemptId, status: "NEEDS_REVIEW" });
+      }
+      const command = {
+        accountId: work?.account_id, jobId: work?.id, snapshotId: work?.snapshot_id,
+        originalOzonTaskId: work?.ozon_task_id, statusVersion: Number(work?.status_version),
+        correlationId: work?.correlation_id, items: statusInfo.items,
+      };
+      const begun = await beginCategoryRecovery(command);
+      if (begun?.status !== "FAILED" || typeof begun.evidenceId !== "string" || !begun.evidenceId) {
+        return Object.freeze({ handled: false });
+      }
+      const recovered = await recoverCategory({
+        accountId: command.accountId, jobId: command.jobId, evidenceId: begun.evidenceId,
+        correlationId: command.correlationId,
+      });
+      if (recovered?.status !== "RETRY_PENDING" || typeof recovered.attemptId !== "string"
+        || !recovered.attemptId) return Object.freeze({ handled: true,
+        attemptId: recovered?.attemptId || null, status: recovered?.status || "NEEDS_REVIEW" });
+      return Object.freeze({ handled: true, attemptId: recovered.attemptId, status: "RETRY_PENDING" });
+    },
+    async acceptRetry({ work, retryOzonTaskId } = {}) {
+      const identity = categoryRecoveryIdentity(work);
+      if (!identity || work.categoryRecovery.status !== "RETRY_PENDING"
+        || typeof retryOzonTaskId !== "string" || !retryOzonTaskId) {
+        throw Object.assign(new Error("类目恢复重试身份无效"), {
+          code: "LISTING_CATEGORY_RECOVERY_IDENTITY_INVALID",
+        });
+      }
+      return markRetryAccepted({ ...identity, retryOzonTaskId });
+    },
+    async completeRetry({ work } = {}) {
+      const identity = categoryRecoveryIdentity(work);
+      const retryOzonTaskId = work?.categoryRecovery?.retryOzonTaskId;
+      if (!identity || work.categoryRecovery.status !== "RETRY_ACCEPTED"
+        || typeof retryOzonTaskId !== "string" || !retryOzonTaskId
+        || work.ozon_task_id !== retryOzonTaskId) {
+        throw Object.assign(new Error("类目恢复重试身份无效"), {
+          code: "LISTING_CATEGORY_RECOVERY_IDENTITY_INVALID",
+        });
+      }
+      return completeRecovery({ ...identity, retryOzonTaskId });
+    },
+  });
+}
+
+const productionCategoryRecoveryController = createListingWorkerCategoryRecoveryController({
+  beginCategoryRecovery: beginSubmissionCategoryRecoveryV3,
+  recoverCategory: async () => {
+    throw Object.assign(new Error("生产类目错误策略尚未启用"), {
+      code: "AUTO_LISTING_CATEGORY_RECOVERY_POLICY_DISABLED", status: 409, retryable: false,
+    });
+  },
+  markRetryAccepted: markSubmissionCategoryRetryAcceptedV3,
+  completeRecovery: completeSubmissionCategoryRecoveryV3,
+  requireRecoveryReview: requireSubmissionCategoryRecoveryReviewV3,
+});
+
+export async function completeListingCategoryRetryAndContinue({
+  work,
+  statusInfo,
+  controller,
+  continueImport,
+} = {}) {
+  if (statusInfo?.done !== true || statusInfo.status !== "SUCCEEDED"
+    || typeof controller?.completeRetry !== "function" || typeof continueImport !== "function") {
+    throw Object.assign(new Error("类目恢复成功续接参数无效"), {
+      code: "LISTING_CATEGORY_RECOVERY_CONTINUATION_INVALID",
+    });
+  }
+  await controller.completeRetry({ work });
+  return continueImport(work, statusInfo);
+}
+
+export function resolveListingSubmitFailureDispositionForWork(work, error) {
+  if (work?.categoryRecovery?.status === "RETRY_PENDING") return "RECONCILING";
+  return resolveSubmissionFailureDisposition(error);
+}
 
 function collectPatch(status, job = {}, extra = {}) {
   const statusText = {
@@ -88,7 +218,7 @@ async function processSubmit(jobId) {
       message: "Worker 已读取不可变快照并开始最终校验",
       actorId: workerId,
     });
-    const items = Array.isArray(work.items) ? work.items : [];
+    const items = Array.isArray(work.effectiveItems) ? work.effectiveItems : [];
     if (!items.length) throw Object.assign(new Error("不可变上架快照没有商品变体"), { status: 400, code: "SNAPSHOT_EMPTY" });
     await authorizeListingRfbsWritePhase(work, "PRE_IMPORT");
     const credential = await readStoreCredentialV3(work.store_id, work.account_id);
@@ -101,16 +231,22 @@ async function processSubmit(jobId) {
     const response = await callOzonSellerApi(credential, "/v3/product/import", { items }, 120000);
     const ozonTaskId = String(response?.result?.task_id || response?.task_id || "");
     if (!ozonTaskId) throw Object.assign(new Error("Ozon 已响应但未返回 task_id"), { code: "OZON_TASK_ID_MISSING" });
-    const accepted = await transitionSubmissionJobV3(jobId, "OZON_ACCEPTED", {
-      ozonTaskId,
-      errorCode: "",
-      errorMessage: "",
-      resultSummary: { accepted: true, ozonTaskId },
-    }, {
-      type: "submission.ozon_accepted",
-      message: `Ozon 已受理，task_id=${ozonTaskId}`,
-      actorId: workerId,
-    });
+    let accepted;
+    if (work.categoryRecovery?.status === "RETRY_PENDING") {
+      await productionCategoryRecoveryController.acceptRetry({ work, retryOzonTaskId: ozonTaskId });
+      accepted = await loadSubmissionWorkV3(jobId);
+    } else {
+      accepted = await transitionSubmissionJobV3(jobId, "OZON_ACCEPTED", {
+        ozonTaskId,
+        errorCode: "",
+        errorMessage: "",
+        resultSummary: { accepted: true, ozonTaskId },
+      }, {
+        type: "submission.ozon_accepted",
+        message: `Ozon 已受理，task_id=${ozonTaskId}`,
+        actorId: workerId,
+      });
+    }
     await transitionSubmissionJobV3(jobId, "CHECKING", { ozonTaskId }, {
       type: "submission.status_check_scheduled",
       message: "已安排查询每个变体的最终结果",
@@ -121,7 +257,7 @@ async function processSubmit(jobId) {
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
     const disposition = latest?.status === "SUBMITTING"
-      ? resolveSubmissionFailureDisposition(error)
+      ? resolveListingSubmitFailureDispositionForWork(work, error)
       : "FAILED";
     if (/^LISTING_RFBS_PHASE_/u.test(String(error?.code || "")) && latest?.status === "VALIDATING"
       && Number(latest?.attempt_count || 0) < 3) {
@@ -210,7 +346,8 @@ async function processCheck(jobId) {
       task_id: Number(work.ozon_task_id) || work.ozon_task_id,
     }, 60000);
     const statusInfo = deriveOzonImportStatus(response, {
-      expectedOfferIds: (Array.isArray(work.items) ? work.items : []).map((item) => String(item?.offer_id || "")),
+      expectedOfferIds: (Array.isArray(work.effectiveItems) ? work.effectiveItems : [])
+        .map((item) => String(item?.offer_id || "")),
     });
     await updateSubmissionItemsV3({
       accountId: work.account_id,
@@ -221,6 +358,21 @@ async function processCheck(jobId) {
       items: statusInfo.items,
     });
     if (statusInfo.done) {
+      if (statusInfo.status === "SUCCEEDED" && work.categoryRecovery?.status === "RETRY_ACCEPTED") {
+        await completeListingCategoryRetryAndContinue({
+          work, statusInfo, controller: productionCategoryRecoveryController,
+          continueImport: finishSuccessfulImport,
+        });
+        return;
+      } else {
+        let category = { handled: false };
+        try {
+          category = await productionCategoryRecoveryController.handleTerminal({ work, statusInfo });
+        } catch (error) {
+          if (error?.code !== "AUTO_LISTING_CATEGORY_RECOVERY_POLICY_DISABLED") throw error;
+        }
+        if (category.handled && category.status === "RETRY_PENDING") return;
+      }
       await finishSuccessfulImport(work, statusInfo);
     } else if (checkCount >= maxStatusChecks) {
       await failSubmission(work, Object.assign(new Error(`超过 ${maxStatusChecks} 次状态查询仍未完成`), { code: "OZON_STATUS_TIMEOUT" }), "FAILED");

@@ -105,6 +105,27 @@ test("SUCCEEDED is terminal, auditable and carries bounded variant and stock evi
   assert.equal(JSON.stringify(applied).includes("apiKey"), false);
 });
 
+test("reconciliation carries only safe category recovery identity on the original link", async () => {
+  const { reconciler, calls } = harness({
+    status: "SUCCEEDED", ozonTaskId: "task-retry",
+    categoryRecovery: {
+      attemptId: "attempt-a", status: "SUCCEEDED", originalOzonTaskId: "task-original",
+      retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 1,
+      replacementSharedCategoryVersion: 3,
+    },
+  });
+  await reconciler.reconcile(request);
+  const applied = calls.find(([kind]) => kind === "apply")[1];
+  assert.equal(applied.submissionLinkId, "link-a");
+  assert.equal(applied.submissionJobId, "submission-a");
+  assert.deepEqual(applied.summary.categoryRecovery, {
+    attemptId: "attempt-a", status: "SUCCEEDED", originalOzonTaskId: "task-original",
+    retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 1,
+    replacementSharedCategoryVersion: 3,
+  });
+  assert.doesNotMatch(JSON.stringify(applied), /corrected_items|rawResponse|apiKey/iu);
+});
+
 test("partial success and uncertain reconciliation block resubmission instead of creating another product", async () => {
   for (const [status, failureCode] of [
     ["PARTIAL_SUCCESS", "OZON_PARTIAL_SUCCESS_REQUIRES_REVIEW"],

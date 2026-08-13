@@ -135,3 +135,21 @@ export function resolveSubmissionFailureDisposition(error = {}) {
   if (error?.code === "SUBMISSION_NOT_SENT") return "RETRY_PENDING";
   return "FAILED";
 }
+
+export function assertCategoryRecoverySubmissionTransition({
+  fromStatus,
+  toStatus,
+  categoryRecoveryTransaction = false,
+} = {}) {
+  const allowed = categoryRecoveryTransaction === true
+    && ((fromStatus === "CHECKING" && toStatus === "FAILED")
+      || (fromStatus === "FAILED" && toStatus === "RETRY_PENDING"));
+  if (!allowed) {
+    throw policyError(
+      "类目恢复状态迁移必须由专用事务执行",
+      409,
+      "LISTING_CATEGORY_RECOVERY_TRANSITION_FORBIDDEN",
+    );
+  }
+  return true;
+}

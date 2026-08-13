@@ -63,6 +63,20 @@ function safeVariants(raw) {
   }));
 }
 
+function safeCategoryRecovery(value) {
+  if (value === null || value === undefined) return null;
+  const keys = ["attemptId", "status", "originalOzonTaskId", "retryOzonTaskId",
+    "oldSharedCategoryVersion", "replacementSharedCategoryVersion"];
+  if (!plain(value) || Reflect.ownKeys(value).length !== keys.length
+    || !keys.every((key) => Object.hasOwn(value, key))
+    || !SAFE_ID.test(value.attemptId || "") || !SAFE_CODE.test(value.status || "")
+    || !SAFE_ID.test(value.originalOzonTaskId || "") || !SAFE_ID.test(value.retryOzonTaskId || "")
+    || !Number.isSafeInteger(value.oldSharedCategoryVersion) || value.oldSharedCategoryVersion < 1
+    || !Number.isSafeInteger(value.replacementSharedCategoryVersion)
+    || value.replacementSharedCategoryVersion < 1) return null;
+  return Object.freeze(Object.fromEntries(keys.map((key) => [key, value[key]])));
+}
+
 function summary(submission) {
   const result = plain(submission?.resultSummary) ? submission.resultSummary : {};
   return Object.freeze({
@@ -75,6 +89,7 @@ function summary(submission) {
       stockCount: integer(result.stockCount),
     }),
     variants: Object.freeze(safeVariants(submission?.items)),
+    categoryRecovery: safeCategoryRecovery(submission?.categoryRecovery),
   });
 }
 

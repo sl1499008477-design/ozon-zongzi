@@ -12,6 +12,7 @@ import { decryptSecret } from "./crypto-secrets.mjs";
 import { getPostgresPool, postgresEnabled } from "./db/connection.mjs";
 import { runMigrations } from "./db/migrate.mjs";
 import {
+  assertCategoryRecoverySubmissionTransition,
   assertListingPreparationInput,
   markListingReplayPreflightError,
   resolveListingPreparationReplay,
@@ -1762,6 +1763,42 @@ export async function getSubmissionJobDetailV3(idOrTaskId, accountId) {
   };
 }
 
+export function projectSubmissionWorkRowV3(row) {
+  if (!row) return null;
+  const originalItems = Array.isArray(row.items) ? row.items : [];
+  const correctedItems = Array.isArray(row.recovery_corrected_items)
+    ? row.recovery_corrected_items : null;
+  const sameRecovery = typeof row.recovery_attempt_id === "string" && row.recovery_attempt_id
+    && row.recovery_account_id === row.account_id
+    && row.recovery_job_id === row.id
+    && row.recovery_snapshot_id === row.snapshot_id
+    && ["MATCHED", "RETRY_PENDING", "RETRY_ACCEPTED", "SUCCEEDED", "NEEDS_REVIEW"]
+      .includes(row.recovery_status);
+  const correctionUsable = sameRecovery
+    && ["MATCHED", "RETRY_PENDING"].includes(row.recovery_status)
+    && Array.isArray(correctedItems) && correctedItems.length > 0;
+  const categoryRecovery = sameRecovery ? Object.freeze({
+    attemptId: row.recovery_attempt_id,
+    status: row.recovery_status,
+    evidenceId: row.recovery_evidence_id,
+    sourceEvidenceId: row.recovery_source_evidence_id,
+    oldSharedCategoryId: row.recovery_old_shared_category_id,
+    oldSharedCategoryVersion: Number(row.recovery_old_shared_category_version),
+    replacementSharedCategoryId: row.recovery_replacement_shared_category_id,
+    replacementSharedCategoryVersion: row.recovery_replacement_shared_category_version === null
+      ? null : Number(row.recovery_replacement_shared_category_version),
+    originalOzonTaskId: row.recovery_original_ozon_task_id,
+    retryOzonTaskId: row.recovery_retry_ozon_task_id || null,
+    correlationId: row.recovery_correlation_id,
+  }) : null;
+  return {
+    ...row,
+    items: originalItems,
+    effectiveItems: correctionUsable ? correctedItems : originalItems,
+    categoryRecovery,
+  };
+}
+
 export async function loadSubmissionWorkV3(jobId) {
   const pool = await poolReady();
   const result = await pool.query(
@@ -1809,6 +1846,19 @@ export async function loadSubmissionWorkV3(jobId) {
             warehouse.status AS rfbs_current_warehouse_status,
             warehouse.is_active AS rfbs_current_warehouse_active,
             warehouse.is_archived AS rfbs_current_warehouse_archived
+            ,recovery.id AS recovery_attempt_id,recovery.account_id AS recovery_account_id,
+            recovery.submission_job_id AS recovery_job_id,
+            recovery.submission_snapshot_id AS recovery_snapshot_id,
+            recovery.status AS recovery_status,recovery.corrected_items AS recovery_corrected_items,
+            recovery.triggering_error_evidence_id AS recovery_evidence_id,
+            recovery.source_evidence_id AS recovery_source_evidence_id,
+            recovery.old_shared_category_id AS recovery_old_shared_category_id,
+            recovery.old_shared_category_version AS recovery_old_shared_category_version,
+            recovery.replacement_shared_category_id AS recovery_replacement_shared_category_id,
+            recovery.replacement_shared_category_version AS recovery_replacement_shared_category_version,
+            recovery.original_ozon_task_id AS recovery_original_ozon_task_id,
+            recovery.retry_ozon_task_id AS recovery_retry_ozon_task_id,
+            recovery.correlation_id AS recovery_correlation_id
      FROM submission_jobs j
      JOIN submission_snapshots s ON s.id=j.snapshot_id
      LEFT JOIN collect_items c ON c.id=j.collect_item_id
@@ -1856,10 +1906,168 @@ export async function loadSubmissionWorkV3(jobId) {
        ON warehouse.store_id=COALESCE(handoff.store_id,historical.store_id)
       AND warehouse.id=COALESCE(handoff.local_warehouse_id,historical.local_warehouse_id)
       AND warehouse.warehouse_id=COALESCE(handoff.platform_warehouse_id,historical.platform_warehouse_id)
+     LEFT JOIN submission_category_recovery_attempts AS recovery
+       ON recovery.account_id=j.account_id AND recovery.submission_job_id=j.id
+      AND recovery.submission_snapshot_id=j.snapshot_id
      WHERE j.id=$1`,
     [jobId],
   );
-  return result.rows[0] || null;
+  return projectSubmissionWorkRowV3(result.rows[0] || null);
+}
+
+export async function scheduleSubmissionCategoryRetryV3({
+  accountId, jobId, snapshotId, attemptId, correctedItemsHash, correlationId,
+} = {}) {
+  assertCategoryRecoverySubmissionTransition({
+    fromStatus: "FAILED", toStatus: "RETRY_PENDING", categoryRecoveryTransaction: true,
+  });
+  return transaction(async (client) => {
+    const updated = await client.query(
+      `UPDATE submission_jobs AS job
+          SET status='RETRY_PENDING',status_version=status_version+1,
+              error_code='',error_message='',status_message='类目已重新匹配，正在继续上架',
+              updated_at=NOW()
+         FROM submission_category_recovery_attempts AS recovery
+        WHERE job.account_id=$1 AND job.id=$2 AND job.snapshot_id=$3 AND job.status='FAILED'
+          AND recovery.account_id=job.account_id AND recovery.submission_job_id=job.id
+          AND recovery.submission_snapshot_id=job.snapshot_id AND recovery.id=$4
+          AND recovery.status='RETRY_PENDING'
+          AND ($5::TEXT IS NULL OR recovery.corrected_items_hash=$5)
+        RETURNING job.*`,
+      [accountId, jobId, snapshotId, attemptId, correctedItemsHash],
+    );
+    if (updated.rowCount !== 1) {
+      const replay = await client.query(
+        `SELECT job.* FROM submission_jobs AS job
+          JOIN submission_category_recovery_attempts AS recovery
+            ON recovery.account_id=job.account_id AND recovery.submission_job_id=job.id
+           AND recovery.submission_snapshot_id=job.snapshot_id
+         WHERE job.account_id=$1 AND job.id=$2 AND job.snapshot_id=$3
+           AND job.status='RETRY_PENDING' AND recovery.id=$4
+           AND recovery.status IN ('RETRY_PENDING','RETRY_ACCEPTED','SUCCEEDED')
+           AND ($5::TEXT IS NULL OR recovery.corrected_items_hash=$5)`,
+        [accountId, jobId, snapshotId, attemptId, correctedItemsHash],
+      );
+      if (replay.rowCount !== 1) throw Object.assign(new Error("类目恢复重试状态冲突"), {
+        code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT", status: 409,
+      });
+      return replay.rows[0];
+    }
+    await client.query(
+      `INSERT INTO submission_events
+        (job_id,from_status,to_status,event_type,message,actor_type,actor_id,payload)
+       VALUES ($1,'FAILED','RETRY_PENDING','submission.category_retry_scheduled',
+         '类目已重新匹配，正在继续上架','worker','category-recovery',$2::jsonb)`,
+      [jobId, json({ attemptId, correctedItemsHash, correlationId })],
+    );
+    await client.query(
+      `INSERT INTO outbox_events (id,aggregate_type,aggregate_id,event_type,payload,dedupe_key)
+       VALUES ($1,'submission_job',$2,'listing.submit.requested',$3::jsonb,$4)
+       ON CONFLICT DO NOTHING`,
+      [stableId("outbox", jobId, attemptId), jobId,
+        json({ submissionJobId: jobId, action: "submit" }), `${jobId}:category-retry:${attemptId}`],
+    );
+    return updated.rows[0];
+  });
+}
+
+export async function beginSubmissionCategoryRecoveryV3() {
+  throw Object.assign(new Error("生产类目错误策略尚未启用"), {
+    code: "AUTO_LISTING_CATEGORY_RECOVERY_POLICY_DISABLED", status: 409, retryable: false,
+  });
+}
+
+function categoryAttemptIdentity(input = {}) {
+  const keys = ["accountId", "jobId", "snapshotId", "evidenceId", "attemptId",
+    "sourceEvidenceId", "oldSharedCategoryId", "oldSharedCategoryVersion",
+    "originalOzonTaskId", "correlationId"];
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || keys.some((key) => !Object.hasOwn(input, key))
+    || keys.filter((key) => key !== "oldSharedCategoryVersion")
+      .some((key) => typeof input[key] !== "string" || !input[key])
+    || !Number.isSafeInteger(input.oldSharedCategoryVersion)
+    || input.oldSharedCategoryVersion < 1) {
+    throw Object.assign(new Error("类目恢复身份无效"), {
+      code: "LISTING_CATEGORY_RECOVERY_IDENTITY_INVALID", status: 409,
+    });
+  }
+  return input;
+}
+
+async function transitionSubmissionCategoryAttemptV3(raw, kind) {
+  const input = categoryAttemptIdentity(raw);
+  const retryOzonTaskId = raw.retryOzonTaskId;
+  if ((kind === "accepted" || kind === "complete")
+    && (typeof retryOzonTaskId !== "string" || !retryOzonTaskId)) {
+    throw Object.assign(new Error("类目恢复重试任务无效"), {
+      code: "LISTING_CATEGORY_RECOVERY_IDENTITY_INVALID", status: 409,
+    });
+  }
+  return transaction(async (client) => {
+    const from = kind === "accepted" ? "RETRY_PENDING" : kind === "complete" ? "RETRY_ACCEPTED"
+      : "RETRY_ACCEPTED";
+    const to = kind === "accepted" ? "RETRY_ACCEPTED" : kind === "complete" ? "SUCCEEDED"
+      : "NEEDS_REVIEW";
+    const result = await client.query(
+      `UPDATE submission_category_recovery_attempts
+          SET status=$11,retry_ozon_task_id=CASE WHEN $12::TEXT IS NULL
+                THEN retry_ozon_task_id ELSE $12 END,
+              safe_review_code=CASE WHEN $13::TEXT IS NULL THEN safe_review_code ELSE $13 END,
+              completed_at=CASE WHEN $11 IN ('SUCCEEDED','NEEDS_REVIEW') THEN NOW() ELSE completed_at END,
+              updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 microsecond')
+        WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
+          AND triggering_error_evidence_id=$4 AND id=$5 AND source_evidence_id=$6
+          AND old_shared_category_id=$7 AND old_shared_category_version=$8
+          AND original_ozon_task_id=$9 AND correlation_id=$10 AND status=$14
+          AND ($15::TEXT IS NULL OR retry_ozon_task_id=$15)
+        RETURNING id,status,retry_ozon_task_id`,
+      [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
+        input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+        input.originalOzonTaskId, input.correlationId, to,
+        kind === "accepted" ? retryOzonTaskId : null,
+        kind === "review" ? "AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED" : null,
+        from, kind === "complete" ? retryOzonTaskId : null],
+    );
+    if (result.rowCount !== 1) throw Object.assign(new Error("类目恢复状态冲突"), {
+      code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT", status: 409,
+    });
+    if (kind === "accepted") {
+      const job = await client.query(
+        `UPDATE submission_jobs
+            SET status='OZON_ACCEPTED',status_version=status_version+1,ozon_task_id=$4,
+                error_code='',error_message='',status_message='类目修复后的商品已由 Ozon 接收',
+                accepted_at=COALESCE(accepted_at,NOW()),updated_at=NOW()
+          WHERE account_id=$1 AND id=$2 AND snapshot_id=$3 AND status='SUBMITTING'
+          RETURNING id`,
+        [input.accountId, input.jobId, input.snapshotId, retryOzonTaskId],
+      );
+      if (job.rowCount !== 1) throw Object.assign(new Error("类目恢复任务受理状态冲突"), {
+        code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT", status: 409,
+      });
+      await client.query(
+        `INSERT INTO submission_events
+          (job_id,from_status,to_status,event_type,message,actor_type,actor_id,payload)
+         VALUES ($1,'SUBMITTING','OZON_ACCEPTED','submission.category_retry_accepted',
+           'Ozon 已接收类目修复后的商品','worker','category-recovery',$2::jsonb)`,
+        [input.jobId, json({ attemptId: input.attemptId, originalOzonTaskId: input.originalOzonTaskId,
+          retryOzonTaskId })],
+      );
+    }
+    return Object.freeze({ attemptId: result.rows[0].id, status: result.rows[0].status,
+      retryOzonTaskId: result.rows[0].retry_ozon_task_id || null });
+  });
+}
+
+export function markSubmissionCategoryRetryAcceptedV3(input) {
+  return transitionSubmissionCategoryAttemptV3(input, "accepted");
+}
+
+export function completeSubmissionCategoryRecoveryV3(input) {
+  return transitionSubmissionCategoryAttemptV3(input, "complete");
+}
+
+export function requireSubmissionCategoryRecoveryReviewV3(input) {
+  return transitionSubmissionCategoryAttemptV3(input, "review");
 }
 
 function rfbsPhaseError(code = "LISTING_RFBS_PHASE_AUTHORIZATION_FAILED", retryable = true) {

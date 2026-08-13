@@ -131,7 +131,9 @@ function nullableText(value) {
 
 function safeSummary(raw) {
   try {
-    const value = closed(raw, new Set(["submissionJobId", "ozonTaskId", "counts", "variants"]));
+    const summaryKeys = new Set(["submissionJobId", "ozonTaskId", "counts", "variants",
+      ...(Object.hasOwn(raw || {}, "categoryRecovery") ? ["categoryRecovery"] : [])]);
+    const value = closed(raw, summaryKeys);
     if (!identifier(value.submissionJobId) || nullableText(value.ozonTaskId) === undefined
       || !Array.isArray(value.variants) || value.variants.length > 100) throw invalid();
     const counts = closed(value.counts, new Set(["success", "failed", "skipped", "stockCount"]));
@@ -144,7 +146,21 @@ function safeSummary(raw) {
         || (variant.errorCode !== null && !code(variant.errorCode))) throw invalid();
       return variant;
     });
-    return { submissionJobId: value.submissionJobId, ozonTaskId: value.ozonTaskId, counts, variants };
+    let categoryRecovery = null;
+    if (Object.hasOwn(value, "categoryRecovery") && value.categoryRecovery !== null) {
+      categoryRecovery = closed(value.categoryRecovery, new Set([
+        "attemptId", "status", "originalOzonTaskId", "retryOzonTaskId",
+        "oldSharedCategoryVersion", "replacementSharedCategoryVersion",
+      ]));
+      if (![categoryRecovery.attemptId, categoryRecovery.originalOzonTaskId,
+        categoryRecovery.retryOzonTaskId].every(identifier) || !code(categoryRecovery.status)
+        || !Number.isSafeInteger(categoryRecovery.oldSharedCategoryVersion)
+        || categoryRecovery.oldSharedCategoryVersion < 1
+        || !Number.isSafeInteger(categoryRecovery.replacementSharedCategoryVersion)
+        || categoryRecovery.replacementSharedCategoryVersion < 1) throw invalid();
+    }
+    return { submissionJobId: value.submissionJobId, ozonTaskId: value.ozonTaskId, counts, variants,
+      ...(Object.hasOwn(value, "categoryRecovery") ? { categoryRecovery } : {}) };
   } catch (error) {
     if (ownCode(error) === "AUTO_LISTING_RECONCILE_INVALID") throw error;
     throw invalid();
@@ -256,13 +272,22 @@ export function createPostgresAutoListingSubmissionReconciliationRepository(opti
               link.submission_job_id,submission.status AS submission_status,
               submission.ozon_task_id,submission.error_code AS submission_error_code,
               submission.success_count,submission.failed_count,submission.skipped_count,
-              submission.result_summary
+              submission.result_summary,
+              recovery.id AS recovery_attempt_id,recovery.status AS recovery_status,
+              recovery.original_ozon_task_id AS recovery_original_ozon_task_id,
+              recovery.retry_ozon_task_id AS recovery_retry_ozon_task_id,
+              recovery.old_shared_category_version AS recovery_old_shared_category_version,
+              recovery.replacement_shared_category_version AS recovery_replacement_shared_category_version
          FROM auto_listing_submission_links AS link
          JOIN auto_listing_job_items AS item
            ON item.account_id=link.account_id AND item.job_id=link.job_id
           AND item.id=link.auto_listing_item_id
          JOIN submission_jobs AS submission
            ON submission.account_id=link.account_id AND submission.id=link.submission_job_id
+         LEFT JOIN submission_category_recovery_attempts AS recovery
+           ON recovery.account_id=submission.account_id
+          AND recovery.submission_job_id=submission.id
+          AND recovery.submission_snapshot_id=submission.snapshot_id
         WHERE link.account_id=$1 AND link.auto_listing_item_id=$2 AND link.id=$3
           AND link.submission_job_id IS NOT NULL`,
       [input.accountId, input.itemId, input.submissionLinkId]);
@@ -287,6 +312,13 @@ export function createPostgresAutoListingSubmissionReconciliationRepository(opti
         ozonTaskId: row.ozon_task_id || null, errorCode: row.submission_error_code || null,
         successCount: Number(row.success_count || 0), failedCount: Number(row.failed_count || 0),
         skippedCount: Number(row.skipped_count || 0), resultSummary: row.result_summary || {},
+        categoryRecovery: row.recovery_attempt_id ? Object.freeze({
+          attemptId: row.recovery_attempt_id, status: row.recovery_status,
+          originalOzonTaskId: row.recovery_original_ozon_task_id,
+          retryOzonTaskId: row.recovery_retry_ozon_task_id,
+          oldSharedCategoryVersion: Number(row.recovery_old_shared_category_version),
+          replacementSharedCategoryVersion: Number(row.recovery_replacement_shared_category_version),
+        }) : null,
         items: (items.rows || []).map((entry) => ({
           offerId: entry.offer_id || null, status: entry.status, productId: entry.product_id || null,
           errorCode: entry.error_code || null,
