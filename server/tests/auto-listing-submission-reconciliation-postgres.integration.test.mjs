@@ -206,7 +206,9 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
     [accountA, h]);
     const retrySubmitCases = ["notsent", "local", "persist", "schedule",
       "watchdog-submit", "watchdog-validating", "watchdog-accepted",
-      "watchdog-wrong-tenant", "watchdog-ambiguous"];
+      "watchdog-wrong-tenant", "watchdog-ambiguous", "watchdog-pending-legal",
+      "watchdog-pending-queue", "watchdog-pending-queued", "watchdog-pending-task",
+      "watchdog-pending-correlation", "watchdog-pending-tuple"];
     for (const label of retrySubmitCases) {
       await owner.query(`INSERT INTO submission_snapshots(
         id,collect_item_id,draft_id,draft_version,account_id,store_id,idempotency_key,
@@ -498,6 +500,64 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
         AND status IN ('PENDING','PUBLISHING')) AS pending_outbox`)).rows[0], {
       wrong_job: "SUBMITTING", ambiguous_job: "SUBMITTING", ambiguous_attempts: 2,
       pending_outbox: 0,
+    });
+
+    const pendingWatchdogCases = ["legal", "queue", "queued", "task", "correlation", "tuple"];
+    for (const label of pendingWatchdogCases) {
+      const full = `watchdog-pending-${label}`;
+      await pipeline.scheduleSubmissionCategoryRetryV3({
+        accountId: accountA, jobId: `submission-${full}`,
+        snapshotId: `submission-snapshot-${full}`, attemptId: `category-attempt-${full}`,
+        correctedItemsHash: correctedHash, correlationId: `submission-correlation-${full}`,
+      });
+      await owner.query(`UPDATE outbox_events SET status='PUBLISHED',published_at=NOW()
+        WHERE aggregate_id=$1 AND event_type='listing.submit.requested'`, [`submission-${full}`]);
+      await owner.query(`UPDATE submission_jobs SET updated_at=NOW()-INTERVAL '10 minutes'
+        WHERE id=$1`, [`submission-${full}`]);
+    }
+    await owner.query(`UPDATE submission_jobs SET status='QUEUE_PENDING'
+      WHERE id='submission-watchdog-pending-queue'`);
+    await owner.query(`UPDATE submission_jobs SET status='QUEUED'
+      WHERE id='submission-watchdog-pending-queued'`);
+    await owner.query(`UPDATE submission_jobs SET ozon_task_id='drifted-original-task'
+      WHERE id='submission-watchdog-pending-task'`);
+    await owner.query("SET session_replication_role='replica'");
+    await owner.query(`UPDATE submission_jobs SET correlation_id='drifted-correlation'
+      WHERE id='submission-watchdog-pending-correlation'`);
+    await owner.query(`UPDATE submission_category_recovery_attempts
+      SET submission_snapshot_id='submission-snapshot-a'
+      WHERE id='category-attempt-watchdog-pending-tuple'`);
+    await owner.query("SET session_replication_role='origin'");
+    const pendingFirst = await pipeline.recoverStaleSubmissionJobsV3({
+      workerId: "task8-fix5-watchdog", limit: 30,
+    });
+    const pendingSecond = await pipeline.recoverStaleSubmissionJobsV3({
+      workerId: "task8-fix5-watchdog", limit: 30,
+    });
+    assert.deepEqual(pendingFirst.filter((row) => row.id.startsWith("submission-watchdog-pending-"))
+      .map((row) => ({ id: row.id, fromStatus: row.fromStatus,
+        toStatus: row.toStatus, action: row.action })), [{
+      id: "submission-watchdog-pending-legal", fromStatus: "RETRY_PENDING",
+      toStatus: "RETRY_PENDING", action: "submit",
+    }]);
+    assert.equal(pendingSecond.some((row) => row.id.startsWith("submission-watchdog-pending-")), false);
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-pending-queue') AS queue_status,
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-pending-queued') AS queued_status,
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-pending-task') AS task_status,
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-pending-correlation') AS correlation_status,
+      (SELECT status FROM submission_jobs WHERE id='submission-watchdog-pending-tuple') AS tuple_status,
+      (SELECT count(*)::int FROM outbox_events
+        WHERE aggregate_id='submission-watchdog-pending-legal'
+          AND event_type='listing.submit.requested' AND status='PENDING') AS legal_pending,
+      (SELECT count(*)::int FROM outbox_events
+        WHERE aggregate_id LIKE 'submission-watchdog-pending-%'
+          AND aggregate_id <> 'submission-watchdog-pending-legal'
+          AND event_type IN ('listing.submit.requested','listing.check.requested')
+          AND status IN ('PENDING','PUBLISHING')) AS attack_pending`)).rows[0], {
+      queue_status: "QUEUE_PENDING", queued_status: "QUEUED", task_status: "RETRY_PENDING",
+      correlation_status: "RETRY_PENDING", tuple_status: "RETRY_PENDING",
+      legal_pending: 1, attack_pending: 0,
     });
     assert.equal((await pipeline.scheduleSubmissionCategoryRetryV3({
       accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",

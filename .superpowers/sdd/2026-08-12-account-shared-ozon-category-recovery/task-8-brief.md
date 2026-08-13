@@ -47,6 +47,10 @@ Any failure during the single retry submission must either atomically terminate 
 
 The stale-job watchdog must resolve an exact account/job/snapshot recovery relation before generic recovery. Pending retry submissions without a persisted retry task terminate atomically for review, accepted retry tasks resume only their own check, and missing/ambiguous/cross-tenant recovery relations fail closed. Ordinary non-recovery watchdog behavior remains unchanged.
 
+### Automatic fix-round-5 review contract
+
+The watchdog may recreate a category retry submit outbox only while both durable job and attempt remain exact `RETRY_PENDING` under the immutable tenant/job/snapshot/correlation/original-task identity and no retry task exists. Every other recovery shape is inert; the valid replay remains generation-deduplicated.
+
 ## Closed worker behavior
 
 - Only the first terminal, all-item allowlisted category failure with every `productId` absent may enter Task 7 recovery. Partial success, any product identity, still-processing, unknown, ordinary/non-category failure, response loss, or offer `PRESENT/UNKNOWN` causes zero category refresh.

@@ -2725,7 +2725,7 @@ export async function recoverStaleSubmissionJobsV3({ workerId = "listing-watchdo
     const recovered = [];
     for (const row of result.rows) {
       const recoveryRows = await client.query(
-        `SELECT id,account_id,submission_job_id,submission_snapshot_id,status,
+        `SELECT id,account_id,submission_job_id,submission_snapshot_id,status,correlation_id,
                 original_ozon_task_id,retry_ozon_task_id
            FROM submission_category_recovery_attempts
           WHERE submission_job_id=$1
@@ -2784,7 +2784,9 @@ export async function recoverStaleSubmissionJobsV3({ workerId = "listing-watchdo
         && recovery.retry_ozon_task_id === row.ozon_task_id
         && ["OZON_ACCEPTED", "CHECKING", "RECONCILING"].includes(row.status))
         && !(recovery.status === "RETRY_PENDING" && recovery.retry_ozon_task_id === null
-          && ["QUEUE_PENDING", "QUEUED", "RETRY_PENDING"].includes(row.status))) {
+          && row.status === "RETRY_PENDING"
+          && recovery.original_ozon_task_id === row.ozon_task_id
+          && recovery.correlation_id === row.correlation_id)) {
         continue;
       }
       let nextStatus = row.status;
