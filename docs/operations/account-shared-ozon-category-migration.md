@@ -2,9 +2,9 @@
 
 ## Scope and safety boundary
 
-This runbook covers the forward-only migration from retired store/collect-item category matches to immutable collected source evidence and one account-shared Ozon category state. The tested migration chain is **001–069**. Migration 063 performs the destructive replacement; 064 adds lookup/manual-confirmation evidence; 065–069 close lease, graph handoff, recovery-attempt, corrected-item, and recovery-child-result contracts.
+This runbook covers the forward-only migration from retired store/collect-item category matches to immutable collected source evidence and one account-shared Ozon category state. The tested migration chain is **001–071**. Migration 063 performs the destructive replacement; 064 adds lookup evidence; 065–069 close lease, graph handoff, recovery-attempt, corrected-item, and recovery-child-result contracts; 070 adds immutable administrator-confirmation provenance; and 071 adds the crash-safe stock-write ledger.
 
-The authoritative tested implementation SHA is `bb3224741bf4ace4533316ee290af288a018a39d`, also recorded in `docs/verification/2026-08-12-account-shared-ozon-category-recovery.md`. Deploy only that exact implementation (or a separately reverified descendant) with the matching 001–069 migration set.
+The authoritative tested implementation SHA is `a4cbb5329eb2bf3442920a1355736601f67fb4d8`, also recorded in `docs/verification/2026-08-12-account-shared-ozon-category-recovery.md`. Deploy only that exact implementation (or a separately reverified descendant) with the matching 001–071 migration set.
 
 > Production automatic category recovery is disabled. The V1 production structured-error allowlist is intentionally empty. The E2E proof uses a clearly labelled, test-only historical evidence fixture inserted only into disposable PostgreSQL. Do not copy that fixture or create an evidence-injection route in production.
 
