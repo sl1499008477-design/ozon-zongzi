@@ -63,6 +63,15 @@ No real Ozon seller/product/stock call, AI request, object-storage write, produc
 
 ## Residual gate and rollback
 
+## Automatic fix round 2 — closed recovery audit and crash replay
+
+- Reconciliation now accepts exactly six descriptor-only recovery fields and validates the nullable shape and job/task relationship independently for `CLAIMED`, `MATCHED`, `RETRY_PENDING`, `RETRY_ACCEPTED`, `SUCCEEDED`, and `NEEDS_REVIEW`. Transparent/revoked proxies and accessors are rejected with the fixed safe error before execution.
+- Retry-import response loss no longer reads the original Ozon task or submits a third import. Only an actually ambiguous delivery error closes the exact `RETRY_PENDING` attempt for safe review; definitely-not-sent and local RFBS validation errors remain on their existing paths.
+- Submission work loads the exact migration-069 retry child rows. A crash after child persistence, attempt success, or attempt review resumes idempotently from those rows, closes the original job, and never mutates the original FAILED item/evidence or repeats import. In the exercised barriers the stock continuation ran once across two replays.
+- TDD RED exposed the missing status-specific nullable contract, proxy execution/null coercion, missing child replay, incomplete child acceptance, and overbroad retry-uncertainty classification. Final focused/adjacent unit gate: **203 passed, 0 failed**; its two PostgreSQL placeholders were then exercised separately rather than counted as passes. Fresh PostgreSQL reconciliation: **1/1 passed, 0 failed, 0 skipped**. The earlier complete fresh database matrix remains **37/37, 0 skipped**.
+- Sharp was verified with Node 24.14.0 and Sharp 0.34.5. The extra Sharp-related diagnostic was **89/90**: the sole failure is the unmodified `auto-listing-source-materializer` fixture lacking the category now required by the pre-existing Task 5 contract, so it is explicitly not reported as a passing gate.
+- No real Ozon, AI, object storage, stock endpoint, production database, credential, or deployed service was contacted. Round 2 adds no migration and changes no production external contract.
+
 - Not verified by design: a real current Ozon category-invalid payload and production automatic triggering. Empty V1 fails closed until official evidence is reviewed.
 - Enabling recovery is not a data-only toggle: it requires a reviewed policy-version change and production composition review; tests must then repeat the same first/retry/uncertain-path matrix against the authoritative fixture.
 - Roll back application behavior by reverting the Task 8 fix commit. Migration 069 is additive and may remain dormant; preserve both 068 and 069 append-only evidence. A physical schema rollback requires stopping recovery work and proving no 069 child rows exist before dropping its triggers/table/constraint in reverse order. Never delete recovery or audit rows to imitate rollback.

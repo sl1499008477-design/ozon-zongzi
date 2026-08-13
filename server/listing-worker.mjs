@@ -25,6 +25,7 @@ import {
   recoverStaleSubmissionJobsV3,
   releaseSubmissionLockV3,
   requireSubmissionCategoryRecoveryReviewV3,
+  requireSubmissionCategoryRetryUncertainReviewV3,
   transitionSubmissionJobV3,
   updateSubmissionItemsV3,
 } from "./listing-pipeline.mjs";
@@ -99,9 +100,11 @@ export function createListingWorkerCategoryRecoveryController({
   markRetryAccepted,
   completeRecovery,
   requireRecoveryReview,
+  reviewUncertainRetry,
 } = {}) {
   if ([beginCategoryRecovery, recoverCategory, persistRetryResults, markRetryAccepted,
-    completeRecovery, requireRecoveryReview].some((port) => typeof port !== "function")) {
+    completeRecovery, requireRecoveryReview, reviewUncertainRetry]
+    .some((port) => typeof port !== "function")) {
     throw new TypeError("listing category recovery ports are required");
   }
   async function persistRetryTerminal({ work, statusInfo } = {}) {
@@ -127,9 +130,7 @@ export function createListingWorkerCategoryRecoveryController({
         if (work.categoryRecovery.status !== "RETRY_ACCEPTED" || statusInfo?.done !== true
           || statusInfo.status === "SUCCEEDED") return Object.freeze({ handled: false });
         await persistRetryTerminal({ work, statusInfo });
-        const reviewed = await requireRecoveryReview({
-          ...existing, safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED",
-        });
+        const reviewed = await this.reviewRetry({ work });
         return Object.freeze({ handled: true, attemptId: reviewed.attemptId, status: "NEEDS_REVIEW" });
       }
       if (!explicitCategoryTerminal(statusInfo)) return Object.freeze({ handled: false });
@@ -173,6 +174,26 @@ export function createListingWorkerCategoryRecoveryController({
       }
       return completeRecovery({ ...identity, retryOzonTaskId });
     },
+    async reviewRetry({ work } = {}) {
+      const identity = categoryRecoveryIdentity(work);
+      if (!identity || work.categoryRecovery.status !== "RETRY_ACCEPTED") {
+        throw Object.assign(new Error("类目恢复复核身份无效"), {
+          code: "LISTING_CATEGORY_RECOVERY_IDENTITY_INVALID",
+        });
+      }
+      return requireRecoveryReview({
+        ...identity, safeReviewCode: "AUTO_LISTING_CATEGORY_RECOVERY_RETRY_FAILED",
+      });
+    },
+    async handleSubmitUncertainty({ work, error } = {}) {
+      const identity = categoryRecoveryIdentity(work);
+      if (!identity || work.categoryRecovery.status !== "RETRY_PENDING"
+        || resolveSubmissionFailureDisposition(error) !== "RECONCILING") {
+        return Object.freeze({ handled: false });
+      }
+      const reviewed = await reviewUncertainRetry(identity);
+      return Object.freeze({ handled: true, attemptId: reviewed.attemptId, status: "NEEDS_REVIEW" });
+    },
     persistRetryTerminal,
   });
 }
@@ -188,6 +209,7 @@ const productionCategoryRecoveryController = createListingWorkerCategoryRecovery
   markRetryAccepted: markSubmissionCategoryRetryAcceptedV3,
   completeRecovery: completeSubmissionCategoryRecoveryV3,
   requireRecoveryReview: requireSubmissionCategoryRecoveryReviewV3,
+  reviewUncertainRetry: requireSubmissionCategoryRetryUncertainReviewV3,
 });
 
 export async function completeListingCategoryRetryAndContinue({
@@ -205,6 +227,45 @@ export async function completeListingCategoryRetryAndContinue({
   await controller.persistRetryTerminal({ work, statusInfo });
   await controller.completeRetry({ work });
   return continueImport(work, statusInfo);
+}
+
+export async function resumeListingCategoryRecoveryFromChildResults({
+  work, controller = productionCategoryRecoveryController, continueImport,
+} = {}) {
+  const recovery = work?.categoryRecovery;
+  if (!recovery || !["CHECKING", "RECONCILING"].includes(work?.status)
+    || !["RETRY_ACCEPTED", "SUCCEEDED", "NEEDS_REVIEW"].includes(recovery.status)
+    || !Array.isArray(work.categoryRecoveryResults) || work.categoryRecoveryResults.length < 1) {
+    return Object.freeze({ handled: false });
+  }
+  const rawItems = work.categoryRecoveryResults;
+  if (!Array.isArray(work.items) || rawItems.length !== work.items.length) {
+    throw Object.assign(new Error("类目恢复子结果不完整"), {
+      code: "LISTING_CATEGORY_RECOVERY_RESULT_INVALID",
+    });
+  }
+  const success = rawItems.filter((item) => item?.status === "SUCCEEDED").length;
+  const skipped = rawItems.filter((item) => item?.status === "SKIPPED").length;
+  const failed = rawItems.length - success - skipped;
+  const status = success === rawItems.length ? "SUCCEEDED" : success > 0 ? "PARTIAL_SUCCESS" : "FAILED";
+  const statusInfo = Object.freeze({
+    done: true, status, success, failed, skipped,
+    items: Object.freeze(rawItems.map((item) => Object.freeze({
+      offerId: item?.offerId, status: item?.status, productId: item?.productId ?? null,
+    }))),
+    errorMessage: "", statusMessage: "",
+  });
+  if (!retryTerminalItems(statusInfo) || typeof continueImport !== "function") {
+    throw Object.assign(new Error("类目恢复子结果无效"), {
+      code: "LISTING_CATEGORY_RECOVERY_RESULT_INVALID",
+    });
+  }
+  if (recovery.status === "RETRY_ACCEPTED") {
+    if (status === "SUCCEEDED") await controller.completeRetry({ work });
+    else await controller.reviewRetry({ work });
+  }
+  await continueImport(work, statusInfo);
+  return Object.freeze({ handled: true, status });
 }
 
 export function resolveListingSubmitFailureDispositionForWork(work, error) {
@@ -308,6 +369,10 @@ async function processSubmit(jobId) {
     if (work.collect_item_id) await patchLegacyCollectStatusV3(work.account_id, work.collect_item_id, collectPatch("CHECKING", { ...accepted, ozon_task_id: ozonTaskId }));
   } catch (error) {
     const latest = await loadSubmissionWorkV3(jobId);
+    const uncertainRecovery = await productionCategoryRecoveryController.handleSubmitUncertainty({
+      work, error,
+    });
+    if (uncertainRecovery.handled) return;
     const disposition = latest?.status === "SUBMITTING"
       ? resolveListingSubmitFailureDispositionForWork(work, error)
       : "FAILED";
@@ -392,6 +457,10 @@ async function processCheck(jobId) {
       });
       work = await loadSubmissionWorkV3(jobId);
     }
+    const resumedRecovery = await resumeListingCategoryRecoveryFromChildResults({
+      work, controller: productionCategoryRecoveryController, continueImport: finishSuccessfulImport,
+    });
+    if (resumedRecovery.handled) return;
     const checkCount = await incrementSubmissionStatusCheckV3(jobId);
     const credential = await readStoreCredentialV3(work.store_id, work.account_id);
     const response = await callOzonSellerApi(credential, "/v1/product/import/info", {

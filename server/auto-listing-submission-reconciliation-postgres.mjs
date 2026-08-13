@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { types as utilTypes } from "node:util";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/u;
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{0,119}$/u;
@@ -33,7 +34,7 @@ function ownCode(error) {
 }
 
 function plain(value) {
-  try { return value !== null && typeof value === "object" && !Array.isArray(value)
+  try { return value !== null && typeof value === "object" && !utilTypes.isProxy(value) && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype; } catch { return false; }
 }
 
@@ -131,8 +132,11 @@ function nullableText(value) {
 
 function safeSummary(raw) {
   try {
+    if (utilTypes.isProxy(raw)) throw invalid();
+    const rawDescriptors = Object.getOwnPropertyDescriptors(raw);
+    const hasCategoryRecovery = Object.hasOwn(rawDescriptors, "categoryRecovery");
     const summaryKeys = new Set(["submissionJobId", "ozonTaskId", "counts", "variants",
-      ...(Object.hasOwn(raw || {}, "categoryRecovery") ? ["categoryRecovery"] : [])]);
+      ...(hasCategoryRecovery ? ["categoryRecovery"] : [])]);
     const value = closed(raw, summaryKeys);
     if (!identifier(value.submissionJobId) || nullableText(value.ozonTaskId) === undefined
       || !Array.isArray(value.variants) || value.variants.length > 100) throw invalid();
@@ -147,20 +151,32 @@ function safeSummary(raw) {
       return variant;
     });
     let categoryRecovery = null;
-    if (Object.hasOwn(value, "categoryRecovery") && value.categoryRecovery !== null) {
+    if (hasCategoryRecovery && value.categoryRecovery !== null) {
       categoryRecovery = closed(value.categoryRecovery, new Set([
         "attemptId", "status", "originalOzonTaskId", "retryOzonTaskId",
         "oldSharedCategoryVersion", "replacementSharedCategoryVersion",
       ]));
-      if (![categoryRecovery.attemptId, categoryRecovery.originalOzonTaskId,
-        categoryRecovery.retryOzonTaskId].every(identifier) || !code(categoryRecovery.status)
-        || !Number.isSafeInteger(categoryRecovery.oldSharedCategoryVersion)
-        || categoryRecovery.oldSharedCategoryVersion < 1
-        || !Number.isSafeInteger(categoryRecovery.replacementSharedCategoryVersion)
-        || categoryRecovery.replacementSharedCategoryVersion < 1) throw invalid();
+      const oldVersion = categoryRecovery.oldSharedCategoryVersion;
+      const replacementVersion = categoryRecovery.replacementSharedCategoryVersion;
+      const retryTask = categoryRecovery.retryOzonTaskId;
+      const replacementValid = Number.isSafeInteger(replacementVersion) && replacementVersion > oldVersion;
+      const retryValid = Boolean(identifier(retryTask))
+        && retryTask !== categoryRecovery.originalOzonTaskId;
+      const shapeValid = categoryRecovery.status === "CLAIMED"
+        ? retryTask === null && replacementVersion === null
+        : ["MATCHED", "RETRY_PENDING"].includes(categoryRecovery.status)
+          ? retryTask === null && replacementValid
+          : ["RETRY_ACCEPTED", "SUCCEEDED"].includes(categoryRecovery.status)
+            ? retryValid && replacementValid
+            : categoryRecovery.status === "NEEDS_REVIEW"
+              && ((retryTask === null && (replacementVersion === null || replacementValid))
+                || (retryValid && replacementValid));
+      if (!identifier(categoryRecovery.attemptId) || !identifier(categoryRecovery.originalOzonTaskId)
+        || !shapeValid || !Number.isSafeInteger(oldVersion) || oldVersion < 1
+        || value.ozonTaskId !== (retryTask || categoryRecovery.originalOzonTaskId)) throw invalid();
     }
     return { submissionJobId: value.submissionJobId, ozonTaskId: value.ozonTaskId, counts, variants,
-      ...(Object.hasOwn(value, "categoryRecovery") ? { categoryRecovery } : {}) };
+      ...(hasCategoryRecovery ? { categoryRecovery } : {}) };
   } catch (error) {
     if (ownCode(error) === "AUTO_LISTING_RECONCILE_INVALID") throw error;
     throw invalid();
@@ -328,7 +344,8 @@ export function createPostgresAutoListingSubmissionReconciliationRepository(opti
           originalOzonTaskId: row.recovery_original_ozon_task_id,
           retryOzonTaskId: row.recovery_retry_ozon_task_id,
           oldSharedCategoryVersion: Number(row.recovery_old_shared_category_version),
-          replacementSharedCategoryVersion: Number(row.recovery_replacement_shared_category_version),
+          replacementSharedCategoryVersion: row.recovery_replacement_shared_category_version === null
+            ? null : Number(row.recovery_replacement_shared_category_version),
         }) : null,
         items: (items.rows || []).map((entry) => ({
           offerId: entry.offer_id || null, status: entry.status, productId: entry.product_id || null,

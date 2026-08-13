@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createPostgresAutoListingSubmissionReconciliationRepository } from "../auto-listing-submission-reconciliation-postgres.mjs";
 
-function harness({ enqueueDuplicate = false, parentStatus = "UPLOADING", aggregateRow = {
+function harness({ enqueueDuplicate = false, parentStatus = "UPLOADING", recoveryRow = {}, aggregateRow = {
   total_count: 1, terminal_count: 1, succeeded_count: 1, blocked_count: 0, cancelled_count: 0,
 } } = {}) {
   const calls = [];
@@ -22,6 +22,7 @@ function harness({ enqueueDuplicate = false, parentStatus = "UPLOADING", aggrega
         submission_link_status: "SUBMITTED", submission_job_id: "submission-a",
         submission_status: "CHECKING", ozon_task_id: "ozon-a", submission_error_code: "",
         success_count: 0, failed_count: 0, skipped_count: 0, result_summary: {},
+        ...recoveryRow,
       }], rowCount: 1 };
       if (/FROM submission_items AS item/u.test(sql)) return { rows: [
         { offer_id: "offer-a", status: "SUCCESS", product_id: "product-a", error_code: "" },
@@ -74,6 +75,21 @@ test("evidence loading joins every identifier through the account boundary and b
   assert.match(calls.find(({ sql }) => /FROM submission_items AS item/u.test(sql)).sql, /LIMIT 101/iu);
   assert.equal(calls[0].sql, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   assert.deepEqual(calls.slice(-2).map(({ sql }) => sql), ["COMMIT", "RELEASE"]);
+});
+
+test("evidence loading preserves nullable recovery fields for pre-match and pre-accept states", async () => {
+  const { repository } = harness({ recoveryRow: {
+    recovery_attempt_id: "attempt-a", recovery_status: "CLAIMED",
+    recovery_original_ozon_task_id: "ozon-a", recovery_retry_ozon_task_id: null,
+    recovery_old_shared_category_version: 1, recovery_replacement_shared_category_version: null,
+  } });
+  const result = await repository.loadReconciliationEvidence({
+    accountId: "account-a", itemId: "item-a", submissionLinkId: "link-a", correlationId: "correlation-a",
+  });
+  assert.deepEqual(result.submission.categoryRecovery, {
+    attemptId: "attempt-a", status: "CLAIMED", originalOzonTaskId: "ozon-a",
+    retryOzonTaskId: null, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: null,
+  });
 });
 
 test("enqueue replay returns the durable existing task identity and does not append a second CREATED event", async () => {
@@ -258,5 +274,86 @@ test("apply rejects accessor-bearing nested result evidence before opening a tra
   }), (error) => error?.code === "AUTO_LISTING_RECONCILE_INVALID"
     && !/apiKey|raw-secret/iu.test(error.message));
   assert.equal(reads, 0);
+  assert.equal(calls.length, 0);
+});
+
+test("apply rejects proxied recovery summaries without executing traps", async () => {
+  let reads = 0;
+  const transparent = new Proxy({}, {
+    getPrototypeOf() { reads += 1; throw new Error("apiKey=proxy-secret"); },
+    getOwnPropertyDescriptor() { reads += 1; throw new Error("apiKey=proxy-secret"); },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  for (const summary of [transparent, revoked.proxy]) {
+    const { repository, calls } = harness();
+    await assert.rejects(repository.applyReconciliation({
+      accountId: "account-a", jobId: "job-a", itemId: "item-a", submissionLinkId: "link-a",
+      submissionJobId: "submission-a", correlationId: "correlation-a",
+      expectedItemStatus: "UPLOADING", expectedItemStatusVersion: 8, expectedLinkStatus: "SUBMITTED",
+      itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED", failureCode: null, summary,
+      advanceItemVersion: true, enqueueNextCheck: false, allowResubmission: false,
+      resolveReconciliationBlock: false,
+    }), { code: "AUTO_LISTING_RECONCILE_INVALID" });
+    assert.equal(calls.length, 0);
+  }
+  assert.equal(reads, 0);
+});
+
+test("repository accepts only status-exact nullable recovery audit summaries", async () => {
+  const valid = [
+    ["CLAIMED", null, null], ["MATCHED", null, 3], ["RETRY_PENDING", null, 3],
+    ["RETRY_ACCEPTED", "retry-a", 3], ["SUCCEEDED", "retry-a", 3],
+    ["NEEDS_REVIEW", null, null], ["NEEDS_REVIEW", null, 3], ["NEEDS_REVIEW", "retry-a", 3],
+  ];
+  for (const [status, retryOzonTaskId, replacementSharedCategoryVersion] of valid) {
+    const { repository, calls } = harness();
+    await repository.applyReconciliation({
+      accountId: "account-a", jobId: "job-a", itemId: "item-a", submissionLinkId: "link-a",
+      submissionJobId: "submission-a", correlationId: `correlation-${status}-${retryOzonTaskId || "null"}`,
+      expectedItemStatus: "UPLOADING", expectedItemStatusVersion: 8, expectedLinkStatus: "SUBMITTED",
+      itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED", failureCode: null,
+      summary: { submissionJobId: "submission-a", ozonTaskId: retryOzonTaskId || "original-a",
+        counts: { success: 1, failed: 0, skipped: 0, stockCount: 1 }, variants: [],
+        categoryRecovery: { attemptId: "attempt-a", status, originalOzonTaskId: "original-a",
+          retryOzonTaskId, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion } },
+      advanceItemVersion: true, enqueueNextCheck: false, allowResubmission: false,
+      resolveReconciliationBlock: false,
+    });
+    assert.equal(calls.length > 0, true);
+  }
+  for (const categoryRecovery of [
+    { attemptId: "attempt-a", status: "CLAIMED", originalOzonTaskId: "original-a",
+      retryOzonTaskId: "retry-a", oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: null },
+    { attemptId: "attempt-a", status: "RETRY_ACCEPTED", originalOzonTaskId: "original-a",
+      retryOzonTaskId: null, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: 3 },
+  ]) {
+    const { repository, calls } = harness();
+    await assert.rejects(repository.applyReconciliation({
+      accountId: "account-a", jobId: "job-a", itemId: "item-a", submissionLinkId: "link-a",
+      submissionJobId: "submission-a", correlationId: "correlation-invalid-a",
+      expectedItemStatus: "UPLOADING", expectedItemStatusVersion: 8, expectedLinkStatus: "SUBMITTED",
+      itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED", failureCode: null,
+      summary: { submissionJobId: "submission-a", ozonTaskId: "original-a",
+        counts: { success: 1, failed: 0, skipped: 0, stockCount: 1 }, variants: [], categoryRecovery },
+      advanceItemVersion: true, enqueueNextCheck: false, allowResubmission: false,
+      resolveReconciliationBlock: false,
+    }), { code: "AUTO_LISTING_RECONCILE_INVALID" });
+    assert.equal(calls.length, 0);
+  }
+  const { repository, calls } = harness();
+  await assert.rejects(repository.applyReconciliation({
+    accountId: "account-a", jobId: "job-a", itemId: "item-a", submissionLinkId: "link-a",
+    submissionJobId: "submission-a", correlationId: "correlation-wrong-task-a",
+    expectedItemStatus: "UPLOADING", expectedItemStatusVersion: 8, expectedLinkStatus: "SUBMITTED",
+    itemStatus: "SUCCEEDED", linkStatus: "SUCCEEDED", failureCode: null,
+    summary: { submissionJobId: "submission-a", ozonTaskId: "wrong-task",
+      counts: { success: 1, failed: 0, skipped: 0, stockCount: 1 }, variants: [],
+      categoryRecovery: { attemptId: "attempt-a", status: "SUCCEEDED",
+        originalOzonTaskId: "original-a", retryOzonTaskId: "retry-a",
+        oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: 3 } },
+    advanceItemVersion: true, enqueueNextCheck: false, allowResubmission: false,
+    resolveReconciliationBlock: false,
+  }), { code: "AUTO_LISTING_RECONCILE_INVALID" });
   assert.equal(calls.length, 0);
 });

@@ -126,6 +126,64 @@ test("reconciliation carries only safe category recovery identity on the origina
   assert.doesNotMatch(JSON.stringify(applied), /corrected_items|rawResponse|apiKey/iu);
 });
 
+test("recovery audit accepts only the exact nullable six-field shape for every attempt state", async () => {
+  const cases = [
+    ["CLAIMED", "FAILED", null, null],
+    ["MATCHED", "FAILED", null, 3],
+    ["RETRY_PENDING", "RETRY_PENDING", null, 3],
+    ["RETRY_ACCEPTED", "CHECKING", "task-retry", 3],
+    ["SUCCEEDED", "SUCCEEDED", "task-retry", 3],
+    ["NEEDS_REVIEW", "FAILED", null, null],
+    ["NEEDS_REVIEW", "FAILED", null, 3],
+    ["NEEDS_REVIEW", "FAILED", "task-retry", 3],
+  ];
+  for (const [status, submissionStatus, retryOzonTaskId, replacementSharedCategoryVersion] of cases) {
+    const ozonTaskId = retryOzonTaskId || "task-original";
+    const { reconciler, calls } = harness({
+      status: submissionStatus, ozonTaskId,
+      categoryRecovery: {
+        attemptId: "attempt-a", status, originalOzonTaskId: "task-original",
+        retryOzonTaskId, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion,
+      },
+    });
+    await reconciler.reconcile(request);
+    assert.deepEqual(calls.find(([kind]) => kind === "apply")[1].summary.categoryRecovery, {
+      attemptId: "attempt-a", status, originalOzonTaskId: "task-original",
+      retryOzonTaskId, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion,
+    });
+  }
+
+  for (const categoryRecovery of [
+    { attemptId: "attempt-a", status: "CLAIMED", originalOzonTaskId: "task-original",
+      retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: null },
+    { attemptId: "attempt-a", status: "MATCHED", originalOzonTaskId: "task-original",
+      retryOzonTaskId: null, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: null },
+    { attemptId: "attempt-a", status: "RETRY_ACCEPTED", originalOzonTaskId: "task-original",
+      retryOzonTaskId: null, oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: 3 },
+    { attemptId: "attempt-a", status: "NEEDS_REVIEW", originalOzonTaskId: "task-original",
+      retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 1, replacementSharedCategoryVersion: null },
+  ]) {
+    const { reconciler, calls } = harness({ status: "FAILED", ozonTaskId: "task-original", categoryRecovery });
+    await assert.rejects(reconciler.reconcile(request), {
+      code: "AUTO_LISTING_RECONCILE_EVIDENCE_INVALID",
+    });
+    assert.equal(calls.some(([kind]) => kind === "apply"), false);
+  }
+
+  const acceptedBeforeItsAtomicJobTransition = harness({
+    status: "SUBMITTING", ozonTaskId: "task-retry",
+    categoryRecovery: {
+      attemptId: "attempt-a", status: "RETRY_ACCEPTED", originalOzonTaskId: "task-original",
+      retryOzonTaskId: "task-retry", oldSharedCategoryVersion: 1,
+      replacementSharedCategoryVersion: 3,
+    },
+  });
+  await assert.rejects(acceptedBeforeItsAtomicJobTransition.reconciler.reconcile(request), {
+    code: "AUTO_LISTING_RECONCILE_EVIDENCE_INVALID",
+  });
+  assert.equal(acceptedBeforeItsAtomicJobTransition.calls.some(([kind]) => kind === "apply"), false);
+});
+
 test("reconciliation rejects hostile or inconsistent recovery audit DTOs without executing them", async () => {
   let reads = 0;
   const getter = Object.create(null);

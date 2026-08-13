@@ -1792,11 +1792,16 @@ export function projectSubmissionWorkRowV3(row) {
     retryOzonTaskId: row.recovery_retry_ozon_task_id || null,
     correlationId: row.recovery_correlation_id,
   }) : null;
+  const categoryRecoveryResults = sameRecovery && Array.isArray(row.recovery_item_results)
+    ? Object.freeze(row.recovery_item_results.map((item) => Object.freeze({
+      offerId: item?.offerId, status: item?.status, productId: item?.productId ?? null,
+    }))) : Object.freeze([]);
   return {
     ...row,
     items: originalItems,
     effectiveItems: correctionUsable ? correctedItems : originalItems,
     categoryRecovery,
+    categoryRecoveryResults,
   };
 }
 
@@ -1859,7 +1864,23 @@ export async function loadSubmissionWorkV3(jobId) {
             recovery.replacement_shared_category_version AS recovery_replacement_shared_category_version,
             recovery.original_ozon_task_id AS recovery_original_ozon_task_id,
             recovery.retry_ozon_task_id AS recovery_retry_ozon_task_id,
-            recovery.correlation_id AS recovery_correlation_id
+            recovery.correlation_id AS recovery_correlation_id,
+            COALESCE((
+              SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+                'offerId',child.offer_id,'status',child.status,'productId',child.product_id
+              ) ORDER BY original_item.sort_order,child.submission_item_id)
+                FROM submission_category_recovery_item_results AS child
+                JOIN submission_items AS original_item
+                  ON original_item.job_id=child.submission_job_id
+                 AND original_item.snapshot_id=child.submission_snapshot_id
+                 AND original_item.id=child.submission_item_id
+                 AND original_item.offer_id=child.offer_id
+               WHERE child.account_id=recovery.account_id
+                 AND child.submission_job_id=recovery.submission_job_id
+                 AND child.submission_snapshot_id=recovery.submission_snapshot_id
+                 AND child.recovery_attempt_id=recovery.id
+                 AND child.retry_ozon_task_id=recovery.retry_ozon_task_id
+            ),'[]'::JSONB) AS recovery_item_results
      FROM submission_jobs j
      JOIN submission_snapshots s ON s.id=j.snapshot_id
      LEFT JOIN collect_items c ON c.id=j.collect_item_id
@@ -2188,6 +2209,72 @@ export function completeSubmissionCategoryRecoveryV3(input) {
 
 export function requireSubmissionCategoryRecoveryReviewV3(input) {
   return transitionSubmissionCategoryAttemptV3(input, "review");
+}
+
+export async function requireSubmissionCategoryRetryUncertainReviewV3(raw) {
+  const input = categoryAttemptIdentity(raw);
+  return transaction(async (client) => {
+    const attempt = await client.query(
+      `UPDATE submission_category_recovery_attempts
+          SET status='NEEDS_REVIEW',safe_review_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN',
+              completed_at=COALESCE(completed_at,NOW()),
+              updated_at=GREATEST(NOW(),updated_at+INTERVAL '1 microsecond')
+        WHERE account_id=$1 AND submission_job_id=$2 AND submission_snapshot_id=$3
+          AND triggering_error_evidence_id=$4 AND id=$5 AND source_evidence_id=$6
+          AND old_shared_category_id=$7 AND old_shared_category_version=$8
+          AND original_ozon_task_id=$9 AND correlation_id=$10
+          AND status='RETRY_PENDING' AND retry_ozon_task_id IS NULL
+        RETURNING id,status`,
+      [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
+        input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+        input.originalOzonTaskId, input.correlationId],
+    );
+    const job = await client.query(
+      `UPDATE submission_jobs
+          SET status='FAILED',status_version=status_version+1,
+              error_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN',
+              error_message='类目修复后的上架请求结果未知，需要人工复核',
+              status_message='',completed_at=COALESCE(completed_at,NOW()),updated_at=NOW()
+        WHERE account_id=$1 AND id=$2 AND snapshot_id=$3
+          AND status IN ('SUBMITTING','RECONCILING') AND ozon_task_id=$4
+        RETURNING id`,
+      [input.accountId, input.jobId, input.snapshotId, input.originalOzonTaskId],
+    );
+    if (attempt.rowCount === 1 && job.rowCount === 1) {
+      await client.query(
+        `INSERT INTO submission_events
+          (job_id,from_status,to_status,event_type,message,actor_type,actor_id,payload)
+         VALUES ($1,'SUBMITTING','FAILED','submission.category_retry_unknown_review',
+           '类目修复后的上架请求结果未知，需要人工复核','worker','category-recovery',$2::jsonb)`,
+        [input.jobId, json({ attemptId: input.attemptId,
+          originalOzonTaskId: input.originalOzonTaskId })],
+      );
+      return Object.freeze({ attemptId: input.attemptId, status: "NEEDS_REVIEW" });
+    }
+    const replay = await client.query(
+      `SELECT attempt.id
+         FROM submission_category_recovery_attempts AS attempt
+         JOIN submission_jobs AS job
+           ON job.account_id=attempt.account_id AND job.id=attempt.submission_job_id
+          AND job.snapshot_id=attempt.submission_snapshot_id
+        WHERE attempt.account_id=$1 AND attempt.submission_job_id=$2
+          AND attempt.submission_snapshot_id=$3 AND attempt.triggering_error_evidence_id=$4
+          AND attempt.id=$5 AND attempt.source_evidence_id=$6
+          AND attempt.old_shared_category_id=$7 AND attempt.old_shared_category_version=$8
+          AND attempt.original_ozon_task_id=$9 AND attempt.correlation_id=$10
+          AND attempt.status='NEEDS_REVIEW'
+          AND attempt.safe_review_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN'
+          AND attempt.retry_ozon_task_id IS NULL AND job.status='FAILED'
+          AND job.error_code='AUTO_LISTING_CATEGORY_RETRY_TASK_UNKNOWN'`,
+      [input.accountId, input.jobId, input.snapshotId, input.evidenceId, input.attemptId,
+        input.sourceEvidenceId, input.oldSharedCategoryId, input.oldSharedCategoryVersion,
+        input.originalOzonTaskId, input.correlationId],
+    );
+    if (replay.rowCount !== 1) throw Object.assign(new Error("类目恢复未知任务状态冲突"), {
+      code: "LISTING_CATEGORY_RECOVERY_TRANSITION_CONFLICT", status: 409,
+    });
+    return Object.freeze({ attemptId: input.attemptId, status: "NEEDS_REVIEW" });
+  });
 }
 
 function rfbsPhaseError(code = "LISTING_RFBS_PHASE_AUTHORIZATION_FAILED", retryable = true) {

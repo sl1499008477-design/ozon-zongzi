@@ -77,15 +77,24 @@ function safeCategoryRecovery(value) {
       || !keys.includes(key) || descriptors[key]?.enumerable !== true
       || !Object.hasOwn(descriptors[key], "value"))) throw new Error("invalid recovery DTO");
     const projected = Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
-    if (!SAFE_ID.test(projected.attemptId || "")
-      || !["SUCCEEDED", "NEEDS_REVIEW"].includes(projected.status)
+    const replacementValid = Number.isSafeInteger(projected.replacementSharedCategoryVersion)
+      && projected.replacementSharedCategoryVersion > projected.oldSharedCategoryVersion;
+    const retryValid = SAFE_ID.test(projected.retryOzonTaskId || "")
+      && projected.originalOzonTaskId !== projected.retryOzonTaskId;
+    const shapeValid = projected.status === "CLAIMED"
+      ? projected.retryOzonTaskId === null && projected.replacementSharedCategoryVersion === null
+      : ["MATCHED", "RETRY_PENDING"].includes(projected.status)
+        ? projected.retryOzonTaskId === null && replacementValid
+        : ["RETRY_ACCEPTED", "SUCCEEDED"].includes(projected.status)
+          ? retryValid && replacementValid
+          : projected.status === "NEEDS_REVIEW"
+            && ((projected.retryOzonTaskId === null
+                && (projected.replacementSharedCategoryVersion === null || replacementValid))
+              || (retryValid && replacementValid));
+    if (!SAFE_ID.test(projected.attemptId || "") || !shapeValid
       || !SAFE_ID.test(projected.originalOzonTaskId || "")
-      || !SAFE_ID.test(projected.retryOzonTaskId || "")
-      || projected.originalOzonTaskId === projected.retryOzonTaskId
       || !Number.isSafeInteger(projected.oldSharedCategoryVersion)
-      || projected.oldSharedCategoryVersion < 1
-      || !Number.isSafeInteger(projected.replacementSharedCategoryVersion)
-      || projected.replacementSharedCategoryVersion <= projected.oldSharedCategoryVersion) {
+      || projected.oldSharedCategoryVersion < 1) {
       throw new Error("invalid recovery DTO");
     }
     return Object.freeze(projected);
@@ -113,10 +122,17 @@ function submissionCategoryRecovery(submission) {
       ? taskDescriptor.value : null;
     const submissionStatus = statusDescriptor && Object.hasOwn(statusDescriptor, "value")
       ? statusDescriptor.value : null;
-    const statusConsistent = recovery.status === "SUCCEEDED"
-      ? ["CHECKING", "RECONCILING", "SUCCEEDED", "PARTIAL_SUCCESS"].includes(submissionStatus)
-      : ["CHECKING", "RECONCILING", "FAILED", "PARTIAL_SUCCESS"].includes(submissionStatus);
-    if (recovery.retryOzonTaskId !== taskId || !statusConsistent) {
+    const expectedTaskId = recovery.retryOzonTaskId || recovery.originalOzonTaskId;
+    const statusConsistent = ["CLAIMED", "MATCHED"].includes(recovery.status)
+      ? submissionStatus === "FAILED"
+      : recovery.status === "RETRY_PENDING"
+        ? submissionStatus === "RETRY_PENDING"
+        : recovery.status === "RETRY_ACCEPTED"
+          ? ["OZON_ACCEPTED", "CHECKING", "RECONCILING"].includes(submissionStatus)
+          : recovery.status === "SUCCEEDED"
+            ? ["CHECKING", "RECONCILING", "SUCCEEDED", "PARTIAL_SUCCESS"].includes(submissionStatus)
+            : ["CHECKING", "RECONCILING", "FAILED", "PARTIAL_SUCCESS"].includes(submissionStatus);
+    if (expectedTaskId !== taskId || !statusConsistent) {
       throw new Error("inconsistent recovery DTO");
     }
     return recovery;

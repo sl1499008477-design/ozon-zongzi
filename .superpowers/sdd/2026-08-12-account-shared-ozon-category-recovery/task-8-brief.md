@@ -35,6 +35,10 @@ The initial Task 8 implementation reused `submission_items` for retry results. T
 
 Migration 069 stores child retry item results under the complete account/job/snapshot/attempt/retry-task/item/offer identity. It does not alter migration 068, the original `submission_items`, the original error evidence, or the one-attempt rule. Retry child results are append-only, terminal-monotonic and idempotent; only the exact `RETRY_ACCEPTED` attempt may first write them. Recovery completion/review must derive their decision from this exact child result set.
 
+### Automatic fix-round-2 review contract
+
+The approved second review round stays within the existing Task 8 files and migration 069. It closes the six-field recovery summary per attempt status, handles retry-response uncertainty through the exact retry identity only, and resumes terminal work from exact child rows after the specified crash barriers. It introduces no new migration, external side effect, production policy rule, or file-scope expansion.
+
 ## Closed worker behavior
 
 - Only the first terminal, all-item allowlisted category failure with every `productId` absent may enter Task 7 recovery. Partial success, any product identity, still-processing, unknown, ordinary/non-category failure, response loss, or offer `PRESENT/UNKNOWN` causes zero category refresh.

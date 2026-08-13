@@ -232,6 +232,16 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
     pipelineUrl.searchParams.set("options", `-c search_path=${schema},public`);
     process.env.DATABASE_URL = pipelineUrl.toString();
     const pipeline = await import(`../listing-pipeline.mjs?task8=${suffix}`);
+    const listingWorker = await import(`../listing-worker.mjs?task8fix2=${suffix}`);
+    const recoveryController = listingWorker.createListingWorkerCategoryRecoveryController({
+      async beginCategoryRecovery() { throw new Error("must not begin another recovery"); },
+      async recoverCategory() { throw new Error("must not refresh or import again"); },
+      persistRetryResults: pipeline.persistSubmissionCategoryRetryResultsV3,
+      markRetryAccepted: pipeline.markSubmissionCategoryRetryAcceptedV3,
+      completeRecovery: pipeline.completeSubmissionCategoryRecoveryV3,
+      requireRecoveryReview: pipeline.requireSubmissionCategoryRecoveryReviewV3,
+      reviewUncertainRetry: pipeline.requireSubmissionCategoryRetryUncertainReviewV3,
+    });
     assert.equal((await pipeline.scheduleSubmissionCategoryRetryV3({
       accountId: accountA, jobId: "submission-a", snapshotId: "submission-snapshot-a",
       attemptId: "category-attempt-a", correctedItemsHash: correctedHash,
@@ -283,9 +293,32 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       ...successChildCommand,
       items: [{ offerId: "offer-a", status: "SUCCEEDED", productId: "102" }],
     }), { code: "LISTING_CATEGORY_RECOVERY_RESULT_CONFLICT" });
-    assert.deepEqual(await pipeline.completeSubmissionCategoryRecoveryV3(recoveryIdentity), {
-      attemptId: "category-attempt-a", status: "SUCCEEDED", retryOzonTaskId: "ozon-task-retry",
+    const crashAfterSuccessAttempt = new Error("simulated crash after attempt success");
+    await assert.rejects(listingWorker.resumeListingCategoryRecoveryFromChildResults({
+      work: await pipeline.loadSubmissionWorkV3("submission-a"), controller: recoveryController,
+      continueImport: async () => { throw crashAfterSuccessAttempt; },
+    }), crashAfterSuccessAttempt);
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_category_recovery_attempts WHERE id='category-attempt-a') AS attempt,
+      (SELECT status FROM submission_jobs WHERE id='submission-a') AS job`)).rows[0], {
+      attempt: "SUCCEEDED", job: "CHECKING",
     });
+    let stockWrites = 0;
+    assert.deepEqual(await listingWorker.resumeListingCategoryRecoveryFromChildResults({
+      work: await pipeline.loadSubmissionWorkV3("submission-a"), controller: recoveryController,
+      continueImport: async (_work, statusInfo) => {
+        stockWrites += 1;
+        await pipeline.transitionSubmissionJobV3("submission-a", "SUCCEEDED", {
+          successCount: statusInfo.success, failedCount: statusInfo.failed,
+          skippedCount: statusInfo.skipped, resultSummary: { success: 1, failed: 0, skipped: 0, stockCount: 1 },
+        }, { type: "submission.completed", actorId: "task8-fix2-test" });
+      },
+    }), { handled: true, status: "SUCCEEDED" });
+    assert.deepEqual(await listingWorker.resumeListingCategoryRecoveryFromChildResults({
+      work: await pipeline.loadSubmissionWorkV3("submission-a"), controller: recoveryController,
+      continueImport: async () => { stockWrites += 1; },
+    }), { handled: false });
+    assert.equal(stockWrites, 1);
     assert.deepEqual(await pipeline.persistSubmissionCategoryRetryResultsV3(successChildCommand), {
       attemptId: "category-attempt-a", status: "RECORDED", count: 1, idempotent: true,
     });
@@ -295,9 +328,13 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
     await assert.rejects(owner.query(`DELETE FROM submission_category_recovery_item_results
       WHERE recovery_attempt_id='category-attempt-a'`), (error) => error?.code === "23514");
     assert.deepEqual((await owner.query(`SELECT status,product_id,
-      response->'errorEvidence'->>'classification' AS classification
+      response->'errorEvidence'->>'classification' AS classification,
+      (SELECT count(*)::int FROM submission_category_recovery_item_results
+        WHERE recovery_attempt_id='category-attempt-a') AS child_count,
+      (SELECT status FROM submission_jobs WHERE id='submission-a') AS job_status
       FROM submission_items WHERE job_id='submission-a' AND id='submission-item-a'`)).rows[0], {
       status: "FAILED", product_id: "", classification: "EXPLICIT_CATEGORY_FAILURE",
+      child_count: 1, job_status: "SUCCEEDED",
     });
 
     const failedOriginalItems = [{
@@ -409,10 +446,33 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
       attemptId: "category-attempt-fail", retryOzonTaskId: "ozon-task-retry-fail",
       items: [{ offerId: "offer-fail", status: "FAILED", productId: null }],
     });
-    assert.deepEqual(await pipeline.requireSubmissionCategoryRecoveryReviewV3(failedRecoveryIdentity), {
-      attemptId: "category-attempt-fail", status: "NEEDS_REVIEW",
-      retryOzonTaskId: "ozon-task-retry-fail",
+    const crashAfterReviewAttempt = new Error("simulated crash after attempt review");
+    await assert.rejects(listingWorker.resumeListingCategoryRecoveryFromChildResults({
+      work: await pipeline.loadSubmissionWorkV3("submission-fail"), controller: recoveryController,
+      continueImport: async () => { throw crashAfterReviewAttempt; },
+    }), crashAfterReviewAttempt);
+    assert.deepEqual((await owner.query(`SELECT
+      (SELECT status FROM submission_category_recovery_attempts WHERE id='category-attempt-fail') AS attempt,
+      (SELECT status FROM submission_jobs WHERE id='submission-fail') AS job`)).rows[0], {
+      attempt: "NEEDS_REVIEW", job: "CHECKING",
     });
+    let failedContinuations = 0;
+    assert.deepEqual(await listingWorker.resumeListingCategoryRecoveryFromChildResults({
+      work: await pipeline.loadSubmissionWorkV3("submission-fail"), controller: recoveryController,
+      continueImport: async (_work, statusInfo) => {
+        failedContinuations += 1;
+        await pipeline.transitionSubmissionJobV3("submission-fail", "FAILED", {
+          successCount: statusInfo.success, failedCount: statusInfo.failed,
+          skippedCount: statusInfo.skipped, errorCode: "OZON_ITEM_RESULT",
+          resultSummary: { success: 0, failed: 1, skipped: 0, stockCount: 0 },
+        }, { type: "submission.completed", actorId: "task8-fix2-test" });
+      },
+    }), { handled: true, status: "FAILED" });
+    assert.deepEqual(await listingWorker.resumeListingCategoryRecoveryFromChildResults({
+      work: await pipeline.loadSubmissionWorkV3("submission-fail"), controller: recoveryController,
+      continueImport: async () => { failedContinuations += 1; },
+    }), { handled: false });
+    assert.equal(failedContinuations, 1);
     assert.deepEqual(await pipeline.persistSubmissionCategoryRetryResultsV3({
       accountId: accountA, jobId: "submission-fail", snapshotId: "submission-snapshot-fail",
       attemptId: "category-attempt-fail", retryOzonTaskId: "ozon-task-retry-fail",
@@ -424,10 +484,16 @@ test("durable reconciliation survives an expired lease and applies one tenant-sc
         WHERE recovery_attempt_id='category-attempt-fail') AS retry_status,
       (SELECT status FROM submission_category_recovery_attempts
         WHERE id='category-attempt-fail') AS attempt_status,
+      (SELECT status FROM submission_jobs WHERE id='submission-fail') AS job_status,
+      (SELECT response->'errorEvidence'->>'classification' FROM submission_items
+        WHERE id='submission-item-fail') AS classification,
+      (SELECT count(*)::int FROM submission_category_recovery_item_results
+        WHERE recovery_attempt_id='category-attempt-fail') AS child_count,
       (SELECT count(*)::int FROM outbox_events
         WHERE aggregate_id='submission-fail' AND event_type='listing.submit.requested') AS imports`
     )).rows[0], {
-      original_status: "FAILED", retry_status: "FAILED", attempt_status: "NEEDS_REVIEW", imports: 1,
+      original_status: "FAILED", retry_status: "FAILED", attempt_status: "NEEDS_REVIEW",
+      job_status: "FAILED", classification: "EXPLICIT_CATEGORY_FAILURE", child_count: 1, imports: 1,
     });
     await owner.query(
       `INSERT INTO auto_listing_submission_links
