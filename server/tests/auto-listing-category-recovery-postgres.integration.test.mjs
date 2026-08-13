@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import { createPostgresAccountSharedOzonCategoryRepository } from "../account-shared-ozon-category-repository.mjs";
 import { createAutoListingCategoryRecoveryPostgres } from "../auto-listing-category-recovery-postgres.mjs";
 import { createAutoListingCategoryRecoveryService } from "../auto-listing-category-recovery-service.mjs";
+import { createAutoListingListingBasePreparer } from "../auto-listing-listing-base-preparer.mjs";
 import { rebuildOzonItemsForCategory } from "../ozon-category-item-rebuilder.mjs";
 
 const databaseUrl = process.env.SONLI_MIGRATION_TEST_DATABASE_URL || "";
@@ -99,12 +100,50 @@ async function seed(client, suffix, itemOverrides = {}) {
       id,job_id,snapshot_id,variant_key,sort_order,sku,offer_id,status,product_id,response)
       VALUES($1,$2,$3,$4,$5,$6,$7,'FAILED','',$8)`,
     [index === 0 ? ids.item : `${ids.item}-${index + 1}`, ids.job, ids.snapshot,
-      `variant-${index + 1}`, index, item.sku, item.offer_id, JSON.stringify({
+      `variant-${index + 1}`, index, typeof item.sku === "string" ? item.sku : "", item.offer_id, JSON.stringify({
         schemaVersion: "OZON_SUBMISSION_ITEM_RESPONSE_V1", rawResponse: {},
         errorEvidence: safeEvidence(item.offer_id),
       })]);
   }
   return ids;
+}
+
+async function realPreparedItemWithoutSku(suffix) {
+  const image = "https://cdn.example.test/item.jpg";
+  const sourceVariant = {
+    sku: "source-sku", offer_id: "offer-a", name: "Prepared item", price: "1.00",
+    currency_code: "RUB", weight: 100, weight_unit: "g", depth: 100, width: 100,
+    height: 100, dimension_unit: "mm", images: [image], primary_image: image,
+    attributes: [{ complex_id: 0, id: 1, values: [{ value: "safe" }] }],
+  };
+  const prepare = createAutoListingListingBasePreparer({
+    loadStoreAccess: async () => ({ id: `store-${suffix}`, ownerAccountId: `account-${suffix}`,
+      clientId: "loopback-client", apiKey: "loopback-key", currencyCode: "RUB" }),
+    categoryService: {
+      getCategoryAttributes: async () => ({ items: [{ id: 1, is_required: true }, { id: 11254 }] }),
+      getCategoryAttributeValues: async () => ({ items: [] }),
+    },
+  });
+  const prepared = await prepare({
+    accountId: `account-${suffix}`,
+    source: {
+      collectItem: { listingDraft: { ...sourceVariant, variants: [sourceVariant] } },
+      productDraft: { id: `draft-${suffix}`, version: 1, dataHash: "b".repeat(64),
+        normalizerVersion: "v3", categoryRuleVersion: "category-v1", dictionaryVersion: "dictionary-live" },
+    },
+    targetStore: { id: `store-${suffix}`, ownerAccountId: `account-${suffix}` },
+    targetCategory: {
+      schemaVersion: "AUTO_LISTING_ACCOUNT_CATEGORY_V2", evidenceId: `source-${suffix}`,
+      sharedCategoryId: `shared-${suffix}`, sharedCategoryVersion: 1,
+      sourceDescriptionCategoryId: 10, sourceTypeId: 20, descriptionCategoryId: 10,
+      typeId: 20, taxonomyScope: "OZON:DEFAULT", taxonomyFingerprint: "",
+      provenance: "SOURCE_DIRECT",
+    },
+    pricingEvidence: { currency: "RUB", currencySource: "SOURCE", blackKopecks: "100", greenKopecks: null },
+  });
+  const item = prepared.variants[0].item;
+  assert.equal(Object.hasOwn(item, "sku"), false, "production preparer emits the valid Ozon item without sku");
+  return item;
 }
 
 async function assertCheckRejected(client, sql, params) {
@@ -147,6 +186,59 @@ if (!enabled) {
       const repository = createAutoListingCategoryRecoveryPostgres({
         pool: scopedPool, idFactory: () => `recovery-${suffix}`, now: () => "2026-08-13T00:00:00.000Z",
       });
+      const preparedSuffix = `${suffix}prepared`;
+      const preparedItem = await realPreparedItemWithoutSku(preparedSuffix);
+      const preparedIds = await seed(client, preparedSuffix, { ...preparedItem, sku: undefined });
+      const skuCarrierIds = [preparedIds];
+      const preparedSnapshot = (await client.query(
+        `SELECT items,snapshot_hash FROM ${q(schema)}.submission_snapshots WHERE id=$1`,
+        [preparedIds.snapshot],
+      )).rows[0];
+      const preparedEvidenceId = `category-error-${preparedSuffix}`;
+      await client.query(`INSERT INTO ${q(schema)}.submission_category_error_evidence(
+        id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,
+        original_ozon_task_id,original_snapshot_hash,original_items,source_evidence_id,
+        old_shared_category_id,old_shared_category_version,classifier_policy_version,safe_evidence)
+        VALUES($1,$2,$3,$4,$5,'offer-a','task-original',$6,$7,$8,$9,1,'ozon-category-policy.v2',$10)`,
+      [preparedEvidenceId, preparedIds.account, preparedIds.job, preparedIds.snapshot,
+        preparedIds.item, preparedSnapshot.snapshot_hash, JSON.stringify(preparedSnapshot.items),
+        preparedIds.source, preparedIds.shared, JSON.stringify(safeEvidence())]);
+      const preparedBasis = await repository.loadCategoryRecoveryBasis({
+        accountId: preparedIds.account, jobId: preparedIds.job, evidenceId: preparedEvidenceId,
+      });
+      assert.deepEqual(preparedBasis.offers, [{ offerId: "offer-a", sku: "" }],
+        "a production-prepared Ozon item does not invent a sku for category recovery");
+      const loadSkuCarrier = async (label, sku) => {
+        const carrierSuffix = `${suffix}${label}`;
+        const carrierIds = await seed(client, carrierSuffix, { ...preparedItem, sku });
+        skuCarrierIds.push(carrierIds);
+        const carrierSnapshot = (await client.query(
+          `SELECT items,snapshot_hash FROM ${q(schema)}.submission_snapshots WHERE id=$1`,
+          [carrierIds.snapshot],
+        )).rows[0];
+        const carrierEvidenceId = `category-error-${carrierSuffix}`;
+        await client.query(`INSERT INTO ${q(schema)}.submission_category_error_evidence(
+          id,account_id,submission_job_id,submission_snapshot_id,submission_item_id,offer_id,
+          original_ozon_task_id,original_snapshot_hash,original_items,source_evidence_id,
+          old_shared_category_id,old_shared_category_version,classifier_policy_version,safe_evidence)
+          VALUES($1,$2,$3,$4,$5,'offer-a','task-original',$6,$7,$8,$9,1,'ozon-category-policy.v2',$10)`,
+        [carrierEvidenceId, carrierIds.account, carrierIds.job, carrierIds.snapshot,
+          carrierIds.item, carrierSnapshot.snapshot_hash, JSON.stringify(carrierSnapshot.items),
+          carrierIds.source, carrierIds.shared, JSON.stringify(safeEvidence())]);
+        return repository.loadCategoryRecoveryBasis({
+          accountId: carrierIds.account, jobId: carrierIds.job, evidenceId: carrierEvidenceId,
+        });
+      };
+      assert.deepEqual((await loadSkuCarrier("nullsku", null)).offers,
+        [{ offerId: "offer-a", sku: "" }]);
+      assert.deepEqual((await loadSkuCarrier("stringsku", "source-sku")).offers,
+        [{ offerId: "offer-a", sku: "source-sku" }]);
+      for (const [label, hostileSku] of [
+        ["objectsku", {}], ["arraysku", []], ["numbersku", 7], ["longsku", "x".repeat(241)],
+      ]) {
+        await assert.rejects(loadSkuCarrier(label, hostileSku), (error) =>
+          error.code === "AUTO_LISTING_CATEGORY_RECOVERY_CONFLICT" && error.cause === null);
+      }
       const evidenceInput = {
         accountId: ids.account, jobId: ids.job, snapshotId: ids.snapshot, itemId: ids.item,
         offerId: "offer-a", originalOzonTaskId: "task-original", policyVersion: "ozon-category-policy.v2",
@@ -728,6 +820,10 @@ if (!enabled) {
         await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`,
           [postIds.account, postIds.job]);
       }
+      for (const carrierIds of skuCarrierIds) {
+        await client.query(`DELETE FROM ${q(schema)}.submission_jobs WHERE account_id=$1 AND id=$2`,
+          [carrierIds.account, carrierIds.job]);
+      }
       const cleanup = (await client.query(`SELECT
         (SELECT COUNT(*)::INT FROM ${q(schema)}.submission_category_error_evidence) AS evidence,
         (SELECT COUNT(*)::INT FROM ${q(schema)}.submission_category_recovery_attempts) AS attempts`)).rows[0];
@@ -945,4 +1041,39 @@ test("repository rejects malformed commands before opening PostgreSQL", async ()
     return true;
   });
   assert.equal(connects, 0);
+});
+
+test("recovery basis rejects hostile sku carriers without executing traps", async () => {
+  const command = { accountId: "account-a", jobId: "job-a", evidenceId: "evidence-a" };
+  const rejectCarrier = async (item) => {
+    const client = {
+      async query(sql) {
+        return String(sql).includes("SELECT evidence.*")
+          ? { rows: [{ original_items: [item], safe_evidence: safeEvidence() }] }
+          : { rows: [] };
+      },
+      release() {},
+    };
+    const repository = createAutoListingCategoryRecoveryPostgres({
+      pool: { connect: async () => client },
+    });
+    await assert.rejects(repository.loadCategoryRecoveryBasis(command), (error) =>
+      error.code === "AUTO_LISTING_CATEGORY_RECOVERY_CONFLICT"
+        && error.cause === null && !String(error.message).includes("secret"));
+  };
+  let traps = 0;
+  const accessor = { offer_id: "offer-a" };
+  Object.defineProperty(accessor, "sku", { enumerable: true, get() { traps += 1; return "secret"; } });
+  await rejectCarrier(accessor);
+  const transparent = new Proxy({ offer_id: "offer-a", sku: "secret" }, {
+    get() { traps += 1; return "secret"; }, ownKeys() { traps += 1; return []; },
+    getOwnPropertyDescriptor() { traps += 1; return undefined; }, getPrototypeOf() { traps += 1; return Object.prototype; },
+  });
+  await rejectCarrier(transparent);
+  const revocable = Proxy.revocable({ offer_id: "offer-a", sku: "secret" }, {});
+  revocable.revoke();
+  await rejectCarrier(revocable.proxy);
+  await rejectCarrier(Object.assign(Object.create({ inherited: "secret" }), { offer_id: "offer-a", sku: "secret" }));
+  await rejectCarrier({ offer_id: "offer-a", sku: undefined });
+  assert.equal(traps, 0);
 });

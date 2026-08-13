@@ -190,9 +190,11 @@ function parseBasis(row) {
   const seen = new Set();
   for (const item of items) {
     if (!item || Array.isArray(item) || typeof item.offer_id !== "string" || !SAFE_ID.test(item.offer_id)
-      || typeof item.sku !== "string" || item.sku.length > 240 || seen.has(item.offer_id)) throw conflict();
+      || seen.has(item.offer_id)) throw conflict();
+    const sku = !Object.hasOwn(item, "sku") || item.sku === null ? "" : item.sku;
+    if (typeof sku !== "string" || sku.length > 240) throw conflict();
     seen.add(item.offer_id);
-    offers.push(Object.freeze({ offerId: item.offer_id, sku: item.sku }));
+    offers.push(Object.freeze({ offerId: item.offer_id, sku }));
   }
   return deepFreeze({
     accountId: row.account_id,
