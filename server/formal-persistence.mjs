@@ -1055,6 +1055,8 @@ async function mirrorStores(client, state = {}) {
     await client.query("UPDATE stores SET is_current=FALSE WHERE owner_account_id=ANY($1::text[]) AND is_current", [ownerAccountIds]);
   }
   for (const store of stores) {
+    const currencySource = text(store.currencySource, 40);
+    const currencySyncedAt = dateOrNull(store.currencySyncedAt);
     const currency = text(store.currencyCode || store.currency || store.companyCurrency || "RUB", 12).toUpperCase();
     const keyCreatedAt = apiKeyCreatedAt(store);
     const keyExpiresAt = apiKeyExpiresAt(store);
@@ -1063,9 +1065,10 @@ async function mirrorStores(client, state = {}) {
         INSERT INTO stores (
           id, owner_account_id, label, company_name, legal_name, client_id, inn, tax_id, currency_code,
           is_premium, status, is_current, seller_company_id, saved_at, updated_at,
-          profile_synced_at, api_key_created_at, api_key_expires_at, raw
+          profile_synced_at, api_key_created_at, api_key_expires_at, raw,
+          currency_source, currency_synced_at
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21)
         ON CONFLICT (id) DO UPDATE SET
           owner_account_id = EXCLUDED.owner_account_id,
           label = EXCLUDED.label,
@@ -1083,7 +1086,9 @@ async function mirrorStores(client, state = {}) {
           profile_synced_at = EXCLUDED.profile_synced_at,
           api_key_created_at = EXCLUDED.api_key_created_at,
           api_key_expires_at = EXCLUDED.api_key_expires_at,
-          raw = EXCLUDED.raw
+          raw = EXCLUDED.raw,
+          currency_source = EXCLUDED.currency_source,
+          currency_synced_at = EXCLUDED.currency_synced_at
       `,
       [
         store.id,
@@ -1105,6 +1110,8 @@ async function mirrorStores(client, state = {}) {
         keyCreatedAt,
         keyExpiresAt,
         json({ ...store, apiKey: store.apiKey ? "__encrypted__" : "" }),
+        currencySource || null,
+        currencySyncedAt,
       ],
     );
     if (store.apiKey) {

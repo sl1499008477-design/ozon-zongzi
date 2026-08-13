@@ -198,7 +198,8 @@ async function lockTargetWarehouseEvidenceWithClient(client, {
   accountId, targetStoreId, targetWarehouseId, warehouseValidation = null,
 }) {
   const storeResult = await client.query(
-    `SELECT s.id,s.owner_account_id,s.label,s.company_name,s.client_id,s.currency_code,s.status
+    `SELECT s.id,s.owner_account_id,s.label,s.company_name,s.client_id,s.currency_code,
+            s.currency_source,s.currency_synced_at,s.status
        FROM stores s
       WHERE s.id=$1 AND s.owner_account_id=$2
       FOR SHARE OF s`,
@@ -222,6 +223,9 @@ async function lockTargetWarehouseEvidenceWithClient(client, {
     companyName: storeRow.company_name,
     clientId: storeRow.client_id,
     currencyCode: storeRow.currency_code,
+    currencySource: storeRow.currency_source,
+    currencySyncedAt: storeRow.currency_synced_at instanceof Date
+      ? storeRow.currency_synced_at.toISOString() : storeRow.currency_synced_at,
     status: storeRow.status,
     credentialsSaved: credentialResult.rows.length > 0,
   };
@@ -1286,7 +1290,8 @@ export function createAutoListingRepository({
       const scope = requiredAccountId(accountId);
       const storeId = requiredText(targetStoreId);
       const result = await pool.query(
-        `SELECT s.id,s.owner_account_id,s.label,s.company_name,s.client_id,s.currency_code,s.status,
+        `SELECT s.id,s.owner_account_id,s.label,s.company_name,s.client_id,s.currency_code,
+                s.currency_source,s.currency_synced_at,s.status,
                 EXISTS (SELECT 1 FROM store_credentials sc WHERE sc.store_id=s.id) AS credentials_saved
            FROM stores s WHERE s.id=$1 AND s.owner_account_id=$2`,
         [storeId, scope],
@@ -1299,6 +1304,9 @@ export function createAutoListingRepository({
         companyName: row.company_name,
         clientId: row.client_id,
         currencyCode: row.currency_code,
+        currencySource: row.currency_source,
+        currencySyncedAt: row.currency_synced_at instanceof Date
+          ? row.currency_synced_at.toISOString() : row.currency_synced_at,
         status: row.status,
         credentialsSaved: row.credentials_saved === true,
       } : null;

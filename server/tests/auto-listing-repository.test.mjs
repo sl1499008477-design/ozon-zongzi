@@ -500,7 +500,8 @@ function warehouseEvidenceFixture({
       }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
-        client_id: "client-a", currency_code: "RUB", status: "active", ...store,
+        client_id: "client-a", currency_code: "RUB", currency_source: "OZON_SELLER_INFO",
+        currency_synced_at: "2026-08-13T00:00:00.000Z", status: "active", ...store,
       }] };
       if (/FROM store_credentials/.test(sql)) return { rows: credential ? [{ store_id: "store-a" }] : [] };
       if (/FROM warehouses w/.test(sql)) return { rows: [{
@@ -1122,7 +1123,8 @@ function successfulCreationFixture({ stageBehavior = null, profiles = [{ id: "pr
       if (/FROM accounts WHERE id=\$1 FOR UPDATE/.test(sql)) return { rows: [{ id: "account-a" }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
-        client_id: "client-a", currency_code: "RUB", status: "active",
+        client_id: "client-a", currency_code: "RUB", currency_source: "OZON_SELLER_INFO",
+        currency_synced_at: "2026-08-13T00:00:00.000Z", status: "active",
       }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/FROM warehouses w/.test(sql)) return { rows: [{
@@ -1344,7 +1346,8 @@ function reusedEvidenceFixture({ graph, persistedSnapshot }) {
       if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
       if (/FROM stores s/.test(sql) && /owner_account_id/.test(sql)) return { rows: [{
         id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A",
-        client_id: "client-a", currency_code: "RUB", status: "active",
+        client_id: "client-a", currency_code: "RUB", currency_source: "OZON_SELLER_INFO",
+        currency_synced_at: "2026-08-13T00:00:00.000Z", status: "active",
       }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/FROM warehouses w/.test(sql)) return { rows: [{

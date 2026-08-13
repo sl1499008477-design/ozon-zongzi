@@ -26,10 +26,14 @@ function safeStoreCarrier(store) {
       label: value("label"), companyName: value("companyName", "company_name"),
       clientId: value("clientId", "client_id"), currencyCode: value("currencyCode", "currency_code"),
       currency: value("currency"), status: value("status"),
+      currencySource: value("currencySource", "currency_source"),
+      currencySyncedAt: value("currencySyncedAt", "currency_synced_at"),
       credentialsSaved: value("credentialsSaved", "credentials_saved"),
     };
     if (["id", "ownerAccountId", "label", "companyName", "clientId", "currencyCode", "currency", "status"]
       .some((key) => projected[key] !== undefined && typeof projected[key] !== "string")
+      || ["currencySource", "currencySyncedAt"]
+        .some((key) => projected[key] !== undefined && projected[key] !== null && typeof projected[key] !== "string")
       || (projected.credentialsSaved !== undefined && typeof projected.credentialsSaved !== "boolean")) return null;
     return projected;
   } catch { return null; }
@@ -85,12 +89,19 @@ export function validateTargetStoreRecord({
   if (requireCredentials && (!clean(safeStore.clientId) || !credentialsSaved)) {
     throw policyError("目标经营店铺缺少可用凭据", 409, "TARGET_STORE_CREDENTIALS_REQUIRED");
   }
+  if (clean(safeStore.currencySource) !== "OZON_SELLER_INFO"
+    || Number.isNaN(Date.parse(clean(safeStore.currencySyncedAt)))) {
+    throw policyError("店铺币种尚未同步，请先同步店铺资料", 409,
+      "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED");
+  }
   return {
     id: clean(safeStore.id),
     ownerAccountId,
     label: clean(safeStore.label || safeStore.companyName),
     clientId: clean(safeStore.clientId),
     currencyCode: clean(safeStore.currencyCode || safeStore.currency),
+    currencySource: clean(safeStore.currencySource),
+    currencySyncedAt: clean(safeStore.currencySyncedAt),
     validatedAt: new Date(validatedAt).toISOString(),
   };
 }

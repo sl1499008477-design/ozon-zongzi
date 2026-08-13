@@ -520,7 +520,10 @@ function canAccessLocalFile(file, account) {
 
 function publicStore(store, state = null) {
   if (!store) return null;
-  const currency = storeContractCurrencyCode(state, store);
+  const currency = String(store.currencySource || "") === "OZON_SELLER_INFO"
+    && !Number.isNaN(Date.parse(String(store.currencySyncedAt || "")))
+    ? normalizeCurrencyCode(store.currencyCode || store.currency || store.companyCurrency)
+    : "";
   const credentialsSaved = Boolean(store.apiKey);
   return {
     id: store.id,
@@ -541,6 +544,8 @@ function publicStore(store, state = null) {
     currency,
     currencyCode: currency,
     companyCurrency: currency,
+    currencySource: currency ? "OZON_SELLER_INFO" : "",
+    currencySyncedAt: currency ? store.currencySyncedAt : "",
     sellerCompanyId: store.sellerCompanyId || "",
     sellerCookieSyncedAt: store.sellerCookieSyncedAt || "",
     savedAt: store.savedAt,
@@ -1005,41 +1010,10 @@ function normalizeCurrencyCode(value) {
   return /^[A-Z]{3}$/.test(code) ? code : "";
 }
 
-function productCurrencyCandidates(product = {}) {
-  return [
-    product.currency_code,
-    product.currencyCode,
-    product.companyCurrency,
-    product.currency,
-    product.priceCurrency,
-    product.price?.currency_code,
-    product.price?.currencyCode,
-    product.price?.currency,
-    product.price?.price_currency,
-    product.marketing_price_currency,
-  ].map(normalizeCurrencyCode).filter(Boolean);
-}
-
-function inferCurrencyFromProductCache(state, store = null) {
-  const products = Array.isArray(state?.caches?.products) ? state.caches.products : [];
-  const storeId = String(store?.id || "");
-  const scoped = products.filter((product) => !product.storeId || !storeId || String(product.storeId) === storeId);
-  const counts = new Map();
-  for (const product of scoped.length ? scoped : products) {
-    const [code] = productCurrencyCandidates(product);
-    if (code) counts.set(code, (counts.get(code) || 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
-}
-
 function storeContractCurrencyCode(state, store = null) {
-  return normalizeCurrencyCode(
-    store?.companyCurrency ||
-    store?.currency ||
-    store?.currencyCode ||
-    store?.contractCurrency ||
-    store?.defaultCurrency
-  ) || inferCurrencyFromProductCache(state, store) || "RUB";
+  if (String(store?.currencySource || "") !== "OZON_SELLER_INFO"
+    || Number.isNaN(Date.parse(String(store?.currencySyncedAt || "")))) return "";
+  return normalizeCurrencyCode(store?.currencyCode || store?.currency || store?.companyCurrency);
 }
 
 function withStoreContractCurrency(state, store, items = []) {

@@ -17,6 +17,7 @@ const PUBLIC_ERRORS = Object.freeze({
   AUTO_LISTING_CONFIG_INVALID: 422,
   AUTO_LISTING_CONFIG_FORBIDDEN_FIELD: 422,
   AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED: 422,
+  AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED: 409,
   TARGET_STORE_NOT_FOUND: 404,
   TARGET_STORE_DISABLED: 409,
   TARGET_STORE_CREDENTIALS_REQUIRED: 409,
@@ -204,6 +205,7 @@ function messageFor(code) {
   if (code === "PERMISSION_FORBIDDEN") return "没有该操作权限";
   if (code === "AUTO_LISTING_REQUEST_INVALID") return "自动上架请求无效";
   if (code === "AUTO_LISTING_TARGET_STORE_CURRENCY_UNSUPPORTED") return "目标店铺币种暂不支持自动上架";
+  if (code === "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED") return "店铺币种尚未同步，请先同步店铺资料";
   if (code === "RFBS_WAREHOUSE_NOT_FOUND") return "未找到目标 RFBS 仓库";
   if (code === "RFBS_WAREHOUSE_DISABLED") return "目标 RFBS 仓库不可用";
   if (code === "RFBS_WAREHOUSE_SCOPE_MISMATCH") return "RFBS 仓库不属于当前账号或店铺";

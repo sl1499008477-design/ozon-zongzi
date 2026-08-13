@@ -91,6 +91,8 @@ test("store currency drives the adjustment label, preview symbol, and cross-curr
   assert.match(page, /currencyPresentation\.symbol/);
   assert.match(page, /shouldResetAutoListingAdjustment/);
   assert.match(page, /切换了店铺币种，售价加减已重置为 0/);
+  assert.match(page, /店铺币种尚未同步，请先同步店铺资料/);
+  assert.match(page, /币种未同步/);
   assert.match(page, /priceAdjustmentKopecks:\s*amountToMinorUnits\(values\.priceAdjustmentAmount\)/);
   assert.doesNotMatch(page, /priceAdjustmentRubles/);
   assert.doesNotMatch(page, /售价加减（卢布）/);

@@ -125,6 +125,8 @@ test("validated target metadata excludes every credential field", () => {
       label: "Store A",
       clientId: "client-a",
       currencyCode: "RUB",
+      currencySource: "OZON_SELLER_INFO",
+      currencySyncedAt: "2026-07-28T00:00:00.000Z",
       status: "active",
       credentialsSaved: true,
       apiKey: "plain-secret",
@@ -141,9 +143,28 @@ test("validated target metadata excludes every credential field", () => {
     label: "Store A",
     clientId: "client-a",
     currencyCode: "RUB",
+    currencySource: "OZON_SELLER_INFO",
+    currencySyncedAt: "2026-07-28T00:00:00.000Z",
     validatedAt: "2026-07-29T00:00:00.000Z",
   });
   assert.doesNotMatch(JSON.stringify(target), /plain-secret|ciphertext|apiKey|credential|authTag|iv/);
+});
+
+test("a legacy PostgreSQL NULL currency authority is unverified rather than a missing store", () => {
+  assert.throws(() => validateTargetStoreRecord({
+    accountId: "acct-a",
+    targetStoreId: "store-a",
+    store: {
+      id: "store-a",
+      owner_account_id: "acct-a",
+      status: "active",
+      client_id: "client-a",
+      currency_code: "RUB",
+      currency_source: null,
+      currency_synced_at: null,
+      credentials_saved: true,
+    },
+  }), { status: 409, code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED" });
 });
 
 test("validated target rejects malicious carriers without executing accessors or coercion", () => {
@@ -205,6 +226,8 @@ test("local listing target resolution returns the full store separately from saf
     label: "Store A",
     clientId: "client-a",
     currencyCode: "RUB",
+    currencySource: "OZON_SELLER_INFO",
+    currencySyncedAt: "2026-07-28T00:00:00.000Z",
     status: "active",
     apiKey: "plain-secret",
   };
@@ -223,6 +246,8 @@ test("local listing target resolution returns the full store separately from saf
     label: "Store A",
     clientId: "client-a",
     currencyCode: "RUB",
+    currencySource: "OZON_SELLER_INFO",
+    currencySyncedAt: "2026-07-28T00:00:00.000Z",
     validatedAt: "2026-07-29T00:00:00.000Z",
   });
   assert.doesNotMatch(JSON.stringify(resolved.target), /plain-secret|apiKey/);

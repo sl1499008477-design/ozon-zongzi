@@ -75,6 +75,10 @@ function validateTarget(row, input) {
         ownerAccountId: row.owner_account_id,
         status: row.store_status,
         clientId: row.client_id,
+        currencyCode: row.currency_code,
+        currencySource: row.currency_source,
+        currencySyncedAt: row.currency_synced_at instanceof Date
+          ? row.currency_synced_at.toISOString() : row.currency_synced_at,
         credentialsSaved: row.credentials_saved === true,
       } : null,
     });
@@ -102,6 +106,7 @@ function validateTarget(row, input) {
     }
   } catch (error) {
     if (["TARGET_STORE_NOT_FOUND", "TARGET_STORE_DISABLED", "TARGET_STORE_CREDENTIALS_REQUIRED",
+      "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED",
       "LISTING_WAREHOUSE_NOT_ELIGIBLE"].includes(error?.code)) throw error;
     throw preferenceError("LISTING_WAREHOUSE_NOT_ELIGIBLE", 422);
   }
@@ -174,6 +179,7 @@ export function createPostgresAutoListingPreferencesRepository({ pool } = {}) {
         }
         const target = await client.query(
           `SELECT s.id AS store_id,s.owner_account_id,s.status AS store_status,s.client_id,
+                  s.currency_code,s.currency_source,s.currency_synced_at,
                   EXISTS(SELECT 1 FROM store_credentials sc WHERE sc.store_id=s.id) AS credentials_saved,
                   w.id AS warehouse_record_id,w.warehouse_id,w.warehouse_type,w.status AS warehouse_status,
                   w.is_active,w.is_archived,

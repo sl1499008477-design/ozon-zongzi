@@ -161,6 +161,11 @@ function firstCleanText(values, maxLength = 160) {
   return "";
 }
 
+function supportedStoreCurrency(value) {
+  const currency = cleanText(value, 12).toUpperCase();
+  return ["RUB", "CNY"].includes(currency) ? currency : "";
+}
+
 function extractSellerInfoProfile(payload = {}) {
   const source = payload?.result && typeof payload.result === "object" ? payload.result : payload;
   const company = source?.company && typeof source.company === "object" ? source.company : {};
@@ -180,6 +185,7 @@ function extractSellerInfoProfile(payload = {}) {
     companyName: firstCleanText([company.name, source.company_name, source.companyName, source.name], 160),
     legalName: firstCleanText([company.legal_name, company.legalName, source.legal_name, source.legalName], 220),
     inn: firstCleanText([company.inn, company.INN, source.inn, source.INN, company.tax_id, source.tax_id], 80),
+    currencyCode: supportedStoreCurrency(company.currency),
     isPremium: premium,
   };
 }
@@ -460,7 +466,15 @@ export function createOzonSyncService({
     if (profile.isPremium !== null && profile.isPremium !== undefined) {
       store.isPremium = profile.isPremium;
     }
-    store.profileSyncedAt = nowIso();
+    const syncedAt = nowIso();
+    if (profile.currencyCode) {
+      store.currencyCode = profile.currencyCode;
+      store.currency = profile.currencyCode;
+      store.companyCurrency = profile.currencyCode;
+      store.currencySource = "OZON_SELLER_INFO";
+      store.currencySyncedAt = syncedAt;
+    }
+    store.profileSyncedAt = syncedAt;
     store.updatedAt = store.profileSyncedAt;
     return profile;
   }

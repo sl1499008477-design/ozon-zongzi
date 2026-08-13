@@ -155,16 +155,20 @@ try {
     [foreignAccountId, `pipeline-foreign-${suffix}`, "Pipeline Foreign Test"],
   );
   await pool.query(
-    "INSERT INTO stores (id,owner_account_id,label,client_id,status,is_current,currency_code) VALUES ($1,$2,$3,$4,'active',TRUE,'RUB')",
+    `INSERT INTO stores (
+       id,owner_account_id,label,client_id,status,is_current,currency_code,currency_source,currency_synced_at
+     ) VALUES ($1,$2,$3,$4,'active',TRUE,'RUB','OZON_SELLER_INFO','2026-08-13T00:00:00.000Z')`,
     [storeId, accountId, "Pipeline Test Store", `client-${suffix}`],
   );
   await pool.query(
-    `INSERT INTO stores (id,owner_account_id,label,client_id,status,is_current,currency_code)
+    `INSERT INTO stores (
+       id,owner_account_id,label,client_id,status,is_current,currency_code,currency_source,currency_synced_at
+     )
      VALUES
-       ($1,$5,'Pipeline Second Store',$6,'active',FALSE,'RUB'),
-       ($2,$7,'Foreign Secret Store',$8,'active',FALSE,'RUB'),
-       ($3,$5,'Pipeline Disabled Store',$9,'disabled',FALSE,'RUB'),
-       ($4,$5,'Pipeline No Credential Store',$10,'active',FALSE,'RUB')`,
+       ($1,$5,'Pipeline Second Store',$6,'active',FALSE,'RUB','OZON_SELLER_INFO','2026-08-13T00:00:00.000Z'),
+       ($2,$7,'Foreign Secret Store',$8,'active',FALSE,'RUB','OZON_SELLER_INFO','2026-08-13T00:00:00.000Z'),
+       ($3,$5,'Pipeline Disabled Store',$9,'disabled',FALSE,'RUB','OZON_SELLER_INFO','2026-08-13T00:00:00.000Z'),
+       ($4,$5,'Pipeline No Credential Store',$10,'active',FALSE,'RUB','OZON_SELLER_INFO','2026-08-13T00:00:00.000Z')`,
     [
       secondStoreId,
       foreignStoreId,
@@ -897,9 +901,12 @@ try {
   );
   assert.deepEqual(audit.rows[0].metadata.targetStore, {
     id: storeId,
+    ownerAccountId: accountId,
     label: "Pipeline Test Store",
     clientId: `client-${suffix}`,
     currencyCode: "RUB",
+    currencySource: "OZON_SELLER_INFO",
+    currencySyncedAt: "2026-08-13T00:00:00.000Z",
     validatedAt: audit.rows[0].metadata.targetStore.validatedAt,
   });
   assert.doesNotMatch(

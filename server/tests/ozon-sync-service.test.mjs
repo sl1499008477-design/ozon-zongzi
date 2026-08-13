@@ -70,6 +70,7 @@ try {
           name: "Seller A",
           legal_name: "Seller A LLC",
           inn: "7701234567",
+          currency: " cny ",
         },
         subscription: {
           status: "premium",
@@ -94,9 +95,26 @@ try {
   assert.equal(persisted.stores[0].inn, "7701234567");
   assert.equal(persisted.stores[0].taxId, "7701234567");
   assert.equal(persisted.stores[0].isPremium, true);
+  assert.equal(persisted.stores[0].currencyCode, "CNY");
+  assert.equal(persisted.stores[0].currencySource, "OZON_SELLER_INFO");
+  assert.equal(persisted.stores[0].currencySyncedAt, "2026-07-28T08:00:00.000Z");
   assert.equal(persisted.stores[0].profileSyncedAt, "2026-07-28T08:00:00.000Z");
   assert.equal(persisted.stores[0].updatedAt, "2026-07-28T08:00:00.000Z");
   assert.equal(persisted.stores[1].companyName, undefined);
+
+  const preserveService = createOzonSyncService({
+    loadState: async () => clone(persisted),
+    saveState: async (state) => { persisted = clone(state); },
+    now: () => new Date("2026-07-29T08:00:00.000Z"),
+    logger: { warn() {}, error() {} },
+  });
+  for (const currency of [undefined, "USD"]) {
+    globalThis.fetch = async () => jsonResponse({ result: { company: { name: "Seller A", currency } } });
+    await preserveService.refreshStoreProfiles(clone(persisted), { accountId: "acct_a", storeId: "store_a" });
+    assert.equal(persisted.stores[0].currencyCode, "CNY");
+    assert.equal(persisted.stores[0].currencySource, "OZON_SELLER_INFO");
+    assert.equal(persisted.stores[0].currencySyncedAt, "2026-07-28T08:00:00.000Z");
+  }
 
   const requestCountBeforeForbiddenStore = requests.length;
   await assert.rejects(

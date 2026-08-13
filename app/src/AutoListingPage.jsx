@@ -522,7 +522,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
                 const label = safeStoreLabel(store);
                 return {
                   value: store.id,
-                  label: presentation ? `${label}（${presentation.name} ${presentation.currency}）` : `${label}（币种不支持）`,
+                  label: presentation ? `${label}（${presentation.name} ${presentation.currency}）` : `${label}（币种未同步）`,
                   disabled: !presentation,
                 };
               })} />
@@ -536,7 +536,7 @@ export default function AutoListingPage({ localData = {}, onRefresh, account = n
               rules={[{ required: true }]}><Input /></Form.Item>
           </div>
           {selectedStoreId && !currencyPresentation
-            ? <Alert type="error" showIcon title="当前店铺币种不支持自动上架，请检查店铺设置。" /> : null}
+            ? <Alert type="error" showIcon title="店铺币种尚未同步，请先同步店铺资料。" /> : null}
           <Alert type="info" showIcon title="RFBS 新店仓库将在创建任务时由后端只读验证，不会在验证阶段创建商品或修改库存。" />
           <Alert type="info" showIcon title="售价计算规则"
             description={`所有金额均按店铺原币计算。黑标价大于等于 80 ${currencyPresentation?.symbol || ""}：真实售价＝（黑标价－绿标价）×2.25＋黑标价；低于 80 ${currencyPresentation?.symbol || ""}：真实售价＝黑标价÷1.0715。最后再加上或减去上面的金额。`} />

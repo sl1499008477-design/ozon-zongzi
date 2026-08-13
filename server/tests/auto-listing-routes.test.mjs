@@ -366,6 +366,28 @@ test("unsupported target-store currency has a stable safe 422 response", async (
   assert.doesNotMatch(JSON.stringify(replies[0]), /USD|credential|secret/iu);
 });
 
+test("unverified target-store currency has a stable safe 409 response", async () => {
+  const { handler, replies } = harness({ runtime: { getService: async () => ({
+    createAutoListingJob: async () => {
+      throw Object.assign(new Error("legacy RUB inference credential=secret"), {
+        code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED",
+        status: 500,
+      });
+    },
+  }) } });
+  await handler(request({ method: "POST", path: "/auto-listing/jobs/from-collect-box", body: createBody }), {}, new URL("http://local/auto-listing/jobs/from-collect-box"));
+  assert.deepEqual(replies[0], {
+    status: 409,
+    payload: {
+      ok: false,
+      code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED",
+      message: "店铺币种尚未同步，请先同步店铺资料",
+      correlationId: "corr_1",
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(replies[0]), /legacy|RUB|credential|secret/iu);
+});
+
 for (const [code, status, message] of [
   ["RFBS_WAREHOUSE_NOT_FOUND", 404, "未找到目标 RFBS 仓库"],
   ["RFBS_WAREHOUSE_DISABLED", 409, "目标 RFBS 仓库不可用"],

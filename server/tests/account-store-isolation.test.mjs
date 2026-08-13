@@ -174,6 +174,29 @@ assert.equal(payloadB.summary.products, 2);
 assert.equal(payloadB.summary.postings, 1);
 assert.deepEqual(Object.keys(payloadB.jobs), ["job_b"]);
 
+const noCrossStoreCurrency = localStatePayload(ensureAccountState({
+  accounts: [accountA],
+  sessions: {},
+  stores: [
+    { id: "store_unknown", ownerAccountId: accountA.id, label: "Unknown", clientId: "unknown" },
+    { id: "store_cny", ownerAccountId: accountA.id, label: "CNY", clientId: "cny",
+      currencyCode: "CNY", currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-08-13T00:00:00.000Z" },
+  ],
+  currentAccountId: accountA.id,
+  currentStoreId: "store_unknown",
+  currentStoreIdsByAccount: { [accountA.id]: "store_unknown" },
+  caches: {
+    products: [{ id: "cny-product", storeId: "store_cny", currency_code: "CNY" }],
+    postings: [], warehouses: [], collectBox: [], favorites: [], promotions: [], returns: [], refunds: [],
+  },
+  jobs: {},
+  reports: [],
+  auditEvents: [],
+}), { account: accountA, token: "token-a", authenticated: true });
+assert.equal(noCrossStoreCurrency.binding.currencyCode, "");
+assert.equal(noCrossStoreCurrency.stores.find((store) => store.id === "store_unknown").currencyCode, "");
+assert.equal(noCrossStoreCurrency.stores.find((store) => store.id === "store_cny").currencyCode, "CNY");
+
 assert.equal(canAccessLocalFile(state.caches.files[0], accountB), false);
 assert.equal(canAccessLocalFile(state.caches.files[1], accountB), true);
 

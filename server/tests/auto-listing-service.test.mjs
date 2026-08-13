@@ -169,7 +169,7 @@ function fakeRepository({ sources = [source("collect-1")], existing = null } = {
         sources: sources.map((entry, index) => ({ ...entry, id: `row-${index + 1}`, collectItemId: entry.id })),
       };
     },
-    async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "RUB", credentialsSaved: true }; },
+    async loadTargetStore(input) { calls.push(["loadTargetStore", input]); return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "RUB", currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-08-13T00:00:00.000Z", credentialsSaved: true }; },
     async loadTargetWarehouse(input) { calls.push(["loadTargetWarehouse", input]); return { warehouse: { id: "warehouse-a", storeId: "store-a", accountId: input.accountId, warehouse_id: "1001", warehouse_type: "FBS", status: "active", is_active: true, is_archived: false }, products: [{ accountId: input.accountId, storeId: "store-a", warehouse_stocks: [{ warehouse_id: "1001", source: "fbs" }] }] }; },
     async loadPublishedStrategy(input) { calls.push(["loadPublishedStrategy", input]); return { strategyVersion: { strategyId: "strategy-a", strategyVersionId: "version-a" }, rules: [] }; },
     async loadPublishedUploadPolicies(input) {
@@ -856,7 +856,8 @@ test("creates a native CNY job from exact target-store currency evidence", async
   const repository = fakeRepository({ sources: [cny] });
   repository.loadTargetStore = async (input) => {
     repository.calls.push(["loadTargetStore", input]);
-    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "CNY", credentialsSaved: true };
+    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "CNY",
+      currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-08-13T00:00:00.000Z", credentialsSaved: true };
   };
   const result = await createAutoListingService({ repository }).createAutoListingJob({
     actor, collectItemIds: ["collect-cny"], idempotencyKey: "cny-native", correlationId: "corr-cny", config,
@@ -869,11 +870,25 @@ test("creates a native CNY job from exact target-store currency evidence", async
   });
 });
 
+test("rejects a legacy default currency without exact Ozon seller-info authority", async () => {
+  const repository = fakeRepository();
+  repository.loadTargetStore = async (input) => ({
+    id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a",
+    currencyCode: "RUB", credentialsSaved: true,
+  });
+  await assert.rejects(createAutoListingService({ repository }).createAutoListingJob({
+    actor, collectItemIds: ["collect-1"], idempotencyKey: "unverified-store-currency",
+    correlationId: "corr-unverified", config,
+  }), { code: "AUTO_LISTING_TARGET_STORE_CURRENCY_UNVERIFIED", status: 409 });
+  assert.equal(repository.calls.some(([name]) => name === "loadTargetWarehouse"), false);
+  assert.equal(repository.calls.some(([name]) => name === "createJobGraph"), false);
+});
+
 test("blocks an explicit source currency that conflicts with the target store", async () => {
   const repository = fakeRepository();
   repository.loadTargetStore = async (input) => {
     repository.calls.push(["loadTargetStore", input]);
-    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "CNY", credentialsSaved: true };
+    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "CNY", currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-08-13T00:00:00.000Z", credentialsSaved: true };
   };
   const result = await createAutoListingService({ repository }).createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "currency-mismatch", correlationId: "corr-cny", config,
@@ -888,7 +903,7 @@ test("rejects an unsupported target-store currency before warehouse or job work"
   const repository = fakeRepository();
   repository.loadTargetStore = async (input) => {
     repository.calls.push(["loadTargetStore", input]);
-    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "USD", credentialsSaved: true };
+    return { id: "store-a", ownerAccountId: input.accountId, status: "active", clientId: "client-a", currencyCode: "USD", currencySource: "OZON_SELLER_INFO", currencySyncedAt: "2026-08-13T00:00:00.000Z", credentialsSaved: true };
   };
   await assert.rejects(createAutoListingService({ repository }).createAutoListingJob({
     actor, collectItemIds: ["collect-1"], idempotencyKey: "unsupported-target-currency", correlationId: "corr-usd", config,
@@ -1053,7 +1068,7 @@ test("repository rejects an empty platform warehouse ID before the shared eligib
       if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
       if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
       if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
-      if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
+      if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z", status: "active" }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM ai_content_strategy_rules/.test(sql)) return { rows: [] };
@@ -1170,7 +1185,7 @@ test("repository persists only a canonical recomputed price with a non-default s
       if (/auto-listing-category-graph-lock-keys/u.test(sql)) return { rows: params[1].map((id, index) => ({ shared_category_id: id, lock_key: String(index + 1) })) };
       if (/pg_try_advisory_xact_lock_shared/u.test(sql)) return { rows: [{ locked: true }] };
       if (/auto-listing-category-graph-lease-active/u.test(sql)) return { rows: [{ id: "category-lease-a" }] };
-      if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", status: "active" }] };
+      if (/FROM stores s/.test(sql)) return { rows: [{ id: "store-a", owner_account_id: "account-a", label: "Store A", company_name: "Store A", client_id: "client-a", currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z", status: "active" }] };
       if (/FROM store_credentials/.test(sql)) return { rows: [{ store_id: "store-a" }] };
       if (/SELECT strategy_key/.test(sql)) return { rows: [{ strategy_key: "strategy-a" }] };
       if (/FROM auto_listing_upload_policy_versions/.test(sql)) return { rows: [{ id: "upload-policy-review-v1" }] };

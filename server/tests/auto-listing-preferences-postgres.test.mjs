@@ -28,6 +28,7 @@ test("preference save validates owned active FBS inventory scope and records one
       if (sql.includes("FROM auto_listing_preferences") && sql.includes("FOR UPDATE")) return { rows: [] };
       if (sql.includes("FROM stores s") && sql.includes("JOIN warehouses")) return { rows: [{
         store_id: "store-a", owner_account_id: "account-a", store_status: "active", client_id: "client-a",
+        currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z",
         credentials_saved: true, warehouse_record_id: "warehouse-a", warehouse_id: "1001",
         warehouse_type: "FBS", warehouse_status: "active", is_active: true, is_archived: false,
         has_active_product_association: true,
@@ -69,6 +70,7 @@ test("preference save accepts only the exact RFBS pending state without networki
       if (sql.includes("FROM auto_listing_preferences") && sql.includes("FOR UPDATE")) return { rows: [] };
       if (sql.includes("FROM stores s") && sql.includes("JOIN warehouses")) return { rows: [{
         store_id: "store-a", owner_account_id: "account-a", store_status: "active", client_id: "client-a",
+        currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z",
         credentials_saved: true, warehouse_record_id: "warehouse-a", warehouse_id: "2001",
         warehouse_type: "RFBS", warehouse_status: "active", is_active: true, is_archived: false,
         has_active_product_association: false,
@@ -111,6 +113,7 @@ test("preference save rejects unsupported or malformed RFBS-like warehouse state
         if (sql.includes("FROM auto_listing_preferences") && sql.includes("FOR UPDATE")) return { rows: [] };
         if (sql.includes("FROM stores s") && sql.includes("JOIN warehouses")) return { rows: [{
           store_id: "store-a", owner_account_id: "account-a", store_status: "active", client_id: "client-a",
+          currency_code: "RUB", currency_source: "OZON_SELLER_INFO", currency_synced_at: "2026-08-13T00:00:00.000Z",
           credentials_saved: true, warehouse_record_id: "warehouse-a",
           has_active_product_association: false, ...warehouse,
         }] };

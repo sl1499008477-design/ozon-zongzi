@@ -32,17 +32,18 @@ const canonical = (value) => Array.isArray(value) ? value.map(canonical)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 const canonicalSha = (value) => sha(JSON.stringify(canonical(value)));
 
-async function migrationFiles(maximum = 72) {
+async function migrationFiles(maximum = 73) {
   const files = (await readdir(migrationsDir))
     .filter((file) => /^\d{3}_.+\.sql$/u.test(file) && Number(file.slice(0, 3)) <= maximum)
     .sort();
   if (maximum === 69) assert.equal(files.at(-1), "069_submission_category_recovery_item_results.sql");
   if (maximum === 71) assert.equal(files.at(-1), "071_submission_stock_write_ledger.sql");
   if (maximum === 72) assert.equal(files.at(-1), "072_account_shared_category_confirmation_audit_provenance.sql");
+  if (maximum === 73) assert.equal(files.at(-1), "073_store_currency_authority.sql");
   return files;
 }
 
-async function applyMigrations(client, maximum = 72) {
+async function applyMigrations(client, maximum = 73) {
   for (const file of await migrationFiles(maximum)) {
     await client.query(await readFile(path.join(migrationsDir, file), "utf8"));
   }
@@ -455,7 +456,7 @@ if (!enabled) {
     skip: "set ACCOUNT_SHARED_CATEGORY_RECOVERY_E2E=1 and both disposable database URLs",
   }, () => {});
 } else {
-  test("001-072 account-shared category and one recovery use real PG and loopback-only Ozon", { timeout: 180_000 }, async () => {
+  test("001-073 account-shared category and one recovery use real PG and loopback-only Ozon", { timeout: 180_000 }, async () => {
     assert.ok(sourceUrl && restoreUrl && sourceContainer && restoreContainer, "two disposable DB/container identities are required");
     const pool = new Pool({ connectionString: sourceUrl });
     const client = await pool.connect();
@@ -466,9 +467,9 @@ if (!enabled) {
     try {
       await client.query(`CREATE SCHEMA ${q(schema)}`);
       await client.query(`SET search_path TO ${q(schema)}, public`);
-      await applyMigrations(client, 72);
+      await applyMigrations(client, 73);
       await client.query("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
-      for (const migration of await migrationFiles(72)) {
+      for (const migration of await migrationFiles(73)) {
         await client.query("INSERT INTO schema_migrations(version) VALUES($1)", [migration.replace(/\.sql$/u, "")]);
       }
       const accountA = `account-a-${schema}`;

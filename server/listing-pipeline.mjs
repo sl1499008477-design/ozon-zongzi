@@ -661,6 +661,8 @@ export async function assertUsableOperatingStore({
        s.label,
        s.client_id,
        s.currency_code,
+       s.currency_source,
+       s.currency_synced_at,
        s.status,
        (
          sc.store_id IS NOT NULL
@@ -674,10 +676,22 @@ export async function assertUsableOperatingStore({
      LIMIT 1`,
     [scope.targetStoreId, scope.accountId],
   );
+  const row = result.rows[0];
   return validateTargetStoreRecord({
     accountId: scope.accountId,
     targetStoreId: scope.targetStoreId,
-    store: result.rows[0] || null,
+    store: row ? {
+      id: row.id,
+      ownerAccountId: row.owner_account_id,
+      label: row.label,
+      clientId: row.client_id,
+      currencyCode: row.currency_code,
+      currencySource: row.currency_source,
+      currencySyncedAt: row.currency_synced_at instanceof Date
+        ? row.currency_synced_at.toISOString() : row.currency_synced_at,
+      status: row.status,
+      credentialsSaved: row.credentials_saved === true,
+    } : null,
     requireCredentials,
   });
 }
